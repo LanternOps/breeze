@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, ActionError } from "@/lib/runAction";
+import { extractApiError } from "@/lib/apiError";
 
 /**
  * At or above this many target devices the operator must type the count, the
@@ -34,10 +35,15 @@ type RemediationPreview = {
   maxDevices: number;
 };
 
+// Every settled state carries the policy it was loaded for. The dialog stays
+// mounted across close/reopen, so on the first render after reopening for a
+// DIFFERENT policy the previous policy's preview is still in state until the
+// effect resets it; tagging lets render treat that as loading, so another
+// policy's deviceIds can never be confirmed against this one.
 type PreviewState =
   | { status: "loading" }
-  | { status: "error" }
-  | { status: "ready"; preview: RemediationPreview };
+  | { status: "error"; policyId: string; reason: string | null }
+  | { status: "ready"; policyId: string; preview: RemediationPreview };
 
 export interface RemediateConfirmDialogProps {
   open: boolean;
@@ -105,14 +111,17 @@ export default function RemediateConfirmDialog({
             res.status,
             data,
           );
-          setState({ status: "error" });
+          // Surface the server's reason (audit-only policy, not found, …)
+          // when it gave one; the generic line covers the rest.
+          const reason = res.ok ? null : extractApiError(data, "") || null;
+          setState({ status: "error", policyId, reason });
           return;
         }
-        setState({ status: "ready", preview: data });
+        setState({ status: "ready", policyId, preview: data });
       } catch (err) {
         if (cancelled) return;
         console.error("[RemediateConfirmDialog] remediation preview failed", err);
-        setState({ status: "error" });
+        setState({ status: "error", policyId, reason: null });
       }
     })();
     return () => {
@@ -122,7 +131,11 @@ export default function RemediateConfirmDialog({
 
   if (!policy) return null;
 
-  const preview = state.status === "ready" ? state.preview : null;
+  const current: PreviewState =
+    state.status !== "loading" && state.policyId !== policy.id
+      ? { status: "loading" }
+      : state;
+  const preview = current.status === "ready" ? current.preview : null;
   const count = preview?.deviceCount ?? 0;
   const needsTypedCount = count >= TYPED_CONFIRM_THRESHOLD;
   const typedOk = !needsTypedCount || typedCount.trim() === String(count);
@@ -134,19 +147,34 @@ export default function RemediateConfirmDialog({
   const handleConfirm = async () => {
     if (!preview || preview.deviceIds.length === 0) return;
     setSubmitting(true);
+    const requested = preview.deviceIds.length;
     try {
-      await runAction<{ queued?: number }>({
+      const data = await runAction<{ queued?: number } | undefined>({
         request: () =>
           fetchWithAuth(`/software-policies/${policy.id}/remediate`, {
             method: "POST",
             body: JSON.stringify({ deviceIds: preview.deviceIds }),
           }),
         errorFallback: t("software.remediateConfirm.failed"),
-        successMessage: (data) =>
-          t("software.remediateConfirm.queued", {
-            count: data?.queued ?? 0,
-          }),
       });
+      // A 200 is not proof anything was queued: devices can leave scope or
+      // already have remediation pending between preview and confirm, and the
+      // route answers those with `queued: 0` (or fewer than requested). Never
+      // report that as a plain success.
+      const queued = typeof data?.queued === "number" ? data.queued : 0;
+      if (queued === 0) {
+        showToast({ type: "warning", message: t("software.remediateConfirm.queuedNone") });
+      } else if (queued < requested) {
+        showToast({
+          type: "warning",
+          message: t("software.remediateConfirm.queuedPartial", { queued, requested }),
+        });
+      } else {
+        showToast({
+          type: "success",
+          message: t("software.remediateConfirm.queued", { count: queued }),
+        });
+      }
       onQueued?.();
       onClose();
     } catch (err) {
@@ -160,10 +188,12 @@ export default function RemediateConfirmDialog({
   };
 
   let message: string;
-  if (state.status === "loading") {
+  if (current.status === "loading") {
     message = t("software.remediateConfirm.loading");
-  } else if (state.status === "error") {
-    message = t("software.remediateConfirm.previewFailed");
+  } else if (current.status === "error") {
+    message = current.reason
+      ? t("software.remediateConfirm.previewFailedWithReason", { reason: current.reason })
+      : t("software.remediateConfirm.previewFailed");
   } else if (count === 0) {
     message = t("software.remediateConfirm.nothingToRemove");
   } else {
@@ -190,11 +220,11 @@ export default function RemediateConfirmDialog({
       confirmLabel={t("software.remediateConfirm.confirm", { count })}
       variant="destructive"
       isLoading={submitting}
-      confirmDisabled={state.status !== "ready" || count === 0 || !typedOk}
+      confirmDisabled={current.status !== "ready" || count === 0 || !typedOk}
       confirmTestId="confirm-software-remediate"
       dialogTestId="software-remediate-dialog"
     >
-      {state.status === "error" && (
+      {current.status === "error" && (
         <p data-testid="software-remediate-preview-error" className="text-sm text-destructive">
           {t("software.remediateConfirm.nothingQueued")}
         </p>

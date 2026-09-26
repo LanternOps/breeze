@@ -88,22 +88,47 @@ vi.mock('../services/permissions', () => ({
 }));
 
 
+vi.mock('../services/softwarePolicyRemediationPreview', async () => {
+  const actual = await vi.importActual<typeof import('../services/softwarePolicyRemediationPreview')>(
+    '../services/softwarePolicyRemediationPreview',
+  );
+  // The real SQL is proven against Postgres in
+  // softwarePolicyRemediationPreview.integration.test.ts; here only the route's
+  // wiring — which policy, which tenant filter, which site ceiling — is under test.
+  return { ...actual, queryRemediationPreview: vi.fn() };
+});
+
 import { softwarePoliciesRoutes } from './softwarePolicies';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
+import { queryRemediationPreview } from '../services/softwarePolicyRemediationPreview';
 
 // ───────────── GET /:id/remediate/preview (#3616) ─────────────
-// The dry run behind the Remediate confirmation. It must resolve the SAME
-// server-side target set the operator is about to act on (never the client's
-// filter view), hand back the exact device ids the confirm call will send, and
-// never queue anything itself.
+// The dry run behind the Remediate confirmation. It must resolve the target set
+// server-side under the caller's tenant + site scope (never the client's filter
+// view), hand back the exact device ids the confirm call will send, and never
+// queue anything itself.
 describe('GET /:id/remediate/preview', () => {
   const ORG_ID = '11111111-1111-1111-1111-111111111111';
   const POLICY_ID = '22222222-2222-2222-2222-222222222222';
   const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+  const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
   const DEVICE_A = '33333333-3333-3333-3333-333333333333';
   const DEVICE_B = '44444444-4444-4444-4444-444444444444';
+  const ORG_CONDITION = { __orgCondition: ORG_ID };
+
+  const EMPTY = {
+    deviceIds: [],
+    deviceCount: 0,
+    uninstallCount: 0,
+    software: [],
+    softwareDistinctCount: 0,
+    sampleDevices: [],
+    totalTargetDevices: 0,
+    capped: false,
+    maxDevices: 500,
+  };
 
   let app: Hono;
 
@@ -114,7 +139,7 @@ describe('GET /:id/remediate/preview', () => {
         orgId: ORG_ID,
         accessibleOrgIds: [ORG_ID],
         canAccessOrg: (orgId: string) => orgId === ORG_ID,
-        orgCondition: () => undefined,
+        orgCondition: () => ORG_CONDITION,
         user: { id: 'user-123', email: 'test@example.com' },
       });
       if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
@@ -140,52 +165,25 @@ describe('GET /:id/remediate/preview', () => {
     } as any);
   }
 
-  // db.select({deviceId, hostname, violations}).from(compliance)
-  //   .innerJoin(devices).where(...).orderBy(...).limit(500)
-  function mockTargetRows(rows: Array<Record<string, unknown>>) {
-    const limit = vi.fn().mockResolvedValue(rows);
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({ limit }),
-          }),
-        }),
-      }),
-    } as any);
-    return limit;
-  }
-
-  // db.select({count}).from(compliance).innerJoin(devices).where(...)
-  function mockTotalCount(count: number) {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ count }]),
-        }),
-      }),
-    } as any);
-  }
-
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(queryRemediationPreview).mockResolvedValue(EMPTY as any);
     app = new Hono();
     app.route('/software-policies', softwarePoliciesRoutes);
   });
 
-  it('returns the server-resolved target set, blast radius, and policy identity without queuing anything', async () => {
+  it('returns the server-resolved preview plus policy identity, scoped to the caller, without queuing anything', async () => {
     setAuth();
     mockPolicyLookup({ id: POLICY_ID, orgId: ORG_ID, mode: 'allowlist', name: 'Standard apps' });
-    const limit = mockTargetRows([
-      { deviceId: DEVICE_A, hostname: 'alpha', violations: [
-        { type: 'unauthorized', software: { name: 'Zoom', version: '5' } },
-        { type: 'unauthorized', software: { name: 'Steam' } },
-      ] },
-      { deviceId: DEVICE_B, hostname: 'bravo', violations: [
-        { type: 'unauthorized', software: { name: 'Zoom', version: '5' } },
-      ] },
-    ]);
-    mockTotalCount(2);
+    vi.mocked(queryRemediationPreview).mockResolvedValueOnce({
+      ...EMPTY,
+      deviceIds: [DEVICE_A, DEVICE_B],
+      deviceCount: 2,
+      uninstallCount: 3,
+      software: [{ name: 'Zoom', deviceCount: 2 }],
+      softwareDistinctCount: 1,
+      totalTargetDevices: 2,
+    } as any);
 
     const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
 
@@ -193,31 +191,41 @@ describe('GET /:id/remediate/preview', () => {
     const body = await res.json();
     expect(body.policy).toEqual({ id: POLICY_ID, name: 'Standard apps', mode: 'allowlist' });
     expect(body.deviceIds).toEqual([DEVICE_A, DEVICE_B]);
-    expect(body.deviceCount).toBe(2);
     expect(body.uninstallCount).toBe(3);
-    expect(body.totalTargetDevices).toBe(2);
-    expect(body.capped).toBe(false);
-    expect(body.maxDevices).toBe(500);
-    expect(body.software[0]).toEqual({ name: 'Zoom', deviceCount: 2 });
-    expect(body.sampleDevices[0].hostname).toBe('alpha');
-    // Same cap the remediate route enforces on its explicit deviceIds.
-    expect(limit).toHaveBeenCalledWith(500);
+    expect(vi.mocked(queryRemediationPreview)).toHaveBeenCalledWith({
+      policyId: POLICY_ID,
+      orgCondition: ORG_CONDITION,
+      siteAllowedDeviceIds: null,
+    });
     expect(vi.mocked(scheduleSoftwareRemediation)).not.toHaveBeenCalled();
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
   });
 
-  it('reports capped when more devices would be targeted than one remediation can carry', async () => {
-    setAuth();
+  it('narrows a site-restricted caller to devices in their allowed sites', async () => {
+    setAuth([SITE_ALLOWED]);
     mockPolicyLookup({ id: POLICY_ID, orgId: ORG_ID, mode: 'blocklist', name: 'Block' });
-    mockTargetRows([
-      { deviceId: DEVICE_A, hostname: 'alpha', violations: [{ type: 'unauthorized', software: { name: 'X' } }] },
+    mockSiteResolution([
+      { id: DEVICE_A, siteId: SITE_ALLOWED },
+      { id: DEVICE_B, siteId: SITE_DENIED },
     ]);
-    mockTotalCount(812);
 
     const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
-    const body = await res.json();
-    expect(body.totalTargetDevices).toBe(812);
-    expect(body.capped).toBe(true);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(queryRemediationPreview)).toHaveBeenCalledWith(
+      expect.objectContaining({ siteAllowedDeviceIds: [DEVICE_A] }),
+    );
+  });
+
+  it('fails closed for a site-restricted caller on a partner-wide policy (orgId null)', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockPolicyLookup({ id: POLICY_ID, orgId: null, partnerId: 'p-1', mode: 'blocklist', name: 'Partner template' });
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
+    expect(res.status).toBe(200);
+    // [] (no devices), never null (unrestricted).
+    expect(vi.mocked(queryRemediationPreview)).toHaveBeenCalledWith(
+      expect.objectContaining({ siteAllowedDeviceIds: [] }),
+    );
   });
 
   it('404s for a policy the caller cannot see', async () => {
@@ -225,6 +233,7 @@ describe('GET /:id/remediate/preview', () => {
     mockPolicyLookup(null);
     const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
     expect(res.status).toBe(404);
+    expect(vi.mocked(queryRemediationPreview)).not.toHaveBeenCalled();
   });
 
   it('400s for an audit-only policy, matching the remediate route', async () => {
@@ -232,18 +241,6 @@ describe('GET /:id/remediate/preview', () => {
     mockPolicyLookup({ id: POLICY_ID, orgId: ORG_ID, mode: 'audit', name: 'Audit' });
     const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
     expect(res.status).toBe(400);
-  });
-
-  it('previews zero for a site-restricted caller with no reachable devices, without querying violations', async () => {
-    setAuth([SITE_ALLOWED]);
-    mockPolicyLookup({ id: POLICY_ID, orgId: ORG_ID, mode: 'blocklist', name: 'Block' });
-    mockSiteResolution([]);
-
-    const res = await app.request(`/software-policies/${POLICY_ID}/remediate/preview`);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.deviceCount).toBe(0);
-    expect(body.deviceIds).toEqual([]);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(queryRemediationPreview)).not.toHaveBeenCalled();
   });
 });

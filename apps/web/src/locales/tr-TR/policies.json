@@ -1790,7 +1790,10 @@
       "queued": "{{count}} cihaz için düzeltme kuyruğa alındı",
       "failed": "Düzeltme zamanlanamadı",
       "modeAllowlist": "izin listesi",
-      "modeBlocklist": "engelleme listesi"
+      "modeBlocklist": "engelleme listesi",
+      "queuedNone": "Kuyruğa hiçbir şey eklenmedi: önizlemedeki cihazların artık düzeltmeye ihtiyacı yok ya da düzeltme zaten beklemede.",
+      "queuedPartial": "Önizlemedeki {{requested}} cihazdan {{queued}} tanesi için düzeltme kuyruğa alındı; kalanların artık ihtiyacı yok ya da zaten beklemede.",
+      "previewFailedWithReason": "Düzeltme önizlemesi yüklenemedi: {{reason}}"
     }
   }
 }

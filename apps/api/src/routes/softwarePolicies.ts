@@ -17,7 +17,11 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
-import { summarizeRemediationTargets } from '../services/softwarePolicyRemediationPreview';
+import {
+  MAX_REMEDIATION_DEVICES,
+  implicitRemediationConditions,
+  queryRemediationPreview,
+} from '../services/softwarePolicyRemediationPreview';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
@@ -130,10 +134,6 @@ const violationsQuerySchema = z.object({
   deviceId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
-
-// Upper bound on one remediation request, shared by the explicit-deviceIds
-// schema, the legacy implicit selection, and the remediate preview (#3616).
-const MAX_REMEDIATION_DEVICES = 500;
 
 const optionalDeviceIdsSchema = z.object({
   deviceIds: z.array(z.string().guid()).min(1).max(MAX_REMEDIATION_DEVICES).optional(),
@@ -904,27 +904,6 @@ async function resolveRemediationSiteAllowlist(
     : (perms?.allowedSiteIds ? [] : null);
 }
 
-// Conditions selecting a policy's violating devices the caller may act on.
-// Returns null when the caller can reach no devices at all. Used by BOTH the
-// preview and the legacy implicit remediate path, so the two cannot drift.
-function implicitRemediationConditions(
-  policyId: string,
-  auth: AuthContext,
-  siteAllowedDeviceIds: string[] | null,
-): SQL[] | null {
-  const conditions: SQL[] = [
-    eq(softwareComplianceStatus.policyId, policyId),
-    eq(softwareComplianceStatus.status, 'violation'),
-  ];
-  const orgCondition = auth.orgCondition(devices.orgId);
-  if (orgCondition) conditions.push(orgCondition);
-  if (siteAllowedDeviceIds) {
-    if (siteAllowedDeviceIds.length === 0) return null;
-    conditions.push(inArray(softwareComplianceStatus.deviceId, siteAllowedDeviceIds));
-  }
-  return conditions;
-}
-
 // #3616 — the dry run behind the Remediate confirmation dialog (incident
 // #3381: 259 devices lost software to one click with no count shown). It
 // resolves the same server-side target set the remediate route would, narrowed
@@ -951,48 +930,16 @@ softwarePoliciesRoutes.get(
       return c.json({ error: 'Remediation is not available for audit-only policies' }, 400);
     }
 
-    const policySummary = { id: policy.id, name: policy.name, mode: policy.mode };
     const siteAllowedDeviceIds = await resolveRemediationSiteAllowlist(policy, perms);
-    const baseConditions = implicitRemediationConditions(policy.id, auth, siteAllowedDeviceIds);
-
-    let rows: Array<{ deviceId: string; hostname: string | null; violations: unknown }> = [];
-    let totalTargetDevices = 0;
-    if (baseConditions) {
-      const conditions = [
-        ...baseConditions,
-        sql`${softwareComplianceStatus.violations} @> '[{"type":"unauthorized"}]'::jsonb`,
-      ];
-      rows = await db
-        .select({
-          deviceId: softwareComplianceStatus.deviceId,
-          hostname: devices.hostname,
-          violations: softwareComplianceStatus.violations,
-        })
-        .from(softwareComplianceStatus)
-        .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
-        .where(and(...conditions))
-        .orderBy(devices.hostname, softwareComplianceStatus.deviceId)
-        .limit(MAX_REMEDIATION_DEVICES);
-
-      const [countRow] = await db
-        .select({ count: sql<number>`count(distinct ${softwareComplianceStatus.deviceId})` })
-        .from(softwareComplianceStatus)
-        .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
-        .where(and(...conditions));
-      totalTargetDevices = Number(countRow?.count ?? 0);
-    }
-
-    const summary = summarizeRemediationTargets(rows);
-    // The count query can only be >= the capped selection; never report a
-    // total smaller than what is actually listed.
-    totalTargetDevices = Math.max(totalTargetDevices, summary.deviceCount);
+    const preview = await queryRemediationPreview({
+      policyId: policy.id,
+      orgCondition: auth.orgCondition(devices.orgId),
+      siteAllowedDeviceIds,
+    });
 
     return c.json({
-      policy: policySummary,
-      ...summary,
-      totalTargetDevices,
-      capped: totalTargetDevices > summary.deviceCount,
-      maxDevices: MAX_REMEDIATION_DEVICES,
+      policy: { id: policy.id, name: policy.name, mode: policy.mode },
+      ...preview,
     });
   }
 );
@@ -1062,7 +1009,11 @@ softwarePoliciesRoutes.post(
       // Legacy empty-body path: the server resolves the set on its own. The
       // web UI no longer uses it (#3616) — it previews via GET
       // /:id/remediate/preview and confirms with the exact previewed ids.
-      const complianceConditions = implicitRemediationConditions(policy.id, auth, siteAllowedDeviceIds);
+      const complianceConditions = implicitRemediationConditions(
+        policy.id,
+        auth.orgCondition(devices.orgId),
+        siteAllowedDeviceIds,
+      );
       if (!complianceConditions) {
         return c.json({ message: 'No matching violating devices found for remediation', queued: 0 });
       }

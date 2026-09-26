@@ -1790,7 +1790,10 @@
       "queued": "Assainissement mis en file d'attente pour {{count}} appareil(s)",
       "failed": "Impossible de planifier l'assainissement",
       "modeAllowlist": "liste d'autorisation",
-      "modeBlocklist": "liste de blocage"
+      "modeBlocklist": "liste de blocage",
+      "queuedNone": "Rien n'a été mis en file d'attente : les appareils de l'aperçu n'ont plus besoin d'assainissement ou en ont déjà un en attente.",
+      "queuedPartial": "Assainissement mis en file d'attente pour {{queued}} appareil(s) sur {{requested}} de l'aperçu ; les autres n'en ont plus besoin ou en ont déjà un en attente.",
+      "previewFailedWithReason": "Impossible de charger l'aperçu de l'assainissement : {{reason}}"
     }
   }
 }

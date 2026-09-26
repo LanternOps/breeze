@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../db', () => ({ db: {} }));
 import {
+  implicitRemediationConditions,
   REMEDIATION_PREVIEW_SAMPLE_DEVICES,
   REMEDIATION_PREVIEW_TOP_SOFTWARE,
   summarizeRemediationTargets,
@@ -98,5 +101,18 @@ describe('summarizeRemediationTargets (#3616)', () => {
     ]);
     expect(summary.deviceIds).toEqual([dev(1)]);
     expect(summary.uninstallCount).toBe(2);
+  });
+});
+
+describe('implicitRemediationConditions', () => {
+  it('returns null (no devices) for an empty site allowlist, never an unrestricted set', () => {
+    expect(implicitRemediationConditions('p', undefined, [])).toBeNull();
+  });
+
+  it('adds the tenant filter and the site ceiling when given', () => {
+    const orgCondition = { fake: 'org' } as never;
+    expect(implicitRemediationConditions('p', undefined, null)).toHaveLength(2);
+    expect(implicitRemediationConditions('p', orgCondition, null)).toHaveLength(3);
+    expect(implicitRemediationConditions('p', orgCondition, ['d'])).toHaveLength(4);
   });
 });

@@ -16,6 +16,14 @@
  * lower-cased (name, version) — so the preview count is the command count.
  */
 
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { db } from '../db';
+import { devices, softwareComplianceStatus } from '../db/schema';
+
+/** Upper bound on one remediation request — the remediate route's explicit
+ *  deviceIds schema, its legacy implicit selection, and this preview. */
+export const MAX_REMEDIATION_DEVICES = 500;
+
 export const REMEDIATION_PREVIEW_SAMPLE_DEVICES = 10;
 export const REMEDIATION_PREVIEW_TOP_SOFTWARE = 15;
 
@@ -115,5 +123,90 @@ export function summarizeRemediationTargets(rows: RemediationPreviewRow[]): Reme
       const entry = perDevice.get(deviceId)!;
       return { deviceId, hostname: entry.hostname, uninstalls: entry.uninstalls };
     }),
+  };
+}
+
+/**
+ * Conditions selecting a policy's violating devices the caller may act on.
+ * `orgCondition` is the caller's tenant filter on devices.org_id (undefined =
+ * unrestricted system scope); `siteAllowedDeviceIds` is the app-layer site
+ * ceiling (null = no site restriction). Returns null when the caller can reach
+ * no devices at all. Shared by this preview and the remediate route's legacy
+ * implicit path so the two cannot drift.
+ */
+export function implicitRemediationConditions(
+  policyId: string,
+  orgCondition: SQL | undefined,
+  siteAllowedDeviceIds: string[] | null,
+): SQL[] | null {
+  const conditions: SQL[] = [
+    eq(softwareComplianceStatus.policyId, policyId),
+    eq(softwareComplianceStatus.status, 'violation'),
+  ];
+  if (orgCondition) conditions.push(orgCondition);
+  if (siteAllowedDeviceIds) {
+    if (siteAllowedDeviceIds.length === 0) return null;
+    conditions.push(inArray(softwareComplianceStatus.deviceId, siteAllowedDeviceIds));
+  }
+  return conditions;
+}
+
+export type RemediationPreviewResult = RemediationPreviewSummary & {
+  /** Uncapped count of devices that qualify; >= deviceCount. */
+  totalTargetDevices: number;
+  capped: boolean;
+  maxDevices: number;
+};
+
+/**
+ * Resolve and summarize the uninstall target set for a policy. Narrowed to
+ * devices whose violations contain an `unauthorized` entry — the only kind the
+ * uninstall worker acts on — ordered by hostname, capped at
+ * MAX_REMEDIATION_DEVICES, with a separate uncapped COUNT(DISTINCT) so a
+ * capped run says so rather than reporting the cap as the total.
+ */
+export async function queryRemediationPreview(input: {
+  policyId: string;
+  orgCondition: SQL | undefined;
+  siteAllowedDeviceIds: string[] | null;
+}): Promise<RemediationPreviewResult> {
+  const base = implicitRemediationConditions(input.policyId, input.orgCondition, input.siteAllowedDeviceIds);
+
+  let rows: RemediationPreviewRow[] = [];
+  let total = 0;
+  if (base) {
+    const conditions = and(
+      ...base,
+      sql`${softwareComplianceStatus.violations} @> '[{"type":"unauthorized"}]'::jsonb`,
+    );
+    rows = await db
+      .select({
+        deviceId: softwareComplianceStatus.deviceId,
+        hostname: devices.hostname,
+        violations: softwareComplianceStatus.violations,
+      })
+      .from(softwareComplianceStatus)
+      .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
+      .where(conditions)
+      .orderBy(devices.hostname, softwareComplianceStatus.deviceId)
+      .limit(MAX_REMEDIATION_DEVICES);
+
+    const [countRow] = await db
+      .select({ count: sql<number>`count(distinct ${softwareComplianceStatus.deviceId})::int` })
+      .from(softwareComplianceStatus)
+      .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
+      .where(conditions);
+    total = Number(countRow?.count ?? 0);
+  }
+
+  const summary = summarizeRemediationTargets(rows);
+  // The count can only be >= the capped selection; never report a total
+  // smaller than what is actually listed.
+  const totalTargetDevices = Math.max(total, summary.deviceCount);
+  return {
+    ...summary,
+    totalTargetDevices,
+    capped: totalTargetDevices > summary.deviceCount,
+    maxDevices: MAX_REMEDIATION_DEVICES,
   };
 }

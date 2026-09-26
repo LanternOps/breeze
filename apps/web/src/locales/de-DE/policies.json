@@ -1790,7 +1790,10 @@
       "queued": "Korrektur für {{count}} Gerät(e) in die Warteschlange gestellt",
       "failed": "Korrektur konnte nicht geplant werden",
       "modeAllowlist": "Zulassungsliste",
-      "modeBlocklist": "Sperrliste"
+      "modeBlocklist": "Sperrliste",
+      "queuedNone": "Nichts wurde in die Warteschlange gestellt: Die Geräte aus der Vorschau benötigen keine Abhilfe mehr oder sie steht bereits aus.",
+      "queuedPartial": "Abhilfe für {{queued}} von {{requested}} Gerät(en) aus der Vorschau in die Warteschlange gestellt; die übrigen benötigen sie nicht mehr oder sie steht bereits aus.",
+      "previewFailedWithReason": "Die Vorschau konnte nicht geladen werden: {{reason}}"
     }
   }
 }

@@ -1790,7 +1790,10 @@
       "queued": "Remediation queued for {{count}} device(s)",
       "failed": "Failed to schedule remediation",
       "modeAllowlist": "Allowlist",
-      "modeBlocklist": "Blocklist"
+      "modeBlocklist": "Blocklist",
+      "queuedNone": "Nothing was queued: the previewed devices no longer need remediation or already have it pending.",
+      "queuedPartial": "Remediation queued for {{queued}} of {{requested}} previewed device(s); the rest no longer need it or already have it pending.",
+      "previewFailedWithReason": "Could not load the remediation preview: {{reason}}"
     }
   }
 }

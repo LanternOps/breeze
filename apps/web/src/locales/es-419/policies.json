@@ -1790,7 +1790,10 @@
       "queued": "Remediación en cola para {{count}} dispositivo(s)",
       "failed": "No se pudo programar la remediación",
       "modeAllowlist": "lista de permitidos",
-      "modeBlocklist": "lista de bloqueados"
+      "modeBlocklist": "lista de bloqueados",
+      "queuedNone": "No se puso nada en cola: los dispositivos de la vista previa ya no necesitan remediación o ya la tienen pendiente.",
+      "queuedPartial": "Remediación en cola para {{queued}} de {{requested}} dispositivo(s) de la vista previa; el resto ya no la necesita o ya la tiene pendiente.",
+      "previewFailedWithReason": "No se pudo cargar la vista previa de la remediación: {{reason}}"
     }
   }
 }

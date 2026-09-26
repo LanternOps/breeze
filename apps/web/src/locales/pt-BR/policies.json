@@ -1790,7 +1790,10 @@
       "queued": "Correção enfileirada para {{count}} dispositivo(s)",
       "failed": "Falha ao agendar a correção",
       "modeAllowlist": "lista de permissões",
-      "modeBlocklist": "lista de bloqueio"
+      "modeBlocklist": "lista de bloqueio",
+      "queuedNone": "Nada foi enfileirado: os dispositivos da prévia não precisam mais de correção ou já a têm pendente.",
+      "queuedPartial": "Correção enfileirada para {{queued}} de {{requested}} dispositivo(s) da prévia; os demais não precisam mais dela ou já a têm pendente.",
+      "previewFailedWithReason": "Não foi possível carregar a prévia da correção: {{reason}}"
     }
   }
 }

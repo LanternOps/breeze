@@ -168,4 +168,56 @@ describe("RemediateConfirmDialog (#3616)", () => {
     expect(onQueued).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("never reports a 0-device result as success", async () => {
+    fetchMock.mockResolvedValueOnce(json(preview(2)));
+    renderDialog();
+    await screen.findByTestId("software-remediate-preview");
+
+    fetchMock.mockResolvedValueOnce(
+      json({ message: "No matching violating devices found for remediation", queued: 0 }),
+    );
+    fireEvent.click(confirmButton());
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "warning" }),
+      ),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("reports a partial queue as queued-of-requested, not as full success", async () => {
+    fetchMock.mockResolvedValueOnce(json(preview(3)));
+    renderDialog();
+    await screen.findByTestId("software-remediate-preview");
+
+    fetchMock.mockResolvedValueOnce(json({ queued: 1 }));
+    fireEvent.click(confirmButton());
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "warning",
+          message: expect.stringContaining("1 of 3"),
+        }),
+      ),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("shows the server's reason when the preview is refused", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({ error: "Remediation is not available for audit-only policies" }, false, 400),
+    );
+    renderDialog();
+    await screen.findByTestId("software-remediate-preview-error");
+    expect(
+      screen.getByTestId("software-remediate-dialog").textContent,
+    ).toContain("Remediation is not available for audit-only policies");
+  });
 });

@@ -1790,7 +1790,10 @@
       "queued": "Correzione in coda per {{count}} dispositivo/i",
       "failed": "Impossibile pianificare la correzione",
       "modeAllowlist": "lista consentiti",
-      "modeBlocklist": "lista bloccati"
+      "modeBlocklist": "lista bloccati",
+      "queuedNone": "Nulla è stato messo in coda: i dispositivi dell'anteprima non richiedono più la correzione o l'hanno già in sospeso.",
+      "queuedPartial": "Correzione in coda per {{queued}} di {{requested}} dispositivi dell'anteprima; gli altri non ne hanno più bisogno o l'hanno già in sospeso.",
+      "previewFailedWithReason": "Impossibile caricare l'anteprima della correzione: {{reason}}"
     }
   }
 }
