@@ -5476,6 +5476,7 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "updateUser": "Impossible de mettre à jour l’utilisateur",
       "updateRole": "Impossible de mettre à jour le rôle",
+      "updateOrgAccess": "Impossible de mettre à jour l'accès aux organisations",
       "removeUser": "Impossible de supprimer l’utilisateur",
       "resetMfa": "Échec de la réinitialisation de la MFA"
     },
