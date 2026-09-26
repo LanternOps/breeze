@@ -56,11 +56,13 @@ func runExecWithGuard(t *testing.T, ctx context.Context, server string, fn func(
 
 func fastBudget() rebuildBudget {
 	return rebuildBudget{
-		Ceiling:              time.Minute,
-		StallWindow:          150 * time.Millisecond,
-		OpaqueStallFloor:     400 * time.Millisecond,
+		Ceiling: time.Minute,
+		// Absolute slack of hundreds of ms per check: -race on a loaded CI
+		// host can delay a wakeup by that much.
+		StallWindow:          500 * time.Millisecond,
+		OpaqueStallFloor:     2 * time.Second,
 		OpaqueBytesPerSecond: 1 << 20,
-		Tick:                 10 * time.Millisecond,
+		Tick:                 25 * time.Millisecond,
 	}
 }
 
@@ -141,13 +143,13 @@ func TestExecBareMetalRebuild_SteadyProgressOutlivesTheStallWindow(t *testing.T)
 	withRebuildBudget(t, b)
 	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
 	fn := scriptedRebuild(func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
-		deadline := time.Now().Add(4 * b.StallWindow)
+		deadline := time.Now().Add(3 * b.StallWindow)
 		for i := int64(1); time.Now().Before(deadline); i++ {
 			if ctx.Err() != nil {
 				return engineFailure(rebuild.PhaseRestore, ctx.Err())
 			}
 			opts.Progress(rebuild.PhaseRestore, "restored: f", i, 1<<20)
-			time.Sleep(b.StallWindow / 5)
+			time.Sleep(b.StallWindow / 10)
 		}
 		return &rebuild.Result{Status: "completed"}, nil
 	})
@@ -166,13 +168,13 @@ func TestExecBareMetalRebuild_DownloadBytesCountAsProgress(t *testing.T) {
 	fn := scriptedRebuild(func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
 		opts.Progress(rebuild.PhaseRestore, "starting", 0, 0)
 		w := providers.DownloadProgressWriter(ctx, io.Discard)
-		deadline := time.Now().Add(4 * b.StallWindow)
+		deadline := time.Now().Add(3 * b.StallWindow)
 		for time.Now().Before(deadline) {
 			if ctx.Err() != nil {
 				return engineFailure(rebuild.PhaseRestore, ctx.Err())
 			}
 			_, _ = w.Write(make([]byte, 32<<10))
-			time.Sleep(b.StallWindow / 5)
+			time.Sleep(b.StallWindow / 10)
 		}
 		return &rebuild.Result{Status: "completed"}, nil
 	})
@@ -193,7 +195,7 @@ func TestExecBareMetalRebuild_OpaquePhaseGetsTheLongerWindow(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return engineFailure(rebuild.PhaseConvert, ctx.Err())
-		case <-time.After(2 * b.StallWindow): // longer than streaming, shorter than opaque
+		case <-time.After(2 * b.StallWindow): // 1s: twice the streaming window, half the opaque floor
 		}
 		return &rebuild.Result{Status: "completed"}, nil
 	})
@@ -219,7 +221,7 @@ func TestExecBareMetalRebuild_HungOpaquePhaseIsStopped(t *testing.T) {
 
 func TestExecBareMetalRebuild_CeilingIsADistinctReason(t *testing.T) {
 	b := fastBudget()
-	b.Ceiling = 300 * time.Millisecond
+	b.Ceiling = time.Second
 	withRebuildBudget(t, b)
 	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
 	fn := scriptedRebuild(func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {

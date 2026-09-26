@@ -74,11 +74,14 @@ func restoreTree(ctx context.Context, r *run) error {
 	if err != nil {
 		return fmt.Errorf("restore files: %w", err)
 	}
+	// Record the counts first so an interrupted restore still reports how
+	// far it got; the interruption, when there is one, is the phase error.
+	recordErr := r.recordRestoreFailures(res)
 	if err := restoreInterrupted(ctx, res); err != nil {
 		return err
 	}
-	if err := r.recordRestoreFailures(res); err != nil {
-		return err
+	if recordErr != nil {
+		return recordErr
 	}
 	// Belt-and-braces (#5493): run this even when boot() will be skipped
 	// (Options.SkipBoot) — boot() is the phase that actually bind-mounts
@@ -115,9 +118,12 @@ func restoreTree(ctx context.Context, r *run) error {
 // early because ctx ended: RestoreFromSnapshotContext then returns its
 // partial result with a nil error, and without this check the phase would
 // be recorded completed, so a resumed run would skip the files that were
-// never restored (#6664). Shared by restoreTree and winRestoreTree.
+// never restored (#6664). A result the restore itself marked "completed"
+// is trusted: it checks ctx before declaring completion, so a ctx that
+// ends afterwards (during its staging cleanup) did not cut anything short.
+// Shared by restoreTree and winRestoreTree.
 func restoreInterrupted(ctx context.Context, res *backup.RestoreResult) error {
-	if ctx.Err() == nil {
+	if ctx.Err() == nil || (res != nil && res.Status == "completed") {
 		return nil
 	}
 	restored := 0

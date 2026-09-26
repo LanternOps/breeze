@@ -130,8 +130,8 @@ func TestRestoreTree_CancelledRestoreFailsThePhase(t *testing.T) {
 			Provider:   prov,
 			StateDir:   dir,
 			Progress: func(_ Phase, msg string, _, _ int64) {
-				if strings.HasPrefix(msg, "restored:") {
-					cancel() // stop after the first file lands
+				if strings.HasPrefix(msg, "restored:") && strings.HasSuffix(msg, "/src/02") {
+					cancel() // stop after the third file lands
 				}
 			},
 		},
@@ -146,5 +146,26 @@ func TestRestoreTree_CancelledRestoreFailsThePhase(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want it to wrap context.Canceled", err)
+	}
+	// The counts still reach the result, so a stopped rebuild reports how
+	// far it got.
+	if r.result.FilesRestored != 3 {
+		t.Fatalf("FilesRestored = %d, want 3 (the files restored before the cancel)", r.result.FilesRestored)
+	}
+}
+
+// A restore that finished is not failed because ctx ended after it returned
+// (e.g. the watchdog's ceiling during the restore's staging cleanup).
+func TestRestoreInterrupted_TrustsACompletedRestore(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := restoreInterrupted(ctx, &backup.RestoreResult{Status: "completed", FilesRestored: 5}); err != nil {
+		t.Fatalf("completed restore reported interrupted: %v", err)
+	}
+	if err := restoreInterrupted(ctx, &backup.RestoreResult{Status: "partial", FilesRestored: 2}); err == nil {
+		t.Fatal("a partial restore under a cancelled ctx must be reported interrupted")
+	}
+	if err := restoreInterrupted(context.Background(), &backup.RestoreResult{Status: "partial"}); err != nil {
+		t.Fatalf("a live ctx is never an interruption: %v", err)
 	}
 }
