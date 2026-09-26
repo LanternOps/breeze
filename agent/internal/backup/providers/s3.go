@@ -106,7 +106,7 @@ func (s *S3Provider) UploadContext(ctx context.Context, localPath, remotePath st
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(remotePath),
-		Body:   file,
+		Body:   uploadProgressSource(ctx, file),
 	}
 	switch s.sseAlgorithm {
 	case "AES256":

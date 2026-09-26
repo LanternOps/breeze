@@ -82,7 +82,7 @@ func (p *B2Provider) UploadContext(ctx context.Context, localPath, remotePath st
 	obj := bucket.Object(remotePath)
 	writer := obj.NewWriter(ctx)
 
-	if _, err := io.Copy(writer, file); err != nil {
+	if _, err := io.Copy(writer, uploadProgressSource(ctx, file)); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("failed to upload file to b2: %w", err)
 	}
