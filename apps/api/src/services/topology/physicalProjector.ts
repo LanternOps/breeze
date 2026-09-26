@@ -264,8 +264,10 @@ export function projectPhysicalTopology(input: TopologyProjectionInput): Topolog
   const interfaces = new Map(input.interfaces.map(i => [i.id, i]));
 
   if (adjacency.kind === 'snmp_interfaces') {
-    for (const row of [...adjacency.rows].sort((a, b) => a.rowKey.localeCompare(b.rowKey)) as PhysicalInterfaceRow[]) {
-      for (const change of planInterfaceRow(scope, subject, row, [...interfaces.values()], at, section.outcome)) { interfaces.set(change.id, change); delta.interfaces.push(change); }
+    const rows = [...adjacency.rows].sort((a, b) => a.rowKey.localeCompare(b.rowKey)) as PhysicalInterfaceRow[];
+    const reportedKeys = new Set(rows.map(row => row.interfaceKey));
+    for (const row of rows) {
+      for (const change of planInterfaceRow(scope, subject, row, [...interfaces.values()], at, section.outcome, reportedKeys)) { interfaces.set(change.id, change); delta.interfaces.push(change); }
     }
     return delta;
   }
@@ -296,19 +298,43 @@ export function projectPhysicalTopology(input: TopologyProjectionInput): Topolog
   return delta;
 }
 
-/** D10 generation plan for one reported SNMP interface of `owner`. */
-export function planInterfaceRow(scope: TopologyScope, owner: string, row: PhysicalInterfaceRow, known: InterfacePublication[], at: Date, outcome: string): InterfacePublication[] {
+/**
+ * D10 generation plan for one reported SNMP interface of `owner`.
+ *
+ * The interface key is usually `name:<ifName>`, so a rename changes the key.
+ * Continuity is therefore also tracked by owner + ifIndex: a current generation
+ * of another key at the same ifIndex (and not itself reported in this section,
+ * `reportedKeys`) is the same port. With physical-address continuity (both
+ * addresses present and equal) the rename keeps that generation (same id; its
+ * epoch unless the new key already used that number); otherwise it is retired
+ * and a new generation starts. One ifIndex never has two current generations.
+ */
+export function planInterfaceRow(scope: TopologyScope, owner: string, row: PhysicalInterfaceRow, known: InterfacePublication[], at: Date, outcome: string,
+  reportedKeys: ReadonlySet<string> = new Set([row.interfaceKey])): InterfacePublication[] {
   const generations = known.filter(i => i.ownerNodeId === owner && i.interfaceKey === row.interfaceKey && isPhysicalGeneration(i.epoch));
   const current = generations.find(i => !i.retiredAt) ?? null;
   const highest = generations.reduce((max, i) => Math.max(max, physicalGenerationNumber(i.epoch)), 0);
   const reported = { name: row.ifName, physAddress: normalizeMac(row.physAddress) ?? row.physAddress, osIndex: String(row.ifIndex) };
-  const decision = planInterfaceGeneration(current ? { name: current.name ?? null, physAddress: current.physAddress ?? null, osIndex: current.osIndex ?? null } : null, highest, reported);
   const observed = { name: row.ifName, alias: row.ifAlias, osIndex: String(row.ifIndex), physAddress: reported.physAddress, lastObservedAt: at, lastOutcome: outcome as InterfacePublication['lastOutcome'] };
-  if (decision.action === 'keep') return [{ ...current!, ...observed }];
+  // Current generations of OTHER keys at this ifIndex that no row of this section claims.
+  const renamedFrom = known.filter(i => i.ownerNodeId === owner && i.interfaceKey !== row.interfaceKey && !reportedKeys.has(i.interfaceKey)
+    && isPhysicalGeneration(i.epoch) && !i.retiredAt && i.osIndex === observed.osIndex).sort((a, b) => a.id.localeCompare(b.id));
+  const retiredRenames = renamedFrom.map(i => ({ ...i, retiredAt: at }));
+  if (!current && renamedFrom.length === 1) {
+    const previous = renamedFrom[0]!;
+    const [pm, rm] = [normalizeMac(previous.physAddress ?? null), normalizeMac(reported.physAddress ?? null)];
+    if (pm && rm && pm === rm) {
+      const kept = physicalGenerationNumber(previous.epoch);
+      const epoch = kept > highest ? previous.epoch : `gen:${highest + 1}`;
+      return [{ ...previous, ...observed, interfaceKey: row.interfaceKey, epoch }];
+    }
+  }
+  const decision = planInterfaceGeneration(current ? { name: current.name ?? null, physAddress: current.physAddress ?? null, osIndex: current.osIndex ?? null } : null, highest, reported);
+  if (decision.action === 'keep') return [...retiredRenames, { ...current!, ...observed }];
   const epoch = decision.epoch;
   const created: InterfacePublication = { ...scope, id: stableLegacyId(opaqueHash([scope, owner, row.interfaceKey, epoch])), ownerNodeId: owner, interfaceKey: row.interfaceKey, epoch,
     kind: 'unknown', addresses: [], retiredAt: null, ...observed };
-  return decision.retireCurrent && current ? [{ ...current, retiredAt: at }, created] : [created];
+  return [...retiredRenames, ...(decision.retireCurrent && current ? [{ ...current, retiredAt: at }] : []), created];
 }
 
 // ---- FDB parent selection (D15.3) ----

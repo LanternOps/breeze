@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildPhysicalRelationship, projectPhysicalTopology, selectFdbParent, selectFdbParents, type FdbCandidate } from './physicalProjector';
+import { buildPhysicalRelationship, planInterfaceRow, projectPhysicalTopology, selectFdbParent, selectFdbParents, type FdbCandidate } from './physicalProjector';
+import type { InterfacePublication } from './reconciliationTypes';
 import { applyFdbSelection } from './physicalPublication';
 import { projectTopology } from './projectors';
 import { validatePublicationInput } from './publish';
@@ -211,5 +212,52 @@ describe('FDB parent selection (D15.3)', () => {
     expect(decisions.get('r1')).toMatchObject({ selection: 'excluded', confidence: 'low' });
     expect(decisions.get('r2')).toMatchObject({ selection: 'none', confidence: 'low' });
     void CLIENT_MAC;
+  });
+});
+
+// #5998 review: the interface key is `name:<ifName>`, so a rename changes the
+// key and the generation lookup (owner + key) found nothing: a second current
+// generation was allocated for the same ifIndex beside the old one.
+describe('interface rename continuity (owner + ifIndex)', () => {
+  const owner = '0e000000-0000-4000-8000-000000000001';
+  const at = new Date('2026-09-20T00:00:00Z');
+  const stored = (extra: Partial<InterfacePublication> = {}): InterfacePublication => ({ ...FIXTURE_SCOPE, id: '0e000000-0000-4000-8000-0000000000a7', ownerNodeId: owner,
+    interfaceKey: 'name:Gi0/7-old', epoch: 'gen:1', kind: 'unknown', addresses: [], retiredAt: null, name: 'Gi0/7-old', alias: null, osIndex: '7', physAddress: '02:00:00:00:07:07', ...extra });
+  const row = (physAddress: string | null) => ({ rowKey: '7', interfaceKey: 'name:Gi0/7-new', ifIndex: 7, ifName: 'Gi0/7-new', ifAlias: null, physAddress, lldpLocalPort: 7, bridgePort: 7 });
+  const currentFor = (known: InterfacePublication[], changes: InterfacePublication[]) => {
+    const all = new Map(known.map(i => [i.id, i])); for (const c of changes) all.set(c.id, c);
+    return [...all.values()].filter(i => i.ownerNodeId === owner && i.osIndex === '7' && !i.retiredAt);
+  };
+
+  it('renames in place (same id and generation) when the physical address is continuous', () => {
+    const known = [stored()];
+    const changes = planInterfaceRow(FIXTURE_SCOPE, owner, row('02:00:00:00:07:07'), known, at, 'complete');
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ id: known[0]!.id, epoch: 'gen:1', interfaceKey: 'name:Gi0/7-new', name: 'Gi0/7-new', retiredAt: null });
+    expect(currentFor(known, changes)).toHaveLength(1);
+  });
+
+  it('retires the old generation and starts a new one without address continuity', () => {
+    for (const address of ['02:00:00:00:07:99', null]) {
+      const known = [stored()];
+      const changes = planInterfaceRow(FIXTURE_SCOPE, owner, row(address), known, at, 'complete');
+      expect(changes.find(c => c.id === known[0]!.id)).toMatchObject({ retiredAt: at });
+      const current = currentFor(known, changes);
+      expect(current).toHaveLength(1);
+      expect(current[0]).toMatchObject({ interfaceKey: 'name:Gi0/7-new' });
+      expect(current[0]!.id).not.toBe(known[0]!.id);
+    }
+  });
+
+  it('takes a fresh epoch when the new key already has a generation with the same number', () => {
+    const history = stored({ id: '0e000000-0000-4000-8000-0000000000b7', interfaceKey: 'name:Gi0/7-new', epoch: 'gen:1', osIndex: '9', retiredAt: new Date('2026-01-01') });
+    const changes = planInterfaceRow(FIXTURE_SCOPE, owner, row('02:00:00:00:07:07'), [stored(), history], at, 'complete');
+    expect(changes).toEqual([expect.objectContaining({ id: stored().id, interfaceKey: 'name:Gi0/7-new', epoch: 'gen:2' })]);
+  });
+
+  it('leaves another key alone while this section still reports it', () => {
+    const known = [stored()];
+    const changes = planInterfaceRow(FIXTURE_SCOPE, owner, row('02:00:00:00:07:07'), known, at, 'complete', new Set(['name:Gi0/7-new', 'name:Gi0/7-old']));
+    expect(changes.some(c => c.id === known[0]!.id)).toBe(false);
   });
 });
