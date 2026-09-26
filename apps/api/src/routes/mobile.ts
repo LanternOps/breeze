@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
@@ -18,7 +18,7 @@ import {
   sites,
   tickets
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown } from '../services/alertCooldown';
 import {
@@ -1471,137 +1471,67 @@ mobileRoutes.post(
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
-
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
     const permissions = c.get('permissions') as UserPermissions | undefined;
-    if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
 
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Device is decommissioned' }, 400);
-    }
-
-    if (data.action === 'run_script') {
-      const result = await executeScriptOnDevices({
-        scriptId: data.scriptId as string,
-        deviceIds: [device.id],
-        parameters: data.parameters as Record<string, unknown> | undefined,
-        triggerType: 'manual',
-        auth,
-        permissions,
+    // #7109 — this route is registered in middleware/selfManagedDbContextRoutes.ts,
+    // so no request transaction is held here and every DB touch below must run
+    // inside a context this handler opens.
+    //
+    // The non-script actions run their WHOLE body in one context, which keeps
+    // the single-transaction behaviour they had under the request tx.
+    const { action } = data;
+    if (action !== 'run_script') {
+      return withAuthDbAccessContext(auth, async () => {
+        const target = await resolveQuickActionTarget(deviceId, auth, permissions);
+        if (!target.ok) {
+          return c.json({ error: target.error }, target.status);
+        }
+        return runNonScriptQuickAction(c, auth, target.device, action);
       });
+    }
 
-      if (!result.ok) {
-        return c.json({ error: result.error }, result.status);
-      }
+    // run_script: the target read commits on its own, then the service creates
+    // the execution rows through the runner below (a context that COMMITS when
+    // it returns) and sends the command only after that commit. Under the old
+    // request tx the command went out while its rows were still uncommitted,
+    // so a fast agent's result found no device_commands row and was dropped as
+    // an orphan. No context is held across the service call: it opens its own,
+    // and holding one here would take a second pooled connection (#6671).
+    const target = await withAuthDbAccessContext(auth, () =>
+      resolveQuickActionTarget(deviceId, auth, permissions),
+    );
+    if (!target.ok) {
+      return c.json({ error: target.error }, target.status);
+    }
+    const { device } = target;
 
-      const admission = result.admission.targets.find(
-        (target) => target.requestedDeviceId === device.id,
-      );
-      if (!admission || admission.admission !== 'admitted' || !admission.executionId || !admission.commandId) {
-        const status = admission?.reasonCode === 'maintenance_suppressed' ? 409 : 422;
-        return c.json(
-          {
-            admission: admission?.admission ?? 'denied',
-            reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
-          },
-          status,
-        );
-      }
-      writeRouteAudit(c, {
-        orgId: device.orgId,
-        action: 'mobile.device.action',
-        resourceType: 'device',
-        resourceId: device.id,
-        resourceName: device.hostname,
-        details: {
-          action: data.action,
-          requestId: result.admission.requestId,
-          scriptId: result.script.id,
-          executionId: admission.executionId,
-          commandId: admission.commandId,
-          // #3409 PR3 §2.2 — bound parameter keys whose caller-supplied value
-          // was dropped in favour of the binding. KEYS ONLY, never values.
-          // Named distinctly rather than folded into an existing key: audit
-          // `details` is an untyped shared bag and overloading a generic name
-          // there has already caused one cross-meaning collision (`deviceId`).
-          ignoredParameterKeys: result.ignoredParameters,
+    const result = await executeScriptOnDevices({
+      scriptId: data.scriptId as string,
+      deviceIds: [device.id],
+      parameters: data.parameters as Record<string, unknown> | undefined,
+      triggerType: 'manual',
+      auth,
+      permissions,
+      runInDbContext: (fn) => withAuthDbAccessContext(auth, fn),
+    });
+
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status);
+    }
+
+    const admission = result.admission.targets.find(
+      (entry) => entry.requestedDeviceId === device.id,
+    );
+    if (!admission || admission.admission !== 'admitted' || !admission.executionId || !admission.commandId) {
+      const status = admission?.reasonCode === 'maintenance_suppressed' ? 409 : 422;
+      return c.json(
+        {
+          admission: admission?.admission ?? 'denied',
+          reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
         },
-      });
-
-      return c.json({
-        action: data.action,
-        executionId: admission.executionId,
-        commandId: admission.commandId,
-        // This endpoint accepts `parameters`, so the mobile client is just as
-        // able to supply a value for a bound key as the web one — the warning
-        // is surfaced here for the same reason and in the same shape as
-        // POST /scripts/:id/execute (omitted when empty, so the clean-run
-        // response shape mobile already parses is unchanged). The single-
-        // device shape needs no aggregation: the fan-out is one device.
-        ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
-      }, 201);
+        status,
+      );
     }
-
-    // Wake-on-LAN: dispatch via the relay-aware service. Audit row is written
-    // by the service against the target device; no route-level audit here to
-    // avoid duplication.
-    if (data.action === 'wake') {
-      const wake = await dispatchWake(device.id, auth.user.id, {
-        ipAddress: getTrustedClientIpOrUndefined(c),
-        userAgent: c.req.header('user-agent'),
-      });
-      if (!wake.ok) {
-        return c.json({ error: wake.message, code: wake.code }, 412);
-      }
-      return c.json({
-        action: 'wake',
-        commandId: wake.commandId,
-        wakeAttemptId: wake.wakeAttemptId,
-        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
-        network: wake.network,
-        broadcast: wake.broadcast,
-        macs: wake.macs,
-      }, 202);
-    }
-
-    let cmdResult;
-    try {
-      await assertDeviceExecuteAllowed(device.id, data.action, auth.user.id);
-      cmdResult = await db
-        .insert(deviceCommands)
-        .values({
-          deviceId: device.id,
-          type: data.action,
-          payload: { source: 'mobile' },
-          status: 'pending',
-          createdBy: auth.user.id
-        })
-        .returning();
-    } catch (e) {
-      if (e instanceof TrustDeniedError) {
-        return c.json(
-          trustDenyBody({
-            allow: false,
-            code: e.code,
-            capability: 'device_execute',
-            reason: e.reason,
-          }, false),
-          403,
-        );
-      }
-      throw e;
-    }
-    const cmd = cmdResult[0];
-
-    if (!cmd) {
-      return c.json({ error: 'Failed to create command' }, 500);
-    }
-
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'mobile.device.action',
@@ -1610,16 +1540,145 @@ mobileRoutes.post(
       resourceName: device.hostname,
       details: {
         action: data.action,
-        commandId: cmd.id
-      }
+        requestId: result.admission.requestId,
+        scriptId: result.script.id,
+        executionId: admission.executionId,
+        commandId: admission.commandId,
+        // #3409 PR3 §2.2 — bound parameter keys whose caller-supplied value
+        // was dropped in favour of the binding. KEYS ONLY, never values.
+        // Named distinctly rather than folded into an existing key: audit
+        // `details` is an untyped shared bag and overloading a generic name
+        // there has already caused one cross-meaning collision (`deviceId`).
+        ignoredParameterKeys: result.ignoredParameters,
+      },
     });
 
     return c.json({
       action: data.action,
-      commandId: cmd.id
+      executionId: admission.executionId,
+      commandId: admission.commandId,
+      // This endpoint accepts `parameters`, so the mobile client is just as
+      // able to supply a value for a bound key as the web one — the warning
+      // is surfaced here for the same reason and in the same shape as
+      // POST /scripts/:id/execute (omitted when empty, so the clean-run
+      // response shape mobile already parses is unchanged). The single-
+      // device shape needs no aggregation: the fan-out is one device.
+      ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
     }, 201);
   }
 );
+
+type QuickActionDevice = NonNullable<Awaited<ReturnType<typeof getDeviceWithOrgCheck>>>;
+
+type QuickActionTarget =
+  | { ok: true; device: QuickActionDevice }
+  | { ok: false; error: string; status: 400 | 403 | 404 };
+
+/**
+ * The device checks every quick action shares. Must run inside a DB access
+ * context — POST /devices/:id/actions is self-managed (#7109).
+ */
+async function resolveQuickActionTarget(
+  deviceId: string,
+  auth: AuthContext,
+  permissions: UserPermissions | undefined,
+): Promise<QuickActionTarget> {
+  const device = await getDeviceWithOrgCheck(deviceId, auth);
+  if (!device) {
+    return { ok: false, error: 'Device not found', status: 404 };
+  }
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return { ok: false, error: 'Access to this site denied', status: 403 };
+  }
+  if (device.status === 'decommissioned') {
+    return { ok: false, error: 'Device is decommissioned', status: 400 };
+  }
+  return { ok: true, device };
+}
+
+/**
+ * Wake and the plain device commands (reboot). Runs inside the single
+ * withAuthDbAccessContext the route opens for them, so a throw rolls back
+ * exactly what the request transaction used to.
+ */
+async function runNonScriptQuickAction(
+  c: Context,
+  auth: AuthContext,
+  device: QuickActionDevice,
+  action: Exclude<z.infer<typeof deviceActionSchema>['action'], 'run_script'>,
+) {
+  // Wake-on-LAN: dispatch via the relay-aware service. Audit row is written
+  // by the service against the target device; no route-level audit here to
+  // avoid duplication.
+  if (action === 'wake') {
+    const wake = await dispatchWake(device.id, auth.user.id, {
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+    });
+    if (!wake.ok) {
+      return c.json({ error: wake.message, code: wake.code }, 412);
+    }
+    return c.json({
+      action: 'wake',
+      commandId: wake.commandId,
+      wakeAttemptId: wake.wakeAttemptId,
+      relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+      network: wake.network,
+      broadcast: wake.broadcast,
+      macs: wake.macs,
+    }, 202);
+  }
+
+  let cmdResult;
+  try {
+    await assertDeviceExecuteAllowed(device.id, action, auth.user.id);
+    cmdResult = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId: device.id,
+        type: action,
+        payload: { source: 'mobile' },
+        status: 'pending',
+        createdBy: auth.user.id
+      })
+      .returning();
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return c.json(
+        trustDenyBody({
+          allow: false,
+          code: e.code,
+          capability: 'device_execute',
+          reason: e.reason,
+        }, false),
+        403,
+      );
+    }
+    throw e;
+  }
+  const cmd = cmdResult[0];
+
+  if (!cmd) {
+    return c.json({ error: 'Failed to create command' }, 500);
+  }
+
+  writeRouteAudit(c, {
+    orgId: device.orgId,
+    action: 'mobile.device.action',
+    resourceType: 'device',
+    resourceId: device.id,
+    resourceName: device.hostname,
+    details: {
+      action: action,
+      commandId: cmd.id
+    }
+  });
+
+  return c.json({
+    action: action,
+    commandId: cmd.id
+  }, 201);
+}
 
 // GET /summary - Get dashboard summary
 mobileRoutes.get(

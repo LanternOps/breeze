@@ -231,6 +231,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // The handler now creates every row in a short withAuthDbAccessContext block
   // and sends only after it commits (executeScriptOnDevices' runInDbContext).
   { method: 'POST', pattern: /^\/api\/v1\/scripts\/[^/]+\/execute\/?$/ },
+  // #7109 — the same race on the two single-device Run Script callers. Both
+  // pass executeScriptOnDevices the runInDbContext runner and wrap their own
+  // reads and writes in short withAuthDbAccessContext blocks. The mobile
+  // registration covers EVERY quick action the route handles (reboot, wake,
+  // run_script): the non-script actions run their whole body in one
+  // withAuthDbAccessContext, so they keep the single-transaction behaviour
+  // they had under the request tx.
+  { method: 'POST', pattern: /^\/api\/v1\/mobile\/devices\/[^/]+\/actions\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/[^/]+\/execute\/?$/ },
   // #6597 — manual backup runs (single device and run-all). Each creates
   // backup_jobs rows and enqueues a dispatch the backup worker picks up on its
   // own connection within milliseconds. Under the ambient request transaction
