@@ -736,6 +736,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // turn. The SDK already exposes only topology tools; this re-checks the
     // allowlist, consumes the six-read budget (refused attempts included) and
     // re-asserts the live investigation scope BEFORE guardrails run.
+    if (session.topologyTurnSealed) return { allowed: false, error: 'This topology investigation has ended.' };
     if (session.topologyInvestigation) {
       const verdict = await session.topologyInvestigation.beforeToolCall(stripMcpPrefix(mcpToolName ?? toolName));
       if (!verdict.allowed) return { allowed: false, error: verdict.error };
@@ -2364,6 +2365,10 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
+    // A timed-out topology turn (C1): its gate is gone, so a tool that was
+    // still in flight must not fall through to the generic path and persist
+    // its raw output.
+    if (session.topologyTurnSealed) return;
     if (session.topologyInvestigation) {
       await topologyPostToolUse(session, toolName, input, output, isError, durationMs);
       return;

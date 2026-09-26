@@ -621,6 +621,15 @@ export interface ActiveSession {
   topologyInvestigation?: TopologyTurnRuntime;
   /** Set when a topology token cap stopped the turn; the result then ends in a fixed error. */
   topologyStopped?: boolean;
+  /**
+   * Set (and never cleared) when a topology turn timed out. The timeout tears
+   * the session down — SDK aborted, query closed — and this seal keeps the
+   * output gate shut for anything the provider still emits for that turn:
+   * the processor loop drops it and the tool hooks refuse/skip it, so late,
+   * unvalidated prose can never reach the event bus, replay or ai_messages
+   * via the generic (non-topology) paths once `topologyInvestigation` is gone.
+   */
+  topologyTurnSealed?: boolean;
   /** True when admin has paused auto-approve — falls back to per_step */
   isPaused: boolean;
   /** ID of the currently active action plan (if any) */
@@ -1376,7 +1385,19 @@ export class StreamingSessionManager {
         // in the background instead of holding the subprocess for the rest of
         // the 5-minute wait (#3089).
         settleApprovalWaits(session);
-        void this.abortTopologyTurn(session);
+        if (session.topologyInvestigation) {
+          // Topology M4 (C1): a timed-out investigation must not keep running
+          // behind a cleared gate. Seal first (so nothing the provider still
+          // emits takes a generic path), then tear the session down, which
+          // discards the runtime and its lease, aborts in-flight tool
+          // handlers and closes the SDK query. The next message rebuilds the
+          // session from its row.
+          session.topologyTurnSealed = true;
+          session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
+          session.eventBus.publish({ type: 'done' });
+          this.remove(session.breezeSessionId);
+          return;
+        }
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -1468,6 +1489,8 @@ export class StreamingSessionManager {
       for await (const message of session.query) {
         // Stop publishing if session is being torn down
         if (session.state === 'closing' || session.state === 'closed') break;
+        // A sealed topology turn (timed out) never publishes or persists again.
+        if (session.topologyTurnSealed) break;
 
         switch (message.type) {
           case 'system': {

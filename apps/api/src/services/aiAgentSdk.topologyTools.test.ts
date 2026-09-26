@@ -402,4 +402,15 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
       expect(session.eventBus.publish).toHaveBeenCalledWith({ type: 'topology_progress', phase: 'analyzing' });
     }
   });
+
+  it('a timed-out (sealed) topology turn refuses late tool calls and persists no late tool output (C1)', async () => {
+    const values = mockInsertValues();
+    // The timeout cleared the runtime; only the seal remains.
+    const session = makeActiveSession({ topologyInvestigation: undefined, topologyTurnSealed: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' })).toEqual({ allowed: false, error: 'This topology investigation has ended.' });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5);
+    expect(values).not.toHaveBeenCalled();
+    expect(session.eventBus.publish).not.toHaveBeenCalled();
+  });
 });

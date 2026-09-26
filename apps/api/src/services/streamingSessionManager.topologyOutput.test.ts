@@ -53,6 +53,7 @@ vi.mock('./aiAgentSdkTools', () => ({
 vi.mock('./aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(() => vi.fn()),
   createSessionPostToolUse: vi.fn(() => vi.fn()),
+  settleApprovalWaits: vi.fn(),
 }));
 vi.mock('./aiToolOutput', () => ({
   redactAiToolOutputText: (s: string) => s,
@@ -244,5 +245,49 @@ describe('topology investigation output (M4 Task 3)', () => {
     const explanations = session.eventBus.getReplayEvents().filter((e) => e.type === 'topology_explanation') as Array<{ explanation: { status: string } }>;
     expect(explanations.map((e) => e.explanation.status)).toEqual(['evidence_changed']);
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
+  });
+
+  it('a turn timeout aborts the SDK and keeps the gate closed: late uncited prose is never streamed, replayed or persisted (C1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { rt, appended } = runtime();
+      let releaseLate!: () => void;
+      const late = new Promise<void>((resolve) => { releaseLate = resolve; });
+      const interrupt = vi.fn(async () => undefined);
+      const close = vi.fn();
+      const LATE = 'LATE-UNCITED-PROSE about the foreign site';
+      queryMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield messageStartEvent() as never;
+          yield textBlockStartEvent() as never;
+          yield textDeltaEvent('Looking. ') as never;
+          await late; // the provider stalls past the turn timeout …
+          yield textDeltaEvent(LATE) as never; // … then keeps talking
+          yield { type: 'assistant', message: { content: [{ type: 'text', text: LATE }], usage: { input_tokens: 10, output_tokens: 5 } } } as never;
+          yield RESULT_MSG as never;
+        },
+        interrupt,
+        close,
+      }));
+      const session = await manager.getOrCreate('sess-topo-timeout', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, { topologyInvestigation: rt });
+      session.state = 'processing';
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(60 * 60_000); // fire the turn timeout
+      expect(rt.abort).toHaveBeenCalled();
+      expect(close.mock.calls.length + interrupt.mock.calls.length).toBeGreaterThan(0);
+      releaseLate();
+      await session.processorPromise;
+      const replay = session.eventBus.getReplayEvents();
+      expect(replay).toContainEqual({ type: 'error', message: 'AI request timed out. Please try again.' });
+      expect(replay.some((e) => e.type === 'content_delta')).toBe(false);
+      expect(JSON.stringify(replay)).not.toContain('LATE-UNCITED');
+      expect(JSON.stringify(insertedRows)).not.toContain('LATE-UNCITED');
+      expect(appended.join('')).not.toContain('LATE-UNCITED');
+      expect(rt.complete).not.toHaveBeenCalled();
+      expect(replay.some((e) => e.type === 'topology_explanation')).toBe(false);
+      expect(session.topologyTurnSealed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
