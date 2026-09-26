@@ -8,9 +8,10 @@ import Svg, { Circle, Line } from 'react-native-svg';
 import { useApprovalTheme, palette, spacing, type } from '../../theme';
 import type { Alert, Device } from '../../services/api';
 import type { SystemsStackParamList, MainTabParamList } from '../../navigation/MainNavigator';
-import { useAppDispatch } from '../../store';
+import { useAppDispatch, useAppSelector } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
 import { acknowledgeAlerts } from '../../services/api';
+import { clearAcks, recordHeldAcks, sendAcknowledge, takeReplay } from './ackOutbox';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
@@ -149,6 +150,17 @@ export function SystemsScreen() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [undo, setUndo] = useState(emptyUndo);
   const { show: showToast } = useToast();
+  // Owner of the durable ack outbox (#3919): a held acknowledge replays only
+  // under the account that asked for it. Read through a ref by the callbacks
+  // below, which are deliberately stable.
+  const userId = useAppSelector((s) => s.auth.user?.id ?? null);
+  const userIdRef = useRef(userId);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
+  // Ids with a bulk request currently in flight from THIS session, so an
+  // outbox replay does not send a second, overlapping request for them.
+  const inFlightAcksRef = useRef<Set<string>>(new Set());
 
   const {
     summary,
@@ -259,8 +271,16 @@ export function SystemsScreen() {
       // the reference count and leave them hidden after this call releases one.
       // Restore only what actually failed, so a partial outcome is honest.
       let toRestore: readonly string[] = ids;
+      for (const id of ids) inFlightAcksRef.current.add(id);
       try {
-        const { acknowledged, failed, unknown, errors } = await acknowledgeAlerts([...ids]);
+        // Through the outbox (#3919): the ids were written to durable storage
+        // when their undo window opened and are cleared only once this answer
+        // arrives, so a process killed anywhere in this await — including the
+        // credential lookups before `fetch` — leaves them for the next replay.
+        const { acknowledged, failed, unknown, errors } = await sendAcknowledge(
+          acknowledgeAlerts,
+          ids
+        );
         // Per-id failures never throw, so they would otherwise bypass the
         // catch below and be reported nowhere. Without this, a systematic
         // failure (every id aborting at the same deadline) is invisible in
@@ -269,12 +289,14 @@ export function SystemsScreen() {
         // Restore ONLY confirmed failures. `unknown` ids stay hidden: the
         // request may well have committed them server-side, and acknowledging
         // is irreversible, so putting the row back invites a second
-        // acknowledge. The next authoritative fetch is what resolves them.
+        // acknowledge. The next authoritative fetch is what resolves them, and
+        // they stay in the outbox, so the next foreground or launch re-sends
+        // them (idempotent server-side: a committed one comes back skipped).
         toRestore = failed;
         if (unknown.length > 0) {
           showToast({
             kind: 'error',
-            text: `Couldn't confirm ${unknown.length}. Checking again.`,
+            text: `Couldn't confirm ${unknown.length}. Will retry.`,
           });
         } else if (failed.length === 0) {
           // Deliberately silent on success. The undo toast already said
@@ -338,6 +360,8 @@ export function SystemsScreen() {
         reportInternalError(err, 'bulk-acknowledge');
         showToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
         setPendingAcks((p) => endAck(p, toRestore));
+      } finally {
+        for (const id of ids) inFlightAcksRef.current.delete(id);
       }
     },
     [refresh, getActiveAlertsGeneration]
@@ -392,6 +416,18 @@ export function SystemsScreen() {
     (ids: string[]) => {
       if (ids.length === 0) return;
       setPendingAcks((p) => beginAck(p, ids));
+      // Durable BEFORE anything can lose it (#3919). Written when the window
+      // opens, not when it closes: the close happens on `background`, moments
+      // before iOS may suspend or reclaim the process, and the request's own
+      // credential lookups sit between that flush and `fetch`. The storage
+      // chain is ordered, so an Undo's or a response's clear always lands
+      // after this record.
+      const owner = userIdRef.current;
+      if (owner !== null) {
+        void recordHeldAcks(ids, owner).then((ok) => {
+          if (!ok) reportInternalError(new Error('ack outbox: could not persist held acknowledge'), 'ack-outbox');
+        });
+      }
       const { state, flush } = scheduleUndo(undoRef.current, ids);
       undoRef.current = state;
       setUndo(state);
@@ -409,8 +445,12 @@ export function SystemsScreen() {
   const onUndoAcknowledge = useCallback(
     (token: number) => {
       const ids = takeUndo((s) => cancelUndo(s, token));
-      // Never sent, so there is nothing to reverse — just show them again.
-      if (ids.length > 0) setPendingAcks((p) => endAck(p, ids));
+      // Never sent, so there is nothing to reverse — just show them again,
+      // and drop them from the outbox so a later replay cannot send them.
+      if (ids.length > 0) {
+        setPendingAcks((p) => endAck(p, ids));
+        void clearAcks(ids);
+      }
     },
     [takeUndo]
   );
@@ -447,13 +487,14 @@ export function SystemsScreen() {
 
   // UNMOUNT: the ref only. Calling setState on an unmounted component is
   // pointless, and there is no UI left to reconcile, so this fires the request
-  // bare and reports failures to telemetry.
+  // bare and reports failures to telemetry. It still goes through the outbox,
+  // so anything it cannot confirm is re-sent on the next mount.
   useEffect(() => {
     return () => {
       const { state, ids } = flushAllUndo(undoRef.current);
       undoRef.current = state;
       if (ids.length === 0) return;
-      void acknowledgeAlerts([...ids])
+      void sendAcknowledge(acknowledgeAlerts, ids)
         .then(({ errors }) => {
           for (const err of errors) reportInternalError(err, 'acknowledge-alert');
         })
@@ -477,12 +518,66 @@ export function SystemsScreen() {
   // pull. This repo already reasons the same way in
   // `services/appLockMachine.test.ts` ("inactive must never start the lock
   // clock"), because the Face ID sheet itself fires `inactive`.
+  // Replay the durable outbox (#3919): acknowledges a previous session held or
+  // sent but never saw confirmed — the process was killed mid-request, or the
+  // answer was a timeout. Runs on mount (once the account is known) and on
+  // every return to the foreground.
+  //
+  // Skips ids this session is already handling (an open undo window or a
+  // request in flight): those will settle through their own path, and a
+  // second request for them would only double the pending-ack count.
+  const replayingRef = useRef(false);
+  const replayOutbox = useCallback(async () => {
+    const owner = userIdRef.current;
+    if (owner === null || replayingRef.current) return;
+    replayingRef.current = true;
+    try {
+      const { replay, expired } = await takeReplay(owner);
+      if (expired.length > 0) {
+        // Not sent: after the TTL the alert may have escalated, so the row
+        // shows again and the operator decides. Say so rather than letting a
+        // swipe the toast called "acknowledged" quietly come back.
+        showToast({
+          kind: 'error',
+          text:
+            expired.length === 1
+              ? 'An earlier acknowledge expired unsent.'
+              : `${expired.length} earlier acknowledges expired unsent.`,
+        });
+      }
+      const held = new Set(undoRef.current.batch?.ids ?? []);
+      const ids = replay.filter((id) => !held.has(id) && !inFlightAcksRef.current.has(id));
+      if (ids.length === 0) return;
+      // Hide them like any acknowledge, then reconcile through the normal
+      // path: confirmed rows release on a fresh fetch, refused ones come back
+      // with an error toast, unknown ones stay queued.
+      setPendingAcks((p) => beginAck(p, ids));
+      showToast({
+        kind: 'success',
+        text:
+          ids.length === 1
+            ? 'Resending an earlier acknowledge.'
+            : `Resending ${ids.length} earlier acknowledges.`,
+      });
+      await dispatchRef.current(ids);
+    } catch (err) {
+      reportInternalError(err, 'ack-outbox-replay');
+    } finally {
+      replayingRef.current = false;
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (userId !== null) void replayOutbox();
+  }, [userId, replayOutbox]);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'background') flushHeldAcknowledgesMounted();
+      else if (next === 'active') void replayOutbox();
     });
     return () => sub.remove();
-  }, [flushHeldAcknowledgesMounted]);
+  }, [flushHeldAcknowledgesMounted, replayOutbox]);
 
   const exitSelection = useCallback(() => {
     setSelecting(false);
