@@ -166,7 +166,29 @@ export type DispatchScriptInput = {
    * `device_commands.created_by`).
    */
   principalActorId?: string | null;
+  /**
+   * #3445 — create the execution + command rows but do NOT claim or send the
+   * command; return a `deliver()` continuation instead.
+   *
+   * For callers that dispatch inside a transaction that stays open after this
+   * function returns (the automation runtime holds the device row lock around
+   * it). The rows are INSERTed through the ambient transaction, and the agent
+   * result path reads `device_commands` on its own connection: a send before
+   * commit lets a fast agent answer while the rows are still invisible, the
+   * result is dropped as an orphan, and the execution is stranded until the
+   * stale reaper fails it at timeout + 5 min. Such a caller passes this flag
+   * and calls `deliver()` after its transaction commits.
+   */
+  deferDelivery?: boolean;
 };
+
+/** Why an attempted delivery did or did not reach the agent. */
+export type ScriptDeliveryOutcome =
+  | 'sent'
+  | 'claim_lost'
+  | 'decrypt_failed'
+  | 'send_failed'
+  | 'no_agent';
 
 export type DispatchScriptResult =
   | {
@@ -191,13 +213,22 @@ export type DispatchScriptResult =
       // 'agent_upgrade_required_recorded' refusal (see below), because every
       // caller branches on `ok` alone and would otherwise report a run that
       // had already been failed as successfully queued.
-      deliveryOutcome:
-        | 'sent'
-        | 'claim_lost'
-        | 'decrypt_failed'
-        | 'send_failed'
-        | 'no_agent';
+      //
+      // 'deferred' (#3445) is returned ONLY when the caller passed
+      // `deferDelivery: true`: nothing has been attempted yet, and the caller
+      // owns calling `deliver()` once its transaction has committed.
+      deliveryOutcome: ScriptDeliveryOutcome | 'deferred';
       executedAt: Date | null;
+      /**
+       * #3445 — present only for a `deferDelivery: true` dispatch. Claims the
+       * queued command, sends it over the agent's WebSocket, and marks the
+       * execution `running`, then resolves to the dispatch result with the real
+       * delivery fields. MUST be called with no ambient transaction (it opens
+       * its own short system contexts), after the transaction that created the
+       * rows has committed. It can resolve to an `ok: false` claim-time
+       * refusal, exactly as an immediate dispatch can.
+       */
+      deliver?: () => Promise<DispatchScriptResult>;
       // Bound parameter keys the caller supplied a value for (#3409 PR3
       // §2.2). The binding wins authoritatively and the supplied value is
       // dropped — reported rather than rejected, because a stored automation
@@ -730,113 +761,148 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     return { ok: false, code: 'insert_failed', error: 'Failed to create command' };
   }
 
-  let delivered = false;
-  let executedAt: Date | null = null;
-  let deliveryOutcome:
-    | 'sent'
-    | 'claim_lost'
-    | 'decrypt_failed'
-    | 'send_failed'
-    | 'no_agent' = 'no_agent';
-  if (device.agentId) {
-    const claimed = await claimPendingCommandForDelivery(command.id);
-    if (claimed) {
-      // #3409 PR4c-2: the immediate-send path claims the command itself and
-      // hands it straight to the WS, bypassing
-      // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to
-      // run HERE too, or a device whose agent lost the capability between the
-      // preflight above and this claim would receive the script with the
-      // credential unset. Only the secret-bearing path pays for it.
-      //
-      // A `[]` return means the gate already drove the command AND its
-      // execution row terminal: do not send, and do NOT release the claim
-      // back to pending (an incapable agent would just re-claim it).
-      //
-      // The gate's own try/catch covers only its writes — the capability
-      // SELECT (and its multi-device contract-violation throw) propagates
-      // out of here. Left bare that would escape AFTER
-      // `claimPendingCommandForDelivery` already flipped the row to 'sent',
-      // 500 the caller, and abort a large fan-out mid-run. So a throw fails
-      // CLOSED (never decrypt, never send) and returns a per-device refusal
-      // so the fan-out continues — but under its OWN code
-      // ('secret_gate_unavailable'), not the capability one: nothing was
-      // written on that path, and the agent may be perfectly current. The
-      // command row is deliberately LEFT 'sent' with its envelope intact for
-      // the stale-command reaper to strip — this path cannot know whether the
-      // gate's terminal write landed, and writing over it blind could clobber
-      // a row something else already moved.
-      // `false` = deliver; a code = refuse with it. Distinct values because
-      // the two refusals differ in whether rows were already written.
-      let gated: false | 'agent_upgrade_required_recorded' | 'secret_gate_unavailable' = false;
-      if (hasSecrets) {
-        try {
-          const survivors = await failClaimedSecretCommandsForUnsupportedAgent([
-            {
-              id: command.id,
-              type: 'script',
+  // Claim → claim-time secret gate → JIT decrypt → WS send → mark running.
+  // Runs inline for an ordinary dispatch, or later through `deliver()` for a
+  // `deferDelivery` one (#3445).
+  const commandId = command.id;
+  const deliverPayload = payload;
+  const deliverNow = async (): Promise<
+    | Extract<DispatchScriptResult, { ok: false }>
+    | { ok: true; delivered: boolean; deliveryOutcome: ScriptDeliveryOutcome; executedAt: Date | null }
+  > => {
+    let delivered = false;
+    let executedAt: Date | null = null;
+    let deliveryOutcome: ScriptDeliveryOutcome = 'no_agent';
+    if (device.agentId) {
+      const claimed = await claimPendingCommandForDelivery(commandId);
+      if (claimed) {
+        // #3409 PR4c-2: the immediate-send path claims the command itself and
+        // hands it straight to the WS, bypassing
+        // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to
+        // run HERE too, or a device whose agent lost the capability between the
+        // preflight above and this claim would receive the script with the
+        // credential unset. Only the secret-bearing path pays for it.
+        //
+        // A `[]` return means the gate already drove the command AND its
+        // execution row terminal: do not send, and do NOT release the claim
+        // back to pending (an incapable agent would just re-claim it).
+        //
+        // The gate's own try/catch covers only its writes — the capability
+        // SELECT (and its multi-device contract-violation throw) propagates
+        // out of here. Left bare that would escape AFTER
+        // `claimPendingCommandForDelivery` already flipped the row to 'sent',
+        // 500 the caller, and abort a large fan-out mid-run. So a throw fails
+        // CLOSED (never decrypt, never send) and returns a per-device refusal
+        // so the fan-out continues — but under its OWN code
+        // ('secret_gate_unavailable'), not the capability one: nothing was
+        // written on that path, and the agent may be perfectly current. The
+        // command row is deliberately LEFT 'sent' with its envelope intact for
+        // the stale-command reaper to strip — this path cannot know whether the
+        // gate's terminal write landed, and writing over it blind could clobber
+        // a row something else already moved.
+        // `false` = deliver; a code = refuse with it. Distinct values because
+        // the two refusals differ in whether rows were already written.
+        let gated: false | 'agent_upgrade_required_recorded' | 'secret_gate_unavailable' = false;
+        if (hasSecrets) {
+          try {
+            // Own system context: a no-op when a caller's context is already
+            // held (the immediate path), and the write's context when deliver()
+            // runs after the caller committed (#3445).
+            const survivors = await withSystemDbAccessContext(() => failClaimedSecretCommandsForUnsupportedAgent([
+              {
+                id: commandId,
+                type: 'script',
+                deviceId: device.id,
+                payload: deliverPayload,
+                executedAt: claimed.executedAt,
+              },
+            ]));
+            gated = survivors.length === 0 ? 'agent_upgrade_required_recorded' : false;
+          } catch (gateErr) {
+            // ids only — never the payload, sealed or otherwise.
+            console.error('[scriptDispatch] secret claim gate threw; refusing delivery', {
+              commandId,
               deviceId: device.id,
-              payload,
-              executedAt: claimed.executedAt,
-            },
-          ]);
-          gated = survivors.length === 0 ? 'agent_upgrade_required_recorded' : false;
-        } catch (gateErr) {
-          // ids only — never the payload, sealed or otherwise.
-          console.error('[scriptDispatch] secret claim gate threw; refusing delivery', {
-            commandId: command.id,
-            deviceId: device.id,
-            executionId,
-            error: gateErr instanceof Error ? gateErr.message : String(gateErr),
-          });
-          captureException(gateErr);
-          // NOT the capability refusal: this branch wrote nothing, and the
-          // agent may be perfectly current. A distinct code keeps it out of
-          // DISPATCH_CODES_ALREADY_RECORDED (so the device still gets its
-          // failure row) and off the "go upgrade your agent" remediation.
-          gated = 'secret_gate_unavailable';
+              executionId,
+              error: gateErr instanceof Error ? gateErr.message : String(gateErr),
+            });
+            captureException(gateErr);
+            // NOT the capability refusal: this branch wrote nothing, and the
+            // agent may be perfectly current. A distinct code keeps it out of
+            // DISPATCH_CODES_ALREADY_RECORDED (so the device still gets its
+            // failure row) and off the "go upgrade your agent" remediation.
+            gated = 'secret_gate_unavailable';
+          }
         }
-      }
-      if (gated) {
-        return gated === 'agent_upgrade_required_recorded'
-          ? { ok: false, code: gated, error: AGENT_UPGRADE_REQUIRED_MESSAGE }
-          : { ok: false, code: gated, error: SECRET_GATE_UNAVAILABLE_MESSAGE };
-      }
-      const deliverable = decryptCommandForDelivery({
-        id: command.id,
-        type: 'script',
-        deviceId: device.id,
-        payload,
-      });
-      const sent = deliverable
-        ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
-        : false;
-      if (sent) {
-        delivered = true;
-        deliveryOutcome = 'sent';
-        executedAt = claimed.executedAt;
-        if (executionId) {
-          // Guarded on pending: a fast agent can already have driven the row
-          // terminal (see handleScriptResult in services/commandResultHandlers.ts).
-          await db
-            .update(scriptExecutions)
-            .set({ status: 'running', startedAt: claimed.executedAt })
-            .where(and(eq(scriptExecutions.id, executionId), eq(scriptExecutions.status, 'pending')));
+        if (gated) {
+          return gated === 'agent_upgrade_required_recorded'
+            ? { ok: false, code: gated, error: AGENT_UPGRADE_REQUIRED_MESSAGE }
+            : { ok: false, code: gated, error: SECRET_GATE_UNAVAILABLE_MESSAGE };
+        }
+        const deliverable = decryptCommandForDelivery({
+          id: commandId,
+          type: 'script',
+          deviceId: device.id,
+          payload: deliverPayload,
+        });
+        const sent = deliverable
+          ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
+          : false;
+        if (sent) {
+          delivered = true;
+          deliveryOutcome = 'sent';
+          executedAt = claimed.executedAt;
+          if (executionId) {
+            // Guarded on pending: a fast agent can already have driven the row
+            // terminal (see handleScriptResult in services/commandResultHandlers.ts).
+            // Same context rule as the secret gate above.
+            const runningAt = claimed.executedAt;
+            const runningExecutionId = executionId;
+            await withSystemDbAccessContext(() => db
+              .update(scriptExecutions)
+              .set({ status: 'running', startedAt: runningAt })
+              .where(and(eq(scriptExecutions.id, runningExecutionId), eq(scriptExecutions.status, 'pending'))));
+          }
+        } else {
+          // We had a claimed command and a connected agent and still failed to
+          // reach it — operationally different from the normal "no agent
+          // connected, queued for later" case, so this is worth a log line.
+          deliveryOutcome = deliverable ? 'send_failed' : 'decrypt_failed';
+          console.warn('[scriptDispatch] failed to deliver claimed command to connected agent', {
+            commandId,
+            deviceId: device.id,
+            deliveryOutcome,
+          });
+          await releaseClaimedCommandDelivery(commandId, claimed.executedAt);
         }
       } else {
-        // We had a claimed command and a connected agent and still failed to
-        // reach it — operationally different from the normal "no agent
-        // connected, queued for later" case, so this is worth a log line.
-        deliveryOutcome = deliverable ? 'send_failed' : 'decrypt_failed';
-        console.warn('[scriptDispatch] failed to deliver claimed command to connected agent', {
-          commandId: command.id,
-          deviceId: device.id,
-          deliveryOutcome,
-        });
-        await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+        deliveryOutcome = 'claim_lost';
       }
-    } else {
-      deliveryOutcome = 'claim_lost';
     }
+    return { ok: true, delivered, deliveryOutcome, executedAt };
+  };
+
+  const settle = (
+    attempt: Awaited<ReturnType<typeof deliverNow>>,
+  ): DispatchScriptResult => (attempt.ok
+    ? {
+      ok: true,
+      commandId,
+      executionId,
+      delivered: attempt.delivered,
+      deliveryOutcome: attempt.deliveryOutcome,
+      executedAt: attempt.executedAt,
+      deliverBy,
+      ignoredParameters,
+      runAs,
+      targetSessionId: input.targetSessionId ?? null,
+    }
+    : attempt);
+
+  let immediate: DispatchScriptResult | null = null;
+  if (!input.deferDelivery) {
+    immediate = settle(await deliverNow());
+    if (!immediate.ok) return immediate;
   }
 
   // #5022 / W05: an AI-authored (proposal-backed) run writes its own audit
@@ -898,7 +964,23 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     });
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
+  if (immediate) return immediate;
+  // Deferred (#3445): the rows exist but nothing has been attempted. The AI
+  // audit row above is written now rather than after delivery; no AI surface
+  // defers delivery today, so no audited dispatch can reach this branch.
+  return {
+    ok: true,
+    commandId,
+    executionId,
+    delivered: false,
+    deliveryOutcome: 'deferred',
+    executedAt: null,
+    deliverBy,
+    ignoredParameters,
+    runAs,
+    targetSessionId: input.targetSessionId ?? null,
+    deliver: async () => settle(await deliverNow()),
+  };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

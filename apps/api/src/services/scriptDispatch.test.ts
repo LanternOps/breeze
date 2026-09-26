@@ -754,6 +754,94 @@ describe('dispatchScriptToDevice — delivery', () => {
   });
 });
 
+// #3445: a caller that dispatches inside a transaction (the automation
+// runtime's per-device lock) must not put the command on the wire before that
+// transaction commits, or a fast agent's result reaches rows it cannot see.
+describe('dispatchScriptToDevice — deferDelivery (#3445)', () => {
+  function mockRunningUpdate() {
+    const setSpy = vi.fn();
+    vi.mocked(db.update).mockReturnValue({
+      set: (vals: Record<string, unknown>) => {
+        setSpy(vals);
+        return { where: () => Promise.resolve(undefined) };
+      },
+    } as any);
+    return setSpy;
+  }
+
+  it('creates the rows but neither claims nor sends until deliver() is called', async () => {
+    const setSpy = mockRunningUpdate();
+    const executedAt = new Date('2026-09-26T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+
+    const r = await dispatchScriptToDevice({
+      device: device({ agentId: 'agent-1' }),
+      source: { kind: 'saved', script: savedScript() },
+      deferDelivery: true,
+    });
+
+    expect(queueCommand).toHaveBeenCalledTimes(1);
+    expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.delivered).toBe(false);
+    expect(r.deliveryOutcome).toBe('deferred');
+    expect(r.deliver).toBeTypeOf('function');
+
+    const delivered = await r.deliver!();
+    expect(claimPendingCommandForDelivery).toHaveBeenCalledWith('cmd-1');
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({ id: 'cmd-1', type: 'script' }));
+    expect(setSpy).toHaveBeenCalledWith({ status: 'running', startedAt: executedAt });
+    expect(delivered).toEqual(expect.objectContaining({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      delivered: true,
+      deliveryOutcome: 'sent',
+      executedAt,
+    }));
+  });
+
+  it('deliver() writes the running flip in its own system context (it runs with no ambient transaction)', async () => {
+    mockRunningUpdate();
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt: new Date() } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    const { withSystemDbAccessContext } = await import('../db');
+
+    const r = await dispatchScriptToDevice({
+      device: device({ agentId: 'agent-1' }),
+      source: { kind: 'saved', script: savedScript() },
+      deferDelivery: true,
+    });
+    if (!r.ok) throw new Error('expected ok');
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    await r.deliver!();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+  });
+
+  it('deliver() reports no_agent without claiming when the device has no agent', async () => {
+    const r = await dispatchScriptToDevice({
+      device: device({ agentId: null }),
+      source: { kind: 'saved', script: savedScript() },
+      deferDelivery: true,
+    });
+    if (!r.ok) throw new Error('expected ok');
+    const delivered = await r.deliver!();
+    expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+    expect(delivered).toEqual(expect.objectContaining({ ok: true, delivered: false, deliveryOutcome: 'no_agent' }));
+  });
+
+  it('without deferDelivery the result carries no deliver() (immediate path unchanged)', async () => {
+    const r = await dispatchScriptToDevice({ device: device({ agentId: null }), source: { kind: 'saved', script: savedScript() } });
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.deliver).toBeUndefined();
+    expect(r.deliveryOutcome).toBe('no_agent');
+  });
+});
+
 // #3409 PR2 Task 4: wiring tenant variable resolution into dispatch.
 describe('dispatchScriptToDevice — {{var.*}} resolution', () => {
   it('substitutes a non-secret variable into the content that reaches the payload', async () => {
