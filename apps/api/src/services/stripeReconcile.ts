@@ -11,7 +11,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
-import { markSiblingRevocationIntentInTx } from './stripeSessionRevocation';
+import { markSiblingRevocationIntentInTx, markSessionChargedRepair } from './stripeSessionRevocation';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -47,8 +47,29 @@ type ReconcileOutcome =
  * deliveries can both observe a null invoice_payment_id in the unlocked
  * discovery read), then the payment insert and a GUARDED mapping link.
  */
-export async function recordStripePayment(input: CaptureInput): Promise<{ invoiceId: string }> {
-  const outcome = await withSystemDbAccessContext(async (): Promise<ReconcileOutcome> => {
+export interface RecordStripePaymentOptions {
+  /**
+   * SEC-150 charged-repair (the settle-from-Checkout paths): once the capture
+   * has decided, park the session for a human when its mapping is no longer
+   * `active`/`legacy_unbounded` — i.e. a session we asked Stripe to kill that
+   * Stripe nonetheless reports paid. Provider truth still wins: the capture is
+   * recorded (or terminal-failed) exactly as without this flag.
+   *
+   * Runs in THIS transaction, after the capture's own writes, so the park
+   * commits or rolls back with them. That also keeps the B10 lock order: on the
+   * locking paths the capture has already taken the invoice row and then the
+   * mapping row, and on the early already-linked no-op no lock is held yet, so
+   * the park's single-row mapping UPDATE never takes a lock out of order.
+   */
+  markChargedRepairIfRevoked?: boolean;
+}
+
+export async function recordStripePayment(
+  input: CaptureInput,
+  options: RecordStripePaymentOptions = {},
+): Promise<{ invoiceId: string }> {
+  // The capture decision proper. Runs inside the transaction opened below.
+  const captureUnderLock = async (): Promise<ReconcileOutcome> => {
     // Unlocked discovery read: maps the Stripe object to an invoice id so the
     // invoice lock can be taken first. NOT authoritative — rechecked under lock.
     const [pre] = await db.select().from(invoiceStripePayments)
@@ -156,6 +177,25 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     const [updated] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
     return { kind: 'recorded', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId,
              paymentId: payment!.id, paid: updated?.status === 'paid', paymentPushMappingId };
+  };
+
+  const outcome = await withSystemDbAccessContext(async (): Promise<ReconcileOutcome> => {
+    const decided = await captureUnderLock();
+    if (options.markChargedRepairIfRevoked) {
+      const [mapping] = await db.select({ revocationState: invoiceStripePayments.revocationState })
+        .from(invoiceStripePayments)
+        .where(and(
+          eq(invoiceStripePayments.stripeObjectId, input.stripeObjectId),
+          eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
+        )).limit(1);
+      if (mapping && mapping.revocationState !== 'active' && mapping.revocationState !== 'legacy_unbounded') {
+        await markSessionChargedRepair(
+          input.stripeObjectId,
+          `session settled while revocation_state=${mapping.revocationState}`,
+        );
+      }
+    }
+    return decided;
   });
 
   // Side effects AFTER the transaction commits (and the row locks release).

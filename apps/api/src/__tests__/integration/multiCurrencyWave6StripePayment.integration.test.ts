@@ -197,8 +197,8 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
       id: eurSession, payment_status: 'paid', payment_intent: `pi_${eurSession}`,
       amount_total: 12345, currency: 'eur',
     });
-    const settled = await withSystemDbAccessContext(() =>
-      settleCheckoutSession(fixture.partnerId, eurSession));
+    // Called with no context held — settleCheckoutSession owns its transactions (#7065).
+    const settled = await settleCheckoutSession(fixture.partnerId, eurSession);
     expect(settled).toMatchObject({ settled: true, invoiceId: invoice.id });
 
     const payments = await readPayments(invoice.id);
@@ -263,8 +263,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
       id: jpySession, payment_status: 'paid', payment_intent: `pi_${jpySession}`,
       amount_total: 1000, currency: 'jpy',
     });
-    const settled = await withSystemDbAccessContext(() =>
-      settleCheckoutSession(fixture.partnerId, jpySession));
+    const settled = await settleCheckoutSession(fixture.partnerId, jpySession);
     expect(settled).toMatchObject({ settled: true, invoiceId: invoice.id });
 
     const payments = await readPayments(invoice.id);
