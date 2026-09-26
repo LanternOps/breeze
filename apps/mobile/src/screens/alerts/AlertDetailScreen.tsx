@@ -3,7 +3,13 @@ import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
-import { getAlert, hasQueuedReboot, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
+import {
+  deviceNeedsRestart,
+  getAlert,
+  hasQueuedReboot,
+  sendDeviceAction,
+  type Alert as AlertModel,
+} from '../../services/api';
 import { needsAlertLookup, rebootPlan } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
@@ -104,7 +110,11 @@ export function AlertDetailScreen({ route }: Props) {
     if (!needsAlertLookup(alert)) return;
     let mounted = true;
     getAlert(alert.id)
-      .then((read) => {
+      .then(async (read) => {
+        // The alert can outlive the restart it asked for, so the button also
+        // needs the device to still report a pending restart.
+        const plan = rebootPlan(read);
+        if (!plan || !(await deviceNeedsRestart(plan.deviceId))) return;
         if (mounted) setFetched(read);
       })
       // Only the Reboot now button depends on this; without it the screen
@@ -137,8 +147,8 @@ export function AlertDetailScreen({ route }: Props) {
       if (currentAlertId.current !== alertId) return;
       const now = rebootPlan(await getAlert(alertId));
       if (currentAlertId.current !== alertId) return;
-      if (!now || now.deviceId !== deviceId) {
-        Alert.alert('Not sent', 'This alert no longer needs a restart, so nothing was sent.');
+      if (!now || now.deviceId !== deviceId || !(await deviceNeedsRestart(deviceId))) {
+        Alert.alert('Not sent', 'This device no longer needs a restart, so nothing was sent.');
         return;
       }
       // The alert stays open after a restart is sent, so reopening it would

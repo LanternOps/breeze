@@ -1233,9 +1233,24 @@ export async function sendDeviceAction(
 }
 
 /**
- * Whether a restart is already queued for the device: a `reboot` command the
- * agent has not finished (`pending` or `sent`). The alert-screen Reboot now
- * checks this so reopening a still-open alert does not queue a second one.
+ * Whether the device itself still reports that it needs a restart
+ * (`devices.pending_reboot`). A reboot-pending alert is never auto-resolved,
+ * so it can outlive the restart it asked for; this is the current truth.
+ */
+export async function deviceNeedsRestart(deviceId: string): Promise<boolean> {
+  const response = await requestWithPrefix<{ pendingReboot?: unknown }>(
+    `/devices/${deviceId}`,
+    API_CORE_PREFIX,
+  );
+  return response.pendingReboot === true;
+}
+
+/**
+ * Best-effort check for a restart already queued for the device: a `reboot`
+ * command the agent has not finished (`pending` or `sent`), looking at the
+ * newest 100 of each. The alert-screen Reboot now uses it so reopening a
+ * still-open alert does not queue a second one. It is a read before a write,
+ * so two people confirming at the same moment can still both send.
  */
 export async function hasQueuedReboot(deviceId: string): Promise<boolean> {
   for (const status of ['pending', 'sent'] as const) {

@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlert, getAlerts, getAlertStats, hasQueuedReboot } from './api';
+import { deviceNeedsRestart, getAlert, getAlerts, getAlertStats, hasQueuedReboot } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -157,5 +157,20 @@ describe('hasQueuedReboot', () => {
   it('rejects when the check itself fails, rather than reporting none', async () => {
     fetchWithTimeout.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 500 }));
     await expect(hasQueuedReboot('dev-1')).rejects.toThrow();
+  });
+});
+
+describe('deviceNeedsRestart', () => {
+  it('follows the device pendingReboot flag', async () => {
+    jsonOnce({ id: 'dev-1', pendingReboot: true });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(true);
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/api/v1/devices/dev-1');
+    jsonOnce({ id: 'dev-1', pendingReboot: false });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(false);
+  });
+
+  it('treats a missing flag as no restart needed', async () => {
+    jsonOnce({ id: 'dev-1' });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(false);
   });
 });
