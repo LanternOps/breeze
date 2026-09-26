@@ -73,6 +73,13 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // effective projection would count a parent's source once for every child.
   'services/monitors/conversion/retirementSweep.ts',
 
+  // #6373 W05e — network adoption appends to, and revert rewrites, the
+  // generated policy's OWN monitors link (items + `inheritance`) and resolves
+  // which authored policy owns an attachment. An inherited projection would
+  // write a parent's settings back onto the generated policy.
+  'services/monitors/conversion/networkChecks.ts',
+  'services/monitors/conversion/networkHistory.ts',
+
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
   'services/configurationPolicy.ts',

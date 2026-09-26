@@ -21,6 +21,10 @@ describe('isSelfManagedDbContextRoute', () => {
     // invoice pay route above. Until registered, the portal auth middleware
     // pinned the request tx AND a system tx across the Stripe round-trip.
     ['POST', '/api/v1/portal/quotes/def-456/pay'],
+    // Customer-portal verify-on-return (#7065): the Stripe retrieve must not run
+    // under the portal request transaction.
+    ['POST', '/api/v1/portal/invoices/def-456/settle'],
+    ['POST', '/api/v1/portal/invoices/def-456/settle/'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/overview'],
@@ -222,6 +226,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices/abc-123/pay-link/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
+    ['GET', '/api/v1/portal/invoices/def-456/settle', 'portal settle is POST-only'],
+    ['POST', '/api/v1/portal/invoices//settle', 'empty id segment must not match'],
     ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
     ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],

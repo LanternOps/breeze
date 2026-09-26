@@ -208,6 +208,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   // PARTIAL as of #5213 — many IP-less manual rows may coexist in one org, but a
   // non-NULL IP is still unique per org. Every upsert onto this index must
   // repeat the predicate via `targetWhere`, or Postgres cannot infer it (42P10).
+  idOrgUnique: uniqueIndex('discovered_assets_id_org_id_uniq').on(table.id, table.orgId),
   idOrgSiteUnique: uniqueIndex('discovered_assets_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
     .on(table.orgId, table.ipAddress)

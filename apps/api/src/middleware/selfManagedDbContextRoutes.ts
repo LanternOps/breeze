@@ -60,6 +60,8 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
 
   // Only the entry points that open their OWN isolated transaction. /ledger and
   // /pending are ordinary reads and must keep the request's context.
+  { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/convert\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/convert-all\/?$/ },
@@ -75,6 +77,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // when the route shipped, so the portal request tx was pinned across Stripe
   // (#3777 review F2).
   { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
+  // Customer-portal verify-on-return (#7065) — settleCheckoutSession retrieves
+  // the Checkout session from Stripe and then records the capture in its own
+  // transaction. Under the portal request transaction the handler escaped to a
+  // SECOND pooled connection for that (the #6671 double-hold) while the first
+  // sat idle-in-transaction across the Stripe round-trip.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/settle\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
