@@ -87,7 +87,11 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/mssql/instances` | List all discovered instances (org-wide) |
 | GET | `/backup/mssql/instances/:deviceId` | List instances on a device |
 | POST | `/backup/mssql/backup` | Back up a database (`deviceId`, `instance`, `database`, `backupType`, `outputPath`) |
-| POST | `/backup/mssql/restore` | Restore a database (`deviceId`, `instance`, `backupFile`, `targetDatabase`, optional `noRecovery`) |
+| POST | `/backup/mssql/restore` | Restore a database from a backup snapshot (`deviceId`, `snapshotId`, `targetDatabase`, optional `instance`, optional `noRecovery`). Returns `202` with `commandId` and `restoreJobId` once the restore is dispatched — see note below |
+
+<Aside type="note" title="SQL Server and Hyper-V restores are asynchronous (v0.117.0+)">
+  `POST /backup/mssql/restore` and `POST /backup/hyperv/restore` return `202 Accepted` as soon as the restore command is queued, instead of holding the request open for up to 10 minutes and reporting a failure while the agent was still restoring. The response carries a `restoreJobId`; poll `GET /backup/restore/:id` for the terminal status. A device that is offline is rejected with `409`.
+</Aside>
 
 ---
 
@@ -98,7 +102,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/hyperv/vms` | List VMs (org-wide) |
 | GET | `/backup/hyperv/vms/:deviceId` | List VMs on a host |
 | POST | `/backup/hyperv/backup` | Export a VM (`deviceId`, `vmName`, `exportPath`, optional `consistencyType`) |
-| POST | `/backup/hyperv/restore` | Import a VM from backup |
+| POST | `/backup/hyperv/restore` | Import a VM from a backup snapshot (`deviceId`, `snapshotId`, optional `vmName`, optional `generateNewId`, default `true`). Returns `202` with `commandId` and `restoreJobId` once dispatched |
 | POST | `/backup/hyperv/checkpoints/:deviceId/:vmId` | Manage VM checkpoints |
 | POST | `/backup/hyperv/vm-state/:deviceId/:vmId` | Control VM power state |
 

@@ -11,6 +11,10 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 Open a device's **Hardware** tab and find **Storage & RAID**. It shows controller identity, virtual disks and RAID level, physical disk model and serial, slot, size, temperature, error counters and rebuild progress when the source reports them. The **OS-visible disks** group separates operating-system observations; disks backed by a RAID virtual disk are collapsed beneath that note and do not create duplicate alerts.
 
+<Aside type="note" title="Requires agent 0.117.0">
+  Hardware collection ships in Breeze v0.117.0 and needs the matching agent. A device on an older agent shows no hardware data until its agent is updated.
+</Aside>
+
 Breeze detects installed tools and reads their output. It never downloads or bundles vendor utilities, changes controller configuration, starts a rebuild or clears a foreign configuration. Collection works on supported Windows and Linux hosts with an agent; it is capability-detected rather than restricted to devices classified as servers. macOS and agentless hypervisors are outside this feature.
 
 The device list has an optional **Hardware** column. Enable it in the column picker for the rollup pill and component-count tooltip. The hardware filter accepts Warning, Critical or Unknown. A dash means no rollup has been received; it is distinct from an observed Unknown rollup.
@@ -35,7 +39,7 @@ The device list has an optional **Hardware** column. Enable it in the column pic
 | `hponcfg` | Windows, Linux | `hponcfg -w` with a temporary output file (RIBCL export) | In-band management-controller address, MAC, firmware and vendor | RAID tier, at most daily; 20 seconds | fixture-only |
 
 <Aside type="note">
-  “Live lab” means the source was exercised end to end on a lab machine running a real agent: collection, the Hardware tab and, where stated, fault injection with per-component alerts and recovery. The Storage Spaces and mdadm lab runs used file-backed and loop-backed virtual disks, not physical drives or a hardware controller. On Storage Spaces, a disconnected member can currently leave its physical-disk alert open after the member returns (issue #6895).
+  “Live lab” means the source was exercised end to end on a lab machine running a real agent: collection, the Hardware tab and, where stated, fault injection with per-component alerts and recovery. The Storage Spaces and mdadm lab runs used file-backed and loop-backed virtual disks, not physical drives or a hardware controller. On Storage Spaces, a disconnected member used to leave its physical-disk alert open after the member returned; this is fixed in v0.117.0.
 
   “fixture-only” means parser behavior has been checked against samples, without a verified capture from a live deployment of that vendor source. A supported parser is not a claim of hardware lab validation. These markers change only when a real capture and its validation are recorded.
 </Aside>

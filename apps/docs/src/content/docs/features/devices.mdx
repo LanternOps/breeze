@@ -20,7 +20,7 @@ The list shows a compact set of columns by default — hostname, class, organiza
 - **Power** — battery charge and charging state (see [Battery and Power Status](#battery-and-power-status))
 - **VPN** — active VPN/overlay clients (see [VPN Presence](#vpn-presence))
 - **CPU model, cores, total RAM, total disk**
-- **Agent version** and **watchdog version**
+- **Agent version**, **watchdog version**, and **helper version** (the installed Breeze Assist version, v0.117.0+; also available as a filter field)
 - **WAN IP** and **LAN IP** — the device's public (egress) address as seen from the server, and its local network interface address. Both are sortable; see [IP History](/features/ip-history/) for the timeline of address changes.
 - **Tags, last logged-in user, uptime, enrollment date**
 - **Desktop access** and **reliability score**
@@ -38,13 +38,15 @@ With the **Agent version** column enabled, each device's reported version is tin
 
 The version renders in plain text with no tint when the comparison can't be made -- a network or manual row that has never reported an agent version, or an organization whose effective version hasn't resolved yet.
 
+Since v0.117.0 an **Updates withheld** badge appears next to the version when the server has stopped offering agent updates to that device because it cannot confirm that the device's agent build accepts the edition this server serves. The device stays on its current version until it is recovered with an installer of the served edition, or an agent release that reports its edition. The device's Info tab shows the same warning with the date it started.
+
 ### Filters
 
 Above the list you can:
 
 - **Search** by display name or hostname.
 - Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
-- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)).
+- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)). The list opens on **Agent** by default and remembers the last facet you chose.
 - Filter by **VPN** when the VPN column is enabled (see below).
 
 ---
@@ -292,7 +294,7 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Hardware Summary** | CPU model, cores/threads, RAM, disk, GPU, motherboard, BIOS version. |
 | **Power** | Battery and power status (portable devices only — see above). |
 | **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
-| **Agent** | Agent and watchdog versions, status, last seen, enrollment date, system uptime, logged-in user. |
+| **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
