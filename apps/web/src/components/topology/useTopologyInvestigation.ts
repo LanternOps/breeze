@@ -76,7 +76,10 @@ export function useTopologyInvestigation(selection: TopologyAiSelection | null, 
   // Reopen from the hash: read the stored investigation (no model call).
   useEffect(() => {
     const id = options.initialSessionId;
-    if (id && useAiStore.getState().sessionId !== id) void useAiStore.getState().loadSession(id);
+    // After a page reload only the persisted session id survives (not its
+    // messages), so "is it the store's session" is not "is it loaded".
+    const state = useAiStore.getState();
+    if (id && (state.sessionId !== id || state.hydratedSessionId !== id)) void state.loadSession(id);
   }, []);
 
   const forget = useCallback(() => {

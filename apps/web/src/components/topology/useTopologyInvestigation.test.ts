@@ -52,6 +52,14 @@ describe('useTopologyInvestigation (M4 Task 5)', () => {
     expect(result.current.historical).toBe(true);
   });
 
+  it('reopens after a page reload, when only the persisted session id survived', async () => {
+    useAiStore.setState({ sessionId: AI.session, hydratedSessionId: null, messages: [] } as never);
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession()));
+    const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
+    await waitFor(() => expect(result.current.status).toBe('complete'));
+    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`]);
+  });
+
   it('a reopened answer for the same selection is current, not historical', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession()));
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));

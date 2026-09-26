@@ -135,6 +135,33 @@ describe('topology turn streaming', () => {
     expect(useAiStore.getState().pendingApproval).toBeNull();
   });
 
+  it('attaches the explanation even when message_end closed the assistant message first (chat-only transport order)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(sseResponse([
+      { type: 'message_start', messageId: 'm1' },
+      { type: 'topology_progress', phase: 'analyzing' },
+      { type: 'message_end', inputTokens: 100, outputTokens: 50 },
+      { type: 'topology_progress', phase: 'validating' },
+      { type: 'topology_explanation', explanation },
+      { type: 'done' },
+    ]));
+    await useAiStore.getState().sendMessage('Explain this selection.');
+    const assistants = useAiStore.getState().messages.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.topologyExplanation).toEqual(explanation);
+  });
+
+  it('attaches a cached answer that arrives with no message_start at all', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(sseResponse([
+      { type: 'topology_progress', phase: 'validating' },
+      { type: 'topology_explanation', explanation },
+      { type: 'done' },
+    ]));
+    await useAiStore.getState().sendMessage('Explain this selection.');
+    const assistants = useAiStore.getState().messages.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.topologyExplanation).toEqual(explanation);
+  });
+
   it('keeps the current progress phase while the turn runs', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(sseResponse([
       { type: 'message_start', messageId: 'm1' },

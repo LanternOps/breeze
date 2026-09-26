@@ -446,16 +446,21 @@ export function processStreamEvent(
       const patch: Partial<AiMessage> = parsed.success
         ? { content: renderTopologyExplanation(parsed.data), topologyExplanation: parsed.data }
         : { content: '', topologyExplanationInvalid: true };
-      if (currentAssistantId) {
-        set((s) => ({
-          topologyPhase: null,
-          messages: s.messages.map((m) =>
-            m.id === currentAssistantId ? { ...m, ...patch } : m
-          ),
-        }));
-      } else {
-        set(() => ({ topologyPhase: null }));
-      }
+      // The explanation is published AFTER the transport's message_end (which
+      // clears the current id), and a cached answer arrives with no
+      // message_start at all. Attach it to this turn's assistant message —
+      // the last one after the last user message — or start one.
+      set((s) => {
+        const lastUser = s.messages.map((m) => m.role).lastIndexOf('user');
+        const targetIndex = currentAssistantId
+          ? s.messages.findIndex((m) => m.id === currentAssistantId)
+          : s.messages.findIndex((m, i) => i > lastUser && m.role === 'assistant');
+        if (targetIndex >= 0) {
+          return { topologyPhase: null, messages: s.messages.map((m, i) => (i === targetIndex ? { ...m, ...patch, isStreaming: false } : m)) };
+        }
+        const message: AiMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', createdAt: new Date(), ...patch };
+        return { topologyPhase: null, messages: [...s.messages, message] };
+      });
       return currentAssistantId;
     }
 
