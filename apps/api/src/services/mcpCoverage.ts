@@ -180,6 +180,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/sessions.ts': { exempt: 'agent_transport' },
   'agents/state.ts': { exempt: 'agent_transport' },
   'agents/token.ts': { exempt: 'agent_transport' },
+  'agents/topologyAdjacency.ts': { exempt: 'agent_transport' },
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
