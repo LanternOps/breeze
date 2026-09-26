@@ -34,9 +34,21 @@ import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
 // `commandTypes.ts` is a constant table with no dispatch surface, so importing
 // it does not re-open the hole the contract scan closes.
 import { CommandTypes } from './commandTypes';
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+/**
+ * #6911: `remediate_sensitive_data`'s mutating actions all write
+ * `auth.user.id` into `sensitive_data_findings.remediation_metadata.updatedBy`
+ * — under the rebuilt agent auth that id is an `aiAgents.id`, so refuse
+ * rather than write a row whose owner the worker and this handler's auth
+ * disagree about. Mirrors `aiToolsBrowser.ts`'s `approverReleaseMismatch`.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -525,7 +537,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         required: ['findingIds', 'action']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const findingIdsRaw = Array.isArray(input.findingIds) ? input.findingIds : [];
       const findingIds = Array.from(new Set(
         findingIdsRaw
@@ -608,6 +620,12 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
       const now = new Date();
       if (action === 'accept_risk' || action === 'false_positive' || action === 'mark_remediated') {
+        // #6911: user-owned on release — see approverReleaseMismatch. This
+        // branch stamps `updatedBy: auth.user.id` into
+        // `sensitiveDataFindings.remediationMetadata` below.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         const nextStatus = action === 'accept_risk'
           ? 'accepted'
           : action === 'false_positive'
@@ -648,6 +666,14 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
           queued: 0,
           failed: 0,
         });
+      }
+
+      // #6911: user-owned on release — see approverReleaseMismatch. The
+      // encrypt/quarantine/secure_delete queue path below stamps
+      // `updatedBy: auth.user.id` into `sensitiveDataFindings.remediationMetadata`
+      // once commands are queued.
+      if (approverReleaseMismatch(auth, context)) {
+        return JSON.stringify({ error: 'approver_auth_mismatch', action });
       }
 
       const commandType = action === 'encrypt'
