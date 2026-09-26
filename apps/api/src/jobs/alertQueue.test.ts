@@ -45,8 +45,6 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/alertService', () => ({
   evaluateDeviceAlerts: vi.fn(),
   checkAllAutoResolve: vi.fn(),
-  evaluateDeviceAlertsFromPolicy: vi.fn(),
-  checkAutoResolveFromConfigPolicy: vi.fn(),
 }));
 
 vi.mock('../services/subjectAlertOutbox', () => ({

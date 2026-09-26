@@ -247,15 +247,36 @@ describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
     window.location.hash = '';
   });
 
-  it('passes every feature link on the policy to the Monitors tab as siblingLinks (W05c2)', async () => {
+  it.each(['#alert_rule', '#monitoring'])('redirects legacy deep link %s to Monitors', async (hash) => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    window.history.replaceState(null, '', `/configuration-policies/pol-1?keep=value${hash}`);
+    const replace = vi.spyOn(window.history, 'replaceState');
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('monitors-tab-editor')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /monitors/i })).toBeInTheDocument();
+    expect(replace).toHaveBeenCalledWith(null, '', '/configuration-policies/pol-1?keep=value#monitors');
+    expect(window.location.hash).toBe('#monitors');
+    replace.mockRestore();
+  });
+
+  it.each(['#alert_rule', '#monitoring'])('redirects %s after the page has mounted', async (hash) => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    window.location.hash = hash;
+    expect(await screen.findByTestId('monitors-tab-editor')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#monitors');
+  });
+
+  it('passes every feature link on the policy to the Monitors tab as siblingLinks', async () => {
     mockPolicy({ orgId: 'org-1', partnerId: null }, [
       { id: 'l-mon', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [] } },
-      { id: 'l-svc', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } },
+      { id: 'l-svc', featureType: 'patch', featurePolicyId: null, inlineSettings: {} },
     ]);
     window.location.hash = '#monitors';
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     const tab = await screen.findByTestId('monitors-tab-editor');
-    expect(tab.getAttribute('data-sibling-types')).toBe('monitors,monitoring');
+    expect(tab.getAttribute('data-sibling-types')).toBe('monitors,patch');
   });
 
   it('selects a feature tab from the initial hash (#patch)', async () => {
@@ -427,96 +448,4 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
       window.history.replaceState(null, '', originalSearch);
     }
   });
-});
-
-
-describe('ConfigPolicyDetailPage — inherited duplicate conditions', () => {
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    await i18n.changeLanguage('en');
-    window.location.hash = '';
-  });
-  afterEach(() => { window.location.hash = ''; });
-
-  const cases = [
-    {
-      tab: 'alert_rule',
-      settings: { items: [{ name: 'Legacy CPU', severity: 'high', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }], cooldownMinutes: 15 }] },
-      monitor: { id: 'cpu-monitor', name: 'CPU monitor', kind: 'cpu' },
-      pair: 'Legacy CPU ↔ CPU monitor',
-    },
-    {
-      tab: 'monitoring',
-      settings: { watches: [{ watchType: 'service', name: 'nginx', enabled: true }] },
-      monitor: { id: 'service-monitor', name: 'Service monitor', kind: 'service', condition: { serviceName: 'nginx' } },
-      pair: 'nginx ↔ Service monitor',
-    },
-  ];
-
-  it.each(cases)('warns on $tab for an inherited monitor and own legacy condition', async ({ tab, settings, monitor, pair }) => {
-    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
-    const monitorLink = { id: 'parent-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } };
-    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink], {
-      parentPolicyId: 'parent-1',
-      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [monitorLink] },
-    }, [monitor]);
-    window.location.hash = tab;
-    render(<ConfigPolicyDetailPage policyId="pol-1" />);
-    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
-  });
-
-  it.each(cases)('warns on $tab for parent monitor B even with own monitor A', async ({ tab, settings, monitor, pair }) => {
-    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
-    const monitorLink = { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } };
-    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink, monitorLink], {
-      parentPolicyId: 'parent-1',
-      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [{ ...monitorLink, id: 'parent-monitors', inlineSettings: { items: [{ monitorId: 'parent-monitor', enabled: true }] } }] },
-    }, [monitor, { ...monitor, id: 'parent-monitor', name: 'Inherited monitor B' }]);
-    window.location.hash = tab;
-    render(<ConfigPolicyDetailPage policyId="pol-1" />);
-    const notice = await screen.findByTestId('duplicate-condition-notice');
-    expect(notice).toHaveTextContent(pair);
-    expect(notice).toHaveTextContent('Inherited monitor B');
-  });
-
-  it.each(cases)('respects an own disabled monitor on $tab', async ({ tab, settings, monitor }) => {
-    const ownLink = { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings };
-    const monitorLink = { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id, enabled: false }] } };
-    mockPolicy({ orgId: 'org-1', partnerId: null }, [ownLink, monitorLink], {
-      parentPolicyId: 'parent-1',
-      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [
-        { ...monitorLink, id: 'parent-monitors', inlineSettings: { items: [{ monitorId: monitor.id, enabled: true }] } },
-      ] },
-    }, [monitor]);
-    window.location.hash = tab;
-    render(<ConfigPolicyDetailPage policyId="pol-1" />);
-    await screen.findByTestId('legacy-freeze-notice');
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions'));
-    expect(screen.queryByTestId('duplicate-condition-notice')).not.toBeInTheDocument();
-  });
-
-  it.each(cases)('retains duplicate warnings without a parent on $tab', async ({ tab, settings, monitor, pair }) => {
-    mockPolicy({ orgId: 'org-1', partnerId: null }, [
-      { id: 'legacy-link', featureType: tab, featurePolicyId: null, inlineSettings: settings },
-      { id: 'own-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id }] } },
-    ], {}, [monitor]);
-    window.location.hash = tab;
-    render(<ConfigPolicyDetailPage policyId="pol-1" />);
-    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
-  });
-
-  it.each(['alert_rule', 'monitoring'])('warns on %s for an inherited watch and inherited monitor', async (tab) => {
-    const { settings, monitor, pair } = cases[1];
-    mockPolicy({ orgId: 'org-1', partnerId: null }, [], {
-      parentPolicyId: 'parent-1',
-      parentPolicy: { id: 'parent-1', name: 'Parent', orgId: null, featureLinks: [
-        { id: 'parent-watch', featureType: 'monitoring', featurePolicyId: null, inlineSettings: settings },
-        { id: 'parent-monitors', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: monitor.id }] } },
-      ] },
-    }, [monitor]);
-    window.location.hash = tab;
-    render(<ConfigPolicyDetailPage policyId="pol-1" />);
-    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent(pair);
-  });
-
 });

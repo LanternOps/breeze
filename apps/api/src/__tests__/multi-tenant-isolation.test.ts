@@ -112,7 +112,6 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown:                   vi.fn(),
-  markConfigPolicyRuleCooldown:  vi.fn(),
 }));
 
 vi.mock('../services/eventBus', () => ({

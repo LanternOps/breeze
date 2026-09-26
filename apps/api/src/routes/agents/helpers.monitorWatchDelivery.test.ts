@@ -1,25 +1,7 @@
 /**
- * Service/process watch delivery from resolved MONITORS (#5287 W04, #5291).
- *
- * Before this wave the heartbeat's `monitoring_settings` block came only from
- * the config-policy Monitoring tab. W02 made `service` / `process` monitors
- * first-class authoring objects, so a technician could attach one and nothing
- * would ever reach the agent. This inverts the source of truth: monitor-derived
- * watches are computed first and the policy tab's watches are unioned over
- * them, emitting the IDENTICAL `MonitoringConfigUpdate` shape.
- *
- * Two invariants are load-bearing and both are pinned here:
- *
- *  1. **The wire shape is frozen.** `monitoring_settings` on the wire is
- *     consumed by the Go agent's `MonitorConfig` / `WatchConfig`
- *     (agent/internal/monitoring/types.go). No key added, removed or renamed.
- *     The Go side proves the same thing from its end in
- *     agent/internal/monitoring/monitor_w04_wire_test.go.
- *  2. **auto_restart is never LOWERED.** It drives the agent's offline-capable
- *     local restart. The union ORs the flag across sources; a monitor-derived
- *     watch that happens to carry no restart response must not switch off a
- *     restart the policy tab already delivers. Without that test the union is
- *     a downgrade vector.
+ * W05d: only effective monitors deliver service/process watches. Policy links
+ * supply the interval. The frozen wire shape and monitor restart responses
+ * remain compatible with the Go agent.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -92,46 +74,22 @@ const { buildMonitoringConfigUpdate } = await import('./helpers');
 
 const DEVICE_ID = 'device-1';
 
-/**
- * The five reads the POLICY half performs, in order. The policy half runs
- * FIRST (see resolveDeviceMonitoringSettings), so a monitor-definitions read
- * queues AFTER these.
- */
+/** Assignments and explicit interval rows precede the monitor-definitions read. */
 function policyQueue(opts: {
   checkIntervalSeconds?: number;
-  watches?: Array<Record<string, unknown>>;
   resolved?: boolean;
 }): unknown[][] {
-  const resolved = opts.resolved ?? true;
-  const head: unknown[][] = [
-    [{ orgId: 'org-1', siteId: 'site-1' }], // devices
-    [{ partnerId: 'partner-1' }], // organizations
-    [], // deviceGroupMemberships
-  ];
-  // No matching policy row short-circuits BEFORE the watches read, so the
-  // queue must not reserve a slot for it.
-  if (!resolved) return [...head, []];
   return [
-    ...head,
-    [{ level: 'organization', assignmentPriority: 0, settingsId: 'settings-1', checkIntervalSeconds: 45 }],
-    opts.watches ?? [],
+    [{ orgId: 'org-1', siteId: 'site-1' }],
+    [{ partnerId: 'partner-1' }],
+    [],
+    opts.resolved === false ? [] : [{
+      policyId: 'policy-1', parentPolicyId: null, level: 'organization', assignmentPriority: 0,
+    }],
+    ...(opts.resolved === false ? [] : [[{
+      policyId: 'policy-1', checkIntervalSeconds: opts.checkIntervalSeconds ?? 45,
+    }]]),
   ];
-}
-
-function policyWatchRow(overrides: Record<string, unknown> = {}) {
-  return {
-    watchType: 'service',
-    name: 'Spooler',
-    alertOnStop: true,
-    alertAfterConsecutiveFailures: 2,
-    autoRestart: false,
-    maxRestartAttempts: 3,
-    restartCooldownSeconds: 300,
-    cpuThresholdPercent: null,
-    memoryThresholdMb: null,
-    thresholdDurationSeconds: null,
-    ...overrides,
-  };
 }
 
 function monitorDefRow(overrides: Record<string, unknown> = {}) {
@@ -163,6 +121,50 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     vi.clearAllMocks();
     redisMock.get.mockResolvedValue(null);
     resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [] });
+  });
+
+  it.each([
+    { name: 'inherits the parent interval despite its own attachment link', intervals: [{ policyId: 'parent', checkIntervalSeconds: 30 }], expected: 30 },
+    { name: 'prefers its own explicit interval over the parent', intervals: [{ policyId: 'parent', checkIntervalSeconds: 30 }, { policyId: 'child', checkIntervalSeconds: 45 }], expected: 45 },
+    { name: 'does not turn an attachment-only policy into a default interval override', intervals: [], expected: 60 },
+  ])('$name', async ({ intervals, expected }) => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1' }], [{ partnerId: 'partner-1' }], [],
+      [{ policyId: 'child', parentPolicyId: 'parent', level: 'device', assignmentPriority: 0 }],
+      intervals,
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: expected, watches: [] });
+  });
+
+  it('excludes interval-less assignments before ranking by level and priority', async () => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1' }], [{ partnerId: 'partner-1' }], [],
+      [
+        { policyId: 'device-policy', parentPolicyId: null, level: 'device', assignmentPriority: 0 },
+        { policyId: 'org-later', parentPolicyId: null, level: 'organization', assignmentPriority: 2 },
+        { policyId: 'org-first', parentPolicyId: null, level: 'organization', assignmentPriority: 1 },
+        { policyId: 'partner', parentPolicyId: null, level: 'partner', assignmentPriority: 0 },
+      ],
+      [
+        { policyId: 'org-later', checkIntervalSeconds: 90 },
+        { policyId: 'org-first', checkIntervalSeconds: 30 },
+        { policyId: 'partner', checkIntervalSeconds: 120 },
+      ],
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: 30, watches: [] });
+  });
+
+  it('excludes role and OS mismatches before reading intervals', async () => {
+    dbMock._resetQueue([
+      [{ orgId: 'org-1', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ partnerId: 'partner-1' }], [],
+      [
+        { policyId: 'wrong-role', level: 'device', assignmentPriority: 0, roleFilter: ['server'] },
+        { policyId: 'wrong-os', level: 'device', assignmentPriority: 0, osFilter: ['linux'] },
+      ],
+    ]);
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: 60, watches: [] });
+    expect(dbMock.select).toHaveBeenCalledTimes(4);
   });
 
   it('emits exactly the frozen monitoring_settings key set', async () => {
@@ -207,66 +209,21 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     });
   });
 
-  it('leaves a policy-only resolution byte-identical to today (regression fence)', async () => {
-    dbMock._resetQueue([...policyQueue({ watches: [policyWatchRow({ autoRestart: true })] })]);
-
-    const out = await buildMonitoringConfigUpdate(DEVICE_ID);
-
-    expect(out).toEqual({
-      check_interval_seconds: 45,
-      watches: [
-        {
-          watch_type: 'service',
-          name: 'Spooler',
-          alert_on_stop: true,
-          alert_after_consecutive_failures: 2,
-          auto_restart: true,
-          max_restart_attempts: 3,
-          restart_cooldown_seconds: 300,
-        },
-      ],
-    });
-  });
-
-  it('keeps both watches when the monitor and the policy name DIFFERENT services', async () => {
+  it('delivers only monitor watches with the resolved monitors-link interval', async () => {
     resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
-      ...policyQueue({ watches: [policyWatchRow({ name: 'W32Time' })] }),
-      [monitorDefRow({ condition: { serviceName: 'Spooler' } })],
-    ]);
-
-    const out = await buildMonitoringConfigUpdate(DEVICE_ID);
-
-    expect(out!.watches.map((w) => w.name).sort()).toEqual(['Spooler', 'W32Time']);
-  });
-
-  it('lets the MONITOR win on a name collision (consecutiveFailures 5 beats the policy tab 2)', async () => {
-    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
-    dbMock._resetQueue([
-      ...policyQueue({ watches: [policyWatchRow({ alertAfterConsecutiveFailures: 2 })] }),
+      ...policyQueue({ checkIntervalSeconds: 90 }),
       [monitorDefRow({ condition: { serviceName: 'Spooler', consecutiveFailures: 5 } })],
     ]);
-
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
-
-    expect(out!.watches).toHaveLength(1);
-    expect(out!.watches[0]!.alert_after_consecutive_failures).toBe(5);
-  });
-
-  it('never LOWERS auto_restart: a monitor with no restart response keeps the policy tab true', async () => {
-    // THE auto-restart regression test. `auto_restart` drives the agent's own
-    // offline-capable restart; a union that let the monitor row's `false`
-    // overwrite the policy's `true` would be a silent downgrade vector.
-    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
-    dbMock._resetQueue([
-      ...policyQueue({ watches: [policyWatchRow({ autoRestart: true })] }),
-      [monitorDefRow({ responses: [] })],
-    ]);
-
-    const out = await buildMonitoringConfigUpdate(DEVICE_ID);
-
-    expect(out!.watches).toHaveLength(1);
-    expect(out!.watches[0]).toMatchObject({ auto_restart: true, max_restart_attempts: 3, restart_cooldown_seconds: 300 });
+    expect(out).toEqual({
+      check_interval_seconds: 90,
+      watches: [{
+        watch_type: 'service', name: 'Spooler', alert_on_stop: true,
+        alert_after_consecutive_failures: 5, auto_restart: false,
+        max_restart_attempts: 3, restart_cooldown_seconds: 300,
+      }],
+    });
   });
 
   it('compiles a restart_service response to auto_restart on the delivered watch', async () => {
@@ -324,29 +281,18 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     expect(out!.watches[0]).toMatchObject({ auto_restart: true, max_restart_attempts: 7, restart_cooldown_seconds: 120 });
   });
 
-  it('falls back to the policy row for process thresholds the monitor cannot author', async () => {
+  it('delivers process watches without historical policy thresholds', async () => {
     resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
-      ...policyQueue({
-        watches: [
-          policyWatchRow({
-            watchType: 'process',
-            name: 'chrome.exe',
-            cpuThresholdPercent: 80,
-            memoryThresholdMb: 2048,
-            thresholdDurationSeconds: 300,
-          }),
-        ],
-      }),
+      ...policyQueue({}),
       [monitorDefRow({ kind: 'process', condition: { processName: 'chrome.exe' } })],
     ]);
-
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
-
     expect(out!.watches).toHaveLength(1);
-    expect(out!.watches[0]!.cpu_threshold_percent).toBe(80);
-    expect(out!.watches[0]!.memory_threshold_mb).toBe(2048);
-    expect(out!.watches[0]!.threshold_duration_seconds).toBe(300);
+    expect(out!.watches[0]).toMatchObject({ watch_type: 'process', name: 'chrome.exe' });
+    expect(out!.watches[0]).not.toHaveProperty('cpu_threshold_percent');
+    expect(out!.watches[0]).not.toHaveProperty('memory_threshold_mb');
+    expect(out!.watches[0]).not.toHaveProperty('threshold_duration_seconds');
   });
 
   it('contributes nothing for a monitor whose effective attachment is disabled', async () => {
@@ -407,7 +353,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   it('still emits an EMPTY watches array when a policy resolved with zero watches (#2949)', async () => {
     // The "stop watching" signal. Collapsing this to null makes heartbeat omit
     // the block entirely and strands watches on agents forever.
-    dbMock._resetQueue([...policyQueue({ watches: [] })]);
+    dbMock._resetQueue([...policyQueue({})]);
 
     expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({
       check_interval_seconds: 45,
@@ -419,20 +365,20 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     // A policy resolved with zero configured watches — on its own this is the
     // legitimate #2949 "stop watching" signal (previous test). But if the
     // monitor-derived side ALSO raced a device delete and came back as a
-    // fabricated `[]` instead of `device_missing`, the union below would
+    // fabricated `[]` instead of `device_missing`, the combined resolution below would
     // still be `{ watches: [] }` — sent to the agent as an explicit clear,
     // even though nothing was actually resolved to zero. Must return null
     // instead: omit the update this heartbeat, exactly like a missing policy
     // device lookup already does.
     resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
-    dbMock._resetQueue([...policyQueue({ watches: [] })]);
+    dbMock._resetQueue([...policyQueue({})]);
 
     expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
   });
 
-  it('device_missing omits the whole monitoring update even when the policy side resolved real watches — the monitor answer is unreliable this cycle, so nothing is asserted either way', async () => {
+  it('device_missing omits the whole monitoring update even when the policy side resolved an interval — the monitor answer is unreliable this cycle, so nothing is asserted either way', async () => {
     resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
-    dbMock._resetQueue([...policyQueue({ watches: [policyWatchRow()] })]);
+    dbMock._resetQueue([...policyQueue({})]);
 
     expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
   });

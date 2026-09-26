@@ -5,7 +5,7 @@ import { navigateTo } from '@/lib/navigation';
 import type { AlertSeverity, MonitorKind } from '@breeze/shared';
 
 type Answer = {
-  source: 'monitor_none' | 'monitor_channels' | 'legacy_override' | 'routing_rule' | 'default_row' | 'none';
+  source: 'monitor_none' | 'monitor_channels' | 'routing_rule' | 'default_row' | 'none';
   channelIds: string[]; skippedChannelIds: Array<{ id: string; reason: 'disabled' | 'unavailable' }>; escalationPolicyId: string | null; routingRuleName?: string;
   description: { channels: Array<{ id: string; name: string; enabled: boolean }>;
     escalationPolicy: { id: string; name: string } | null; owner: 'partner' | 'organization' | null };

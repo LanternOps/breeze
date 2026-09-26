@@ -29,8 +29,8 @@ function collectKeys(value: unknown, out = new Set<string>()): Set<string> {
 describe('inline settings reference round-trip', () => {
   const validatedTypes = Object.keys(VALIDATED_INLINE_SETTINGS) as Array<keyof typeof POLICY_FEATURE_INLINE_SETTINGS_REFERENCE>;
 
-  it('validates compliance and alert_rule inline settings', () => {
-    expect(validatedTypes).toEqual(expect.arrayContaining(['compliance', 'alert_rule']));
+  it('validates compliance inline settings', () => {
+    expect(validatedTypes).toContain('compliance');
   });
 
   it.each(validatedTypes)('%s: the example passes the write validator', (featureType) => {
@@ -83,11 +83,5 @@ describe('inline settings reference round-trip', () => {
     } as never);
     expect(result.passed).toBe(false);
     expect(result.details[0]?.message).toContain('is not installed');
-  });
-
-  it('alert_rule: the reference states what the Windows agent actually collects and points app-presence at compliance', () => {
-    const reference = POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.alert_rule;
-    expect(reference).toMatch(/Information-level events can never match/);
-    expect(reference).toContain('required_software');
   });
 });

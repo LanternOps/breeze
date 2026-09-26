@@ -83,7 +83,6 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../middleware/userRateLimit', () => ({ userRateLimit: () => async (_c: unknown, next: () => Promise<void>) => next() }));
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: (...a: unknown[]) => writeRouteAudit(...a) }));
 vi.mock('../services/eventBus', () => ({ publishEvent: (...a: unknown[]) => publishEvent(...a) }));

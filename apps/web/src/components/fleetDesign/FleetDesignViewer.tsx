@@ -7,10 +7,10 @@ import type { UseDesignSelectionResult } from "./useDesignSelection";
 /**
  * Fleet Designer W03/W04 (#5653/#5654) — renders the eight
  * `FLEET_DESIGN_SECTION_KEYS` sections of a stored `FleetDesignOutcome` in
- * order. Selectable items (functions, monitoring watches/rules, retired
- * items, automation scripts, role corrections) get a checkbox wired through
- * `selection`. `found`/`baseline` and the non-role-correction parts of
- * `unsure` are read-only. Within automation, playbooks stay read-only (no
+ * order. Selectable items (functions, monitoring watches/rules,
+ * automation scripts, role corrections) get a checkbox wired through
+ * `selection`. Historical retired items, `found`/`baseline` and the
+ * non-role-correction parts of `unsure` are read-only. Within automation, playbooks stay read-only (no
  * apply path — only scripts do); legacy is read-only by design — it is an
  * informational inventory, never an apply target (`approval.legacy` is
  * always `[]`, see `useDesignSelection`'s docstring).
@@ -176,11 +176,12 @@ export default function FleetDesignViewer({ outcome, selection, unavailable = []
 
       <Section title={t("sections.retired")} testId="fleet-design-section-retired">
         {sections.retired.length === 0 && <p className="text-sm text-muted-foreground">{t("items.none")}</p>}
-        {sections.retired.map((r) =>
-          r.itemRef ? (
-            <SelectableRow key={r.itemRef} itemRef={r.itemRef} label={r.itemName} meta={r.reason} selection={selection} />
-          ) : null,
-        )}
+        {sections.retired.map((r, index) => (
+          <div key={r.itemRef ?? index} className="text-sm">
+            <p>{r.itemName}</p>
+            <p className="text-muted-foreground">{r.reason}</p>
+          </div>
+        ))}
       </Section>
 
       <Section title={t("sections.automation")} testId="fleet-design-section-automation">

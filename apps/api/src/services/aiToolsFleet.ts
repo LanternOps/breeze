@@ -41,7 +41,6 @@ import {
 } from '../db/schema/maintenance';
 import {
   alertRules,
-  alertTemplates,
   alerts,
   notificationChannels,
 } from '../db/schema/alerts';
@@ -64,7 +63,7 @@ import {
 } from '../db/schema/reports';
 import { devices, sites } from '../db/schema';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
-import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 
@@ -1593,7 +1592,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           // early-returns as disabled above (patch policies are managed through
           // configuration policies). The two fixes below are defense-in-depth,
           // kept correct so the block is not a trap if the gate is ever lifted
-          // — same convention as the disabled `manage_alert_rules` branch.
+          // — configuration policies own these writes.
           //
           // `policyAccessCondition`, not a bare org-equality (#3493): a
           // partner-wide policy stores `org_id NULL`, so the org form would tell
@@ -2637,17 +2636,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     domain: 'monitoring',
-    searchHint: 'alert rules: list templates, list rules, get rule, test rule, list channels, alert summary',
+    searchHint: 'alert rules: list rules, get rule, test rule, list channels, alert summary',
     definition: {
       name: 'manage_alert_rules',
-      description: 'Read alert rules, templates and channels. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary, create_rule (disabled), update_rule (disabled), delete_rule (disabled). For writes, use manage_policy_feature_link with featureType "alert_rule".',
+      description: 'Read compiled alert rules and channels. list_rules returns monitorId. Author conditions with manage_monitor_definitions. Actions: list_rules, get_rule, test_rule, list_channels, alert_summary.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list_templates', 'list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. This tool is read-only — to create/modify alert rules, use manage_policy_feature_link with featureType "alert_rule".' },
+          action: { type: 'string', enum: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'], description: 'The action to perform. This tool is read-only — to create/modify alert conditions, use manage_monitor_definitions.' },
           ruleId: { type: 'string', description: 'Alert rule UUID (required for get_rule/test_rule)' },
-          category: { type: 'string', description: 'Filter templates by category (for list_templates)' },
-          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list_templates/alert_summary)' },
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for alert_summary)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         required: ['action'],
@@ -2657,52 +2655,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
-      if (action === 'list_templates') {
-        const conditions: SQL[] = [];
-        // Show built-in templates (orgId IS NULL) + custom templates for accessible orgs
-        const oc = orgWhere(auth, alertTemplates.orgId);
-        if (oc) {
-          // Org/partner scope: built-in OR belonging to accessible org(s)
-          // `is_built_in AND org_id IS NULL` — policyAlertBridge creates
-          // ORG-OWNED built-in rows, so a bare is_built_in disjunct would show
-          // another org's template (security review 2026-08-16 §1.5, same class).
-          conditions.push(sql`((${alertTemplates.isBuiltIn} = true AND ${alertTemplates.orgId} IS NULL) OR ${oc})`);
-        }
-        // System scope (oc undefined): no filter — show all templates
-        if (typeof input.category === 'string') conditions.push(eq(alertTemplates.category, input.category as string));
-        if (typeof input.severity === 'string') conditions.push(eq(alertTemplates.severity, input.severity as any));
-
-        const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
-        const rows = await db.select({
-          id: alertTemplates.id,
-          name: alertTemplates.name,
-          description: alertTemplates.description,
-          category: alertTemplates.category,
-          severity: alertTemplates.severity,
-          conditions: alertTemplates.conditions,
-          isBuiltIn: alertTemplates.isBuiltIn,
-          autoResolve: alertTemplates.autoResolve,
-          cooldownMinutes: alertTemplates.cooldownMinutes,
-        }).from(alertTemplates)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(alertTemplates.isBuiltIn), alertTemplates.name)
-          .limit(limit);
-
-        return JSON.stringify({
-          templates: rows,
-          showing: rows.length,
-          hint: 'Alert rules are managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" and inlineSettings to add alert rules to a policy.',
-        });
-      }
-
       if (action === 'list_rules') {
-        const conditions: SQL[] = [];
+        const conditions: SQL[] = [isNotNull(alertRules.managedByMonitorId)];
         const oc = alertRuleWhere(auth);
         if (oc) conditions.push(oc);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const rows = await db.select({
           id: alertRules.id,
+          monitorId: alertRules.managedByMonitorId,
           name: alertRules.name,
           templateId: alertRules.templateId,
           targetType: alertRules.targetType,
@@ -2723,7 +2684,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           visibleRules = rows.filter((_, i) => !denied[i]);
         }
 
-        return JSON.stringify({ rules: visibleRules, showing: visibleRules.length });
+        return JSON.stringify({
+          rules: visibleRules,
+          showing: visibleRules.length,
+          note: 'Only monitor-managed rules are listed. Feature-engine rules (patch, compliance/policy bridge, automation) are not listed; use get_rule with an alert\'s ruleId to read them.',
+        });
       }
 
       if (action === 'get_rule') {
@@ -2760,12 +2725,6 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .limit(5);
 
         return JSON.stringify({ rule, recentAlerts });
-      }
-
-      if (action === 'create_rule' || action === 'update_rule' || action === 'delete_rule') {
-        return JSON.stringify({
-          error: `Action "${action}" is disabled. Alert rules must be managed through configuration policies. Use manage_policy_feature_link with featureType "alert_rule" to add, update, or remove alert rules on a configuration policy.`,
-        });
       }
 
       if (action === 'test_rule') {
