@@ -17,6 +17,23 @@ type msiProduct struct {
 // one registered (msiexec exit 1605, ERROR_UNKNOWN_PRODUCT).
 var errMSIProductNotInstalled = errors.New("msi package product is not installed")
 
+// msiExitUnknownProduct is ERROR_UNKNOWN_PRODUCT: the package's ProductCode
+// is not the registered one.
+const msiExitUnknownProduct = 1605
+
+// msiReinstallExitError maps a failed `msiexec /f` exit to installMSI's
+// contract: 3010 (reboot required) is success, 1605 is
+// errMSIProductNotInstalled, anything else is a failure wrapping cause.
+func msiReinstallExitError(exitCode int, cause error, output string) error {
+	switch exitCode {
+	case 3010:
+		return nil
+	case msiExitUnknownProduct:
+		return fmt.Errorf("msiexec /f: %w (output: %s)", errMSIProductNotInstalled, strings.TrimSpace(output))
+	}
+	return fmt.Errorf("msiexec /f: %w (output: %s)", cause, strings.TrimSpace(output))
+}
+
 // msiOps are the side effects of a Windows MSI helper install. installMSI takes
 // them as arguments so its decisions are testable on any host.
 type msiOps struct {

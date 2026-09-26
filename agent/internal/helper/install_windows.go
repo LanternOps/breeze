@@ -89,8 +89,12 @@ func findHelperProduct(displayName string) (msiProduct, error) {
 			}
 			// An unreadable DisplayVersion leaves version "", which never
 			// matches a target, so installMSI falls back to a plain install.
-			version, _, _ := child.GetStringValue("DisplayVersion")
+			version, _, verErr := child.GetStringValue("DisplayVersion")
 			child.Close()
+			if verErr != nil {
+				log.Warn("helper MSI DisplayVersion unreadable; a same-version reinstall cannot be detected",
+					"productCode", sk, "key", root+`\`+sk, "error", verErr.Error())
+			}
 			return msiProduct{code: sk, version: version}, nil
 		}
 	}
@@ -147,27 +151,22 @@ func msiReinstallArgs(msiPath string) []string {
 	return []string{"/fvamus", msiPath, "/qn", "/norestart"}
 }
 
-// msiExitUnknownProduct is ERROR_UNKNOWN_PRODUCT: the package's ProductCode
-// is not the registered one.
-const msiExitUnknownProduct = 1605
-
 // runMSIReinstall forces a file reinstall of the registered product from
-// msiPath (#6868). Exit 3010 counts as success; the caller's on-disk version
-// check still decides whether the files were actually replaced.
+// msiPath (#6868). The caller's on-disk version check still decides whether
+// the files were actually replaced.
 func runMSIReinstall(msiPath string) error {
 	cmd := exec.Command("msiexec", msiReinstallArgs(msiPath)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			switch exitErr.ExitCode() {
-			case 3010:
-				log.Info("MSI reinstalled successfully (reboot required)", "msi", msiPath)
-				return nil
-			case msiExitUnknownProduct:
-				return fmt.Errorf("msiexec /f: %w (output: %s)", errMSIProductNotInstalled, strings.TrimSpace(string(out)))
-			}
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			return fmt.Errorf("msiexec /f: %w (output: %s)", err, strings.TrimSpace(string(out)))
 		}
-		return fmt.Errorf("msiexec /f: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		if err := msiReinstallExitError(exitErr.ExitCode(), err, string(out)); err != nil {
+			return err
+		}
+		log.Info("MSI reinstalled successfully (reboot required)", "msi", msiPath)
+		return nil
 	}
 	log.Info("MSI reinstalled successfully", "msi", msiPath)
 	return nil

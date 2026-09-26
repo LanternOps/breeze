@@ -166,3 +166,19 @@ func TestDownloadAndInstallPassesTargetVersionToInstaller(t *testing.T) {
 		t.Fatalf("installer got versions %v, want [0.116.0]", got)
 	}
 }
+
+// runMSIReinstall's exit-code mapping, testable off Windows.
+func TestMSIReinstallExitError(t *testing.T) {
+	cause := errors.New("exit status N")
+	if err := msiReinstallExitError(3010, cause, ""); err != nil {
+		t.Fatalf("3010 (reboot required) must be success, got %v", err)
+	}
+	if err := msiReinstallExitError(1605, cause, "out"); !errors.Is(err, errMSIProductNotInstalled) {
+		t.Fatalf("1605 must map to errMSIProductNotInstalled, got %v", err)
+	}
+	err := msiReinstallExitError(1603, cause, "log text")
+	if err == nil || errors.Is(err, errMSIProductNotInstalled) || !errors.Is(err, cause) ||
+		!strings.Contains(err.Error(), "log text") {
+		t.Fatalf("1603 must be a plain failure wrapping the cause with output, got %v", err)
+	}
+}
