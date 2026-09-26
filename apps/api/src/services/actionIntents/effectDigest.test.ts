@@ -28,6 +28,12 @@ import {
  * still runs against whatever fake `Database` the test hands it.
  */
 const { loadScope } = vi.hoisted(() => ({ loadScope: vi.fn() }));
+// Topology M4-D3: the diagnose_connectivity resolver's scoped load + pure
+// extraction is covered against real Postgres (topologyAiApproval
+// integration suite) and in topology/aiDiagnosticApproval.test.ts; here only
+// the digest plumbing (hash + verified context) is under test.
+const { resolveTopology } = vi.hoisted(() => ({ resolveTopology: vi.fn() }));
+vi.mock('../topology/aiDiagnosticEffect', () => ({ resolveTopologyDiagnosticEffect: resolveTopology }));
 vi.mock('../tenantVariableResolution', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../tenantVariableResolution')>()),
   loadTenantVariableScope: loadScope,
@@ -808,5 +814,28 @@ describe('hasPinnedDigest', () => {
     [{ effectDigest: '' }, false],
   ])('%j → %s', (intent, expected) => {
     expect(hasPinnedDigest(intent as { effectDigest?: string | null })).toBe(expected);
+  });
+});
+
+describe('diagnose_connectivity (topology M4-D3)', () => {
+  const verified = {
+    scope: { orgId: 'org-1', siteId: 'site-1' },
+    proposal: { site_id: 'site-1' },
+    expiresAt: '2026-09-26T12:15:00.000Z',
+  };
+
+  it('hashes the extracted material and hands the release the verified effect with that digest', async () => {
+    resolveTopology.mockResolvedValueOnce({ kind: 'material', material: 'effect-material', verified });
+    const result = await computeEffectDigestForRelease('diagnose_connectivity', { site_id: 'site-1' }, makeFakeDb([]).database);
+    const expected = createHash('sha256').update('effect-material').digest('hex');
+    expect(result.digest).toBe(expected);
+    expect(result.context).toEqual({ verifiedTopologyDiagnostic: { ...verified, effectDigest: expected } });
+  });
+
+  it('an unresolvable effect (moved or missing binding, foreign site) yields no digest and no context', async () => {
+    resolveTopology.mockResolvedValueOnce({ kind: 'target_absent' });
+    expect(await computeEffectDigestForRelease('diagnose_connectivity', { site_id: 'site-1' }, makeFakeDb([]).database)).toEqual({ digest: null });
+    resolveTopology.mockResolvedValueOnce({ kind: 'missing_arg' });
+    expect(await computeEffectDigestOutcome('diagnose_connectivity', {}, makeFakeDb([]).database)).toEqual({ kind: 'unresolved', reason: 'missing_arg' });
   });
 });

@@ -8,7 +8,9 @@ export const topologySettingsSchema = z.object({
   siteId: z.string().uuid(), settingsRevision: z.string(),
   capabilities: z.object({ ui: capability, diagnostics: capability, physical: capability, collection: capability,
     /** M3 (optional for pre-M3 servers): port measurement and recurring monitoring. Absent = unavailable. */
-    interfaceHealth: capability.optional(), recurringMonitoring: capability.optional() }),
+    interfaceHealth: capability.optional(), recurringMonitoring: capability.optional(),
+    /** M4 (optional for pre-M4 servers): flags + provider + org AI policy (M4-D4). Absent = unavailable. */
+    ai: capability.optional() }),
   /** Per-site authority (execute/configure + satisfied MFA). The graph projection does not compute these. */
   permissions: z.object({ canEdit: z.boolean(), canDiagnose: z.boolean(), canConfigureMonitoring: z.boolean() }).optional(),
 });

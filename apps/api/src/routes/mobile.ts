@@ -52,6 +52,7 @@ import { trustDenyBody } from '../services/partnerTrust';
 // POST /mobile/devices/:id/actions. One definition, one guard.
 import { getDeviceWithOrgCheck } from './devices/helpers';
 import { alertSiteScopeByDeviceIds, alertTopologySiteGate } from './alerts/helpers';
+import { topologySessionAccessCondition } from '../services/topology/aiSessionAccess';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -1842,7 +1843,9 @@ mobileRoutes.get(
     const sessionWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(aiSessions.orgId, orgCheck.orgIds),
       gte(aiSessions.lastActivityAt, thirtyDaysAgo),
-      ilike(aiSessions.title, term)
+      ilike(aiSessions.title, term),
+      // Topology M4-D2: a session pinned to an unreadable site never matches.
+      await topologySessionAccessCondition(auth)
     );
 
     // Suppress the unused-import lint when orgCheck.orgIds is null.

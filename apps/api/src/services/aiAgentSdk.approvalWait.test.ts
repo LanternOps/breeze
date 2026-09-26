@@ -88,6 +88,7 @@ vi.mock('./aiAgentSdkTools', () => ({
   TOOL_TIERS: {
     execute_command: 3,
     take_screenshot: 2,
+    diagnose_connectivity: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -723,6 +724,57 @@ describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
     const types = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => (c[0] as { type: string }).type);
     expect(types).toContain('approval_required');
     expect(types).not.toContain('unattended_release');
+  });
+});
+
+// ============================================
+// Topology M4 Task 5 (#6000): the approval card shows the PINNED effect
+// ============================================
+
+describe('diagnose_connectivity approval card (M4-D3)', () => {
+  const pinnedArguments = {
+    site_id: '20000000-0000-4000-8000-000000000001', subject: { kind: 'node', id: '30000000-0000-4000-8000-000000000001' },
+    recipe_id: 'gateway_basic', recipe_version: 1, graph_revision: '7', origin_device_id: '50000000-0000-4000-8000-000000000001',
+    context_key: 'default', family: 'ipv4', proposal_expires_at: '2026-09-26T12:15:00.000Z',
+  };
+  const pinnedLabel = 'Run gateway reachability check from core-sw-1 (context default, ipv4) to gateway 10.0.0.1 — 2 bounded steps, 60s max; approval expires 2026-09-26 12:15 UTC';
+
+  it('carries the server-materialized arguments and approval text, never the model input', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-diag' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-diag', actionName: 'diagnose_connectivity', requesterApprovalRequestId: 'appr-self' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: (table: unknown) => ({
+        where: () => ({ limit: async () => (table === actionIntents ? [{ arguments: pinnedArguments, reason: pinnedLabel }] : []) }),
+      }),
+    })) as never);
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('diagnose_connectivity', { site_id: pinnedArguments.site_id, recipe_id: 'gateway_basic', note: 'MODEL SUPPLIED' });
+
+    const card = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+      .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+    expect(card).toMatchObject({ toolName: 'diagnose_connectivity', input: pinnedArguments, description: pinnedLabel, selfApprovalRequestId: 'appr-self' });
+    expect(JSON.stringify(card)).not.toContain('MODEL SUPPLIED');
+  });
+
+  it('falls back to a fixed description, never the model input, when the pinned effect cannot be read', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-diag-2' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-diag-2', actionName: 'diagnose_connectivity' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    vi.mocked(db.select).mockImplementation((() => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) })) as never);
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('diagnose_connectivity', { site_id: pinnedArguments.site_id, note: 'MODEL SUPPLIED' });
+
+    const card = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+      .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+    expect(card.input).toEqual({});
+    expect(JSON.stringify(card)).not.toContain('MODEL SUPPLIED');
   });
 });
 

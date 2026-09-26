@@ -523,5 +523,75 @@
         "configuration": "Configuração"
       }
     }
+  },
+  "ai": {
+    "heading": "Explicar",
+    "explain": "Explicar",
+    "explainAgain": "Explicar novamente",
+    "cancel": "Parar",
+    "started": "Investigação de rede iniciada",
+    "startFailed": "Não foi possível iniciar a investigação de rede",
+    "intro": "Peça à IA para explicar esta seleção com base nas evidências registradas. Ela só lê; nada é executado sem a sua aprovação.",
+    "phase": {
+      "starting": "Iniciando a investigação…",
+      "gathering_evidence": "Coletando evidências…",
+      "analyzing": "Analisando as evidências…",
+      "validating": "Conferindo as citações…",
+      "awaiting_approval": "Aguardando sua decisão sobre uma verificação proposta…"
+    },
+    "findings": "Constatações",
+    "hypotheses": "Causas possíveis",
+    "hypothesisNote": "Não verificado: uma interpretação das evidências citadas.",
+    "missingData": "Dados ausentes",
+    "nextChecks": "Próximas verificações",
+    "noEvidence": "As evidências não sustentam nenhuma constatação para esta seleção.",
+    "partial": "Resposta parcial: algumas afirmações foram removidas ou marcadas como não verificadas.",
+    "evidenceChanged": "Algumas evidências citadas mudaram ou não estão mais disponíveis, então as afirmações que dependiam delas foram removidas.",
+    "historical": "Resposta anterior para outra seleção ou revisão do mapa. As verificações propostas estão desativadas.",
+    "fallback": "As evidências, a integridade e os diagnósticos desta página continuam funcionando.",
+    "errors": {
+      "disabled": "As explicações por IA estão desativadas para esta organização ou site.",
+      "limit": "O limite de investigações por IA foi atingido. Tente novamente mais tarde.",
+      "scopeChanged": "A seleção ou o site dela mudou. Inicie uma nova explicação.",
+      "accessChanged": "Você não tem mais acesso à topologia deste site.",
+      "invalid": "Não foi possível validar a explicação, então nenhuma afirmação da IA é exibida.",
+      "generic": "A explicação por IA não está disponível no momento."
+    },
+    "citation": {
+      "label": "Evidência {{n}}",
+      "expired": "O detalhe não está mais disponível",
+      "observed": "observado {{time}}",
+      "notObserved": "sem horário de observação",
+      "resource": {
+        "node": "Dispositivo",
+        "relationship": "Conexão",
+        "observation": "Observação",
+        "confirmation": "Confirmação",
+        "change": "Alteração",
+        "link_health": "Integridade do link",
+        "node_health": "Integridade do dispositivo"
+      }
+    },
+    "proposal": {
+      "heading": "Verificação proposta",
+      "recipe": "Verificação",
+      "origin": "De",
+      "expires": "A aprovação expira",
+      "readOnly": "Você não pode executar diagnósticos neste site, então esta proposta não pode ser aprovada aqui.",
+      "historical": "Esta proposta pertence a uma resposta anterior e não pode ser aprovada."
+    },
+    "run": {
+      "heading": "Verificação aprovada",
+      "state": "Situação: {{state}}",
+      "loadFailed": "Não foi possível carregar o status da verificação aprovada."
+    },
+    "states": {
+      "queued": "Na fila",
+      "running": "Em execução",
+      "completed": "Concluída",
+      "failed": "Com falha",
+      "cancelled": "Cancelada",
+      "expired": "Expirada"
+    }
   }
 }

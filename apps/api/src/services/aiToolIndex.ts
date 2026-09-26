@@ -12,8 +12,8 @@ export interface ToolIndexEntry { name: string; domain: AiToolDomain; searchHint
  * sentence that names a tool absent from the rendered subset.
  */
 export const DOMAIN_NOTES: Readonly<Partial<Record<AiToolDomain, string>>> = {
-  patching: 'CVEs need vulnerability tools; get_security_posture scores controls, manage_patches lists KBs. Empty reports: no correlated findings, not no vulnerabilities (coverage incomplete). Create manage_update_rings; link featurePolicyId via manage_policy_feature_link for schedules/auto-approval. manage_update_rings third-party auto-approval needs third-party patch sources. Approve patches before install.',
-  scripts: 'For compacted command output (stdoutTruncation/_chat), page or narrow filters instead of repeating the call. File listings have no paging: narrow the path. get_script_execution covers external runs (such as editor Test Run or execution history) and expired run waits; a timeout alone does not justify changing a script.',
+  patching: 'CVEs need vulnerability tools; get_security_posture scores controls, manage_patches lists KBs. Empty reports: no correlated findings, not no vulnerabilities. Create manage_update_rings; link featurePolicyId via manage_policy_feature_link for schedules/auto-approval. manage_update_rings third-party auto-approval needs third-party patch sources. Approve patches before install.',
+  scripts: 'For compacted command output (stdoutTruncation/_chat), page or narrow filters instead of repeating the call. File listings have no paging: narrow the path. get_script_execution covers external runs (editor Test Run, execution history) and expired run waits; a timeout alone does not justify changing a script.',
 };
 
 const MAX_INLINE_ACTIONS = 8;

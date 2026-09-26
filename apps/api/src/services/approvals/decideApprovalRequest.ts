@@ -51,6 +51,11 @@ import { PERMISSION_GRANTS, requiredAssurance, type RiskTier, type ApprovalProof
 import { scriptProposals } from '../../db/schema/scriptProposals';
 import { loadProposalRow } from '../scriptProposals/queries';
 import { resolveStrictAcknowledgement } from './strictAcknowledgement';
+import {
+  FRESH_APPROVER_FACTOR_MIN_LEVEL,
+  isFreshApproverFactor,
+  requiresFreshApproverFactor,
+} from '../actionIntents/freshApproverFactor';
 
 /**
  * The approvals DECIDE core (P2-2 #4189), lifted verbatim out of
@@ -1159,6 +1164,40 @@ export async function decideApprovalRequest(
         return { httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } };
       }
     }
+  }
+
+  // Topology M4-D3 (#6000): a tool listed in FRESH_APPROVER_FACTOR_TOOLS is
+  // approved only with a hardware-backed factor assertion (>= L3) made for
+  // THIS decision — not a supervised session tap, not a reused step-up grant.
+  // The release path re-reads exactly this recorded factor instead of trusting
+  // any session `mfa` claim (a durable release's rebuilt auth synthesizes one).
+  // Approve-only: a deny is never blocked. Checked BEFORE the CAS so an
+  // under-assured approve never flips the row; the client runs the ceremony on
+  // `step_up_required` and retries.
+  if (
+    linkedIntent
+    && status === 'approved'
+    && requiresFreshApproverFactor(linkedIntent.actionName)
+    && !isFreshApproverFactor({
+      decidedVia: assurance.decidedVia,
+      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+      stepUpGrantReuse: assurance.stepUpGrantReuse === true,
+    })
+  ) {
+    recordActionIntentEvent({
+      orgId: linkedIntent.orgId,
+      intentId: linkedIntent.id,
+      actionName: linkedIntent.actionName,
+      argumentDigest: linkedIntent.argumentDigest,
+      source: linkedIntent.source,
+      outcome: 'approver_unauthorized',
+      actorId: userId,
+      details: { approvalId: existing.id, errorCode: 'fresh_mfa_required' },
+    });
+    return {
+      httpStatus: 403,
+      body: { error: 'step_up_required', requiredLevel: FRESH_APPROVER_FACTOR_MIN_LEVEL, reason: 'fresh_mfa_required' },
+    };
   }
 
   // Task 6: the ENTIRE decision write — approval-row CAS, the ai_tool_executions

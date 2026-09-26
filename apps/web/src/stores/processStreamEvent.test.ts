@@ -603,3 +603,48 @@ describe('processStreamEvent exhaustiveness', () => {
     expect(called).toBe(false);
   });
 });
+
+/**
+ * Topology M4 (#6000): a topology turn streams no text. The store shows the
+ * server-validated explanation (never raw model output) and keeps the
+ * structured answer on the message for the Explain panel.
+ */
+describe('topology investigation events (M4)', () => {
+  const explanation = {
+    schemaVersion: 1 as const, status: 'partial' as const,
+    findings: [
+      { kind: 'finding' as const, claim: 'health' as const, text: 'The uplink reports failed checks.', citationIds: ['r1'] },
+      { kind: 'hypothesis' as const, claim: 'cause' as const, text: 'A loop may be flooding the switch.', citationIds: [] },
+    ],
+    missingData: ['No LLDP from host-aa.'], nextChecks: [{ recipeId: 'gateway_basic' as const, rationale: 'Check the gateway.', citationIds: [] }],
+    citationIds: ['r1'], citations: [], reasons: ['causal_claim_demoted'],
+  };
+
+  function run(events: AiStreamEvent[]) {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    let current: string | null = null;
+    for (const event of events) {
+      current = processStreamEvent(event, (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; }, () => ({ ...state, ...patch }), current);
+    }
+    return { ...state, ...patch };
+  }
+
+  it('renders the validated explanation into the assistant message and keeps the structured answer', () => {
+    const state = run([
+      { type: 'message_start', messageId: 'm1' },
+      { type: 'topology_progress', phase: 'gathering_evidence' },
+      { type: 'topology_explanation', explanation },
+    ]);
+    const message = state.messages.find((m) => m.role === 'assistant')!;
+    expect(message.topologyExplanation).toEqual(explanation);
+    expect(message.content).toContain('The uplink reports failed checks.');
+    expect(message.content).toContain('Hypothesis: A loop may be flooding the switch.');
+    expect(message.content).toContain('Missing data: No LLDP from host-aa.');
+  });
+
+  it('treats progress phases as status only, never as message text', () => {
+    const state = run([{ type: 'message_start', messageId: 'm1' }, { type: 'topology_progress', phase: 'analyzing' }]);
+    expect(state.messages.find((m) => m.role === 'assistant')?.content ?? '').toBe('');
+  });
+});

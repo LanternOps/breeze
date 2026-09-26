@@ -192,6 +192,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_device_details',
   'get_device_hardware_health',
   'get_device_vulnerabilities',
+  'get_diagnostic_run', // M4 Task 1 (#6000) one topology diagnostic run, Tier 1 read
   'get_dns_security',
   'get_effective_configuration',
   'get_fleet_findings',
@@ -201,6 +202,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_interface_history', // M3 Task 6 topology read
   'get_invite_funnel',
   'get_invoice',
+  'get_link_evidence', // M4 Task 1 (#6000) link observations, Tier 1 read
   'get_link_health', // M3 Task 6 topology read
   'get_log_trends',
   'get_network_asset', // A-W06 Tier-1 read
@@ -224,6 +226,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_service_monitoring_status',
   'get_site', // A-W06 Tier-1 read
   'get_timesheet', // A-W06 Tier-1 read
+  'get_topology', // M4 Task 1 (#6000) bounded topology graph, Tier 1 read
   'get_topology_impact', // M3 Task 10 topology read
   'get_topology_monitoring_status', // M3-D12 (#5999) one-site monitoring status, Tier 1 read
   'get_user_experience_metrics',

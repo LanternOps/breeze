@@ -523,5 +523,75 @@
         "configuration": "Configuration"
       }
     }
+  },
+  "ai": {
+    "heading": "Explain this",
+    "explain": "Explain this",
+    "explainAgain": "Explain again",
+    "cancel": "Stop",
+    "started": "Network investigation started",
+    "startFailed": "Could not start the network investigation",
+    "intro": "Ask AI to explain this selection from its recorded evidence. It only reads; nothing runs unless you approve it.",
+    "phase": {
+      "starting": "Starting the investigation\u2026",
+      "gathering_evidence": "Gathering evidence\u2026",
+      "analyzing": "Analyzing the evidence\u2026",
+      "validating": "Checking citations\u2026",
+      "awaiting_approval": "Waiting for your decision on a proposed check\u2026"
+    },
+    "findings": "Findings",
+    "hypotheses": "Possible causes",
+    "hypothesisNote": "Not verified \u2014 an interpretation of the cited evidence.",
+    "missingData": "Missing data",
+    "nextChecks": "Next checks",
+    "noEvidence": "The evidence did not support any finding for this selection.",
+    "partial": "Partial answer: some statements were removed or marked as unverified.",
+    "evidenceChanged": "Some cited evidence changed or is no longer available, so statements that depended on it were removed.",
+    "historical": "Earlier answer for a different selection or map revision. Proposed checks are disabled.",
+    "fallback": "The evidence, health and diagnostics on this page still work.",
+    "errors": {
+      "disabled": "AI explanations are turned off for this organization or site.",
+      "limit": "The AI investigation limit was reached. Try again later.",
+      "scopeChanged": "The selection or its site changed. Start a new explanation.",
+      "accessChanged": "You no longer have access to this site's topology.",
+      "invalid": "The explanation could not be validated, so no AI statement is shown.",
+      "generic": "The AI explanation is unavailable right now."
+    },
+    "citation": {
+      "label": "Evidence {{n}}",
+      "expired": "Detail no longer available",
+      "observed": "observed {{time}}",
+      "notObserved": "no observation time",
+      "resource": {
+        "node": "Device",
+        "relationship": "Connection",
+        "observation": "Observation",
+        "confirmation": "Confirmation",
+        "change": "Change",
+        "link_health": "Link health",
+        "node_health": "Device health"
+      }
+    },
+    "proposal": {
+      "heading": "Proposed check",
+      "recipe": "Check",
+      "origin": "From",
+      "expires": "Approval expires",
+      "readOnly": "You can't run diagnostics at this site, so this proposal can't be approved here.",
+      "historical": "This proposal belongs to an earlier answer and can't be approved."
+    },
+    "run": {
+      "heading": "Approved check",
+      "state": "Status: {{state}}",
+      "loadFailed": "Could not load the status of the approved check."
+    },
+    "states": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
+    }
   }
 }

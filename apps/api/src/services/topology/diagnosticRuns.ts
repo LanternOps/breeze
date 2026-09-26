@@ -18,7 +18,8 @@ import {
   topologyDiagnosticSteps,
 } from '../../db/schema';
 import { hasSatisfiedMfa } from '../../middleware/auth';
-import { requireTopologySiteAccess, type TopologyRequestContext } from './access';
+import { getPermissionAuthorityVersion, getUserPermissions } from '../permissions';
+import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
   type TopologyDiagnosticIntent,
@@ -156,6 +157,43 @@ function stepsForRun(runId: string) {
     .from(topologyDiagnosticSteps)
     .where(eq(topologyDiagnosticSteps.runId, runId))
     .orderBy(asc(topologyDiagnosticSteps.createdAt), asc(topologyDiagnosticSteps.id));
+}
+
+/**
+ * Freeze the requester's authority at a permission generation whose grants
+ * were VERIFIED for that same generation (C2, M4-D3).
+ *
+ * The frozen record carries only a permission VERSION; every later boundary
+ * treats an unchanged version as "the permissions verified at acceptance still
+ * hold". Freezing whatever version is current at freeze time breaks that
+ * premise when a revocation lands between the start's permission check and the
+ * freeze: the record would capture the post-revocation generation while the
+ * grants actually checked belonged to the one before it — and the run would
+ * execute. So: read the version, re-derive the grants fresh and re-check the
+ * execute floor against them, then freeze and require the frozen version to be
+ * the one read first (a seqlock). Any movement in between refuses the start;
+ * a retry re-verifies against the new generation.
+ */
+async function freezeVerifiedRequesterAuthority(ctx: TopologyRequestContext) {
+  const userId = ctx.auth.user.id;
+  const before = await getPermissionAuthorityVersion(userId);
+  if (before === null) throw new TopologyOperationError('topology_authority_unavailable', 503);
+  const permissions = await getUserPermissions(userId, {
+    partnerId: ctx.auth.partnerId ?? undefined,
+    orgId: ctx.auth.orgId ?? undefined,
+    scope: ctx.auth.scope,
+  });
+  if (!permissions) throw new TopologyOperationError('permission_changed', 403);
+  try {
+    const current = await requireTopologySiteAccess(ctx.auth, permissions, ctx.scope.siteId, 'execute');
+    if (current.scope.orgId !== ctx.scope.orgId) throw new TopologyOperationError('permission_changed', 403);
+  } catch (error) {
+    if (error instanceof TopologyError) throw new TopologyOperationError('permission_changed', 403);
+    throw error;
+  }
+  const frozen = await freezeTopologyTraceRequester(ctx);
+  if (frozen.permissionVersion !== before) throw new TopologyOperationError('permission_changed', 403);
+  return frozen;
 }
 
 /**
@@ -319,12 +357,59 @@ async function acceptTopologyDiagnosticRun(
   // boundary (enqueue, delivery, result publication) can re-derive it live.
   // A scheduled occurrence carries it too: its requester is the policy's
   // arming actor, re-derived at every later boundary (generalized M3-D13).
+  // A scheduled occurrence pins the arming actor's version it was verified
+  // at; a live trace request re-verifies its grants at the frozen generation.
   const requesterAuthority = plan.recipeId === 'trace_route' || occurrence
-    ? await freezeTopologyTraceRequester(ctx, options.requesterPermissionVersion !== undefined
-      ? { permissionVersion: async () => options.requesterPermissionVersion! }
-      : {})
+    ? options.requesterPermissionVersion !== undefined
+      ? await freezeTopologyTraceRequester(ctx, { permissionVersion: async () => options.requesterPermissionVersion! })
+      : await freezeVerifiedRequesterAuthority(ctx)
     : null;
 
+  const inserted = await db.transaction(async (tx) => {
+    // The budget is a check-then-insert, so it only holds if nothing else can
+    // insert between the two. Diagnostic starts are rare, so one advisory lock
+    // per ORG — taken inside this transaction and released with it — is enough
+    // to serialize them; without it N concurrent requests carrying distinct
+    // Idempotency-Keys each counted zero active runs and were all accepted.
+    await lockDiagnosticStarts(tx, ctx);
+    return persistAcceptedRun(tx, ctx, plan, { idempotencyKey, bodyHash, requesterAuthority, occurrence });
+  });
+
+  if (!inserted) {
+    // Lost the insert race against a concurrent replay of the same key.
+    const raced = await findRunByIdempotencyKey(ctx, idempotencyKey);
+    if (!raced) throw new TopologyOperationError('topology_dispatch_unavailable', 503);
+    return replayRun(raced, bodyHash);
+  }
+  return topologyDiagnosticRunView(inserted, []);
+}
+
+type DiagnosticStartTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function lockDiagnosticStarts(tx: DiagnosticStartTx, ctx: TopologyRequestContext): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${TOPOLOGY_DIAGNOSTIC_START_LOCK_SALT}::int, hashtext(${ctx.scope.orgId})::int)`,
+  );
+}
+
+/**
+ * Budget check, run row and durable dispatch intent — on the caller's
+ * transaction, strictly after `lockDiagnosticStarts`. Shared by the ordinary
+ * start and the verified (approved AI proposal) start so both write the SAME
+ * M1 run + outbox rows.
+ */
+async function persistAcceptedRun(
+  tx: DiagnosticStartTx,
+  ctx: TopologyRequestContext,
+  plan: TopologyDiagnosticPlan,
+  args: {
+    idempotencyKey: string;
+    bodyHash: string;
+    requesterAuthority: Awaited<ReturnType<typeof freezeTopologyTraceRequester>> | null;
+    occurrence?: TopologyScheduledOccurrence;
+  },
+): Promise<RunRow | null> {
+  const { idempotencyKey, bodyHash, requesterAuthority, occurrence } = args;
   const runId = randomUUID();
   const attemptId = randomUUID();
   const intent: TopologyDiagnosticIntent = {
@@ -335,16 +420,7 @@ async function acceptTopologyDiagnosticRun(
     deviceId: plan.origin.deviceId,
     state: 'pending',
   };
-
-  const inserted = await db.transaction(async (tx) => {
-    // The budget is a check-then-insert, so it only holds if nothing else can
-    // insert between the two. Diagnostic starts are rare, so one advisory lock
-    // per ORG — taken inside this transaction and released with it — is enough
-    // to serialize them; without it N concurrent requests carrying distinct
-    // Idempotency-Keys each counted zero active runs and were all accepted.
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(${TOPOLOGY_DIAGNOSTIC_START_LOCK_SALT}::int, hashtext(${ctx.scope.orgId})::int)`,
-    );
+  {
     // Counted on this same transaction/connection, behind the same lock as the
     // insert below.
     // Scheduled and on-demand runs share the concurrency semaphore; the
@@ -417,10 +493,74 @@ async function acceptTopologyDiagnosticRun(
       deliveredAt: new Date(),
     });
     return row;
+  }
+}
+
+/**
+ * Topology M4 Task 4 (#6000): the start of an APPROVED AI proposal — an
+ * explicitly typed internal entry point; the public diagnostic POST keeps
+ * `createTopologyDiagnosticRun`.
+ *
+ * Differs from the ordinary start in exactly three ways:
+ *   - the request's origin, context and family are REQUIRED (pinned by the
+ *     approval); the compiler can never choose a different origin;
+ *   - the session MFA claim is not authority: the caller's `authorize` proves
+ *     the approval (fresh approver factor, intent/actor binding) instead, since
+ *     a durable release's AuthContext synthesizes `mfa: true`;
+ *   - the plan is resolved INSIDE the start transaction, after the org lock,
+ *     by the caller's `resolvePlan` — which re-derives the pinned effect and
+ *     binds the approval — so the final check and the persisted run share one
+ *     short transaction.
+ * The requester's authority is frozen on the run so every later boundary
+ * (enqueue, both delivery transports, result publication) re-derives it live
+ * (M3-D13 generalized). Everything else — idempotent replay, budgets, the run
+ * row and its durable dispatch intent — is the same M1 path.
+ */
+export type VerifiedTopologyDiagnosticStart = {
+  request: CreateTopologyDiagnosticRequest;
+  authorize: (ctx: TopologyRequestContext) => Promise<void>;
+  resolvePlan: (tx: DiagnosticStartTx) => Promise<TopologyDiagnosticPlan>;
+};
+
+export async function createVerifiedTopologyDiagnosticRun(
+  ctx: TopologyRequestContext,
+  start: VerifiedTopologyDiagnosticStart,
+  idempotencyKey: string,
+): Promise<TopologyDiagnosticRun> {
+  const request = createTopologyDiagnosticSchema.parse(start.request);
+  if (!request.originDeviceId || !request.contextKey || !request.family) {
+    throw new TopologyOperationError('pinned_origin_required', 400, 'An approved diagnostic must pin its origin, context and family');
+  }
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1 || idempotencyKey.length > 255) {
+    throw new TopologyOperationError('idempotency_key_required', 400, 'An Idempotency-Key is required');
+  }
+
+  const current = await requireTopologySiteAccess(ctx.auth, ctx.permissions, ctx.scope.siteId, 'execute');
+  if (current.scope.orgId !== ctx.scope.orgId) throw new TopologyOperationError('topology_site_not_found', 404);
+  if (ctx.auth.principal?.kind === 'ai_agent') throw new TopologyOperationError('human_approval_required', 403);
+  const flags = await loadTopologyFlags(ctx);
+  if (!flags.materialization || !flags.diagnostics) throw new TopologyOperationError('diagnostics_disabled', 409);
+  await start.authorize(ctx);
+
+  const bodyHash = topologyDiagnosticBodyHash(request);
+  const existing = await findRunByIdempotencyKey(ctx, idempotencyKey);
+  if (existing) return replayRun(existing, bodyHash);
+
+  const requesterAuthority = await freezeVerifiedRequesterAuthority(ctx);
+  const inserted = await db.transaction(async (tx) => {
+    await lockDiagnosticStarts(tx, ctx);
+    const plan = await start.resolvePlan(tx);
+    if (
+      plan.scope.orgId !== ctx.scope.orgId || plan.scope.siteId !== ctx.scope.siteId
+      || plan.origin.deviceId !== request.originDeviceId || plan.origin.contextKey !== request.contextKey
+      || plan.family !== request.family || plan.reasons.length > 0
+    ) {
+      throw new TopologyOperationError('content_changed', 409, 'The approved diagnostic no longer matches the site');
+    }
+    return persistAcceptedRun(tx, ctx, plan, { idempotencyKey, bodyHash, requesterAuthority });
   });
 
   if (!inserted) {
-    // Lost the insert race against a concurrent replay of the same key.
     const raced = await findRunByIdempotencyKey(ctx, idempotencyKey);
     if (!raced) throw new TopologyOperationError('topology_dispatch_unavailable', 503);
     return replayRun(raced, bodyHash);

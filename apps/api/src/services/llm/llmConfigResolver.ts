@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partnerLlmConfigs } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
 import type { CatalogPricingSnapshot } from '../aiCostTracker';
@@ -367,6 +367,50 @@ export async function resolveLlmConfigForOrg(orgId: string): Promise<ResolvedLlm
   const partnerId = await readOrganizationPartnerId(orgId);
   if (partnerId === undefined) throw new LlmOrgResolutionError(orgId);
   return resolveLlmConfig(partnerId ?? null);
+}
+
+/**
+ * Readiness view of `resolveLlmConfigForOrg` for a caller ALREADY inside a
+ * system DB context (topology AI readiness, review R1): the same decisions —
+ * no partner config means the platform key; an `error` status, an
+ * undecryptable key or an unusable catalog pin means unavailable — read on
+ * the caller's own connection. It never escapes to a second pooled
+ * connection (the resolver's `runOutsideDbContext` reads would, which under a
+ * held transaction is the #6671 pool-exhaustion shape) and has no side
+ * effects: it never marks a config errored — only a real model call does.
+ * The authoritative resolution still happens before any model call.
+ */
+export async function isLlmProviderUsableForOrgInSystemContext(orgId: string): Promise<boolean> {
+  if (getCurrentDbAccessContext()?.scope !== 'system') {
+    throw new Error('isLlmProviderUsableForOrgInSystemContext requires a held system DB context');
+  }
+  const [organization] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!organization) return false;
+  if (!organization.partnerId) return true;
+  const [row] = await db
+    .select({
+      id: partnerLlmConfigs.id,
+      apiKeyEncrypted: partnerLlmConfigs.apiKeyEncrypted,
+      defaultModel: partnerLlmConfigs.defaultModel,
+      catalogEntryId: partnerLlmConfigs.catalogEntryId,
+      status: partnerLlmConfigs.status,
+    })
+    .from(partnerLlmConfigs)
+    .where(eq(partnerLlmConfigs.partnerId, organization.partnerId))
+    .limit(1);
+  if (!row) return true;
+  if (row.status === 'error') return false;
+  try {
+    decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
+  } catch {
+    return false;
+  }
+  if (!row.catalogEntryId) return true;
+  return (await resolveCatalogEndpoint(row.catalogEntryId, row.defaultModel ?? resolveDefaultModel())).ok;
 }
 
 export async function getLlmBillingSourceForOrg(

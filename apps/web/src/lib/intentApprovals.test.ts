@@ -26,6 +26,7 @@ vi.mock('../components/shared/Toast', () => ({
 }));
 
 import {
+  __resetStepUpGrantCacheForTests,
   CeremonyError,
   decideIntentApproval,
   decideIntentApprovalBatch,
@@ -226,6 +227,82 @@ describe('decideIntentApproval — supervised scope skips the ceremony (#5600)',
     const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/mobile/approvals/ap-1/deny');
     expect(JSON.parse(init.body as string)).toEqual({ reason: 'too risky' });
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+  });
+});
+
+describe('decideIntentApproval — fresh approver factor (topology M4-D3)', () => {
+  beforeEach(() => __resetStepUpGrantCacheForTests());
+
+  /** Seed the module grant cache through the real path: an enforced supervised approve that minted one. */
+  async function seedGrant() {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ stepUpGrantId: 'grant-1' }), { status: 200 }));
+    await decideIntentApproval('ap-0', 'approve', undefined, 'supervised');
+    vi.clearAllMocks();
+  }
+
+  it('supervised approve with freshFactor runs the ceremony FIRST and never spends a cached grant', async () => {
+    await seedGrant();
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValueOnce(new Response(JSON.stringify({ stepUpGrantId: 'grant-2' }), { status: 200 }));
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised', { freshFactor: true });
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledWith('/mobile/approvals', 'ap-1');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/mobile/approvals/ap-1/approve');
+    expect(JSON.parse(init.body as string)).toEqual({ proof: PROOF });
+  });
+
+  it('a fresh-factor decide never caches a grant for the next card', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValueOnce(new Response(JSON.stringify({ stepUpGrantId: 'grant-9' }), { status: 200 }));
+    await decideIntentApproval('ap-1', 'approve', undefined, 'supervised', { freshFactor: true });
+
+    vi.clearAllMocks();
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    fetchWithAuth.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    await decideIntentApproval('ap-2', 'approve', undefined, 'supervised');
+    const [, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('stepUpGrantId');
+  });
+
+  it("maps 403 step_up_required reason 'fresh_mfa_required' to fresh_factor_required, not the register-a-device CTA", async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3, reason: 'fresh_mfa_required' }), { status: 403 }));
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised', { freshFactor: true });
+    expect(outcome).toBe('fresh_factor_required');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("a supervised approve WITHOUT the flag still recovers from 'fresh_mfa_required' with exactly one ceremony", async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3, reason: 'fresh_mfa_required' }), { status: 403 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    expect(await decideIntentApproval('ap-1', 'approve', undefined, 'supervised')).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((fetchWithAuth.mock.calls[1] as [string, RequestInit])[1].body as string)).toEqual({ proof: PROOF });
+  });
+
+  it("without the flag, a refusal still maps to needs_device (callers such as the approvals inbox never see the new outcome)", async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3, reason: 'fresh_mfa_required' }), { status: 403 }));
+    expect(await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes')).toBe('needs_device');
+  });
+
+  it('deny with freshFactor needs no ceremony', async () => {
+    await decideIntentApproval('ap-1', 'deny', undefined, 'supervised', { freshFactor: true });
     expect(getApprovalAssertion).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
+import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 import { extractApiError } from '@/lib/apiError';
+import { i18n } from '@/lib/i18n';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -49,6 +51,24 @@ interface AiState {
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
+  /**
+   * Machine refusal code of the last failed session create / message send
+   * (e.g. `investigation_scope_changed`, `topology_ai_disabled`), so a surface
+   * can choose honest copy without parsing `error`. Null on success.
+   */
+  errorCode: string | null;
+  /**
+   * Topology M4 (#6000): the site the CURRENT session is pinned to when it is
+   * an "Explain this" investigation (server-owned pin, echoed here for the
+   * stream filter and the Explain panel). Null for every other session.
+   */
+  topologySiteId: string | null;
+  /** The investigation's stored selection (IDs only); null when unknown. */
+  topologySelection: TopologyAiSelection | null;
+  /** Fixed progress phase of the running topology turn; null when none. */
+  topologyPhase: AiTopologyProgressPhase | null;
+  /** Accepted run of an approved diagnostic proposal in this session's latest turn. */
+  topologyRunId: string | null;
   pageContext: AiPageContext | null;
   pendingApproval: PendingApproval | null;
   pendingPlan: PendingPlan | null;
@@ -72,7 +92,12 @@ interface AiState {
   open: () => void;
   close: () => void;
   setPageContext: (ctx: AiPageContext | null) => void;
-  createSession: (opts?: { deviceId?: string }) => Promise<void>;
+  /**
+   * `pageContext` overrides the store's current page context for THIS session
+   * (topology "Explain this", M4 #6000). A topology context is sent alone: the
+   * server pins the session to its site and refuses a device or M365 binding.
+   */
+  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext }) => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -124,6 +149,10 @@ function pageContextOrgMismatch(
 const CLEARED_SESSION = {
   sessionId: null,
   sessionOrgId: null,
+  topologySiteId: null,
+  topologySelection: null,
+  topologyPhase: null,
+  topologyRunId: null,
   hydratedSessionId: null,
   messages: [] as AiMessage[],
   isFlagged: false,
@@ -148,6 +177,53 @@ const CLEARED_SESSION = {
  */
 let activeStreamToken = 0;
 
+/**
+ * Identifies the request that currently owns WHICH session the store is bound
+ * to (create / load / switch / close). Each such request takes a new token; a
+ * response arriving after a newer one began is stale and must not rebind the
+ * store — a late create for an abandoned investigation would otherwise
+ * overwrite the session (and live stream) the user has since moved to.
+ */
+let sessionOwnerToken = 0;
+const claimSessionOwnership = (): (() => boolean) => {
+  const token = ++sessionOwnerToken;
+  return () => sessionOwnerToken === token;
+};
+
+/**
+ * Topology M4 (#6000): the only events a topology investigation turn may
+ * render. The server already withholds raw text and tool traffic for such a
+ * turn; this is the client-side defense in depth — a generic `content_delta`,
+ * tool or plan event arriving on a topology turn is dropped, never rendered.
+ */
+const TOPOLOGY_TURN_EVENTS: ReadonlySet<AiStreamEvent['type']> = new Set<AiStreamEvent['type']>([
+  'message_start', 'topology_progress', 'topology_explanation', 'topology_diagnostic_run',
+  'approval_required', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
+]);
+
+/** IDs-only selection of a topology page context, or null for any other context. */
+function topologySelectionOf(ctx: unknown): TopologyAiSelection | null {
+  if (!ctx || typeof ctx !== 'object') return null;
+  const c = ctx as Record<string, unknown>;
+  const subject = c.subject as Record<string, unknown> | undefined;
+  if (c.type !== 'topology' || typeof c.siteId !== 'string' || typeof c.graphRevision !== 'string'
+    || (c.view !== 'overview' && c.view !== 'physical' && c.view !== 'logical')
+    || !subject || (subject.kind !== 'node' && subject.kind !== 'relationship') || typeof subject.id !== 'string') return null;
+  return { siteId: c.siteId, subject: { kind: subject.kind, id: subject.id }, view: c.view, graphRevision: c.graphRevision };
+}
+
+/** Pin + selection fields for a session loaded from `GET /ai/sessions/:id`. */
+function topologyFieldsOf(session: Record<string, unknown> | undefined) {
+  const siteId = session?.type === 'topology' && typeof session.topologySiteId === 'string' ? session.topologySiteId : null;
+  const selection = siteId ? topologySelectionOf(session?.contextSnapshot) : null;
+  return {
+    topologySiteId: siteId,
+    topologySelection: selection && selection.siteId === siteId ? selection : null,
+    topologyPhase: null,
+    topologyRunId: null,
+  };
+}
+
 export const useAiStore = create<AiState>()(
   persist(
     (set, get) => ({
@@ -160,6 +236,11 @@ export const useAiStore = create<AiState>()(
   isStreaming: false,
   isLoading: false,
   error: null,
+  errorCode: null,
+  topologySiteId: null,
+  topologySelection: null,
+  topologyPhase: null,
+  topologyRunId: null,
   pageContext: null,
   pendingApproval: null,
   pendingPlan: null,
@@ -189,7 +270,7 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
-  clearError: () => set({ error: null }),
+  clearError: () => set({ error: null, errorCode: null }),
 
   setPageContext: (ctx) =>
     set((s) =>
@@ -199,9 +280,62 @@ export const useAiStore = create<AiState>()(
     ),
 
   createSession: async (opts) => {
-    set({ isLoading: true, error: null });
+    const ownsSession = claimSessionOwnership();
+    set({ isLoading: true, error: null, errorCode: null });
+    const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
+    const pageContext = opts?.pageContext ?? storeContext;
+    const topology = pageContext?.type === 'topology';
+    if (topology) {
+      // Topology M4 (#6000) "Explain this": the ONLY model-start path of an
+      // investigation, so its outcome is always surfaced (runAction). Sent
+      // alone — the server pins the session to the authorized site and
+      // refuses a device or M365 binding.
+      const selection = topologySelectionOf(pageContext);
+      const errorFallback = i18n.t('topology:ai.startFailed');
+      // Take the shared store over from whatever it was streaming: a superseded
+      // stream must stop writing, and a stale `isStreaming` would make the
+      // investigation's first sendMessage a silent no-op.
+      const streamToken = ++activeStreamToken;
+      /** False once a newer create/load/switch or a newer send took the store over. */
+      const ownsCreate = () => ownsSession() && activeStreamToken === streamToken;
+      set({ isStreaming: false, isInterrupting: false, pendingApproval: null, pendingPlan: null, activePlan: null });
+      try {
+        const data = await runAction<{ id: string; orgId?: string | null }>({
+          request: () => fetchWithAuth('/ai/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ pageContext, approvalMode }),
+          }),
+          errorFallback,
+          successMessage: i18n.t('topology:ai.started'),
+        });
+        if (!ownsCreate()) return;
+        set({
+          sessionId: data.id,
+          sessionOrgId: data.orgId ?? null,
+          hydratedSessionId: data.id,
+          messages: [],
+          isLoading: false,
+          isFlagged: false,
+          flagReason: null,
+          boundM365ConnectionId: null,
+          pendingApproval: null,
+          topologySiteId: selection?.siteId ?? null,
+          topologySelection: selection,
+          topologyPhase: null,
+          topologyRunId: null,
+        });
+      } catch (err) {
+        handleActionError(err, errorFallback);
+        if (!ownsCreate()) return;
+        set({
+          error: err instanceof Error ? err.message : errorFallback,
+          errorCode: err instanceof ActionError ? err.code ?? null : null,
+          isLoading: false,
+        });
+      }
+      return;
+    }
     try {
-      const { pageContext, selectedM365ConnectionId, approvalMode } = get();
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
@@ -216,6 +350,7 @@ export const useAiStore = create<AiState>()(
         throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
+      if (!ownsSession()) return;
       set({
         sessionId: data.id,
         sessionOrgId: data.orgId ?? null,
@@ -224,9 +359,14 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: false,
         flagReason: null,
-        boundM365ConnectionId: data.delegantM365ConnectionId ?? null
+        boundM365ConnectionId: data.delegantM365ConnectionId ?? null,
+        topologySiteId: null,
+        topologySelection: null,
+        topologyPhase: null,
+        topologyRunId: null,
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
         isLoading: false
@@ -249,9 +389,11 @@ export const useAiStore = create<AiState>()(
   },
 
   loadSession: async (sessionId: string) => {
+    const ownsSession = claimSessionOwnership();
     set({ isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
+      if (!ownsSession()) return;
       if (!res.ok) {
         if (res.status === 404) {
           set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
@@ -261,6 +403,7 @@ export const useAiStore = create<AiState>()(
         return;
       }
       const data = await res.json();
+      if (!ownsSession()) return;
       if (data.session?.status !== 'active') {
         set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         return;
@@ -286,8 +429,10 @@ export const useAiStore = create<AiState>()(
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
         boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+        ...topologyFieldsOf(data.session),
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         sessionId: null,
         sessionOrgId: null,
@@ -339,8 +484,13 @@ export const useAiStore = create<AiState>()(
       messages: [...s.messages, userMsg],
       isStreaming: true,
       error: null,
-      pendingApproval: null
+      errorCode: null,
+      pendingApproval: null,
+      topologyPhase: null,
+      topologyRunId: null,
     }));
+    // A topology investigation turn renders only vetted events (see TOPOLOGY_TURN_EVENTS).
+    const topologyTurn = get().topologySiteId !== null;
 
     const streamToken = ++activeStreamToken;
     /** False once this stream has been superseded — by a rebind, or a newer send. */
@@ -356,7 +506,10 @@ export const useAiStore = create<AiState>()(
       if (!res.ok) {
         const data = await res.json().catch(() => null);
 
-        if (res.status === 409) {
+        const code = data && typeof data === 'object' && typeof (data as { code?: unknown }).code === 'string'
+          ? (data as { code: string }).code : null;
+
+        if (res.status === 409 && !code) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Another response is still in progress for this conversation.')
@@ -364,6 +517,7 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
+        set({ errorCode: code });
         throw new Error(extractApiError(data, 'Failed to send message'));
       }
 
@@ -397,7 +551,12 @@ export const useAiStore = create<AiState>()(
             try {
               const event = JSON.parse(jsonStr) as AiStreamEvent;
               if (!ownsStream()) break;
+              if (topologyTurn && !TOPOLOGY_TURN_EVENTS.has(event.type)) continue;
               currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
+              // The tool_result / unattended_release events that normally withdraw
+              // an approval card never reach a topology turn: withdraw it when the
+              // run is announced or the turn ends (decided elsewhere, or timed out).
+              if (topologyTurn && (event.type === 'done' || event.type === 'topology_diagnostic_run')) set({ pendingApproval: null });
             } catch (parseErr) {
               console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
             }
@@ -522,9 +681,11 @@ export const useAiStore = create<AiState>()(
   closeSession: async () => {
     const { sessionId } = get();
     if (!sessionId) return;
+    const ownsSession = claimSessionOwnership();
 
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`, { method: 'DELETE' });
+      if (!ownsSession()) return;
       if (!res.ok) {
         set({ error: 'Failed to close session' });
         return;
@@ -579,11 +740,13 @@ export const useAiStore = create<AiState>()(
   },
 
   switchSession: async (sessionId: string) => {
+    const ownsSession = claimSessionOwnership();
     set({ showHistory: false, isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) throw new Error('Failed to load session');
       const data = await res.json();
+      if (!ownsSession()) return;
 
       const messages = mapMessagesFromApi(data.messages || []);
 
@@ -599,8 +762,10 @@ export const useAiStore = create<AiState>()(
         isFlagged: !!data.session?.flaggedAt,
         flagReason: data.session?.flagReason ?? null,
         boundM365ConnectionId: data.session?.delegantM365ConnectionId ?? null,
+        ...topologyFieldsOf(data.session),
       });
     } catch (err) {
+      if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false

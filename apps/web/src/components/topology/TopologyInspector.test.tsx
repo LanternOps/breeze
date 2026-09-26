@@ -88,3 +88,26 @@ describe('physical relationship detail', () => {
     expect(vi.mocked(fetchWithAuth).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
   });
 });
+
+describe('Explain this in the inspector (M4 Task 5)', () => {
+  const explain = { canApprove: true, onInvestigation: vi.fn(), onRun: vi.fn(), onEvidenceSelect: vi.fn() };
+  beforeEach(() => vi.mocked(fetchWithAuth).mockReset());
+
+  it('offers Explain for a canonical selection when AI is available, and keeps the deterministic Diagnose action', () => {
+    render(<TopologyInspector graph={topologyGraphFixture()} selection={{ kind: 'node', id: NODE }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} explain={explain} />);
+    expect(screen.getByTestId('topology-explain')).toBeEnabled();
+    expect(screen.getByTestId('topology-diagnose')).toBeEnabled();
+    // Rendering the panel never starts a model call.
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('offers no Explain when AI is unavailable (no explain wiring) or for a schematic element', () => {
+    const { unmount } = render(<TopologyInspector graph={topologyGraphFixture()} selection={{ kind: 'node', id: NODE }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.queryByTestId('topology-explain')).toBeNull();
+    unmount();
+    const graph = topologyGraphFixture();
+    graph.presentation.nodes = [{ id: 'schematic-1', meaning: 'missing_default_route', authority: false } as never];
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'schematic-1' }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} explain={explain} />);
+    expect(screen.queryByTestId('topology-explain')).toBeNull();
+  });
+});

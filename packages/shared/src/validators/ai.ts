@@ -5,6 +5,17 @@ import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';
 // Page Context Validators
 // ============================================
 
+export const aiTopologyPageContextSchema = z.object({
+  type: z.literal('topology'),
+  siteId: z.string().guid(),
+  subject: z.object({
+    kind: z.enum(['node', 'relationship']),
+    id: z.string().guid()
+  }).strict(),
+  view: z.enum(['overview', 'physical', 'logical']),
+  graphRevision: z.string().regex(/^(0|[1-9]\d{0,19})$/)
+}).strict();
+
 export const aiPageContextSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('device'),
@@ -34,7 +45,12 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
     type: z.literal('custom'),
     label: z.string(),
     data: z.record(z.string(), z.unknown())
-  })
+  }),
+  // Topology M4 (#6000): the selection an "Explain this" investigation starts
+  // from. Only IDs — never evidence bodies, labels, org ids or credentials. The
+  // server authorizes `siteId` at session creation and PINS the session to it
+  // (ai_sessions.topology_site_id, M4-D2); a later page context never moves it.
+  aiTopologyPageContextSchema
 ]);
 
 // ============================================

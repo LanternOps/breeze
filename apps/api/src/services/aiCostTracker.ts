@@ -17,6 +17,7 @@ import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
 import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
+import { topologySessionCondition, type TopologySessionVisibility } from './topology/aiSessionAccess';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -1498,7 +1499,12 @@ export async function updateBudget(orgId: string, settings: {
 /**
  * Get session history for admin dashboard.
  */
-export async function getSessionHistory(orgId: string, options: { limit?: number; offset?: number; flagged?: boolean }): Promise<Array<{
+export async function getSessionHistory(
+  orgId: string,
+  options: { limit?: number; offset?: number; flagged?: boolean },
+  /** Topology M4-D2: the CALLER's pinned-site visibility, applied before LIMIT/OFFSET. Absent = no pinned session is shown. */
+  topologyVisibility: TopologySessionVisibility = { kind: 'none' },
+): Promise<Array<{
   id: string;
   userId: string | null;
   title: string | null;
@@ -1518,6 +1524,8 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
   if (options.flagged) {
     conditions.push(isNotNull(aiSessions.flaggedAt));
   }
+  const topologyCondition = topologySessionCondition(topologyVisibility);
+  if (topologyCondition) conditions.push(topologyCondition);
 
   return db
     .select({

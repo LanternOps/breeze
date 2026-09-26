@@ -578,6 +578,15 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // ("backup triggers, ... agent upgrades").
   'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup',
   'trigger_agent_upgrade', 'trigger_agent_restart',
+  // Topology M4 Task 4 (#6000), same class as network_discovery: every
+  // accepted recipe is ONE bounded, same-site OBSERVATIONAL check from the
+  // fixed M1/M3 set (gateway/DNS/internet/configured target/routed trace) —
+  // no arbitrary shell, configuration, identity, destination or destructive
+  // operation exists in its input. Supervised removes nothing: it still needs
+  // an explicit approval with a FRESH second factor (freshApproverFactor.ts),
+  // a mandatory pinned effect digest and live re-authorization at release. It
+  // is not policy-decidable and has no unattended grant.
+  'diagnose_connectivity',
 ]);
 
 /**
@@ -1514,6 +1523,15 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_recent_network_changes: { resource: 'topology', action: 'read' },
   // M3-D12: the devices:read floor comes from requireTopologySiteAccess('read').
   get_topology_monitoring_status: { resource: 'topology', action: 'read' },
+  // M4 Task 1 (#6000): same floor, applied by the M4-D1 site-pinned gate.
+  get_topology: { resource: 'topology', action: 'read' },
+  get_link_evidence: { resource: 'topology', action: 'read' },
+  get_diagnostic_run: { resource: 'topology', action: 'read' },
+  // M4 Task 4: devices:execute here (one pair per tool, catalog-backed, the
+  // network_discovery precedent); the full floor — topology:execute +
+  // devices:execute + both reads, org/site ceilings — is
+  // requireTopologySiteAccess('execute'), applied at proposal AND at release.
+  diagnose_connectivity: { resource: 'devices', action: 'execute' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -2719,6 +2737,11 @@ function buildApprovalDescription(
 
     case 'file_operations':
       parts.push(`File ${action}: ${input.path}`);
+      break;
+
+    case 'diagnose_connectivity':
+      parts.push(`Topology ${typeof input.recipe_id === 'string' ? input.recipe_id.replace(/_/g, ' ') : 'connectivity'} diagnostic`);
+      if (typeof input.site_id === 'string') parts.push(`at site ${input.site_id.slice(0, 8)}...`);
       break;
 
     case 'network_discovery':

@@ -14,3 +14,12 @@ it('rejects a malformed port id instead of reading history for it', () => {
   expect(parseTopologyHash(`#topology/view/overview/iface/not-a-uuid`)).toBeUndefined();
   expect(parseTopologyHash(`#topology/view/overview/ops/yes`)).toBeUndefined();
 });
+
+it('round-trips an open Explain investigation and its approved AI diagnostic run (M4)', () => {
+  const SESSION = '71000000-0000-4000-8000-000000000001', RUN = '72000000-0000-4000-8000-000000000001';
+  writeTopologyHash({ siteId: SITE, view: 'overview', selection: { kind: 'edge', id: EDGE }, search: '', investigationId: SESSION, aiRunId: RUN });
+  expect(window.location.hash).toBe(`#topology/site/${SITE}/view/overview/edge/${EDGE}/explain/${SESSION}/airun/${RUN}`);
+  expect(parseTopologyHash(window.location.hash)).toEqual({ siteId: SITE, view: 'overview', selection: { kind: 'edge', id: EDGE }, search: '', investigationId: SESSION, aiRunId: RUN });
+  expect(parseTopologyHash('#topology/view/overview/explain/not-a-uuid')).toBeUndefined();
+  expect(parseTopologyHash('#topology/view/overview/airun/../../x')).toBeUndefined();
+});

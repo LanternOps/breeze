@@ -41,10 +41,12 @@ import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
+import { requiresPinnedEffectDigest } from '../services/actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
+import { withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
@@ -1214,6 +1216,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // the very window this check just closed (the digest proves the target was
   // unchanged AS OF THE READ; a later read proves nothing).
   let verifiedContext: ToolExecutionContext | undefined;
+  // A tool whose pin is MANDATORY (topology diagnose_connectivity, M4-D3) never
+  // inherits the NULL-means-nothing-to-check fallback below: no pinned digest
+  // is an explicit refusal, before anything executes.
+  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName)) {
+    await failIntent(intent, 'digest_required', { details: { actionName: intent.actionName } });
+    return;
+  }
   if (hasPinnedDigest(intent)) {
     // Runs in its own short system-scoped context (same discipline as Step 2
     // above) — this point in the function is between DB contexts (Step 2's
@@ -1425,7 +1434,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
               },
             });
       rawResult = await withToolTimeout(
-        withAuthDbAccessContext(auth, invoke),
+        // Review R1 (#6671 shape): a topology diagnostic release re-checks
+        // topology AI availability inside its start transaction, under the
+        // org lock. Its partner-axis preconditions are resolved HERE, before
+        // the release context opens, and carried in — never read through a
+        // second pooled connection while that lock is held. A no-op for
+        // every other action.
+        withTopologyReleasePreconditions(intent.actionName, intent.orgId, () => withAuthDbAccessContext(auth, invoke)),
         getToolTimeout(intent.actionName),
         intent.actionName,
       );
