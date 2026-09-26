@@ -38,6 +38,7 @@ import {
   SCRIPT_BUILDER_MCP_TOOL_NAMES,
 } from '../services/scriptBuilderTools';
 import { captureException } from '../services/sentry';
+import { persistAutoSessionTitle } from '../services/aiSessionTitle';
 import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -348,9 +349,7 @@ scriptAiRoutes.post(
       if (!dbSession.title) {
         const title = generateSessionTitle(sanitizedContent);
         try {
-          await db.update(aiSessions)
-            .set({ title })
-            .where(eq(aiSessions.id, sessionId));
+          await persistAutoSessionTitle(sessionId, title);
           activeSession.eventBus.publish({ type: 'title_updated', title });
         } catch (err) {
           captureException(err, c);
