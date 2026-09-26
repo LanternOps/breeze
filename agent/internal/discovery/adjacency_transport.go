@@ -30,8 +30,8 @@ import (
 // daily. An interrupted upload salvages nothing: the next collection resends.
 
 const (
-	maxAdjacencyTargets    = 4096
-	adjacencyFullRevalidMS = 24 * time.Hour
+	maxAdjacencyTargets          = 4096
+	adjacencyFullRevalidInterval = 24 * time.Hour
 	// JSON.stringify and encoding/json differ slightly (Go escapes <>&), so keep
 	// a margin under the server's 4 MiB report guard.
 	adjacencyReportBudget = AdjacencyV2MaxBytes - 16*1024
@@ -266,7 +266,7 @@ func (p *HTTPAdjacencyPoster) Post(ctx context.Context, body []byte) (int, []byt
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, b, err
 }
@@ -465,7 +465,7 @@ func (t *AdjacencyTransport) sendOne(ctx context.Context, target TargetPhysical)
 		seq = ms
 	}
 	report.Sequence = strconv.FormatUint(seq, 10)
-	if st.AckDigest != "" && st.AckSnapshotID != "" && st.AckDigest == report.ContentDigest && now.Sub(st.LastFullAt) < adjacencyFullRevalidMS {
+	if st.AckDigest != "" && st.AckSnapshotID != "" && st.AckDigest == report.ContentDigest && now.Sub(st.LastFullAt) < adjacencyFullRevalidInterval {
 		report.ReportKind, report.BaseSnapshotID = "unchanged", st.AckSnapshotID
 		report.Sections, report.FinalManifest = nil, nil
 	}
