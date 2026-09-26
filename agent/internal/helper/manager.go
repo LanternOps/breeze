@@ -955,8 +955,14 @@ func (m *Manager) applyPendingUpdate() {
 	}
 	// The pre-update version lets a rollback that cannot replace the exe tell
 	// "nothing to restore" (msiexec rolled its own change back) from "the good
-	// copy is only in the backup" (#6869). "" when unreadable.
-	preVersion, _ := m.readBinaryVersion()
+	// copy is only in the backup" (#6869). "" when unknown.
+	preVersion, err := m.readBinaryVersion()
+	if err != nil {
+		if !errors.Is(err, errBinaryVersionUnsupported) {
+			log.Warn("failed to read pre-update helper version", "path", m.binaryPath, "error", err.Error())
+		}
+		preVersion = ""
+	}
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.recordInstallFailureLocked(m.pendingHelperVersion)

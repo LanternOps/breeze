@@ -285,3 +285,32 @@ func containsPID(pids []int, pid int) bool {
 	}
 	return false
 }
+
+// The idle gate before an update covers only tracked sessions, so a helper in
+// an untracked session can be mid-chat. The rollback must not kill a live
+// Assist conversation to free the exe: it leaves that holder running and keeps
+// the backup (the logged, safe fallback).
+func TestRollbackDoesNotStopHolderWithActiveChat(t *testing.T) {
+	h := newRollbackHarness(t, "1")
+	installPackageFunc = func(_, binaryPath, _ string) error {
+		if err := os.WriteFile(binaryPath, []byte("0.114.0-partial"), 0755); err != nil {
+			return err
+		}
+		return errors.New("msiexec: exit status 1603")
+	}
+	h.procs.procs = append(h.procs.procs, helperInstance{PID: 4242, SessionKey: "7"})
+	writeSessionStatus(t, h.mgr.baseDir, "7", "pid: 0\nchat_active: true\nlast_activity: "+
+		time.Now().UTC().Format(time.RFC3339)+"\n")
+
+	h.mgr.CheckUpdate("0.114.0")
+	h.mgr.mu.Lock()
+	h.mgr.applyPendingUpdate()
+	h.mgr.mu.Unlock()
+
+	if containsPID(h.procs.stopped, 4242) {
+		t.Fatal("rollback stopped a helper with an active chat in an untracked session")
+	}
+	if !backupExists(h.backup) {
+		t.Fatalf("%s deleted although the restore could not run", h.backup)
+	}
+}

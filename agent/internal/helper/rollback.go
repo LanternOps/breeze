@@ -47,8 +47,13 @@ var rollbackRetryDelays = []time.Duration{
 // Must be called with m.mu held.
 func (m *Manager) rollbackBinaryLocked(backupPath, preVersion string) {
 	if _, err := os.Stat(backupPath); err != nil {
-		log.Warn("no helper backup to roll back to", "backup", backupPath, "error", err.Error())
-		return
+		if errors.Is(err, os.ErrNotExist) {
+			log.Warn("no helper backup to roll back to", "backup", backupPath)
+			return
+		}
+		// Not "missing": something else is wrong with the backup. Try the
+		// restore anyway; the rename reports what it hits.
+		log.Error("cannot stat helper backup before rollback", "backup", backupPath, "error", err.Error())
 	}
 
 	err := renameFunc(backupPath, m.binaryPath)
@@ -93,7 +98,13 @@ func (m *Manager) rollbackBinaryLocked(backupPath, preVersion string) {
 // stopAllHelperInstancesLocked terminates every running process whose image
 // is the helper binary, in any session, and returns the PIDs it stopped. Only
 // the rollback uses it: the helpers it kills would otherwise keep a failed or
-// half-installed exe mapped. Must be called with m.mu held.
+// half-installed exe mapped.
+//
+// An instance whose session status shows an active chat is left running. The
+// pre-update idle gate (allSessionsIdle) sees only tracked sessions, so an
+// untracked session can be mid-conversation; dropping it to free the exe is
+// worse than keeping the backup and retrying on a later heartbeat. Must be
+// called with m.mu held.
 func (m *Manager) stopAllHelperInstancesLocked() []int {
 	all, err := listHelperInstancesFunc(m.binaryPath)
 	if err != nil {
@@ -103,6 +114,11 @@ func (m *Manager) stopAllHelperInstancesLocked() []int {
 	var stopped []int
 	for _, inst := range all {
 		if inst.PID <= 0 {
+			continue
+		}
+		if inst.SessionKey != "" && !IsIdle(newSessionState(inst.SessionKey, m.baseDir).configPath) {
+			log.Warn("not stopping breeze assist holding the helper binary: chat active",
+				"pid", inst.PID, "session", inst.SessionKey)
 			continue
 		}
 		killed, err := m.stopIfOursFunc(inst.PID, m.binaryPath)
