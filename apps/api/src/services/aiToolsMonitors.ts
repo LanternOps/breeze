@@ -349,7 +349,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_monitor_definitions',
       description:
-        'Manage monitors; never edit compiled managed rows directly. Partner scope applies to every partner org and requires full partner org access; default is organization. Actions: create, update, delete, enable, disable, attach, detach.',
+        'Manage definitions, not compiled rows. Default: org scope; partner scope covers all partner orgs and requires full access. Actions: create, update, delete, enable, disable, attach, detach. Kind network_check creates a managed probe; condition.assetId binds a discovered asset.',
       input_schema: {
         type: 'object' as const,
         properties: {

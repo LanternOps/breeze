@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 const { authRef, selectQueue, insertMock, updateMock, deleteMock, accessMock } = vi.hoisted(() => ({
   authRef: { current: {} as any },
@@ -81,32 +82,34 @@ describe('legacy alert rule site boundary', () => {
     };
   });
 
-  it('rejects default all-org creation before template lookup or insertion', async () => {
+  it('retires all-org creation before template lookup or insertion', async () => {
     const res = await app().request('/alert-templates/rules', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ templateId: TEMPLATE_ID, name: 'Rule' }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(selectQueue).toHaveLength(0);
     expect(insertMock).not.toHaveBeenCalled();
   });
 
-  it('allows a validated device target and persists only that target', async () => {
+  it('retires a validated device target without persisting it', async () => {
     accessMock.mockResolvedValue(true);
     selectQueue.push([{ id: TEMPLATE_ID, name: 'Template' }]);
     const res = await app().request('/alert-templates/rules', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ templateId: TEMPLATE_ID, name: 'Rule', targets: { deviceIds: [DEVICE_ID] } }),
     });
-    expect(res.status).toBe(201);
-    expect(insertMock).toHaveBeenCalledWith(expect.objectContaining({ targetType: 'device', targetId: DEVICE_ID }));
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it.each([
     ['PATCH', `/alert-templates/rules/${RULE_ID}`, { name: 'Changed' }],
     ['DELETE', `/alert-templates/rules/${RULE_ID}`, undefined],
     ['POST', `/alert-templates/rules/${RULE_ID}/toggle`, { enabled: false }],
-  ] as const)('denies %s of a hidden persisted target before mutation', async (method, path, body) => {
+  ] as const)('retires %s of a hidden persisted target before mutation', async (method, path, body) => {
     selectQueue.push(
       [{ partnerId: null }],
       [{ id: RULE_ID, orgId: ORG_ID, name: 'Hidden', targetType: 'device', targetId: DEVICE_ID, isActive: true }],
@@ -116,7 +119,8 @@ describe('legacy alert rule site boundary', () => {
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(updateMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
   });

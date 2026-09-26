@@ -60,6 +60,8 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
 
   // Only the entry points that open their OWN isolated transaction. /ledger and
   // /pending are ordinary reads and must keep the request's context.
+  { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/network-checks\/convert\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/partner\/convert-all\/?$/ },
