@@ -8,7 +8,7 @@ import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 import { fixMemory, fixOutcomes } from './fixMemory';
 
 const TABLES_SQL = readFileSync(
-  new URL('../../../migrations/2026-11-01-100000-fix-memory-tables.sql', import.meta.url),
+  new URL('../../../migrations/2026-11-03-100000-fix-memory-tables.sql', import.meta.url),
   'utf8',
 );
 
@@ -38,7 +38,8 @@ describe('fix memory schema contract', () => {
     expect(TABLES_SQL).toMatch(/fix_memory_one_owner_chk\s+CHECK\s*\(\s*\(org_id IS NULL\)\s*<>\s*\(partner_id IS NULL\)\s*\)/);
     expect(TABLES_SQL).toMatch(/CREATE POLICY fix_memory_partner_wide_select[\s\S]*FOR SELECT[\s\S]*org_id IS NULL AND partner_id = public\.breeze_current_partner_id\(\)/);
     expect(TABLES_SQL).toMatch(/fix_outcomes_org_partner_fk[\s\S]*REFERENCES organizations\(id, partner_id\)[\s\S]*DEFERRABLE INITIALLY IMMEDIATE/);
-    expect(TABLES_SQL).toMatch(/'fix_outcomes'/); // excluded from breeze_device_child_orgid_tables()
+    // Anchored to the function's NOT IN exclusion list, not a bare literal match anywhere in the file.
+    expect(TABLES_SQL).toMatch(/breeze_device_child_orgid_tables[\s\S]*NOT IN\s*\(\s*[\s\S]*?'fix_outcomes'[\s\S]*?\)/);
   });
 
   it('Drizzle exposes every migration column', () => {
