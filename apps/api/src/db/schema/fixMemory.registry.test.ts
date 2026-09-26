@@ -3,15 +3,32 @@
 // so the unit job pins them here rather than waiting for Integration Tests.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { FIX_KINDS, FIX_MEMORY_STATUSES, FIX_OUTCOME_STATES, FIX_VOTES } from '@breeze/shared';
+import {
+  ALERT_RESOLUTION_REASONS,
+  FIX_KINDS,
+  FIX_MEMORY_STATUSES,
+  FIX_OUTCOME_STATES,
+  FIX_VOTES,
+  REMEDIATION_SUGGESTION_ORIGINS,
+} from '@breeze/shared';
 import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 import { fixMemory, fixOutcomes } from './fixMemory';
+import { alerts } from './alerts';
+import { remediationSuggestions } from './remediationSuggestions';
 import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { __testOnly as orgMergeRegistryTestOnly } from '../../services/orgMergeRegistry';
 
 const TABLES_SQL = readFileSync(
   new URL('../../../migrations/2026-11-03-100000-fix-memory-tables.sql', import.meta.url),
+  'utf8',
+);
+const ORIGIN_SQL = readFileSync(
+  new URL('../../../migrations/2026-11-03-100100-remediation-suggestion-origin.sql', import.meta.url),
+  'utf8',
+);
+const REASON_SQL = readFileSync(
+  new URL('../../../migrations/2026-11-03-100200-alert-resolution-reason.sql', import.meta.url),
   'utf8',
 );
 
@@ -86,5 +103,27 @@ describe('fix memory registrations', () => {
     expect(outcomes!.columns['signature_facets']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
     expect(outcomes!.columns['signature_key']?.decision).toBe('include');
     expect(memory!.columns['recent_outcomes']?.decision).toBe('include');
+  });
+});
+
+describe('suggestion origin + alert resolution reason', () => {
+  it('origin CHECK mirrors REMEDIATION_SUGGESTION_ORIGINS and defaults existing rows to catalog_match', () => {
+    expect(checkConstraintLiterals(ORIGIN_SQL, 'remediation_suggestions_origin_check', 'origin').sort())
+      .toEqual([...REMEDIATION_SUGGESTION_ORIGINS].sort());
+    expect(ORIGIN_SQL).toMatch(/ADD COLUMN IF NOT EXISTS origin varchar\(20\) NOT NULL DEFAULT 'catalog_match'/);
+    expect(checkConstraintLiterals(ORIGIN_SQL, 'remediation_suggestions_target_type_check', 'target_type'))
+      .toContain('manual_steps');
+  });
+
+  it('resolution_reason CHECK mirrors ALERT_RESOLUTION_REASONS', () => {
+    expect(checkConstraintLiterals(REASON_SQL, 'alerts_resolution_reason_check', 'resolution_reason').sort())
+      .toEqual([...ALERT_RESOLUTION_REASONS].sort());
+  });
+
+  it('Drizzle exposes the new columns and export policy classifies them', () => {
+    expect(remediationSuggestions).toHaveProperty('origin');
+    expect(alerts).toHaveProperty('resolutionReason');
+    expect(CORE_TENANT_EXPORT_POLICY['remediation_suggestions']!.columns['origin']?.decision).toBe('include');
+    expect(CORE_TENANT_EXPORT_POLICY['alerts']!.columns['resolution_reason']?.decision).toBe('include');
   });
 });
