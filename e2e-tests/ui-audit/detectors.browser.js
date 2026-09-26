@@ -4,17 +4,42 @@
 // references (`__name`, …) that do not exist in the page.
 //
 // It is one expression: a function taking { mobile } and returning
-// { findings, signature, links }.
+// { findings, signature, links }. Each finding's element (and a spill's
+// culprit) is tagged with its index so crops.ts can find it again.
 (function detectLayoutIssues(opts) {
   const MAX_PER_KIND = 15;
   const vw = document.documentElement.clientWidth; // excludes the scrollbar
   const vh = window.innerHeight;
   const findings = [];
   const counts = {};
+  const REF = 'data-ui-audit-ref';
+  const CULPRIT = 'data-ui-audit-culprit';
 
-  function push(f) {
+  // the previous theme's scan tagged this same DOM
+  for (const attr of [REF, CULPRIT]) {
+    for (const e of document.querySelectorAll('[' + attr + ']')) e.removeAttribute(attr);
+  }
+
+  // space-separated: one element can carry several findings
+  function tag(el, attr, ref) {
+    const cur = el.getAttribute(attr);
+    el.setAttribute(attr, cur ? cur + ' ' + ref : String(ref));
+  }
+
+  function push(f, el, culprit) {
     counts[f.kind] = (counts[f.kind] || 0) + 1;
-    if (counts[f.kind] <= MAX_PER_KIND) findings.push(f);
+    if (counts[f.kind] > MAX_PER_KIND) return;
+    if (el) {
+      f.ref = findings.length;
+      tag(el, REF, f.ref);
+      if (culprit) tag(culprit, CULPRIT, f.ref);
+      // Does the viewport screenshot show it? The app shell scrolls <main>,
+      // not the document, so anything below the fold is simply not in it.
+      // Taller-than-viewport boxes count as shown when their top is on screen.
+      const r = (culprit || el).getBoundingClientRect();
+      f.inView = r.top >= 0 && r.top < vh && (r.bottom <= vh || r.height > vh / 2);
+    }
+    findings.push(f);
   }
 
   function describe(el) {
@@ -144,7 +169,7 @@
         'Page scrolls horizontally: content is ' + docW + 'px wide in a ' + vw + 'px viewport' +
         (offenders.length ? '; widest offenders: ' + offenders.slice(0, 3).map(describe).join(' | ') : ''),
       selector: offenders.length ? describe(offenders[0]) : undefined,
-    });
+    }, offenders[0]);
   }
 
   // --- content spilling out of its box ------------------------------------
@@ -188,7 +213,7 @@
       severity: 'medium',
       message: 'Content spills ' + s.px + 'px past the right edge of its box (culprit: ' + describe(s.culprit) + ')',
       selector: describe(s.el),
-    });
+    }, s.el, s.culprit);
   }
 
   // --- clipped text --------------------------------------------------------
@@ -212,7 +237,7 @@
         'Text is cut off ' + (lostX ? 'horizontally' : 'vertically') + ' with no ellipsis: "' +
         el.textContent.trim().replace(/\s+/g, ' ').slice(0, 60) + '"',
       selector: describe(el),
-    });
+    }, el);
   }
 
   // --- controls: offscreen, covered, too small ----------------------------
@@ -230,7 +255,7 @@
         severity: 'high',
         message: 'Control "' + label + '" is cut off by the viewport edge (x ' + Math.round(r.left) + '→' + Math.round(r.right) + ', viewport ' + vw + ')',
         selector: describe(el),
-      });
+      }, el);
     }
 
     const cx = r.left + r.width / 2;
@@ -245,7 +270,7 @@
           severity: 'high',
           message: 'Control "' + label + '" is covered by ' + describe(hit),
           selector: describe(el),
-        });
+        }, el);
       }
     }
 
@@ -260,7 +285,7 @@
           severity: 'low',
           message: 'Tap target "' + label + '" is ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px (min 24×24)',
           selector: describe(el),
-        });
+        }, el);
       }
     }
   }
@@ -276,7 +301,7 @@
         severity: 'medium',
         message: 'Image failed to load: ' + (img.currentSrc || img.src).slice(0, 120),
         selector: describe(img),
-      });
+      }, img);
     }
   }
 

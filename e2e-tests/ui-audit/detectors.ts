@@ -12,7 +12,12 @@ const SOURCE = readFileSync(
   .trim()
   .replace(/;$/, '');
 
-export type LayoutFinding = Omit<Finding, 'viewport' | 'theme'>;
+export interface LayoutFinding extends Omit<Finding, 'viewport' | 'theme' | 'crop'> {
+  /** Index tagged onto the element (`data-ui-audit-ref`) for this scan; see crops.ts. */
+  ref?: number;
+  /** Whether the viewport screenshot shows the element. */
+  inView?: boolean;
+}
 
 export interface LayoutScan {
   findings: LayoutFinding[];

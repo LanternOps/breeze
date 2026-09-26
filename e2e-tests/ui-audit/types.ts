@@ -19,6 +19,12 @@ export interface Finding {
   /** Absent for findings that are not tied to one render (console, network). */
   viewport?: string;
   theme?: Theme;
+  /**
+   * Close-up of the finding's element when the render's screenshot does not
+   * show it (below the fold of a scrolling container). Relative to the run
+   * directory.
+   */
+  crop?: string;
 }
 
 export interface Shot {

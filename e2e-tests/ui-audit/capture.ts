@@ -3,6 +3,7 @@ import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { waitForHydration } from '../pages/hydration';
+import { cropOffscreenFindings } from './crops';
 import { detectLayoutIssues } from './detectors';
 import { routeSlug } from './routes';
 import type { AppName, Finding, RouteResult, Severity, Theme, Viewport } from './types';
@@ -48,10 +49,18 @@ export class StackDown extends Error {}
 const THROTTLE_BACKOFF_MS = 30_000;
 
 /**
- * POSTs that only read (search/query bodies) or open the realtime stream.
- * Blocking them breaks the render the audit is trying to capture.
+ * POSTs that only read (search/query bodies), open the realtime stream, or
+ * feed the report builder's live preview (`/reports/generate` computes and
+ * returns rows; its only write is an audit-log entry). Blocking them breaks
+ * the render the audit is trying to capture.
  */
-const READ_ONLY_POST = [/\/events\/ws-ticket$/, /\/search$/, /\/query$/];
+const READ_ONLY_POST = [/\/events\/ws-ticket$/, /\/search$/, /\/query$/, /\/reports\/generate$/];
+
+/** Same-origin writes a page makes on load, except auth and the read-only POSTs above. */
+export function isBlockedWrite(method: string, url: URL, origin: string): boolean {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method) || url.origin !== origin) return false;
+  return !url.pathname.includes('/auth/') && !READ_ONLY_POST.some((re) => re.test(url.pathname));
+}
 
 // --- login ----------------------------------------------------------------
 
@@ -125,9 +134,7 @@ export async function createWorker(
     await page.route('**/*', (route) => {
       const req = route.request();
       const url = new URL(req.url());
-      const write = !['GET', 'HEAD', 'OPTIONS'].includes(req.method());
-      const allowed = url.pathname.includes('/auth/') || READ_ONLY_POST.some((re) => re.test(url.pathname));
-      if (write && url.origin === origin && !allowed) {
+      if (isBlockedWrite(req.method(), url, origin)) {
         note({
           source: 'network',
           kind: 'mutation-on-load',
@@ -351,7 +358,6 @@ async function captureOnce(
     for (const [ti, theme] of opts.themes.entries()) {
       await applyTheme(page, theme);
       const scan = await detectLayoutIssues(page, { mobile: vp.width < 768 });
-      for (const f of scan.findings) result.findings.push({ ...f, viewport: vp.name, theme });
       if (vi === 0 && ti === 0) {
         result.signature = scan.signature;
         opts.onLinks?.(target.app, scan.links);
@@ -369,6 +375,16 @@ async function captureOnce(
           : {}),
       });
       result.shots.push({ viewport: vp.name, theme, file });
+
+      // after the screenshot: cropping scrolls (and restores) the page
+      const crops = await cropOffscreenFindings(page, scan.findings, {
+        outDir: opts.outDir,
+        stem: file.replace(/\.png$/, ''),
+      });
+      for (const { ref, inView: _in, ...f } of scan.findings) {
+        const crop = ref === undefined ? undefined : crops.get(ref);
+        result.findings.push({ ...f, viewport: vp.name, theme, ...(crop ? { crop } : {}) });
+      }
 
       if (axeViewport && (opts.axe === 'all' || vp.name === axeViewport)) {
         result.findings.push(...(await runAxe(page, vp.name, theme)));

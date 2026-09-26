@@ -408,12 +408,15 @@ function writeOutputs(outDir: string, results: RouteResult[], meta: RunMeta, min
 
   const s = summarize(results);
   const queuedShots = queue.reduce((n, q) => n + q.screenshots.length, 0);
+  const queuedCrops =
+    queue.reduce((n, q) => n + q.findings.reduce((m, f) => m + (f.crops?.length ?? 0), 0), 0) +
+    shell.filter((f) => f.crop).length;
   const totalShots = results.reduce((n, r) => n + r.shots.length, 0);
   console.log(
     `\n[ui-audit] ${s.routes.ok} ok · ${s.routes.error} error · ${s.routes.unresolved} unresolved · ${s.routes.skipped} skipped` +
       `\n[ui-audit] findings: ${s.bySeverity.high} high · ${s.bySeverity.medium} medium · ${s.bySeverity.low} low` +
       `\n[ui-audit] repeated: ${shell.length} visual findings on 3+ routes (triaged once each)` +
-      `\n[ui-audit] triage queue: ${queue.length} routes, ${queuedShots}/${totalShots} screenshots (floor: ${minSeverity})` +
+      `\n[ui-audit] triage queue: ${queue.length} routes, ${queuedShots}/${totalShots} screenshots + ${queuedCrops} close-ups (floor: ${minSeverity})` +
       `\n[ui-audit] report: ${path.join(outDir, 'report.md')}`,
   );
 }
