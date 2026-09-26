@@ -213,7 +213,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
     }
   };
 
-  const handleDisableAll = async (assetId: string) => {
+  const handleDisableSnmp = async (assetId: string) => {
     setActionLoading(assetId);
     setActionError(undefined);
     try {
@@ -341,14 +341,14 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
               : <Power className="h-4 w-4 text-green-600" />}
           </button>
         )}
-        {asset.monitoring.active && (
+        {asset.snmp.configured && asset.snmp.isActive && (
           <button
             type="button"
             data-testid={`monitoring-asset-disable-${asset.id}`}
-            onClick={() => void handleDisableAll(asset.id)}
+            onClick={() => void handleDisableSnmp(asset.id)}
             disabled={isLoadingAction}
             className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            title={t('longTail.monitoring.MonitoringAssetsDashboard.disableAllActiveMonitoring')}
+            title={t('longTail.monitoring.MonitoringAssetsDashboard.disableSnmpMonitoring')}
           >
             <XCircle className="h-4 w-4" />
           </button>

@@ -159,3 +159,52 @@ describe('connectWebRTC — capture failure diagnostics (#4162)', () => {
     expect(polls).toBe(1);
   });
 });
+
+// #6818: the consent-wait notice only reaches DesktopViewer if connectWebRTC
+// forwards the hook to createWebRTCSession.
+describe('connectWebRTC — consent wait (#6818)', () => {
+  class FakePeer {
+    iceGatheringState = 'complete';
+    localDescription = { sdp: 'v=0 fake-sdp', type: 'offer' };
+    ontrack: unknown = null;
+    onicegatheringstatechange: unknown = null;
+    onconnectionstatechange: unknown = null;
+    ondatachannel: unknown = null;
+    addTransceiver() {}
+    createDataChannel() {
+      return { bufferedAmountLowThreshold: 0, close() {} };
+    }
+    async createOffer() {
+      return { sdp: 'v=0 fake-sdp', type: 'offer' };
+    }
+    async setLocalDescription() {}
+    async setRemoteDescription() {}
+    close() {}
+  }
+
+  it('forwards onAwaitingUserApproval while the agent waits on the consent dialog', async () => {
+    vi.stubGlobal('RTCPeerConnection', FakePeer);
+    vi.stubGlobal('RTCSessionDescription', class { constructor(public init: unknown) {} });
+    let polls = 0;
+    const json = (body: unknown) => ({
+      ok: true, status: 200, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body),
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/ice-servers')) return json({ iceServers: [] });
+      if (url.includes('/viewer/offer')) return json({ ok: true });
+      polls += 1;
+      return json({
+        status: 'connecting',
+        promptMode: 'consent',
+        answerTimeoutMs: 77_000,
+        webrtcAnswer: polls < 2 ? null : 'v=0 answer-sdp',
+      });
+    }));
+
+    const deps = makeDeps();
+    deps.onAwaitingUserApproval = vi.fn();
+    await expect(connectWebRTC(auth, deps)).resolves.not.toBeNull();
+    expect(deps.onAwaitingUserApproval).toHaveBeenCalledOnce();
+  });
+});

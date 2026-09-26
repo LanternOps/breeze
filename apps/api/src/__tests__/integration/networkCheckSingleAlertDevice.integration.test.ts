@@ -22,15 +22,21 @@ import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configPolicyMonitors,
+  configPolicyMaintenanceSettings,
   configurationPolicies,
   deviceGroupMemberships,
   deviceGroups,
   devices,
+  discoveredAssets,
+  networkMonitorAlertRules,
   monitorDefinitions,
   monitorDeviceState,
   networkMonitorResults,
   networkMonitors,
 } from '../../db/schema';
+import { createAlertWorker, getAlertQueue, processEvaluateAll, shutdownAlertWorkers } from '../../jobs/alertWorker';
+import { createSystemAuthContext } from '../../services/featureConfigResolver';
+import { previewNetworkCheckConversion, convertNetworkChecks } from '../../services/monitors/conversion/networkChecks';
 import { compileMonitorInTx } from '../../services/monitors/monitorCompiler';
 import {
   evaluateNetworkCheckAlertsForOrg,
@@ -67,6 +73,7 @@ afterEach(async () => {
       // monitor_definitions cascades into the managed alert_templates /
       // alert_rules / automations / network_monitors (+ results).
       await db.delete(monitorDefinitions).where(inArray(monitorDefinitions.orgId, orgIds));
+      await db.delete(discoveredAssets).where(inArray(discoveredAssets.orgId, orgIds));
       await db.delete(devices).where(inArray(devices.orgId, orgIds));
     }
     if (partnerIds.length > 0) {
@@ -261,6 +268,44 @@ describe('network_check — one alert per check, on the alert device, online or 
     expect(await activeAlerts(f.orgId)).toHaveLength(0);
   });
 
+  it('suppresses monitor alerts during policy maintenance, resumes outside, and still auto-resolves open alerts', async () => {
+    const f = await fixture();
+    await pushResults(f, 'offline', 2);
+    const maintenanceId = await system(async () => {
+      const [policy] = await db.insert(configurationPolicies).values({
+        orgId: f.orgId, name: 'Maintenance', status: 'active',
+      }).returning();
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id, featureType: 'maintenance',
+      }).returning();
+      const [settings] = await db.insert(configPolicyMaintenanceSettings).values({
+        featureLinkId: link!.id, recurrence: 'once', durationHours: 2,
+        windowStart: new Date(Date.now() - 60_000).toISOString(),
+        timezone: 'UTC', suppressAlerts: true,
+      }).returning();
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id, level: 'organization', targetId: f.orgId, priority: 0,
+      });
+      return settings!.id;
+    });
+
+    expect((await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId))).alertIds).toEqual([]);
+    expect(await activeAlerts(f.orgId)).toHaveLength(0);
+
+    await system(() => db.update(configPolicyMaintenanceSettings).set({
+      windowStart: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+    }).where(eq(configPolicyMaintenanceSettings.id, maintenanceId)));
+    expect((await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId))).alertIds).toHaveLength(1);
+    expect(await activeAlerts(f.orgId)).toHaveLength(1);
+
+    await system(() => db.update(configPolicyMaintenanceSettings).set({
+      windowStart: new Date(Date.now() - 60_000).toISOString(),
+    }).where(eq(configPolicyMaintenanceSettings.id, maintenanceId)));
+    await pushResults(f, 'online', 2);
+    expect(await system(() => checkAllAutoResolve(f.orgId))).toBe(1);
+    expect(await activeAlerts(f.orgId)).toHaveLength(0);
+  });
+
   it('a device-group-scoped attachment alerts on the most recent device IN the group, not the org-wide recency pick', async () => {
     const f = await fixture('device_group');
     await pushResults(f, 'offline', 2);
@@ -296,3 +341,62 @@ describe('network_check — one alert per check, on the alert device, online or 
     expect(open[0]!.deviceId).toBe(f.offlineAlertDevice);
   });
 });
+
+it('public legacy adoption reaches the offline alert device through the real scheduler and worker exactly once', async () => {
+  expect(NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION).toBe(true);
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const site = await createSite({ orgId: org.id });
+  createdPartnerIds.push(partner.id);
+  createdOrgIds.push(org.id);
+  const offlineId = await seedDevice(org.id, site.id, { status: 'offline', lastSeenAt: new Date() });
+  const proberId = await seedDevice(org.id, site.id, { status: 'online', lastSeenAt: new Date() });
+  const source = await system(async () => {
+    const [asset] = await db.insert(discoveredAssets).values({
+      orgId: org.id, siteId: site.id, ipAddress: '192.0.2.1', linkedDeviceId: offlineId,
+    }).returning();
+    const [check] = await db.insert(networkMonitors).values({
+      orgId: org.id, assetId: asset!.id, name: 'Gateway', monitorType: 'icmp_ping',
+      target: '192.0.2.1', config: { count: 4 },
+    }).returning();
+    await db.insert(networkMonitorAlertRules).values({ monitorId: check!.id, condition: 'offline', severity: 'high' });
+    return check!;
+  });
+  const auth = createSystemAuthContext();
+  // These public services own their serializable caller transactions.
+  const preview = await previewNetworkCheckConversion(org.id, auth);
+  expect(preview.blockedBy).toBeUndefined();
+  expect(preview.items).toEqual([expect.objectContaining({ sourceId: source.id, outcome: 'convertible' })]);
+  const converted = await convertNetworkChecks(org.id, preview.previewHash, auth);
+  expect(converted.monitorsCreated).toBe(1);
+  const [adopted] = await system(() => db.select().from(networkMonitors).where(eq(networkMonitors.id, source.id)));
+  expect(adopted!.managedByMonitorId).toBeTruthy();
+  expect(adopted!.retiredAt).toBeNull();
+  await system(() => db.insert(networkMonitorResults).values({
+    orgId: org.id, monitorId: source.id, deviceId: proberId, status: 'offline', responseMs: null,
+  }));
+  const worker = createAlertWorker();
+  const failures: Error[] = [];
+  worker.on('error', error => failures.push(error));
+  worker.on('failed', (_job, error) => failures.push(error));
+  const readAlerts = () => system(() => db.select().from(alerts).where(eq(alerts.orgId, org.id)));
+  try {
+    await worker.waitUntilReady();
+    // Exercise scheduling, not a direct evaluation of the offline device.
+    for (let pass = 0; pass < 2; pass++) {
+      const scheduled = await processEvaluateAll({ type: 'evaluate-all' });
+      expect(scheduled.networkCheckOrgsQueued).toBe(1);
+      await expect.poll(async () => (await readAlerts()).length, { timeout: 15000 }).toBe(1);
+      await expect.poll(async () => {
+        const counts = await getAlertQueue().getJobCounts('wait', 'active', 'delayed');
+        return Object.values(counts).reduce((sum, count) => sum + count, 0);
+      }, { timeout: 15000 }).toBe(0);
+    }
+    expect(await readAlerts()).toEqual([expect.objectContaining({
+      deviceId: offlineId, monitorId: adopted!.managedByMonitorId, status: 'active',
+    })]);
+    expect(failures).toEqual([]);
+  } finally {
+    try { await worker.close(); } finally { await shutdownAlertWorkers(); }
+  }
+}, 60000);

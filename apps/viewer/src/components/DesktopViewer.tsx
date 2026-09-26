@@ -180,6 +180,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
   const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  // #6818: the agent is waiting on the end user's consent dialog. Only read
+  // while status === 'connecting'; cleared whenever status changes.
+  const [awaitingUserApproval, setAwaitingUserApproval] = useState(false);
   const [reconnectSecondsLeft, setReconnectSecondsLeft] = useState(0);
   const [transport, setTransport] = useState<Transport | null>(null);
   const [fps, setFps] = useState(0);
@@ -191,6 +194,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [remoteOs, setRemoteOs] = useState<string | null>(null);
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // #6818: the consent notice belongs to one connect attempt. Any status
+  // change (connected, error, a reconnect attempt) ends that attempt.
+  useEffect(() => {
+    setAwaitingUserApproval(false);
+  }, [status]);
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
   // Transient toolbar notice for a paste that did not fully land. Deliberately
   // NOT errorMessage — that only renders behind the full-screen connection-error
@@ -540,6 +548,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       targetSessionId: targetSessionId ?? defaultTargetSessionId,
       showRemoteCursorRef,
       remoteCursorShapeRef,
+      onAwaitingUserApproval: () => setAwaitingUserApproval(true),
       onConnected: () => {
         // Guard: ignore stale session events after the ref has moved on
         if (webrtcRef.current !== sessionWrapper) return;
@@ -2203,7 +2212,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
             <div className="text-center">
               <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-4" />
-              <p className="text-gray-300">Connecting to remote desktop...</p>
+              <p className="text-gray-300">
+                {awaitingUserApproval
+                  ? 'Waiting for the user on the remote device to allow the connection...'
+                  : 'Connecting to remote desktop...'}
+              </p>
             </div>
           </div>
         )}

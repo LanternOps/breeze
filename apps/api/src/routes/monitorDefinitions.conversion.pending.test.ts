@@ -16,6 +16,11 @@ vi.mock('../services/monitors/conversion', () => ({
   ConversionPrerequisiteMissingError: class extends Error {},
 }));
 vi.mock('../services/monitors/conversion/loadSources', () => ({ readRetirementReport: h.report }));
+vi.mock('../services/monitors/conversion/networkChecks', () => ({
+  previewNetworkCheckConversion: vi.fn(), convertNetworkChecks: vi.fn(),
+  NetworkCheckConversionError: class extends Error {},
+}));
+vi.mock('../services/monitors/conversion/networkHistory', () => ({ NetworkHistoryError: class extends Error {} }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 const ORG = '10000000-0000-4000-8000-000000000001';
@@ -33,7 +38,7 @@ function request(orgId = ORG) {
 beforeEach(() => {
   vi.clearAllMocks();
   h.authenticated = h.permitted = true;
-  h.counts.mockResolvedValue({ policies: 0, rows: 0, pendingPolicies: [] });
+  h.counts.mockResolvedValue({ policies: 0, rows: 0, pendingPolicies: [], networkChecks: 2 });
   h.report.mockResolvedValue({ unconvertible: [], sweep: null });
 });
 it('returns the report and passes the selected org to its authorized loader', async () => {
@@ -43,7 +48,7 @@ it('returns the report and passes the selected org to its authorized loader', as
   h.report.mockResolvedValue(report);
   const res = await request();
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [], ...report } });
+  expect(await res.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [], networkChecks: 2, ...report } });
   expect(h.report).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }), ORG);
 });
 it('returns null for an absent sweep marker', async () => {

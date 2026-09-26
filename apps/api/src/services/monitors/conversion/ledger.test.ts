@@ -132,3 +132,8 @@ it.each([true, false])('retains the live-target gate for an available runtime (%
   m.rows = [[{ ...entry, sourceTable: 'network_monitors' }], live ? [{ id: TARGET }] : [], []];
   expect((await listConversionLedger({ limit: 1 }, auth)).items[0]!.revertable).toBe(!live);
 });
+
+it('disables Undo for a source released by monitor deletion', async () => {
+  m.rows = [[{ ...entry, sourceTable: 'network_monitors', sourceState: { name: 'Gateway', sourceReleased: true } }], []];
+  expect((await listConversionLedger({}, auth)).items[0]).toMatchObject({ sourceName: 'Gateway', revertable: false });
+});

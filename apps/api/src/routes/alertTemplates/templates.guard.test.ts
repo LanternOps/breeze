@@ -1,67 +1,39 @@
-import { describe, it, expect } from 'vitest';
-import { canWriteTemplate } from './templates';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
-// #1425: partner-wide alert templates. canWriteTemplate is the write boundary
-// for PATCH/DELETE — the DB's dual-axis RLS is the real enforcement, but this
-// returns the correct 403/404 UX and stops org-scope users editing shared rows.
+const { authRef } = vi.hoisted(() => ({ authRef: { current: {} as Record<string, unknown> } }));
+vi.mock('../../middleware/auth', () => ({
+  requireScope: () => async (c: any, next: any) => { c.set('auth', authRef.current); await next(); },
+  requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
+}));
+// Retirement must not look up ownership or mutate any row.
+vi.mock('../../db', () => ({ db: {} }));
+vi.mock('../../db/schema', () => ({ alertTemplates: {} }));
+import { templateRoutes } from './templates';
 
-type Row = { orgId: string | null; partnerId: string | null; isBuiltIn: boolean };
-const orgRow: Row = { orgId: 'org-1', partnerId: 'p-1', isBuiltIn: false };
-const partnerWide: Row = { orgId: null, partnerId: 'p-1', isBuiltIn: false };
-const builtIn: Row = { orgId: null, partnerId: null, isBuiltIn: true };
+const TEMPLATE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
 
-const orgUser = { scope: 'organization' as const, partnerId: 'p-1', canAccessOrg: (id: string) => id === 'org-1' };
-// Full partner admin: org_access = 'all' is the capability to administer
-// partner-wide state (epic #2135). `restrictedPartnerUser` is the same partner
-// with a narrowed selection — visible to it, but not administrable.
-const partnerUser = { scope: 'partner' as const, partnerId: 'p-1', partnerOrgAccess: 'all' as const, canAccessOrg: (id: string) => id === 'org-1' };
-const restrictedPartnerUser = { scope: 'partner' as const, partnerId: 'p-1', partnerOrgAccess: 'selected' as const, canAccessOrg: (id: string) => id === 'org-1' };
-const otherPartnerUser = { scope: 'partner' as const, partnerId: 'p-2', partnerOrgAccess: 'all' as const, canAccessOrg: () => false };
-const systemUser = { scope: 'system' as const, partnerId: null, canAccessOrg: () => true };
+describe('retired template ownership guards', () => {
+  beforeEach(() => vi.clearAllMocks());
 
-describe('canWriteTemplate', () => {
-  it('blocks editing built-in templates for every scope', () => {
-    for (const u of [orgUser, partnerUser, systemUser]) {
-      const r = canWriteTemplate(u, builtIn);
-      expect(r).toMatchObject({ ok: false, status: 403 });
+  it.each([
+    ['organization', undefined],
+    ['partner', 'all'],
+    ['partner', 'selected'],
+    ['system', undefined],
+  ])('returns retirement guidance for %s scope with %s org access', async (scope, partnerOrgAccess) => {
+    authRef.current = { scope, partnerOrgAccess, partnerId: 'partner-1', canAccessOrg: () => true };
+    const app = new Hono();
+    app.route('/alert-templates', templateRoutes);
+    for (const method of ['PATCH', 'DELETE']) {
+      const res = await app.request(`/alert-templates/templates/${TEMPLATE_ID}`, {
+        method, headers: { 'content-type': 'application/json' },
+        body: method === 'DELETE' ? undefined : '{}',
+      });
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     }
-  });
-
-  it('lets an org user edit their own org template', () => {
-    expect(canWriteTemplate(orgUser, orgRow)).toEqual({ ok: true });
-  });
-
-  it('makes partner-wide templates read-only (403) for org-scope users', () => {
-    const r = canWriteTemplate(orgUser, partnerWide);
-    expect(r).toMatchObject({ ok: false, status: 403 });
-    if (!r.ok) expect(r.error).toMatch(/read-only/i);
-  });
-
-  it('lets the owning partner edit a partner-wide template', () => {
-    expect(canWriteTemplate(partnerUser, partnerWide)).toEqual({ ok: true });
-  });
-
-  it('denies a RESTRICTED partner user (orgAccess selected) the partner-wide write (§1.1 #5)', () => {
-    // Scope proves WHICH partner, not the capability to administer its shared
-    // state. The row is visible to this user; it must not be writable.
-    expect(canWriteTemplate(restrictedPartnerUser, partnerWide)).toMatchObject({ ok: false, status: 403 });
-  });
-
-  it('still lets a restricted partner user edit an ORG-owned template they can reach', () => {
-    expect(canWriteTemplate(restrictedPartnerUser, orgRow)).toEqual({ ok: true });
-  });
-
-  it('hides another partner’s partner-wide template (404)', () => {
-    expect(canWriteTemplate(otherPartnerUser, partnerWide)).toMatchObject({ ok: false, status: 404 });
-  });
-
-  it('404s an org-specific template the caller cannot access', () => {
-    const r = canWriteTemplate(partnerUser, { orgId: 'org-99', partnerId: 'p-1', isBuiltIn: false });
-    expect(r).toMatchObject({ ok: false, status: 404 });
-  });
-
-  it('lets system scope edit any non-built-in template', () => {
-    expect(canWriteTemplate(systemUser, partnerWide)).toEqual({ ok: true });
-    expect(canWriteTemplate(systemUser, orgRow)).toEqual({ ok: true });
   });
 });

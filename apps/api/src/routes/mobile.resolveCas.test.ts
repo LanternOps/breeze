@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -52,7 +53,6 @@ const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
 const emitAlertStateFeedback = vi.fn((..._args: unknown[]) => Promise.resolve());
 const writeRouteAudit = vi.fn();
 const setCooldown = vi.fn((..._args: unknown[]) => Promise.resolve());
-const markConfigPolicyRuleCooldown = vi.fn((..._args: unknown[]) => Promise.resolve());
 vi.mock('../db', () => ({
   db: dbMock,
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -80,7 +80,6 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../middleware/userRateLimit', () => ({ userRateLimit: () => async (_c: unknown, next: () => Promise<void>) => next() }));
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: (...args: unknown[]) => setCooldown(...args),
-  markConfigPolicyRuleCooldown: (...args: unknown[]) => markConfigPolicyRuleCooldown(...args),
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: (...a: unknown[]) => writeRouteAudit(...a) }));
 vi.mock('../services/eventBus', () => ({ publishEvent: (...a: unknown[]) => publishEvent(...a) }));
@@ -110,7 +109,6 @@ beforeEach(() => {
   publishEvent.mockResolvedValue('evt');
   emitAlertStateFeedback.mockResolvedValue(undefined);
   setCooldown.mockResolvedValue(undefined);
-  markConfigPolicyRuleCooldown.mockResolvedValue(undefined);
   // The pre-read always sees a resolvable alert; the race happens after it.
   selectReturns.push([{ ...alertRow, status: 'active' }]);
 });
@@ -127,7 +125,6 @@ describe('POST /mobile/alerts/:id/resolve — the losing caller', () => {
     });
     expect(publishEvent).not.toHaveBeenCalled();
     expect(setCooldown).not.toHaveBeenCalled();
-    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
     expect(emitAlertStateFeedback).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -185,4 +182,17 @@ it.each([null, 'disk:3'])('manual mobile resolution isolates subject %s', async 
   updateReturns.push([{ ...row, status: 'resolved' }]);
   expect((await resolveRequest()).status).toBe(200);
   expect(setCooldown).toHaveBeenCalledExactlyOnceWith('rule-1', 'device-1', 42, subjectKey ?? undefined);
+});
+
+it('resolves history-only policy alerts without writing cooldown', async () => {
+  const row = { ...alertRow, configPolicyId: 'cp-1', context: { cooldownMinutes: 7 }, status: 'active' };
+  selectReturns[0] = [row];
+  updateReturns.push([{ ...row, status: 'resolved' }]);
+  expect((await resolveRequest()).status).toBe(200);
+  expect(setCooldown).not.toHaveBeenCalled();
+});
+
+it('has no legacy policy cooldown import or branch', () => {
+  expect(readFileSync(new URL('./mobile.ts', import.meta.url), 'utf8'))
+    .not.toMatch(/markConfigPolicyRuleCooldown|else if \(alert\.configPolicyId\)/);
 });

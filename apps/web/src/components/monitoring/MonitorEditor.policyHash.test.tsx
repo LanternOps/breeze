@@ -37,3 +37,17 @@ describe('policy hash preselection', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+
+it.each(['', `policy=${POLICY}&`])('preserves network handoff keys across tabs (%s)', prefix => {
+  const hash = `#${prefix}kind=network_check&assetId=${MONITOR}&checkType=http_check&target=https%3A%2F%2Fexample.com`;
+  const activity = editorHashForTab(hash, 'activity');
+  const params = new URLSearchParams(activity.slice(1));
+  expect(params.get('kind')).toBe('network_check');
+  expect(params.get('assetId')).toBe(MONITOR);
+  expect(params.get('checkType')).toBe('http_check');
+  expect(params.get('target')).toBe('https://example.com');
+  expect(params.get('policy')).toBe(prefix ? POLICY : null);
+  expect(tabFromHash(activity)).toBe('activity');
+  expect(tabFromHash(editorHashForTab(activity, 'settings'))).toBe('settings');
+});

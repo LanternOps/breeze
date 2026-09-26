@@ -316,13 +316,37 @@ export function runInRecoveryOrgContext<T>(orgId: string, fn: () => Promise<T>):
   );
 }
 
+const BMR_UNRESOLVED_IP_LIMIT_MULTIPLIER = 20;
+const BMR_UNRESOLVED_EXCHANGE_MULTIPLIER = 3;
+let lastUnresolvedWarnAt = 0;
+
 export async function enforcePublicRateLimit(
   c: any,
   action: 'authenticate' | 'complete' | 'exchange',
   limit: number
 ) {
   const ip = getTrustedClientIp(c);
-  const rateCheck = await rateLimiter(getRedis(), `bmr:${action}:${rateLimitIpKey(ip)}`, limit, 60);
+  // #5409: an unresolvable client IP (proxy not in TRUSTED_PROXY_CIDRS, no
+  // socket metadata) is the literal 'unknown' — every recovering machine would
+  // then share one strict per-IP bucket. Use a distinct bucket with a widened
+  // limit instead. authenticate/complete are also bounded per token (opaque
+  // high-entropy bearer). exchange has NO effective per-token bound (the
+  // limiter keys on the submitted guess), so it relies on the code's entropy
+  // and TTL and gets only a small multiplier.
+  const unresolved = ip === 'unknown';
+  if (unresolved) {
+    const now = Date.now();
+    if (now - lastUnresolvedWarnAt > 5 * 60_000) {
+      lastUnresolvedWarnAt = now;
+      console.warn(
+        `[bmr] client IP unresolved for public ${action} route — using shared unresolved rate-limit bucket; check TRUSTED_PROXY_CIDRS / TRUST_PROXY_HEADERS`
+      );
+    }
+  }
+  const key = unresolved ? `bmr:${action}:unresolved` : `bmr:${action}:${rateLimitIpKey(ip)}`;
+  const multiplier = action === 'exchange' ? BMR_UNRESOLVED_EXCHANGE_MULTIPLIER : BMR_UNRESOLVED_IP_LIMIT_MULTIPLIER;
+  const effectiveLimit = unresolved ? limit * multiplier : limit;
+  const rateCheck = await rateLimiter(getRedis(), key, effectiveLimit, 60);
   if (rateCheck.allowed) return null;
 
   const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));

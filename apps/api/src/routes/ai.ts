@@ -177,6 +177,12 @@ async function releaseUnusedTurn(orgId: string, dispatch: AiTurnBudgetDispatch):
 }
 
 export const aiRoutes = new Hono();
+
+// Sessions with an approve-plan decision currently being persisted (#7077).
+// The write happens before the in-memory resolver is released, so without
+// this a second request could slip past the pending check and persist a
+// conflicting decision.
+const planDecisionsInFlight = new WeakSet<object>();
 const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 // Org-level AI config (budget) and cross-owner moderation (flag/unflag) stay
 // organizations:write actions.
@@ -1210,29 +1216,57 @@ aiRoutes.post(
       return c.json({ error: 'No pending plan approval' }, 400);
     }
 
-    // Resolve the in-memory promise
-    activeSession.planApprovalResolver(approved);
-    activeSession.planApprovalResolver = null;
+    if (planDecisionsInFlight.has(activeSession)) {
+      return c.json({ error: 'A decision on this plan is already being saved' }, 409);
+    }
 
-    // Update DB plan record
-    if (activeSession.activePlanId || !approved) {
-      try {
-        const planId = activeSession.activePlanId;
-        if (planId) {
-          await db.update(aiActionPlans)
+    // Persist the decision BEFORE releasing the agent (#7077). If the write
+    // fails, the approval stays pending so the user can retry, and the agent
+    // never acts on (or abandons) a plan whose recorded status disagrees.
+    const resolvePlanApproval = activeSession.planApprovalResolver;
+    const planId = activeSession.activePlanId;
+    planDecisionsInFlight.add(activeSession);
+    try {
+      if (planId) {
+        try {
+          // Only a still-pending plan takes a decision: an abort that landed
+          // first must not be overwritten with approved/rejected.
+          const updated = await db.update(aiActionPlans)
             .set({
               status: approved ? 'approved' : 'rejected',
               approvedBy: auth.user.id,
               approvedAt: new Date(),
             })
-            .where(eq(aiActionPlans.id, planId));
+            .where(and(eq(aiActionPlans.id, planId), eq(aiActionPlans.status, 'pending')))
+            .returning({ id: aiActionPlans.id });
+          if (updated.length === 0) {
+            return c.json({ error: 'The plan approval is no longer pending' }, 409);
+          }
+        } catch (err) {
+          console.error('[AI] Failed to update plan status:', err);
+          captureException(err);
+          return c.json(
+            { error: 'The plan decision could not be saved. Please try again.' },
+            500,
+          );
         }
-      } catch (err) {
-        console.error('[AI] Failed to update plan status:', err);
-        captureException(err);
-        return c.json({ success: true, approved, warning: 'Plan processed but database record could not be updated.' });
       }
+    } finally {
+      planDecisionsInFlight.delete(activeSession);
     }
+
+    // The approval can time out, or the plan be aborted, while the write
+    // above is in flight. Don't release the agent onto a plan that is gone.
+    if (
+      activeSession.planApprovalResolver !== resolvePlanApproval ||
+      activeSession.activePlanId !== planId
+    ) {
+      return c.json({ error: 'The plan approval is no longer pending' }, 409);
+    }
+
+    // Resolve the in-memory promise
+    resolvePlanApproval(approved);
+    activeSession.planApprovalResolver = null;
 
     writeRouteAudit(c, {
       orgId: session.orgId,

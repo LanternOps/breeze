@@ -186,6 +186,8 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const row = await readSessionStatus(sessionId);
     expect(row.status).toBe('denied');
     expect(row.endedAt).not.toBeNull();
+    // #6818: the reason is recorded so the viewer's answer poll can show it.
+    expect(row.errorMessage).toBe('The user on the remote device declined the connection.');
     expect(await auditActionsFor(sessionId)).toContain('session_consent_denied');
     expect(await consentAuditFor(sessionId, 'session_consent_denied')).toMatchObject({
       actorType: 'agent',
@@ -213,6 +215,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
 
     const row = await readSessionStatus(sessionId);
     expect(row.status).toBe('denied');
+    expect(row.errorMessage).toBe('The connection could not be approved on the remote device.');
     const actions = await auditActionsFor(sessionId);
     expect(actions).toContain('session_consent_bypassed');
     expect(actions).not.toContain('session_consent_denied');

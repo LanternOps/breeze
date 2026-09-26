@@ -153,6 +153,12 @@ vi.mock('../../db/schema', () => ({
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending']
 }));
 
+// #4223 deployment overlay — real SQL is covered by
+// __tests__/integration/patchInstallFailureStatus.integration.test.ts.
+vi.mock('../../services/patchInstallFailures', () => ({
+  loadPatchInstallFailures: vi.fn(async () => new Map())
+}));
+
 vi.mock('../../services/commandQueue', () => ({
   queueCommand: vi.fn(),
   queueCommandForExecution: vi.fn()
@@ -226,6 +232,7 @@ import { devicePatches } from '../../db/schema';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
 // Real implementations (the mock above spreads the actual module). Fixtures
 // below must therefore carry a fingerprint the real decoder accepts.
 import {
@@ -505,6 +512,48 @@ describe('patch routes', () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].cveIds).toEqual(['CVE-2024-1234']);
     expect(body.data[0].version).toBe('128.0.3');
+    // No failed attempt → explicit null, not an absent field.
+    expect(body.data[0].installFailure).toBeNull();
+  });
+
+  it('overlays the last failed install attempt and its reason on the list row (#4223)', async () => {
+    const failure = {
+      deviceCount: 1,
+      error: 'preflight check "battery" failed: running on battery power (battery: 76%)',
+      failedAt: '2026-08-29T18:00:00.000Z'
+    };
+    vi.mocked(loadPatchInstallFailures).mockResolvedValueOnce(new Map([[PATCH_ID, failure]]));
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([
+        {
+          id: PATCH_ID,
+          title: 'KB5041585',
+          description: null,
+          source: 'microsoft',
+          severity: 'important',
+          category: 'security',
+          version: null,
+          osTypes: ['windows'],
+          inferredOs: null,
+          cveIds: [],
+          releaseDate: null,
+          requiresReboot: true,
+          downloadSizeMb: null,
+          createdAt: new Date('2026-08-01T00:00:00.000Z')
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].installFailure).toEqual(failure);
+    expect(vi.mocked(loadPatchInstallFailures)).toHaveBeenCalledWith([PATCH_ID], { orgId: undefined });
   });
 
   it('defaults to newest-first (desc createdAt) when no sort params are supplied', async () => {

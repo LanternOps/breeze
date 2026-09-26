@@ -19,4 +19,4 @@
  * A parity test (`policyBaselineDefaults.test.ts`) asserts this list matches the
  * Drizzle `configFeatureTypeEnum`.
  */
-export { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
+export { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, type ConfigFeatureType, type RetiredConfigFeatureType } from '@breeze/shared/constants';

@@ -104,7 +104,6 @@ function ensureContainedLocalPath(rootPath: string, relativePath: string): strin
 
 function normalizeStoragePrefix(
   provider: string | null | undefined,
-  providerConfig: Record<string, unknown>,
   snapshotMetadata: Record<string, unknown>,
   snapshotId: string,
 ): string {
@@ -119,11 +118,14 @@ function normalizeStoragePrefix(
     }
   }
 
-  const configuredPrefix = getStringValue(providerConfig, 'prefix');
-  const snapshotPrefix = `snapshots/${snapshotId}`;
-  return configuredPrefix
-    ? `${configuredPrefix.replace(/^\/+|\/+$/g, '')}/${snapshotPrefix}`
-    : snapshotPrefix;
+  // #6398: deliberately NOT `providerConfig.prefix`. The agent writes every
+  // snapshot object at `snapshots/<id>/...` verbatim (its providers take no
+  // prefix — see the KNOWN GAP note below), so applying the destination prefix
+  // here pointed immutability and deletion at a region that holds nothing:
+  // object lock threw "No snapshot objects found" and deletion silently
+  // stranded the real objects. Only a per-snapshot recorded `storagePrefix`
+  // (above) may relocate a snapshot.
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`;
 }
 
 function normalizeObjectPrefix(storagePrefix: string): string {
@@ -153,6 +155,14 @@ function keyMatchesSnapshotPrefix(key: string, normalizedPrefix: string): boolea
 // storage identity EXCLUDING prefix (see backupRetention.ts) — two configs
 // that only differ by a cosmetically-configured prefix are, in reality, the
 // exact same physical object namespace as far as the agent is concerned.
+//
+// #6398: every OTHER snapshot-key reader now agrees — normalizeStoragePrefix
+// (immutability, deletion) and recoveryDownloadService's
+// deriveRemoteStorageKey (token-mode recovery) no longer apply the prefix
+// either. Making the prefix real later means recording the key layout per
+// snapshot (metadata.storagePrefix already carries one) so pre-change
+// snapshots stay reachable and GC never sweeps across layouts; do not
+// re-introduce a config-level prefix on any one reader.
 
 export function backupSnapshotRootPrefix(): string {
   return BACKUP_SNAPSHOT_ROOT_DIR;
@@ -654,7 +664,7 @@ export async function deleteBackupSnapshotArtifacts(input: SnapshotStorageInput)
 
   const providerConfig = asRecord(input.providerConfig);
   const snapshotMetadata = asRecord(input.metadata);
-  const storagePrefix = normalizeStoragePrefix(provider, providerConfig, snapshotMetadata, input.snapshotId);
+  const storagePrefix = normalizeStoragePrefix(provider, snapshotMetadata, input.snapshotId);
 
   if (provider === 's3') {
     await deleteS3Prefix(providerConfig, storagePrefix);
@@ -670,7 +680,7 @@ export async function applyBackupSnapshotImmutability(
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
   const snapshotMetadata = asRecord(input.metadata);
-  const storagePrefix = normalizeStoragePrefix(provider, providerConfig, snapshotMetadata, input.snapshotId);
+  const storagePrefix = normalizeStoragePrefix(provider, snapshotMetadata, input.snapshotId);
 
   if (provider === 's3') {
     return applyS3PrefixRetention(providerConfig, storagePrefix, input.retainUntil);

@@ -299,6 +299,12 @@
     "pagination": {
       "rowsPerPage": "Righe per pagina",
       "pageStatus": "Pagina {{current}} di {{total}}"
+    },
+    "installFailure": {
+      "badgeDevices_one": "Installazione non riuscita su {{count}} dispositivo",
+      "badgeDevices_other": "Installazione non riuscita su {{count}} dispositivi",
+      "noReason": "Nessun motivo segnalato dall'agente",
+      "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
     }
   },
   "patchesPage": {
