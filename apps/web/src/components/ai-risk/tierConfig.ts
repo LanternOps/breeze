@@ -274,6 +274,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
+      { name: 'diagnose_connectivity', description: 'One approved topology connectivity check (fresh MFA)', category: 'Network & DNS' },
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
       // Backup & Recovery
@@ -358,6 +359,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'registry_operations', tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   // Network & DNS
   { toolName: 'network_discovery', tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
+  { toolName: 'diagnose_connectivity', tier: 3, permission: 'devices.execute', category: 'Network & DNS' },
   // Logs & Audit
   { toolName: 'search_logs', tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
   { toolName: 'get_log_trends', tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
@@ -517,6 +519,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   analyze_screen: 'devices.execute',
   // Network discovery
   network_discovery: 'devices.execute',
+  diagnose_connectivity: 'devices.execute',
   // Brain device context
   get_device_context: 'devices.read',
   set_device_context: 'devices.write',

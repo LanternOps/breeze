@@ -119,7 +119,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'tickets/forms.ts',
   'tickets/ticketResponseTemplates.ts',
   'timeEntries/suggestions.ts',
-  'topology/diagnostics.ts',
   'topology/manual.ts',
   'topology/policies.ts',
   'topology/settings.ts',

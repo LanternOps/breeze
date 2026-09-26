@@ -36,15 +36,21 @@ import { TopologyAiOutputGate, type TopologyAiGateResult } from './aiOutputGate'
 import { resolveTopologySessionVisibility } from './aiSessionAccess';
 import { authorizeTopologySessionSite, TOPOLOGY_AI_TOOL_NAMES } from './aiToolGate';
 
-export const TOPOLOGY_AI_PROMPT_VERSION = 'topology-investigation:v1';
+export const TOPOLOGY_AI_PROMPT_VERSION = 'topology-investigation:v2';
 export const TOPOLOGY_AI_INPUT_TOKEN_BUDGET = TOPOLOGY_AI_QUOTAS.inputTokens;
 /** Conservative bound when no tokenizer is available: at most 3 UTF-8 bytes per token, plus protocol overhead. */
 const BYTES_PER_TOKEN = 3;
 const PROTOCOL_OVERHEAD_TOKENS = 600;
 const QUESTION_MAX_CHARS = 2_000;
 
-/** The tools a topology investigation may call (the M4-D1 gate still authorizes each call). */
-export const TOPOLOGY_INVESTIGATION_TOOL_NAMES: readonly string[] = [...TOPOLOGY_AI_TOOL_NAMES];
+/**
+ * The tools a topology investigation may call: the topology reads (each still
+ * authorized by the M4-D1 gate) plus the ONE approval-gated action (M4 Task 4),
+ * which counts against the investigation's single-proposal budget instead of
+ * its read budget and only ever creates an approval request.
+ */
+export const TOPOLOGY_INVESTIGATION_PROPOSAL_TOOL = 'diagnose_connectivity';
+export const TOPOLOGY_INVESTIGATION_TOOL_NAMES: readonly string[] = [...TOPOLOGY_AI_TOOL_NAMES, TOPOLOGY_INVESTIGATION_PROPOSAL_TOOL];
 export const TOPOLOGY_INVESTIGATION_MCP_TOOL_NAMES = TOPOLOGY_INVESTIGATION_TOOL_NAMES.map((name) => `mcp__breeze__${name}`);
 
 export const TOPOLOGY_INVESTIGATION_SYSTEM_PROMPT = [
@@ -55,6 +61,7 @@ export const TOPOLOGY_INVESTIGATION_SYSTEM_PROMPT = [
   '- Every factual statement cites evidence IDs exactly as they appear in the evidence (node, link, observation, "health:<id>" or change IDs).',
   '- Causes and physical faults are hypotheses. A timeout never proves a broken cable.',
   '- You cannot change configuration, health, topology, schedules or alerts, and you cannot run commands.',
+  '- You may PROPOSE at most one diagnose_connectivity check. It only asks a human to approve it; never claim it ran.',
   '- Only these fixed recipes may be suggested as next checks: gateway_basic, dns_basic, internet_basic, target_connectivity, trace_route.',
   'Reply with ONLY one JSON object and nothing else:',
   '{"findings":[{"kind":"finding|hypothesis","claim":"topology|health|measurement|change|reachability|physical_fault|cause","text":"...","citationIds":["..."]}],',
@@ -177,7 +184,7 @@ function createRuntime(
     async beforeToolCall(toolName) {
       if (!allowed.has(toolName)) return { allowed: false, error: 'Only topology read tools are available in a topology investigation' };
       try {
-        await consumeTopologyAiBudget(investigationId, { readCalls: 1 });
+        await consumeTopologyAiBudget(investigationId, toolName === TOPOLOGY_INVESTIGATION_PROPOSAL_TOOL ? { proposals: 1 } : { readCalls: 1 });
         await scopedDb(async () => {
           const current = await authorizeTopologySessionSite(ctx.auth, ctx.scope.siteId);
           await assertTopologyAiCurrentScope(current, snapshot.scopeStamp);

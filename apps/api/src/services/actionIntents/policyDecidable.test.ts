@@ -186,3 +186,12 @@ describe('rejectionReasonFor — structural headlessCompatible enforcement (revi
     expect(rejectionReasonFor(fakeEntry)).toBeNull();
   });
 });
+
+describe('diagnose_connectivity is never policy-decidable (topology M4-D1)', () => {
+  it('stays out of the frozen registry and is rejected as an authorization key', () => {
+    expect(isPolicyDecidableKey('diagnose_connectivity')).toBe(false);
+    expect(validateAuthorizationKeys(['diagnose_connectivity'])).toEqual({
+      ok: [], rejected: [{ key: 'diagnose_connectivity', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+    });
+  });
+});

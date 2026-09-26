@@ -317,6 +317,9 @@ export const TOOL_TIERS = {
   get_topology: 1,
   get_link_evidence: 1,
   get_diagnostic_run: 1,
+  // M4 Task 4 (#6000): the one topology action — approval-gated (supervised,
+  // fresh second factor, pinned effect digest); runs only as a release.
+  diagnose_connectivity: 3,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -2788,6 +2791,23 @@ export function buildBreezeSdkTools(
         run_id: uuid,
       },
       makeHandler('get_diagnostic_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M4 Task 4 (#6000) — same strict shape as aiToolSchemasTopology.ts.
+    tool(
+      'diagnose_connectivity',
+      registryDescription('diagnose_connectivity'),
+      {
+        site_id: uuid,
+        subject: z.object({ kind: z.enum(['node', 'relationship', 'destination']), id: uuid }).strict(),
+        recipe_id: z.enum(['gateway_basic', 'dns_basic', 'internet_basic', 'target_connectivity', 'trace_route']),
+        recipe_version: z.literal(1),
+        graph_revision: z.string().regex(/^(0|[1-9]\d*)$/),
+        origin_device_id: uuid.optional(),
+        context_key: z.string().min(1).max(255).optional(),
+        family: z.enum(['ipv4', 'ipv6']).optional(),
+        proposal_expires_at: z.string().datetime().optional(),
+      },
+      makeHandler('diagnose_connectivity', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

@@ -61,6 +61,7 @@ import {
   type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
+import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -425,6 +426,15 @@ function nonEmptyString(value: unknown): string | null {
  * fallback below.
  */
 const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) => string | null> = {
+  // Topology M4 Task 4: the materialized proposal names its pinned origin,
+  // context, family and expiry; nothing on the device changes.
+  diagnose_connectivity: (input) => {
+    const recipe = nonEmptyString(input.recipe_id);
+    const origin = nonEmptyString(input.origin_device_id);
+    const expires = nonEmptyString(input.proposal_expires_at);
+    if (!recipe || !origin || !expires) return null;
+    return `Runs one bounded ${recipe.replace(/_/g, ' ')} check from device ${origin.slice(0, 8)}... (context ${nonEmptyString(input.context_key) ?? 'default'}, ${nonEmptyString(input.family) ?? 'ipv4'}); observational only, nothing is changed. Not startable after ${expires}.`;
+  },
   manage_services: (input) => {
     const action = nonEmptyString(input.action);
     const serviceName = nonEmptyString(input.serviceName);
@@ -1297,6 +1307,36 @@ export async function createActionIntent(
     throw new ActionIntentError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'site_ceiling');
   }
 
+  // Topology M4 Task 4 (#6000), amendments M4-D1/M4-D3: a diagnose_connectivity
+  // proposal is admitted only from a human's site-pinned topology session, and
+  // is MATERIALIZED here — the origin the planner would use (auto-selected or
+  // confirmed), its context/family and an immutable proposal expiry become the
+  // intent's (immutable) arguments, and the origin is written into the approval
+  // text — so what the approver reads is exactly what the effect digest below
+  // pins. Every intent path funnels through this function, so agent runs, API
+  // keys and scripts are refused here too. Refusals leave no row behind.
+  if (input.toolName === DIAGNOSE_CONNECTIVITY_TOOL_NAME && !externalTool) {
+    // Loaded on demand: the topology graph is irrelevant to every other intent.
+    const { prepareTopologyDiagnosticProposal, TopologyDiagnosticProposalError } = await import('../topology/aiDiagnosticApproval');
+    let prepared: Awaited<ReturnType<typeof prepareTopologyDiagnosticProposal>>;
+    try {
+      prepared = await prepareTopologyDiagnosticProposal(auth, input.input);
+    } catch (err) {
+      if (err instanceof TopologyDiagnosticProposalError) throw new ActionIntentError(err.message, err.code);
+      throw err;
+    }
+    if (input.orgId && input.orgId !== prepared.orgId) {
+      throw new ActionIntentError('The proposal belongs to a different organization', 'topology_site_mismatch');
+    }
+    input = {
+      ...input,
+      input: prepared.arguments as unknown as Record<string, unknown>,
+      orgId: prepared.orgId,
+      reason: prepared.label,
+      actionLabel: prepared.label,
+    };
+  }
+
   const { check: guardrail, context: guardrailContext } = externalTool
     ? {
         check: {
@@ -1862,6 +1902,15 @@ export async function createActionIntent(
       // check", not a failure. The `unresolved` cases are audited after
       // commit — they are intents that SHOULD have been pinned and weren't.
       const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      // A tool whose pin is MANDATORY (effectDigest.ts's
+      // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
+      // proposal instead of inheriting the legacy "nothing to check" fallback.
+      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName)) {
+        throw new EffectDigestUnresolvableError(
+          input.toolName,
+          effectDigestOutcome.kind === 'unresolved' ? effectDigestOutcome.reason : 'no resolver',
+        );
+      }
       const effectDigest = effectDigestOutcome.kind === 'pinned' ? effectDigestOutcome.digest : null;
 
       // Wave 5 Part A (#3827): resolved BEFORE the insert so it can be

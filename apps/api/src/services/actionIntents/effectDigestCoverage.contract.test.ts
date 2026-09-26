@@ -35,7 +35,8 @@ import {
   TIER3_FOUR_EYES_ACTIONS, TIER3_FOUR_EYES_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
 } from '../aiGuardrails';
-import { effectDigestResolverKey } from './effectDigest';
+import { effectDigestResolverKey, requiresPinnedEffectDigest } from './effectDigest';
+import { TIER3_SUPERVISED_TOOLS } from '../aiGuardrails';
 
 /** Expands one shared reason across a family of surfaces that are unpinnable
  * for identical structural reasons (the 20 Google Workspace tools, the
@@ -197,5 +198,15 @@ describe('effect-digest coverage: every four_eyes surface is pinned or explicitl
     for (const action of ['issue', 'void', 'record_payment', 'void_payment']) {
       expect(resolverFor(`manage_invoices:${action}`)).toBe(`manage_invoices:${action}`);
     }
+  });
+
+  // Topology M4-D3 (#6000): diagnose_connectivity is SUPERVISED, so the
+  // four_eyes enumeration above never visits it. Its pin is not optional — the
+  // release fails closed without one — so membership is asserted explicitly.
+  it('pins diagnose_connectivity (supervised) and requires the pin', () => {
+    expect(TIER3_SUPERVISED_TOOLS.has('diagnose_connectivity')).toBe(true);
+    expect(effectDigestResolverKey('diagnose_connectivity')).toBe('diagnose_connectivity');
+    expect(requiresPinnedEffectDigest('diagnose_connectivity')).toBe(true);
+    expect(requiresPinnedEffectDigest('run_script')).toBe(false);
   });
 });

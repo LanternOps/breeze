@@ -1530,6 +1530,22 @@ describe('releaseApprovedIntent', () => {
       expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
     });
 
+    // Topology M4-D3 (#6000): a tool whose pin is MANDATORY never inherits the
+    // "NULL digest means nothing to check" fallback.
+    it('digest_required: diagnose_connectivity with no pinned digest fails before any recompute or execution', async () => {
+      const intent = baseIntent({ actionName: 'diagnose_connectivity', effectDigest: null });
+      primeThroughRevalidation(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigestForRelease).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'digest_required' }),
+      );
+    });
+
     it('proceeds to execute when the recomputed digest still matches the stored one', async () => {
       const digest = 'c'.repeat(64);
       const intent = baseIntent({ effectDigest: digest });

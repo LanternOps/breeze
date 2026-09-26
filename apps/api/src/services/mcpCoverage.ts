@@ -565,8 +565,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/suggestions.ts': { gap: '#6776' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
-  // Collector selection and diagnostic run lifecycle have no registered AI tool.
-  'topology/diagnostics.ts': { gap: '#6778' },
+  // M4-D5 (#6000): run reads and the ONE approval-gated start are the M4 tools.
+  // NOT covered, deliberately (no implicit parity): collector selection and
+  // cancel have no tool, and the tool path is not the public POST — it starts
+  // only an approved, digest-pinned proposal from a site-pinned session.
+  'topology/diagnostics.ts': { tools: ['get_diagnostic_run', 'diagnose_connectivity'] },
   'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
   // M4-D5 (#6000): the graph/evidence/link-health reads are the M4 tools; layout,
   // exclusion and manual writes live in their own route modules.

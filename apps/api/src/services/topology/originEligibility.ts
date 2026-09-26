@@ -1,12 +1,12 @@
 import {and,eq,isNull,inArray} from 'drizzle-orm';
-import {networkContextFullSchema,topologyContextSectionSchema,createTopologyDiagnosticSchema,type CreateTopologyDiagnosticRequest,type TopologyOriginEligibility} from '@breeze/shared';
+import {networkContextFullSchema,topologyContextSectionSchema,createTopologyDiagnosticSchema,type CreateTopologyDiagnosticRequest,type TopologyOriginEligibility,type TopologyScope} from '@breeze/shared';
 import {db} from '../../db';
 import {devices,topologyNodes,topologyRelationships,topologyNodeBindings,topologyInterfaces,topologyCollectionSources,topologyRelationshipSupport,topologyProbeTargets,topologySiteState} from '../../db/schema';
 import {deviceExecuteAllowedForOrg} from '../partnerTrust.commands';
 import {hasPermission,type UserPermissions} from '../permissions';
 import {requireTopologySiteAccess,type TopologyRequestContext} from './access';
 import {scopedWrite} from './writes';
-import {loadTopologyConfiguration} from './siteConfiguration';
+import {loadTopologyConfiguration,readTopologyConfiguration} from './siteConfiguration';
 import {topologyConfigurationRevision} from './collectionAuthority';
 import {TopologyOperationError} from './operationErrors';
 import {TOPOLOGY_TRACE_CAPABILITY} from './diagnosticTraceAuthority';
@@ -30,7 +30,12 @@ export type CollectorEligibilityInput={
  now:number;
  settingsRevision:string;
  capabilities:Set<string>;
- permissions:UserPermissions;
+ /**
+  * The requester's permissions, or null for the AUTH-FREE effect loader
+  * (M4-D3): that caller authorizes the requester live and separately, so its
+  * pinned material must not depend on who happens to load it.
+  */
+ permissions:UserPermissions|null;
  device:{status:string|null;lastSeenAt:Date|null;agentTokenHash:string|null;agentTokenSuspendedAt:Date|null};
  source:{revokedAt:Date|null;freshUntil:Date|null;producerEpoch:string};
  root:{revokedAt:Date|null;lastReceivedAt:Date|null;producerEpoch:string;configurationRevision:string|null}|undefined;
@@ -46,17 +51,33 @@ export function collectorEligibilityReasons({now,settingsRevision,capabilities,p
  if(recipeId==='trace_route'&&!capabilities.has(TOPOLOGY_TRACE_CAPABILITY))reasons.push('trace_unsupported');
  if(source.revokedAt||root?.revokedAt||!source.freshUntil||source.freshUntil.getTime()<=now||!root?.lastReceivedAt||now-root.lastReceivedAt.getTime()>900_000)reasons.push('context_stale');
  if(!root||source.producerEpoch!==root.producerEpoch||root.configurationRevision!==expectedCollectorConfigurationRevision(device.agentTokenHash,settingsRevision))reasons.push('context_changed');
- if(!hasPermission(permissions,'topology','execute')||!hasPermission(permissions,'devices','execute'))reasons.push('origin_permission_denied');
+ if(permissions&&(!hasPermission(permissions,'topology','execute')||!hasPermission(permissions,'devices','execute')))reasons.push('origin_permission_denied');
  return reasons;
 }
 async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:CreateTopologyDiagnosticRequest):Promise<DiagnosticPlanningSnapshot>{
  const request=createTopologyDiagnosticSchema.parse(input);
  const current=await requireTopologySiteAccess(ctx.auth,ctx.permissions,ctx.scope.siteId,'read');
  if(current.scope.orgId!==ctx.scope.orgId)throw new TopologyOperationError('topology_site_not_found',404);
+ return readDiagnosticPlanningSnapshot(ctx.scope,request,{now:Date.now(),loadSettings:()=>loadTopologyConfiguration(ctx),authority:{permissions:ctx.permissions,userId:ctx.auth.user.id}});
+}
+/**
+ * M4-D3 scoped loading: the same planning snapshot with NO caller authority —
+ * every read is predicated on the explicit scope, and the requester-dependent
+ * eligibility findings (permission, partner trust) are left out because the
+ * approval path authorizes the requester live and separately. Deterministic in
+ * (scope, request, stored state, now), so an approval's pinned effect can be
+ * re-derived identically at release by any context allowed to read the rows
+ * (system scope for the digest, the requester's RLS context at acceptance).
+ */
+export async function loadTopologyDiagnosticPlanningSnapshotForScope(scope:TopologyScope,input:CreateTopologyDiagnosticRequest,options:{now:number}):Promise<DiagnosticPlanningSnapshot>{
+ return readDiagnosticPlanningSnapshot(scope,createTopologyDiagnosticSchema.parse(input),{now:options.now,loadSettings:()=>readTopologyConfiguration(scope),authority:null});
+}
+async function readDiagnosticPlanningSnapshot(scope:TopologyScope,request:CreateTopologyDiagnosticRequest,options:{now:number;loadSettings:()=>ReturnType<typeof readTopologyConfiguration>;authority:{permissions:UserPermissions;userId:string}|null}):Promise<DiagnosticPlanningSnapshot>{
+ const ctx={scope};
  const [state]=await db.select().from(topologySiteState).where(scopedWrite(ctx.scope,topologySiteState)).limit(1);
  if(!state)throw new TopologyOperationError('topology_preparing',409);
  // A label/layout-only revision is not diagnostic identity authority.
- const settings=await loadTopologyConfiguration(ctx);
+ const settings=await options.loadSettings();
  const targets=await db.select().from(topologyProbeTargets).where(and(scopedWrite(ctx.scope,topologyProbeTargets),isNull(topologyProbeTargets.deletedAt),eq(topologyProbeTargets.enabled,true)));
  const relationships=await db.select().from(topologyRelationships).where(and(scopedWrite(ctx.scope,topologyRelationships),isNull(topologyRelationships.deletedAt),eq(topologyRelationships.lifecycle,'active')));
  const bindings=await db.select().from(topologyNodeBindings).where(scopedWrite(ctx.scope,topologyNodeBindings));
@@ -84,15 +105,15 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
  // partner trust for this command type is loop-invariant. Evaluate it ONCE:
  // per-device evaluation opened a second pooled connection and wrote one
  // denial audit row per device on a read-only listing of up to 1000 devices.
- const trustDenied=!await deviceExecuteAllowedForOrg(ctx.scope.orgId,'network_diagnostic',ctx.auth.user.id);
- const now=Date.now(),candidates:DiagnosticCandidate[]=[];
+ const trustDenied=options.authority?!await deviceExecuteAllowedForOrg(ctx.scope.orgId,'network_diagnostic',options.authority.userId):false;
+ const now=options.now,candidates:DiagnosticCandidate[]=[];
  for(const device of inventory){
   const binding=bindings.find(row=>row.deviceId===device.id);if(!binding||originalNodes.size&&!originalNodes.has(binding.nodeId))continue;
   const root=sources.find(source=>source.producerId===device.id&&source.protocol==='envelope');
   const envelope=networkContextFullSchema.safeParse(root?.currentBaseline);const caps=new Set(envelope.success?envelope.data.capabilities.filter(cap=>cap.supported&&cap.version===1).map(cap=>cap.name):[]);
   for(const source of sources.filter(row=>row.producerId===device.id&&row.protocol==='routes'&&(!request.contextKey||row.contextKey===request.contextKey)&&(!request.family||row.addressFamily===request.family))){
    const routeSection=topologyContextSectionSchema.safeParse(source.publishedBaseline.section);if(!routeSection.success||routeSection.data.kind!=='routes')continue;
-   const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:ctx.permissions,device,source,root,recipeId:request.recipeId});
+   const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:options.authority?.permissions??null,device,source,root,recipeId:request.recipeId});
    if(trustDenied)reasons.push('trust_denied');
    const gateways:DiagnosticCandidate['gatewayEvidence']=[];const usedInterfaces=new Set<string>();
    const mapping=source.publishedBaseline._rowRelationships as Record<string,string[]>|undefined;

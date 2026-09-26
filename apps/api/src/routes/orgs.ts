@@ -1,3 +1,4 @@
+import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
 import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
@@ -3014,19 +3015,29 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
-  // The site's topology domain cascades with it, but the topology policy
-  // alerts it OWNS (M3-D6) hold a NO ACTION FK to it: remove them and their
-  // NO ACTION children first, under the site row lock, in one transaction —
-  // otherwise the delete aborts with 23503 (PR #7117 T3).
-  const removedTopologyAlerts = await db.transaction(async (tx) => {
+  // The site's topology domain cascades with it, but two kinds of row point at
+  // it through NO ACTION FKs and must go first, under the site row lock, in ONE
+  // transaction — otherwise the delete aborts with 23503:
+  //  - the topology policy alerts it OWNS (M3-D6, PR #7117 T3) and their
+  //    NO ACTION children;
+  //  - its topology investigation sessions (M4-D2, #6000), pinned to it by
+  //    ai_sessions.topology_site_id, children first.
+  // Both counts land on the audit row.
+  const removed = await db.transaction(async (tx) => {
     if (!(await lockSiteForDelete(tx, site.id))) return null;
-    const removed = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
+    const removedTopologyAlerts = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
+    const topologyAiSessions = await deleteSiteTopologyAiSessions(tx, { orgId: site.orgId, siteId: site.id });
     await tx.delete(sites).where(eq(sites.id, id));
-    return removed;
+    return { removedTopologyAlerts, topologyAiSessions };
   });
-  if (removedTopologyAlerts === null) {
+  if (removed === null) {
     return c.json({ error: 'Site not found' }, 404);
   }
+  const { removedTopologyAlerts, topologyAiSessions } = removed;
+  const siteDeleteDetails = {
+    ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
+    ...(topologyAiSessions.investigations > 0 ? { topologyInvestigationsDeleted: topologyAiSessions } : {}),
+  };
 
   writeRouteAudit(c, {
     orgId: site.orgId,
@@ -3034,7 +3045,7 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     resourceType: 'site',
     resourceId: site.id,
     resourceName: site.name,
-    ...(removedTopologyAlerts > 0 ? { details: { removedTopologyAlerts } } : {})
+    ...(Object.keys(siteDeleteDetails).length > 0 ? { details: siteDeleteDetails } : {}),
   });
 
   return c.json({ success: true });

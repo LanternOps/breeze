@@ -7,16 +7,44 @@
  * site the investigation is pinned to. Bounds mirror `topology/aiRead.ts`.
  */
 import { z } from 'zod';
-import { TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
+import {
+  TOPOLOGY_INTERFACE_METRIC_SERIES,
+  topologyDiagnosticSubjectSchema,
+  topologyRecipeIdSchema,
+  topologyRevisionSchema,
+} from '@breeze/shared';
 
 // Reusable validators (duplicated locally to avoid circular imports)
 const uuid = z.string().guid();
+/** Same bound as the shared topology UTF-8 key (1..255 bytes). */
+const contextKeySchema = z.string().min(1).refine((value) => Buffer.byteLength(value, 'utf8') <= 255, 'Maximum 255 UTF-8 bytes');
 const revision = z.string().regex(/^(0|[1-9]\d{0,19})$/);
 
 export const TOPOLOGY_AI_GRAPH_MAX_NODES = 150;
 export const TOPOLOGY_AI_EVIDENCE_MAX_OBSERVATIONS = 100;
 
+/**
+ * `diagnose_connectivity` (M4 Task 4, Tier 3): ONE fixed M1/M3 recipe against a
+ * subject at the pinned site. No target, address, OID, script, body, command,
+ * step or `action` field exists — each is a schema failure before any proposal
+ * or dispatch. The origin selectors are optional (the server auto-selects and
+ * pins); `proposal_expires_at` is server-written and any model value is
+ * replaced at proposal time.
+ */
+export const diagnoseConnectivityInputSchema = z.object({
+  site_id: uuid,
+  subject: topologyDiagnosticSubjectSchema,
+  recipe_id: topologyRecipeIdSchema,
+  recipe_version: z.literal(1),
+  graph_revision: topologyRevisionSchema,
+  origin_device_id: uuid.optional(),
+  context_key: contextKeySchema.optional(),
+  family: z.enum(['ipv4', 'ipv6']).optional(),
+  proposal_expires_at: z.string().datetime().optional(),
+}).strict();
+
 export const topologyToolSchemas: Record<string, z.ZodType> = {
+  diagnose_connectivity: diagnoseConnectivityInputSchema,
   get_topology: z.object({
     site_id: uuid,
     view: z.enum(['overview', 'physical', 'logical']).optional(),

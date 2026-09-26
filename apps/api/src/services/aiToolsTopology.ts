@@ -44,6 +44,7 @@ import { getTopologyImpact } from './topology/impact';
 import { getRecentTopologyChanges } from './topology/changes';
 import { getTopologyMonitoringStatus } from './topology/monitoringStatus';
 import { TopologyOperationError } from './topology/operationErrors';
+import { runApprovedTopologyDiagnostic } from './topology/aiDiagnosticApproval';
 
 /** AI-facing bound: a model never needs the UI's 1,000-bucket resolution. */
 export const AI_INTERFACE_HISTORY_MAX_BUCKETS = 120;
@@ -293,6 +294,44 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
         }
       },
     }),
+
+    // M4 Task 4 (#6000): the ONE action. Tier 3, whole-tool SUPERVISED, and
+    // executable only as the release of an approved, digest-pinned proposal:
+    // the handler refuses unless a release path supplied `actionIntentId` and
+    // the verified effect, then re-authorizes live and binds the approval (see
+    // topology/aiDiagnosticApproval.ts). It is NOT behind the read-tool session
+    // gate — a durable release has no session binding — because its site pin
+    // is the proposing session recorded on the intent, re-checked at release.
+    ['diagnose_connectivity', {
+      tier: 3, domain: 'network', deviceArgs: [], captureExempt: true,
+      searchHint: 'run one approved gateway/DNS/internet connectivity check',
+      definition: {
+        name: 'diagnose_connectivity',
+        description: 'Propose ONE fixed connectivity check (gateway, DNS, internet, target or routed trace) at the investigation\'s site. The server pins the origin; a human approves it with a fresh second factor before it runs. Read the result with get_diagnostic_run.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            site_id: SITE_PROPERTY,
+            subject: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['node', 'relationship', 'destination'] },
+                id: { type: 'string', description: 'Topology node, relationship or configured destination UUID' },
+              },
+              required: ['kind', 'id'],
+            },
+            recipe_id: { type: 'string', enum: ['gateway_basic', 'dns_basic', 'internet_basic', 'target_connectivity', 'trace_route'] },
+            recipe_version: { type: 'number', enum: [1] },
+            graph_revision: { type: 'string', description: 'The graph revision the proposal is based on (from get_topology)' },
+            origin_device_id: { type: 'string', description: 'Optional origin device UUID; omitted, the server selects one and shows it to the approver' },
+            context_key: { type: 'string', description: 'Optional network context key' },
+            family: { type: 'string', enum: ['ipv4', 'ipv6'] },
+          },
+          required: ['site_id', 'subject', 'recipe_id', 'recipe_version', 'graph_revision'],
+        },
+      },
+      handler: (input, auth, context) => runApprovedTopologyDiagnostic(input, auth, context),
+    }],
   ];
   for (const [name, tool] of entries) aiTools.set(name, tool);
 }

@@ -60,6 +60,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
+import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   assertNoPlaintextSecret,
@@ -1745,6 +1746,30 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // worker failed CLOSED (a recompute never equals `undefined`, so
           // every pinned release would have been content_changed). One
           // predicate, one behavior, in one place.
+          // Mandatory pin (M4-D3): same explicit refusal as the durable worker.
+          if (!hasPinnedDigest(intentRow) && requiresPinnedEffectDigest(intentRow.actionName)) {
+            const requiredCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: 'digest_required' },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!requiredCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_digest_required',
+                executed: false,
+              });
+            }
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'This action requires a pinned effect and could not be verified; it was not executed.',
+            });
+          }
           if (hasPinnedDigest(intentRow)) {
             const recomputed = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>

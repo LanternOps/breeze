@@ -3,6 +3,7 @@ import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
+import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -178,4 +179,14 @@ export type ToolExecutionContext = {
    * request-local scope. Set by `executeTool` next to `topologyRequest`.
    */
   topologyAliasScope?: string;
+  /**
+   * Topology M4 Task 4 (#6000): a `diagnose_connectivity` release's effect,
+   * re-derived by the release path and verified against the approval's pinned
+   * effect digest (`computeEffectDigestForRelease`). Set ONLY from that
+   * recompute on a MATCH — never from model arguments or the auth identity —
+   * and travels with `actionIntentId`. The handler refuses without both, and
+   * still re-derives and re-binds the effect inside its acceptance
+   * transaction; it never selects a different origin or target.
+   */
+  verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
 };

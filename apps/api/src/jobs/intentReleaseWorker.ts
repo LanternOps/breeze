@@ -41,6 +41,7 @@ import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
+import { requiresPinnedEffectDigest } from '../services/actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
@@ -1214,6 +1215,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // the very window this check just closed (the digest proves the target was
   // unchanged AS OF THE READ; a later read proves nothing).
   let verifiedContext: ToolExecutionContext | undefined;
+  // A tool whose pin is MANDATORY (topology diagnose_connectivity, M4-D3) never
+  // inherits the NULL-means-nothing-to-check fallback below: no pinned digest
+  // is an explicit refusal, before anything executes.
+  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName)) {
+    await failIntent(intent, 'digest_required', { details: { actionName: intent.actionName } });
+    return;
+  }
   if (hasPinnedDigest(intent)) {
     // Runs in its own short system-scoped context (same discipline as Step 2
     // above) — this point in the function is between DB contexts (Step 2's

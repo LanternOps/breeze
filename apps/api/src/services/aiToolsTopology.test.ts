@@ -63,7 +63,9 @@ beforeEach(() => {
 
 describe('topology AI tools', () => {
   it('registers every topology tool as a Tier-1 network read that is never artifact-captured (M4-D6)', () => {
-    expect([...tools.keys()].sort()).toEqual([...TOPOLOGY_AI_TOOL_NAMES].sort());
+    expect([...tools.keys()].sort()).toEqual([...TOPOLOGY_AI_TOOL_NAMES, 'diagnose_connectivity'].sort());
+    // M4 Task 4: the one action is Tier 3, never captured, and release-only.
+    expect(tools.get('diagnose_connectivity')).toMatchObject({ tier: 3, domain: 'network', captureExempt: true, deviceArgs: [] });
     for (const name of TOPOLOGY_AI_TOOL_NAMES) {
       expect(tools.get(name)).toMatchObject({ tier: 1, domain: 'network', captureExempt: true, deviceArgs: [] });
       expect(tools.get(name)!.searchHint.length).toBeLessThanOrEqual(120);
