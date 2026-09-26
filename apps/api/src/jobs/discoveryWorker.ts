@@ -52,6 +52,7 @@ import {
 } from './queueSchemas';
 import { reconcileTopology } from './reconcileTopology';
 import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
+import { markTopologyIdentityDirty } from '../services/topology/identityDirty';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 
 const { db } = dbModule;
@@ -1518,6 +1519,18 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     await reconcileTopology(data.orgId, data.siteId, data.hosts, data.adjacency ?? []);
   } catch (err) {
     console.error(`[DiscoveryWorker] Topology reconciliation failed for job ${data.jobId}:`, err);
+  }
+
+  // M2 D15.2: a new discovered asset can become the subject of an SNMP target
+  // (`snmp:<ip>` resolves to the scoped asset at that address), so the physical
+  // publisher must re-resolve. Refreshes of existing rows keep the IP (the
+  // lookup key) and change no identity the publisher uses.
+  if (newCount > 0) {
+    try {
+      await markTopologyIdentityDirty(db, { orgId: data.orgId, siteId: data.siteId });
+    } catch (err) {
+      console.error(`[DiscoveryWorker] Topology identity dirty mark failed for job ${data.jobId}:`, err);
+    }
   }
 
   // Update the job record

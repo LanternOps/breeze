@@ -111,6 +111,8 @@ vi.mock('../services/networkBaseline', () => ({
   buildEventFingerprint: vi.fn(() => 'fingerprint')
 }));
 
+vi.mock('../services/topology/identityDirty', () => ({ markTopologyIdentityDirty: vi.fn() }));
+
 vi.mock('./networkBaselineWorker', () => ({
   enqueueBaselineComparison: vi.fn(async () => 'enqueued'),
   getNetworkBaselineQueue: vi.fn()
@@ -417,6 +419,22 @@ describe('processResults — type_source', () => {
     expect(capturedInsertValues).not.toBeNull();
     expect(capturedInsertValues!.typeSource).toBe('auto');
     expect(capturedInsertValues!.detectedAssetType).toBe('server');
+  });
+
+  it('marks topology identity dirty when a scan creates a discovered asset (an SNMP target subject by IP)', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    selectQueue = [...baseSelectQueue(), [], []];
+    await processResults(makeData([{ ip: '192.168.1.60', assetType: 'switch', methods: [] }]));
+    const data = makeData([]);
+    expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledWith(expect.anything(), { orgId: data.orgId, siteId: data.siteId });
+  });
+
+  it('does not mark topology identity dirty when a scan only refreshes existing assets', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    selectQueue = [...baseSelectQueue(), [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], [{ linkedDeviceId: null }], []];
+    await processResults(makeData([{ ip: '192.168.1.61', assetType: 'switch', methods: [] }]));
+    expect(vi.mocked(markTopologyIdentityDirty)).not.toHaveBeenCalled();
   });
 
   describe('SNMP identity ingest wiring', () => {

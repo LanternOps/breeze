@@ -294,11 +294,8 @@ export function physicalChassisClaimsOf(entries: Iterable<{ source: Pick<Collect
   return claims;
 }
 
-/** Explicit identity dirty mark (D15.2) for writers outside the publisher. */
-export async function markTopologyIdentityDirty(tx: Tx | typeof db, scope: TopologyScope): Promise<void> {
-  await tx.execute(sql`UPDATE topology_site_state SET identity_revision=identity_revision+1, dirty_revision=dirty_revision+1, last_build_status='pending', updated_at=now()
-    WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid`);
-}
+/** Explicit identity dirty mark (D15.2) for writers outside the publisher (leaf module). */
+export { markTopologyIdentityDirty } from './identityDirty';
 
 export type MergedInterfacePlan = {
   /** Loser interfaces re-owned by the survivor (owner, epoch and retirement decided). */
