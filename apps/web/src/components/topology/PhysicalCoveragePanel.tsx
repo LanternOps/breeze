@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { TOPOLOGY_COVERAGE_REASON_CODES, type GraphResponse } from '@breeze/shared';
+import type { GraphResponse } from '@breeze/shared';
+import { TOPOLOGY_COVERAGE_REASON_CODES } from '@breeze/shared/validators/topology';
 
 const KNOWN = new Set<string>(TOPOLOGY_COVERAGE_REASON_CODES);
 
