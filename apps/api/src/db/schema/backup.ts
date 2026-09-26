@@ -49,7 +49,7 @@ export const backupStatusEnum = pgEnum('backup_status', [
   'partial',
   // #5396: a run that produced a restorable snapshot but had one or more file
   // failures under the #3000 partial threshold. `completed` means every file
-  // was read. Added by 2026-10-31-120000-backup-status-completed-with-errors.sql.
+  // was read. Added by 2026-11-02-100200-backup-status-completed-with-errors.sql.
   'completed_with_errors',
 ]);
 
