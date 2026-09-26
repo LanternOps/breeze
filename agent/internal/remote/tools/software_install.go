@@ -599,8 +599,8 @@ func computeSHA256(filePath string) (string, error) {
 // that the installer's descendants outlived it (see runInstallerCommand), which
 // post-install detection needs in order to wait for the real install to land.
 // successExitCodes are the version's declared vendor success codes (#7038);
-// they apply to the installer itself only, never to the DMG path's hdiutil/cp
-// helpers, whose own contract is zero-only.
+// they apply to the installer itself (for a DMG, its embedded .pkg), never to
+// the DMG path's hdiutil/cp helpers, whose own contract is zero-only.
 func executeInstaller(localPath, fileType, silentInstallArgs string, successExitCodes []uint32) (int, string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
@@ -628,7 +628,7 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 
 	case fileType == "dmg" && runtime.GOOS == "darwin":
 		// Mount, find .app or .pkg, install, unmount
-		return installDMG(ctx, localPath)
+		return installDMG(ctx, localPath, successExitCodes)
 
 	default:
 		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
@@ -834,7 +834,10 @@ func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
 // real disk image; production behavior is unchanged.
 var dmgCommandContext = exec.CommandContext
 
-func installDMG(ctx context.Context, dmgPath string) (int, string, bool, error) {
+// successExitCodes are the version's declared vendor success codes (#7038). They
+// apply to the embedded .pkg — the version's real installer — and never to the
+// hdiutil/cp helpers.
+func installDMG(ctx context.Context, dmgPath string, successExitCodes []uint32) (int, string, bool, error) {
 	// Mount
 	mountPoint := filepath.Join(os.TempDir(), "breeze-dmg-mount")
 	os.MkdirAll(mountPoint, 0700)
@@ -866,7 +869,7 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, bool, error) 
 			// A .pkg postinstall script routinely spawns a lingering child, so
 			// this is the DMG case that needs both the WaitDelay escape and the
 			// descendantsPending signal that makes detection settle.
-			return runInstallerCommand(ctx, dmgCommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/"), "pkg", nil)
+			return runInstallerCommand(ctx, dmgCommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/"), "pkg", successExitCodes)
 		}
 	}
 
