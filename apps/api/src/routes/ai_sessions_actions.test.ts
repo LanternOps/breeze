@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// #3127: depth of the (mocked) short per-phase DB contexts the message-send
+// handler opens now that it no longer runs inside a request transaction.
+const dbCtx = vi.hoisted(() => ({ depth: 0 }));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -74,6 +78,14 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+    dbCtx.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth -= 1;
+    }
+  }),
 }));
 
 vi.mock('../services/aiAgent', () => ({
@@ -149,6 +161,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
+import { reserveAiBudget, releaseUnusedAiBudgetReservation } from '../services/aiBudgetReservations';
 
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -344,6 +357,71 @@ describe('AI routes', () => {
       expect(settleBlockedTurnForNewMessage).toHaveBeenCalledWith(activeSession);
       expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('hello there');
       expect(streamingSessionManager.startTurnTimeout).toHaveBeenCalledWith(activeSession);
+    });
+
+    // #3127: the route owns its DB context (selfManagedDbContextRoutes), so the
+    // settle wait must run with NO context held — before, the auth middleware's
+    // request transaction pinned a pooled connection idle across the wait.
+    function trackPreflightDepth(depths: Record<string, number>) {
+      mockPreflightOk();
+      const preflightImpl = vi.mocked(runPreFlightChecks).getMockImplementation()!;
+      vi.mocked(runPreFlightChecks).mockImplementation(async (...args) => {
+        depths.preflight = dbCtx.depth;
+        return preflightImpl(...args);
+      });
+    }
+
+    it('#3127: waits and reserves with no DB context held; reads and writes each run in a short one', async () => {
+      const depths: Record<string, number> = {};
+      trackPreflightDepth(depths);
+      const activeSession = makeActiveSession();
+      vi.mocked(streamingSessionManager.get)
+        .mockReturnValueOnce(activeSession)
+        .mockReturnValueOnce(undefined);
+      vi.mocked(settleBlockedTurnForNewMessage).mockImplementation(async () => {
+        depths.settle = dbCtx.depth;
+        return 'concluded';
+      });
+      const reserveImpl = vi.mocked(reserveAiBudget).getMockImplementation()!;
+      vi.mocked(reserveAiBudget).mockImplementationOnce(async (...args) => {
+        depths.reserve = dbCtx.depth;
+        return reserveImpl(...args);
+      });
+      vi.mocked(streamingSessionManager.getOrCreate).mockImplementation(async () => {
+        depths.getOrCreate = dbCtx.depth;
+        return activeSession;
+      });
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+      vi.mocked(db.insert).mockImplementation(() => {
+        depths.insert = dbCtx.depth;
+        return { values: vi.fn().mockResolvedValue(undefined) } as any;
+      });
+
+      const res = await postMessage();
+
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(depths).toEqual({ preflight: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
+      expect(dbCtx.depth).toBe(0);
+    });
+
+    it('#3127: a refused dispatch releases its reservation after the dispatch context closes', async () => {
+      trackPreflightDepth({});
+      vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+      let releaseDepth = -1;
+      vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
+        releaseDepth = dbCtx.depth;
+        return { kind: 'released', reservationId: input.reservationId } as any;
+      });
+
+      const res = await postMessage();
+
+      expect(res.status).toBe(409);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+      expect(releaseDepth).toBe(0);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
     it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {

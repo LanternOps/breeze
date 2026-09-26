@@ -11,7 +11,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { eq, and, desc, sql, asc } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { aiSessions, aiMessages, devices } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -34,7 +34,7 @@ import { checkBudget } from '../../services/aiCostTracker';
 import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
-import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
+import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 import { captureException } from '../../services/sentry';
@@ -276,13 +276,25 @@ helperRoutes.post(
     const sessionId = c.req.param('id');
     const { content } = c.req.valid('json');
 
+    // #3127: this route is registered in selfManagedDbContextRoutes, so
+    // helperAuth holds no request transaction across the handler. Each DB phase
+    // re-enters the exact helper context in a short transaction of its own, and
+    // the settle wait and the budget reservation (which opens its own system
+    // transaction) run between them with no connection checked out.
+    const helperDbContext = helperDbAccessContext({
+      orgId: device.orgId,
+      partnerId: auth.helperDevicePartnerId,
+    });
+    const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> =>
+      runOutsideDbContext(() => withDbAccessContext(helperDbContext, fn));
+
     // Pre-flight checks
-    const preflight = await runHelperPreFlight(
+    const preflight = await inRequestDb(() => runHelperPreFlight(
       sessionId,
       content,
       device,
       auth.helperDevicePartnerId ?? null,
-    );
+    ));
     if (!preflight.ok) {
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
@@ -311,6 +323,7 @@ helperRoutes.post(
 
     const priorSession = streamingSessionManager.get(sessionId);
     if (priorSession?.state === 'processing') {
+      // #3127: runs with no DB context held (see inRequestDb above).
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         return c.json({
@@ -354,72 +367,86 @@ helperRoutes.post(
     // resolves the WIRE model inside the manager, so a catalog revision with no
     // verified mapping for THIS session's model fails closed only here. Same
     // catch shape as ai.ts — otherwise it reaches `app.onError` as a 500.
-    let activeSession;
-    try {
-      activeSession = await streamingSessionManager.getOrCreate(
-        sessionId,
-        {
-          orgId: dbSession.orgId,
-          sdkSessionId: dbSession.sdkSessionId,
-          model: dbSession.model,
-          maxTurns: dbSession.maxTurns,
-          turnCount: dbSession.turnCount,
-          systemPrompt: dbSession.systemPrompt,
-        },
-        auth,
-        c,
-        systemPrompt,
-        reservedMaxBudgetUsd,
-        resolved,
-        allowedTools,
-        mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-        { budgetReservationId },
-      );
-    } catch (err) {
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
-      throw err;
-    }
-
-    // Concurrent message guard. If the turn is blocked only on pending
-    // approval waits (PAM-gated helper tools), settle them so the assistant
-    // can conclude and answer this message (#3089 — shared helper, see ai.ts).
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
-    }
-
-    // Save user message
-    try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'user',
-        content: sanitizedContent,
-      });
-    } catch (err) {
-      console.error('[Helper] Failed to save user message:', err);
-      activeSession.state = 'idle';
-      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
-      return c.json({ error: 'Failed to save message' }, 500);
-    }
-
-    // Auto-generate title from first message
-    if (!dbSession.title) {
-      const title = generateSessionTitle(sanitizedContent);
+    const dispatch = await inRequestDb(async (): Promise<
+      | { kind: 'dispatched'; activeSession: ActiveSession }
+      | { kind: 'refused'; response: Response }
+      | { kind: 'failed'; error: unknown }
+    > => {
+      let activeSession: ActiveSession;
       try {
-        await db
-          .update(aiSessions)
-          .set({ title })
-          .where(eq(aiSessions.id, sessionId));
-        activeSession.eventBus.publish({ type: 'title_updated', title });
+        activeSession = await streamingSessionManager.getOrCreate(
+          sessionId,
+          {
+            orgId: dbSession.orgId,
+            sdkSessionId: dbSession.sdkSessionId,
+            model: dbSession.model,
+            maxTurns: dbSession.maxTurns,
+            turnCount: dbSession.turnCount,
+            systemPrompt: dbSession.systemPrompt,
+          },
+          auth,
+          c,
+          systemPrompt,
+          reservedMaxBudgetUsd,
+          resolved,
+          allowedTools,
+          mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
+          { budgetReservationId },
+        );
       } catch (err) {
-        console.error('[Helper] Failed to auto-set session title:', err);
+        if (err instanceof LlmUnavailableError) {
+          return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
+        }
+        return { kind: 'failed', error: err };
       }
-    }
 
-    // Push message and start timeout
-    activeSession.inputController.pushMessage(sanitizedContent);
-    streamingSessionManager.startTurnTimeout(activeSession);
+      // Concurrent message guard. If the turn is blocked only on pending
+      // approval waits (PAM-gated helper tools), settle them so the assistant
+      // can conclude and answer this message (#3089 — shared helper, see ai.ts).
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+      }
+
+      // Save user message
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
+      } catch (err) {
+        console.error('[Helper] Failed to save user message:', err);
+        activeSession.state = 'idle';
+        return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
+      }
+
+      // Auto-generate title from first message
+      if (!dbSession.title) {
+        const title = generateSessionTitle(sanitizedContent);
+        try {
+          await db
+            .update(aiSessions)
+            .set({ title })
+            .where(eq(aiSessions.id, sessionId));
+          activeSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          console.error('[Helper] Failed to auto-set session title:', err);
+        }
+      }
+
+      // Push message and start timeout
+      activeSession.inputController.pushMessage(sanitizedContent);
+      streamingSessionManager.startTurnTimeout(activeSession);
+      return { kind: 'dispatched', activeSession };
+    });
+    if (dispatch.kind !== 'dispatched') {
+      // Released only after the dispatch context has closed, so the release's
+      // own system transaction never runs beside a held request connection.
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      if (dispatch.kind === 'failed') throw dispatch.error;
+      return dispatch.response;
+    }
+    const { activeSession } = dispatch;
 
     const subscriptionId = crypto.randomUUID();
 

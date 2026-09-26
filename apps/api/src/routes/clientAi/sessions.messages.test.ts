@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
+
+// #3127: depth of the (mocked) short per-phase DB contexts the message-send
+// handler opens now that clientAiAuth no longer wraps it in a request transaction.
+const dbCtx = vi.hoisted(() => ({ depth: 0 }));
 
 const {
   CLIENT_USER_ID, ORG_ID, SESSION_ID,
@@ -58,6 +63,9 @@ vi.mock('../../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../../middleware/clientAiAuth', () => ({
+  clientAiDbAccessContext: (orgId: string) => ({
+    scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null,
+  }),
   clientAiAuthMiddleware: (c: any, next: any) => {
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
     c.set('clientAiAuth', {
@@ -73,8 +81,16 @@ vi.mock('../../middleware/clientAiAuth', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
-  withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => {
+    dbCtx.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth -= 1;
+    }
+  }),
 }));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
@@ -514,6 +530,58 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_budget_lock_timeout' });
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('#3127: settles an approval-blocked turn with no DB context held, between two short ones', async () => {
+    const depths: Record<string, number[]> = { select: [], reserve: [], getOrCreate: [], settle: [], insert: [] };
+    dbSelectMock.mockImplementation(() => {
+      depths.select.push(dbCtx.depth);
+      return selectChain([SESSION_ROW]);
+    });
+    reserveAiBudgetMock.mockImplementationOnce(async () => {
+      depths.reserve.push(dbCtx.depth);
+      return { kind: 'reserved', reservationId: 'res-settled', reservedCostCents: 100 };
+    });
+    managerMock.getOrCreate.mockImplementation(async () => {
+      depths.getOrCreate.push(dbCtx.depth);
+      return activeSession;
+    });
+    // Busy on the first claim; free once the blocked turn has been settled.
+    managerMock.tryTransitionToProcessing.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.mocked(settleBlockedTurnForNewMessage).mockImplementationOnce(async () => {
+      depths.settle.push(dbCtx.depth);
+      return 'concluded';
+    });
+    dbInsertMock.mockImplementation(() => {
+      depths.insert.push(dbCtx.depth);
+      return { values: vi.fn(() => Promise.resolve()) };
+    });
+
+    const res = await postMessage({ content: 'hi' });
+
+    expect(res.status).toBe(202);
+    expect(settleBlockedTurnForNewMessage).toHaveBeenCalledWith(activeSession);
+    expect(depths.select.length).toBeGreaterThan(0);
+    expect(depths.select.every((d) => d === 1)).toBe(true);
+    expect(depths).toMatchObject({ reserve: [0], getOrCreate: [1], settle: [0], insert: [1] });
+    expect(releaseUnusedAiBudgetReservationMock).not.toHaveBeenCalled();
+    expect(dbCtx.depth).toBe(0);
+  });
+
+  it('#3127: a settle that does not conclude releases the reservation with no DB context held', async () => {
+    managerMock.tryTransitionToProcessing.mockReturnValue(false);
+    vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValueOnce('still_processing');
+    let releaseDepth = -1;
+    releaseUnusedAiBudgetReservationMock.mockImplementationOnce(async () => {
+      releaseDepth = dbCtx.depth;
+      return { kind: 'released' };
+    });
+
+    const res = await postMessage({ content: 'hi' });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/wrapping up the previous turn/);
+    expect(releaseDepth).toBe(0);
   });
 
   it('409 concurrency path releases the reservation taken for the losing turn', async () => {

@@ -9,7 +9,13 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+} from '../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
@@ -676,9 +682,17 @@ aiRoutes.post(
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
     const body = c.req.valid('json');
+    // #3127: this route is registered in selfManagedDbContextRoutes, so no
+    // request transaction is held across the handler. Each DB phase runs in its
+    // own short context carrying the caller's exact scope, and the settle wait
+    // and the budget reservation (which opens its own system transaction) run
+    // between them with no connection checked out.
+    const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
-    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c);
+    const preflight = await inRequestDb(() =>
+      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c),
+    );
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
@@ -723,51 +737,63 @@ aiRoutes.post(
       }
       const budgetDispatch = budgetDispatchFrom(reservation)!;
       const openaiManager = getOpenAISessionManager();
-      const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
-      if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
-        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-        return c.json({ error: 'A message is already being processed for this session' }, 409);
-      }
+      const dispatch = await inRequestDb(async (): Promise<
+        | { kind: 'dispatched'; openaiSession: ReturnType<typeof openaiManager.getOrCreate> }
+        | { kind: 'refused'; response: Response }
+      > => {
+        const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
-      writeRouteAudit(c, {
-        orgId: dbSession.orgId,
-        action: 'ai.message.send',
-        resourceType: 'ai_session',
-        resourceId: sessionId,
-        details: { contentLength: body.content.length },
-      });
-
-      try {
-        await db.insert(aiMessages).values({
-          sessionId,
-          role: 'user',
-          content: sanitizedContent,
-        });
-      } catch (err) {
-        console.error('[AI/OpenAI] Failed to save user message to DB:', err);
-        openaiSession.state = 'idle';
-        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-        return c.json({ error: 'Failed to save message' }, 500);
-      }
-
-      if (!dbSession.title) {
-        const title = generateSessionTitle(sanitizedContent);
-        try {
-          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
-          openaiSession.eventBus.publish({ type: 'title_updated', title });
-        } catch (err) {
-          console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+        if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+          return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
         }
-      }
 
-      openaiManager.startTurn(
-        openaiSession,
-        dbSession.model,
-        systemPrompt,
-        sanitizedContent,
-        budgetDispatch,
-      );
+        writeRouteAudit(c, {
+          orgId: dbSession.orgId,
+          action: 'ai.message.send',
+          resourceType: 'ai_session',
+          resourceId: sessionId,
+          details: { contentLength: body.content.length },
+        });
+
+        try {
+          await db.insert(aiMessages).values({
+            sessionId,
+            role: 'user',
+            content: sanitizedContent,
+          });
+        } catch (err) {
+          console.error('[AI/OpenAI] Failed to save user message to DB:', err);
+          openaiSession.state = 'idle';
+          return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
+        }
+
+        if (!dbSession.title) {
+          const title = generateSessionTitle(sanitizedContent);
+          try {
+            await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+            openaiSession.eventBus.publish({ type: 'title_updated', title });
+          } catch (err) {
+            console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+          }
+        }
+
+        openaiManager.startTurn(
+          openaiSession,
+          dbSession.model,
+          systemPrompt,
+          sanitizedContent,
+          budgetDispatch,
+        );
+        return { kind: 'dispatched', openaiSession };
+      });
+      if (dispatch.kind === 'refused') {
+        // Released only after the dispatch context has closed, so the release's
+        // own system transaction never runs beside a held request connection.
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+        return dispatch.response;
+      }
+      const { openaiSession } = dispatch;
 
       const subscriptionId = crypto.randomUUID();
       return streamSSE(c, async (stream) => {
@@ -809,6 +835,7 @@ aiRoutes.post(
       // concludes the turn, and this message then proceeds normally. If the
       // session is busy for any other reason (model actively working), or the
       // turn doesn't conclude in time, fall back to a 409 as before.
+      // #3127: runs with no DB context held (see inRequestDb above).
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         return c.json({
@@ -847,86 +874,99 @@ aiRoutes.post(
     }
     const budgetDispatch = budgetDispatchFrom(reservation)!;
 
-    let activeSession;
-    try {
-      activeSession = await streamingSessionManager.getOrCreate(
-        sessionId,
-        {
-          orgId: dbSession.orgId,
-          sdkSessionId: dbSession.sdkSessionId,
-          model: dbSession.model,
-          maxTurns: dbSession.maxTurns,
-          turnCount: dbSession.turnCount,
-          systemPrompt: dbSession.systemPrompt,
-          // Device-bound sessions narrow tool execution to the device's org
-          // (ai_sessions.org_id), not the login org (#3087).
-          deviceId: dbSession.deviceId,
-        },
-        auth,
-        c,
-        systemPrompt,
-        budgetDispatch.maxBudgetUsd,
-        resolved,
-        undefined,
-        undefined,
-        { budgetReservationId: budgetDispatch.reservationId },
-      );
-    } catch (err) {
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      throw err;
-    }
-
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
-    }
-
-    writeRouteAudit(c, {
-      orgId: dbSession.orgId,
-      action: 'ai.message.send',
-      resourceType: 'ai_session',
-      resourceId: sessionId,
-      details: { contentLength: body.content.length }
-    });
-
-    try {
-      await db.insert(aiMessages).values({
-        sessionId,
-        role: 'user',
-        content: sanitizedContent,
-      });
-    } catch (err) {
-      console.error('[AI] Failed to save user message to DB:', err);
-      activeSession.state = 'idle';
-      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-      return c.json({ error: 'Failed to save message' }, 500);
-    }
-
-    // Auto-generate title from first user message
-    if (!dbSession.title) {
-      const title = generateSessionTitle(sanitizedContent);
+    type ActiveChatSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
+    const dispatch = await inRequestDb(async (): Promise<
+      | { kind: 'dispatched'; activeSession: ActiveChatSession }
+      | { kind: 'refused'; response: Response }
+      | { kind: 'failed'; error: unknown }
+    > => {
+      let activeSession: ActiveChatSession;
       try {
-        await db.update(aiSessions)
-          .set({ title })
-          .where(eq(aiSessions.id, sessionId));
-        activeSession.eventBus.publish({ type: 'title_updated', title });
+        activeSession = await streamingSessionManager.getOrCreate(
+          sessionId,
+          {
+            orgId: dbSession.orgId,
+            sdkSessionId: dbSession.sdkSessionId,
+            model: dbSession.model,
+            maxTurns: dbSession.maxTurns,
+            turnCount: dbSession.turnCount,
+            systemPrompt: dbSession.systemPrompt,
+            // Device-bound sessions narrow tool execution to the device's org
+            // (ai_sessions.org_id), not the login org (#3087).
+            deviceId: dbSession.deviceId,
+          },
+          auth,
+          c,
+          systemPrompt,
+          budgetDispatch.maxBudgetUsd,
+          resolved,
+          undefined,
+          undefined,
+          { budgetReservationId: budgetDispatch.reservationId },
+        );
       } catch (err) {
-        console.error('[AI] Failed to auto-set session title:', err);
+        return { kind: 'failed', error: err };
       }
-    }
 
-    // Execution plane (spec §5.5): an `analysis` run associated with this
-    // session may have finished between turns (chat-initiated launch is
-    // currently disabled, #6086, but a preconfigured agent's run can still
-    // report back to a session this way). Its summary is prepended HERE
-    // rather than pushed when it arrived — pushing then would start a turn
-    // with no SSE subscriber, so the assistant's reply would never reach the
-    // browser.
-    const pendingRunResults = drainPendingRunResults(activeSession);
-    activeSession.inputController.pushMessage(
-      pendingRunResults ? `${pendingRunResults}\n\n${sanitizedContent}` : sanitizedContent,
-    );
-    streamingSessionManager.startTurnTimeout(activeSession);
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+      }
+
+      writeRouteAudit(c, {
+        orgId: dbSession.orgId,
+        action: 'ai.message.send',
+        resourceType: 'ai_session',
+        resourceId: sessionId,
+        details: { contentLength: body.content.length }
+      });
+
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
+      } catch (err) {
+        console.error('[AI] Failed to save user message to DB:', err);
+        activeSession.state = 'idle';
+        return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
+      }
+
+      // Auto-generate title from first user message
+      if (!dbSession.title) {
+        const title = generateSessionTitle(sanitizedContent);
+        try {
+          await db.update(aiSessions)
+            .set({ title })
+            .where(eq(aiSessions.id, sessionId));
+          activeSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          console.error('[AI] Failed to auto-set session title:', err);
+        }
+      }
+
+      // Execution plane (spec §5.5): an `analysis` run associated with this
+      // session may have finished between turns (chat-initiated launch is
+      // currently disabled, #6086, but a preconfigured agent's run can still
+      // report back to a session this way). Its summary is prepended HERE
+      // rather than pushed when it arrived — pushing then would start a turn
+      // with no SSE subscriber, so the assistant's reply would never reach the
+      // browser.
+      const pendingRunResults = drainPendingRunResults(activeSession);
+      activeSession.inputController.pushMessage(
+        pendingRunResults ? `${pendingRunResults}\n\n${sanitizedContent}` : sanitizedContent,
+      );
+      streamingSessionManager.startTurnTimeout(activeSession);
+      return { kind: 'dispatched', activeSession };
+    });
+    if (dispatch.kind !== 'dispatched') {
+      // Released only after the dispatch context has closed, so the release's
+      // own system transaction never runs beside a held request connection.
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      if (dispatch.kind === 'failed') throw dispatch.error;
+      return dispatch.response;
+    }
+    const { activeSession } = dispatch;
 
     const subscriptionId = crypto.randomUUID();
 
