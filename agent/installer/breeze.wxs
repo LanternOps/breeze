@@ -215,7 +215,6 @@
     <Property Id="MsiLogging" Value="voicewarmupx" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
-    <Property Id="BREEZE_KILL_CMD" Secure="yes" />
     <Property Id="BREEZE_ACL_CMD" Secure="yes" />
     <Property Id="BREEZE_SC_FAILURE_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
@@ -269,11 +268,24 @@
          that's why PrepareServiceShutdown below repeats the disarm (both
          services) + watchdog stop as a deferred LocalSystem action before
          StopServices. -->
-    <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
+    <!-- Console window (#3624): an immediate EXE custom action runs
+         impersonated on the installing user's desktop, and Windows Installer
+         launches it with no CREATE_NO_WINDOW / SW_HIDE, so a plain cmd.exe CA
+         showed a black console, held on screen for the ~3s wait in step 3 on
+         every upgrade over a running agent. The CA cannot become deferred
+         (it must beat InstallValidate, see above) and the wait cannot go
+         (it is what makes the stop graceful), so the same command line now
+         runs through the WiX Util extension's WixQuietExec, which spawns it
+         with no window and copies its output into the MSI log. In immediate
+         mode WixQuietExec reads the command from the WixQuietExecCmdLine
+         property; nothing else in this package uses that property, so it is
+         free to set here. build-msi.ps1 loads the extension (-ext
+         WixToolset.Util.wixext), which provides the Wix4UtilCA_* binary. -->
+    <SetProperty Id="WixQuietExecCmdLine" Value="&quot;[System64Folder]cmd.exe&quot; /c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0" Before="KillBreezeProcesses" Sequence="execute" />
     <CustomAction
       Id="KillBreezeProcesses"
-      Property="BREEZE_KILL_CMD"
-      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
       Execute="immediate"
       Return="ignore" />
 
