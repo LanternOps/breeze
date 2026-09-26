@@ -33,7 +33,7 @@ async function setFlags(orgId: string, flags: Record<string, boolean>) {
  *           ─LLDP─ switch S2                   └─FDB attachment (inferred)─ host H2
  * A fresh SNMP sample reports the S1 uplink port operationally down (the measured failure).
  */
-async function seed(orgId: string, siteId: string) {
+async function seed(orgId: string, siteId: string, options: { runAgeMs?: number } = {}) {
   const db = getTestDb();
   const scope = { orgId, siteId };
   const ids = {
@@ -94,11 +94,12 @@ async function seed(orgId: string, siteId: string) {
       VALUES (${orgId}::uuid, ${siteId}::uuid, ${ids.s1Port}::uuid, 'gen:1', ${ids.metrics}::uuid, 'p1', ${String(i + 1)}, ${iso(now - (1 - i) * MIN)}::timestamptz, 'raw', ${JSON.stringify(readings)}::jsonb, 1)`);
   }
   // A completed reachability check from G that failed toward H1 one minute ago (fresh corroborating evidence).
+  const runAt = now - (options.runAgeMs ?? MIN);
   await db.execute(sql`INSERT INTO topology_diagnostic_runs (id, org_id, site_id, recipe_id, recipe_version, requester_id, subject_node_id, origin_node_id, origin_snapshot, plan,
       plan_digest, idempotency_key, body_hash, attempt_id, state, assessment, coverage, queued_at, queue_deadline, deadline, finished_at)
     VALUES (${ids.run}::uuid, ${orgId}::uuid, ${siteId}::uuid, 'reachability', 1, ${randomUUID()}::uuid, ${ids.h1}::uuid, ${ids.g}::uuid, '{}'::jsonb, '{}'::jsonb,
       ${'b'.repeat(64)}, ${randomUUID()}, ${'c'.repeat(64)}, ${randomUUID()}::uuid, 'completed', 'failed_check', 'complete',
-      ${iso(now - 3 * MIN)}::timestamptz, ${iso(now - 2 * MIN)}::timestamptz, ${iso(now)}::timestamptz, ${iso(now - MIN)}::timestamptz)`);
+      ${iso(runAt - 2 * MIN)}::timestamptz, ${iso(runAt - MIN)}::timestamptz, ${iso(runAt + MIN)}::timestamptz, ${iso(runAt)}::timestamptz)`);
   // An open alert on the poller: impact must never acknowledge, suppress, resolve or re-evaluate it.
   await db.execute(sql`INSERT INTO alerts (org_id, device_id, status, severity, title) VALUES (${orgId}::uuid, ${ids.device}::uuid, 'active', 'critical', 'Uplink port down')`);
   // An incomplete structural collection run: a collection gap.
@@ -176,6 +177,18 @@ describe('M3 Task 10 impact and change history (real DB)', () => {
     expect(await conflict.json()).toMatchObject({ code: 'graph_revision_changed' });
 
     expect(await sideEffects(env.organization.id)).toEqual(before);
+  });
+
+  it('never counts an expired on-demand check as fresh, however wide the window', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    await setFlags(env.organization.id, { physical: true, interfaceHealth: true });
+    // The H1 check finished 12 minutes ago: inside a 30-minute window, but past its 5-minute freshness.
+    const { ids } = await seed(env.organization.id, env.site.id, { runAgeMs: 12 * MIN });
+    const body = topologyImpactResponseSchema.parse(await (await get(env, env.site.id, impactPath(ids.uplink, '&windowMinutes=30'))).json());
+    expect(body.measuredFailures.some((failure) => failure.id === ids.h1)).toBe(false);
+    expect(body.reasons).toContain('failure_evidence_stale');
+    expect(body.causeSuggestion.state).toBe('not_suggested');
+    expect(body.potentiallyAffected.find((entry) => entry.id === ids.h1)!.reasons).not.toContain('failure_measured');
   });
 
   it('serves bounded change history with evidence, expired-detail markers and signed paging, and writes nothing', async () => {

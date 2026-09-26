@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { topologyImpactResponseSchema } from '@breeze/shared';
-import { analyzeTopologyImpact, type ImpactEvidence, type ImpactGraph, type ImpactRelationship } from './impact';
+import { analyzeTopologyImpact, diagnosticRunEvidenceFreshness, type ImpactEvidence, type ImpactGraph, type ImpactRelationship } from './impact';
 
 /**
  * Pure impact analysis (M3 Task 10). Fixtures use stable UUIDs, explicit
@@ -244,5 +244,19 @@ describe('analyzeTopologyImpact', () => {
     expect(result.counts).toMatchObject({ potentiallyAffected: 521, omittedPotentiallyAffected: 21 });
     expect(result.coverage).toBe('partial');
     expect(result.reasons).toContain('result_limit');
+  });
+});
+
+describe('diagnosticRunEvidenceFreshness', () => {
+  const now = new Date('2026-11-10T12:00:00Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  it.each([
+    ['on-demand within 5 min', { finishedAt: ago(4 * 60_000), policyId: null, intervalSeconds: null }, 'fresh'],
+    ['on-demand past 5 min (inside a 30 min window)', { finishedAt: ago(12 * 60_000), policyId: null, intervalSeconds: null }, 'stale'],
+    ['scheduled within 3 × cadence', { finishedAt: ago(8 * 60_000), policyId: 'p', intervalSeconds: 300 }, 'fresh'],
+    ['scheduled past 3 × cadence', { finishedAt: ago(4 * 60_000), policyId: 'p', intervalSeconds: 60 }, 'stale'],
+    ['never finished', { finishedAt: null, policyId: null, intervalSeconds: null }, 'unknown'],
+  ] as const)('%s', (_name, run, expected) => {
+    expect(diagnosticRunEvidenceFreshness(run, now)).toBe(expected);
   });
 });

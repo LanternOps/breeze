@@ -8,6 +8,8 @@ import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
 import { GraphReadError, graphAuthority } from './graphCursor';
 import { missingSubject, nodeExposure, nodeLabelSql, relationshipExposure, scoped } from './graphRead';
+import { DIAGNOSTIC_FRESHNESS_WINDOW_MS } from './diagnosticHealth';
+import { policyFreshnessWindowMs } from './policyHealth';
 import { readTopologySubjectHealth, type TopologyHealthContribution } from './subjectHealth';
 import { buildTopologyTraceViews } from './tracerouteResults';
 
@@ -342,7 +344,23 @@ type RelationshipRow = Omit<ImpactRelationship, 'freshUntil'> & { freshUntil: st
 type RunRow = {
   id: string; recipeId: string; assessment: HealthStatus; subjectNodeId: string | null; subjectRelationshipId: string | null;
   originNodeId: string; finishedAt: string | Date | null; plan: TopologyDiagnosticPlan;
+  /** Scheduled occurrences only: the policy's cadence (null for an on-demand check). */
+  policyId: string | null; intervalSeconds: number | null;
 };
+
+/**
+ * A run is fresh evidence only within its OWN freshness limit, never merely
+ * because it finished inside the requested impact window: an on-demand check
+ * for DIAGNOSTIC_FRESHNESS_WINDOW_MS, a scheduled occurrence for its policy's
+ * max(3 × cadence, 60 s) (M3-D10). A widened window only reaches back for stale
+ * evidence to report as stale.
+ */
+export function diagnosticRunEvidenceFreshness(run: Pick<RunRow, 'finishedAt' | 'policyId' | 'intervalSeconds'>, now: Date): Freshness {
+  if (!run.finishedAt) return 'unknown';
+  const finished = new Date(run.finishedAt).getTime();
+  const limit = run.policyId ? policyFreshnessWindowMs(run.intervalSeconds) : DIAGNOSTIC_FRESHNESS_WINDOW_MS;
+  return now.getTime() - finished <= limit ? 'fresh' : 'stale';
+}
 /** Health evidence is read for at most this many subjects (the /health endpoint's bounds). */
 export const IMPACT_HEALTH_SUBJECTS = { nodes: 1_000, relationships: 2_000 } as const;
 const MAX_RUNS = 100;
@@ -388,10 +406,13 @@ async function loadGraph(tx: ReadTx, ctx: TopologyRequestContext, physical: bool
   };
 }
 
-async function loadRuns(tx: ReadTx, ctx: TopologyRequestContext, nodeIds: string[], relationshipIds: string[], window: ImpactEvidence['window'], physical: boolean) {
+async function loadRuns(tx: ReadTx, ctx: TopologyRequestContext, nodeIds: string[], relationshipIds: string[], window: ImpactEvidence['window'], physical: boolean, now: Date) {
   if (!nodeIds.length && !relationshipIds.length) return { health: [], routedPaths: [] };
   const runs = await tx.execute<RunRow>(sql`SELECT r.id, r.recipe_id AS "recipeId", r.assessment, r.subject_node_id AS "subjectNodeId",
-      r.subject_relationship_id AS "subjectRelationshipId", r.origin_node_id AS "originNodeId", r.finished_at AS "finishedAt", r.plan
+      r.subject_relationship_id AS "subjectRelationshipId", r.origin_node_id AS "originNodeId", r.finished_at AS "finishedAt", r.plan,
+      r.policy_id AS "policyId",
+      (SELECT (p.definition->>'intervalSeconds')::int FROM topology_monitoring_policies p
+        WHERE p.org_id = r.org_id AND p.site_id = r.site_id AND p.id = r.policy_id) AS "intervalSeconds"
     FROM topology_diagnostic_runs r
     WHERE ${scoped(ctx.scope, 'r')} AND r.state IN ('completed','failed')
       AND r.finished_at >= ${window.from}::timestamptz AND r.finished_at <= ${window.to}::timestamptz
@@ -401,7 +422,7 @@ async function loadRuns(tx: ReadTx, ctx: TopologyRequestContext, nodeIds: string
     ORDER BY r.finished_at DESC, r.id LIMIT ${MAX_RUNS}`);
   const health: ImpactHealthEvidence[] = runs.map((run) => ({
     subject: run.subjectNodeId ? { kind: 'node', id: run.subjectNodeId } : { kind: 'relationship', id: run.subjectRelationshipId! },
-    status: run.assessment, freshness: 'fresh', evidenceId: run.id, evidenceKind: 'diagnostic_run', contextKey: `origin:${run.originNodeId}`,
+    status: run.assessment, freshness: diagnosticRunEvidenceFreshness(run, now), evidenceId: run.id, evidenceKind: 'diagnostic_run', contextKey: `origin:${run.originNodeId}`,
   }));
   // Routed traces are cited as OBSERVED routed paths only; a hop never becomes a node or relationship.
   const traces = runs.filter((run) => run.recipeId === 'trace_route').slice(0, TOPOLOGY_IMPACT_LIMITS.maxRoutedPaths);
@@ -465,7 +486,7 @@ export async function getTopologyImpact(
     const relIds = allRelIds.slice(0, IMPACT_HEALTH_SUBJECTS.relationships);
     const contributions = await readTopologySubjectHealth({ executor: tx as ReadTx, ctx, now, exposure: { interfaceHealth: authority.interfaceHealth },
       subjects: [...nodeIds.map((id) => ({ kind: 'node' as const, id })), ...relIds.map((id) => ({ kind: 'relationship' as const, id }))] });
-    const runs = await loadRuns(tx, ctx, nodeIds, relIds, window, authority.physical);
+    const runs = await loadRuns(tx, ctx, nodeIds, relIds, window, authority.physical, now);
     const health = [...[...contributions.values()].flat().map(contributionEvidence).filter((e): e is ImpactHealthEvidence => !!e), ...runs.health];
 
     const result = analyzeTopologyImpact(graph, effect, { window, health, routedPaths: runs.routedPaths }, remaining(), { now });
