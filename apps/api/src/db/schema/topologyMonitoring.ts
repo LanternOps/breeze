@@ -9,7 +9,7 @@ import { topologyNodes } from './topology';
 export type TopologyTelemetryArmInterface = { interfaceId: string; interfaceEpoch: string; ifIndex: number };
 
 /**
- * M3-D2/D3 standing SNMP interface-telemetry arm (migration 2026-11-02-110000).
+ * M3-D2/D3 standing SNMP interface-telemetry arm (migration 2026-11-03-090200).
  * Human-only, MFA-fresh, outside the settings digest. The arm pins the exact
  * target (node + address), collector, credential source + digest, interfaces
  * and expiry; `generation` rotates on any material change and is the telemetry
@@ -43,7 +43,7 @@ export const topologyTelemetryArms = pgTable('topology_telemetry_arms', {
   revokedBy: uuid('revoked_by'),
   nextPollAt: timestamp('next_poll_at', { withTimezone: true }),
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
-  /** Server-owned poll batch sequence (uint64 decimal), strictly increasing per arm (migration 2026-11-02-110100). */
+  /** Server-owned poll batch sequence (uint64 decimal), strictly increasing per arm (migration 2026-11-03-090300). */
   pollSequence: numeric('poll_sequence', { precision: 20, scale: 0 }).notNull().default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

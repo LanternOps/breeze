@@ -129,7 +129,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON topology_telemetry_arms TO breeze_app;
 --    idempotency key (the occurrence key) is a second guard. A scheduled run
 --    always carries the frozen requester authority (M3-D13).
 -- requester_authority is also created (with its CHECK/guard) by the M3 Task 9
--- migration 2026-11-02-120000, which sorts AFTER this one; declared here too
+-- migration 2026-11-03-090500, which sorts AFTER this one; declared here too
 -- (idempotently) so this file's CHECK does not depend on a later migration.
 ALTER TABLE topology_diagnostic_runs ADD COLUMN IF NOT EXISTS requester_authority jsonb;
 ALTER TABLE topology_diagnostic_runs ADD COLUMN IF NOT EXISTS policy_id uuid;

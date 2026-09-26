@@ -15,7 +15,7 @@ import { checkConstraintLiterals } from './schema/checkConstraintTestHelpers';
 import { TOPOLOGY_INTERFACE_SAMPLE_RESOLUTIONS } from '@breeze/shared';
 
 const MIGRATIONS = resolve(__dirname, '../../migrations');
-const FILE = '2026-11-02-100000-topology-interface-samples.sql';
+const FILE = '2026-11-03-090000-topology-interface-samples.sql';
 const SQL = readFileSync(join(MIGRATIONS, FILE), 'utf8');
 const code = SQL.split('\n').filter(line => !line.trimStart().startsWith('--')).join('\n');
 const TABLE = 'topology_interface_samples';
@@ -23,7 +23,7 @@ const TABLE = 'topology_interface_samples';
 describe('topology interface samples migration', () => {
   it('sorts after the M2 topology migrations', () => {
     const files = readdirSync(MIGRATIONS).filter(name => /^\d{4}-.*\.sql$/.test(name)).sort((a, b) => a.localeCompare(b));
-    expect(files.indexOf(FILE)).toBeGreaterThan(files.indexOf('2026-11-01-150000-topology-relationship-endpoint-indexes.sql'));
+    expect(files.indexOf(FILE)).toBeGreaterThan(files.indexOf('2026-11-03-080600-topology-relationship-endpoint-indexes.sql'));
   });
 
   it('partitions LIST(resolution) -> RANGE(sampled_at) with no default partition', () => {
