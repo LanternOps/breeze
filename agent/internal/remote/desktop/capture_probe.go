@@ -124,7 +124,7 @@ func probeCaptureBackends(plan captureProbePlan) (captureProbeResult, error) {
 
 // captureOneProbeFrame captures a single frame and always closes capturer.
 func captureOneProbeFrame(capturer ScreenCapturer) error {
-	defer capturer.Close()
+	defer func() { _ = capturer.Close() }()
 	img, err := capturer.Capture()
 	if err != nil {
 		return err
