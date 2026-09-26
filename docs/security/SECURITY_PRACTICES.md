@@ -648,7 +648,7 @@ We follow coordinated disclosure. See [SECURITY.md](../SECURITY.md) for:
 - Response timelines (48-hour acknowledgment, severity-based fix targets)
 - Scope and disclosure policy
 
-**Email**: [security@lanternops.io](mailto:security@lanternops.io)
+**Email**: [security@breezermm.com](mailto:security@breezermm.com)
 
 ---
 
@@ -731,4 +731,4 @@ Breeze's security controls align with SOC 2 Trust Service Criteria:
 
 *Last updated: May 2026 (v0.65.0 cross-cutting hardening release)*
 
-*For questions about Breeze security practices, contact [security@lanternops.io](mailto:security@lanternops.io).*
+*For questions about Breeze security practices, contact [security@breezermm.com](mailto:security@breezermm.com).*

@@ -32,7 +32,7 @@ vi.mock('../../middleware/auth', () => ({
   siteAccessCheck: () => () => true,
 }));
 vi.mock('../../services/alertCooldown', () => ({
-  setCooldown: vi.fn(), markConfigPolicyRuleCooldown: vi.fn(),
+  setCooldown: vi.fn(),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn() }));

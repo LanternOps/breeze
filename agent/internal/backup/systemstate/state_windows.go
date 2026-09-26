@@ -71,6 +71,8 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 	// restore; a system_image missing either is not restorable, so fail hard
 	// rather than shipping a partial that looks complete. Other steps (certs,
 	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
+	// The returned error carries each failed required step's own reason (e.g.
+	// which registry hives failed), not just the step name (#6505).
 	if err := runCollectionSteps(manifest, steps, stagingDir, windowsRequiredSteps); err != nil {
 		return manifest, err
 	}

@@ -46,7 +46,7 @@ you.
 
 Instead, please report them responsibly:
 
-1. **Email**: [security@lanternops.io](mailto:security@lanternops.io)
+1. **Email**: [security@breezermm.com](mailto:security@breezermm.com)
 2. **Subject**: `[SECURITY] Brief description`
 3. **Include**:
    - Description of the vulnerability

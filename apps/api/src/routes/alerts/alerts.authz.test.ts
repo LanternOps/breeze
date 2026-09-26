@@ -181,7 +181,7 @@ vi.mock('../../db/schema', () => ({
   alertNotifications: {}, devices: tables.devices, tickets: tables.tickets, ticketAlertLinks: {},
 }));
 vi.mock('../../services/alertCooldown', () => ({
-  setCooldown: vi.fn(), markConfigPolicyRuleCooldown: vi.fn(),
+  setCooldown: vi.fn(),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn() }));

@@ -160,6 +160,13 @@
       "label": "Riavvia servizio sul dispositivo",
       "maxAttempts": "Tentativi massimi di riavvio",
       "cooldownSeconds": "Attesa tra riavvii (secondi)"
+    },
+    "networkCheckAsset": {
+      "label": "Risorsa",
+      "unbound": "Nessun asset associato",
+      "failed": "Impossibile caricare gli asset",
+      "orgRequired": "Seleziona un'organizzazione proprietaria per associare un asset.",
+      "pingName": "Ping a {{label}}"
     }
   },
   "kinds": {
@@ -223,7 +230,18 @@
     "port": "Numero di porta",
     "expectStatus": "Codice di stato previsto",
     "pollingIntervalSeconds": "Interroga ogni (secondi)",
-    "match": "Corrispondenza"
+    "match": "Corrispondenza",
+    "pingCount": "Richieste echo",
+    "expectBanner": "Banner atteso",
+    "httpMethod": "Metodo HTTP",
+    "expectedBody": "La risposta deve contenere",
+    "followRedirects": "Segui i reindirizzamenti",
+    "verifySsl": "Verifica certificato TLS",
+    "recordType": "Tipo di record",
+    "expectedValue": "Valore atteso",
+    "nameserver": "Server dei nomi",
+    "degradedIsFailure": "Considera degradato come errore",
+    "maxResponseMs": "Fallisci se più lento di (ms)"
   },
   "operators": {
     "gt": "maggiore di",
@@ -509,6 +527,30 @@
       "conversion_revert_unavailable": "Questa conversione non può più essere annullata.",
       "invalid_reason": "Il motivo di ritiro non è valido.",
       "unknown": "Conversione non riuscita. Riprova."
+    },
+    "retirement": {
+      "summary_one": "{{count}} regola legacy non è stata convertita in un monitor: verificala.",
+      "summary_other": "{{count}} regole legacy non sono state convertite in monitor: verificale.",
+      "review": "Verifica",
+      "dismiss": "Ignora",
+      "openAlertsNote": "Queste regole non scattano più. Gli avvisi aperti restano aperti finché qualcuno non li risolve; ricrea la condizione come monitor se serve ancora.",
+      "reasons": {
+        "custom_condition": "condizione personalizzata",
+        "nested_group": "gruppo di condizioni annidato",
+        "no_condition": "nessuna condizione valutabile",
+        "equivalence_delta": "la conversione cambierebbe cosa scatta su alcuni dispositivi",
+        "escalation_policy_axis": "la policy di escalation appartiene a una sola organizzazione",
+        "parent_unconverted": "la policy padre non è stata convertita",
+        "policy_inactive": "la policy è inattiva o archiviata",
+        "prerequisite_missing": "su questo server manca una correzione prerequisita",
+        "metric_without_kind": "la metrica non ha un tipo di monitor",
+        "child_kind_not_composable": "condizione incompatibile con un monitor composto",
+        "too_many_conditions": "troppe condizioni",
+        "too_many_responses": "servirebbero più di dieci risposte",
+        "auto_resolve_conditions": "impossibile mantenere le condizioni di risoluzione personalizzate",
+        "target_unconvertible": "impossibile convertire la destinazione della risposta",
+        "unknown": "conversione rifiutata; verifica l’origine"
+      }
     }
   },
   "device": {
@@ -543,5 +585,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (recupera)",
+    "HEAD": "HEAD (solo intestazioni)",
+    "POST": "POST (invia)",
+    "PUT": "PUT (sostituisci)",
+    "OPTIONS": "OPTIONS (funzionalità)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (indirizzo IPv4)",
+    "AAAA": "AAAA (indirizzo IPv6)",
+    "MX": "MX (server di posta)",
+    "CNAME": "CNAME (nome alternativo)",
+    "TXT": "TXT (testo)",
+    "NS": "NS (server dei nomi)"
   }
 }

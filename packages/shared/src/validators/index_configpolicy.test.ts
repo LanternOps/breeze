@@ -1,3 +1,4 @@
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { describe, it, expect } from 'vitest';
 import {
   // Config Policy
@@ -87,20 +88,14 @@ describe('addFeatureLinkSchema', () => {
 
   it('should accept with inlineSettings', () => {
     const result = addFeatureLinkSchema.safeParse({
-      featureType: 'monitoring',
-      inlineSettings: { interval: 60 },
+      featureType: 'monitors',
+      inlineSettings: { checkIntervalSeconds: 60 },
     });
     expect(result.success).toBe(true);
   });
 
   it('should accept all feature types', () => {
-    const featureTypes = [
-      'patch', 'alert_rule', 'backup', 'security', 'monitoring',
-      'maintenance', 'compliance', 'automation', 'event_log',
-      'software_policy', 'sensitive_data', 'peripheral_control',
-      'warranty', 'helper',
-    ] as const;
-    for (const featureType of featureTypes) {
+    for (const featureType of CONFIG_FEATURE_TYPES) {
       const result = addFeatureLinkSchema.safeParse({
         featureType,
         inlineSettings: {},
@@ -114,6 +109,10 @@ describe('addFeatureLinkSchema', () => {
       featureType: 'patch',
     });
     expect(result.success).toBe(false);
+  });
+
+  it.each(RETIRED_CONFIG_FEATURE_TYPES)('rejects retired feature type %s', (featureType) => {
+    expect(addFeatureLinkSchema.safeParse({ featureType, inlineSettings: {} }).success).toBe(false);
   });
 
   it('should reject invalid feature type', () => {

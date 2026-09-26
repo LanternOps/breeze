@@ -7,7 +7,6 @@ const TABS = [
   { href: '/alerts', labelKey: 'alerts' },
   { href: '/alerts/correlations', labelKey: 'correlations' },
   { href: '/alerts/monitors', labelKey: 'monitors' },
-  { href: '/alerts/rules', labelKey: 'rules' },
   { href: '/alerts/delivery', labelKey: 'delivery' },
 ] as const;
 
@@ -44,7 +43,6 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
     // Legacy paths redirect permanently to Delivery.
     if (path.startsWith('/alerts/delivery') || path.startsWith('/alerts/channels') || path.startsWith('/alerts/routing-rules')) return '/alerts/delivery';
     if (path.startsWith('/alerts/monitors')) return '/alerts/monitors';
-    if (path.startsWith('/alerts/rules')) return '/alerts/rules';
     return '/alerts';
   }, [path]);
 

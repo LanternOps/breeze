@@ -132,7 +132,6 @@ import {
   applyFleetDesign,
   canonical,
   describeAction,
-  retireRewrite,
   snapshotLinks,
   toRuleItem,
   toWatchItem,
@@ -238,14 +237,14 @@ describe('applyFleetDesign — blocked', () => {
   it('refuses a displaced policy that is not in displacementsAccepted: throws FleetDesignApplyError(blocked), nothing written', async () => {
     const previewCtx = makeCtx({
       preview: makePreview({
-        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 1, ruleCount: 0, displaces: [{ policyId: 'p1', policyName: 'Old', featureType: 'monitoring', deviceCount: 2 }] }],
+        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 1, ruleCount: 0, displaces: [{ policyId: 'p1', policyName: 'Old', featureType: 'monitors', deviceCount: 2 }] }],
       }),
     });
     previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
 
     await expect(applyFleetDesign(makeAuth(), RUN, makeApproval())).rejects.toMatchObject({
       code: 'blocked',
-      payload: { unaccepted: [{ policyId: 'p1', policyName: 'Old', featureType: 'monitoring', deviceCount: 2 }] },
+      payload: { unaccepted: [{ policyId: 'p1', policyName: 'Old', featureType: 'monitors', deviceCount: 2 }] },
     });
     expect(ledgerMock.recordApplied).not.toHaveBeenCalled();
     expect(configPolicyMock.createConfigPolicy).not.toHaveBeenCalled();
@@ -297,35 +296,6 @@ describe('applyFleetDesign — step 1 (functions)', () => {
     }, transactionState.tx);
     expect(result.applied).toContain('functions:file_server');
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'fleet_design.apply.function' }));
-  });
-});
-
-describe('applyFleetDesign — step 2 (retire)', () => {
-  it('rewrites the feature link with the named watch disabled and records the previous inlineSettings as before-image', async () => {
-    const inlineSettings = { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: true }] };
-    const previewCtx = makeCtx({
-      retiredResolved: new Map([[
-        'retired:0',
-        { item: { kind: 'watch' as const, policyId: 'p2', policyName: 'Old Policy', itemName: 'Spooler', reason: 'unused' }, linkId: 'link-1', inlineSettings, policyOrgId: ORG },
-      ]]),
-    });
-    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
-    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-1' });
-
-    const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ retired: ['retired:0'] }));
-
-    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith(
-      'link-1',
-      { inlineSettings: { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: false }] } },
-      'p2',
-      undefined, transactionState.tx,
-    );
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
-      itemRef: 'retired:0', itemKind: 'retired', step: 2,
-      createdRefs: { policyId: 'p2', linkId: 'link-1' },
-      beforeImage: { inlineSettings },
-    }), transactionState.tx);
-    expect(result.applied).toContain('retired:0');
   });
 });
 
@@ -584,7 +554,7 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
     expect(bundleMock.importBundle).not.toHaveBeenCalled();
   });
 
-  it('legacy ledger (applied before W05c2): appends the created id to the rationale of an applied rule, and refreshes the policy snapshot', async () => {
+  it('legacy ledger: creates approved scripts without rewriting retired rules or their historical snapshot', async () => {
     const rule: FleetDesignRule = {
       name: 'Spooler stuck', severity: 'medium', kind: 'disk', condition: { operator: 'gt', value: 90 }, responses: [], deliveryMode: 'inherit', deliveryChannelIds: [], cooldownMinutes: 30, rationale: 'jobs pile up',
       action: { kind: 'script', ref: spooler.name }, paging: 'business_hours',
@@ -611,11 +581,10 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
 
     await applyFleetDesign(makeAuth(), RUN, approval());
 
-    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-r', { inlineSettings: { items: patchedItems } }, 'p1', undefined, transactionState.tx);
-    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith('ledger-policy', ORG, expect.objectContaining({
-      policyId: 'p1',
-      linksSnapshot: snapshotLinks([{ featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]),
-    }), transactionState.tx);
+    expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+    expect(configPolicyMock.listFeatureLinks).not.toHaveBeenCalled();
+    expect(ledgerMock.updateCreatedRefs).not.toHaveBeenCalled();
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemKind: 'script' }), transactionState.tx);
     expect(monitorServiceMock.updateMonitorDefinition).not.toHaveBeenCalled();
   });
 
@@ -684,7 +653,7 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
 });
 
 describe('applyFleetDesign — partial failure', () => {
-  it('a failure in step 3 leaves step 1 and 2 rows applied, records a failed row with the error, returns partial with failedStep 3', async () => {
+  it('a failure in step 3 leaves step 1 rows applied, records a failed row with the error, returns partial with failedStep 3', async () => {
     const outcome = makeOutcome({
       functions: [{ functionKey: 'domain_controller', label: 'Domain Controller', deviceIds: ['d1'], confidence: 0.9, evidence: [] }],
       monitoring: [{
@@ -700,10 +669,6 @@ describe('applyFleetDesign — partial failure', () => {
         functions: [{ functionKey: 'domain_controller', label: 'Domain Controller', groupId: null, groupName: 'Fleet Design: Domain Controller', deviceCount: 1, devicesAdded: ['d1'], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
       }),
       wantedByFunction: new Map([['domain_controller', ['d1']]]),
-      retiredResolved: new Map([[
-        'retired:0',
-        { item: { kind: 'watch' as const, policyId: 'p2', policyName: 'Old Policy', itemName: 'Spooler', reason: 'unused' }, linkId: 'link-1', inlineSettings: { watches: [{ name: 'Spooler', enabled: true }] }, policyOrgId: ORG },
-      ]]),
       // References a DIFFERENT function than the approved one, and no group exists for it.
       monitoringByFunction: new Map([['file_server', { watches: [0], rules: [] }]]),
     });
@@ -721,11 +686,11 @@ describe('applyFleetDesign — partial failure', () => {
     ledgerMock.findReusableGroup.mockResolvedValue(null);
 
     const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({
-      functions: ['domain_controller'], retired: ['retired:0'], monitoring: ['monitoring:file_server:watch:0'],
+      functions: ['domain_controller'], monitoring: ['monitoring:file_server:watch:0'],
     }));
 
     expect(result.partial).toEqual({ failedStep: 3, reason: expect.stringContaining('function_group_missing') });
-    expect(result.applied).toEqual(expect.arrayContaining(['functions:domain_controller', 'retired:0']));
+    expect(result.applied).toEqual(expect.arrayContaining(['functions:domain_controller']));
     expect(result.applied).not.toContain('policy:file_server');
     expect(result.rollbackAvailable).toBe(true);
     expect(ledgerMock.recordFailed).toHaveBeenCalledWith(expect.objectContaining({
@@ -775,18 +740,6 @@ describe('applyFleetDesign — idempotent re-apply', () => {
 });
 
 describe('pure helpers', () => {
-  describe('retireRewrite', () => {
-    it('disables the named watch by name, leaving other watches untouched', () => {
-      const result = retireRewrite('watch', 'Spooler', { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: true }, { name: 'BITS', enabled: true }] });
-      expect(result).toEqual({ checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: false }, { name: 'BITS', enabled: true }] });
-    });
-
-    it('removes the named rule by name from items', () => {
-      const result = retireRewrite('rule', 'Disk full', { items: [{ name: 'Disk full' }, { name: 'CPU high' }] });
-      expect(result).toEqual({ items: [{ name: 'CPU high' }] });
-    });
-  });
-
   describe('describeAction / toRuleItem', () => {
     it('describes a none action plainly', () => {
       expect(describeAction('none')).toBe('none');

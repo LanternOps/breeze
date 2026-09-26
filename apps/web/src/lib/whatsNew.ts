@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.117.0',
+    date: '2026-09-25',
+    title: 'Hardware & RAID health monitoring, business reports, and a System page for your install',
+    highlights: [
+      'Hardware & RAID health: disks, controllers and RAID arrays (storcli, mdadm, Storage Spaces, ZFS, smartctl and more) report into a new Storage & RAID section on each device, with a device-list column, filter and built-in hardware alerts (needs agent 0.117.0).',
+      'Business reports: ready-made templates with options forms and ownership, plus read-only report history for inactive organizations.',
+      'Settings ▸ System shows connection status for your integrations and a Deprecations report of anything you still need to move off.',
+      'Device anomalies are grouped into episodes: one card per burst instead of one per metric blip, and resolving an episode auto-resolves its alert.',
+      'Billing: organizations can override payment terms, and each invoice keeps the theme and page size it was issued with.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.116.0',
     date: '2026-09-23',
     title: 'Accept quotes on a customer\'s behalf, IOC threat scanning, and invoices grouped by ticket',

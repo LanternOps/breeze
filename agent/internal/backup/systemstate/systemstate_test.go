@@ -964,3 +964,103 @@ func TestRunCollectionStepsAllFail(t *testing.T) {
 		t.Fatalf("err = %v, want 'produced no artifacts'", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// runCollectionSteps — the step loop Windows CollectState delegates to. #6505:
+// the required-artifact error used to name only the failed STEP ("[registry]"),
+// discarding the step's own error (which names the hive), so
+// backup_jobs.error_log never said which hive failed.
+// ---------------------------------------------------------------------------
+
+func TestRunCollectionSteps_RequiredStepErrorCarriesStepReason(t *testing.T) {
+	hiveErr := &registrySaveError{
+		FailedHives: []string{"SAM", "SECURITY"},
+		Err:         errors.New(`fork/exec C:\Windows\system32\reg.exe: Access is denied.`),
+	}
+	manifest := &SystemStateManifest{}
+	steps := []collectionStep{
+		{"registry", func(string) ([]Artifact, error) {
+			return []Artifact{{Name: "registry_SYSTEM"}}, hiveErr
+		}},
+		{"boot", func(string) ([]Artifact, error) { return []Artifact{{Name: "bcd_export"}}, nil }},
+		{"iis", func(string) ([]Artifact, error) { return nil, errors.New("appcmd blew up") }},
+	}
+
+	err := runCollectionSteps(manifest, steps, t.TempDir(), map[string]bool{"registry": true, "boot": true})
+	if err == nil {
+		t.Fatal("a failed required step must fail the collection")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"missing required artifact(s) [registry]",
+		"image would not be restorable",
+		"reg save failed for hive(s) [SAM SECURITY]",
+		"Access is denied",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must contain %q; got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "appcmd") {
+		t.Errorf("a best-effort step's failure must not be reported as a required-step reason; got %q", msg)
+	}
+	var rsErr *registrySaveError
+	if !errors.As(err, &rsErr) || !reflect.DeepEqual(rsErr.FailedHives, []string{"SAM", "SECURITY"}) {
+		t.Errorf("the step error must stay reachable via errors.As; got %v", rsErr)
+	}
+	if !reflect.DeepEqual(manifest.IncompleteSteps, []string{"registry", "iis"}) {
+		t.Errorf("IncompleteSteps = %v, want [registry iis]", manifest.IncompleteSteps)
+	}
+}
+
+func TestRunCollectionSteps_OnlyOptionalFailuresSucceed(t *testing.T) {
+	manifest := &SystemStateManifest{}
+	steps := []collectionStep{
+		{"registry", func(string) ([]Artifact, error) { return []Artifact{{Name: "registry_SYSTEM"}}, nil }},
+		{"iis", func(string) ([]Artifact, error) { return nil, errors.New("appcmd blew up") }},
+	}
+	if err := runCollectionSteps(manifest, steps, t.TempDir(), map[string]bool{"registry": true}); err != nil {
+		t.Fatalf("optional-step failure must not fail the collection: %v", err)
+	}
+	if len(manifest.Artifacts) != 1 || !reflect.DeepEqual(manifest.IncompleteSteps, []string{"iis"}) {
+		t.Errorf("artifacts=%v incomplete=%v", manifest.Artifacts, manifest.IncompleteSteps)
+	}
+}
+
+// Every step failing (e.g. an unelevated agent) is the likeliest real-world
+// shape of #6505, so the required steps' reasons must survive the
+// no-artifacts short-circuit too.
+func TestRunCollectionSteps_AllFailNoArtifacts(t *testing.T) {
+	hiveErr := &registrySaveError{FailedHives: []string{"SAM"}, Err: errors.New("Access is denied.")}
+	steps := []collectionStep{
+		{"registry", func(string) ([]Artifact, error) { return nil, hiveErr }},
+		{"drivers", func(string) ([]Artifact, error) { return nil, errors.New("driverquery exploded") }},
+	}
+	err := runCollectionSteps(&SystemStateManifest{}, steps, t.TempDir(), map[string]bool{"registry": true})
+	if err == nil {
+		t.Fatal("all steps failing must fail the collection")
+	}
+	msg := err.Error()
+	for _, want := range []string{"produced no artifacts - all 2 steps failed", "reg save failed for hive(s) [SAM]"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must contain %q; got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "driverquery") {
+		t.Errorf("a best-effort step's failure must not be reported as a required-step reason; got %q", msg)
+	}
+	var rsErr *registrySaveError
+	if !errors.As(err, &rsErr) {
+		t.Errorf("the registry step error must stay reachable via errors.As; got %q", msg)
+	}
+}
+
+func TestRunCollectionSteps_AllOptionalFailNoArtifacts(t *testing.T) {
+	steps := []collectionStep{
+		{"drivers", func(string) ([]Artifact, error) { return nil, errors.New("x") }},
+	}
+	err := runCollectionSteps(&SystemStateManifest{}, steps, t.TempDir(), map[string]bool{"registry": true})
+	if err == nil || err.Error() != "system state collection produced no artifacts - all 1 steps failed" {
+		t.Fatalf("got %v", err)
+	}
+}

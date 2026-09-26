@@ -77,7 +77,7 @@ Breeze has privileged access to every device it manages. We take that seriously.
 
 For the full security whitepaper, including SOC 2 alignment mapping, see **[Security Practices](docs/security/SECURITY_PRACTICES.md)**.
 
-To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops.io)**. See [SECURITY.md](SECURITY.md) for our disclosure policy.
+To report a vulnerability: **[security@breezermm.com](mailto:security@breezermm.com)**. See [SECURITY.md](SECURITY.md) for our disclosure policy.
 
 ---
 

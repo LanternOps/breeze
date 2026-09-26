@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alertRuleConditionSchema, alertRuleInlineSettingsSchema, monitoringInlineSettingsSchema } from './index';
+import { alertRuleConditionSchema } from './index';
 
 describe('alertRuleConditionSchema', () => {
   it('accepts a metric condition', () => {
@@ -99,38 +99,5 @@ describe('alertRuleConditionSchema', () => {
     const r = alertRuleConditionSchema.safeParse({ type: 'network', metric: 'network', operator: 'gt', value: 85 });
     expect(r.success).toBe(false);
     if (!r.success) expect(JSON.stringify(r.error.issues)).toContain('metric');
-  });
-});
-
-describe('alertRuleInlineSettingsSchema', () => {
-  it('parses items with defaults', () => {
-    const r = alertRuleInlineSettingsSchema.parse({
-      items: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }] }],
-    });
-    expect(r.items[0]!.severity).toBe('medium');
-    expect(r.items[0]!.cooldownMinutes).toBe(5);
-  });
-});
-
-describe('monitoringInlineSettingsSchema (post-consolidation)', () => {
-  it('rejects non-empty legacy alertRules with a pointer message', () => {
-    const r = monitoringInlineSettingsSchema.safeParse({
-      checkIntervalSeconds: 60, watches: [],
-      alertRules: [{ name: 'x', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
-    });
-    expect(r.success).toBe(false);
-    if (!r.success) expect(JSON.stringify(r.error.issues)).toContain('Alerts feature');
-  });
-
-  it('rejects non-empty legacy eventLogAlerts', () => {
-    const r = monitoringInlineSettingsSchema.safeParse({
-      eventLogAlerts: [{ name: 'x', category: 'system', level: 'error' }],
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it('accepts empty/absent legacy arrays (stale clients sending [])', () => {
-    expect(monitoringInlineSettingsSchema.safeParse({ checkIntervalSeconds: 60, watches: [], alertRules: [], eventLogAlerts: [] }).success).toBe(true);
-    expect(monitoringInlineSettingsSchema.safeParse({ watches: [{ watchType: 'service', name: 'MSSQLSERVER' }] }).success).toBe(true);
   });
 });
