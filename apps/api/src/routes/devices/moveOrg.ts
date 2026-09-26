@@ -1004,8 +1004,12 @@ moveOrgRoutes.post(
         // subselect still resolves after the generic loop re-stamped `alerts` —
         // alerts.device_id is not what the loop changes, and the request context
         // spans both orgs (same argument as the ai_agent_runs subselect above).
+        //
+        // A SITE-OWNED topology policy alert (M3-D6, topology_site_id set) does
+        // not move: its ownership guard keeps it in its site's org while the
+        // origin device (provenance only) leaves, so its link stays with it.
         await tx.execute(
-          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
+          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)`,
         );
 
         // ticket_outbox (#4743) denormalizes org_id from its ticket and has no
@@ -1189,6 +1193,10 @@ moveOrgRoutes.post(
         // statement because "g.org_id = target" is what "this move just took
         // the group with it" means here.
         //
+        // The alert leg excludes SITE-OWNED topology alerts (M3-D6): they stay
+        // in their site's org when the origin device moves, and so does their
+        // verdict (same rule as ticket_alert_links above).
+        //
         // Provenance note: verdict.run_id is NOT NULL and `ai_agent_runs`
         // deliberately stays in the SOURCE org (owner decision 2026-08-23), so
         // after this re-stamp a verdict's org_id and its run's org_id differ.
@@ -1198,7 +1206,7 @@ moveOrgRoutes.post(
         // org — see the fix in services/aiAgents/alertVerdicts.ts.
         const movedAlertVerdicts = (await tx.execute(
           sql`UPDATE ${sql.identifier('ai_alert_verdicts')} SET org_id = ${targetOrgId}::uuid
-              WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
+              WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)
                  OR correlation_group_id IN (
                    SELECT g.id FROM alert_correlation_groups g
                    WHERE g.org_id = ${targetOrgId}::uuid
