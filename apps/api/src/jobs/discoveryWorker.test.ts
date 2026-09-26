@@ -8,6 +8,7 @@ const { mockDb } = vi.hoisted(() => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    execute: vi.fn(async (_query: unknown) => [] as unknown[]),
   }
 }));
 
@@ -894,6 +895,11 @@ describe('cleanupSpeculativeTopologyLinks', () => {
 
     expect(deleted).toBe(2);
     expect(vi.mocked(db.delete)).toHaveBeenCalledWith(expect.anything());
+    // M2 D5: tagged as legacy collector absence around the DELETE, then cleared.
+    const settings = vi.mocked(mockDb.execute).mock.calls.map(([query]) => new PgDialect().sqlToQuery(query as never).sql);
+    expect(settings).toEqual([expect.stringContaining("'breeze.topology_delete_cause', 'collector_absence', true"), expect.stringContaining("'breeze.topology_delete_cause', '', true")]);
+    expect(vi.mocked(mockDb.execute).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.delete).mock.invocationCallOrder[0]!);
+    expect(vi.mocked(mockDb.execute).mock.invocationCallOrder[1]).toBeGreaterThan(vi.mocked(db.delete).mock.invocationCallOrder[0]!);
   });
 });
 

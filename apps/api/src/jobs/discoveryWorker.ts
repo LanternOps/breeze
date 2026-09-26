@@ -51,6 +51,7 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { reconcileTopology } from './reconcileTopology';
+import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 
 const { db } = dbModule;
@@ -1612,7 +1613,8 @@ export async function cleanupSpeculativeTopologyLinks(
   orgId: string,
   siteId: string
 ): Promise<number> {
-  const deleted = await db
+  // M2 D5: collector-absence cleanup, not a user/inventory delete.
+  const deleted = await withLegacyCollectorAbsence(() => db
     .delete(networkTopology)
     .where(
       and(
@@ -1626,7 +1628,7 @@ export async function cleanupSpeculativeTopologyLinks(
         )!
       )
     )
-    .returning({ id: networkTopology.id });
+    .returning({ id: networkTopology.id }));
 
   return deleted.length;
 }
