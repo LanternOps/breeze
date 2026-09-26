@@ -736,13 +736,23 @@ aiRoutes.post(
         return c.json({ error: reservation.message }, 402);
       }
       const budgetDispatch = budgetDispatchFrom(reservation)!;
-      const openaiManager = getOpenAISessionManager();
 
+      type OpenAIChatSession = ReturnType<OpenAISessionManager['getOrCreate']>;
       const dispatch = await inRequestDb(async (): Promise<
-        | { kind: 'dispatched'; openaiSession: ReturnType<typeof openaiManager.getOrCreate> }
+        | { kind: 'dispatched'; openaiSession: OpenAIChatSession }
         | { kind: 'refused'; response: Response }
+        | { kind: 'failed'; error: unknown }
       > => {
-        const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
+        // Caught (not thrown through) so the reservation taken above is still
+        // released below — same shape as the Claude SDK branch.
+        let openaiManager: OpenAISessionManager;
+        let openaiSession: OpenAIChatSession;
+        try {
+          openaiManager = getOpenAISessionManager();
+          openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
+        } catch (err) {
+          return { kind: 'failed', error: err };
+        }
 
         if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
           return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
@@ -787,10 +797,11 @@ aiRoutes.post(
         );
         return { kind: 'dispatched', openaiSession };
       });
-      if (dispatch.kind === 'refused') {
+      if (dispatch.kind !== 'dispatched') {
         // Released only after the dispatch context has closed, so the release's
         // own system transaction never runs beside a held request connection.
         await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+        if (dispatch.kind === 'failed') throw dispatch.error;
         return dispatch.response;
       }
       const { openaiSession } = dispatch;

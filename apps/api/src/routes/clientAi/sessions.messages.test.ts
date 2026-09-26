@@ -533,7 +533,9 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
   });
 
   it('#3127: settles an approval-blocked turn with no DB context held, between two short ones', async () => {
-    const depths: Record<string, number[]> = { select: [], reserve: [], getOrCreate: [], settle: [], insert: [] };
+    const depths: { select: number[]; reserve: number[]; getOrCreate: number[]; settle: number[]; insert: number[] } = {
+      select: [], reserve: [], getOrCreate: [], settle: [], insert: [],
+    };
     dbSelectMock.mockImplementation(() => {
       depths.select.push(dbCtx.depth);
       return selectChain([SESSION_ROW]);
@@ -582,6 +584,27 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/wrapping up the previous turn/);
     expect(releaseDepth).toBe(0);
+  });
+
+  it('#3127: a session that fails to materialise releases its reservation with no DB context held', async () => {
+    let getOrCreateDepth = -1;
+    managerMock.getOrCreate.mockImplementation(async () => {
+      getOrCreateDepth = dbCtx.depth;
+      throw new Error('sdk bootstrap failed');
+    });
+    let releaseDepth = -1;
+    releaseUnusedAiBudgetReservationMock.mockImplementationOnce(async () => {
+      releaseDepth = dbCtx.depth;
+      return { kind: 'released' };
+    });
+
+    const res = await postMessage({ content: 'hi' });
+
+    expect(res.status).toBe(500);
+    expect(getOrCreateDepth).toBe(1);
+    expect(releaseUnusedAiBudgetReservationMock).toHaveBeenCalledTimes(1);
+    expect(releaseDepth).toBe(0);
+    expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
   it('409 concurrency path releases the reservation taken for the losing turn', async () => {

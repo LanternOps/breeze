@@ -1,9 +1,35 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // #3127: depth of the (mocked) short per-phase DB contexts the message-send
 // handler opens now that it no longer runs inside a request transaction.
 const dbCtx = vi.hoisted(() => ({ depth: 0 }));
+
+// OpenAI-compatible branch harness (#3127): provider switch + session manager.
+const openai = vi.hoisted(() => ({
+  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
+  manager: {
+    getOrCreate: vi.fn(),
+    tryTransitionToProcessing: vi.fn(),
+    startTurn: vi.fn(),
+  },
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: vi.fn(() => ({
+    MCP_LLM_PROVIDER: openai.provider,
+    MCP_LLM_BASE_URL: 'http://llm.example.test',
+    MCP_LLM_API_KEY: 'k',
+    MCP_LLM_PRICE_INPUT_PER_M_USD: 1,
+    MCP_LLM_PRICE_OUTPUT_PER_M_USD: 1,
+  })),
+}));
+
+vi.mock('../services/llm/openaiSessionManager', () => ({
+  OpenAISessionManager: vi.fn(function OpenAISessionManager() {
+    return openai.manager;
+  }),
+}));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -422,6 +448,78 @@ describe('AI routes', () => {
       expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
       expect(releaseDepth).toBe(0);
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    describe('#3127: OpenAI-compatible branch', () => {
+      beforeEach(() => {
+        openai.provider = 'openai-compatible';
+      });
+      afterEach(() => {
+        openai.provider = 'anthropic';
+      });
+
+      it('reads in a short context and reserves with none held', async () => {
+        const depths: Record<string, number> = {};
+        trackPreflightDepth(depths);
+        const reserveImpl = vi.mocked(reserveAiBudget).getMockImplementation()!;
+        vi.mocked(reserveAiBudget).mockImplementationOnce(async (...args) => {
+          depths.reserve = dbCtx.depth;
+          return reserveImpl(...args);
+        });
+        const openaiSession = makeActiveSession();
+        openai.manager.getOrCreate.mockImplementation(() => {
+          depths.getOrCreate = dbCtx.depth;
+          return openaiSession;
+        });
+        openai.manager.tryTransitionToProcessing.mockReturnValue(true);
+        vi.mocked(db.insert).mockImplementation(() => {
+          depths.insert = dbCtx.depth;
+          return { values: vi.fn().mockResolvedValue(undefined) } as any;
+        });
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(200);
+        await res.text();
+        expect(depths).toEqual({ preflight: 1, reserve: 0, getOrCreate: 1, insert: 1 });
+        expect(openai.manager.startTurn).toHaveBeenCalledTimes(1);
+        expect(dbCtx.depth).toBe(0);
+      });
+
+      it('releases the reservation with no context held when the session manager throws', async () => {
+        trackPreflightDepth({});
+        openai.manager.getOrCreate.mockImplementation(() => {
+          throw new Error('manager exploded');
+        });
+        let releaseDepth = -1;
+        vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
+          releaseDepth = dbCtx.depth;
+          return { kind: 'released', reservationId: input.reservationId } as any;
+        });
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(500);
+        expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+        expect(releaseDepth).toBe(0);
+        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+      });
+
+      it('releases the reservation with no context held when the turn slot is taken', async () => {
+        trackPreflightDepth({});
+        openai.manager.getOrCreate.mockReturnValue(makeActiveSession());
+        openai.manager.tryTransitionToProcessing.mockReturnValue(false);
+        let releaseDepth = -1;
+        vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
+          releaseDepth = dbCtx.depth;
+          return { kind: 'released', reservationId: input.reservationId } as any;
+        });
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(409);
+        expect(releaseDepth).toBe(0);
+      });
     });
 
     it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {
