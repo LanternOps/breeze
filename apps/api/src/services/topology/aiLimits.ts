@@ -126,6 +126,15 @@ redis.call('EXPIRE', KEYS[1], ARGV[3])
 return {'ok', redis.call('HGET', KEYS[1], 'readCalls') or '0', redis.call('HGET', KEYS[1], 'proposals') or '0',
   redis.call('HGET', KEYS[1], 'inputTokens') or '0', redis.call('HGET', KEYS[1], 'outputTokens') or '0'}`;
 
+// A prompt reservation returned by a turn that never reached the model
+// (PR #7147 F2). Atomic, and floored at zero so a refund can never mint budget
+// another turn did not reserve.
+const REFUND = `
+local current = tonumber(redis.call('HGET', KEYS[1], 'inputTokens') or '0')
+local refund = math.min(current, tonumber(ARGV[1]))
+if refund > 0 then redis.call('HINCRBY', KEYS[1], 'inputTokens', -refund) end
+return refund`;
+
 type EvalRedis = { eval(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown> };
 
 function redisOrFail(): EvalRedis {
@@ -241,6 +250,20 @@ export async function recordTopologyAiTokenUsage(
   const totals = totalsFrom(answer);
   if (!totals) throw new TopologyAiLimitError('topology_ai_limits_unavailable');
   return totals;
+}
+
+/**
+ * Return a turn's up-front input reservation (`consumeTopologyAiBudget`'s
+ * prompt estimate) when the turn was refused before any model call — a
+ * 409/402/503 at dispatch — so a refusal never burns the investigation's
+ * cumulative budget. Only the reservation is returned; usage a model call
+ * actually spent is never refunded. Throws `topology_ai_limits_unavailable` on
+ * a Redis failure (the caller keeps the charge: conservative).
+ */
+export async function refundTopologyAiTokenReservation(investigationId: string, inputTokens: number): Promise<void> {
+  const amount = Math.max(0, Math.trunc(inputTokens));
+  if (amount === 0) return;
+  await run(redisOrFail(), REFUND, [budgetKey(investigationId)], [amount]);
 }
 
 /** True while cumulative token totals are within the per-investigation caps. */

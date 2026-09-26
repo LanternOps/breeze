@@ -247,6 +247,54 @@ describe('topology investigation output (M4 Task 3)', () => {
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
   });
 
+  describe('a refused concurrent request never hijacks the running turn (PR #7147 F1)', () => {
+    function stalledSdk() {
+      queryMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() { await new Promise(() => undefined); },
+        interrupt: vi.fn(async () => undefined),
+        close: vi.fn(),
+      }));
+    }
+
+    it('a reuse while the turn is processing leaves the running runtime, its cap stop and its reservation untouched', async () => {
+      stalledSdk();
+      const { rt: running } = runtime();
+      const { rt: late } = runtime();
+      const session = await manager.getOrCreate('sess-topo-race', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, {});
+      expect(manager.tryTransitionToProcessing(session, 'res-a', { topologyInvestigation: running })).toBe(true);
+      session.topologyStopped = true; // a token cap stopped the running turn
+
+      // Request B passed the route's get() check before A created the session.
+      const reused = await manager.getOrCreate('sess-topo-race', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, { topologyInvestigation: late });
+      expect(reused).toBe(session);
+      expect(session.topologyInvestigation).toBe(running);
+      expect(session.topologyStopped).toBe(true);
+
+      // B loses the slot: nothing of B's is bound.
+      expect(manager.tryTransitionToProcessing(reused, 'res-b', { topologyInvestigation: late })).toBe(false);
+      expect(session.topologyInvestigation).toBe(running);
+      expect(session.topologyStopped).toBe(true);
+      expect(session.budgetReservationId).toBe('res-a');
+      expect(running.abort).not.toHaveBeenCalled();
+    });
+
+    it('the turn that wins the slot binds its own runtime (or none) and clears a stale cap stop', async () => {
+      stalledSdk();
+      const { rt } = runtime();
+      const session = await manager.getOrCreate('sess-topo-idle', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, {});
+      session.state = 'idle';
+      session.topologyStopped = true;
+      expect(manager.tryTransitionToProcessing(session, 'res-1', { topologyInvestigation: rt })).toBe(true);
+      expect(session.topologyInvestigation).toBe(rt);
+      expect(session.topologyStopped).toBe(false);
+
+      session.state = 'idle';
+      session.topologyInvestigation = undefined;
+      expect(manager.tryTransitionToProcessing(session, 'res-2', { topologyInvestigation: undefined })).toBe(true);
+      expect(session.topologyInvestigation).toBeUndefined();
+    });
+  });
+
   it('a turn timeout aborts the SDK and keeps the gate closed: late uncited prose is never streamed, replayed or persisted (C1)', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

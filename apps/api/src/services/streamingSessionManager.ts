@@ -611,8 +611,9 @@ export interface ActiveSession {
   allowedTools?: string[];
   /**
    * Topology M4 Task 3 (#6000): the host-owned investigation runtime for the
-   * CURRENT turn of a topology session (set by the route via `getOrCreate`
-   * options, cleared when the turn ends). While set, provider text goes into
+   * CURRENT turn of a topology session (bound by the route through
+   * `tryTransitionToProcessing` — only when it wins the slot — and cleared
+   * when the turn ends). While set, provider text goes into
    * its output gate instead of the event bus, tool events are replaced by
    * fixed `topology_progress` phases, raw assistant content is never
    * persisted, and the turn ends with one validated `topology_explanation`.
@@ -809,13 +810,25 @@ export class StreamingSessionManager {
    * slot attaches their own reservation, and every loser releases a reservation
    * that was never attached to anything.
    */
-  tryTransitionToProcessing(session: ActiveSession, budgetReservationId?: string): boolean {
+  tryTransitionToProcessing(
+    session: ActiveSession,
+    budgetReservationId?: string,
+    turn?: { topologyInvestigation?: TopologyTurnRuntime },
+  ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
     }
     session.state = 'processing';
     if (budgetReservationId !== undefined) {
       session.budgetReservationId = budgetReservationId;
+    }
+    // Same claim-then-attach rule for the topology runtime (PR #7147 F1): only
+    // the caller that takes the slot binds its turn's runtime (or clears a
+    // previous one) and resets the cap stop. A loser binds nothing, so the
+    // running turn keeps streaming into its OWN gate and its cap stop holds.
+    if (turn) {
+      session.topologyInvestigation = turn.topologyInvestigation;
+      session.topologyStopped = false;
     }
     // The state and its staleness clock move together: eviction reads
     // lastActivityAt to tell a live turn from a wedged one, and before this the
@@ -913,8 +926,11 @@ export class StreamingSessionManager {
           : refreshedAuthWithOrigin;
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
-        reusable.topologyInvestigation = options?.topologyInvestigation;
-        reusable.topologyStopped = false;
+        // Topology fields are NOT touched here (PR #7147 F1): this session may
+        // be processing another request's turn, which this caller is about to
+        // lose with a 409. Rebinding here streamed the running turn into the
+        // loser's (then aborted) runtime and cleared a cap stop mid-turn. The
+        // winner of `tryTransitionToProcessing` binds its runtime there.
         // Re-resolve the approval mode so a settings change applies to the NEXT
         // message rather than only to a brand-new in-memory session (#5593).
         // Skipped while a turn is in flight: the route answers a concurrent
@@ -1048,6 +1064,8 @@ export class StreamingSessionManager {
       approvalMode,
       approvalWaitBudgetMs,
       allowedTools,
+      // Seeds a brand-new session only; a reused session is never rebound
+      // here (see the reuse branch and tryTransitionToProcessing).
       topologyInvestigation: options?.topologyInvestigation,
       topologyStopped: false,
       isPaused: false,

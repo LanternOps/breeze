@@ -30,6 +30,23 @@ vi.mock('../../services/llm/openaiCompatibleProvider', () => ({
   },
 }));
 
+// PR #7147 F2: a switch to refuse ONE dispatch at the monetary reservation
+// (402 denial / 503 lock timeout); otherwise the real reservation runs.
+const budgetGate = vi.hoisted(() => ({ next: null as null | 'deny' | 'lockTimeout' }));
+vi.mock('../../services/aiBudgetReservations', async (original) => {
+  const actual = await original<typeof import('../../services/aiBudgetReservations')>();
+  return {
+    ...actual,
+    reserveAiBudget: async (...args: Parameters<typeof actual.reserveAiBudget>) => {
+      const next = budgetGate.next;
+      budgetGate.next = null;
+      if (next === 'deny') return { kind: 'denied' as const, reason: 'budget_exhausted' as never, message: 'AI budget exhausted' };
+      if (next === 'lockTimeout') throw new actual.AiBudgetLockTimeoutError('reserve', 1);
+      return actual.reserveAiBudget(...args);
+    },
+  };
+});
+
 import { aiRoutes } from '../../routes/ai';
 import { actionIntents, aiBudgetReservations, aiMessages, aiSessions, deviceCommands } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
@@ -253,6 +270,54 @@ describe('topology AI failure fallback, release accounting and injection (M4 Tas
       expect((await call(peerToken, 'POST', `/sessions/${firstSession}/messages`, { content: 'again' })).status).toBe(404);
       expect([403, 404]).toContain((await call(peerToken, 'POST', `/sessions/${firstSession}/ticket-draft`, {})).status);
       expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('refused turns never burn the investigation budget (PR #7147 F2)', () => {
+    it('a 402 budget denial and a 503 lock timeout refund the prompt reservation: no model call, the whole budget remains', async () => {
+      const sessionId = await openSession();
+      budgetGate.next = 'deny';
+      const denied = await ask(sessionId);
+      expect(denied.res.status, denied.text).toBe(402);
+      budgetGate.next = 'lockTimeout';
+      const timedOut = await ask(sessionId);
+      expect(timedOut.res.status, timedOut.text).toBe(503);
+      expect(provider.chatStream).not.toHaveBeenCalled();
+      expect(Number((await budget(sessionId)).inputTokens ?? 0)).toBe(0);
+      expect(await leaseCount()).toBe(0);
+
+      // The investigation still has its full budget for a real turn.
+      answer([validAnswer(ids.rel)]);
+      const ok = await ask(sessionId);
+      expect(ok.res.status, ok.text).toBe(200);
+      expect(explanationOf<{ status: string }>(ok.events).status).not.toBe('fallback');
+      expect(Number((await budget(sessionId)).inputTokens)).toBeGreaterThan(0);
+    });
+
+    it('a 409 while the session\'s turn is running refunds only the refused turn\'s reservation; the running turn completes', async () => {
+      const sessionId = await openSession();
+      let releaseProvider!: () => void;
+      const providerGate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+      provider.chatStream.mockImplementation(async function* () {
+        await providerGate;
+        yield { type: 'content_delta', delta: validAnswer(ids.rel) };
+        yield { type: 'message_end', inputTokens: 100, outputTokens: 50 };
+      });
+      const running = await call(token, 'POST', `/sessions/${sessionId}/messages`, { content: 'Why is this link failing?' });
+      expect(running.status).toBe(200);
+      await vi.waitFor(() => expect(provider.chatStream).toHaveBeenCalledTimes(1));
+      const reservedByRunning = Number((await budget(sessionId)).inputTokens);
+      expect(reservedByRunning).toBeGreaterThan(0);
+
+      const busy = await ask(sessionId);
+      expect(busy.res.status, busy.text).toBe(409);
+      expect(Number((await budget(sessionId)).inputTokens)).toBe(reservedByRunning);
+
+      releaseProvider();
+      const events = sseEvents(await running.text());
+      expect(events.filter((e) => e.type === 'topology_explanation')).toHaveLength(1);
+      expect(provider.chatStream).toHaveBeenCalledTimes(1);
+      expect(await leaseCount()).toBe(0);
     });
   });
 

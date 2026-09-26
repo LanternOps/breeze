@@ -639,7 +639,14 @@ describe('AI routes', () => {
         const args = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!;
         expect(args[4]).toBe('TOPOLOGY SYSTEM');
         expect(args[7]).toEqual(['mcp__breeze__get_topology']);
-        expect(args[9]).toMatchObject({ topologyInvestigation: { abort: topo.abort }, injectApprovalModeInstructions: false });
+        expect(args[9]).toMatchObject({ injectApprovalModeInstructions: false });
+        // PR #7147 F1: the runtime is bound only by the transition that wins
+        // the slot — never by getOrCreate, whose reuse branch can hand back a
+        // session another request's turn is already processing.
+        expect(args[9]).not.toHaveProperty('topologyInvestigation');
+        const transition = vi.mocked(streamingSessionManager.tryTransitionToProcessing).mock.calls[0]!;
+        expect(transition[0]).toBe(activeSession);
+        expect(transition[2]).toMatchObject({ topologyInvestigation: { abort: topo.abort } });
         expect(topo.abort).not.toHaveBeenCalled();
       });
 

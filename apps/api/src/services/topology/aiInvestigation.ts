@@ -20,7 +20,7 @@
  * into its output gate instead of the event bus; each tool call is checked
  * against the topology allowlist, the six-read budget and the live scope; and
  * `complete` validates, re-authorizes under a FRESH site context, caches only
- * a validated answer, and releases the lease. `abort` discards and releases.
+ * a validated answer, and releases the lease. `abort` discards and releases (refunding the prompt reservation when the turn never reached the model).
  */
 import { createHash } from 'node:crypto';
 import { topologyAiSelectionSchema, type TopologyAiExplanation, type TopologyAiSelection } from '@breeze/shared';
@@ -33,7 +33,7 @@ import { deleteCachedTopologyExplanation, getCachedTopologyExplanation, setCache
 import { applyTopologyAiCitationAvailability, reauthorizeTopologyAiCitations, topologyAiFallbackExplanation } from './aiCitations';
 import { assertTopologyAiCurrentScope, buildTopologyAiEvidence, TopologyAiScopeChangedError, type TopologyAiEvidenceSnapshot, type TopologyAiModelEvidence } from './aiEvidence';
 import {
-  consumeTopologyAiBudget, recordTopologyAiTokenUsage, reserveTopologyInvestigation, TOPOLOGY_AI_QUOTAS, TopologyAiLimitError, topologyAiTokensWithinBudget,
+  consumeTopologyAiBudget, recordTopologyAiTokenUsage, refundTopologyAiTokenReservation, reserveTopologyInvestigation, TOPOLOGY_AI_QUOTAS, TopologyAiLimitError, topologyAiTokensWithinBudget,
   type TopologyAiBudgetTotals, type TopologyInvestigationLease,
 } from './aiLimits';
 import { TopologyAiOutputGate, type TopologyAiGateResult } from './aiOutputGate';
@@ -184,6 +184,10 @@ function createRuntime(
   let output = 0;
   let recorded = false;
   let settled = false;
+  // Set by anything only a model call can cause (usage, text, a block, a tool
+  // request). A turn aborted with this still false never reached the model:
+  // it was refused at dispatch (409/402/503, PR #7147 F2).
+  let modelCalled = false;
   // Input this turn as accounted: never less than what it reserved up front.
   const inputCounted = () => Math.max(budget.reservation, input);
   const withinBudget = () => topologyAiTokensWithinBudget({
@@ -195,11 +199,21 @@ function createRuntime(
     recorded = true;
     return recordTopologyAiTokenUsage(investigationId, { inputTokens: inputCounted() - budget.reservation, outputTokens: output });
   };
+  /**
+   * Exactly once (the `settled` latch): a turn that never reached the model
+   * returns its prompt reservation instead of recording — otherwise every
+   * refused dispatch would burn up to the whole cumulative input budget and
+   * later turns would fail `topology_ai_budget_exhausted` with no model call
+   * ever made. A turn that did reach the model records its actual usage.
+   */
   const settle = async () => {
     if (settled) return;
     settled = true;
     try {
-      if (!recorded) await recordUsage().catch(() => undefined);
+      if (!recorded) {
+        if (modelCalled) await recordUsage().catch(() => undefined);
+        else await refundTopologyAiTokenReservation(investigationId, budget.reservation).catch(() => undefined);
+      }
     } finally {
       await lease.release();
     }
@@ -207,9 +221,10 @@ function createRuntime(
   return {
     investigationId,
     allowedToolNames: allowed,
-    append: (delta) => gate.append(delta),
-    startBlock: () => gate.startBlock(),
+    append: (delta) => { modelCalled = true; return gate.append(delta); },
+    startBlock: () => { modelCalled = true; gate.startBlock(); },
     noteUsage({ inputTokens, outputTokens }) {
+      modelCalled = true;
       // Cumulative (review C4): each model call re-sends the context and every
       // re-send counts against the investigation's input limit.
       if (typeof inputTokens === 'number' && inputTokens > 0) {
@@ -223,6 +238,7 @@ function createRuntime(
       return withinBudget();
     },
     async beforeToolCall(toolName) {
+      modelCalled = true;
       if (!allowed.has(toolName)) return { allowed: false, error: 'Only topology read tools are available in a topology investigation' };
       // A tool result is only useful to a NEXT model call, which re-sends at
       // least the last call's context: refuse the tool (without spending a

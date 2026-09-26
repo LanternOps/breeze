@@ -34,7 +34,7 @@ import { aiRoutes } from '../../routes/ai';
 import { aiMessages, aiSessions, organizationUsers } from '../../db/schema';
 import { clearPermissionCache } from '../../services/permissions';
 import { createAccessToken } from '../../services/jwt';
-import { consumeTopologyAiBudget, recordTopologyAiTokenUsage, reserveTopologyInvestigation, topologyAiTokensWithinBudget } from '../../services/topology/aiLimits';
+import { consumeTopologyAiBudget, recordTopologyAiTokenUsage, refundTopologyAiTokenReservation, reserveTopologyInvestigation, topologyAiTokensWithinBudget } from '../../services/topology/aiLimits';
 import { canonicalIdentityKey } from '../../services/topology/identity';
 import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -152,6 +152,16 @@ describe('topology investigation quotas (M4 Task 3, real Redis)', () => {
     const totals = await recordTopologyAiTokenUsage(investigation, { inputTokens: 5_000, outputTokens: 2_500 });
     expect(totals).toMatchObject({ inputTokens: 25_000, outputTokens: 2_500 });
     expect(topologyAiTokensWithinBudget(totals)).toBe(false);
+  });
+
+  it('refunds a prompt reservation atomically, never below zero, without touching other dimensions (PR #7147 F2)', async () => {
+    const investigation = randomUUID();
+    await consumeTopologyAiBudget(investigation, { inputTokens: 12_000, readCalls: 1 });
+    await consumeTopologyAiBudget(investigation, { inputTokens: 8_000 }); // a concurrent turn's reservation
+    await refundTopologyAiTokenReservation(investigation, 8_000); // that turn was refused before its model call
+    expect(await consumeTopologyAiBudget(investigation, { inputTokens: 8_000 })).toMatchObject({ inputTokens: 20_000, readCalls: 1 });
+    await refundTopologyAiTokenReservation(investigation, 50_000);
+    expect(await consumeTopologyAiBudget(investigation, {})).toMatchObject({ inputTokens: 0, readCalls: 1, outputTokens: 0 });
   });
 });
 

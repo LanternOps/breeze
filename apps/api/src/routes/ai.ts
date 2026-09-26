@@ -1012,14 +1012,16 @@ aiRoutes.post(
           topology ? topology.allowedMcpTools : undefined,
           topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
           topology
-            ? { budgetReservationId: budgetDispatch.reservationId, topologyInvestigation: topology.runtime, injectApprovalModeInstructions: false }
+            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false }
             : { budgetReservationId: budgetDispatch.reservationId },
         );
       } catch (err) {
         return { kind: 'failed', error: err };
       }
 
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
+      // The topology runtime is bound by the transition itself, and only when
+      // this request wins the slot (PR #7147 F1) — same as the OpenAI branch.
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  reserve: vi.fn(), release: vi.fn(), consume: vi.fn(), record: vi.fn(), build: vi.fn(), assertScope: vi.fn(), reauthorize: vi.fn(),
+  reserve: vi.fn(), release: vi.fn(), consume: vi.fn(), record: vi.fn(), refund: vi.fn(), build: vi.fn(), assertScope: vi.fn(), reauthorize: vi.fn(),
   cacheGet: vi.fn(), cacheSet: vi.fn(), cacheDelete: vi.fn(), permissionVersion: vi.fn(), visibility: vi.fn(), currentContext: vi.fn(),
   events: [] as string[], held: 0, carried: null as null | string,
 }));
-vi.mock('./aiLimits', async (original) => ({ ...await original<object>(), reserveTopologyInvestigation: mocks.reserve, consumeTopologyAiBudget: mocks.consume, recordTopologyAiTokenUsage: mocks.record }));
+vi.mock('./aiLimits', async (original) => ({ ...await original<object>(), reserveTopologyInvestigation: mocks.reserve, consumeTopologyAiBudget: mocks.consume, recordTopologyAiTokenUsage: mocks.record, refundTopologyAiTokenReservation: mocks.refund }));
 vi.mock('./aiEvidence', async (original) => ({ ...await original<object>(), buildTopologyAiEvidence: mocks.build, assertTopologyAiCurrentScope: mocks.assertScope }));
 vi.mock('./aiCitations', async (original) => ({ ...await original<object>(), reauthorizeTopologyAiCitations: mocks.reauthorize }));
 vi.mock('./aiCache', async (original) => ({ ...await original<object>(), getCachedTopologyExplanation: mocks.cacheGet, setCachedTopologyExplanation: mocks.cacheSet, deleteCachedTopologyExplanation: mocks.cacheDelete }));
@@ -287,6 +287,44 @@ describe('topology turn runtime (M4 Task 3)', () => {
     expect(result.outcome).toBe('explanation');
     expect(mocks.cacheSet).toHaveBeenCalledWith(ctx, expect.anything(), result.explanation, expect.any(Date));
     expect(mocks.release).toHaveBeenCalled();
+  });
+
+  describe('a turn refused before any model call (PR #7147 F2)', () => {
+    const reserved = () => (mocks.consume.mock.calls[0]![1] as { inputTokens: number }).inputTokens;
+
+    it('refunds its prompt reservation exactly once and records nothing', async () => {
+      mocks.refund.mockResolvedValue(undefined);
+      const runtime = await live();
+      expect(reserved()).toBeGreaterThan(0);
+      await runtime.abort();
+      await runtime.abort();
+      expect(mocks.refund).toHaveBeenCalledTimes(1);
+      expect(mocks.refund).toHaveBeenCalledWith(SESSION, reserved());
+      expect(mocks.record).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed refund keeps the charge (conservative) and still releases the lease', async () => {
+      mocks.refund.mockRejectedValue(new TopologyAiLimitError('topology_ai_limits_unavailable'));
+      const runtime = await live();
+      await expect(runtime.abort()).resolves.toBeUndefined();
+      expect(mocks.release).toHaveBeenCalledTimes(1);
+    });
+
+    for (const [label, drive] of [
+      ['usage was reported', (rt: Awaited<ReturnType<typeof live>>) => { rt.noteUsage({ inputTokens: 900, outputTokens: 10 }); }],
+      ['provider text streamed', (rt: Awaited<ReturnType<typeof live>>) => { rt.append('partial'); }],
+      ['a text block started', (rt: Awaited<ReturnType<typeof live>>) => { rt.startBlock(); }],
+      ['a tool was requested', async (rt: Awaited<ReturnType<typeof live>>) => { await rt.beforeToolCall('run_script'); }],
+    ] as const) {
+      it(`keeps the reservation charged once a model call ran (${label})`, async () => {
+        const runtime = await live();
+        await drive(runtime);
+        await runtime.abort();
+        expect(mocks.refund).not.toHaveBeenCalled();
+        expect(mocks.record).toHaveBeenCalledTimes(1);
+      });
+    }
   });
 
   it('abort discards raw output, never caches, and releases the lease', async () => {
