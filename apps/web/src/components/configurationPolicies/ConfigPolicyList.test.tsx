@@ -65,7 +65,7 @@ describe('ConfigPolicyList Features column (#2950)', () => {
   const withLinks: ConfigPolicy = {
     ...orgOwned,
     featureLinks: [
-      { id: 'link-1', featureType: 'alert_rule' },
+      { id: 'link-1', featureType: 'monitors' },
       { id: 'link-2', featureType: 'onedrive_helper' },
     ],
   };
@@ -74,7 +74,7 @@ describe('ConfigPolicyList Features column (#2950)', () => {
     render(<ConfigPolicyList policies={[withLinks]} />);
 
     const badges = screen.getAllByTestId('config-policy-feature-badge');
-    expect(badges.map((b) => b.textContent)).toEqual(['Alerts', 'OneDrive Helper']);
+    expect(badges.map((b) => b.textContent)).toEqual(['Monitors', 'OneDrive Helper']);
     expect(screen.queryByTestId('config-policy-features-empty')).toBeNull();
   });
 

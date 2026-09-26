@@ -63,6 +63,8 @@ import {
   configPolicyFeatureLinks,
   configPolicyAssignments,
   configPolicyEventLogSettings,
+  configPolicyMonitors,
+  monitorDefinitions,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
   configPolicyPatchSettings,
@@ -128,6 +130,7 @@ function partnerWideBlindContext(orgId: string): DbAccessContext {
 
 const createdPolicies: string[] = [];
 const createdDevices: string[] = [];
+const createdMonitors: string[] = [];
 
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
@@ -137,7 +140,11 @@ afterEach(async () => {
     for (const id of createdPolicies) {
       await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
     }
+    for (const id of createdMonitors) {
+      await db.delete(monitorDefinitions).where(eq(monitorDefinitions.id, id));
+    }
   });
+  createdMonitors.length = 0;
   createdDevices.length = 0;
   createdPolicies.length = 0;
 });
@@ -206,6 +213,7 @@ async function seedEventLogPolicy(
 async function seedMonitoringPolicy(
   owner: { orgId: string | null; partnerId: string | null },
   checkIntervalSeconds: number,
+  attachMonitor = false,
 ) {
   return withDbAccessContext(SYSTEM_CTX, async () => {
     const [policy] = await db
@@ -215,7 +223,7 @@ async function seedMonitoringPolicy(
     createdPolicies.push(policy!.id);
     const [link] = await db
       .insert(configPolicyFeatureLinks)
-      .values({ configPolicyId: policy!.id, featureType: 'monitoring' })
+      .values({ configPolicyId: policy!.id, featureType: 'monitors' })
       .returning();
     const [settings] = await db
       .insert(configPolicyMonitoringSettings)
@@ -224,9 +232,27 @@ async function seedMonitoringPolicy(
     await db.insert(configPolicyMonitoringWatches).values({
       settingsId: settings!.id,
       watchType: 'service',
-      name: 'TestService',
+      name: 'HistoricalService',
       enabled: true,
+      retiredAt: new Date(),
+      retiredReason: 'unconvertible:equivalence_delta',
     });
+    if (attachMonitor) {
+      const [monitor] = await db.insert(monitorDefinitions).values({
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
+        name: `service-monitor-${randomUUID()}`,
+        kind: 'service',
+        condition: { serviceName: 'TestService', consecutiveFailures: 2 },
+        severity: 'high',
+      }).returning({ id: monitorDefinitions.id });
+      createdMonitors.push(monitor!.id);
+      await db.insert(configPolicyMonitors).values({
+        featureLinkId: link!.id,
+        monitorId: monitor!.id,
+        enabled: true,
+      });
+    }
     return policy!.id;
   });
 }
@@ -342,8 +368,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
 
       expect(result).not.toBeNull();
       expect(result!.check_interval_seconds).toBe(999);
-      expect(result!.watches).toHaveLength(1);
-      expect(result!.watches[0]?.name).toBe('TestService');
+      expect(result!.watches).toEqual([]);
     });
 
     it('buildPamConfigUpdate resolves a partner-owned policy', async () => {
@@ -601,15 +626,9 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
         buildMonitoringConfigUpdate(device.id),
       );
-      // The watches read is a SEPARATE query, chained through settings_id ->
-      // feature link -> configuration_policies. It used to share one escape
-      // with the policy join; now it needs its own
-      // `config_policy_monitoring_watches_partner_wide_select` branch. A
-      // non-empty watches array is the proof that branch exists and matches —
-      // without it this resolves the settings row and then returns null.
-      expect(sighted).not.toBeNull();
-      expect(sighted!.check_interval_seconds).toBe(999);
-      expect(sighted!.watches).toHaveLength(1);
+      // The settings SELECT branch remains load-bearing after the link re-key.
+      // Historical watches beneath those settings are never delivered.
+      expect(sighted).toEqual({ check_interval_seconds: 999, watches: [] });
     });
 
     it('pam: a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
@@ -734,7 +753,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const org = await createOrganization({ partnerId: partner.id });
       const site = await createSite({ orgId: org!.id });
       const device = await seedDevice(org!.id, site!.id);
-      const policyId = await seedMonitoringPolicy({ orgId: org!.id, partnerId: null }, 321);
+      const policyId = await seedMonitoringPolicy({ orgId: org!.id, partnerId: null }, 321, true);
       await assign(policyId, 'organization', org!.id);
       await purgeCaches(device.id);
 

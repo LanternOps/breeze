@@ -66,18 +66,17 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and
   // every caller-facing create/update/delete path below refuses one outright
-  // rather than gating it. So none of these four can reach a partner-owned row
+  // rather than gating it. So none of these paths can reach a partner-owned row
   // at all, which is a stronger property than passing the capability gate.
-  'routes/monitors.ts': 'legacy network-monitor CRUD is org-axis only: requireMonitorAccess refuses an org_id NULL row as 404, and a managed row as 409',
-  'routes/monitoring.ts': 'every write is scoped `networkMonitors.orgId = <org>`, which can never match a partner-wide (org_id NULL) row',
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
-  'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
   // the gate in services/monitors/monitorService.ts before compiling, and the
   // compiler never takes an owner axis from a request.
+  'services/monitors/conversion/networkChecks.ts': 'Network adoption is org-axis only: caller-visible pending org sources, org access and full governance checks precede ledger writes; partnerId is always null and compiler adoption verifies the definition org',
+  'services/monitors/conversion/networkHistory.ts': 'network retirement and reversal require a visible org-owned source, reject site/device ceilings, and scope ledger and definition writes to that organization',
   'services/monitors/monitorCompiler.ts': 'stamps compiled_* provenance on a definition the caller already gated via monitorService',
   // Built-in default monitors: provisions each partner's OWN three monitors
   // once (no policy, no assignment), from createPartner()/the system-scope partner route/API boot —
@@ -127,7 +126,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
@@ -453,7 +451,16 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(undocumented).toEqual([]);
   });
 
-  it('the six sites from the 2026-08-16 review carry the gate', () => {
+  it.each(['routes/alertTemplates/templates.ts', 'routes/alertTemplates/rules.ts'])(
+    '%s cannot mutate partner-axis tables after retirement',
+    (rel) => {
+      const source = readFileSync(join(API_SRC, rel), 'utf8');
+      expect(mutatedTables(source, tableNames)).toEqual([]);
+      expect(source).toContain('legacyAlertingGone');
+    },
+  );
+
+  it('the surviving write sites from the 2026-08-16 review carry the gate', () => {
     // Named explicitly so a regression on any ONE of them is a clearly-labelled
     // failure rather than an anonymous line in the sweep above.
     const fixed = [
@@ -462,7 +469,7 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
       'routes/updateRings.ts',
       'services/aiToolsPolicyPrereqs.ts',
       'routes/clientAi/adminTemplates.ts',
-      'routes/alertTemplates/templates.ts',
+      // Alert-template writes were retired; their absence is checked above.
       'routes/partnerServicePrincipals.ts',
     ];
 

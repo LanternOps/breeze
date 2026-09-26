@@ -96,7 +96,11 @@ export const networkCheckHandler: ConditionHandler = {
     }
 
     const rows = await db
-      .select({ status: networkMonitorResults.status, timestamp: networkMonitorResults.timestamp })
+      .select({
+        status: networkMonitorResults.status,
+        responseMs: networkMonitorResults.responseMs,
+        timestamp: networkMonitorResults.timestamp,
+      })
       .from(networkMonitorResults)
       .where(and(
         eq(networkMonitorResults.monitorId, managed.id),
@@ -109,13 +113,18 @@ export const networkCheckHandler: ConditionHandler = {
       return { passed: false, description: 'No network check results yet' };
     }
 
-    // Count leading offline results. Fewer rows than `needed` can never satisfy
+    const isFailure = (row: { status: string; responseMs: number | null }) =>
+      row.status === 'offline'
+      || (cond.degradedIsFailure === true && row.status === 'degraded')
+      || (cond.maxResponseMs != null && row.responseMs != null && row.responseMs > cond.maxResponseMs);
+
+    // Count leading failing results. Fewer rows than `needed` can never satisfy
     // the threshold — a check that has only run twice has not yet failed three
     // times, and treating a short history as a breach would page on every
     // newly-created monitor.
     let consecutive = 0;
     for (const row of rows) {
-      if (row.status !== 'offline') break;
+      if (!isFailure(row)) break;
       consecutive++;
     }
 
@@ -123,8 +132,8 @@ export const networkCheckHandler: ConditionHandler = {
     return {
       passed,
       description: passed
-        ? `Network check offline for ${consecutive} consecutive result(s) (threshold ${needed})`
-        : `Network check reachable (${consecutive} consecutive offline result(s), threshold ${needed})`,
+        ? `Network check failing for ${consecutive} consecutive result(s) (threshold ${needed})`
+        : `Network check healthy (${consecutive} consecutive failing result(s), threshold ${needed})`,
       actualValue: consecutive,
     };
   },
@@ -140,6 +149,15 @@ export const networkCheckHandler: ConditionHandler = {
       (typeof c.consecutiveFailures !== 'number' || c.consecutiveFailures < 1)
     ) {
       errors.push(`${path}.consecutiveFailures: Must be a positive number`);
+    }
+    if (
+      c.maxResponseMs !== undefined &&
+      (typeof c.maxResponseMs !== 'number' || c.maxResponseMs < 1)
+    ) {
+      errors.push(`${path}.maxResponseMs: Must be a positive number`);
+    }
+    if (c.degradedIsFailure !== undefined && typeof c.degradedIsFailure !== 'boolean') {
+      errors.push(`${path}.degradedIsFailure: Must be a boolean`);
     }
     return errors;
   },

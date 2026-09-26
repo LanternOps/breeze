@@ -281,7 +281,7 @@ export const notificationChannels = pgTable('notification_channels', {
  *
  * Split off `notification_channels` so config confidentiality is enforced by
  * the database, not only by API redaction. The RLS policy
- * (2026-10-31-101100-notification-channel-configs.sql) is parent OWNERSHIP —
+ * (2026-11-02-100600-notification-channel-configs.sql) is parent OWNERSHIP —
  * system, OR org access to the parent's org_id, OR partner access to the
  * parent's partner_id — and deliberately does NOT mirror the parent's
  * SELECT-only partner-wide branch. So an org session sees an inherited

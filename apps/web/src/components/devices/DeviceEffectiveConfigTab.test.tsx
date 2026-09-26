@@ -7,10 +7,10 @@ const baselineOnlyResponse = {
   deviceId: 'dev-1',
   features: {
     patch: { featureType: 'patch', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
-    alert_rule: { featureType: 'alert_rule', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
+    monitors: { featureType: 'monitors', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
   },
   inheritanceChain: [
-    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['patch', 'alert_rule'] },
+    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['patch', 'monitors'] },
   ],
 };
 
@@ -20,11 +20,11 @@ const mixedResponse = {
   deviceId: 'dev-2',
   features: {
     patch: { featureType: 'patch', featurePolicyId: null, inlineSettings: null, sourceLevel: 'organization', sourceTargetId: 'org-1', sourcePolicyId: 'pol-org', sourcePolicyName: 'Org Patch Policy', sourcePriority: 10 },
-    alert_rule: { featureType: 'alert_rule', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
+    monitors: { featureType: 'monitors', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
   },
   inheritanceChain: [
     { level: 'organization', targetId: 'org-1', policyId: 'pol-org', policyName: 'Org Patch Policy', priority: 10, featureTypes: ['patch'] },
-    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['alert_rule'] },
+    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['monitors'] },
   ],
 };
 

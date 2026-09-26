@@ -16,11 +16,10 @@ import {
   escalationPolicies,
   devices,
   organizations,
-  partners,
-  configPolicyAlertRules
+  partners
 } from '../db/schema';
 import { getNotificationChannelWithConfig, type NotificationChannelWithConfig } from './notificationChannelConfig';
-import { eq, and, ne, inArray, isNull, or, gt, type SQL } from 'drizzle-orm';
+import { eq, and, ne, inArray, isNull, isNotNull, or, gt, type SQL } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -244,59 +243,20 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // previews is what fires here. The all-enabled-channels fallback is gone: the
   // "Everything else" routing row is the default a technician can read.
   let monitorId: string | null = alert.monitorId ?? null;
-  let legacyOverride: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null = null;
-
-  // Conversion re-keys open alerts to their monitor in the same transaction as
-  // the retirement (W05c1 convert), so a converted source needs no special
-  // case here. `retireSource` is the other path: an UNCONVERTIBLE source has no
-  // monitor to carry its open alerts to, so a retired row must still answer for
-  // alerts that fired BEFORE it was retired — otherwise those alerts fall to
-  // default routing and silently lose their channels and escalation policy.
-  // Newer alerts never reach a retired source. W05d deletes both branches.
-  if (alert.ruleId) {
+  // A queued alert may only carry the compiled rule identity. Read that
+  // monitor pointer alone; legacy channel and escalation settings no longer
+  // participate in active delivery, including alerts queued before retirement.
+  if (alert.ruleId && !monitorId) {
     const [rule] = await db
-      .select({ overrideSettings: alertRules.overrideSettings, managedByMonitorId: alertRules.managedByMonitorId })
+      .select({ managedByMonitorId: alertRules.managedByMonitorId })
       .from(alertRules)
       .where(and(
         eq(alertRules.id, alert.ruleId),
+        isNotNull(alertRules.managedByMonitorId),
         or(isNull(alertRules.retiredAt), gt(alertRules.retiredAt, alert.createdAt)),
       ))
       .limit(1);
-    if (rule) {
-      monitorId = monitorId ?? rule.managedByMonitorId ?? null;
-      if (!rule.managedByMonitorId) {
-        // Transitional (spec §Delivery resolution "Transitional", W05b → W05d):
-        // an UNMANAGED legacy rule keeps its own channel/escalation overrides
-        // until it is converted. Retired sources are excluded; queued alerts
-        // depend on the transactional carry-over described above.
-        // W05d deletes the branch. A MANAGED (monitor-compiled) rule is never
-        // read for delivery — the monitor definition is the source of truth.
-        const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
-        legacyOverride = {
-          channelIds: Array.isArray(overrides.notificationChannelIds) ? (overrides.notificationChannelIds as string[]) : null,
-          escalationPolicyId: typeof overrides.escalationPolicyId === 'string' ? overrides.escalationPolicyId : null,
-        };
-      }
-    }
-  } else if (alert.configPolicyId) {
-    // Config-policy inline rule (#5289 Task 9): `configPolicyId` holds the
-    // config_policy_alert_rules row id (historical column name). Same
-    // transitional treatment as an unmanaged alert_rules row, including the
-    // retired-but-older-than-the-alert case described above.
-    const [cpRule] = await db
-      .select({
-        escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
-        notificationChannelIds: configPolicyAlertRules.notificationChannelIds
-      })
-      .from(configPolicyAlertRules)
-      .where(and(
-        eq(configPolicyAlertRules.id, alert.configPolicyId),
-        or(isNull(configPolicyAlertRules.retiredAt), gt(configPolicyAlertRules.retiredAt, alert.createdAt)),
-      ))
-      .limit(1);
-    if (cpRule) {
-      legacyOverride = { channelIds: cpRule.notificationChannelIds ?? null, escalationPolicyId: cpRule.escalationPolicyId ?? null };
-    }
+    monitorId = rule?.managedByMonitorId ?? null;
   }
 
   // Dual-axis rail resolution (#2130): the alert org's partner, for the
@@ -307,8 +267,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     orgId: alert.orgId,
     severity: alert.severity as AlertSeverity,
     monitorId,
-    siteId: device?.siteId ?? null,
-    legacyOverride
+    siteId: device?.siteId ?? null
   });
 
   // Escalation resolves independently of channels (spec): "inbox now, page

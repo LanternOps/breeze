@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { FleetDesignOutcome } from '@breeze/shared';
 
 /**
@@ -37,9 +39,11 @@ function makeExec(rowQueue: Array<Array<Record<string, unknown>>>) {
   return { exec, selects };
 }
 
+const executeMock = vi.hoisted(() => vi.fn());
 const holder: { exec: ReturnType<typeof makeExec>['exec'] | null } = { exec: null };
 vi.mock('../../db', () => ({
   db: {
+    execute: executeMock,
     select: (...args: unknown[]) => (holder.exec as unknown as { select: (...a: unknown[]) => unknown }).select(...args),
   },
 }));
@@ -48,6 +52,7 @@ import {
   buildApprovedDesign,
   computeDrift,
   loadApprovedDesign,
+  loadDriftLiveState,
   type ApprovedDesignSummary,
   type DriftLiveState,
 } from './drift';
@@ -324,5 +329,39 @@ describe('loadApprovedDesign', () => {
     const a = await loadApprovedDesign(ORG);
     expect(a?.reportRunId).toBe(RUN);
     expect(a?.functions[0]?.policyId).toBe(POLICY);
+  });
+});
+
+
+describe('loadDriftLiveState', () => {
+  it('uses only attached monitors as live watch/rule sources, never legacy tables', async () => {
+    const queries: string[] = [];
+    executeMock.mockImplementation(async (statement: SQL) => {
+      const query = new PgDialect().sqlToQuery(statement).sql;
+      queries.push(query);
+      if (/config_policy_monitoring_watches|config_policy_alert_rules/.test(query)) {
+        throw new Error('Legacy alerting sources are retired');
+      }
+      if (query.includes('FROM configuration_policies')) return [
+        { id: POLICY, name: 'Applied policy', status: 'active', org_id: ORG, created_at: APPLIED_AT },
+      ];
+      if (query.includes('FROM config_policy_monitors')) return [
+        { policy_id: POLICY, name: 'Service display name', kind: 'service', condition: { serviceName: 'Spooler' }, severity: 'low', cooldown_minutes: 5, enabled: true, item_kind: 'watch' },
+        { policy_id: POLICY, name: 'Service rule', kind: 'service', condition: { serviceName: 'RuleSvc' }, severity: 'high', cooldown_minutes: 30, enabled: true, item_kind: 'rule' },
+        { policy_id: POLICY, name: 'Hand-added process', kind: 'process', condition: { processName: 'worker' }, severity: 'low', cooldown_minutes: 5, enabled: false, item_kind: null },
+      ];
+      return [];
+    });
+    const summary = approved();
+    summary.functions[0]!.groupId = null;
+    const state = await loadDriftLiveState(ORG, summary);
+    expect(state.policies[0]!.watches).toEqual([
+      { watchType: 'service', name: 'Spooler', enabled: true },
+      { watchType: 'process', name: 'worker', enabled: false },
+    ]);
+    expect(state.policies[0]!.rules).toEqual([
+      { name: 'Service rule', severity: 'high', cooldownMinutes: 30 },
+    ]);
+    expect(queries).toHaveLength(3);
   });
 });

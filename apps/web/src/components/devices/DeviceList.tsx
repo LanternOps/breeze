@@ -205,6 +205,8 @@ export type Device = {
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
+  /** Agent-reported Breeze Assist install problem (#6925); null/absent = none. */
+  helperInstallIssue?: string | null;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
    * #2288). The opt-in Server column renders only its hostname. Any current
@@ -1554,6 +1556,13 @@ export default function DeviceList({
   // so don't imply 0/blank.
   const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
     (device.deviceClass ?? "agent") !== "agent" ? dash : node;
+  // Static keys per known code (#6925); a code from a newer agent falls back.
+  const helperInstallIssueTooltip = (issue: string): string =>
+    issue === "awaiting_server_offer"
+      ? t("deviceList.helperInstallIssueTooltip.awaitingServerOffer")
+      : issue === "install_abandoned"
+        ? t("deviceList.helperInstallIssueTooltip.installAbandoned")
+        : t("deviceList.helperInstallIssueTooltip.unknown");
   const columnDefs: Record<
     ColumnId,
     { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }
@@ -2111,6 +2120,17 @@ export default function DeviceList({
           className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
         >
           {agentCell(device, fmtOptionalVersion(device.helperVersion))}
+          {/* #6925: Assist is enabled but not installed — without this the
+              cell shows the same dash as a device with Assist turned off. */}
+          {device.helperInstallIssue ? (
+            <span
+              data-testid={`device-${device.id}-helper-install-issue`}
+              title={helperInstallIssueTooltip(device.helperInstallIssue)}
+              className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
+            >
+              {t("deviceList.helperNotInstalled")}
+            </span>
+          ) : null}
         </td>
       ),
     },

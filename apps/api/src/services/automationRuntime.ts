@@ -23,7 +23,7 @@ import {
 import type { NotificationChannelWithConfig } from './notificationChannelConfig';
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
-import { dispatchScriptToDevice } from './scriptDispatch';
+import { dispatchScriptToDevice, type DispatchScriptResult } from './scriptDispatch';
 import { deliveryTtlMs, type OfflinePolicy } from './commandOfflinePolicy';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
@@ -1305,6 +1305,14 @@ type ActionExecutionContext = {
    * to have done the preload.
    */
   variableScope: TenantVariableScope;
+  /**
+   * #3445 — set by the dispatch loop, which calls `executeAction` inside the
+   * per-device lock transaction. A script action then creates its rows in that
+   * transaction but defers the agent send to `ActionExecutionResult.afterCommit`,
+   * which the loop runs once the transaction has committed. Direct callers that
+   * hold no transaction leave it unset and get the immediate send.
+   */
+  deferDelivery?: boolean;
 };
 
 /**
@@ -1381,7 +1389,80 @@ type ActionExecutionOutcome =
 type ActionExecutionResult = {
   outcome: ActionExecutionOutcome;
   log: AutomationLogEntry;
+  /**
+   * #3445 — present when the action queued a command whose send was deferred
+   * (`ActionExecutionContext.deferDelivery`). The caller MUST run it after the
+   * transaction the action ran in has committed, and use the result it returns
+   * in place of this one. `outcome` here is a pre-send placeholder.
+   */
+  afterCommit?: () => Promise<ActionExecutionResult>;
 };
+
+/**
+ * #3445 — the post-commit half of a deferred script dispatch.
+ *
+ * The send runs with no ambient transaction (`deliver()` opens its own short
+ * system contexts, so its claim commits before the frame reaches the agent);
+ * `settle` then runs in a fresh runtime context because run_script writes the
+ * `queued` status for an undelivered command.
+ *
+ * A throwing `deliver()` is NOT an action failure: the command row is already
+ * committed and still `pending` — a claim that fails rolls back on its own, and
+ * a send that throws after the claim releases it first (scriptDispatch.ts) — so
+ * the heartbeat claim delivers it when the agent next checks in. A failure of
+ * the post-send `running` flip does not throw at all. The action is reported
+ * queued.
+ */
+/** The pre-send result a deferred dispatch returns; the loop replaces it. */
+function deferredPlaceholder(
+  actionType: 'run_script' | 'execute_command',
+  dispatch: Extract<DispatchScriptResult, { ok: true }>,
+  actionIndex: number,
+  context: ActionExecutionContext,
+): ActionExecutionResult {
+  return {
+    outcome: {
+      status: 'queued',
+      commandId: dispatch.commandId,
+      ...(dispatch.executionId ? { scriptExecutionId: dispatch.executionId } : {}),
+      message: QUEUED_UNDELIVERED_MESSAGE,
+    },
+    log: logEntry(`Queued ${actionType} action; delivery deferred until commit`, 'info', {
+      actionType,
+      actionIndex,
+      deviceId: context.device.id,
+      commandId: dispatch.commandId,
+    }),
+  };
+}
+
+function deferredDeliveryContinuation(
+  dispatch: Extract<DispatchScriptResult, { ok: true }>,
+  deliver: () => Promise<DispatchScriptResult>,
+  settle: (dispatch: DispatchScriptResult) => Promise<ActionExecutionResult>,
+  details: { actionIndex: number; deviceId: string },
+): () => Promise<ActionExecutionResult> {
+  return async () => {
+    let delivered: DispatchScriptResult;
+    try {
+      delivered = await runOutsideDbContext(deliver);
+    } catch (err) {
+      console.error('[automationRuntime] deferred script delivery threw; leaving the committed command queued', {
+        ...details,
+        commandId: dispatch.commandId,
+        executionId: dispatch.executionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, undefined, {
+        actionIndex: String(details.actionIndex),
+        deviceId: details.deviceId,
+        commandId: dispatch.commandId,
+      });
+      delivered = { ...dispatch, deliver: undefined, delivered: false, deliveryOutcome: 'send_failed' };
+    }
+    return withAutomationRuntimeDb(() => settle(delivered));
+  };
+}
 
 /**
  * Which admission-gate skips are POLICY outcomes (cooldown, filters, kill
@@ -1525,8 +1606,33 @@ export async function executeRunScriptAction(
     runAs: action.runAs ?? script.runAs,
     offlinePolicy: automationOfflinePolicy(action.whenOffline),
     variableScope,
+    deferDelivery: context.deferDelivery,
   });
 
+  const settle = (settled: DispatchScriptResult) =>
+    settleRunScriptDispatch(settled, script.id, action, actionIndex, context);
+  if (dispatch.ok && dispatch.deliver) {
+    // Deliberately writes nothing: a `queued` status written here would defeat
+    // the pending-guarded `running` flip that deliver() performs after commit.
+    return {
+      ...deferredPlaceholder('run_script', dispatch, actionIndex, context),
+      afterCommit: deferredDeliveryContinuation(dispatch, dispatch.deliver, settle, {
+        actionIndex,
+        deviceId: context.device.id,
+      }),
+    };
+  }
+  return settle(dispatch);
+}
+
+async function settleRunScriptDispatch(
+  dispatch: DispatchScriptResult,
+  scriptId: string,
+  action: RunScriptAction,
+  actionIndex: number,
+  context: ActionExecutionContext,
+): Promise<ActionExecutionResult> {
+  const script = { id: scriptId };
   if (!dispatch.ok) {
     if (dispatch.code === 'maintenance_suppressed') {
       return {
@@ -1642,8 +1748,30 @@ export async function executeCommandAction(
     runAs: 'system',
     createdBy: context.automation.createdBy ?? null,
     offlinePolicy: automationOfflinePolicy(action.whenOffline),
+    deferDelivery: context.deferDelivery,
   });
 
+  const settle = async (settled: DispatchScriptResult) =>
+    settleExecuteCommandDispatch(settled, shell, action, actionIndex, context);
+  if (dispatch.ok && dispatch.deliver) {
+    return {
+      ...deferredPlaceholder('execute_command', dispatch, actionIndex, context),
+      afterCommit: deferredDeliveryContinuation(dispatch, dispatch.deliver, settle, {
+        actionIndex,
+        deviceId: context.device.id,
+      }),
+    };
+  }
+  return settle(dispatch);
+}
+
+function settleExecuteCommandDispatch(
+  dispatch: DispatchScriptResult,
+  shell: ReturnType<typeof chooseShellForDevice>,
+  action: ExecuteCommandAction,
+  actionIndex: number,
+  context: ActionExecutionContext,
+): ActionExecutionResult {
   if (!dispatch.ok) {
     if (dispatch.code === 'maintenance_suppressed') {
       // #4919 — `execute_command` reaches the device through the same script
@@ -2931,22 +3059,33 @@ async function executeAutomationActionsInOrder(args: {
             ? await lockCurrentAutomationTargetDevices(args.automation, [device.id])
             : [device];
           if (!currentDevice) return null;
-          const result = await executeAction(action, actionIndex, buildActionExecutionContext({
-            automation: args.automation,
-            runId: args.runId,
-            scriptsById: args.scriptsById,
-            channelsById: args.channelsById,
-            variableScope: args.variableScope,
-            trigger: args.trigger,
-            remediationTrigger: args.remediationTrigger,
-          }, currentDevice));
+          const result = await executeAction(action, actionIndex, {
+            ...buildActionExecutionContext({
+              automation: args.automation,
+              runId: args.runId,
+              scriptsById: args.scriptsById,
+              channelsById: args.channelsById,
+              variableScope: args.variableScope,
+              trigger: args.trigger,
+              remediationTrigger: args.remediationTrigger,
+            }, currentDevice),
+            // #3445: this transaction holds the device lock and stays open
+            // until executeAction returns. The script rows are written in it,
+            // so the agent send must wait until it commits (afterCommit below)
+            // or a fast agent answers against rows the result path cannot see.
+            deferDelivery: true,
+          });
           return { currentDevice, result };
         });
         if (!admitted) {
           await handleAuthorityLost(device, actionIndex);
           return;
         }
-        const { currentDevice, result } = admitted;
+        const { currentDevice } = admitted;
+        // Committed: the rows are visible to the agent result path now.
+        const result = admitted.result.afterCommit
+          ? await admitted.result.afterCommit()
+          : admitted.result;
         logs.push(result.log);
         await persistActionExecutionOutcome(args.runId, currentDevice.id, actionIndex, result);
         const compensation = await cancelDispatchIfRunCancelled(args.runId, currentDevice.id, result);

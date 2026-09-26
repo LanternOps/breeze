@@ -63,7 +63,7 @@ vi.mock('../utils/pagination', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
 }));
 
-import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { LEGACY_ALERTING_GONE } from './legacyAlertingGone';
 import { templateRoutes } from './alertTemplates/templates';
 
 const TEMPLATE_ID = '55555555-5555-4555-8555-555555555555';
@@ -120,7 +120,7 @@ function deleteRequest(app: Hono) {
   return app.request(`/alert-templates/templates/${TEMPLATE_ID}`, { method: 'DELETE' });
 }
 
-describe('alert template partner-wide capability gate', () => {
+describe('retired partner-wide alert template writes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setPartnerOrgAccess('all');
@@ -138,57 +138,57 @@ describe('alert template partner-wide capability gate', () => {
     dbDeleteMock.mockImplementation(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
   });
 
-  it('POST /templates with partner availability returns 403 for selected access', async () => {
+  it('POST /templates with partner availability returns 410 for selected access', async () => {
     setPartnerOrgAccess('selected');
 
     const res = await createRequest(makeApp());
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
-  it('POST /templates with partner availability succeeds for all access', async () => {
+  it('POST /templates with partner availability returns 410 for all access', async () => {
     const res = await createRequest(makeApp());
 
-    expect(res.status).toBe(201);
-    expect((await res.json()).data).toMatchObject({ orgId: null, partnerId: 'p-1' });
-    expect(dbInsertMock).toHaveBeenCalledOnce();
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
-  it('PATCH /templates/:id returns 403 for selected access on a partner-wide row', async () => {
+  it('PATCH /templates/:id returns 410 for selected access on a partner-wide row', async () => {
     setPartnerOrgAccess('selected');
 
     const res = await patchRequest(makeApp());
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(dbUpdateMock).not.toHaveBeenCalled();
   });
 
-  it('PATCH /templates/:id succeeds for all access on the same partner-wide row', async () => {
+  it('PATCH /templates/:id returns 410 for all access on the same partner-wide row', async () => {
     const res = await patchRequest(makeApp());
 
-    expect(res.status).toBe(200);
-    expect((await res.json()).data.name).toBe('Long-offline devices');
-    expect(dbUpdateMock).toHaveBeenCalledOnce();
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(dbUpdateMock).not.toHaveBeenCalled();
   });
 
-  it('DELETE /templates/:id returns 403 for selected access on a partner-wide row', async () => {
+  it('DELETE /templates/:id returns 410 for selected access on a partner-wide row', async () => {
     setPartnerOrgAccess('selected');
 
     const res = await deleteRequest(makeApp());
 
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(dbDeleteMock).not.toHaveBeenCalled();
   });
 
-  it('DELETE /templates/:id succeeds for all access on the same partner-wide row', async () => {
+  it('DELETE /templates/:id returns 410 for all access on the same partner-wide row', async () => {
     const res = await deleteRequest(makeApp());
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { id: TEMPLATE_ID, deleted: true } });
-    expect(dbDeleteMock).toHaveBeenCalledOnce();
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(dbDeleteMock).not.toHaveBeenCalled();
   });
 });

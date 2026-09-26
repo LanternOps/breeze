@@ -118,6 +118,11 @@ describe('conversionApi (W05c1 contract)', () => {
       .toMatch(/can no longer be undone/i);
   });
 
+  it('maps the network stale-preview token to the translated retry guidance', () => {
+    expect(conversionFriendly('', '', { error: 'stale_preview' }))
+      .toBe(conversionErrorMessage({ error: 'preview_stale' }));
+  });
+
   it('fetchPolicyPreview surfaces the mapped text, not the token, when the preview fails', async () => {
     fetchMock.mockResolvedValue(json({ error: 'preview_failed' }, 500));
     const error = await fetchPolicyPreview('p1').catch((e: Error) => e);
@@ -143,4 +148,12 @@ describe('conversionApi (W05c1 contract)', () => {
     expect(readConvertResult(result)).toEqual(result);
     expect(readPartnerConvertResult({ data: { policies: 2, converted: 5, unconvertible: 1 } })).toEqual({ policies: 2, converted: 5, unconvertible: 1 });
   });
+});
+
+it('keeps retirement report fields when fetching pending counts', async () => {
+  const data = { policies: 0, rows: 0, sweep: { sweptAt: 's1', converted: 2, retired: 1 },
+    unconvertible: [{ sourceTable: 'alert_templates', sourceId: 'r1', name: 'Custom',
+      reason: 'unconvertible:custom_condition', policyId: null, policyName: null, retiredAt: 's1' }] };
+  fetchMock.mockResolvedValue(json({ data }));
+  await expect(fetchPendingCounts('org-1')).resolves.toEqual(data);
 });

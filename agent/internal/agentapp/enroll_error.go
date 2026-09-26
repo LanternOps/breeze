@@ -65,6 +65,7 @@ var (
 	osExit              = os.Exit
 	writeLastErrorFile  = defaultWriteLastErrorFile
 	eventLogError       = eventlog.Error
+	eventLogWarning     = eventlog.Warning
 	enrollLastErrorPath = defaultEnrollLastErrorPath
 )
 

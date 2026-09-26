@@ -5529,6 +5529,7 @@
       "sendInvite": "Falha ao enviar convite",
       "updateUser": "Falha ao atualizar o usuário",
       "updateRole": "Falha ao atualizar a função",
+      "updateOrgAccess": "Falha ao atualizar o acesso às organizações",
       "removeUser": "Falha ao remover usuário",
       "resetMfa": "Falha ao redefinir a MFA"
     },

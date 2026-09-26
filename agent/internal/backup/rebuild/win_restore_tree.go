@@ -106,8 +106,14 @@ func winRestoreTree(ctx context.Context, r *run) error {
 	if err != nil {
 		return fmt.Errorf("restore files: %w", err)
 	}
-	if err := r.recordRestoreFailures(res); err != nil {
+	// Record the counts first so an interrupted restore still reports how
+	// far it got; the interruption, when there is one, is the phase error.
+	recordErr := r.recordRestoreFailures(res)
+	if err := restoreInterrupted(ctx, res); err != nil {
 		return err
+	}
+	if recordErr != nil {
+		return recordErr
 	}
 	return applyWindowsSystemState(ctx, r)
 }

@@ -453,7 +453,7 @@ describe('partner desired-configuration material watermarks', () => {
     expect((await stateClock(org.id, 'configuration-policies')).getTime()).toBeGreaterThan(beforeDelete.getTime());
   });
 
-  runDb('canonical policy settings match Breeze empty collections and validated patch projection', async () => {
+  runDb('canonical policy settings omit retired features and preserve active collections and validated patch projection', async () => {
     const db = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -510,7 +510,7 @@ describe('partner desired-configuration material watermarks', () => {
     };
     expect(body.data, JSON.stringify(body)).toHaveLength(1);
     const settings = Object.fromEntries(body.data[0]!.features.map((feature) => [feature.type, feature.settings]));
-    expect(settings.alert_rule).toEqual({ items: [] });
+    expect(settings).not.toHaveProperty('alert_rule');
     expect(settings.automation).toEqual({ items: [] });
     expect(settings.compliance).toEqual({ items: [] });
     expect(settings.patch).toEqual({
@@ -543,13 +543,7 @@ describe('partner desired-configuration material watermarks', () => {
       suppressPatternIds: [], scheduleType: 'manual', intervalMinutes: null,
       cron: null, timezone: 'UTC',
     });
-    // Canonical 2-key monitoring shape: alert rules are owned by the
-    // alert_rule feature link as of 2026-07-30-alert-rule-ownership-
-    // consolidation.sql, which redefined the SQL materializer's monitoring
-    // branch to match assembleInlineSettings().
-    expect(settings.monitoring).toEqual({
-      checkIntervalSeconds: 60, watches: [],
-    });
+    expect(settings).not.toHaveProperty('monitoring');
     expect(settings.backup).toEqual({
       schedule: {}, retention: {}, paths: [], backupMode: 'file', targets: {},
     });

@@ -1,7 +1,7 @@
 /**
  * Notification channel config confidentiality at the DB layer (#6379).
  *
- * Migration under test: 2026-10-31-101100-notification-channel-configs.sql.
+ * Migration under test: 2026-11-02-100600-notification-channel-configs.sql.
  *
  * `notification_channels` carries a SELECT-only partner-wide read branch
  * (2026-10-10-120000), so an ORG session can read its MSP's partner-wide
@@ -48,7 +48,7 @@ import { createOrganization, createPartner } from './db-utils';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 const MIGRATION_SQL = readFileSync(
-  join(__dirname, '../../../migrations/2026-10-31-101100-notification-channel-configs.sql'),
+  join(__dirname, '../../../migrations/2026-11-02-100600-notification-channel-configs.sql'),
   'utf8',
 );
 
@@ -256,7 +256,7 @@ describe('notification_channel_configs RLS (#6379)', () => {
   });
 });
 
-describe('2026-10-31-101100 migration replay (#6379)', () => {
+describe('2026-11-02-100600 migration replay (#6379)', () => {
   const notices: string[] = [];
   const admin = postgres(process.env.DATABASE_URL ?? '', {
     max: 1,

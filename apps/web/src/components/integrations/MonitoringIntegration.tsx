@@ -15,6 +15,7 @@ import {
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { useOrgScope } from "@/hooks/useOrgScope";
+import { OrgLoadFailedState } from "../shared/OrgLoadFailedState";
 import { getJwtClaims } from "../../lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
@@ -277,8 +278,9 @@ export default function MonitoringIntegration() {
   // flashes the note (and a failed org-context load no longer strands here).
   const needsOrgSelection =
     canAddressManyOrgs && (orgScope.scope === "all" || orgScope.status === "empty");
-  // Partner/system with no org yet but context still resolving (or it failed):
-  // hold the loading frame instead of firing the doomed org-less GET.
+  // Partner/system with no org yet and context still resolving: hold the
+  // loading frame instead of firing the doomed org-less GET. (If the context
+  // load FAILED, the render below shows the retry card instead.)
   const awaitingOrgContext =
     canAddressManyOrgs && !currentOrgId && !needsOrgSelection;
 
@@ -541,6 +543,12 @@ export default function MonitoringIntegration() {
       });
     }
   };
+
+  // The org context itself failed to load: say so (with retry) rather than
+  // holding the loading frame indefinitely — same card the dashboards use.
+  if (awaitingOrgContext && orgScope.status === "error") {
+    return <OrgLoadFailedState error={orgScope.error} />;
+  }
 
   if (needsOrgSelection) {
     return (
