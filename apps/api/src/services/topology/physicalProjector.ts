@@ -3,12 +3,13 @@ import { canonicalIdentityKey } from './identity';
 import { stableLegacyId } from './legacyProjection';
 import { outcomeHasPositives, type AdjacencySourceSection, type UnifiSourceSection } from './collectionTypes';
 import {
-  buildPhysicalIdentityIndex, cdpDeviceSourceKey, isPhysicalGeneration, lldpChassisSourceKey, macEndpointSourceKey, normalizeMac, opaqueHash,
+  buildPhysicalIdentityIndex, cdpDeviceSourceKey, PHYSICAL_GENERATION_PREFIX, isPhysicalGeneration, lldpChassisSourceKey, macEndpointSourceKey, normalizeMac, opaqueHash,
   physicalAuthorityOf, physicalGenerationNumber, physicalLinkKey, physicalTargetSourceKey, planInterfaceGeneration, resolveLocalInterface,
   resolveRemoteInterface, resolveTypedNode, sortedLinkEndpoints, type EndpointPort, type PhysicalIdentityIndex,
 } from './physicalIdentity';
 import { emptyProjection, type InterfacePublication, type PhysicalProjectionContext, type TopologyProjectionDelta, type TopologyProjectionInput } from './reconciliationTypes';
 import type { NodePublication, RelationshipPublication } from './publish';
+import { unifiControllerPortKey, unifiPortInterfaceKey } from './unifiPorts';
 
 /**
  * Durable resolution material of one physical row (D15.1). It is retained in the
@@ -222,6 +223,18 @@ export function projectUnifiPhysicalTopology(input: TopologyProjectionInput & { 
     for (const row of rows as NormalizedUnifiDeviceRow[]) endpoint(row.endpointKey, row.inventoryDeviceId, row.name);
     return delta;
   }
+  if (section.kind === 'unifi_device_details') {
+    // Canonical controller ports (M3 Task 4): one interface per reported port index.
+    const known = [...input.interfaces];
+    for (const row of rows as NormalizedUnifiDeviceDetailRow[]) {
+      const owner = endpoint(row.endpointKey, null);
+      for (const port of row.ports) {
+        const change = planUnifiPortInterface(scope, owner, row.endpointKey, port, known, at, section.outcome);
+        known.push(change);
+        delta.interfaces.push(change);
+      }
+    }
+  }
   const relationships = new Map(input.relationships.map(r => [r.canonicalKey, r]));
   const freshUntil = new Date(at.getTime() + Math.max(run.expectedIntervalSeconds * 3, 900) * 1000);
   for (const row of rows as (NormalizedUnifiClientRow | NormalizedUnifiDeviceDetailRow)[]) {
@@ -314,6 +327,22 @@ export function projectPhysicalTopology(input: TopologyProjectionInput): Topolog
       producerEpoch: source.producerEpoch, sequence: run.sequence, contentDigest: run.contentDigest, firstPositiveAt: at, lastPositiveAt: at, effectiveAt: at, freshUntil, lifecycle: 'active', completeMissCount: 0 }];
   }
   return delta;
+}
+
+/** One UniFi controller port of `owner`. The port index is the identity: an
+ * existing current generation is kept (label/observation refreshed), else the
+ * next generation is allocated. Never retires on absence (M1 owns staleness). */
+export function planUnifiPortInterface(scope: TopologyScope, owner: string, endpointKey: string, port: NormalizedUnifiDeviceDetailRow['ports'][number],
+  known: InterfacePublication[], at: Date, outcome: string): InterfacePublication {
+  const interfaceKey = unifiPortInterfaceKey(port.portIndex);
+  const generations = known.filter(i => i.ownerNodeId === owner && i.interfaceKey === interfaceKey && isPhysicalGeneration(i.epoch));
+  const current = generations.find(i => !i.retiredAt) ?? null;
+  const observed = { name: port.name, osIndex: String(port.portIndex), controllerPortKey: unifiControllerPortKey(endpointKey, port.portIndex),
+    lastObservedAt: at, lastOutcome: outcome as InterfacePublication['lastOutcome'] };
+  if (current) return { ...current, ...observed };
+  const epoch = `${PHYSICAL_GENERATION_PREFIX}${generations.reduce((max, i) => Math.max(max, physicalGenerationNumber(i.epoch)), 0) + 1}`;
+  return { ...scope, id: stableLegacyId(opaqueHash([scope, owner, interfaceKey, epoch])), ownerNodeId: owner, interfaceKey, epoch,
+    kind: 'unknown', addresses: [], retiredAt: null, alias: null, physAddress: null, ...observed };
 }
 
 /**

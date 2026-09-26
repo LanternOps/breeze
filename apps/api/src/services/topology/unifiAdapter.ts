@@ -52,6 +52,8 @@ import { canonicalMac } from '../unifi/unifiMac';
 import { lockTopologyPhysicalIngest, resolveTopologyPhysicalProducer, TOPOLOGY_PRODUCER_REJECTIONS } from './collectionAuthority';
 import { canonicalFactValue } from './collectionFactKeys';
 import { ingestTopologySourceReport } from './collectionIngest';
+import { captureException } from '../sentry';
+import { ingestUnifiInterfaceTelemetry } from './unifiInterfaceMetrics';
 import type { NormalizedTopologyReport, UnifiSourceSection } from './collectionTypes';
 import { currentUnifiCollectorTopology, ensureUnifiTopologyAuthority, resolveUnifiSourceScope, unifiAuthorityKey, unifiHostKey, type UnifiCollectorAuthority } from './unifiAuthority';
 
@@ -216,6 +218,16 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
       resources.push(receipt.accepted
         ? { ...out, accepted: true, contentDigest: resource.contentDigest, ...(receipt.acceptedSequence ? { acceptedSequence: receipt.acceptedSequence } : {}) }
         : { ...out, accepted: false, reason: receipt.reason ?? 'not_accepted' });
+      // M3 Task 4: accepted port details also feed link/speed telemetry. Its
+      // own savepoint; a telemetry failure never changes the structural receipt.
+      if (receipt.accepted && resource.kind === 'device_details') {
+        try {
+          await ingestUnifiInterfaceTelemetry({ deviceId, collector, scope, authorityKey, report, resource });
+        } catch (error) {
+          console.error('[unifi] port telemetry ingest failed; topology receipt unaffected:', error instanceof Error ? error.message : error);
+          captureException(error);
+        }
+      }
     } catch (error) {
       const reason = unifiAdapterRejection(error);
       if (!reason) throw error;
