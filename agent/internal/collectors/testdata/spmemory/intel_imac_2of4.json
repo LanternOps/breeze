@@ -1,0 +1,51 @@
+{
+  "SPMemoryDataType" : [
+    {
+      "_items" : [
+        {
+          "_name" : "BANK 0/ChannelA-DIMM0",
+          "dimm_manufacturer" : "0x80AD",
+          "dimm_part_number" : "0x484D41383147533641465238432D564B2020",
+          "dimm_serial_number" : "0x12AB34CD",
+          "dimm_size" : "8 GB",
+          "dimm_speed" : "2667 MHz",
+          "dimm_status" : "ok",
+          "dimm_type" : "DDR4"
+        },
+        {
+          "_name" : "BANK 0/ChannelA-DIMM1",
+          "dimm_manufacturer" : "empty",
+          "dimm_part_number" : "empty",
+          "dimm_serial_number" : "empty",
+          "dimm_size" : "empty",
+          "dimm_speed" : "empty",
+          "dimm_status" : "empty",
+          "dimm_type" : "empty"
+        },
+        {
+          "_name" : "BANK 1/ChannelB-DIMM0",
+          "dimm_manufacturer" : "Micron",
+          "dimm_part_number" : "0x31364154463230363436485A2D324733453120",
+          "dimm_serial_number" : "0x00000000",
+          "dimm_size" : "16 GB",
+          "dimm_speed" : "2667 MHz",
+          "dimm_status" : "ok",
+          "dimm_type" : "DDR4"
+        },
+        {
+          "_name" : "BANK 1/ChannelB-DIMM1",
+          "dimm_manufacturer" : "empty",
+          "dimm_part_number" : "empty",
+          "dimm_serial_number" : "empty",
+          "dimm_size" : "empty",
+          "dimm_speed" : "empty",
+          "dimm_status" : "empty",
+          "dimm_type" : "empty"
+        }
+      ],
+      "_name" : "memory",
+      "global_ecc_state" : "ecc_disabled",
+      "is_memory_upgradeable" : "Yes"
+    }
+  ]
+}
