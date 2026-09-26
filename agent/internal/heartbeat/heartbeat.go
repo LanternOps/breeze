@@ -2544,7 +2544,7 @@ func (h *Heartbeat) sendHardwareInventory() {
 	if payload.Memory != nil {
 		label = fmt.Sprintf("hardware (%d memory slots)", len(payload.Memory.Modules))
 	}
-	h.sendInventoryData("hardware", payload, label)
+	_ = h.sendInventoryData("hardware", payload, label)
 }
 
 // hardwareInventoryPayload is the PUT /agents/:id/hardware body: the base

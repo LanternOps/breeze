@@ -274,7 +274,7 @@ func readSMBIOSTableFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: open SMBIOS table: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, smbios.MaxTableSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("memory: read SMBIOS table: %w", err)
