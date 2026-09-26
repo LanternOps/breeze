@@ -223,7 +223,18 @@
     "port": "Numero di porta",
     "expectStatus": "Codice di stato previsto",
     "pollingIntervalSeconds": "Interroga ogni (secondi)",
-    "match": "Corrispondenza"
+    "match": "Corrispondenza",
+    "pingCount": "Richieste echo",
+    "expectBanner": "Banner atteso",
+    "httpMethod": "Metodo HTTP",
+    "expectedBody": "La risposta deve contenere",
+    "followRedirects": "Segui i reindirizzamenti",
+    "verifySsl": "Verifica certificato TLS",
+    "recordType": "Tipo di record",
+    "expectedValue": "Valore atteso",
+    "nameserver": "Server dei nomi",
+    "degradedIsFailure": "Considera degradato come errore",
+    "maxResponseMs": "Fallisci se più lento di (ms)"
   },
   "operators": {
     "gt": "maggiore di",
@@ -567,5 +578,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (recupera)",
+    "HEAD": "HEAD (solo intestazioni)",
+    "POST": "POST (invia)",
+    "PUT": "PUT (sostituisci)",
+    "OPTIONS": "OPTIONS (funzionalità)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (indirizzo IPv4)",
+    "AAAA": "AAAA (indirizzo IPv6)",
+    "MX": "MX (server di posta)",
+    "CNAME": "CNAME (nome alternativo)",
+    "TXT": "TXT (testo)",
+    "NS": "NS (server dei nomi)"
   }
 }
