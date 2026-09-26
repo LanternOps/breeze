@@ -19,7 +19,7 @@ import { updateFeatureLink, removeFeatureLink } from '../../services/configurati
 import { replayMigration } from './replayMigration';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2026-10-31-100000-legacy-alerting-retirement-sweep.sql';
+const MIGRATION = '2026-10-31-110000-legacy-alerting-retirement-sweep.sql';
 const SYSTEM_CTX = SYSTEM_DB_ACCESS_CONTEXT;
 
 const created: string[] = [];
@@ -68,7 +68,7 @@ async function settingsLinkFor(policyId: string) {
   );
 }
 
-describe('2026-10-31-100000-legacy-alerting-retirement-sweep.sql', () => {
+describe('2026-10-31-110000-legacy-alerting-retirement-sweep.sql', () => {
   it('re-keys a monitoring-only policy onto a freshly created monitors link and mirrors the interval', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

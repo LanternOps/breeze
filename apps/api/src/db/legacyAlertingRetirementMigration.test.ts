@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const directory = new URL('../../migrations/', import.meta.url);
-const migration = '2026-10-31-100000-legacy-alerting-retirement-sweep.sql';
+const migration = '2026-10-31-110000-legacy-alerting-retirement-sweep.sql';
 const statements = () => readFileSync(new URL(migration, directory), 'utf8')
   .replace(/--[^\n]*/g, '');
 

@@ -1138,7 +1138,7 @@ async function decomposeInlineSettings(
         );
       }
       // Upsert preserves the settings id and its retired watch history after
-      // 2026-10-31-100000-legacy-alerting-retirement-sweep.sql re-keys ownership.
+      // 2026-10-31-110000-legacy-alerting-retirement-sweep.sql re-keys ownership.
       // Attachment edits must neither create an interval override nor reset an
       // existing (including migration-re-keyed) interval.
       if (parsed.checkIntervalSeconds !== undefined) {

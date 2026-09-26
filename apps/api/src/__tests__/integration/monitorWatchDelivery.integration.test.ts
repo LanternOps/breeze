@@ -462,7 +462,7 @@ describe('monitors interval provenance reaches the agent', () => {
     const target = await policy(org.id, {
       interval: 30, legacy: true, assignment: { level: 'device', targetId: device.id },
     });
-    await replayMigration('2026-10-31-100000-legacy-alerting-retirement-sweep.sql');
+    await replayMigration('2026-10-31-110000-legacy-alerting-retirement-sweep.sql');
     await withDbAccessContext(orgContext(org.id, partner.id), async () => {
       const rows = await db.select({ linkId: configPolicyFeatureLinks.id, interval: configPolicyMonitoringSettings.checkIntervalSeconds })
         .from(configPolicyFeatureLinks)
