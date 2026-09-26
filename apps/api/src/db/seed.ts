@@ -469,7 +469,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
-      'topology:read', 'topology:write',
+      'topology:read', 'topology:write', 'topology:execute',
       'remote:access',
       // AI chat (#6396): a technician can run scripts and manage devices over
       // HTTP; the per-tool map bounds chat to exactly the same permissions.
