@@ -751,6 +751,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	var filesDone int
 	var bytesDone int64
 	lastProgressAt := time.Now()
+	// inFlight adds the bytes read so far of the file being uploaded, so one
+	// large file advances the bar instead of freezing it (#5417). Reported
+	// bytes are floored at the last value sent: a file that fails part-way
+	// keeps its already-reported bytes rather than moving the bar backwards.
+	// The terminal result, not this mid-run value, sets the job's final
+	// transferred size.
+	inFlight := newInFlightProgress(onProgress != nil)
+	var reportedBytes int64
 	emitProgress := func(force bool) {
 		if onProgress == nil {
 			return
@@ -761,12 +769,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return
 		}
 		lastProgressAt = time.Now()
-		onProgress(filesDone, filesTotal, bytesDone, bytesTotal, snapshot.ID)
+		reportedBytes = max(reportedBytes, bytesDone+inFlight.load())
+		onProgress(filesDone, filesTotal, reportedBytes, bytesTotal, snapshot.ID)
 	}
 	markDone := func(fileCount int, byteCount int64) {
 		progressMu.Lock()
 		filesDone += fileCount
 		bytesDone += byteCount
+		inFlight.reset()
 		progressMu.Unlock()
 	}
 
@@ -774,7 +784,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// is in flight, the loop emits nothing — but the server-side stale reaper
 	// treats a silent running job as dead and cancels it. Re-emit the current
 	// counters every progressKeepaliveInterval so a long in-flight upload
-	// keeps the job's last_progress_at fresh. The goroutine is joined on
+	// keeps the job's last_progress_at fresh. The same goroutine also emits
+	// (throttled) when inFlight signals that the current file's upload has
+	// read further, so provider read paths never block on onProgress. The
+	// goroutine is joined on
 	// every return path (defer) so no emission can fire after this function
 	// returns.
 	if onProgress != nil {
@@ -788,6 +801,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				case <-keepaliveStop:
 					return
 				case <-keepaliveTicker.C:
+					emitProgress(false)
+				case <-inFlight.kicks():
 					emitProgress(false)
 				}
 			}
@@ -1064,7 +1079,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		)
 
 		uploadStart := time.Now()
-		uploadErr := attemptFileUpload(ctx, provider, uploadFile, backupPath)
+		uploadCtx := inFlight.track(ctx, file.size)
+		uploadErr := attemptFileUpload(uploadCtx, provider, uploadFile, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 			// Before spending anything else on this failure, make sure the
 			// source we are reading from still exists. If the shadow copy died,
@@ -1127,7 +1143,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				case <-ctx.Done():
 					uploadErr = errBackupStopped
 				case <-time.After(retryDelay):
-					uploadErr = attemptFileUpload(ctx, provider, uploadFile, backupPath)
+					uploadErr = attemptFileUpload(uploadCtx, provider, uploadFile, backupPath)
 				}
 			}
 		}
@@ -1178,7 +1194,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		)
 		if haveMeasurement {
 			sumStart := time.Now()
-			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(ctx, provider, file.sourcePath, backupPath, pre)
+			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(uploadCtx, provider, file.sourcePath, backupPath, pre)
 			if reconcileErr != nil {
 				// Only errBackupStopped is ever returned here (a job cancel
 				// during the reconciliation retry) — abort exactly like any
