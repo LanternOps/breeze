@@ -11,7 +11,12 @@ import {
   type UserPermissions,
 } from '../permissions';
 
-export type TopologyCapability = 'read' | 'write' | 'execute' | 'configure';
+// Pure capability -> grant table lives in a leaf module so callers that only
+// need the pairs (e.g. aiSessionAccess, reached from the worker boot closure)
+// never pull in middleware/auth.
+import { topologyPermissionPairs, type TopologyCapability } from './permissionPairs';
+
+export { topologyPermissionPairs, type TopologyCapability, type TopologyPermissionPair } from './permissionPairs';
 
 export type TopologyRequestContext = {
   auth: AuthContext;
@@ -31,37 +36,6 @@ export class TopologyError extends Error {
   ) {
     super(message);
     this.name = 'TopologyError';
-  }
-}
-
-export type TopologyPermissionPair = readonly [resource: string, action: string];
-
-/**
- * Minimum grants for each topology capability. Execution still requires the
- * action path's MFA, target/origin, and current-authority checks.
- */
-export function topologyPermissionPairs(
-  capability: TopologyCapability,
-): TopologyPermissionPair[] {
-  const read: TopologyPermissionPair[] = [
-    ['topology', 'read'],
-    ['devices', 'read'],
-  ];
-
-  switch (capability) {
-    case 'read':
-      return read;
-    case 'write':
-      return [...read, ['topology', 'write']];
-    case 'execute':
-      return [...read, ['topology', 'execute'], ['devices', 'execute']];
-    case 'configure':
-      return [
-        ...read,
-        ['topology', 'write'],
-        ['devices', 'write'],
-        ['devices', 'execute'],
-      ];
   }
 }
 

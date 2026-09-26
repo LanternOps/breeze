@@ -16,7 +16,7 @@ import { aiSessions } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { getUserPermissions, hasPermission } from '../permissions';
 import { normalizeSiteAllowlist } from '../siteAllowlist';
-import { topologyPermissionPairs } from './access';
+import { topologyPermissionPairs } from './permissionPairs';
 
 export type TopologySessionVisibility =
   | { kind: 'all' }
