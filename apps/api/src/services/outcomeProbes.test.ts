@@ -70,6 +70,12 @@ describe('telemetryProbeFor', () => {
     ['anomaly:device_metrics:memory_growth:ram_used', { table: 'device_metrics', column: 'ram_used_mb' }],
     ['anomaly:device_process_samples:process_runaway:process_cpu', { table: 'device_process_samples', column: 'top_processes' }],
     ['rule:metric:diskPercent:high', { table: 'device_metrics', column: 'disk_percent' }],
+    ['rule:metric:cpu:high', { table: 'device_metrics', column: 'cpu_percent' }],
+    ['rule:metric:ram:high', { table: 'device_metrics', column: 'ram_percent' }],
+    ['rule:metric:memory:high', { table: 'device_metrics', column: 'ram_percent' }],
+    ['rule:metric:disk:high', { table: 'device_metrics', column: 'disk_percent' }],
+    ['rule:metric:processCount:high', { table: 'device_metrics', column: 'process_count' }],
+    ['rule:metric:processes:high', { table: 'device_metrics', column: 'process_count' }],
     ['rule:bandwidth_high:in', { table: 'device_metrics', column: 'bandwidth_in_bps' }],
     ['rule:disk_io_high:write', { table: 'device_metrics', column: 'disk_write_bps' }],
     ['rule:service_stopped', CPU],
@@ -81,6 +87,16 @@ describe('telemetryProbeFor', () => {
   it('fails closed (null) for a metric family it cannot map', () => {
     expect(telemetryProbeFor('anomaly:device_metrics:spike:some_new_metric')).toBeNull();
     expect(telemetryProbeFor('rule:metric:gpuPercent:high')).toBeNull();
+  });
+
+  it('fails closed (null) for a compound rule with a metric/bandwidth/disk-io leaf', () => {
+    expect(telemetryProbeFor('rule:and(metric:cpu:high,offline)')).toBeNull();
+    expect(telemetryProbeFor('rule:or(bandwidth_high:in,service_stopped)')).toBeNull();
+    expect(telemetryProbeFor('rule:and(disk_io_high:read,offline)')).toBeNull();
+  });
+
+  it('does not fail closed for a compound rule with no metric/bandwidth/disk-io leaf', () => {
+    expect(telemetryProbeFor('rule:and(offline,service_stopped)')).toEqual(CPU);
   });
 });
 
@@ -108,5 +124,22 @@ describe('probeTelemetryFreshness counts only the measurement itself', () => {
     rows.push([{ status: 'online', lastSeenAt: new Date('2026-11-01T23:50:00Z') }]);
     await expect(probeTelemetryFreshness({ deviceId: 'd', from, to, probe: { table: 'device_metrics', column: 'org_id; drop' } }))
       .rejects.toThrow(/not an allowed telemetry column/);
+  });
+
+  it('casts device_metrics.timestamp (no tz) to ::timestamp, not ::timestamptz', async () => {
+    rows.push([{ status: 'online', lastSeenAt: new Date('2026-11-01T23:50:00Z') }]);
+    executeRows.push([{ buckets: 40 }]);
+    await probeTelemetryFreshness({ deviceId: 'd', from, to, probe: CPU });
+    const q = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[0]![0] as never);
+    expect(q.sql).toContain('::timestamp ');
+    expect(q.sql).not.toContain('::timestamptz');
+  });
+
+  it('casts device_process_samples.timestamp (has tz) to ::timestamptz', async () => {
+    rows.push([{ status: 'online', lastSeenAt: new Date('2026-11-01T23:50:00Z') }]);
+    executeRows.push([{ buckets: 40 }]);
+    await probeTelemetryFreshness({ deviceId: 'd', from, to, probe: { table: 'device_process_samples', column: 'top_processes' } });
+    const q = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[0]![0] as never);
+    expect(q.sql).toContain('::timestamptz');
   });
 });
