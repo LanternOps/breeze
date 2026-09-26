@@ -88,6 +88,10 @@ const (
 	noticeDialogMBIconInformation = 0x00000040
 )
 
+// noticeDialogTimeoutMs bounds how long the fallback dialog stays up. It is an
+// announcement, so it goes away on its own rather than waiting for a click.
+const noticeDialogTimeoutMs = 60_000
+
 // showNoticeDialogOS is the #6864 fallback for a notice whose toast failed: an
 // OK-only information box that closes itself after noticeDialogTimeoutMs. It is
 // topmost so it is not hidden behind the user's windows, but not system-modal:

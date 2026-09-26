@@ -29,13 +29,10 @@ func showNotification(req ipc.NotifyRequest) bool {
 // reports whether the dialog rendered. Tests swap it.
 var showNoticeDialogFn = showNoticeDialogOS
 
-// noticeDialogTimeoutMs bounds how long the fallback dialog stays up. It is an
-// announcement, so it goes away on its own rather than waiting for a click.
-const noticeDialogTimeoutMs = 60_000
-
 // noticeDialogMu serialises fallback dialogs inside one helper. The start and
 // end notices of a short remote session can arrive while the first dialog is
-// still open; the second waits (bounded by noticeDialogTimeoutMs) instead of
+// still open; the second waits (bounded by each platform's own
+// noticeDialogTimeoutMs, declared alongside showNoticeDialogOS) instead of
 // stacking a second topmost window on the first.
 var noticeDialogMu sync.Mutex
 
