@@ -1642,7 +1642,12 @@
       "source": "Fuente"
     },
     "thirdParty": "Tercero",
-    "uncategorized": "Sin categoría"
+    "uncategorized": "Sin categoría",
+    "installFailure": {
+      "badge": "La instalación falló",
+      "noReason": "El agente no informó ningún motivo",
+      "failedAt": "El último intento de instalación falló: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, uso del disco y ancho de banda de la red a lo largo del tiempo",

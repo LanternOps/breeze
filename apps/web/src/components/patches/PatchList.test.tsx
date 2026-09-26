@@ -407,3 +407,47 @@ describe('PatchList bulk decline includes approved rows (#5585)', () => {
     expect(screen.queryByTestId('patch-bulk-decline')).toBeNull();
   });
 });
+
+describe('PatchList install failure overlay (#4223)', () => {
+  const BATTERY = 'preflight check "battery" failed: running on battery power (battery: 76%)';
+
+  it('shows the failed install and its reason instead of "Pending"', () => {
+    const patch = makePatch({
+      id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      approvalStatus: 'pending',
+      installFailure: { deviceCount: 1, error: BATTERY, failedAt: '2026-08-29T18:00:00.000Z' },
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    const badge = desktop.getByTestId(`patch-row-${patch.id}-install-failed`);
+    expect(badge.textContent).toContain('Install failed');
+    expect(desktop.getByText(BATTERY)).toBeTruthy();
+    // The approval badge would claim "Pending" — provably wrong once an install ran.
+    expect(desktop.queryByText('Pending')).toBeNull();
+  });
+
+  it('counts failing devices when more than one failed', () => {
+    const patch = makePatch({
+      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      approvalStatus: 'approved',
+      installFailure: { deviceCount: 3, error: 'disk space', failedAt: '2026-08-29T18:00:00.000Z' },
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-install-failed`).textContent).toContain('3 devices');
+    // A real approval state is still shown alongside the failure.
+    expect(desktop.getByText('Approved')).toBeTruthy();
+  });
+
+  it('renders the plain approval badge when there is no failure', () => {
+    const patch = makePatch({ id: 'dddddddd-dddd-dddd-dddd-dddddddddddd' });
+    render(<PatchList patches={[patch]} />);
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.queryByTestId(`patch-row-${patch.id}-install-failed`)).toBeNull();
+    expect(desktop.getByText('Pending')).toBeTruthy();
+  });
+});

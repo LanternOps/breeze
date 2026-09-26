@@ -1642,7 +1642,12 @@
       "source": "Kaynak"
     },
     "thirdParty": "Üçüncü taraf",
-    "uncategorized": "Genel"
+    "uncategorized": "Genel",
+    "installFailure": {
+      "badge": "Kurulum başarısız",
+      "noReason": "Ajan bir neden bildirmedi",
+      "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "Zaman içinde CPU, RAM, disk kullanımı ve ağ bant genişliği",
