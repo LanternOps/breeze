@@ -1945,9 +1945,7 @@ func (h *Heartbeat) Start() {
 			// a `renewCert` signal that can only arrive in a heartbeat
 			// response the server is refusing to send is a deadlock.
 			go h.maybeSelfInitiateCertRenewal()
-			if h.authMon != nil && h.authMon.ShouldSkip() {
-				log.Debug("skipping heartbeat tick, auth-dead",
-					"backoff", h.authMon.BackoffDuration())
+			if h.skipTickIfAuthDead() {
 				// continue here re-arms the ticker without running
 				// sendHeartbeatWithWatchdog or any inventory/posture/security
 				// scheduling — all of that work requires a valid auth token.
@@ -4693,7 +4691,15 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 		if h.authMon != nil {
 			h.authMon.RecordAuthFailure()
 		}
+		h.noteAuthRejectedLiveness()
 		return nil, false
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		// Decommissioned / quarantined / tenant-inactive. Not counted by the
+		// auth monitor (unchanged), but it is still "running, rejected by the
+		// server", which a watchdog restart cannot fix (#2796).
+		h.noteAuthRejectedLiveness()
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -6046,6 +6052,56 @@ func (h *Heartbeat) reconcilePendingRotation() {
 		persisted.PendingHelperAuthToken,
 	)
 	log.Info("resumed credential rotation confirmed and promoted")
+}
+
+// skipTickIfAuthDead reports whether this heartbeat tick should be skipped
+// because the auth monitor is in an auth-dead backoff window. A skipped tick
+// still refreshes the auth-rejected liveness marker: the loop is alive, it is
+// just not allowed to talk to the server yet (#2796).
+func (h *Heartbeat) skipTickIfAuthDead() bool {
+	if h.authMon == nil || !h.authMon.ShouldSkip() {
+		return false
+	}
+	log.Debug("skipping heartbeat tick, auth-dead",
+		"backoff", h.authMon.BackoffDuration())
+	h.noteAuthRejectedLiveness()
+	return true
+}
+
+// noteAuthRejectedLiveness tells the watchdog that this agent is running its
+// heartbeat loop but the server is rejecting its credentials (#2796).
+// LastHeartbeat only advances on HTTP 200, so without this a live agent that
+// is correctly backing off reads as wedged: the watchdog restarts it every
+// ~10 minutes, each restart resets its in-memory backoff, and once the
+// restart budget is gone the watchdog parks in FAILOVER and polls the server
+// itself. Written to agent.state AND sent over IPC — the file alone is not
+// reliable on AV/EDR-locked hosts (#2763).
+func (h *Heartbeat) noteAuthRejectedLiveness() {
+	now := time.Now()
+	if h.statePath != "" {
+		if err := state.UpdateAuthRejected(h.statePath, now); err != nil {
+			log.Warn("failed to update state file auth-rejected marker", "error", err.Error())
+		}
+	}
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		return
+	}
+	// LastHeartbeat stays empty: this must never read as a successful
+	// heartbeat, to this watchdog or to one that predates AuthRejectedAt.
+	if err := sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+		AgentVersion:     h.agentVersion,
+		Connected:        false,
+		AuthRejectedAt:   now.Format(time.RFC3339),
+		ActiveBackupRuns: h.sessionBroker.ActiveBackupRunCount(),
+	}); err != nil {
+		// On an AV/EDR-locked host this IPC send is the only liveness
+		// channel left, so a failure here must leave a trace.
+		log.Warn("failed to send auth-rejected state_sync to watchdog", "error", err.Error())
+	}
 }
 
 // sendWatchdogStateSync sends a state_sync IPC message to the watchdog

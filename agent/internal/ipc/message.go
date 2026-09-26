@@ -569,6 +569,14 @@ type StateSync struct {
 	// recent (D3): killing the backup helper mid-run on a transient IPC
 	// hiccup previously had no guard at all.
 	ActiveBackupRuns int `json:"activeBackupRuns,omitempty"`
+	// AuthRejectedAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but the server is rejecting its
+	// credentials (401/403, or an auth-dead backoff tick). The watchdog
+	// treats a fresh value as "running, locked out" and does not restart the
+	// agent for its stale heartbeat (#2796). Watchdogs that predate the field
+	// ignore it, and LastHeartbeat stays empty so they cannot mistake it for
+	// a successful heartbeat.
+	AuthRejectedAt string `json:"authRejectedAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.
