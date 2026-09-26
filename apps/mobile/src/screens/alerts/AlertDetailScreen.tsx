@@ -4,7 +4,7 @@ import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
 import { getAlert, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
-import { canRebootFromAlert, needsAlertLookup, rebootConfirmMessage } from './alertActions';
+import { needsAlertLookup, rebootPlan } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
@@ -84,12 +84,13 @@ export function AlertDetailScreen({ route }: Props) {
   const [rebooting, setRebooting] = useState(false);
   const [rebootSent, setRebootSent] = useState(false);
   const [fresh, setFresh] = useState<AlertModel | null>(null);
-  // Reboot now is decided on the fetched copy, which has the current status
-  // (and the source, which a chat-built alert lacks). Until that read lands,
-  // or if it fails, the button stays hidden.
-  const showReboot = fresh
-    ? canRebootFromAlert({ ...alert, source: fresh.source, metadata: fresh.metadata })
-    : false;
+  // Reboot now is decided on, and aimed at, the fetched copy alone: it has
+  // the current status, the source a chat-built alert lacks, and the device
+  // the server says the alert belongs to (a chat payload's own deviceId is
+  // never used as the target). Until that read lands, or if it fails, the
+  // button stays hidden.
+  const plan = rebootPlan(fresh);
+  const showReboot = plan !== null;
 
   useEffect(() => {
     if (!needsAlertLookup(alert)) return;
@@ -137,9 +138,9 @@ export function AlertDetailScreen({ route }: Props) {
   }
 
   function handleReboot() {
-    const deviceId = alert.deviceId;
-    if (!deviceId) return;
-    Alert.alert('Restart device', rebootConfirmMessage(alert), [
+    if (!plan) return;
+    const { deviceId, message } = plan;
+    Alert.alert('Restart device', message, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Restart now', style: 'destructive', onPress: () => void sendReboot(deviceId) },
     ]);

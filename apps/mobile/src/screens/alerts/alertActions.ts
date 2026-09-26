@@ -32,6 +32,16 @@ export function needsAlertLookup(alert: Alert): boolean {
   return alert.source === undefined || alert.source === REBOOT_PENDING_SOURCE;
 }
 
+/**
+ * The restart the screen may offer, built only from the alert as fetched from
+ * the server. It takes no route or chat input, so the target is always the
+ * device the server ties to the alert.
+ */
+export function rebootPlan(fetched: Alert | null): { deviceId: string; message: string } | null {
+  if (!fetched || !fetched.deviceId || !canRebootFromAlert(fetched)) return null;
+  return { deviceId: fetched.deviceId, message: rebootConfirmMessage(fetched) };
+}
+
 /** Confirmation copy for the reboot prompt. */
 export function rebootConfirmMessage(alert: Alert): string {
   const name = alert.deviceName || 'this device';

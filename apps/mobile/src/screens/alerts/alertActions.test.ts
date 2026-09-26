@@ -5,6 +5,7 @@ import {
   canRebootFromAlert,
   needsAlertLookup,
   rebootConfirmMessage,
+  rebootPlan,
   REBOOT_PENDING_SOURCE,
 } from './alertActions';
 
@@ -66,6 +67,21 @@ describe('needsAlertLookup', () => {
     expect(needsAlertLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
     expect(needsAlertLookup(alert({ source: undefined, deviceId: undefined }))).toBe(false);
     expect(needsAlertLookup(alert({ id: '' }))).toBe(false);
+  });
+});
+
+describe('rebootPlan', () => {
+  it('targets the device on the fetched alert', () => {
+    expect(rebootPlan(alert({ deviceId: 'dev-server', deviceName: 'server-host' }))).toEqual({
+      deviceId: 'dev-server',
+      message: expect.stringContaining('Restart server-host now?'),
+    });
+  });
+
+  it('offers nothing before the fetch lands or for a resolved alert', () => {
+    expect(rebootPlan(null)).toBeNull();
+    expect(rebootPlan(alert({ metadata: { status: 'resolved' } }))).toBeNull();
+    expect(rebootPlan(alert({ source: undefined }))).toBeNull();
   });
 });
 

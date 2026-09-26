@@ -115,10 +115,13 @@ describe('alert source', () => {
     jsonOnce({
       id: 'a1', title: 'Reboot pending on host-1', message: 'm', severity: 'medium', status: 'resolved',
       triggeredAt: '2026-09-20T12:00:00.000Z', deviceId: 'dev-1',
+      device: { id: 'dev-1', hostname: 'host-1', osType: 'windows', status: 'online' },
       context: { source: 'maintenance-reboot-sweep', pendingDays: 9 },
     });
     const alert = await getAlert('a1');
     expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/api/v1/alerts/a1');
+    // The detail screen reboots this device, so it must come from the server.
+    expect(alert.deviceId).toBe('dev-1');
     expect(alert.source).toBe('maintenance-reboot-sweep');
     expect(alert.metadata?.status).toBe('resolved');
   });
