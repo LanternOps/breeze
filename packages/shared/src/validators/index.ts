@@ -43,6 +43,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './aiApprovalSettings';
 export * from './softwareDetection';
+export * from './softwareExitCodes';
 export * from './softwareDownloadPolicy';
 export * from './systemCleanup';
 export * from './psa';
