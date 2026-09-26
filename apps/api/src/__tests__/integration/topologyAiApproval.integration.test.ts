@@ -218,6 +218,25 @@ describe('diagnose_connectivity approval and release (M4-D3, real DB)', () => {
     expect(await runCount()).toBe(0);
   });
 
+  it('a decision stamped by an app clock slightly behind the database clock still releases (created_at is DB time, decided_at app time)', async () => {
+    const intent = await proposeAndApprove();
+    // The API host and Postgres keep separate clocks (the local test stack's
+    // DB runs ~30 ms ahead), so a decide made within that skew of the proposal
+    // records decided_at BEFORE created_at. That is not evidence of anything.
+    await system(() => getTestDb().execute(sql`UPDATE action_intents SET decided_at = created_at - interval '2 seconds' WHERE id = ${intent.id}::uuid`));
+    const result = await releaseInline(intent.id);
+    expect(result.runId, JSON.stringify(result)).toBeTruthy();
+    expect(await runCount()).toBe(1);
+  });
+
+  it('a decision recorded well before the proposal existed never releases', async () => {
+    const intent = await proposeAndApprove();
+    await system(() => getTestDb().execute(sql`UPDATE action_intents SET decided_at = created_at - interval '1 hour' WHERE id = ${intent.id}::uuid`));
+    const result = await releaseInline(intent.id);
+    expect(result.code).toBe('fresh_mfa_required');
+    expect(await runCount()).toBe(0);
+  });
+
   it('an expired proposal never starts, even with a valid approval', async () => {
     const intent = await proposeAndApprove();
     const expiry = Date.parse(String((await readIntent(intent.id)).arguments.proposal_expires_at));

@@ -93,6 +93,9 @@ function refuseProposal(code: string): never {
   throw new TopologyDiagnosticProposalError(code, PROPOSAL_REFUSALS[code] ?? PROPOSAL_REFUSALS.diagnostic_not_plannable!);
 }
 
+/** Maximum tolerated skew between the API host clock and the database clock (see the release check). */
+const DECISION_CLOCK_SKEW_TOLERANCE_MS = 60_000;
+
 const scopedAs = <T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
 
@@ -244,8 +247,12 @@ async function assertAcceptance(
     .from(approvalRequests)
     .where(and(eq(approvalRequests.intentId, intent.id), eq(approvalRequests.status, 'approved')))
     .limit(1);
+  // `created_at` is stamped by Postgres and `decided_at` by the API host, so the
+  // ordering check tolerates bounded clock skew between the two; a decision
+  // recorded well before the proposal existed is still refused.
   if (
-    !approval || approval.userId !== ctx.auth.user.id || !intent.decidedAt || intent.decidedAt < intent.createdAt
+    !approval || approval.userId !== ctx.auth.user.id || !intent.decidedAt
+    || intent.decidedAt.getTime() < intent.createdAt.getTime() - DECISION_CLOCK_SKEW_TOLERANCE_MS
     || !isFreshApproverFactor({ decidedVia: intent.decidedVia, decidedAssuranceLevel: intent.decidedAssuranceLevel, stepUpGrantReuse: approval.decidedViaStepUpGrant })
   ) {
     return refuse('fresh_mfa_required');
