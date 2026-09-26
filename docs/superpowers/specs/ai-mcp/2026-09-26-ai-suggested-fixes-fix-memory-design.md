@@ -343,7 +343,7 @@ execute ─► pending ─script failed / timeout / os_mismatch─────�
 **W3**
 
 - An integration test showing a triage run uses a proven fix instead of a full run.
-- A patch-agent known-false-failure classification test.
+- In shadow mode, a proven hit creates no full run; in act mode the full run is admitted with the proven fix in its prompt.
 
 ## Waves
 
