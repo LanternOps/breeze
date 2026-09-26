@@ -38,7 +38,13 @@ export function textReadMinutes(text: string): number {
 }
 
 /** Reading time of sanitized rich-text HTML (a rendered contract template).
- *  Tags become spaces so `</p><p>` never glues two words into one. */
+ *  Tags become spaces so `</p><p>` never glues two words into one.
+ *
+ *  The tag body excludes '<' as well as '>' (not just `[^>]*`): allowing '<'
+ *  inside an unterminated tag lets the engine restart the same scan from
+ *  every position in a run of stray '<' characters, which is O(n^2) on
+ *  adversarial input (CodeQL js/polynomial-redos). Excluding '<' makes a
+ *  failed match at the first '<' fail immediately instead of backtracking. */
 export function htmlReadMinutes(html: string): number {
-  return textReadMinutes(html.replace(/<[^>]*>/g, ' '));
+  return textReadMinutes(html.replace(/<[^<>]*>/g, ' '));
 }

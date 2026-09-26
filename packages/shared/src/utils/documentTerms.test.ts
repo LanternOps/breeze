@@ -44,4 +44,14 @@ describe('htmlReadMinutes', () => {
   it('is never below one minute, even for empty markup', () => {
     expect(htmlReadMinutes('<p></p>')).toBe(1);
   });
+
+  it('stays linear on an unclosed run of "<" (CodeQL js/polynomial-redos)', () => {
+    // The tag-stripping regex must not backtrack quadratically on adversarial
+    // input such as a contract body pasted with many stray '<' and no '>'.
+    // A vulnerable /<[^>]*>/g takes >1s at n=40000; a fixed regex is instant.
+    const malicious = '<'.repeat(60000);
+    const start = Date.now();
+    htmlReadMinutes(malicious);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });
