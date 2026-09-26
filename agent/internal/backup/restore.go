@@ -354,6 +354,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		sd                []byte
 	}
 	var dirSecurity []dirSD
+	var dirAttrs []pendingDirAttrs
 	for _, entry := range append(links, dirs...) {
 		if checkCancelled() {
 			return result, nil
@@ -409,16 +410,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				}
 				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
 				if entryErr == nil {
-					// The walker records a Windows directory entry when the
-					// directory is empty, and for EVERY directory when
-					// security-descriptor capture is on (W06a). A Hidden or
-					// System folder must come back Hidden/System rather than
-					// plain (#5407, review finding). Applied best-effort:
-					// losing a directory attribute is a fidelity warning,
-					// never a failed restore.
-					if attrErr := applyWinAttrs(filepath.Join(targetBase, relativeEntry), entry.WinAttrs); attrErr != nil {
-						result.Warnings = append(result.Warnings,
-							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
+					// A Hidden or System folder must come back Hidden/System
+					// rather than plain (#5407, #6506). Deferred to a
+					// post-pass below, after every entry is in place.
+					if entry.WinAttrs != 0 {
+						dirAttrs = append(dirAttrs, pendingDirAttrs{relative: relativeEntry, display: displayPath, attrs: entry.WinAttrs})
 					}
 					if sd := secDescs.forEntry(entry); sd != nil {
 						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, sd: sd})
@@ -439,6 +435,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		result.FilesRestored++
 	}
+
+	result.Warnings = append(result.Warnings, applyDirWinAttrs(targetBase, dirAttrs)...)
 
 	// Directory security descriptors, now that every file, symlink and
 	// directory is in place. Deepest first, so a parent's DACL can never
