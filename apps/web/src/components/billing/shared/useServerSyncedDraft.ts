@@ -19,6 +19,12 @@
 //     dirty — the long-standing contract, pinned by the invoice editor's
 //     "DOES replace the draft when the server value genuinely changes" test.
 //
+// Known limit: echoes are matched by VALUE. If another user writes, within one
+// save round-trip, a string identical to one of our still-outstanding saves,
+// it is taken as our echo. Telling those apart needs a server version
+// (e.g. updatedAt) on the PATCH response, which these routes do not return;
+// the editors had no concurrent-edit detection before this hook either.
+//
 // The re-sync is derived DURING RENDER, never from a passive effect (#3277 /
 // #4807): a deferred effect can flush after a keystroke and overwrite it.
 // Comparing the normalised STRING (callers pass `value ?? ''`) means a
@@ -45,16 +51,21 @@ export function useServerSyncedDraft(serverValue: string): ServerSyncedDraft {
   const [draft, setDraft] = useState(serverValue);
   const [dirty, setDirty] = useState(false);
   // The server value last synced from, plus the saved values whose refetch has
-  // not landed yet (oldest first). One state object so markSaved can compare
+  // not landed yet. One state object so markSaved can compare
   // against the CURRENT synced value inside a functional update and stay stable.
   const [sync, setSync] = useState<{ from: string; echoes: readonly string[] }>(
     () => ({ from: serverValue, echoes: [] }),
   );
 
   if (sync.from !== serverValue) {
-    const idx = sync.echoes.lastIndexOf(serverValue);
+    const idx = sync.echoes.indexOf(serverValue);
     if (idx >= 0) {
-      const outstanding = sync.echoes.slice(idx + 1);
+      // Consume ONLY the matched echo. Refetches are not guaranteed to land in
+      // save order (the invoice workspace applies every response), so a newer
+      // save's echo can arrive before an older one's; dropping the older entry
+      // here would make its late arrival look like a foreign change and revert
+      // the field to it.
+      const outstanding = [...sync.echoes.slice(0, idx), ...sync.echoes.slice(idx + 1)];
       setSync({ from: serverValue, echoes: outstanding });
       if (!dirty && outstanding.length === 0) setDraft(serverValue);
     } else {

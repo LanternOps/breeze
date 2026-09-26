@@ -55,6 +55,23 @@ describe('useServerSyncedDraft (#4296)', () => {
     expect(h.result.current.dirty).toBe(false);
   });
 
+  it('survives refetches landing out of save order', () => {
+    const h = setup('A');
+    act(() => h.result.current.edit('B'));
+    act(() => h.result.current.markSaved('B'));
+    act(() => h.result.current.edit('C'));
+    act(() => h.result.current.markSaved('C'));
+    // The second save's refetch wins the race…
+    h.rerender({ server: 'C' });
+    expect(h.result.current.draft).toBe('C');
+    act(() => h.result.current.edit('C and more'));
+    // …and the first save's stale refetch lands late. It is still OUR echo, so
+    // it must neither revert the field nor clear dirty.
+    h.rerender({ server: 'B' });
+    expect(h.result.current.draft).toBe('C and more');
+    expect(h.result.current.dirty).toBe(true);
+  });
+
   it('does not record an echo for a save that leaves the server value unchanged', () => {
     const h = setup('A');
     act(() => h.result.current.edit('A'));
