@@ -249,6 +249,36 @@ This surfaces in two places:
 
 ---
 
+## Memory Modules
+
+The device **Hardware** tab lists installed memory per physical slot, so you can plan an upgrade without opening the case or running a script.
+
+The **Memory** card shows total installed RAM, how many slots are in use (for example, **2 of 4 slots used**), and the memory speed. The speed is a single value when every module runs at the same speed and a range when they differ, labelled **configured** (the speed the modules actually run at) or **rated** (the module's rated speed, shown when the configured speed is not reported). On-package memory that has no slots, such as on Apple Silicon Macs, shows **On-package memory** instead of a slot count.
+
+Below the summary cards, the **Memory Modules** table lists one row per slot:
+
+| Column | Contents |
+|--------|----------|
+| **Slot** | The slot label (for example `DIMM_A1`) and bank label, when reported. |
+| **Capacity** | Module size. |
+| **Type** | Memory type and form factor (for example DDR4 · DIMM or DDR5 · SODIMM). |
+| **Speed** | Configured speed in MT/s, with the rated speed alongside when it differs. |
+| **Manufacturer**, **Part Number**, **Serial** | As reported by the module. |
+
+Empty slots are listed by label and marked **Empty**. Fields the firmware leaves blank or fills with a placeholder (such as "To Be Filled By O.E.M.") show a dash.
+
+**Collection.** The agent reads memory inventory from the SMBIOS tables on Windows and Linux and from `system_profiler` on macOS. It collects when the agent starts, every 24 hours, and on a manual hardware refresh, alongside the rest of the hardware inventory. If memory collection fails on a device, the rest of the hardware inventory still updates and the last good memory inventory is kept. Virtual machines report the virtual memory devices their hypervisor presents, which may not match physical hardware.
+
+**Agent requirement.** Memory module inventory needs an agent release that collects it. Until a device runs one, the table shows **Not reported yet — needs agent update**.
+
+The same data is available outside the UI:
+
+- **REST API** — `GET /devices/{id}/hardware` returns `memoryModules` (ordered by slot) next to `hardware`, which carries `memorySlotsTotal`, `memoryMaxCapacityMb`, `memorySoldered` and `memoryObservedAt`.
+- **Partner API** — the `device-inventory` export includes a `memoryModules` array and the slot summary under `hardware.memory`.
+- **AI assistant** — `get_device_details` includes the module list and a used/free slot summary, so you can ask "how many free RAM slots does this server have?".
+
+---
+
 ## The Device Info Tab
 
 Opening a device and selecting **Info** shows the device's identity and inventory at a glance:

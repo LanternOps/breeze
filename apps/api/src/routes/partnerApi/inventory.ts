@@ -5,6 +5,7 @@ import {
   deviceDisks,
   deviceHardware,
   deviceIpHistory,
+  deviceMemoryModules,
   deviceNetwork,
   devices,
   deviceWarranty,
@@ -68,6 +69,10 @@ function finiteNonnegative(value: unknown): number {
 
 function boolean(value: unknown): boolean {
   return value === true;
+}
+
+function nullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
 }
 
 function timestamp(value: unknown): string {
@@ -174,13 +179,29 @@ function projectDeviceInventory(input: unknown) {
     memoryMb: nonnegativeInteger(vm.memoryMb), processorCount: nonnegativeInteger(vm.processorCount),
     rctEnabled: boolean(vm.rctEnabled), passthroughDisks: boolean(vm.passthroughDisks ?? vm.hasPassthroughDisks),
   }));
+  // #5351: one entry per physical slot, empty slots as populated: false. The
+  // agent's slotKey is the sync identity only and stays internal.
+  const memoryModules = array(row.memoryModules, PARTNER_INVENTORY_CHILD_LIMIT).map((module) => ({
+    id: module.id, locator: String(module.locator ?? '').slice(0, 128),
+    bankLabel: nullableString(module.bankLabel, 128), populated: boolean(module.populated),
+    capacityMb: nonnegativeInteger(module.capacityMb), memoryType: nullableString(module.memoryType, 32),
+    formFactor: nullableString(module.formFactor, 32), speedMts: nonnegativeInteger(module.speedMts),
+    configuredSpeedMts: nonnegativeInteger(module.configuredSpeedMts),
+    manufacturer: nullableString(module.manufacturer, 128), partNumber: nullableString(module.partNumber, 128),
+    serialNumber: nullableString(module.serialNumber, 128),
+  }));
   const warrantySource = row.warranty ? object(row.warranty) : null;
   return {
     id: row.id, orgId: row.orgId, siteId: row.siteId, sourceUpdatedAt: row.updatedAt,
     subjectType: 'device' as const, deviceId: row.subjectId,
     hardware: {
       processor: { model: nullableString(hardware.cpuModel, 255), cores: nonnegativeInteger(hardware.cpuCores), threads: nonnegativeInteger(hardware.cpuThreads) },
-      memory: { totalMb: nonnegativeInteger(hardware.ramTotalMb) },
+      memory: {
+        totalMb: nonnegativeInteger(hardware.ramTotalMb),
+        slotsTotal: nonnegativeInteger(hardware.memorySlotsTotal),
+        maxCapacityMb: nonnegativeInteger(hardware.memoryMaxCapacityMb),
+        soldered: nullableBoolean(hardware.memorySoldered),
+      },
       graphics: { model: nullableString(hardware.gpuModel, 255) },
       motherboard: {
         manufacturer: nullableString(hardware.motherboardManufacturer, 255),
@@ -195,10 +216,12 @@ function projectDeviceInventory(input: unknown) {
       subscription: boolean(warrantySource.subscription ?? warrantySource.isSubscription),
     } : null,
     virtualMachines,
+    memoryModules,
     collections: {
       disks: collection(row.diskCount, disks.length), interfaces: collection(row.interfaceCount, interfaces.length),
       addresses: collection(row.addressCount, addresses.length),
       virtualMachines: collection(row.virtualMachineCount, virtualMachines.length),
+      memoryModules: collection(row.memoryModuleCount, memoryModules.length),
     },
   };
 }
@@ -262,6 +285,8 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
       SELECT jsonb_build_object(
         'cpuModel', h.cpu_model, 'cpuCores', h.cpu_cores, 'cpuThreads', h.cpu_threads,
         'ramTotalMb', h.ram_total_mb, 'gpuModel', h.gpu_model,
+        'memorySlotsTotal', h.memory_slots_total, 'memoryMaxCapacityMb', h.memory_max_capacity_mb,
+        'memorySoldered', h.memory_soldered,
         'motherboardManufacturer', h.motherboard_manufacturer, 'motherboardProduct', h.motherboard_product,
         'motherboardVersion', h.motherboard_version, 'biosVersion', h.bios_version
       ) FROM ${deviceHardware} h WHERE h.device_id = ${devices.id} AND h.org_id = ${devices.orgId} LIMIT 1
@@ -341,6 +366,17 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
       ORDER BY v.vm_id LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
     ) bounded), '[]'::jsonb)`,
     virtualMachineCount: sql<number>`(SELECT COUNT(*)::integer FROM ${hypervVms} v WHERE v.device_id = ${devices.id} AND v.org_id = ${devices.orgId})`,
+    // #5351: row ids are stable (synced by slotKey), so they are the export ids.
+    memoryModules: sql<unknown[]>`COALESCE((SELECT jsonb_agg(bounded.item ORDER BY bounded.slot_index, bounded.id) FROM (
+      SELECT m.slot_index, m.id, jsonb_build_object(
+        'id', m.id, 'locator', m.locator, 'bankLabel', m.bank_label, 'populated', m.populated,
+        'capacityMb', m.capacity_mb, 'memoryType', m.memory_type, 'formFactor', m.form_factor,
+        'speedMts', m.speed_mts, 'configuredSpeedMts', m.configured_speed_mts,
+        'manufacturer', m.manufacturer, 'partNumber', m.part_number, 'serialNumber', m.serial_number
+      ) item FROM ${deviceMemoryModules} m WHERE m.device_id = ${devices.id} AND m.org_id = ${devices.orgId}
+      ORDER BY m.slot_index, m.id LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
+    ) bounded), '[]'::jsonb)`,
+    memoryModuleCount: sql<number>`(SELECT COUNT(*)::integer FROM ${deviceMemoryModules} m WHERE m.device_id = ${devices.id} AND m.org_id = ${devices.orgId})`,
   }).from(devices)
     .innerJoin(sites, and(eq(sites.id, devices.siteId), eq(sites.orgId, devices.orgId)))
     .leftJoin(partnerExportDeviceMaterialState, and(

@@ -1,9 +1,10 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceDisks, deviceNetwork } from '../db/schema';
+import { deviceDisks, deviceHardware, deviceMemoryModules, deviceNetwork } from '../db/schema';
 
 /**
- * Diff-and-upsert writers for the agent's disk and network inventory (#6698).
+ * Diff-and-upsert writers for the agent's disk, network and memory-module
+ * inventory (#6698, #5351).
  *
  * Both tables carry the partner-export statement triggers. The INSERT/DELETE
  * triggers take the exclusive per-org advisory lock unconditionally (row
@@ -194,4 +195,182 @@ export async function syncDeviceNetwork(tx: DbTx, device: DeviceRef, adapters: r
       plan.inserts.map((row) => ({ ...row, deviceId: device.id, orgId: device.orgId, updatedAt: now })),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Memory modules (#5351)
+// ---------------------------------------------------------------------------
+
+/** One slot as reported by the agent (validated by agentMemoryInventorySchema). */
+export interface MemoryModuleReport {
+  slotKey: string;
+  locator: string;
+  bankLabel?: string | null;
+  populated: boolean;
+  capacityMb?: number | null;
+  memoryType?: string | null;
+  formFactor?: string | null;
+  speedMts?: number | null;
+  configuredSpeedMts?: number | null;
+  manufacturer?: string | null;
+  partNumber?: string | null;
+  serialNumber?: string | null;
+}
+
+export interface MemoryInventoryReport {
+  slotsTotal?: number | null;
+  maxCapacityMb?: number | null;
+  soldered?: boolean | null;
+  modules: readonly MemoryModuleReport[];
+}
+
+export interface MemoryModuleRow {
+  slotKey: string;
+  slotIndex: number;
+  locator: string;
+  bankLabel: string | null;
+  populated: boolean;
+  capacityMb: number | null;
+  memoryType: string | null;
+  formFactor: string | null;
+  speedMts: number | null;
+  configuredSpeedMts: number | null;
+  manufacturer: string | null;
+  partNumber: string | null;
+  serialNumber: string | null;
+}
+
+const textOrNull = (value: string | null | undefined) => (value ? value : null);
+const intOrNull = (value: number | null | undefined) => (typeof value === 'number' ? value : null);
+
+/**
+ * Normalise a report into stored rows. The report is an authoritative
+ * snapshot, so every absent optional field becomes NULL — never "keep the old
+ * value". slotIndex is the order the agent reported the slots in.
+ */
+export function toMemoryModuleRows(modules: readonly MemoryModuleReport[]): MemoryModuleRow[] {
+  return modules.map((module, slotIndex) => ({
+    slotKey: module.slotKey,
+    slotIndex,
+    locator: module.locator,
+    bankLabel: textOrNull(module.bankLabel),
+    populated: module.populated,
+    capacityMb: intOrNull(module.capacityMb),
+    memoryType: textOrNull(module.memoryType),
+    formFactor: textOrNull(module.formFactor),
+    speedMts: intOrNull(module.speedMts),
+    configuredSpeedMts: intOrNull(module.configuredSpeedMts),
+    manufacturer: textOrNull(module.manufacturer),
+    partNumber: textOrNull(module.partNumber),
+    serialNumber: textOrNull(module.serialNumber),
+  }));
+}
+
+/**
+ * slotKey is both the identity and the exact match: a slot keeps its row id
+ * across reports (a DIMM swapped in the same slot is an UPDATE, not a
+ * delete + insert), and two different slots never match each other. The
+ * locator alone is not unique across memory arrays on multi-socket servers.
+ */
+export function planMemoryModuleSync(
+  stored: readonly { id: string; slotKey: string }[],
+  rows: readonly MemoryModuleRow[],
+): ChildRowPlan<MemoryModuleRow> {
+  return planChildRowSync(stored, rows, {
+    storedKey: (row) => row.slotKey,
+    reportedKey: (row) => row.slotKey,
+    storedExact: (row) => row.slotKey,
+    reportedExact: (row) => row.slotKey,
+  });
+}
+
+/**
+ * Sync device_memory_modules to exactly `modules`. Matched rows are updated
+ * in place (their updated_at is excluded from the partner-export material
+ * comparison), so a report identical to stored state takes no org lock.
+ */
+export async function syncDeviceMemoryModules(
+  tx: DbTx,
+  device: DeviceRef,
+  modules: readonly MemoryModuleReport[],
+  now: Date,
+) {
+  await lockDeviceInventory(tx, 'device_memory_modules', device.id);
+  const rows = toMemoryModuleRows(modules);
+  const stored = await tx
+    .select({ id: deviceMemoryModules.id, slotKey: deviceMemoryModules.slotKey })
+    .from(deviceMemoryModules)
+    .where(eq(deviceMemoryModules.deviceId, device.id));
+  const plan = planMemoryModuleSync(stored, rows);
+
+  // Deletes first: a slot that disappeared frees nothing another row needs,
+  // but ordering deletes before inserts keeps the (device_id, slot_key)
+  // unique index trivially satisfied.
+  if (plan.deleteIds.length > 0) {
+    await tx.execute(sql`DELETE FROM device_memory_modules WHERE device_id = ${device.id}
+      AND id IN (${sql.join(plan.deleteIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+  }
+  if (plan.updates.length > 0) {
+    // timestamp without time zone: bind the UTC wall clock, as Drizzle does for the column.
+    const updatedAt = now.toISOString();
+    const values = plan.updates.map(({ id, row }) => sql`(${id}::uuid, ${row.slotIndex}::integer,
+      ${row.locator}::varchar, ${row.bankLabel}::varchar, ${row.populated}::boolean, ${row.capacityMb}::integer,
+      ${row.memoryType}::varchar, ${row.formFactor}::varchar, ${row.speedMts}::integer,
+      ${row.configuredSpeedMts}::integer, ${row.manufacturer}::varchar, ${row.partNumber}::varchar,
+      ${row.serialNumber}::varchar)`);
+    await tx.execute(sql`UPDATE device_memory_modules AS m SET
+        slot_index = v.slot_index, locator = v.locator, bank_label = v.bank_label, populated = v.populated,
+        capacity_mb = v.capacity_mb, memory_type = v.memory_type, form_factor = v.form_factor,
+        speed_mts = v.speed_mts, configured_speed_mts = v.configured_speed_mts,
+        manufacturer = v.manufacturer, part_number = v.part_number, serial_number = v.serial_number,
+        updated_at = ${updatedAt}::timestamp
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(id, slot_index, locator, bank_label, populated, capacity_mb,
+        memory_type, form_factor, speed_mts, configured_speed_mts, manufacturer, part_number, serial_number)
+      WHERE m.id = v.id AND m.device_id = ${device.id}`);
+  }
+  if (plan.inserts.length > 0) {
+    await tx.insert(deviceMemoryModules).values(
+      plan.inserts.map((row) => ({ ...row, deviceId: device.id, orgId: device.orgId, updatedAt: now })),
+    );
+  }
+}
+
+/** Base hardware columns an agent may report (everything the route validated, minus `memory`). */
+export type HardwareReportColumns = Partial<Omit<typeof deviceHardware.$inferInsert,
+  'deviceId' | 'orgId' | 'updatedAt' | 'partnerExportUpdatedAt'
+  | 'memorySlotsTotal' | 'memoryMaxCapacityMb' | 'memorySoldered' | 'memoryObservedAt'>>;
+
+/**
+ * Upsert device_hardware and, when a valid memory block came with the report,
+ * apply it in the SAME transaction: the four memory_* summary columns on the
+ * hardware row plus the per-slot rows. `memory === null` (absent or invalid
+ * block) leaves the stored memory state untouched.
+ *
+ * memory_observed_at advances on every applied block; it is excluded from the
+ * device_hardware material comparison (2026-11-01-110000), so an otherwise
+ * unchanged report still takes no partner-export org lock.
+ */
+export async function writeHardwareReport(
+  tx: DbTx,
+  device: DeviceRef,
+  hardware: HardwareReportColumns,
+  memory: MemoryInventoryReport | null,
+  now: Date,
+) {
+  const memoryColumns = memory
+    ? {
+      memorySlotsTotal: intOrNull(memory.slotsTotal),
+      memoryMaxCapacityMb: intOrNull(memory.maxCapacityMb),
+      memorySoldered: typeof memory.soldered === 'boolean' ? memory.soldered : null,
+      memoryObservedAt: now,
+    }
+    : {};
+  await tx
+    .insert(deviceHardware)
+    .values({ deviceId: device.id, orgId: device.orgId, ...hardware, ...memoryColumns, updatedAt: now })
+    .onConflictDoUpdate({
+      target: deviceHardware.deviceId,
+      set: { ...hardware, ...memoryColumns, updatedAt: now },
+    });
+  if (memory) await syncDeviceMemoryModules(tx, device, memory.modules, now);
 }
