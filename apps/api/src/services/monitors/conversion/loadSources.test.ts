@@ -59,6 +59,24 @@ describe('loadPolicySources', () => {
     expect(predicates(7)[0]!.params).toEqual(['r1', ...OPEN_ALERT_STATUSES]);
     expect(predicates(8).map((p) => p.sql).join(' ')).toContain('"retired_at" is null');
   });
+  it.each(['monitoring', 'monitors'])('loads normalized watches from a %s settings link', async (featureType) => {
+    reset([[{ ...policy, parentPolicyId: null }], [{ id: 'watch-link', featureType }],
+      [{ id: 'settings1' }], [{ id: 'watch1', settingsId: 'settings1' }]]);
+    const result = await loadPolicySources('policy1');
+    expect(result?.watches).toEqual([{ id: 'watch1', settingsId: 'settings1' }]);
+    expect(predicates(2)[0]!.params).toEqual(['watch-link']);
+    expect(predicates(3)[0]!.params).toEqual(['settings1']);
+    expect(predicates(3)[0]!.sql).toContain('"retired_at" is null');
+  });
+  it('loads watches from both settings rows when an old-link duplicate survived re-keying', async () => {
+    const watches = [{ id: 'old-watch', settingsId: 'old-settings' }, { id: 'new-watch', settingsId: 'new-settings' }];
+    reset([[{ ...policy, parentPolicyId: null }], [
+      { id: 'old-link', featureType: 'monitoring' }, { id: 'new-link', featureType: 'monitors' },
+    ], [{ id: 'old-settings' }, { id: 'new-settings' }], watches]);
+    expect((await loadPolicySources('policy1'))?.watches).toEqual(watches);
+    expect(predicates(2)[0]!.params).toEqual(['old-link', 'new-link']);
+    expect(predicates(3)[0]!.params).toEqual(['old-settings', 'new-settings']);
+  });
   it('returns null for missing or RLS-invisible policies without reading sources', async () => {
     reset([[]]);
     expect(await loadPolicySources('foreign')).toBeNull();

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { monitorsInlineSettingsSchema, type MonitorAttachmentItem } from '@breeze/shared';
 import { db } from '../../../db';
 import { alerts, alertRules } from '../../../db/schema/alerts';
@@ -9,7 +9,10 @@ import {
 } from '../../../db/schema/configurationPolicies';
 import { organizations } from '../../../db/schema/orgs';
 import { normalizeAutomationTrigger } from '../../automationRuntime';
-import type { PendingConversionCounts } from './types';
+import { monitorConversions, partners } from '../../../db/schema';
+import type { AuthContext } from '../../../middleware/auth';
+import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import type { ConversionSourceTable, PendingConversionCounts } from './types';
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 export interface PolicySources {
@@ -38,11 +41,14 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
   const inlineRules = alertRuleLink
     ? await executor.select().from(configPolicyAlertRules).where(and(eq(configPolicyAlertRules.featureLinkId, alertRuleLink.id), isNull(configPolicyAlertRules.retiredAt))).orderBy(configPolicyAlertRules.sortOrder)
     : [];
-  const [settings] = monitoringLink
-    ? await executor.select().from(configPolicyMonitoringSettings).where(eq(configPolicyMonitoringSettings.featureLinkId, monitoringLink.id)).limit(1)
+  // Re-keying may leave the old settings row when the monitors link already
+  // owns one. Both rows still contain legacy sources that must be swept.
+  const settingsLinkIds = links.filter((l) => l.featureType === 'monitoring' || l.featureType === 'monitors').map((l) => l.id);
+  const settings = settingsLinkIds.length
+    ? await executor.select().from(configPolicyMonitoringSettings).where(inArray(configPolicyMonitoringSettings.featureLinkId, settingsLinkIds))
     : [];
-  const watches = settings
-    ? await executor.select().from(configPolicyMonitoringWatches).where(and(eq(configPolicyMonitoringWatches.settingsId, settings.id), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder)
+  const watches = settings.length
+    ? await executor.select().from(configPolicyMonitoringWatches).where(and(inArray(configPolicyMonitoringWatches.settingsId, settings.map((s) => s.id)), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder)
     : [];
   const automationLink = link('automation');
   const policyAutomations = automationLink
@@ -92,7 +98,7 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
     links: {
       alertRule: alertRuleLink?.id ?? null,
       monitoring: monitoringLink?.id ?? null,
-      monitoringSettingsId: settings?.id ?? null,
+      monitoringSettingsId: settings[0]?.id ?? null,
       monitors: monitorsLink ? { id: monitorsLink.id, inheritance: monitorsSettings?.success ? monitorsSettings.data.inheritance : 'cumulative', items: monitorsSettings?.success ? monitorsSettings.data.items : [] } : null,
     },
     inlineRules, watches, policyAutomations, standaloneAutomations, openAlertsBySource, parentUnconverted,
@@ -146,4 +152,62 @@ export async function countPendingConversions(
     rows: counts.reduce((sum, row) => sum + row.count, 0),
     standaloneRules: standalone?.count ?? 0,
   };
+}
+
+/** Ledger-owned refusals, bounded by both caller ownership and the selected organization. */
+export async function readRetirementReport(auth: AuthContext, requestedOrgId: string | null,
+  executor: DbExecutor = db) {
+  if (requestedOrgId && !auth.canAccessOrg(requestedOrgId)) throw new Error('Organization access denied');
+  const owner = auth.scope === 'system' ? sql`true` : or(
+    and(isNotNull(monitorConversions.orgId), auth.orgCondition(monitorConversions.orgId) ?? sql`false`),
+    canManagePartnerWidePolicies(auth) && auth.partnerId
+      ? and(isNull(monitorConversions.orgId), eq(monitorConversions.partnerId, auth.partnerId))
+      : sql`false`,
+  );
+  const selectedOrg = requestedOrgId ? eq(monitorConversions.orgId, requestedOrgId) : sql`true`;
+  const rows = await executor.execute<{
+    source_table: ConversionSourceTable; source_id: string; name: string; reason: string;
+    policy_id: string | null; policy_name: string | null; retired_at: Date;
+  }>(sql`
+    WITH sources AS (
+      SELECT 'config_policy_alert_rules' AS source_table, id, name, retired_reason, retired_at
+      FROM config_policy_alert_rules
+      UNION ALL
+      SELECT 'config_policy_monitoring_watches', id, COALESCE(display_name, name), retired_reason, retired_at
+      FROM config_policy_monitoring_watches
+      UNION ALL
+      SELECT 'alert_templates', id, name, retired_reason, retired_at FROM alert_templates
+      UNION ALL
+      SELECT 'automations', id, name, retired_reason, retired_at FROM automations
+      UNION ALL
+      SELECT 'config_policy_automations', id, name, retired_reason, retired_at FROM config_policy_automations
+    )
+    SELECT sources.source_table, sources.id AS source_id, sources.name,
+           sources.retired_reason AS reason, sources.retired_at,
+           ${configurationPolicies.id} AS policy_id, ${configurationPolicies.name} AS policy_name
+      FROM ${monitorConversions}
+      JOIN sources ON sources.id = ${monitorConversions.sourceId}
+        AND sources.source_table = ${monitorConversions.sourceTable}
+      LEFT JOIN ${configurationPolicies} ON ${configurationPolicies.id} = ${monitorConversions.policyId}
+     WHERE ${owner} AND ${selectedOrg} AND ${monitorConversions.revertedAt} IS NULL
+       AND sources.retired_at IS NOT NULL AND sources.retired_reason LIKE 'unconvertible:%'
+       AND sources.retired_reason <> 'unconvertible:alert_workflow_kept'
+     ORDER BY sources.retired_at DESC, sources.id
+     LIMIT 200
+  `);
+  const unconvertible = rows.map(row => ({ sourceTable: row.source_table, sourceId: row.source_id,
+    name: row.name, reason: row.reason, policyId: row.policy_id, policyName: row.policy_name,
+    retiredAt: new Date(row.retired_at).toISOString() }));
+  // Partner-wide marker counts must not leak other orgs' data to a scoped viewer.
+  // Org-specific reports still list all their refused sources through the ledger.
+  let sweep: { sweptAt: string; converted: number; retired: number } | null = null;
+  if (!requestedOrgId && auth.partnerId && canManagePartnerWidePolicies(auth)) {
+    const [partner] = await executor.select({ settings: partners.settings }).from(partners)
+      .where(eq(partners.id, auth.partnerId)).limit(1);
+    const marker = (partner?.settings as { legacyAlertingRetirement?: {
+      sweptAt: string; converted: number; retired: number;
+    } } | null)?.legacyAlertingRetirement;
+    if (marker?.sweptAt) sweep = { sweptAt: marker.sweptAt, converted: marker.converted, retired: marker.retired };
+  }
+  return { unconvertible, sweep };
 }

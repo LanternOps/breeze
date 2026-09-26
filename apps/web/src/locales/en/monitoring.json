@@ -509,6 +509,30 @@
       "conversion_revert_unavailable": "This conversion can no longer be undone.",
       "invalid_reason": "That retirement reason is not valid.",
       "unknown": "The conversion failed. Try again."
+    },
+    "retirement": {
+      "summary_one": "{{count}} legacy rule could not be converted to a monitor — review it.",
+      "summary_other": "{{count}} legacy rules could not be converted to monitors — review them.",
+      "review": "Review",
+      "dismiss": "Dismiss",
+      "openAlertsNote": "These rules no longer fire. Their open alerts stay open until someone resolves them; recreate the condition as a monitor if it is still needed.",
+      "reasons": {
+        "custom_condition": "custom condition",
+        "nested_group": "nested condition group",
+        "no_condition": "no evaluable condition",
+        "equivalence_delta": "conversion would change what fires on some devices",
+        "escalation_policy_axis": "escalation policy belongs to a single organization",
+        "parent_unconverted": "parent policy was not converted",
+        "policy_inactive": "policy is inactive or archived",
+        "prerequisite_missing": "a prerequisite fix is missing on this server",
+        "metric_without_kind": "metric has no monitor kind",
+        "child_kind_not_composable": "condition cannot be part of a composite monitor",
+        "too_many_conditions": "too many conditions",
+        "too_many_responses": "more than ten responses would be required",
+        "auto_resolve_conditions": "custom resolution conditions cannot be preserved",
+        "target_unconvertible": "the response target cannot be converted",
+        "unknown": "conversion was refused; review the source"
+      }
     }
   },
   "device": {

@@ -13,6 +13,8 @@ import {
   ConversionError, ConversionPrerequisiteMissingError,
 } from '../services/monitors/conversion';
 
+import { readRetirementReport } from '../services/monitors/conversion/loadSources';
+
 type Env = { Variables: { auth: AuthContext } };
 export const monitorConversionRoutes = new Hono<Env>();
 // Also authenticated when mounted in isolation by tools/tests. The real auth
@@ -74,7 +76,8 @@ monitorConversionRoutes.get('/pending', read,
       orgId, partnerId: auth.partnerId,
       includePartnerWide: canManagePartnerWidePolicies(auth),
     });
-    return c.json({ data: { policies: counts.policies, rows: counts.rows, pendingPolicies: counts.pendingPolicies } });
+    const report = await readRetirementReport(auth, orgId);
+    return c.json({ data: { policies: counts.policies, rows: counts.rows, pendingPolicies: counts.pendingPolicies, ...report } });
   });
 monitorConversionRoutes.get('/policies/:policyId/preview', read,
   zValidator('param', policyParam), async (c) => {

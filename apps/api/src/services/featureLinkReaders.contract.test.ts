@@ -28,6 +28,10 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // therefore reads the AUTHORED links for the policy and its parent and ranks
   // the attachments itself (closest attachment wins, per monitor).
   'services/monitors/monitorResolver.ts',
+  // The interval inherits field-level (own explicit interval else parent's).
+  // The effective view returns the child's monitors link whenever it exists,
+  // hiding the parent's interval. Other feature resolvers still use the view.
+  'routes/agents/helpers.ts',
   // #5289 — attachment CRUD and the "which policies attach this monitor" view:
   // the policy's own links, never an inherited projection of them.
   'routes/monitorDefinitions.ts',
@@ -38,6 +42,10 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // services/monitors/monitorResolver.ts's job — so there is no call site here
   // that should switch to the view.
   'services/aiToolsMonitors.ts',
+  // W05d boot-time system sweep: finds partners that still own an unretired
+  // legacy source row. It must see AUTHORED links, including the retired
+  // `alert_rule` / `monitoring` types the effective view no longer exposes.
+  'services/monitors/conversion/retirementSweep.ts',
   // #6371 — the attach/detach read-modify-write shared by the two files above.
   // It rewrites the policy's OWN link (items + its `inheritance`), so it must
   // read that authored row; an inherited projection would write a parent's

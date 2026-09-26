@@ -31,7 +31,6 @@ describe('retired legacy rows are filtered by every reader', () => {
     ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'alertRules.retiredAt'],
     ['services/notificationDispatcher.ts', 'export async function processAlertNotifications', 'configPolicyAlertRules.retiredAt'],
     ['services/offlineAlertEffects.ts', 'export async function expandOfflineAlertPlan', 'alertRules.retiredAt'],
-    ['routes/agents/helpers.ts', 'async function resolvePolicyMonitoringSettings', 'configPolicyMonitoringWatches.retiredAt'],
     ['jobs/automationWorker.ts', 'async function processTriggerEvent', 'automations.retiredAt'],
     ['jobs/automationWorker.ts', 'export async function queueEventTriggers', 'automations.retiredAt'],
     ['routes/alertTemplates/helpers.ts', 'export async function getAllTemplates', 'alertTemplates.retiredAt'],

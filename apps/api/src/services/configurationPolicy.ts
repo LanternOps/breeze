@@ -1137,6 +1137,18 @@ async function decomposeInlineSettings(
           }))
         );
       }
+      // Upsert preserves the settings id and its retired watch history after
+      // 2026-10-31-110000-legacy-alerting-retirement-sweep.sql re-keys ownership.
+      // Attachment edits must neither create an interval override nor reset an
+      // existing (including migration-re-keyed) interval.
+      if (parsed.checkIntervalSeconds !== undefined) {
+        await tx.insert(configPolicyMonitoringSettings)
+          .values({ featureLinkId: linkId, checkIntervalSeconds: parsed.checkIntervalSeconds })
+          .onConflictDoUpdate({
+            target: configPolicyMonitoringSettings.featureLinkId,
+            set: { checkIntervalSeconds: parsed.checkIntervalSeconds, updatedAt: new Date() },
+          });
+      }
       break;
     }
 
@@ -1271,6 +1283,7 @@ async function deleteNormalizedRows(
       break;
     }
     case 'monitors':
+      // Replace attachments only; decompose upserts settings, preserving retired watches.
       await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
       break;
     case 'warranty':
@@ -1576,6 +1589,11 @@ async function assembleInlineSettings(
       const inheritance = monitorsInheritanceSchema.catch('cumulative').parse(
         (link?.inlineSettings as { inheritance?: unknown } | null)?.inheritance,
       );
+      const [settingsRow] = await executor
+        .select({ checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds })
+        .from(configPolicyMonitoringSettings)
+        .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId))
+        .limit(1);
       // Deliberately never falls back to `link.inlineSettings` here, even when
       // `rows` is empty: config_policy_monitors is the sole source of truth for
       // attachments (see addFeatureLink's "runtime must read normalized
@@ -1597,6 +1615,7 @@ async function assembleInlineSettings(
           sortOrder: r.sortOrder,
         })),
         inheritance,
+        ...(settingsRow ? { checkIntervalSeconds: settingsRow.checkIntervalSeconds } : {}),
       };
     }
 
@@ -1740,6 +1759,27 @@ export function resolveWarrantyInlineSettingsForWrite(
   };
 }
 
+/** Keep the compatibility mirror and mutation response faithful to the interval row. */
+async function reloadMonitorsInterval(
+  link: typeof configPolicyFeatureLinks.$inferSelect,
+  executor: DbExecutor,
+) {
+  const [settings] = await executor
+    .select({ checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds })
+    .from(configPolicyMonitoringSettings)
+    .where(eq(configPolicyMonitoringSettings.featureLinkId, link.id))
+    .limit(1);
+  const inlineSettings = { ...(link.inlineSettings as Record<string, unknown> | null ?? {}) };
+  const previousInterval = inlineSettings.checkIntervalSeconds;
+  delete inlineSettings.checkIntervalSeconds;
+  if (settings) inlineSettings.checkIntervalSeconds = settings.checkIntervalSeconds;
+  if (previousInterval !== inlineSettings.checkIntervalSeconds) {
+    await executor.update(configPolicyFeatureLinks).set({ inlineSettings })
+      .where(eq(configPolicyFeatureLinks.id, link.id));
+  }
+  return { ...link, inlineSettings };
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1833,7 +1873,7 @@ export async function addFeatureLink(
       );
     }
 
-    return link;
+    return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
 }
 
@@ -1969,7 +2009,8 @@ export async function updateFeatureLink(
       }
     }
 
-    return updated ?? null;
+    if (!updated) return null;
+    return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
 }
 
@@ -1998,6 +2039,24 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
     const predicate = and(eq(configPolicyFeatureLinks.id, linkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
     const [existing] = await tx.select().from(configPolicyFeatureLinks).where(predicate).for('update');
     if (!existing) return null;
+
+    const [settings] = await tx.select().from(configPolicyMonitoringSettings)
+      .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId)).limit(1);
+    const inline = (existing.inlineSettings ?? {}) as Record<string, unknown>;
+    if (settings || (existing.featureType === 'monitors' && inline.inheritance === 'replace')) {
+      const reason = settings ? 'monitoring_settings' as const : 'replace_inheritance' as const;
+      // Legacy monitoring links may still own duplicate settings and history.
+      if (existing.featureType !== 'monitors') return { ...existing, kept: true as const, reason };
+      await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
+      const inlineSettings: Record<string, unknown> = { ...inline, items: [] };
+      delete inlineSettings.checkIntervalSeconds;
+      if (settings) inlineSettings.checkIntervalSeconds = settings.checkIntervalSeconds;
+      const [updated] = await tx.update(configPolicyFeatureLinks).set({
+        inlineSettings,
+        updatedAt: new Date(),
+      }).where(predicate).returning();
+      return updated ? { ...updated, kept: true as const, reason } : null;
+    }
 
     // D11/D29: deleting the owner would cascade away retired source rows and
     // leave conversion provenance dangling. Keep it as an empty live feature.

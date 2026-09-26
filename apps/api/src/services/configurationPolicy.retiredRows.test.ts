@@ -68,7 +68,7 @@ it.each(['alert_rule', 'automation'])('uses live normalized %s rows over the mir
 
 it.each(['alert_rule', 'automation', 'monitoring'])('removing %s with retired history keeps the link and deletes only live items', async (featureType) => {
   const link = { id: 'link', configPolicyId: 'policy', featureType, inlineSettings: { items: [{ name: 'Live' }] } };
-  m.rows = [[link], ...(featureType === 'alert_rule' ? [] : featureType === 'automation' ? [[]] : [[], []]), [{ id: 'retired-source' }]];
+  m.rows = [[link], [], ...(featureType === 'alert_rule' ? [] : featureType === 'automation' ? [[]] : [[], []]), [{ id: 'retired-source' }]];
   const result = await removeFeatureLink('link', 'policy');
   expect(result).toMatchObject({ id: 'link', kept: true, reason: 'retired_history' });
   expect(m.deleted.some((d) => d.table === configPolicyFeatureLinks || d.table === configPolicyMonitoringSettings)).toBe(false);
@@ -78,7 +78,7 @@ it.each(['alert_rule', 'automation', 'monitoring'])('removing %s with retired hi
   expect(new PgDialect().sqlToQuery(deletion.predicate).sql).toContain('"retired_at" is null');
 });
 it('removing a link without retired history still deletes the link', async () => {
-  m.rows = [[{ id: 'link', featureType: 'alert_rule' }], [], [], []];
+  m.rows = [[{ id: 'link', featureType: 'alert_rule' }], [], [], [], []];
   expect(await removeFeatureLink('link', 'policy')).toMatchObject({ id: 'link' });
   expect(m.deleted.some((d) => d.table === configPolicyFeatureLinks)).toBe(true);
 });

@@ -304,3 +304,16 @@ describe('execute_command restart parameters (W05c1, spec C9)', () => {
     expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'x', cooldownSeconds: 29 }).success).toBe(false);
   });
 });
+
+describe('monitors inline settings — checkIntervalSeconds (W05d)', () => {
+  it('leaves the interval absent and accepts explicit 10..3600', () => {
+    expect(monitorsInlineSettingsSchema.parse({ items: [] })).not.toHaveProperty('checkIntervalSeconds');
+    expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 10 }).checkIntervalSeconds).toBe(10);
+    expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 3600 }).checkIntervalSeconds).toBe(3600);
+  });
+  it('rejects out-of-range and non-integer values', () => {
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 9 }).success).toBe(false);
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 3601 }).success).toBe(false);
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 60.5 }).success).toBe(false);
+  });
+});

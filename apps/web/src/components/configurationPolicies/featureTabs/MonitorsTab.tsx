@@ -59,19 +59,15 @@ const CHECK_INTERVAL_MIN = 10;
 const CHECK_INTERVAL_MAX = 3600;
 const CHECK_INTERVAL_DEFAULT = 60;
 
-function readCheckInterval(link: InlineSettingsLike): number {
+function readCheckInterval(link: InlineSettingsLike): number | undefined {
   const raw = (link?.inlineSettings as { checkIntervalSeconds?: unknown } | null | undefined)?.checkIntervalSeconds;
-  return typeof raw === "number" && Number.isFinite(raw) ? raw : CHECK_INTERVAL_DEFAULT;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
-function readWatches(link: InlineSettingsLike): unknown[] {
-  const raw = (link?.inlineSettings as { watches?: unknown } | null | undefined)?.watches;
-  return Array.isArray(raw) ? raw : [];
-}
-
 // Empty-watch monitoring links carry only the check interval.
 function linkHasLegacyRows(link: FeatureLink): boolean {
   if (link.featureType === "alert_rule" || link.featureType === "automation") return true;
-  return link.featureType === "monitoring" && readWatches(link).length > 0;
+  const watches = link.inlineSettings?.watches;
+  return link.featureType === "monitoring" && Array.isArray(watches) && watches.length > 0;
 }
 
 const SEVERITY_BADGE: Record<string, string> = {
@@ -122,17 +118,23 @@ export default function MonitorsTab({
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string>();
 
-  // Spec §Data model: until W05d the agent reads check_interval_seconds off the
-  // `monitoring` link's settings row, so the Monitors tab writes THAT link —
-  // creating an empty-watch one when the policy has none.
-  const monitoringLink = siblingLinks?.find((l) => l.featureType === "monitoring");
-  const savedCheckInterval = readCheckInterval(monitoringLink);
+  // Interval inheritance is field-level, independent of attachment inheritance.
+  const ownCheckInterval = readCheckInterval(existingLink);
+  const parentCheckInterval = readCheckInterval(parentLink);
+  const savedCheckInterval = ownCheckInterval ?? parentCheckInterval ?? CHECK_INTERVAL_DEFAULT;
   const [checkInterval, setCheckInterval] = useState<string>(String(savedCheckInterval));
   const [checkIntervalError, setCheckIntervalError] = useState<string>();
+  const [checkIntervalEdited, setCheckIntervalEdited] = useState(false);
   const [inheritance, setInheritance] = useState<InheritanceMode>(() => readInheritance(existingLink));
   useEffect(() => { setInheritance(readInheritance(existingLink)); }, [existingLink]);
   const parentItems = seedItems(parentLink);
-  useEffect(() => { setCheckInterval(String(savedCheckInterval)); }, [savedCheckInterval]);
+  useEffect(() => {
+    setCheckInterval(String(savedCheckInterval));
+    setCheckIntervalEdited(false);
+    setCheckIntervalError(undefined);
+  }, [savedCheckInterval, policyId, existingLink, parentLink]);
+  const isIntervalInherited = !checkIntervalEdited && ownCheckInterval === undefined && parentCheckInterval !== undefined;
+  const intervalPayload = () => checkIntervalEdited ? { checkIntervalSeconds: Number(checkInterval) } : {};
 
   useEffect(() => {
     if (!meta.fetchUrl) {
@@ -240,35 +242,21 @@ export default function MonitorsTab({
     }));
 
   const saveAttachments = async (): Promise<boolean> => {
-    if (items.length === 0 && inheritance === "cumulative") {
-      if (existingLink) {
-        const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
-        if (!ok) return false;
-        onLinkChanged(null, "monitors");
-      }
-      return true;
-    }
+    if (!existingLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
-      featurePolicyId: null, // inline settings — never stamp the parent CONFIG policy's own id
-      inlineSettings: { items: buildPayloadItems(), inheritance },
+      featurePolicyId: null,
+      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
     });
-    if (result) onLinkChanged(result, "monitors");
+    if (result) {
+      setCheckIntervalEdited(false);
+      onLinkChanged(result, "monitors");
+    }
     return !!result;
   };
 
-  const saveCheckInterval = async (): Promise<void> => {
-    const parsed = Number(checkInterval);
-    if (parsed === savedCheckInterval) return;
-    const result = await save(monitoringLink?.id ?? null, {
-      featureType: "monitoring",
-      featurePolicyId: null,
-      inlineSettings: { ...(monitoringLink?.inlineSettings ?? {}), checkIntervalSeconds: parsed, watches: readWatches(monitoringLink) },
-    });
-    if (result) onLinkChanged(result, "monitoring");
-  };
-
   const validateCheckInterval = (): boolean => {
+    if (!checkIntervalEdited) return true;
     const parsed = Number(checkInterval);
     const ok = Number.isInteger(parsed) && parsed >= CHECK_INTERVAL_MIN && parsed <= CHECK_INTERVAL_MAX;
     setCheckIntervalError(ok ? undefined : i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalInvalid"));
@@ -279,15 +267,24 @@ export default function MonitorsTab({
     clearError();
     if (!validateCheckInterval()) return;
     if (!(await saveAttachments())) return;
-    await saveCheckInterval();
   };
 
   const handleRemove = async () => {
     if (!existingLink) return;
-    const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
-    if (ok) {
-      onLinkChanged(null, "monitors");
+    clearError();
+    if (!validateCheckInterval()) return;
+    const result = await save(existingLink.id, {
+      featureType: "monitors",
+      featurePolicyId: null,
+      // Remove = stop overriding: an empty `replace` link would block every
+      // monitor the parent attaches, so the kept link goes back to cumulative.
+      inlineSettings: { items: [], inheritance: "cumulative", ...intervalPayload() },
+    });
+    if (result) {
+      onLinkChanged(result, "monitors");
+      setCheckIntervalEdited(false);
       setItems([]);
+      setInheritance("cumulative");
     }
   };
 
@@ -298,18 +295,24 @@ export default function MonitorsTab({
   // attach/detach/toggle/override controls below become live.
   const handleOverride = async () => {
     clearError();
+    if (!validateCheckInterval()) return;
     const result = await save(null, {
       featureType: "monitors",
       featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems(), inheritance },
+      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
     });
-    if (result) onLinkChanged(result, "monitors");
+    if (result) {
+      setCheckIntervalEdited(false);
+      onLinkChanged(result, "monitors");
+    }
   };
 
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id, { successMessage: i18n.t("common:states.saved") });
-    if (ok) onLinkChanged(null, "monitors");
+    // D11 retains an empty link when it owns collection settings.
+    // Read back the server state so that interval remains visible after revert.
+    if (ok) await refreshLinks();
   };
 
   return (
@@ -402,9 +405,14 @@ export default function MonitorsTab({
             step={1}
             value={checkInterval}
             disabled={isInherited}
-            onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalError(undefined); }}
+            onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalEdited(true); setCheckIntervalError(undefined); }}
             className="mt-1 h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
+          {isIntervalInherited && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="monitors-tab-check-interval-inherited">
+              {t("configurationPolicies.featureTabs.monitorsTab.inherited")}
+            </p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             {i18n.t("policies:configurationPolicies.featureTabs.monitorsTab.checkIntervalHint")}
           </p>

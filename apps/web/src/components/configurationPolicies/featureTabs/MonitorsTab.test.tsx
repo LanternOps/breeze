@@ -82,6 +82,7 @@ describe('MonitorsTab', () => {
 
     expect(saveMock).toHaveBeenCalled();
     const inline = inlineSettingsFromCall(saveMock.mock.calls[0]);
+    expect(inline).not.toHaveProperty('checkIntervalSeconds');
     expect(inline?.items).toEqual([
       { monitorId: 'm1', enabled: true, overrides: undefined, sortOrder: 0 },
     ]);
@@ -140,25 +141,25 @@ describe('MonitorsTab', () => {
     // Still removable via the existing detach control.
     fireEvent.click(screen.getByTestId(`monitors-tab-item-detach-${deletedMonitorId}`));
     clickSave();
-    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1', { successMessage: expect.any(String) }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', expect.objectContaining({
+      inlineSettings: { items: [], inheritance: 'cumulative' },
+    })));
+    expect(removeMock).not.toHaveBeenCalled();
   });
 
-  it('detaching the only attached monitor and saving removes the feature link', async () => {
-    const existingLink = {
-      id: 'link-1',
-      featureType: 'monitors' as const,
-      featurePolicyId: null,
-      inlineSettings: { items: [{ monitorId: 'm1', enabled: true, sortOrder: 0 }] },
-    };
-    render(<MonitorsTab {...baseProps} existingLink={existingLink} />);
-
+  it.each(['cumulative', 'replace'] as const)('last detachment saves an empty %s link', async (inheritance) => {
+    render(<MonitorsTab {...baseProps} existingLink={{ id: 'link-1', featureType: 'monitors',
+      featurePolicyId: null, inlineSettings: {
+        items: [{ monitorId: 'm1', enabled: true, sortOrder: 0 }], inheritance, checkIntervalSeconds: 60,
+      } }} />);
     await screen.findByTestId('monitors-tab-item-m1');
     fireEvent.click(screen.getByTestId('monitors-tab-item-detach-m1'));
-
     clickSave();
-
-    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-1', { successMessage: expect.any(String) }));
-    expect(saveMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', {
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [], inheritance },
+    }));
+    expect(removeMock).not.toHaveBeenCalled();
   });
 
   it('renders an inherited parent row as inherited without submitting it until Override is used', async () => {
@@ -166,7 +167,7 @@ describe('MonitorsTab', () => {
       id: 'parent-link-1',
       featureType: 'monitors' as const,
       featurePolicyId: null,
-      inlineSettings: { items: [{ monitorId: 'm2', enabled: true, sortOrder: 0 }] },
+      inlineSettings: { items: [{ monitorId: 'm2', enabled: true, sortOrder: 0 }], checkIntervalSeconds: 90 },
     };
     render(<MonitorsTab {...baseProps} parentLink={parentLink} />);
 
@@ -194,6 +195,7 @@ describe('MonitorsTab', () => {
       { monitorId: 'm2', enabled: true, overrides: undefined, sortOrder: 0 },
     ]);
     expect(inline?.inheritance).toBe('cumulative');
+    expect(inline).not.toHaveProperty('checkIntervalSeconds');
   });
 
   it('sends featurePolicyId: null even when a linked config policy is set', async () => {
@@ -212,64 +214,161 @@ describe('MonitorsTab', () => {
   });
 });
 
-const monitoringLink = (over: Partial<{ id: string; inlineSettings: Record<string, unknown> }> = {}) => ({
-  id: 'link-svc', featureType: 'monitoring' as const, featurePolicyId: null,
-  inlineSettings: { checkIntervalSeconds: 60, watches: [{ watchType: 'service', name: 'Spooler' }] },
-  ...over,
-});
-const ownMonitorsLink = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [{ monitorId: 'm1', enabled: true }] } };
+const ownMonitorsLink = { id: 'link-1', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [{ monitorId: 'm1', enabled: true }], checkIntervalSeconds: 60 } };
 
-describe('MonitorsTab — check interval write-through (W05c2)', () => {
-  it('PATCHes the existing monitoring link with the new interval and its watches untouched', async () => {
-    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink, monitoringLink()]} />);
-    const input = (await screen.findByTestId('monitors-tab-check-interval')) as HTMLInputElement;
-    expect(input.value).toBe('60');
+describe('MonitorsTab — check interval on monitors (W05d)', () => {
+  it('saves the check interval on a new monitors link exactly once', async () => {
+    render(<MonitorsTab {...baseProps} />);
+    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '120' } });
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith(null, {
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 120 },
+    }));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('reads the existing monitors interval and saves it with attachments', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+      inlineSettings: { ...ownMonitorsLink.inlineSettings, checkIntervalSeconds: 45 } }} />);
+    const input = await screen.findByTestId('monitors-tab-check-interval') as HTMLInputElement;
+    expect(input.value).toBe('45');
     fireEvent.change(input, { target: { value: '120' } });
     clickSave();
-    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2));
-    const [linkId, payload] = saveMock.mock.calls[1] as unknown as [string | null, { featureType: string; inlineSettings: Record<string, unknown> }];
-    expect(linkId).toBe('link-svc');
-    expect(payload.featureType).toBe('monitoring');
-    expect(payload.inlineSettings).toEqual({ checkIntervalSeconds: 120, watches: [{ watchType: 'service', name: 'Spooler' }] });
-    expect(baseProps.onLinkChanged).toHaveBeenCalledWith(expect.objectContaining({ id: 'link-1' }), 'monitoring');
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+    expect(saveMock).toHaveBeenCalledWith('link-1', {
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'm1', enabled: true, overrides: undefined, sortOrder: 0 }],
+        inheritance: 'cumulative', checkIntervalSeconds: 120 },
+    });
   });
 
-  it('creates an empty-watch monitoring link when the policy has none', async () => {
-    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
-    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '30' } });
-    clickSave();
-    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2));
-    const [linkId, payload] = saveMock.mock.calls[1] as unknown as [string | null, { inlineSettings: Record<string, unknown> }];
-    expect(linkId).toBeNull();
-    expect(payload.inlineSettings).toEqual({ checkIntervalSeconds: 30, watches: [] });
-  });
-
-  it('leaves the monitoring link alone when the interval did not change', async () => {
-    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink, monitoringLink()]} />);
+  it.each(['cumulative', 'replace'] as const)('Save preserves an already-empty %s link and its settings', async inheritance => {
+    render(<MonitorsTab {...baseProps} existingLink={{ id: 'link-1', featureType: 'monitors',
+      featurePolicyId: null, inlineSettings: { items: [], inheritance, checkIntervalSeconds: 60 } }} />);
     await screen.findByTestId('monitors-tab-check-interval');
     clickSave();
-    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
-  });
-
-  // #6644 review finding 7: a regression here would create an empty monitoring
-  // link on EVERY Monitors-tab save of a policy that never had one.
-  it('creates no monitoring link when the policy has none and the default interval is unchanged', async () => {
-    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
-    await screen.findByTestId('monitors-tab-check-interval');
-    clickSave();
-    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', {
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [], inheritance },
+    }));
     expect(saveMock).toHaveBeenCalledTimes(1);
-    const [, payload] = saveMock.mock.calls[0] as unknown as [string | null, { featureType: string }];
-    expect(payload.featureType).toBe('monitors');
+    expect(removeMock).not.toHaveBeenCalled();
   });
 
-  it('refuses an interval outside 10–3600 without saving anything', async () => {
-    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} siblingLinks={[ownMonitorsLink]} />);
+  it('does not create an absent empty cumulative link at the default interval', async () => {
+    render(<MonitorsTab {...baseProps} />);
+    await screen.findByTestId('monitors-tab-check-interval');
+    clickSave();
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['cumulative', 'replace'] as const)('Remove clears %s attachments and returns to cumulative without pinning the interval', async inheritance => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+      inlineSettings: { ...ownMonitorsLink.inlineSettings, inheritance, checkIntervalSeconds: 45 } }} />);
+    await screen.findByTestId('monitors-tab-item-m1');
+    fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+    fireEvent.click(await screen.findByTestId('feature-tab-remove-confirm'));
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('link-1', {
+      featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [], inheritance: 'cumulative' },
+    }));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(baseProps.onLinkChanged).toHaveBeenCalledWith({ id: 'link-1' }, 'monitors');
+    expect(screen.queryByTestId('monitors-tab-item-m1')).toBeNull();
+  });
+
+  it('Remove validates the interval before clearing attachments', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} />);
     fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: /^remove$/i }));
+    fireEvent.click(await screen.findByTestId('feature-tab-remove-confirm'));
+    expect(await screen.findByText(/between 10 and 3600/i)).toBeInTheDocument();
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('monitors-tab-item-m1')).toBeInTheDocument();
+  });
+
+  it('Override does not pin or validate an unedited inherited interval', async () => {
+    render(<MonitorsTab {...baseProps} parentLink={{ ...ownMonitorsLink,
+      inlineSettings: { ...ownMonitorsLink.inlineSettings, checkIntervalSeconds: 5 } }} />);
+    await screen.findByTestId('monitors-tab-check-interval');
+    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).not.toHaveProperty('checkIntervalSeconds');
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('shows parent interval as inherited despite an own replacement attachment link', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+      inlineSettings: { items: [], inheritance: 'replace' } }} parentLink={{ ...ownMonitorsLink,
+      id: 'parent-link', inlineSettings: { items: [], checkIntervalSeconds: 30 } }} />);
+    expect(await screen.findByTestId('monitors-tab-check-interval')).toHaveValue(30);
+    expect(screen.getByTestId('monitors-tab-check-interval-inherited')).toHaveTextContent('Inherited');
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).not.toHaveProperty('checkIntervalSeconds');
+  });
+
+  it('gives an explicit own interval precedence over the parent interval', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} parentLink={{ ...ownMonitorsLink,
+      id: 'parent-link', inlineSettings: { items: [], checkIntervalSeconds: 30 } }} />);
+    expect(await screen.findByTestId('monitors-tab-check-interval')).toHaveValue(60);
+    expect(screen.queryByTestId('monitors-tab-check-interval-inherited')).toBeNull();
+  });
+
+  it('can pin the inherited interval by editing away and back to the shown value', async () => {
+    render(<MonitorsTab {...baseProps} existingLink={{ ...ownMonitorsLink,
+      inlineSettings: { items: [] } }} parentLink={{ ...ownMonitorsLink,
+      id: 'parent-link', inlineSettings: { items: [], checkIntervalSeconds: 30 } }} />);
+    const input = await screen.findByTestId('monitors-tab-check-interval');
+    fireEvent.change(input, { target: { value: '31' } });
+    fireEvent.change(input, { target: { value: '30' } });
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toHaveProperty('checkIntervalSeconds', 30);
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2));
+    expect(inlineSettingsFromCall(saveMock.mock.calls[1])).not.toHaveProperty('checkIntervalSeconds');
+  });
+
+  it('can pin the default interval on an empty new link after editing', async () => {
+    render(<MonitorsTab {...baseProps} />);
+    const input = await screen.findByTestId('monitors-tab-check-interval');
+    fireEvent.change(input, { target: { value: '61' } });
+    fireEvent.change(input, { target: { value: '60' } });
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toHaveProperty('checkIntervalSeconds', 60);
+  });
+
+  it.each([true, false])('Revert reflects whether the server retained the interval link (%s)', async kept => {
+    const retained = { ...ownMonitorsLink, inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 30 } };
+    fetchWithAuthMock.mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never)
+      .mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: kept ? [retained] : [] }) })) as never);
+    const view = render(<MonitorsTab {...baseProps} existingLink={retained} linkedPolicyId="parent-policy" />);
+    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '120' } });
+    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(await screen.findByTestId('feature-tab-revert-confirm'));
+    await waitFor(() => expect(baseProps.onLinkChanged).toHaveBeenCalledWith(kept ? retained : null, 'monitors'));
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/configuration-policies/policy-1/features');
+    if (kept) expect(baseProps.onLinkChanged).not.toHaveBeenCalledWith(null, 'monitors');
+    view.rerender(<MonitorsTab {...baseProps} existingLink={kept ? { ...retained } : undefined} linkedPolicyId="parent-policy" />);
+    expect(screen.getByTestId('monitors-tab-check-interval')).toHaveValue(kept ? 30 : 60);
+    clickSave();
+    if (kept) expect(inlineSettingsFromCall(saveMock.mock.calls[0])).not.toHaveProperty('checkIntervalSeconds');
+    else expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['5', '3601', '60.5', ''])('refuses invalid interval %s without saving anything', async value => {
+    render(<MonitorsTab {...baseProps} existingLink={ownMonitorsLink} />);
+    fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value } });
     clickSave();
     expect(await screen.findByText(/between 10 and 3600/i)).toBeInTheDocument();
     expect(saveMock).not.toHaveBeenCalled();
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });
 
