@@ -1177,13 +1177,19 @@ aiRoutes.post(
     try {
       if (planId) {
         try {
-          await db.update(aiActionPlans)
+          // Only a still-pending plan takes a decision: an abort that landed
+          // first must not be overwritten with approved/rejected.
+          const updated = await db.update(aiActionPlans)
             .set({
               status: approved ? 'approved' : 'rejected',
               approvedBy: auth.user.id,
               approvedAt: new Date(),
             })
-            .where(eq(aiActionPlans.id, planId));
+            .where(and(eq(aiActionPlans.id, planId), eq(aiActionPlans.status, 'pending')))
+            .returning({ id: aiActionPlans.id });
+          if (updated.length === 0) {
+            return c.json({ error: 'The plan approval is no longer pending' }, 409);
+          }
         } catch (err) {
           console.error('[AI] Failed to update plan status:', err);
           captureException(err);

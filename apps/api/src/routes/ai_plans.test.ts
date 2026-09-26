@@ -224,7 +224,9 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'plan-1' }]),
+          }),
         }),
       } as any);
 
@@ -253,7 +255,9 @@ describe('AI routes', () => {
         vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
         vi.mocked(db.update).mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockRejectedValue(new Error('connection reset')),
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockRejectedValue(new Error('connection reset')),
+            }),
           }),
         } as any);
 
@@ -285,9 +289,12 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockImplementation(async () => {
-            // waitForPlanApproval's timeout fires mid-write
-            mockSession.planApprovalResolver = null;
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation(async () => {
+              // waitForPlanApproval's timeout fires mid-write
+              mockSession.planApprovalResolver = null;
+              return [{ id: 'plan-1' }];
+            }),
           }),
         }),
       } as any);
@@ -313,9 +320,12 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockImplementation(async () => {
-            // abortActivePlan clears activePlanId but leaves the resolver
-            mockSession.activePlanId = null;
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation(async () => {
+              // abortActivePlan clears activePlanId but leaves the resolver
+              mockSession.activePlanId = null;
+              return [{ id: 'plan-1' }];
+            }),
           }),
         }),
       } as any);
@@ -340,9 +350,12 @@ describe('AI routes', () => {
       };
       vi.mocked(streamingSessionManager.get).mockReturnValue(mockSession as any);
       let releaseWrite!: () => void;
-      const where = vi.fn().mockImplementation(
-        () => new Promise<void>((resolve) => { releaseWrite = resolve; }),
+      const returning = vi.fn().mockImplementation(
+        () => new Promise<Array<{ id: string }>>((resolve) => {
+          releaseWrite = () => resolve([{ id: 'plan-1' }]);
+        }),
       );
+      const where = vi.fn().mockReturnValue({ returning });
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({ where }),
       } as any);
@@ -364,6 +377,33 @@ describe('AI routes', () => {
       expect(where).toHaveBeenCalledTimes(1);
       expect(resolver).toHaveBeenCalledTimes(1);
       expect(resolver).toHaveBeenCalledWith(true);
+    });
+
+    it('returns 409 when the plan row is no longer pending (aborted before the write landed) (#7077)', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      const resolver = vi.fn();
+      const mockSession = {
+        activePlanId: 'plan-1',
+        planApprovalResolver: resolver,
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/approve-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved: true }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(resolver).not.toHaveBeenCalled();
     });
 
     it('returns 400 when no pending plan approval', async () => {
