@@ -26,6 +26,7 @@ import {
 import type { CommandPayload } from '../commandQueue';
 import { insertQueuedCommandInTransaction } from '../commandQueueInsert';
 import { CommandTypes } from '../commandTypes';
+import { revalidateTopologyTraceAuthority } from './diagnosticTraceAuthority';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
   type TopologyDiagnosticIntent,
@@ -153,6 +154,13 @@ export async function validateTopologyCommandAuthority(
     .limit(1);
   if (!state || state.settingsRevision.toString() !== payload.plan.settingsRevision) {
     return deny('scope_changed');
+  }
+
+  // M3-D13 (trace path): the REQUESTER's live authority, not only the
+  // origin's. Partner trust is already evaluated by the generic claim.
+  if (run.recipeId === 'trace_route') {
+    const denial = await revalidateTopologyTraceAuthority({ reader, run });
+    if (denial) return deny(denial === 'authority_unavailable' ? 'authority_unavailable' : 'scope_changed');
   }
 
   return { allow: true, payload };
@@ -321,6 +329,16 @@ export async function dispatchTopologyDiagnosticRun(
         await settleRun(run, 'expired', 'dispatch_timeout', now);
         await setIntentState(runId, 'settled');
         return null;
+      }
+      // M3-D13 (trace path): enqueue is a live-authority boundary. A revoked
+      // requester never gets a command minted on their behalf.
+      if (run.recipeId === 'trace_route') {
+        const denial = await revalidateTopologyTraceAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true });
+        if (denial) {
+          await settleRun(run, 'cancelled', `authority_${denial}`.slice(0, 64), now);
+          await setIntentState(runId, 'settled');
+          return null;
+        }
       }
 
       const commandId = randomUUID();

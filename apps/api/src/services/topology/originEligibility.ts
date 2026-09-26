@@ -9,6 +9,8 @@ import {scopedWrite} from './writes';
 import {loadTopologyConfiguration} from './siteConfiguration';
 import {topologyConfigurationRevision} from './collectionAuthority';
 import {TopologyOperationError} from './operationErrors';
+import {TOPOLOGY_TRACE_CAPABILITY} from './diagnosticTraceAuthority';
+export {TOPOLOGY_TRACE_CAPABILITY};
 import {topologyFactKey} from './collectionFactKeys';
 import type {DiagnosticCandidate,DiagnosticPlanningRepository,DiagnosticPlanningSnapshot} from './diagnosticTypes';
 
@@ -32,13 +34,16 @@ export type CollectorEligibilityInput={
  device:{status:string|null;lastSeenAt:Date|null;agentTokenHash:string|null;agentTokenSuspendedAt:Date|null};
  source:{revokedAt:Date|null;freshUntil:Date|null;producerEpoch:string};
  root:{revokedAt:Date|null;lastReceivedAt:Date|null;producerEpoch:string;configurationRevision:string|null}|undefined;
+ /** A routed trace additionally needs the agent's own `network_trace` capability (M3 Task 9). */
+ recipeId?:CreateTopologyDiagnosticRequest['recipeId'];
 };
-export function collectorEligibilityReasons({now,settingsRevision,capabilities,permissions,device,source,root}:CollectorEligibilityInput):string[]{
+export function collectorEligibilityReasons({now,settingsRevision,capabilities,permissions,device,source,root,recipeId}:CollectorEligibilityInput):string[]{
  const reasons:string[]=[];
  if(device.status!=='online'||!device.lastSeenAt||now-device.lastSeenAt.getTime()>180_000)reasons.push('origin_offline');
  if(!device.agentTokenHash||device.agentTokenSuspendedAt)reasons.push('origin_not_enrolled');
  if(!capabilities.has('network_diagnostic'))reasons.push('diagnostics_unavailable');
  if(!capabilities.has('route_lookup'))reasons.push('unsupported_context');
+ if(recipeId==='trace_route'&&!capabilities.has(TOPOLOGY_TRACE_CAPABILITY))reasons.push('trace_unsupported');
  if(source.revokedAt||root?.revokedAt||!source.freshUntil||source.freshUntil.getTime()<=now||!root?.lastReceivedAt||now-root.lastReceivedAt.getTime()>900_000)reasons.push('context_stale');
  if(!root||source.producerEpoch!==root.producerEpoch||root.configurationRevision!==expectedCollectorConfigurationRevision(device.agentTokenHash,settingsRevision))reasons.push('context_changed');
  if(!hasPermission(permissions,'topology','execute')||!hasPermission(permissions,'devices','execute'))reasons.push('origin_permission_denied');
@@ -87,7 +92,7 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
   const envelope=networkContextFullSchema.safeParse(root?.currentBaseline);const caps=new Set(envelope.success?envelope.data.capabilities.filter(cap=>cap.supported&&cap.version===1).map(cap=>cap.name):[]);
   for(const source of sources.filter(row=>row.producerId===device.id&&row.protocol==='routes'&&(!request.contextKey||row.contextKey===request.contextKey)&&(!request.family||row.addressFamily===request.family))){
    const routeSection=topologyContextSectionSchema.safeParse(source.publishedBaseline.section);if(!routeSection.success||routeSection.data.kind!=='routes')continue;
-   const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:ctx.permissions,device,source,root});
+   const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:ctx.permissions,device,source,root,recipeId:request.recipeId});
    if(trustDenied)reasons.push('trust_denied');
    const gateways:DiagnosticCandidate['gatewayEvidence']=[];const usedInterfaces=new Set<string>();
    const mapping=source.publishedBaseline._rowRelationships as Record<string,string[]>|undefined;

@@ -281,3 +281,33 @@ describe('assessTopologyDiagnosticRun', () => {
     expect(assessment.summary.status).toBe('unknown');
   });
 });
+
+describe('routed trace evidence (M3 Task 9)', () => {
+  it('treats an unconfirmed trace as missing evidence, never as a failed path', () => {
+    const route = identifier();
+    const trace = identifier();
+    for (const state of ['failed_check', 'timeout'] as const) {
+      const summary = assessTopologyDiagnostic(
+        plan([{ id: route, method: 'route_lookup' }, { id: trace, method: 'trace' }]),
+        [step({ id: route, state: 'succeeded', method: 'route_lookup' }), step({ id: trace, state, method: 'trace' })],
+        { now: NOW },
+      );
+      expect(summary.status).toBe('unknown');
+      expect(summary.reasons).toContain('trace_destination_not_confirmed');
+      expect(summary.reasons).not.toContain('trace_check_failed');
+      expect(summary.evidenceRefs).toEqual([route]);
+    }
+  });
+
+  it('counts a trace that confirmed its destination as fresh success', () => {
+    const route = identifier();
+    const trace = identifier();
+    const summary = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: trace, method: 'trace' }]),
+      [step({ id: route, state: 'succeeded', method: 'route_lookup' }), step({ id: trace, state: 'succeeded', method: 'trace' })],
+      { now: NOW },
+    );
+    expect(summary).toMatchObject({ status: 'healthy', coverage: 'monitored', evidenceRefs: [route, trace] });
+    expect(summary.reasons).toContain('trace_succeeded');
+  });
+});

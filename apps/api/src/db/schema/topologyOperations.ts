@@ -124,6 +124,8 @@ export const topologyDiagnosticRuns = pgTable('topology_diagnostic_runs', {
   recipeId: varchar('recipe_id', { length: 32 }).notNull(),
   recipeVersion: integer('recipe_version').notNull(),
   requesterId: uuid('requester_id').notNull(),
+  /** M3-D13: the requester authority frozen at acceptance; required for trace_route. */
+  requesterAuthority: jsonb('requester_authority').$type<Record<string, unknown>>(),
   subjectNodeId: uuid('subject_node_id'),
   subjectRelationshipId: uuid('subject_relationship_id'),
   subjectTargetId: uuid('subject_target_id'),
@@ -163,6 +165,8 @@ export const topologyDiagnosticRuns = pgTable('topology_diagnostic_runs', {
   check('topology_diagnostic_runs_origin_chk', sql`jsonb_typeof(origin_snapshot) = 'object' AND octet_length(origin_snapshot::text) <= 8192`),
   check('topology_diagnostic_runs_reasons_chk', sql`jsonb_typeof(reasons) = 'array' AND jsonb_array_length(reasons) <= 64`),
   check('topology_diagnostic_runs_deadline_chk', sql`deadline >= queue_deadline AND queue_deadline > queued_at`),
+  check('topology_diagnostic_runs_requester_authority_chk', sql`requester_authority IS NULL OR (jsonb_typeof(requester_authority) = 'object' AND octet_length(requester_authority::text) <= 1024)`),
+  check('topology_diagnostic_runs_trace_authority_chk', sql`recipe_id <> 'trace_route' OR requester_authority IS NOT NULL`),
   uniqueIndex('topology_diagnostic_runs_request_uniq').on(t.orgId, t.siteId, t.requesterId, t.idempotencyKey),
 ]);
 

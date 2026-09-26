@@ -15,3 +15,38 @@ export type TopologyDiagnosticDestination = z.infer<typeof topologyDiagnosticDes
 import type { topologyOriginEligibilitySchema, topologyCollectorsResponseSchema } from '../validators/topologyDiagnostics';
 export type TopologyOriginEligibility = z.infer<typeof topologyOriginEligibilitySchema>;
 export type TopologyCollectorsResponse = z.infer<typeof topologyCollectorsResponseSchema>;
+
+import type { topologyTraceHopSchema, topologyTraceDetailsSchema, topologyTraceRequestOptionsSchema } from '../validators/topologyDiagnostics';
+export type TopologyTraceHop = z.infer<typeof topologyTraceHopSchema>;
+export type TopologyTraceDetails = z.infer<typeof topologyTraceDetailsSchema>;
+export type TopologyTraceRequestOptions = z.infer<typeof topologyTraceRequestOptionsSchema>;
+
+/**
+ * Read model for one traced step. `kind` is deliberately distinct from any
+ * topology relationship path: a routed trace is observed ICMP evidence from one
+ * origin at one moment, not discovered topology, and is never materialized.
+ */
+export type TopologyTraceView = {
+  kind: 'observed_routed_path';
+  stepId: string;
+  state: TopologyDiagnosticStep['state'] | null;
+  reason: string | null;
+  requestedMethod: 'trace';
+  actualMethod: string | null;
+  protocol: TopologyTraceDetails['protocol'] | null;
+  origin: { deviceId: string; agentId: string; contextKey: string | null; interfaceId: string | null; localAddress: string | null; sourceId: string };
+  destination: { destinationId: string | null; address: string | null; family: 'ipv4' | 'ipv6' | null };
+  attributionQuality: 'observed' | 'requested_unverified' | 'unknown';
+  routeChanged: boolean;
+  destinationReached: boolean;
+  maxHops: number;
+  probesPerHop: number;
+  hops: Array<{
+    ttl: number;
+    responders: Array<{ address: string; attempts: number[]; rttMs: Array<number | null>; outcome: 'reply' | 'unreachable'; attributionQuality: TopologyTraceHop['attributionQuality'] }>;
+    gaps: Array<{ attempt: number; outcome: 'timeout' | 'unsupported' | 'unreachable' }>;
+    alternatives: boolean;
+  }>;
+  truncated: boolean;
+  hopsOmitted: number;
+};

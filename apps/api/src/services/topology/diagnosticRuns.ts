@@ -33,6 +33,7 @@ export {
 
 import { planTopologyDiagnostic } from './diagnosticPlanner';
 import { loadTopologyFlags } from './flags';
+import { freezeTopologyTraceRequester } from './diagnosticTraceAuthority';
 import { TopologyOperationError } from './operationErrors';
 
 /** Fixed on-demand budgets from the operations spec (§9). */
@@ -264,6 +265,12 @@ export async function createTopologyDiagnosticRun(
     throw new TopologyOperationError('topology_site_not_found', 404);
   }
 
+  // M3-D13: a routed trace carries its requester authority so every later
+  // boundary (enqueue, delivery, result publication) can re-derive it live.
+  const requesterAuthority = plan.recipeId === 'trace_route'
+    ? await freezeTopologyTraceRequester(ctx)
+    : null;
+
   const runId = randomUUID();
   const attemptId = randomUUID();
   const intent: TopologyDiagnosticIntent = {
@@ -305,6 +312,7 @@ export async function createTopologyDiagnosticRun(
         recipeId: plan.recipeId,
         recipeVersion: plan.recipeVersion,
         requesterId: ctx.auth.user.id,
+        requesterAuthority,
         ...subjectColumns(plan.subject),
         originNodeId: plan.origin.nodeId,
         originSnapshot: plan.origin,
