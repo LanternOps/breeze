@@ -283,3 +283,21 @@ func createTempFileIn(t *testing.T, dir, name, content string) string {
 	}
 	return createTempFile(t, dir, name, content)
 }
+
+// Three names that all fold together: the first keeps its natural key, the
+// other two each get their own case-twin key.
+func TestCreateSnapshot_ThreeWayTwinsGetDistinctObjects(t *testing.T) {
+	dir := t.TempDir()
+	mod := time.Unix(1_700_000_000, 0)
+	var files []backupFile
+	for i, name := range []string{"FILE.txt", "file.TXT", "File.Txt"} {
+		src := createTempFileIn(t, filepath.Join(dir, strings.Repeat("d", i+1)), "f", "bytes of "+name)
+		files = append(files, backupFile{sourcePath: src, snapshotPath: "path_0/" + name, size: fileSize(t, src), modTime: mod})
+	}
+	provider := newCaseInsensitiveProvider()
+	snap, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	assertEveryEntryRestoresItsOwnBytes(t, provider, snap)
+}
