@@ -8,8 +8,9 @@
  */
 import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, users, invoices, invoiceStripePayments } from '../../db/schema';
 import { getTestDb } from './setup';
 
@@ -20,22 +21,27 @@ const { retrieveMock } = vi.hoisted(() => ({ retrieveMock: vi.fn() }));
 // Settlement reads the session via the partner's key — mock that client.
 vi.mock('../../services/partnerStripe', () => ({
   getPartnerStripeClient: async () => ({ stripe: { checkout: { sessions: { retrieve: retrieveMock } } }, stripeAccountId: 'acct_test' }),
+  // Imported by routes/portal/invoices.ts (the pay route's error mapping).
+  PartnerStripeError: class PartnerStripeError extends Error {},
 }));
 
 import * as svc from '../../services/invoiceService';
 import { settleCheckoutSession } from '../../services/stripeSettle';
 import { reconcilePendingStripePayments } from '../../jobs/stripeReconcileSweep';
 import type { InvoiceActor } from '../../services/invoiceTypes';
+import { invoiceRoutes as portalInvoiceRoutes } from '../../routes/portal/invoices';
+import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-async function seedPendingPayment(sessionId = 'cs_settle_1', paymentIntentId = 'pi_1') {
+/** `partnerId` seeds the org under an EXISTING partner (a sibling customer of the same MSP). */
+async function seedPendingPayment(sessionId = 'cs_settle_1', paymentIntentId = 'pi_1', partnerId?: string) {
   const f = await withSystemDbAccessContext(async () => {
     const sfx = Math.random().toString(36).slice(2, 8);
-    const [p] = await db.insert(partners).values({ name: `P ${sfx}`, slug: `p-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: p!.id, name: 'O', slug: `o-${sfx}` }).returning({ id: organizations.id });
-    const [u] = await db.insert(users).values({ partnerId: p!.id, orgId: o!.id, email: `u-${sfx}@x.io`, name: 'U', status: 'active' }).returning({ id: users.id });
-    return { partnerId: p!.id, orgId: o!.id, userId: u!.id };
+    const pid = partnerId ?? (await db.insert(partners).values({ name: `P ${sfx}`, slug: `p-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id }))[0]!.id;
+    const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: pid, name: 'O', slug: `o-${sfx}` }).returning({ id: organizations.id });
+    const [u] = await db.insert(users).values({ partnerId: pid, orgId: o!.id, email: `u-${sfx}@x.io`, name: 'U', status: 'active' }).returning({ id: users.id });
+    return { partnerId: pid, orgId: o!.id, userId: u!.id };
   });
   const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
   const draft = await withSystemDbAccessContext(() => svc.createManualInvoice({ orgId: f.orgId }, actor));
@@ -205,3 +211,81 @@ describe('Stripe reconcile sweep transaction scope (#7065)', () => {
   });
 });
 
+
+// #7069 — POST /portal/invoices/:id/settle runs in SYSTEM scope (it must, to read
+// the partner-axis Stripe key), so RLS does not isolate it: the explicit org
+// filters on the invoice and on the Checkout-session mapping are the ONLY thing
+// stopping one customer from settling — and learning the outcome of — another
+// org's checkout. The unit suite mocks the DB, so these filters were never
+// proven against real rows until now. Both orgs sit under ONE partner (the
+// realistic sibling-customer case; a foreign partner is strictly easier).
+describe('POST /portal/invoices/:id/settle cross-org isolation (#7069)', () => {
+  function portalApp(orgId: string) {
+    const a = new Hono();
+    a.use('/api/v1/portal/*', async (c, next) => {
+      c.set('portalAuth', {
+        user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
+        token: 't', authMethod: 'bearer', timezone: 'UTC',
+      });
+      // Mirrors routes/portal/auth.ts: the settle route is self-managed, so no
+      // org request transaction wraps it.
+      if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) return next();
+      return withDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null }, () => next());
+    });
+    a.route('/api/v1/portal', portalInvoiceRoutes);
+    return a;
+  }
+
+  async function seedTwoOrgs() {
+    const a = await seedPendingPayment('cs_xorg_a', 'pi_xorg_a');
+    const b = await seedPendingPayment('cs_xorg_b', 'pi_xorg_b', a.f.partnerId);
+    return { a, b };
+  }
+
+  const settle = (orgId: string, invoiceId: string, sessionId: string) =>
+    portalApp(orgId).request(`/api/v1/portal/invoices/${invoiceId}/settle`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }),
+    });
+
+  async function statusOf(invoiceId: string) {
+    const [row] = await getTestDb().select({ status: invoices.status }).from(invoices).where(eq(invoices.id, invoiceId));
+    const [map] = await getTestDb().select({ status: invoiceStripePayments.status }).from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.invoiceId, invoiceId));
+    return { invoice: row!.status, mapping: map!.status };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    retrieveMock.mockImplementation(async (id: string) => ({
+      id, payment_status: 'paid', payment_intent: id === 'cs_xorg_a' ? 'pi_xorg_a' : 'pi_xorg_b', amount_total: 10000, currency: 'usd',
+    }));
+  });
+
+  runDb('404s another org\'s invoice, with that org\'s own session, and never calls Stripe', async () => {
+    const { a, b } = await seedTwoOrgs();
+    const res = await settle(a.f.orgId, b.inv.id, 'cs_xorg_b');
+    expect(res.status).toBe(404);
+    expect(retrieveMock).not.toHaveBeenCalled();
+    expect(await statusOf(b.inv.id)).toEqual({ invoice: 'sent', mapping: 'pending' });
+  });
+
+  runDb('refuses another org\'s Checkout session presented against the caller\'s own invoice', async () => {
+    const { a, b } = await seedTwoOrgs();
+    const res = await settle(a.f.orgId, a.inv.id, 'cs_xorg_b');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ settled: false });
+    expect(retrieveMock).not.toHaveBeenCalled();
+    expect(await statusOf(b.inv.id)).toEqual({ invoice: 'sent', mapping: 'pending' });
+    expect(await statusOf(a.inv.id)).toEqual({ invoice: 'sent', mapping: 'pending' });
+  });
+
+  runDb('control: the same caller settles its OWN session on its own invoice', async () => {
+    const { a, b } = await seedTwoOrgs();
+    const res = await settle(a.f.orgId, a.inv.id, 'cs_xorg_a');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ settled: true, invoiceId: a.inv.id });
+    expect(retrieveMock).toHaveBeenCalledWith('cs_xorg_a');
+    expect(await statusOf(a.inv.id)).toEqual({ invoice: 'paid', mapping: 'succeeded' });
+    expect(await statusOf(b.inv.id)).toEqual({ invoice: 'sent', mapping: 'pending' });
+  });
+});

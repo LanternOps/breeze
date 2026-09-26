@@ -534,7 +534,7 @@
       "saveFailed": "Impossibile modificare questa impostazione",
       "remediation": {
         "title": "Correzioni suggerite",
-        "description": "Suggerimenti di correzione generati dall'IA nella pagina di dettaglio dell'avviso. È il valore predefinito per ogni organizzazione; un'organizzazione può sovrascriverlo nella propria scheda IA.",
+        "description": "Suggerimenti di correzione nella pagina di dettaglio dell'avviso, basati sui tuoi script, modelli e playbook. È il valore predefinito per ogni organizzazione; un'organizzazione può sovrascriverlo nella propria scheda IA.",
         "enabled": "Genera correzioni suggerite",
         "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio."
       }
@@ -4744,7 +4744,7 @@
         "killSwitch": "Il rilevamento delle anomalie è disattivato per l'intera piattaforma dall'operatore. Queste impostazioni avranno effetto quando verrà riattivato.",
         "remediation": {
           "title": "Correzioni suggerite",
-          "description": "Suggerimenti di correzione generati dall'IA per gli avvisi di questa organizzazione. Vuoto significa che si applica il valore predefinito del partner.",
+          "description": "Suggerimenti di correzione per gli avvisi di questa organizzazione, basati sui tuoi script, modelli e playbook. Vuoto significa che si applica il valore predefinito del partner.",
           "enabled": "Genera correzioni suggerite",
           "enabledDescription": "Consenti ai tecnici di generare correzioni suggerite per un avviso dalla sua pagina di dettaglio.",
           "killSwitch": "Le correzioni suggerite sono disattivate per l'intera piattaforma dall'operatore. Questa impostazione avrà effetto quando verranno riattivate."

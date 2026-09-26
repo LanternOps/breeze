@@ -286,6 +286,15 @@ A silently-rejected write is exactly the failure this summary exists to prevent 
 
 To read a custom field value back into a script as an input, bind a script parameter with source **From a device custom field** — see [Parameter sources](/features/scripts/#parameter-sources).
 
+### Filtering and columns on the device list
+
+Since v0.117.0 custom fields are available on the fleet-wide device views, not only on a device's detail page:
+
+- **Advanced filter** -- custom fields appear in the device filter's field picker under their display names, so you can build a condition such as "Asset owner equals Finance" and save it as a saved filter. Before v0.117.0 a custom field could only be filtered by hand-editing the filter.
+- **Device list column** -- each custom field can be added as a column from the device list's column picker. Custom-field columns are off by default.
+
+Custom fields are not yet available as fields in the ad-hoc report builder or the device CSV export.
+
 ---
 
 ## Querying and filtering

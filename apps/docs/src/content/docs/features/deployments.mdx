@@ -92,6 +92,17 @@ To reinstall regardless of what's already on the device, enable **Reinstall even
   **Reboot-pending exit codes are now handled correctly.** Some installers exit with `3010` (`ERROR_SUCCESS_REBOOT_REQUIRED`) or `1641` (`ERROR_SUCCESS_REBOOT_INITIATED`) to report a successful install that needs a reboot to finish. Breeze now treats both codes as **success** for both `.exe` and `.msi` installers. Previously, an `.exe` installer returning `3010`, or an `.msi` installer returning `1641`, was incorrectly reported as a failed deployment.
 </Aside>
 
+### Additional success exit codes
+
+Some vendors document other non-zero exit codes as success. Veeam Agent for Microsoft Windows, for example, returns `1000` when installed and `1101` when installed with a reboot needed. By default Breeze reports any exit code other than `0`, `3010` or `1641` as a failed install, and it does this before it evaluates detection rules.
+
+To accept such codes, open the version's **Advanced options** and enter them in **Additional success exit codes**, separated by commas or spaces (for example `1000, 1101`). The codes are added to the defaults and never replace them. Each version can have up to 32 codes. You can enter decimal values, negative (signed HRESULT) values such as `-2147024891`, or hex values such as `0x80070005`. Breeze stores the signed and hex forms as the equivalent unsigned value.
+
+The exit code check comes first. If the version also has detection rules, they are still evaluated after an accepted exit code, so an install that exits with a declared code but leaves nothing behind is still reported as failed. Only declare codes that the vendor documents as success. For Veeam, do not declare `1001` (only the prerequisites were installed) or `1002` (failure).
+
+Deployments pin the version's install settings when they are created. After you change a version's success codes, a deployment created before the change refuses to dispatch (for example on a scheduled run or a retry) and has to be recreated. The same happens when you change the version's install arguments or detection rules.
+
+
 ---
 
 ## Creating a Deployment

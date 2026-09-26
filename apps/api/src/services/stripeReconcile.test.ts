@@ -3,8 +3,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts): every
 // builder method returns the same chain; an awaited query resolves to the next
 // queued result. Tests queue the rows each db call should resolve to, in order.
-const results: unknown[][] = [];
-function queueResult(rows: unknown[]) { results.push(rows); }
+const results: Array<unknown[] | Error> = [];
+function queueResult(rows: unknown[] | Error) { results.push(rows); }
 
 // Captures every `.set({ amount })` value written so the currency-aware partial
 // refund assertion can inspect the major-unit string actually persisted.
@@ -71,8 +71,10 @@ vi.mock('../db', () => {
       stmts.list.push({ kind: 'delete', table: arg });
       return chain;
     });
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
       const rows = results.shift() ?? [];
+      // A queued Error makes that statement REJECT (a failed query).
+      if (rows instanceof Error) return Promise.reject(rows).then(resolve, reject);
       return Promise.resolve(rows).then(resolve);
     };
     return chain;
@@ -652,6 +654,56 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
       stripe_reconcile_stage: 'settle-pending-reversals',
     }));
+  });
+
+  // #7069 — everything after the capture's transaction commits is a best-effort
+  // side effect. A throw there made recordStripePayment reject, so the settle
+  // route answered { settled:false } and the sweep counted a failure for a
+  // payment row and invoice status that were ALREADY committed.
+  describe('post-commit side effects never change the committed outcome (#7069)', () => {
+    it.each(['payment.recorded', 'invoice.paid'])('resolves when emitting %s throws after the capture committed', async (type) => {
+      emit.mockImplementation(async (e: { type: string }) => { if (e.type === type) throw new Error(`emit ${type} exploded`); });
+      queueCapture();
+
+      await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+      expect(insertValues.calls.some((v) => (v as { method?: string }).method === 'card')).toBe(true);
+      expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+        partner_id: 'p1', stripe_reconcile_stage: `settle-emit-${type}`,
+      }));
+    });
+
+    it('still emits invoice.paid when the payment.recorded emit throws', async () => {
+      emit.mockImplementation(async (e: { type: string }) => { if (e.type === 'payment.recorded') throw new Error('boom'); });
+      queueCapture();
+
+      await recordStripePayment(captureInput());
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'invoice.paid' }));
+    });
+
+    it('resolves when emitting payment.failed throws after a terminal decision committed', async () => {
+      emit.mockRejectedValue(new Error('emit exploded'));
+      queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // discovery
+      queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '107.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked) — void => terminal
+      queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // re-read under lock
+
+      await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+      expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+        stripe_reconcile_stage: 'settle-emit-payment.failed',
+      }));
+    });
+
+    it('resolves, and does NOT announce invoice.paid, when the post-reversal status re-read fails', async () => {
+      processPendingReversals.mockResolvedValue(1);
+      queueCapture();
+      queueResult(new Error('connection terminated')); // post-reversal invoice status re-read
+
+      await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+      // The reversal may have un-paid the invoice; unconfirmed => stay silent.
+      expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'invoice.paid' }));
+      expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+        partner_id: 'p1', stripe_reconcile_stage: 'settle-post-reversal-status',
+      }));
+    });
   });
 
   it('never 500s the webhook on a committed refund because Redis is down', async () => {

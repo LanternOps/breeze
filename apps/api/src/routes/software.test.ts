@@ -599,6 +599,40 @@ describe('software routes', () => {
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe('No fields to update');
     });
+
+    // #7038
+    it('stores declared success exit codes normalized (unsigned, deduped, sorted)', async () => {
+      mockSelects({ id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: null });
+      const setSpy = vi.fn(() => ({
+        where: () => ({ returning: async () => [{ id: VER_ID, version: '1.0.0' }] }),
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await patchReq({ successExitCodes: [1101, 1000, -2147024891, 1000] });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith({ successExitCodes: [1000, 1101, 2147942405] });
+    });
+
+    it('clears declared success exit codes with null', async () => {
+      mockSelects({ id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: null });
+      const setSpy = vi.fn(() => ({
+        where: () => ({ returning: async () => [{ id: VER_ID, version: '1.0.0' }] }),
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await patchReq({ successExitCodes: null });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith({ successExitCodes: [] });
+    });
+
+    it('rejects out-of-range success exit codes', async () => {
+      // Body validation runs before any lookup, so no selects are queued.
+      const res = await patchReq({ successExitCodes: [4294967296] });
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   // The eq(orgId) WHERE filter that used to make cross-tenant writes
@@ -1031,6 +1065,50 @@ describe('software routes', () => {
       expect(uploadBinary).not.toHaveBeenCalled();
     });
 
+    it('rejects malformed successExitCodes JSON with a 400 (#7038)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('successExitCodes', 'not json');
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('successExitCodes must be valid JSON');
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('rejects schema-invalid successExitCodes with a 400 (no silent drop) (#7038)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('successExitCodes', JSON.stringify([1000, 1.5]));
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('successExitCodes is invalid');
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
     it('accepts a valid detectionRules array on upload (201)', async () => {
       vi.mocked(isS3Configured).mockReturnValueOnce(true);
       vi.mocked(db.select).mockReturnValueOnce(
@@ -1141,6 +1219,20 @@ describe('software routes', () => {
       });
       return { res, captured };
     };
+
+    // #7038
+    it('stores declared successExitCodes normalized, and [] when omitted', async () => {
+      const declared = await createVersion({
+        downloadUrl: 'https://cdn.example.com/veeam-agent.exe',
+        successExitCodes: [1101, 1000],
+      });
+      expect(declared.res.status).toBe(201);
+      expect(declared.captured.values?.successExitCodes).toEqual([1000, 1101]);
+
+      const omitted = await createVersion({ downloadUrl: 'https://cdn.example.com/app.exe' });
+      expect(omitted.res.status).toBe(201);
+      expect(omitted.captured.values?.successExitCodes).toEqual([]);
+    });
 
     it('records fileType msi from the URL extension and prefills msiexec args', async () => {
       const { res, captured } = await createVersion({

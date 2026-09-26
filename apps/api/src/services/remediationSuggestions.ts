@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -12,6 +12,7 @@ import {
   scriptTemplates,
 } from '../db/schema';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { SYSTEM_LIBRARY_SCRIPTS } from './systemScriptLibrary';
 
 export const REMEDIATION_SUGGESTION_VERSION = 'remediation-suggestions-v1';
 
@@ -107,8 +108,29 @@ function termsForSource(ctx: SourceContext): string[] {
   return [...terms];
 }
 
+type DeviceOs = typeof devices.$inferSelect['osType'];
+
+// Script languages a device OS can run. Templates carry a language but no OS
+// list; python runs everywhere, and a null language is left unfiltered.
+const TEMPLATE_LANGUAGES_BY_OS: Record<DeviceOs, ReadonlySet<string>> = {
+  windows: new Set(['powershell', 'cmd', 'python']),
+  linux: new Set(['bash', 'python']),
+  macos: new Set(['bash', 'python']),
+};
+
+// The system script library holds agent-lifecycle tooling (e.g. the edition
+// migration), not remediations — it needs operator-supplied inputs and must
+// never be offered as a fix (#7118).
+const NON_REMEDIATION_SYSTEM_SCRIPT_NAMES = SYSTEM_LIBRARY_SCRIPTS.map((def) => def.name);
+
+function matchesTerm(searchable: string, term: string): boolean {
+  // Word-start match: "ram" must not hit "programdata", "update" still hits "updates".
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}`).test(searchable);
+}
+
 function scoreCandidate(searchable: string, terms: string[]): { score: number; matchedTerms: string[] } {
-  const matchedTerms = terms.filter((term) => searchable.includes(term));
+  const matchedTerms = terms.filter((term) => matchesTerm(searchable, term));
   if (matchedTerms.length === 0) return { score: 0, matchedTerms };
   const score = matchedTerms.length / Math.max(terms.length, 1);
   return { score, matchedTerms };
@@ -218,10 +240,21 @@ async function resolveSourceContext(input: GenerateRemediationSuggestionsInput):
   };
 }
 
+async function resolveDeviceOs(deviceId: string | null): Promise<DeviceOs | null> {
+  if (!deviceId) return null;
+  const [row] = await db.select({ osType: devices.osType }).from(devices).where(eq(devices.id, deviceId)).limit(1);
+  return row?.osType ?? null;
+}
+
 async function listCandidates(ctx: SourceContext, limit: number): Promise<Candidate[]> {
   const terms = termsForSource(ctx);
+  // Without a single target device (e.g. a correlation group) there is no OS to
+  // filter on; every per-device execution path re-checks OS at dispatch.
+  const deviceOs = await resolveDeviceOs(ctx.deviceId);
   const scriptConditions: SQL[] = [isNull(scripts.deletedAt)];
   scriptConditions.push(or(eq(scripts.isSystem, true), eq(scripts.orgId, ctx.orgId))!);
+  scriptConditions.push(or(eq(scripts.isSystem, false), notInArray(scripts.name, NON_REMEDIATION_SYSTEM_SCRIPT_NAMES))!);
+  if (deviceOs) scriptConditions.push(sql`${scripts.osTypes} @> ARRAY[${deviceOs}]::text[]`);
 
   const [scriptRows, templateRows, playbookRows] = await Promise.all([
     db.select({
@@ -230,6 +263,8 @@ async function listCandidates(ctx: SourceContext, limit: number): Promise<Candid
       description: scripts.description,
       category: scripts.category,
       runAs: scripts.runAs,
+      osTypes: scripts.osTypes,
+      isSystem: scripts.isSystem,
     }).from(scripts).where(and(...scriptConditions)).orderBy(desc(scripts.updatedAt)).limit(100),
     db.select({
       id: scriptTemplates.id,
@@ -237,6 +272,7 @@ async function listCandidates(ctx: SourceContext, limit: number): Promise<Candid
       description: scriptTemplates.description,
       category: scriptTemplates.category,
       rating: scriptTemplates.rating,
+      language: scriptTemplates.language,
     }).from(scriptTemplates).orderBy(desc(scriptTemplates.downloads)).limit(100),
     db.select({
       id: playbookDefinitions.id,
@@ -252,6 +288,9 @@ async function listCandidates(ctx: SourceContext, limit: number): Promise<Candid
 
   const candidates: Candidate[] = [];
   for (const row of scriptRows) {
+    // Mirrors the SQL filters above so a widened query can never leak these through.
+    if (row.isSystem && NON_REMEDIATION_SYSTEM_SCRIPT_NAMES.includes(row.name)) continue;
+    if (deviceOs && !row.osTypes.includes(deviceOs)) continue;
     const searchable = sourceTextParts(row.name, row.description, row.category, row.runAs);
     const scored = scoreCandidate(searchable, terms);
     if (scored.score <= 0) continue;
@@ -286,6 +325,7 @@ async function listCandidates(ctx: SourceContext, limit: number): Promise<Candid
   }
 
   for (const row of templateRows) {
+    if (deviceOs && row.language && !TEMPLATE_LANGUAGES_BY_OS[deviceOs].has(row.language)) continue;
     const searchable = sourceTextParts(row.name, row.description, row.category);
     const scored = scoreCandidate(searchable, terms);
     if (scored.score <= 0) continue;

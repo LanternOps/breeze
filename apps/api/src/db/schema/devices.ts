@@ -336,6 +336,13 @@ export const deviceHardware = pgTable('device_hardware', {
   motherboardProduct: varchar('motherboard_product', { length: 255 }),
   motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
+  // Memory summary (#5351). All NULL until an agent reports a valid `memory`
+  // block; `memoryObservedAt` is when one was last applied (updatedAt also
+  // advances when memory collection failed). See device_memory_modules.
+  memorySlotsTotal: integer('memory_slots_total'),
+  memoryMaxCapacityMb: integer('memory_max_capacity_mb'),
+  memorySoldered: boolean('memory_soldered'),
+  memoryObservedAt: timestamp('memory_observed_at'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 });
@@ -435,6 +442,41 @@ export const deviceDisks = pgTable('device_disks', {
   health: varchar('health', { length: 50 }).default('healthy'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// Per-slot memory inventory (#5351). One row per physical slot, populated or
+// empty (populated = false). Synced by slotKey from the agent's hardware
+// report (services/inventoryChildSync.ts syncDeviceMemoryModules), so row ids
+// survive unchanged reports. Migration:
+// 2026-11-01-110000-device-memory-modules.sql, which also declares the
+// composite FK DEFERRABLE INITIALLY IMMEDIATE (drizzle's foreignKey() builder
+// has no deferrable option) and installs the partner-export material triggers.
+export const deviceMemoryModules = pgTable('device_memory_modules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  slotKey: varchar('slot_key', { length: 160 }).notNull(),
+  slotIndex: integer('slot_index').notNull(),
+  locator: varchar('locator', { length: 128 }).notNull(),
+  bankLabel: varchar('bank_label', { length: 128 }),
+  populated: boolean('populated').notNull(),
+  capacityMb: integer('capacity_mb'),
+  memoryType: varchar('memory_type', { length: 32 }),
+  formFactor: varchar('form_factor', { length: 32 }),
+  speedMts: integer('speed_mts'),
+  configuredSpeedMts: integer('configured_speed_mts'),
+  manufacturer: varchar('manufacturer', { length: 128 }),
+  partNumber: varchar('part_number', { length: 128 }),
+  serialNumber: varchar('serial_number', { length: 128 }),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  deviceSlotKeyUnique: uniqueIndex('device_memory_modules_device_slot_key_uniq').on(table.deviceId, table.slotKey),
+  orgIdIdx: index('device_memory_modules_org_id_idx').on(table.orgId),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_memory_modules_device_org_fk',
+  }).onUpdate('cascade').onDelete('cascade'),
+}));
 
 export const deviceMetrics = pgTable('device_metrics', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),

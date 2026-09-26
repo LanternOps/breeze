@@ -365,6 +365,12 @@ type Heartbeat struct {
 	inventoryCol              *collectors.InventoryCollector
 	vpnCol                    *collectors.VPNCollector
 	changeTrackerCol          *collectors.ChangeTrackerCollector
+	// hardwareCollectFn / memoryCollectFn override the hardware-send path's
+	// collectors in tests; nil uses hardwareCol.CollectHardware and
+	// collectors.CollectMemoryModules. memoryCollectTimeout 0 = default.
+	hardwareCollectFn    func() (*collectors.HardwareInfo, error)
+	memoryCollectFn      func() (*collectors.MemoryInfo, error)
+	memoryCollectTimeout time.Duration
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
@@ -2521,12 +2527,80 @@ func (h *Heartbeat) sendHardwareInventory() {
 	// Launched as a bare goroutine; without this a panic takes down the process.
 	defer observability.Recoverer("heartbeat.hardwareInventory")
 
-	hw, err := collectors.Guard("hardware", h.hardwareCol.CollectHardware)
+	collectHW := h.hardwareCollectFn
+	if collectHW == nil {
+		collectHW = h.hardwareCol.CollectHardware
+	}
+	hw, err := collectors.Guard("hardware", collectHW)
 	if err != nil {
 		log.Error("failed to collect hardware info", "error", err.Error())
 		return
 	}
-	h.sendInventoryData("hardware", hw, "hardware")
+
+	// Per-slot memory rides on this send only (startup, 24 h, manual
+	// refresh) — deliberately not inside CollectHardware(), which also runs
+	// on the 15-minute change-tracker tick and at enrollment. It is collected
+	// independently: on any failure the `memory` key is omitted (the API then
+	// keeps what it stored) and base hardware still goes out.
+	payload := hardwareInventoryPayload{HardwareInfo: hw, Memory: h.collectMemoryModules()}
+	label := "hardware"
+	if payload.Memory != nil {
+		label = fmt.Sprintf("hardware (%d memory slots)", len(payload.Memory.Modules))
+	}
+	_ = h.sendInventoryData("hardware", payload, label)
+}
+
+// hardwareInventoryPayload is the PUT /agents/:id/hardware body: the base
+// hardware fields flattened at the top level plus the optional `memory`
+// block. Older APIs strip the unknown key.
+type hardwareInventoryPayload struct {
+	*collectors.HardwareInfo
+	Memory *collectors.MemoryInfo `json:"memory,omitempty"`
+}
+
+const defaultMemoryCollectTimeout = 45 * time.Second
+
+// collectMemoryModules runs the memory collector with panic recovery and a
+// hard deadline, returning nil (omit the key) on any failure.
+func (h *Heartbeat) collectMemoryModules() *collectors.MemoryInfo {
+	collect := h.memoryCollectFn
+	if collect == nil {
+		collect = collectors.CollectMemoryModules
+	}
+	timeout := h.memoryCollectTimeout
+	if timeout <= 0 {
+		timeout = defaultMemoryCollectTimeout
+	}
+
+	type result struct {
+		info *collectors.MemoryInfo
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer observability.Recoverer("heartbeat.memoryModules")
+		info, err := collectors.Guard("memory-modules", collect)
+		done <- result{info, err}
+	}()
+
+	select {
+	case r := <-done:
+		switch {
+		case errors.Is(r.err, collectors.ErrMemoryUnsupported):
+			log.Debug("memory module inventory unsupported on this platform")
+			return nil
+		case r.err != nil:
+			log.Warn("failed to collect memory modules; sending hardware without them", "error", r.err.Error())
+			return nil
+		case r.info == nil || len(r.info.Modules) == 0:
+			log.Warn("memory module collector returned no modules; sending hardware without them")
+			return nil
+		}
+		return r.info
+	case <-time.After(timeout):
+		log.Warn("memory module collection timed out; sending hardware without them", "timeout", timeout.String())
+		return nil
+	}
 }
 
 func (h *Heartbeat) sendAppleWarrantyInfo() {

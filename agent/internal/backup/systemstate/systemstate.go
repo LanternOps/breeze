@@ -54,19 +54,26 @@ type collectionStep struct {
 // manifest and recording failed steps in manifest.IncompleteSteps. Individual
 // step failures are logged and do not abort the run. It returns an error when
 // no step produced an artifact, or when a step in required failed.
+//
+// A failed step's artifacts are still recorded: a step may return the pieces
+// it did capture alongside its error (collectRegistryHives returns the hives
+// that saved with a *registrySaveError), and those files are already in
+// stagingDir, so the manifest lists them rather than silently omitting them
+// (#7001). This does not soften the pass/fail decision — the step is still in
+// IncompleteSteps, and a required step's failure still returns an error that
+// carries the step's own reason (#6505).
 func runCollectionSteps(manifest *SystemStateManifest, steps []collectionStep, stagingDir string, required map[string]bool) error {
 	var requiredErrs []error
 	for _, s := range steps {
 		arts, err := s.fn(stagingDir)
+		manifest.Artifacts = append(manifest.Artifacts, arts...)
 		if err != nil {
-			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
+			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error(), "partialArtifacts", len(arts))
 			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
 			if required[s.name] {
 				requiredErrs = append(requiredErrs, fmt.Errorf("%s: %w", s.name, err))
 			}
-			continue
 		}
-		manifest.Artifacts = append(manifest.Artifacts, arts...)
 	}
 
 	missing := missingRequired(manifest.IncompleteSteps, required)

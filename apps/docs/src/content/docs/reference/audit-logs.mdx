@@ -221,6 +221,10 @@ Agents submit diagnostic logs via `POST /agents/:id/logs` with a JSON body conta
 
 Logs are batch-inserted in groups of 100 rows. The endpoint returns the number of successfully inserted records.
 
+A batch is recorded in the audit trail as `agent.logs.submit` (counts only, never message contents) only when it is anomalous: some or all rows failed to insert (`result: failure`, `details.partialFailure`) or the server clamped future timestamps (`details.timestampClampedCount`). Routine batches are not audited. Their volume is exported as the `breeze_agent_ingest_submissions_total` metric, and the rows themselves stay in `agent_logs`.
+
+The other periodic agent reports follow the same rule. `agent.sessions.submit` is no longer written; session history lives in `device_sessions`. `agent.security_status.submit` is written only when the device's AV provider or threat count changes, with a `details.changes` before/after list. `agent.management_posture.submit` is written only when detections or the identity join change, with `details.changed` naming the changed parts. Offline→online transitions are still audited as `agent.heartbeat.state_change`.
+
 ### Querying Diagnostic Logs
 
 Diagnostic logs are queried via `GET /devices/:id/diagnostic-logs` with the following optional parameters:
@@ -290,7 +294,7 @@ Agents submit event logs via `PUT /agents/:id/eventlogs` with a JSON body contai
 - `message` (string, required, max 2000 characters)
 - `details` (optional object, max 64KB serialized)
 
-Events are batch-inserted in groups of 100. The submission is also recorded as an audit event with action `agent.eventlogs.submit`.
+Events are batch-inserted in groups of 100. A submission is recorded as an audit event with action `agent.eventlogs.submit` only when it is anomalous: an insert failed (`result: failure`) or the server clamped one or more future timestamps (`details.timestampClampedCount`). Routine submissions are not audited; their volume is exported as the `breeze_agent_ingest_submissions_total` metric.
 
 **Level filtering.** Before insertion, events are filtered against the org's `minimumLevel` event-log setting (configured via the Event Log configuration policy feature). Events below the configured minimum are dropped and counted separately rather than stored. The response reflects this:
 
