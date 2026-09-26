@@ -74,6 +74,9 @@ func restoreTree(ctx context.Context, r *run) error {
 	if err != nil {
 		return fmt.Errorf("restore files: %w", err)
 	}
+	if err := restoreInterrupted(ctx, res); err != nil {
+		return err
+	}
 	if err := r.recordRestoreFailures(res); err != nil {
 		return err
 	}
@@ -106,6 +109,22 @@ func restoreTree(ctx context.Context, r *run) error {
 		return errors.New("apply system state: system state expected but no artifacts were staged by preflight")
 	}
 	return nil
+}
+
+// restoreInterrupted fails the restore phase when the file restore stopped
+// early because ctx ended: RestoreFromSnapshotContext then returns its
+// partial result with a nil error, and without this check the phase would
+// be recorded completed, so a resumed run would skip the files that were
+// never restored (#6664). Shared by restoreTree and winRestoreTree.
+func restoreInterrupted(ctx context.Context, res *backup.RestoreResult) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	restored := 0
+	if res != nil {
+		restored = res.FilesRestored
+	}
+	return fmt.Errorf("restore files interrupted after %d files: %w", restored, context.Cause(ctx))
 }
 
 // restoreWorkRoot is where the restore keeps its resume state and manifest

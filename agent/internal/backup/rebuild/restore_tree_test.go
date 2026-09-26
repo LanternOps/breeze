@@ -3,6 +3,7 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,5 +93,58 @@ func TestRestoreTree_BoundsFailedFilesMessageAndCounts(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a warning containing %q, got %v", want, r.result.Warnings)
+	}
+}
+
+// #6664: a restore cut short by its context (the helper's stall watchdog or
+// time budget, or an operator cancel) must fail the restore phase. The file
+// restore returns a partial result and a nil error when cancelled between
+// files; before this guard restoreTree then returned nil, the engine marked
+// PhaseRestore completed in its resume state, and a resumed run skipped the
+// files that were never restored.
+func TestRestoreTree_CancelledRestoreFailsThePhase(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "mnt")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const snapID = "snap-1"
+	prov := &memProvider{files: map[string][]byte{}, failKey: map[string]error{}}
+	var files []backup.SnapshotFile
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("snapshots/%s/files/%02d.gz", snapID, i)
+		files = append(files, backup.SnapshotFile{SourcePath: fmt.Sprintf("/src/%02d", i), BackupPath: key, Size: 1, Checksum: sum([]byte("x"))})
+		prov.files[key] = []byte("x")
+	}
+	manBytes, err := json.Marshal(backup.Snapshot{ID: snapID, Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov.files["snapshots/"+snapID+"/manifest.json"] = manBytes
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &run{
+		opts: Options{
+			SnapshotID: snapID,
+			Provider:   prov,
+			StateDir:   dir,
+			Progress: func(_ Phase, msg string, _, _ int64) {
+				if strings.HasPrefix(msg, "restored:") {
+					cancel() // stop after the first file lands
+				}
+			},
+		},
+		staging:   staging,
+		rootMount: staging,
+		result:    &Result{},
+	}
+
+	err = restoreTree(ctx, r)
+	if err == nil {
+		t.Fatalf("a cancelled restore returned nil (restored %d of %d files); the phase must fail so resume re-runs it", r.result.FilesRestored, len(files))
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want it to wrap context.Canceled", err)
 	}
 }

@@ -106,6 +106,9 @@ func winRestoreTree(ctx context.Context, r *run) error {
 	if err != nil {
 		return fmt.Errorf("restore files: %w", err)
 	}
+	if err := restoreInterrupted(ctx, res); err != nil {
+		return err
+	}
 	if err := r.recordRestoreFailures(res); err != nil {
 		return err
 	}
