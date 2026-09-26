@@ -261,10 +261,19 @@ export const backupJobs = pgTable(
     snapshotId: varchar('snapshot_id', { length: BACKUP_SNAPSHOT_ID_MAX_LENGTH }),
     vssMetadata: jsonb('vss_metadata'),
     backupType: backupTypeEnum('backup_type').default('file'),
-    // Live-progress columns (stall detection + UI progress/speed). Set on
-    // every backup_progress WS message and on the async started-ack; NULL
-    // means the agent never reported progress (legacy agent).
+    // Live-progress columns (stall detection + UI progress/speed), #2798.
+    // Two clocks, deliberately separate:
+    //  - last_keepalive_at: LIVENESS. Bumped by every backup_progress WS
+    //    message (including the agent's 30s keepalive, which re-sends
+    //    unchanged counters) and by the async started/queued ack. NULL means
+    //    the agent never sent a lifecycle signal (legacy agent). Also the
+    //    "has the helper spoken yet" marker for the queue lifecycle guards.
+    //  - last_progress_at: PROGRESS. Advanced only when transferred_size or
+    //    file_count actually increases. The stale reaper's no-transfer rule
+    //    keys on it; before #2798 it was bumped by the keepalive too, which
+    //    made the stall rule unreachable for a live-but-wedged agent.
     lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
+    lastKeepaliveAt: timestamp('last_keepalive_at', { withTimezone: true }),
     totalFiles: integer('total_files'),
     // Incremental-backup dedup stats: files/bytes referenced from a prior
     // snapshot instead of re-transferred this run. NULL = agent didn't report
