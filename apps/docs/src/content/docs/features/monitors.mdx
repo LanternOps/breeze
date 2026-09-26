@@ -25,10 +25,23 @@ attachments are refused rather than widening access.
 ## Conditions
 
 The kind picker includes resource thresholds, offline state, event logs,
-patch compliance, service/process state and resources, certificate expiry,
-bandwidth, disk I/O, network errors, software/security/backup conditions,
+patch compliance, service/process state and resources, agent mTLS certificate
+expiry, bandwidth, disk I/O, network errors, software/security/backup conditions,
 script probes and network checks. `GET /monitor-definitions/kinds` returns the
 exact kinds and supported condition fields on your server.
+
+A few kinds have units or evidence rules worth knowing:
+
+- **Bandwidth** thresholds are in megabits per second; **Disk I/O** thresholds are
+  in megabytes per second. Every sample in the duration window must breach.
+- **Network errors** counts the errors that *occurred* during the window (the
+  increase of each interface's error counters, with counter resets handled), not
+  the running totals the agent reports. It needs two samples of the interface to
+  evaluate.
+- **Patch compliance** uses the latest hourly posture score. A score older than
+  24 hours, or one computed for a device with no patch telemetry, counts as no data.
+- **Certificate expiry** watches the Breeze agent's own mTLS certificate only. It
+  does not inspect certificates installed on the device or served by its services.
 
 Composite monitors contain two to ten server-evaluated child conditions,
 matching all or any. They cannot nest or contain agent-delivered/worker-provisioned

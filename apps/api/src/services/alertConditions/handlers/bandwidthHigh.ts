@@ -15,25 +15,22 @@ export const bandwidthHighHandler: ConditionHandler = {
       return { passed: false, description: 'No metrics available for bandwidth', dataAvailable: false };
     }
 
-    // cond.value is in Mbps (user-friendly); convert to bps for DB comparison
-    const thresholdBps = cond.value * 1_000_000;
-
-    const allExceed = metrics.every(m => {
-      let value: number;
+    // The agent reports bandwidth in BYTES per second
+    // (agent/internal/collectors/metrics.go: BandwidthInBps = bytes / elapsed),
+    // while cond.value is authored in megaBITS per second. Convert each sample
+    // to Mbps rather than scaling the threshold, so actualValue is in the same
+    // unit the monitor template renders ("{{actualValue}} Mbps").
+    const sampleMbps = (m: (typeof metrics)[number]): number => {
       const inBps = m.bandwidthInBps !== null ? Number(m.bandwidthInBps) : 0;
       const outBps = m.bandwidthOutBps !== null ? Number(m.bandwidthOutBps) : 0;
+      const bytesPerSec = cond.direction === 'in' ? inBps : cond.direction === 'out' ? outBps : inBps + outBps;
+      return (bytesPerSec * 8) / 1_000_000;
+    };
 
-      if (cond.direction === 'in') value = inBps;
-      else if (cond.direction === 'out') value = outBps;
-      else value = inBps + outBps;
+    const allExceed = metrics.every(m => compareValue(sampleMbps(m), cond.operator, cond.value));
 
-      return compareValue(value, cond.operator, thresholdBps);
-    });
-
-    const latest = metrics[0];
-    const inBps = latest?.bandwidthInBps !== null && latest?.bandwidthInBps !== undefined ? Number(latest.bandwidthInBps) : 0;
-    const outBps = latest?.bandwidthOutBps !== null && latest?.bandwidthOutBps !== undefined ? Number(latest.bandwidthOutBps) : 0;
-    const latestValue = cond.direction === 'in' ? inBps : cond.direction === 'out' ? outBps : inBps + outBps;
+    // metrics are newest-first (getRecentMetrics orders by timestamp desc).
+    const latestValue = Math.round(sampleMbps(metrics[0]!) * 100) / 100;
 
     const operatorDisplay = getOperatorDisplay(cond.operator);
 
