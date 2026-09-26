@@ -24,6 +24,9 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+const reportInternalError = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/errorReporting', () => ({ reportInternalError }));
+
 import {
   ACK_OUTBOX_KEY,
   ACK_OUTBOX_TTL_MS,
@@ -31,6 +34,7 @@ import {
   clearAcks,
   isPermanentAckError,
   parseOutbox,
+  refusedOutright,
   planReplay,
   readOutbox,
   recordHeldAcks,
@@ -139,6 +143,12 @@ describe('isPermanentAckError / settledIds', () => {
     expect(settledIds(o)).toEqual(['a', 'b']);
   });
 
+  it('flags an outright permanent refusal so the caller can restore instead of promising a retry', () => {
+    expect(refusedOutright(outcome({ unknown: ['a'], errors: [{ statusCode: 403 }] }))).toBe(true);
+    expect(refusedOutright(outcome({ unknown: ['a'], errors: [new Error('timeout')] }))).toBe(false);
+    expect(refusedOutright(outcome({ unknown: [], errors: [] }))).toBe(false);
+  });
+
   it('settles unknown ids when the request was refused outright (e.g. 404 no accessible alerts)', () => {
     const o = outcome({ unknown: ['a', 'b'], errors: [{ statusCode: 404 }] });
     expect(settledIds(o)).toEqual(['a', 'b']);
@@ -173,15 +183,30 @@ describe('persisted outbox', () => {
     expect((await readOutbox()).map((e) => e.alertId)).toEqual(['new']);
   });
 
-  it('reports storage failure instead of throwing', async () => {
+  it('reports storage failure with its cause instead of throwing', async () => {
     storage.failWrites = true;
+    reportInternalError.mockClear();
     await expect(recordHeldAcks(['a'], 'u1', T0)).resolves.toBe(false);
+    expect(reportInternalError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'disk full' }),
+      'ack-outbox-write'
+    );
+  });
+
+  it('reports an unreadable outbox on replay rather than silently replaying nothing', async () => {
+    reportInternalError.mockClear();
+    storage.getItem.mockRejectedValueOnce(new Error('read failed'));
+    await expect(takeReplay('u1', T0)).resolves.toEqual({ replay: [], expired: [] });
+    expect(reportInternalError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'read failed' }),
+      'ack-outbox-read'
+    );
   });
 });
 
 describe('sendAcknowledge', () => {
   it('keeps the batch in the outbox until the server answers, then clears settled ids', async () => {
-    await recordHeldAcks(['a', 'b', 'c'], 'u1', T0);
+    await recordHeldAcks(['a', 'b', 'c'], 'u1', Date.now() - 1000);
     let seenDuringFlight: string[] = [];
     const send = vi.fn(async (ids: string[]) => {
       // The request is in flight: nothing has been cleared yet, so a process
@@ -196,8 +221,18 @@ describe('sendAcknowledge', () => {
     expect((await readOutbox()).map((e) => e.alertId)).toEqual(['c']);
   });
 
+  it('does not clear an id re-acknowledged while the request was in flight', async () => {
+    await recordHeldAcks(['a'], 'u1', Date.now() - 1000);
+    const send = vi.fn(async () => {
+      await recordHeldAcks(['a'], 'u1', Date.now() + 60_000);
+      return outcome({ acknowledged: ['a'] });
+    });
+    await sendAcknowledge(send, ['a']);
+    expect((await readOutbox()).map((e) => e.alertId)).toEqual(['a']);
+  });
+
   it('keeps every id when the transport rejects outright', async () => {
-    await recordHeldAcks(['a', 'b'], 'u1', T0);
+    await recordHeldAcks(['a', 'b'], 'u1', Date.now() - 1000);
     const send = vi.fn(async () => {
       throw new Error('boom');
     });

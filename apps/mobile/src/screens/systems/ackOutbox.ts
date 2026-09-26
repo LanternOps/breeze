@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { reportInternalError } from '../../lib/errorReporting';
+
 /**
  * Durable outbox for held and in-flight alert acknowledges (#3919).
  *
@@ -112,13 +114,19 @@ export function addEntries(
   return [...kept, ...[...incoming].map((alertId) => ({ alertId, owner, queuedAt: now }))];
 }
 
+/**
+ * Remove the named ids. With `queuedAtOrBefore`, an entry refreshed by a newer
+ * acknowledge after that moment survives: a settled answer describes the
+ * request that was sent, not an acknowledge the operator made while it ran.
+ */
 export function removeEntries(
   entries: readonly OutboxEntry[],
-  ids: readonly string[]
+  ids: readonly string[],
+  queuedAtOrBefore: number = Number.POSITIVE_INFINITY
 ): OutboxEntry[] {
   if (ids.length === 0) return [...entries];
   const drop = new Set(ids);
-  return entries.filter((e) => !drop.has(e.alertId));
+  return entries.filter((e) => !drop.has(e.alertId) || e.queuedAt > queuedAtOrBefore);
 }
 
 export interface ReplayPlan {
@@ -186,10 +194,30 @@ export function isPermanentAckError(err: unknown): boolean {
  */
 export function settledIds(outcome: AckOutcome): string[] {
   const settled = [...outcome.acknowledged, ...outcome.failed];
-  const refusedOutright =
-    outcome.unknown.length > 0 && outcome.errors.length > 0 && outcome.errors.every(isPermanentAckError);
-  if (refusedOutright) settled.push(...outcome.unknown);
+  if (refusedOutright(outcome)) settled.push(...outcome.unknown);
   return settled;
+}
+
+/**
+ * True when the `unknown` ids are really a permanent refusal of the whole
+ * request (every error carries a permanent status). The caller should treat
+ * them as failed — restore them and say so — since they will not be retried.
+ */
+export function refusedOutright(outcome: AckOutcome): boolean {
+  return (
+    outcome.unknown.length > 0 &&
+    outcome.errors.length > 0 &&
+    outcome.errors.every(isPermanentAckError)
+  );
+}
+
+/** Reporting must never break the storage path it is reporting on. */
+function report(err: unknown, area: string): void {
+  try {
+    reportInternalError(err, area);
+  } catch {
+    // nothing left to report to
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,14 +252,20 @@ function mutate(apply: (entries: OutboxEntry[]) => OutboxEntry[]): Promise<boole
     try {
       await save(apply(await load()));
       return true;
-    } catch {
+    } catch (err) {
+      report(err, 'ack-outbox-write');
       return false;
     }
   });
 }
 
 export function readOutbox(): Promise<OutboxEntry[]> {
-  return serialised(() => load().catch(() => []));
+  return serialised(() =>
+    load().catch((err: unknown) => {
+      report(err, 'ack-outbox-read');
+      return [];
+    })
+  );
 }
 
 /** Record ids whose undo window just opened. Resolves false if storage failed. */
@@ -245,9 +279,12 @@ export function recordHeldAcks(
 }
 
 /** Remove ids that were undone or settled. Resolves false if storage failed. */
-export function clearAcks(ids: readonly string[]): Promise<boolean> {
+export function clearAcks(
+  ids: readonly string[],
+  queuedAtOrBefore: number = Number.POSITIVE_INFINITY
+): Promise<boolean> {
   if (ids.length === 0) return Promise.resolve(true);
-  return mutate((entries) => removeEntries(entries, ids));
+  return mutate((entries) => removeEntries(entries, ids, queuedAtOrBefore));
 }
 
 /**
@@ -263,12 +300,16 @@ export function takeReplay(
       const plan = planReplay(await load(), owner, now);
       try {
         await save(plan.keep);
-      } catch {
+      } catch (err) {
         // Could not prune. Still replay: the entries remain and the next
         // replay re-derives the same plan.
+        report(err, 'ack-outbox-write');
       }
       return { replay: plan.replay, expired: plan.expired };
-    } catch {
+    } catch (err) {
+      // Unreadable: nothing can be replayed this time. The blob is left in
+      // place, so a transient failure costs one replay, not the entries.
+      report(err, 'ack-outbox-read');
       return { replay: [], expired: [] };
     }
   });
@@ -286,12 +327,13 @@ export async function sendAcknowledge(
   send: (ids: string[]) => Promise<AckOutcome>,
   ids: readonly string[]
 ): Promise<AckOutcome> {
+  const sentAt = Date.now();
   let result: AckOutcome;
   try {
     result = await send([...ids]);
   } catch (err) {
     result = { acknowledged: [], failed: [], unknown: [...ids], errors: [err] };
   }
-  await clearAcks(settledIds(result));
+  await clearAcks(settledIds(result), sentAt);
   return result;
 }

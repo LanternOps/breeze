@@ -11,7 +11,7 @@ import type { SystemsStackParamList, MainTabParamList } from '../../navigation/M
 import { useAppDispatch, useAppSelector } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
 import { acknowledgeAlerts } from '../../services/api';
-import { clearAcks, recordHeldAcks, sendAcknowledge, takeReplay } from './ackOutbox';
+import { clearAcks, recordHeldAcks, refusedOutright, sendAcknowledge, takeReplay } from './ackOutbox';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
@@ -277,10 +277,16 @@ export function SystemsScreen() {
         // when their undo window opened and are cleared only once this answer
         // arrives, so a process killed anywhere in this await — including the
         // credential lookups before `fetch` — leaves them for the next replay.
-        const { acknowledged, failed, unknown, errors } = await sendAcknowledge(
-          acknowledgeAlerts,
-          ids
-        );
+        const outcome = await sendAcknowledge(acknowledgeAlerts, ids);
+        const { acknowledged, errors } = outcome;
+        // A request refused outright with a permanent status (403, 404 "No
+        // accessible alerts found") arrives as all-unknown, but the server did
+        // answer: nothing was committed, and the outbox has already dropped
+        // it. Treat it as failed so the rows come back with an error rather
+        // than a "Will retry" that never happens.
+        const refused = refusedOutright(outcome);
+        const failed = refused ? [...outcome.failed, ...outcome.unknown] : outcome.failed;
+        const unknown = refused ? [] : outcome.unknown;
         // Per-id failures never throw, so they would otherwise bypass the
         // catch below and be reported nowhere. Without this, a systematic
         // failure (every id aborting at the same deadline) is invisible in
@@ -424,9 +430,10 @@ export function SystemsScreen() {
       // after this record.
       const owner = userIdRef.current;
       if (owner !== null) {
-        void recordHeldAcks(ids, owner).then((ok) => {
-          if (!ok) reportInternalError(new Error('ack outbox: could not persist held acknowledge'), 'ack-outbox');
-        });
+        // A false result has already been reported with its real cause by the
+        // outbox; the acknowledge itself proceeds regardless (best-effort
+        // durability, never a blocked acknowledge).
+        void recordHeldAcks(ids, owner);
       }
       const { state, flush } = scheduleUndo(undoRef.current, ids);
       undoRef.current = state;
@@ -449,7 +456,10 @@ export function SystemsScreen() {
       // and drop them from the outbox so a later replay cannot send them.
       if (ids.length > 0) {
         setPendingAcks((p) => endAck(p, ids));
-        void clearAcks(ids);
+        // Retried once: an undone id left behind would be SENT by the next
+        // replay, acknowledging an alert the operator explicitly kept. Each
+        // failure is reported with its cause by the outbox itself.
+        void clearAcks(ids).then((ok) => (ok ? true : clearAcks(ids)));
       }
     },
     [takeUndo]
