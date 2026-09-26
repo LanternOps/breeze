@@ -4,9 +4,11 @@
 //
 // The package is pure Go with no build tags so it can be tested on every OS.
 // It is deliberately strict: every field read is length-gated, and any
-// structure or string-set bound violation fails the whole parse. Callers get
-// either a complete, internally consistent result or an error — never a
-// partial table.
+// structure or string-set bound violation (length past end, missing
+// double-NUL terminator) fails the whole parse. Callers get either a complete,
+// internally consistent result or an error — never a partial table. The one
+// tolerated firmware bug is a string reference past the end of a well-formed
+// string set: only that field is left unset.
 package smbios
 
 import (
@@ -70,17 +72,15 @@ func (s Structure) qword(off int) (uint64, bool) {
 
 // str resolves the string-reference byte at off. A field outside the
 // formatted area or a zero reference yields "". A reference past the end of
-// the string set is a malformed structure.
-func (s Structure) str(off int) (string, error) {
+// the (already bounds-validated) string set is a common OEM firmware bug —
+// dmidecode prints "<BAD INDEX>" — so it degrades only that field to "" rather
+// than failing the structure.
+func (s Structure) str(off int) string {
 	idx, ok := s.byteAt(off)
-	if !ok || idx == 0 {
-		return "", nil
+	if !ok || idx == 0 || int(idx) > len(s.Strings) {
+		return ""
 	}
-	if int(idx) > len(s.Strings) {
-		return "", fmt.Errorf("smbios: type %d handle %#04x: string index %d at offset %#x past string set of %d",
-			s.Type, s.Handle, idx, off, len(s.Strings))
-	}
-	return s.Strings[idx-1], nil
+	return s.Strings[idx-1]
 }
 
 // ParseStructures walks the structure table. It stops at the type 127

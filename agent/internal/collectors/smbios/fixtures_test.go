@@ -121,9 +121,10 @@ type dimmSpec struct {
 	extSpeed     uint32
 	extConfSpeed uint32
 	length       byte // 0 → 0x5C (SMBIOS 3.3+)
-	// strIndexOverride forces a raw string index into the locator slot, for
-	// malformed-string-reference cases.
-	strIndexOverride byte
+	// strIndexOverride / partIndexOverride force a raw string index into the
+	// locator / part-number slot, for bad-string-reference cases.
+	strIndexOverride  byte
+	partIndexOverride byte
 }
 
 func (b *tableBuilder) dimm(d dimmSpec) *tableBuilder {
@@ -167,6 +168,9 @@ func (b *tableBuilder) dimm(d dimmSpec) *tableBuilder {
 	setStr(0x1A, d.part)
 	if d.strIndexOverride != 0 {
 		full[0x10] = d.strIndexOverride
+	}
+	if d.partIndexOverride != 0 {
+		full[0x1A] = d.partIndexOverride
 	}
 	return b.raw(17, d.handle, full[4:length], strs...)
 }

@@ -205,9 +205,6 @@ func TestParseMemoryMalformedInline(t *testing.T) {
 		"type 16 shorter than 0x0F": {
 			(&tableBuilder{}).array(arraySpec{handle: 0x10, use: 0x03, length: 0x0C}).dimm(okDimm).end().bytes(), "type 16",
 		},
-		"string index past string set": {
-			(&tableBuilder{}).array(sysArray).dimm(dimmSpec{handle: 0x11, arrayHandle: 0x10, size: 4096, locator: "DIMM0", length: 0x28, strIndexOverride: 5}).end().bytes(), "string index",
-		},
 		"duplicate type 17 handle": {
 			(&tableBuilder{}).array(arraySpec{handle: 0x10, use: 0x03, maxKiB: 1 << 20, numDevices: 2}).dimm(okDimm).dimm(okDimm).end().bytes(), "duplicate",
 		},

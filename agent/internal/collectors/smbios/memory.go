@@ -146,10 +146,7 @@ func ParseMemory(table []byte) (*MemoryInventory, error) {
 		if a.use != arrayUseSystemMemory {
 			continue
 		}
-		d, err := decodeDevice(s)
-		if err != nil {
-			return nil, err
-		}
+		d := decodeDevice(s)
 		a.linked++
 		devices = append(devices, d)
 		if len(devices) > MaxMemoryDevices {
@@ -215,7 +212,7 @@ func decodeArray(s Structure) (*memoryArray, error) {
 	return a, nil
 }
 
-func decodeDevice(s Structure) (MemoryDevice, error) {
+func decodeDevice(s Structure) MemoryDevice {
 	d := MemoryDevice{Handle: s.Handle}
 	d.ArrayHandle, _ = s.word(t17ArrayHandle)
 
@@ -249,25 +246,15 @@ func decodeDevice(s Structure) (MemoryDevice, error) {
 	mt, _ := s.byteAt(t17MemoryType)
 	d.MemoryType = MemoryTypeName(mt)
 
-	var err error
-	for _, f := range []struct {
-		off int
-		dst *string
-	}{
-		{t17Locator, &d.Locator},
-		{t17BankLocator, &d.BankLocator},
-		{t17Manufacturer, &d.Manufacturer},
-		{t17SerialNumber, &d.SerialNumber},
-		{t17PartNumber, &d.PartNumber},
-	} {
-		if *f.dst, err = s.str(f.off); err != nil {
-			return MemoryDevice{}, err
-		}
-	}
+	d.Locator = s.str(t17Locator)
+	d.BankLocator = s.str(t17BankLocator)
+	d.Manufacturer = s.str(t17Manufacturer)
+	d.SerialNumber = s.str(t17SerialNumber)
+	d.PartNumber = s.str(t17PartNumber)
 
 	d.SpeedMTs = decodeSpeed(s, t17Speed, t17ExtSpeed)
 	d.ConfiguredSpeedMTs = decodeSpeed(s, t17ConfiguredSpeed, t17ExtConfSpeed)
-	return d, nil
+	return d
 }
 
 // decodeSpeed reads a WORD speed field, falling back to its DWORD extended

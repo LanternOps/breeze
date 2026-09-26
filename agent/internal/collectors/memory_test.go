@@ -166,6 +166,39 @@ func TestMemoryInfoFromSMBIOSTableErrors(t *testing.T) {
 	}
 }
 
+// End-to-end over a raw table: a bad string reference drops only that field
+// (part number absent; a bad locator falls back to "Slot n").
+func TestMemoryInfoFromSMBIOSTableBadStringIndex(t *testing.T) {
+	// Type 16: system memory, 2 devices.
+	t16 := []byte{16, 0x17, 0x10, 0x00, 0x03, 0x03, 0x03, 0, 0, 0x10, 0, 0xFE, 0xFF, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	t17 := func(handle byte, locIdx, partIdx byte, strs string) []byte {
+		s := make([]byte, 0x1B)
+		s[0], s[1], s[2] = 17, 0x1B, handle
+		s[0x04] = 0x10                // array handle
+		s[0x0C], s[0x0D] = 0x00, 0x40 // 16384 MB
+		s[0x0E], s[0x12] = 0x09, 0x1A // DIMM, DDR4
+		s[0x10], s[0x17], s[0x1A] = locIdx, 2, partIdx
+		return append(s, []byte(strs+"\x00")...)
+	}
+	var table []byte
+	table = append(table, t16...)
+	table = append(table, 0, 0)
+	table = append(table, t17(0x11, 1, 7, "DIMM0\x00Samsung\x00")...)
+	table = append(table, t17(0x12, 9, 0, "DIMM1\x00Samsung\x00")...)
+	table = append(table, 127, 4, 0xFF, 0xFE, 0, 0)
+
+	info, err := memoryInfoFromSMBIOSTable(table)
+	if err != nil {
+		t.Fatalf("memoryInfoFromSMBIOSTable: %v", err)
+	}
+	got, _ := json.Marshal(info.Modules)
+	want := `[{"slotKey":"smbios:0x0011","locator":"DIMM0","populated":true,"capacityMb":16384,"memoryType":"DDR4","formFactor":"DIMM","manufacturer":"Samsung"},` +
+		`{"slotKey":"smbios:0x0012","locator":"Slot 2","populated":true,"capacityMb":16384,"memoryType":"DDR4","formFactor":"DIMM","manufacturer":"Samsung"}]`
+	if string(got) != want {
+		t.Fatalf("modules\n got  %s\n want %s", got, want)
+	}
+}
+
 func TestMemoryInfoFromInventoryPlaceholderLocator(t *testing.T) {
 	mb := uint64(8192)
 	inv := &smbios.MemoryInventory{SlotsTotal: 3, Devices: []smbios.MemoryDevice{
