@@ -2755,8 +2755,22 @@ function matchPlanStep(
 /**
  * Abort the active plan for a session. Updates DB status to 'aborted',
  * emits plan_complete event, and clears session plan state.
+ *
+ * If the plan is still waiting for approval, the pending approval is settled
+ * as rejected FIRST, synchronously and before any await (#7085). Otherwise
+ * the `waitForPlanApproval` resolver stays live on the session and a later
+ * `POST /ai/sessions/:id/approve-plan` resolves it with `true` — and the agent
+ * runs the plan the user aborted (or paused). Doing it before the DB write
+ * also closes the window where an approve lands while the abort write is
+ * still in flight.
  */
 export async function abortActivePlan(session: ActiveSession): Promise<boolean> {
+  const resolver = session.planApprovalResolver;
+  if (resolver) {
+    session.planApprovalResolver = null;
+    resolver(false);
+  }
+
   const planId = session.activePlanId;
   if (!planId) return false;
 
