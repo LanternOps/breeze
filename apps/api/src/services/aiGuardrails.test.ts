@@ -131,17 +131,11 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_alert_rules', 'test_rule'],
       ['manage_alert_rules', 'list_channels'],
       ['manage_alert_rules', 'alert_summary'],
-      // Disabled mutation actions — tools return policy redirect before guardrails apply,
-      // but checkGuardrails resolves them at base tier since they're not in TIER2/TIER3 maps.
-      ['manage_maintenance_windows', 'create'],
-      ['manage_maintenance_windows', 'update'],
-      ['manage_maintenance_windows', 'delete'],
+      // Retired manage_alert_rules mutations are no longer actions; an unknown
+      // action resolves at the base tier.
       ['manage_alert_rules', 'create_rule'],
       ['manage_alert_rules', 'update_rule'],
       ['manage_alert_rules', 'delete_rule'],
-      ['manage_automations', 'create'],
-      ['manage_automations', 'update'],
-      ['manage_automations', 'delete'],
       ['generate_report', 'list'],
       ['generate_report', 'data'],
       ['generate_report', 'history'],
@@ -206,6 +200,14 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_groups', 'update'],
       ['manage_groups', 'delete'],
       ['manage_automations', 'run'],
+      // W01-D3 (#6755): handler-disabled today, escalated so re-enabling the
+      // handler cannot silently reopen an unallowlisted agent write.
+      ['manage_maintenance_windows', 'create'],
+      ['manage_maintenance_windows', 'update'],
+      ['manage_maintenance_windows', 'delete'],
+      ['manage_automations', 'create'],
+      ['manage_automations', 'update'],
+      ['manage_automations', 'delete'],
     ];
 
     it.each(t3Cases)('%s:%s → Tier 3, approval required', (tool, action) => {

@@ -334,6 +334,33 @@ const BINDINGS: readonly Binding[] = [
 
   { tool: 'manage_update_rings', action: 'list', routeFile: 'updateRings.ts', method: 'get', path: '/' },
   { tool: 'manage_update_rings', action: 'create', routeFile: 'updateRings.ts', method: 'post', path: '/' },
+
+  // Spec 2026-09-23 W01 (#6755): route-binding rows for the read tools newly
+  // wired into TOOL_TIERS on this branch. Each pair below already matched its
+  // route's permission when checked by hand; this pins that with a mechanical
+  // read, same as every other row in this table.
+  {
+    tool: 'list_remote_sessions',
+    routeFile: 'remote/sessions.ts',
+    method: 'get',
+    path: '/sessions',
+    parents: ['remote/index.ts'],
+  },
+  { tool: 'search_script_library', routeFile: 'scripts.ts', method: 'get', path: '/' },
+  { tool: 'get_software_compliance', routeFile: 'softwarePolicies.ts', method: 'get', path: '/violations' },
+  { tool: 'query_compliance_policies', routeFile: 'policyManagement/crud.ts', method: 'get', path: '/' },
+  { tool: 'get_elevation_history', routeFile: 'pam.ts', method: 'get', path: '/elevation-requests' },
+  { tool: 'get_peripheral_activity', routeFile: 'peripheralControl.ts', method: 'get', path: '/activity' },
+  { tool: 'get_user_risk_scores', routeFile: 'userRisk.ts', method: 'get', path: '/scores' },
+  { tool: 'get_user_risk_detail', routeFile: 'userRisk.ts', method: 'get', path: '/users/:userId' },
+  { tool: 'get_backup_status', routeFile: 'backup/jobs.ts', method: 'get', path: '/jobs/:id' },
+  { tool: 'query_backup_sla', routeFile: 'backup/sla.ts', method: 'get', path: '/configs' },
+  { tool: 'get_sla_breaches', routeFile: 'backup/sla.ts', method: 'get', path: '/events' },
+  { tool: 'get_sla_compliance_report', routeFile: 'backup/sla.ts', method: 'get', path: '/dashboard' },
+  { tool: 'query_c2c_jobs', routeFile: 'c2c/jobs.ts', method: 'get', path: '/jobs' },
+  { tool: 'search_c2c_items', routeFile: 'c2c/items.ts', method: 'get', path: '/items' },
+  { tool: 'get_ip_history', routeFile: 'devices/hardware.ts', method: 'get', path: '/:id/ip-history' },
+  { tool: 'get_network_changes', routeFile: 'networkChanges.ts', method: 'get', path: '/' },
 ];
 
 /**
@@ -352,6 +379,21 @@ const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> 
   {
     tool: 'computer_control',
     reason: 'no single HTTP route: it rides an already-established remote session over the signalling channel, so its remote:access extra is inherited from create_remote_session rather than from a route of its own',
+  },
+
+  // Spec 2026-09-23 W01 (#6755): read tools newly wired into TOOL_TIERS on
+  // this branch that have no single REST route a permission can be bound to.
+  {
+    tool: 'query_agent_versions',
+    reason: 'no route mirrors the tool\'s list_versions/check_upgrades actions with a single permission: the closest registrations (GET /agent-versions/pinnable, GET /agent-versions) gate on scope or a platform-admin check rather than a requirePermission call, so no route permission set resolves',
+  },
+  {
+    tool: 'query_webhooks',
+    reason: 'GET /webhooks gates only on requireScope, with no requirePermission call at all; there is no route permission set to bind the tool\'s devices:read requirement against',
+  },
+  {
+    tool: 'query_analytics',
+    reason: 'the tool\'s three actions (sla_compliance, capacity_predictions, sla_definitions) read separate tables with no single corresponding REST route, while TOOL_PERMISSIONS declares one flat grant for the whole tool, so no single route registration can be bound',
   },
 ];
 

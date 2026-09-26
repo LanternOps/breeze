@@ -13,34 +13,27 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 // disappear from the baseline. A-W01 must not change product tool exposure.
 // Frozen at A-W01; only shrink this set as declarations land. Unlike the g57
 // exception above, these tools are not promised declarations by A-W02.
+//
+// Spec 2026-09-23 W01 (#6755) declared 11 of these (the L1 reads it wired);
+// removed here rather than left stale, per this test's own "now declared;
+// remove the exception" assertion below.
 const BASELINE_UNDECLARED_TOOLS = new Set([
-  'browse_snapshots',
-  'get_backup_status',
   'get_compliance_status',
   'get_executive_summary',
-  'get_ip_history',
-  'get_network_changes',
-  'get_peripheral_activity',
   'get_sensitive_data_overview',
-  'get_sla_breaches',
-  'get_sla_compliance_report',
-  'get_software_compliance',
-  'list_monitors',
   'manage_quotes',
   'manage_tags',
   'manage_tickets',
-  'query_agent_versions',
   'query_backups',
   'restore_snapshot',
-  'search_script_library',
   'trigger_backup',
   'trigger_mssql_backup',
 ]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 60 unique ids', () => {
-    expect(GOLDEN_CASES).toHaveLength(60);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(60);
+  it('has 67 unique ids', () => {
+    expect(GOLDEN_CASES).toHaveLength(67);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(67);
   });
   it('expects registered tools and declared actions, with only known chat-visibility gaps', () => {
     for (const c of GOLDEN_CASES) for (const e of c.expect) {
@@ -73,6 +66,6 @@ describe('GOLDEN_CASES', () => {
     const structuralMisses = GOLDEN_CASES
       .filter((c) => c.expect.every((e) => undeclared.has(e.tool)))
       .map((c) => c.id);
-    expect(structuralMisses).toEqual(['g23', 'g26', 'g34', 'g35', 'g36', 'g49', 'g55', 'g59', 'g60']);
+    expect(structuralMisses).toEqual(['g34', 'g35', 'g36', 'g60']);
   });
 });

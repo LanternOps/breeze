@@ -537,6 +537,11 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'apply') {
+        // #6911: user-owned on release — see approverReleaseMismatch. `apply`
+        // stamps `userId: auth.user.id` into the queued device command below.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         const policyId = typeof input.policyId === 'string' ? input.policyId : '';
         if (!policyId) return JSON.stringify({ error: 'policyId is required for apply' });
 

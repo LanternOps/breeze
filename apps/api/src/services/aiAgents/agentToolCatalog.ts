@@ -18,11 +18,10 @@ import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import {
-  AGENT_HUMAN_ONLY_TOOLS, TOOL_ACTION_INPUT_KEYS, BLOCKED_TOOLS,
-  checkGuardrails, isReadOnlyResolution,
+  TOOL_ACTION_INPUT_KEYS,
+  checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
-import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 
@@ -410,29 +409,31 @@ function isSessionOnly(name: string): boolean {
 
 /**
  * The runtime deny set `checkAgentGuardrails` enforces unconditionally,
- * regardless of policy: a blocked tool (tier 4) and a secret-bearing tool
- * (`isSecretBearingTool` — never available to agents, aiGuardrails.ts
- * ~1692-1697) are never reachable, so the catalog must exclude both here
- * rather than let a reachable-but-always-denied tool appear in the picker.
+ * regardless of policy — a blocked tool (tier 4), a secret-bearing tool, an
+ * `AGENT_HUMAN_ONLY_TOOLS` entry and an `AGENT_DENIED_READ_TOOLS` entry
+ * (W01-D5, quorum amendment WQ4, #6755) — is never reachable, so the catalog
+ * must exclude all four here rather than let a reachable-but-always-denied
+ * tool appear in the picker. `isNeverAgentTool` (aiGuardrails.ts) is the one
+ * shared predicate for that check; this function and `checkAgentGuardrails`
+ * used to hand-duplicate it.
  */
 export function listAgentReachableTools(): string[] {
   return [...aiTools.keys()]
     .filter((name) =>
       name in TOOL_TIERS
       && !isSessionOnly(name)
-      && !AGENT_HUMAN_ONLY_TOOLS.has(name)
-      && !BLOCKED_TOOLS.has(name)
-      && !isSecretBearingTool(name))
+      && !isNeverAgentTool(name))
     .sort();
 }
 
 /**
  * Every registered tool NOT in `listAgentReachableTools()` — not just the
  * ones absent from `TOOL_TIERS`, but also whichever of the same runtime-deny
- * filters (`AGENT_HUMAN_ONLY_TOOLS`, `BLOCKED_TOOLS`, secret-bearing) trip on
- * a tool that otherwise HAS a tier. Lets the picker (Task 7, #5049) tell a
- * stale allowlist entry naming a real-but-unreachable tool
- * (`unreachable_tool`) apart from one that never existed (`unknown_tool`).
+ * filters `isNeverAgentTool` covers (`AGENT_HUMAN_ONLY_TOOLS`,
+ * `AGENT_DENIED_READ_TOOLS`, `BLOCKED_TOOLS`, secret-bearing) trip on a tool
+ * that otherwise HAS a tier. Lets the picker (Task 7, #5049) tell a stale
+ * allowlist entry naming a real-but-unreachable tool (`unreachable_tool`)
+ * apart from one that never existed (`unknown_tool`).
  */
 export function listUnreachableRegisteredTools(): string[] {
   const reachable = new Set(listAgentReachableTools());

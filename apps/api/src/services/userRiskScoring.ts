@@ -443,6 +443,42 @@ export async function getOrCreateUserRiskPolicy(orgId: string): Promise<UserRisk
   };
 }
 
+/**
+ * Read-only counterpart to getOrCreateUserRiskPolicy (#6755): a GET
+ * must never insert a default policy row. Returns the existing row, or the
+ * normalized defaults with no row created, for callers on a read path
+ * (getUserRiskDetail). Write paths (updateUserRiskPolicy, recompute) keep
+ * using getOrCreateUserRiskPolicy so a policy row always exists once anything
+ * writes against it.
+ */
+export async function readUserRiskPolicy(orgId: string): Promise<UserRiskPolicy> {
+  const [existing] = await db
+    .select()
+    .from(userRiskPolicies)
+    .where(eq(userRiskPolicies.orgId, orgId))
+    .limit(1);
+
+  if (existing) {
+    return {
+      orgId: existing.orgId,
+      weights: normalizeUserRiskWeights(existing.weights),
+      thresholds: normalizeUserRiskThresholds(existing.thresholds),
+      interventions: normalizeUserRiskInterventions(existing.interventions),
+      updatedAt: existing.updatedAt.toISOString(),
+      updatedBy: existing.updatedBy ?? null
+    };
+  }
+
+  return {
+    orgId,
+    weights: normalizeUserRiskWeights(DEFAULT_USER_RISK_WEIGHTS),
+    thresholds: normalizeUserRiskThresholds(DEFAULT_USER_RISK_THRESHOLDS),
+    interventions: normalizeUserRiskInterventions(DEFAULT_USER_RISK_INTERVENTIONS),
+    updatedAt: new Date().toISOString(),
+    updatedBy: null
+  };
+}
+
 export async function updateUserRiskPolicy(input: {
   orgId: string;
   updatedBy: string;
@@ -1180,7 +1216,7 @@ export async function getUserRiskDetail(orgId: string, userId: string, siteIds?:
   ]);
 
   if (history.length === 0) return null;
-  const policy = await getOrCreateUserRiskPolicy(orgId);
+  const policy = await readUserRiskPolicy(orgId);
 
   const latest = history[0]!;
   const previous = history[1] ?? null;

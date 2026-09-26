@@ -256,6 +256,10 @@ const createBreezeMcpServer = vi.hoisted(() =>
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // Mirrors BREEZE_MCP_TOOL_NAMES above (one tool, bare name) — runLoop.ts's
+  // full-profile exposure (WQ3, #6755) derives from Object.keys(TOOL_TIERS)
+  // now, not from BREEZE_MCP_TOOL_NAMES directly, so both mocks must agree.
+  TOOL_TIERS: { query_devices: 1 },
   // The REAL value (aiAgentSdkTools.ts) — kept in sync here so the timeout-
   // budget invariant test below asserts against the actual cap, not a
   // hardcoded guess. See that test for why.

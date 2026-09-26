@@ -36,7 +36,7 @@ import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape } from './aiToolSchemas';
+import { deliveryToolShape, toolInputSchemas } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -204,6 +204,12 @@ export const TOOL_TIERS = {
   list_script_templates: 1,
   get_script_execution_history: 1,
   get_script_execution: 1,
+  // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
+  // Devices, integrations and scripts reads.
+  list_remote_sessions: 1,
+  query_agent_versions: 1,
+  query_webhooks: 1,
+  search_script_library: 1,
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
@@ -284,6 +290,29 @@ export const TOOL_TIERS = {
   manage_software_policies: 1,     // Action-level escalation in guardrails
   manage_peripheral_policies: 1,   // Action-level escalation in guardrails
   manage_backup_configs: 1,        // Action-level escalation in guardrails
+  // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
+  // Security and compliance reads.
+  get_software_compliance: 1,
+  query_compliance_policies: 1,
+  get_elevation_history: 1,
+  get_peripheral_activity: 1,
+  get_user_risk_scores: 1,
+  get_user_risk_detail: 1,
+  // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
+  // Backup, Hyper-V, MSSQL, vault, SLA and C2C reads.
+  get_backup_status: 1,
+  browse_snapshots: 1,
+  get_vm_restore_estimate: 1,
+  query_mssql_instances: 1,
+  get_mssql_backup_status: 1,
+  query_hyperv_vms: 1,
+  get_hyperv_vm_details: 1,
+  get_vault_status: 1,
+  query_backup_sla: 1,
+  get_sla_breaches: 1,
+  get_sla_compliance_report: 1,
+  query_c2c_jobs: 1,
+  search_c2c_items: 1,
   // Playbook tools
   list_playbooks: 1,
   execute_playbook: 3,
@@ -310,6 +339,13 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
   list_incidents: 1,
+  // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
+  // Monitoring, analytics and network reads.
+  query_analytics: 1,
+  list_monitors: 1,
+  get_monitor: 1,
+  get_ip_history: 1,
+  get_network_changes: 1,
   list_ai_agents: 1,
   list_ai_agent_runs: 1,
   get_ai_agent_run: 1,
@@ -537,6 +573,22 @@ function registryDescription(toolName: string): string {
     throw new Error(`No aiTools registry description for tool "${toolName}"`);
   }
   return description;
+}
+
+/**
+ * The SDK Zod shape IS the validated shape: derived from `toolInputSchemas`
+ * so the model is never told a key `validateToolInput` strips (W01-D7,
+ * spec 2026-09-23). Declarations themselves stay literal `tool(` calls with
+ * a quoted name rather than a `.map()` loop: `aiAgentSdkTools.mcpCoverage.test.ts`
+ * greps the source text for each quoted name, and a loop would silently empty
+ * that static scan.
+ */
+function inputShape(toolName: string): z.ZodRawShape {
+  const shape = (toolInputSchemas as Record<string, { shape?: z.ZodRawShape }>)[toolName]?.shape;
+  if (!shape) {
+    throw new Error(`toolInputSchemas.${toolName} is not a plain z.object — hand-mirror its shape instead`);
+  }
+  return shape;
 }
 
 function makeToolHandler(
@@ -1699,6 +1751,71 @@ export function buildBreezeSdkTools(
       makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // The four script-library reads below (W01-D2, spec 2026-09-23) were
+    // previously declared only on the separate script-builder MCP server
+    // (scriptBuilderTools.ts), which left the main chat/agent surface with
+    // run_script but no way to find a scriptId to run it against. The
+    // script-builder declarations are unaffected — that server keeps its own
+    // tier map and descriptions.
+    tool(
+      'list_scripts',
+      registryDescription('list_scripts'),
+      inputShape('list_scripts'),
+      makeHandler('list_scripts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_script_details',
+      registryDescription('get_script_details'),
+      inputShape('get_script_details'),
+      makeHandler('get_script_details', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_script_templates',
+      registryDescription('list_script_templates'),
+      inputShape('list_script_templates'),
+      makeHandler('list_script_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_script_execution_history',
+      registryDescription('get_script_execution_history'),
+      inputShape('get_script_execution_history'),
+      makeHandler('get_script_execution_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_script_library',
+      registryDescription('search_script_library'),
+      inputShape('search_script_library'),
+      makeHandler('search_script_library', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
+    // untiered. Devices and integrations reads. Shape derived from
+    // toolInputSchemas (W01-D7).
+    tool(
+      'list_remote_sessions',
+      registryDescription('list_remote_sessions'),
+      inputShape('list_remote_sessions'),
+      makeHandler('list_remote_sessions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_agent_versions',
+      registryDescription('query_agent_versions'),
+      inputShape('query_agent_versions'),
+      makeHandler('query_agent_versions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_webhooks',
+      registryDescription('query_webhooks'),
+      inputShape('query_webhooks'),
+      makeHandler('query_webhooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_services',
       registryDescription('manage_services'),
@@ -2567,6 +2684,51 @@ export function buildBreezeSdkTools(
       makeHandler('manage_peripheral_policies', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
+    // untiered. Security and compliance reads. Shape derived from
+    // toolInputSchemas (W01-D7).
+    tool(
+      'get_software_compliance',
+      registryDescription('get_software_compliance'),
+      inputShape('get_software_compliance'),
+      makeHandler('get_software_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_compliance_policies',
+      registryDescription('query_compliance_policies'),
+      inputShape('query_compliance_policies'),
+      makeHandler('query_compliance_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_elevation_history',
+      registryDescription('get_elevation_history'),
+      inputShape('get_elevation_history'),
+      makeHandler('get_elevation_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_peripheral_activity',
+      registryDescription('get_peripheral_activity'),
+      inputShape('get_peripheral_activity'),
+      makeHandler('get_peripheral_activity', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_user_risk_scores',
+      registryDescription('get_user_risk_scores'),
+      inputShape('get_user_risk_scores'),
+      makeHandler('get_user_risk_scores', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_user_risk_detail',
+      registryDescription('get_user_risk_detail'),
+      inputShape('get_user_risk_detail'),
+      makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_backup_configs',
       registryDescription('manage_backup_configs'),
@@ -2585,6 +2747,101 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_backup_configs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W01 (#6755): read-only reads, previously registered but
+    // untiered (aiAgentSdkTools.registryParity.contract.test.ts's
+    // KNOWN_MISSING_TOOL_TIERS). Backup, Hyper-V, MSSQL, vault, SLA and
+    // C2C reads. Shape derived from toolInputSchemas (W01-D7).
+    tool(
+      'get_backup_status',
+      registryDescription('get_backup_status'),
+      inputShape('get_backup_status'),
+      makeHandler('get_backup_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'browse_snapshots',
+      registryDescription('browse_snapshots'),
+      inputShape('browse_snapshots'),
+      makeHandler('browse_snapshots', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_vm_restore_estimate',
+      registryDescription('get_vm_restore_estimate'),
+      inputShape('get_vm_restore_estimate'),
+      makeHandler('get_vm_restore_estimate', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_mssql_instances',
+      registryDescription('query_mssql_instances'),
+      inputShape('query_mssql_instances'),
+      makeHandler('query_mssql_instances', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_mssql_backup_status',
+      registryDescription('get_mssql_backup_status'),
+      inputShape('get_mssql_backup_status'),
+      makeHandler('get_mssql_backup_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_hyperv_vms',
+      registryDescription('query_hyperv_vms'),
+      inputShape('query_hyperv_vms'),
+      makeHandler('query_hyperv_vms', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_hyperv_vm_details',
+      registryDescription('get_hyperv_vm_details'),
+      inputShape('get_hyperv_vm_details'),
+      makeHandler('get_hyperv_vm_details', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_vault_status',
+      registryDescription('get_vault_status'),
+      inputShape('get_vault_status'),
+      makeHandler('get_vault_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_backup_sla',
+      registryDescription('query_backup_sla'),
+      inputShape('query_backup_sla'),
+      makeHandler('query_backup_sla', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_sla_breaches',
+      registryDescription('get_sla_breaches'),
+      inputShape('get_sla_breaches'),
+      makeHandler('get_sla_breaches', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_sla_compliance_report',
+      registryDescription('get_sla_compliance_report'),
+      inputShape('get_sla_compliance_report'),
+      makeHandler('get_sla_compliance_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_c2c_jobs',
+      registryDescription('query_c2c_jobs'),
+      inputShape('query_c2c_jobs'),
+      makeHandler('query_c2c_jobs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_c2c_items',
+      registryDescription('search_c2c_items'),
+      inputShape('search_c2c_items'),
+      makeHandler('search_c2c_items', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Playbook tools
@@ -2760,6 +3017,44 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
+    // untiered. Monitoring, analytics and network reads. Shape
+    // derived from toolInputSchemas (W01-D7).
+    tool(
+      'query_analytics',
+      registryDescription('query_analytics'),
+      inputShape('query_analytics'),
+      makeHandler('query_analytics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_monitors',
+      registryDescription('list_monitors'),
+      inputShape('list_monitors'),
+      makeHandler('list_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_monitor',
+      registryDescription('get_monitor'),
+      inputShape('get_monitor'),
+      makeHandler('get_monitor', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_ip_history',
+      registryDescription('get_ip_history'),
+      inputShape('get_ip_history'),
+      makeHandler('get_ip_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_network_changes',
+      registryDescription('get_network_changes'),
+      inputShape('get_network_changes'),
+      makeHandler('get_network_changes', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

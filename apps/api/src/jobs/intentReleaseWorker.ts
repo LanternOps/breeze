@@ -841,6 +841,10 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // supervised (manage_browser_policy is a whole-tool TIER3_SUPERVISED_TOOLS
   // member).
   'manage_browser_policy:create',
+  // Same table/guard shape as `:create` above — `apply` stamps
+  // `userId: auth.user.id` into the queued device command
+  // (aiToolsBrowser.ts's `aiDispatchDeviceCommand` call).
+  'manage_browser_policy:apply',
   // cis_remediation_actions.approved_by / .requested_by
   // (db/schema/cisBenchmark.ts) — apply_cis_remediation is a whole-tool
   // TIER3_SUPERVISED_TOOLS member. It has no dispatch multiplexing, but its
@@ -853,6 +857,18 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // software_policies.created_by (db/schema/softwarePolicies.ts) —
   // manage_software_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
   'manage_software_policy:create',
+  // sensitive_data_findings.remediation_metadata.updatedBy (jsonb, not an
+  // actual FK — db/schema/sensitiveData.ts — but the contract's own
+  // name-level over-approximation is intentional; guarded the same way
+  // regardless) — remediate_sensitive_data is a whole-tool
+  // TIER3_SUPERVISED_TOOLS member. `accept_risk`/`false_positive`/
+  // `mark_remediated` share one branch; the empty-string entry is the
+  // encrypt/quarantine/secure_delete queue path, which is not gated behind
+  // an `action === …` check of its own.
+  'remediate_sensitive_data:accept_risk',
+  'remediate_sensitive_data:false_positive',
+  'remediate_sensitive_data:mark_remediated',
+  'remediate_sensitive_data:',
   // elevation_requests.subject_user_id / elevation_audit_entries.actor_user_id
   // (db/schema/elevations.ts) — request_elevation is a whole-tool
   // TIER3_FOUR_EYES_TOOLS member, single-action.
