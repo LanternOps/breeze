@@ -226,6 +226,17 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		return fail(err.Error())
 	}
 
+	// #5460: Export-VM writes the whole VM into staging before a byte is
+	// uploaded. Refuse up front when the staging volume cannot hold it,
+	// instead of failing after a multi-GB export.
+	preflightWarnings, err := preflightHypervExport(p.VMName, hypervStagingBase(mgr))
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	// Every return below — export failure, upload failure, manifest failure
+	// and success — removes the staged export (#5460). A helper killed
+	// mid-export is covered by sweepOrphanedHypervStaging at startup.
 	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-hyperv-*")
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
@@ -236,10 +247,11 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		}
 	}()
 
-	result, err := hyperv.ExportVM(p.VMName, stagingDir, p.ConsistencyType)
+	result, err := exportHypervVM(p.VMName, stagingDir, p.ConsistencyType)
 	if err != nil {
 		return fail(err.Error())
 	}
+	warnings := append(preflightWarnings, result.Warnings...)
 
 	snapshotID := newHypervSnapshotID(p.VMName)
 	prefix := path.Join("snapshots", snapshotID)
@@ -299,14 +311,14 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		"snapshotId":    snapshotID,
 		"filesBackedUp": fileCount,
 		"bytesBackedUp": totalSize,
-		"warning":       strings.Join(result.Warnings, "\n"),
+		"warning":       strings.Join(warnings, "\n"),
 		"backupType":    "application",
 		"metadata": map[string]any{
 			"backupKind":       "hyperv_export",
 			"vmName":           result.VMName,
 			"consistencyType":  result.ConsistencyType,
 			"durationMs":       result.DurationMs,
-			"warnings":         result.Warnings,
+			"warnings":         warnings,
 			"storagePrefix":    path.Join("snapshots", snapshotID),
 			"exportArtifactId": snapshotID,
 			"exportRoot":       manifest.ExportRoot,
@@ -339,6 +351,12 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 		return fail("failed to download Hyper-V snapshot manifest: " + err.Error())
 	}
 
+	// #5460: the download stages a full copy of the export, and Import-VM
+	// -Copy then writes a second one into the host's virtual hard disk path.
+	if err := preflightHypervRestore(manifest, hypervStagingBase(mgr)); err != nil {
+		return fail(err.Error())
+	}
+
 	restoreDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-hyperv-restore-*")
 	if err != nil {
 		return fail("failed to create Hyper-V restore staging dir: " + err.Error())
@@ -358,7 +376,7 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 		return fail("failed to locate Hyper-V import root: " + err.Error())
 	}
 
-	result, err := hyperv.ImportVM(importRoot, p.VMName, p.GenerateNewID)
+	result, err := importHypervVM(importRoot, p.VMName, p.GenerateNewID)
 	return marshalResult(result, err)
 }
 
