@@ -70,7 +70,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // at all, which is a stronger property than passing the capability gate.
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
-  'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
