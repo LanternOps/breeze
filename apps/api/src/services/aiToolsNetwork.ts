@@ -291,7 +291,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           },
           acknowledged: { type: 'boolean', description: 'Filter by acknowledgment status' },
           since: { type: 'string', description: 'Only include changes detected after this ISO timestamp' },
-          limit: { type: 'number', description: 'Max results (default 100, max 500)' }
+          limit: { type: 'number', description: 'Max results (default 50, max 200)' }
         }
       }
     },
