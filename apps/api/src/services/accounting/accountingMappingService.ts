@@ -1216,10 +1216,15 @@ async function persistRemoteRef(params: {
  * QBO sparse update carrying the persisted Id+SyncToken (mirrors
  * `AccountingEntityMapping` in types.ts); its absence makes it a create —
  * Item creation additionally requires `accounting_connections.default_income_account_ref`.
+ *
+ * `target` (Xero W01): the sync worker passes the exact connection its job was
+ * enqueued for (`{ connectionId }`); omitted, the connection is resolved by
+ * `input.provider` as before (the explicit-sync route and the invoice push).
  */
 export async function syncMappedEntity(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<MappingResult> {
   assertNoAmbientDbContext('syncMappedEntity');
   const redis = getRedis();
@@ -1240,7 +1245,7 @@ export async function syncMappedEntity(
   }, 30_000);
   renewal.unref();
   try {
-    return await syncMappedEntityUnderLease(input, runInDbContext);
+    return await syncMappedEntityUnderLease(input, runInDbContext, target);
   } finally {
     clearInterval(renewal);
     try {
@@ -1258,6 +1263,7 @@ export async function syncMappedEntity(
 async function syncMappedEntityUnderLease(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
+  target: ConnectionTarget,
 ): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
   assertNoAmbientDbContext('syncMappedEntity');
@@ -1268,7 +1274,7 @@ async function syncMappedEntityUnderLease(
   // entity_not_found, a create-time currency_mismatch) is raised here, before
   // a token is resolved or QuickBooks is touched.
   const prep = await runInDbContext(async () => {
-    const conn = await resolveConnection(partnerId, { provider });
+    const conn = await resolveConnection(partnerId, target ?? { provider });
 
     const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
     const mapping = mappingRows.find((m) => m.breezeEntityId === breezeEntityId);

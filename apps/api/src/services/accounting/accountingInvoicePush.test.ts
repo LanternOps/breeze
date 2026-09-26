@@ -1132,7 +1132,7 @@ describe('pushInvoiceToAccounting', () => {
     await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(pushed).toBe(true);
-    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER, CONN_ID);
   });
 
   it('does NOT enqueue a void when the invoice is still issued after the push', async () => {
@@ -1565,7 +1565,7 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
 
     await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
-    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER, CONN_ID);
     expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
   });

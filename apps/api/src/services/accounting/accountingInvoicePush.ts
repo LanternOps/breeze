@@ -999,7 +999,8 @@ export async function pushInvoiceToAccounting(
   });
   if (becameVoid) {
     const { enqueueAccountingInvoiceVoid } = await import('../../jobs/accountingSyncWorker');
-    await enqueueAccountingInvoiceVoid(inv.id, partnerId);
+    // The connection this push just used (Xero W01: the void targets it too).
+    await enqueueAccountingInvoiceVoid(inv.id, partnerId, conn.id);
   }
 
   // ...but NOT for an invoice that went void mid-flight: the void job enqueued

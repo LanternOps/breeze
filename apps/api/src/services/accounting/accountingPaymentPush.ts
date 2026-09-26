@@ -88,7 +88,7 @@ import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
 import { getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
-import { getConnectionForMapping, type AccountingConnection } from './accountingConnectionService';
+import { getConnectionProviderForMapping, type AccountingConnection } from './accountingConnectionService';
 import type { AccountingPaymentPayload, AccountingProviderId, PaymentDeleteResult, RemoteRef } from './types';
 
 /** A row must be at least this stale before the sweep re-enqueues it, so the
@@ -781,9 +781,11 @@ export async function requestPaymentDelete(
       );
       // Read inside the destroyer's own transaction (`tx`) — no second context.
       // The row exists, so its connection does (composite FK, ON DELETE CASCADE).
-      const mappingConn = await getConnectionForMapping(tx, mapping.id, mapping.partnerId);
+      // Provider column only: this void must not start failing on a connection
+      // whose tokens cannot be decrypted (it never read the row before W01).
+      const mappingProvider = await getConnectionProviderForMapping(tx, mapping.id, mapping.partnerId);
       fireAudit({
-        provider: mappingConn?.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER,
+        provider: mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER,
         action: 'accounting.payment.orphan_retained',
         orgId: null,
         resourceType: 'accounting_entity_mapping',
@@ -1310,7 +1312,9 @@ function fireAudit(params: {
  * because a `delete` must propagate even when both switches are off and even for
  * a connection the reconcile fan-out skipped (spec decision 10). The partial
  * index `accounting_entity_mappings_pending_op_idx` serves it, and the steady
- * state is zero rows.
+ * state is zero rows. The provider capability gate (Xero W01: skip rows whose
+ * provider cannot push payments) is applied by the reconcile sweep on top of
+ * this, via `getConnectionProvidersForMappings`, not by joining here.
  */
 export async function listOwedPaymentMappings(
   dbc: PaymentMappingExecutor,
@@ -1952,15 +1956,16 @@ export async function deletePaymentInAccounting(
       // The audit names the row's provider, so read its connection BEFORE the
       // row (the only link to it) is deleted — in this same context, never a
       // second one. The connection is never RESOLVED on this path (it must work
-      // even for a disconnected realm); this is a plain read of the row's own.
-      const mappingConn = await getConnectionForMapping(db, mappingId, partnerId);
+      // even for a disconnected realm); this is a plain read of the row's own
+      // provider column — never its tokens, so a decrypt failure cannot block it.
+      const mappingProvider = await getConnectionProviderForMapping(db, mappingId, partnerId);
       await deleteMappingRow(db, mappingId);
       return {
         kind: 'outcome',
         outcome: 'unresolved_dropped',
         invoicePaymentId: claimed.breezeEntityId,
         unresolvedForMs,
-        provider: (mappingConn?.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId,
+        provider: (mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId,
       } as const;
     }
 

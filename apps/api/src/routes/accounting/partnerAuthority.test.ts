@@ -88,6 +88,11 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   updateMultiCurrencyEnabled: vi.fn(),
   isHomeCurrencyCasAbort: () => false,
   AccountingConnectionError: AccountingError,
+  // Xero W01: bulk push resolves the partner's ONE connection first (its id
+  // rides on every job). A connected QuickBooks row keeps the route on its path.
+  resolveActiveConnection: vi.fn(async (_db: unknown, partnerId: string) => ({
+    id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
+  })),
 }));
 
 vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
@@ -116,6 +121,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteCustomers: effects.listRemoteCustomers,
     listRemoteItems: vi.fn(),
   }),
+  providerSupports: (id: string) => id === 'quickbooks',
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({

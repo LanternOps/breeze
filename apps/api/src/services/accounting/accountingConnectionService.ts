@@ -1,11 +1,12 @@
-import { and, eq, isNotNull, isNull, like, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
-import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider, providerSupports } from './providerRegistry';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
-import type { AccountingProviderId } from './types';
+import type { AccountingCapability, AccountingProviderId } from './types';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { captureException } from '../sentry';
 
@@ -219,6 +220,71 @@ export async function getConnectionForMapping(
     .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
     .limit(1);
   return row ? mapConnection(row.connection) : null;
+}
+
+/**
+ * Just the PROVIDER of the connection a mapping row belongs to — same
+ * partner-guarded join as `getConnectionForMapping`, but it selects only
+ * `provider`, so it never decrypts the realm/token columns. For audit labels on
+ * paths that must survive an undecryptable token (a payment void, an
+ * unresolved-delete drop): before W01 those paths never read the connection row
+ * at all, and a decrypt failure must not start aborting them.
+ */
+export async function getConnectionProviderForMapping(
+  dbc: DbExecutor,
+  mappingId: string,
+  partnerId: string,
+): Promise<AccountingProviderId | null> {
+  const [row] = await dbc
+    .select({ provider: accountingConnections.provider })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
+    .limit(1);
+  return row ? (row.provider as AccountingProviderId) : null;
+}
+
+/**
+ * Batched `getConnectionProviderForMapping` for the reconcile sweep's owed
+ * payment rows: mapping id -> its own connection's provider, one query. A
+ * mapping absent from the result was deleted since it was listed. Provider
+ * column only (no decrypt). System-context callers only: the rows come from a
+ * cross-partner sweep, so there is no partner id to guard on beyond the join.
+ */
+export async function getConnectionProvidersForMappings(
+  dbc: DbExecutor,
+  mappingIds: string[],
+): Promise<Map<string, AccountingProviderId>> {
+  if (mappingIds.length === 0) return new Map();
+  const rows = await dbc
+    .select({ mappingId: accountingEntityMappings.id, provider: accountingConnections.provider })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(inArray(accountingEntityMappings.id, mappingIds));
+  return new Map((rows as Array<{ mappingId: string; provider: AccountingProviderId }>)
+    .map((r) => [r.mappingId, r.provider]));
+}
+
+/**
+ * Producer-side gate (spec "capabilities … producers don't enqueue"). Reads the
+ * partner-axis row through readWithPartnerAxisVisibility: producers run inside
+ * whatever request context issued the invoice, and an org-scoped RLS context
+ * sees ZERO accounting_connections rows, which would silently skip every
+ * enqueue for org-scoped users (#2822). partnerId comes from a row the caller
+ * already resolved under its own context, never from the client.
+ */
+export async function resolveActiveConnectionFor(
+  partnerId: string,
+  capability: AccountingCapability,
+): Promise<AccountingConnection | null> {
+  const conn = await readWithPartnerAxisVisibility(() => resolveActiveConnection(db, partnerId));
+  return conn && providerSupports(conn.provider, capability) ? conn : null;
 }
 
 /** 409 — the partner already has a connection to a DIFFERENT provider (spec D2). */

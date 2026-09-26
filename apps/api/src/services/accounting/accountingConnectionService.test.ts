@@ -37,11 +37,20 @@ const { dbRef, ambientDb, getValidAccessTokenMock, ReauthRequiredErrorClass, fet
   };
 });
 
+// `getCurrentDbAccessContext` + the two spies: `resolveActiveConnectionFor`
+// reads through `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts), which
+// imports all three by name.
+const partnerAxis = vi.hoisted(() => ({
+  scope: undefined as string | undefined,
+  runOutside: vi.fn((fn: () => unknown) => fn()),
+  withSystem: vi.fn((fn: () => unknown) => fn()),
+}));
 vi.mock('../../db', () => ({
   db: ambientDb,
   hasDbAccessContext: () => ctx.depth > 0,
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  getCurrentDbAccessContext: () => (partnerAxis.scope ? { scope: partnerAxis.scope } : undefined),
+  runOutsideDbContext: partnerAxis.runOutside,
+  withSystemDbAccessContext: partnerAxis.withSystem,
 }));
 
 /**
@@ -69,6 +78,9 @@ vi.mock('./providerRegistry', () => ({
   // AccountingProviderConflictError (Xero W01) reads the display name for its
   // message; the real registry's names are stable enough to hardcode here.
   accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : id === 'xero' ? 'Xero' : id),
+  // Capability check for the Xero W01 producer gate: only QuickBooks is a
+  // registered provider, as in the real registry today.
+  providerSupports: (id: string) => id === 'quickbooks',
 }));
 
 /**
@@ -1066,5 +1078,96 @@ describe('one connection per partner (Xero W01)', () => {
     const db = makeMockDb({});
     const { resolveActiveConnection } = await import('./accountingConnectionService');
     expect(await resolveActiveConnection(db as any, 'p1')).toBeNull();
+  });
+});
+
+describe('getConnectionProviderForMapping (Xero W01 audit provider lookup)', () => {
+  function joinDb(rows: Array<Record<string, unknown>>) {
+    const captured: { projection?: Record<string, unknown>; where?: SQL; joinOn?: SQL } = {};
+    const dbc = {
+      select: vi.fn((projection: Record<string, unknown>) => {
+        captured.projection = projection;
+        return {
+          from: () => ({
+            innerJoin: (_t: unknown, on: SQL) => {
+              captured.joinOn = on;
+              return { where: (w: SQL) => { captured.where = w; return { limit: async () => rows }; } };
+            },
+          }),
+        };
+      }),
+    };
+    return { dbc, captured };
+  }
+
+  it("returns the mapping's own connection provider, selecting ONLY the provider column (no token decrypt)", async () => {
+    const { dbc, captured } = joinDb([{ provider: 'quickbooks' }]);
+    const { getConnectionProviderForMapping } = await import('./accountingConnectionService');
+    const { accountingConnections } = await import('../../db/schema');
+
+    await expect(getConnectionProviderForMapping(dbc as any, 'm1', 'p1')).resolves.toBe('quickbooks');
+
+    // Only the provider — never the encrypted realm/token columns that
+    // getConnectionForMapping's mapConnection decrypts.
+    expect(captured.projection).toEqual({ provider: accountingConnections.provider });
+    const dialect = new PgDialect();
+    const join = dialect.sqlToQuery(captured.joinOn!).sql;
+    expect(join).toContain('"accounting_connections"."id" = "accounting_entity_mappings"."integration_id"');
+    expect(join).toContain('"accounting_connections"."partner_id" = "accounting_entity_mappings"."partner_id"');
+    const where = dialect.sqlToQuery(captured.where!);
+    expect(where.sql).toContain('"accounting_entity_mappings"."id" = $1');
+    expect(where.sql).toContain('"accounting_entity_mappings"."partner_id" = $2');
+    expect(where.params).toEqual(['m1', 'p1']);
+  });
+
+  it('returns null when the mapping (or its connection) is gone', async () => {
+    const { dbc } = joinDb([]);
+    const { getConnectionProviderForMapping } = await import('./accountingConnectionService');
+    await expect(getConnectionProviderForMapping(dbc as any, 'm1', 'p1')).resolves.toBeNull();
+  });
+});
+
+describe('resolveActiveConnectionFor (Xero W01 producer gate)', () => {
+  beforeEach(() => {
+    partnerAxis.scope = undefined;
+    partnerAxis.runOutside.mockClear();
+    partnerAxis.withSystem.mockClear();
+  });
+
+  it("returns the partner's active connection when its provider has the capability", async () => {
+    dbRef.current = makeAmbientFakeDb(ambientConnectionRow()).db;
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+    const conn = await resolveActiveConnectionFor('p1', 'invoicePush');
+    expect(conn?.id).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    expect(conn?.provider).toBe('quickbooks');
+  });
+
+  it('returns null when the active provider lacks the capability', async () => {
+    dbRef.current = makeAmbientFakeDb(ambientConnectionRow({ provider: 'xero' })).db;
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+    await expect(resolveActiveConnectionFor('p1', 'invoicePush')).resolves.toBeNull();
+  });
+
+  it('returns null when the partner has no connection', async () => {
+    dbRef.current = makeAmbientFakeDb(null).db;
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+    await expect(resolveActiveConnectionFor('p1', 'invoicePush')).resolves.toBeNull();
+  });
+
+  it('escapes an org-scoped caller into a system read (#2822): an org context sees zero partner-axis rows', async () => {
+    partnerAxis.scope = 'organization';
+    dbRef.current = makeAmbientFakeDb(ambientConnectionRow()).db;
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+    await expect(resolveActiveConnectionFor('p1', 'invoicePush')).resolves.not.toBeNull();
+    expect(partnerAxis.runOutside).toHaveBeenCalledOnce();
+    expect(partnerAxis.withSystem).toHaveBeenCalledOnce();
+  });
+
+  it('does not open a second context when the caller is already system-scoped', async () => {
+    partnerAxis.scope = 'system';
+    dbRef.current = makeAmbientFakeDb(ambientConnectionRow()).db;
+    const { resolveActiveConnectionFor } = await import('./accountingConnectionService');
+    await resolveActiveConnectionFor('p1', 'invoicePush');
+    expect(partnerAxis.withSystem).not.toHaveBeenCalled();
   });
 });

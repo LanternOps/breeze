@@ -116,6 +116,14 @@ vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
+// Xero W01 producer gate: the issue/void hooks only enqueue when the partner
+// has an invoice-push-capable connection, and the job carries its id. Defaults
+// to a connected QuickBooks row so every existing hook test drives the same path.
+vi.mock('./accounting/accountingConnectionService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./accounting/accountingConnectionService')>()),
+  resolveActiveConnectionFor: vi.fn().mockResolvedValue({ id: 'c1', provider: 'quickbooks' }),
+}));
+
 // The Phase D2 payment push/delete REQUEST helpers recordPayment/voidPayment
 // call inside their own transaction. Mocked so these tests assert the
 // DELEGATION (transaction handle, arguments, ordering against the enqueue),
@@ -140,6 +148,8 @@ import {
 } from '../jobs/accountingSyncWorker';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
 import { requestInvoiceSessionRevocation } from './stripeSessionRevocation';
+import { resolveActiveConnectionFor } from './accounting/accountingConnectionService';
+const resolveActiveConnectionForMock = vi.mocked(resolveActiveConnectionFor);
 
 const requestPaymentPushMock = vi.mocked(requestPaymentPush);
 const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
@@ -1020,7 +1030,29 @@ describe('issueInvoice document_locale stamp', () => {
   it('enqueues an accounting push for the issued invoice, keyed off the locked row', async () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
     await svc.issueInvoice('inv1', actor);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith('inv1', 'p1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith('inv1', 'p1', 'c1');
+  });
+
+  it('does not enqueue an auto-push when the partner has no invoice-push-capable connection (Xero W01 producer gate)', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    resolveActiveConnectionForMock.mockResolvedValueOnce(null);
+    await svc.issueInvoice('inv1', actor);
+    expect(resolveActiveConnectionForMock).toHaveBeenCalledWith('p1', 'invoicePush');
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues the auto-push with the active connection id', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    resolveActiveConnectionForMock.mockResolvedValueOnce({ id: 'c1', provider: 'quickbooks' } as never);
+    await svc.issueInvoice('inv1', actor);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith('inv1', 'p1', 'c1');
+  });
+
+  it('does not let a failed connection read fail the (already-committed) issuance', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    resolveActiveConnectionForMock.mockRejectedValueOnce(new Error('db blip'));
+    await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
   });
 
   it('does not let a failed accounting-push enqueue fail the (already-committed) issuance', async () => {
@@ -2807,6 +2839,29 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
     await svc.voidInvoice('i1', 'duplicate', {}, actor);
 
     expect(setCalls.calls.find((p) => p.status === 'void')).toBeTruthy();
+  });
+
+  // Xero W01 producer gate on the void hook, same contract as the issue hook.
+  function queueUnpaidVoid() {
+    queueResult([sentInvoice()]); // invoice FOR UPDATE
+    queueResult([]); // invoice_payments: none
+    queueResult([]); // invoice_lines FOR UPDATE
+    queueResult([]); // the void update
+    queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
+  }
+
+  it('enqueues the accounting void with the active connection id', async () => {
+    queueUnpaidVoid();
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+    expect(resolveActiveConnectionForMock).toHaveBeenCalledWith('p1', 'invoicePush');
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith('i1', 'p1', 'c1');
+  });
+
+  it('does not enqueue an accounting void when the partner has no invoice-push-capable connection', async () => {
+    queueUnpaidVoid();
+    resolveActiveConnectionForMock.mockResolvedValueOnce(null);
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+    expect(enqueueAccountingInvoiceVoidMock).not.toHaveBeenCalled();
   });
 
   it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {

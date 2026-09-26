@@ -22,6 +22,7 @@ import {
   updateMultiCurrencyEnabled,
   upsertConnection,
   resetConnectionForRealmChange,
+  resolveActiveConnection,
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
@@ -43,7 +44,7 @@ import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../servi
 import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getAccountingProvider } from '../../services/accounting/providerRegistry';
+import { getAccountingProvider, providerSupports } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
 import {
@@ -1094,7 +1095,7 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
   // runs outside that context; the stale-row sweep recovers a missed enqueue.
   if (body.decision === 'confirmed' || body.decision === 'create_new') {
     await runOutsideDbContext(() => enqueueAccountingMappingSync(
-      body.breezeEntityType, body.breezeEntityId, partner.partnerId,
+      body.breezeEntityType, body.breezeEntityId, partner.partnerId, mapping.integrationId,
     ));
   }
 
@@ -1225,10 +1226,9 @@ accountingRoutes.post(
 );
 
 // Bulk enqueue. Same gates as the manual push route above, but this one only
-// ever touches Redis (`enqueueAccountingInvoicePush` is fire-and-forget and
-// never calls QuickBooks itself — the actual push happens later on the
-// accounting-sync worker), so it keeps the normal ambient request
-// transaction and carries NO SELF_MANAGED_DB_CONTEXT_ROUTES entry.
+// ever touches Redis (the push happens later on the accounting-sync worker), so
+// it keeps the ambient request transaction and has NO SELF_MANAGED_DB_CONTEXT_ROUTES
+// entry. Every job carries the partner's ONE connection id, resolved once (Xero W01).
 accountingRoutes.post(
   '/:provider/invoices/push-bulk',
   authMiddleware,
@@ -1247,28 +1247,28 @@ accountingRoutes.post(
     const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
     const { invoiceIds } = c.req.valid('json');
+    const conn = await resolveActiveConnection(db, partner.partnerId);
+    if (conn && (conn.provider !== provider || !providerSupports(conn.provider, 'invoicePush'))) {
+      return c.json({ error: 'Invoice push is not available for this accounting connection', code: 'capability_unavailable' }, 409);
+    }
 
-    // Ownership filter: one `inArray` select rather than N per-id lookups. An
-    // id that isn't this partner's (wrong partner, or doesn't exist at all)
-    // is silently counted into `skipped` — this is a bulk convenience action,
-    // not a per-id validation surface.
+    // Ownership filter: one `inArray` select, not N lookups. A foreign or
+    // unknown id lands in `skipped` (a bulk convenience, not a validation surface).
     const owned = await db
       .select({ id: invoices.id })
       .from(invoices)
       .where(and(inArray(invoices.id, invoiceIds), eq(invoices.partnerId, partner.partnerId)));
     const ownedIds = new Set(owned.map((row) => row.id));
 
-    // `enqueued` counts jobs the queue actually ACCEPTED. It used to count
-    // every owned id regardless — `enqueueAccountingInvoicePush` swallows a
-    // Redis outage by design, so a total queue failure still reported "all
-    // enqueued" and the operator had no signal at all. Failures now get their
-    // own count and their own line in the audit record.
+    // `enqueued` counts jobs the queue ACCEPTED (the enqueue swallows a Redis
+    // outage; counting every owned id hid a total queue failure). No connection
+    // at all: nothing is enqueued, every id is `skipped` (it would only no-op).
     let enqueued = 0;
     let failed = 0;
     let skipped = 0;
     for (const invoiceId of invoiceIds) {
-      if (!ownedIds.has(invoiceId)) { skipped++; continue; }
-      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId)) enqueued++;
+      if (!ownedIds.has(invoiceId) || !conn) { skipped++; continue; }
+      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId, conn.id)) enqueued++;
       else failed++;
     }
 

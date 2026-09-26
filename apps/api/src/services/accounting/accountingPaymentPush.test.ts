@@ -98,10 +98,20 @@ vi.mock('./providerRegistry', () => ({
 // Xero W01: a payment mapping's audit names ITS connection's provider. Resolved
 // against the same stateful fake below: the mapping row -> its integration_id's
 // connection, partner-guarded exactly like the real join.
+//
+// The lookup is `getConnectionProviderForMapping` — provider column only. The
+// full-row `getConnectionForMapping` decrypts the realm/tokens, and these audit
+// paths (a payment void, an unresolved-delete drop) never touched the
+// connection row before W01, so an undecryptable token must not abort them:
+// the full-row mock THROWS, so any regression back to it fails every audit test.
 vi.mock('./accountingConnectionService', () => ({
-  getConnectionForMapping: async (_dbc: unknown, mappingId: string, partnerId: string) => {
+  getConnectionProviderForMapping: async (_dbc: unknown, mappingId: string, partnerId: string) => {
     const row = currentMappings.find((m) => m.id === mappingId && m.partnerId === partnerId);
-    return row ? currentConns.find((c) => c.id === row.integrationId && c.partnerId === partnerId) ?? null : null;
+    const conn = row ? currentConns.find((c) => c.id === row.integrationId && c.partnerId === partnerId) : undefined;
+    return conn?.provider ?? null;
+  },
+  getConnectionForMapping: async () => {
+    throw new Error('decrypt failed: audit provider lookups must not load (and decrypt) the connection row');
   },
 }));
 vi.mock('../auditEvents', () => ({
