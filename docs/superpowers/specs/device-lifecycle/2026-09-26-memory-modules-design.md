@@ -88,7 +88,7 @@ Semantics:
 - Composite FK `(device_id, org_id) → devices(id, org_id)` **`ON UPDATE CASCADE DEFERRABLE INITIALLY IMMEDIATE`** (per CLAUDE.md; `device_disks_device_org_fk` is `INITIALLY DEFERRED` — do not copy that detail).
 - Index on `device_id`.
 - RLS enabled + forced + the four org policies, in the same migration, mirroring `device_disks`.
-- Migration file sorts after the newest committed migration (`2026-10-31-130000-device-memory-modules.sql` at time of writing — recheck).
+- Migration file sorts after the newest committed migration (`2026-11-01-110000-device-memory-modules.sql` at time of writing — recheck).
 
 ### New columns on `device_hardware`
 
