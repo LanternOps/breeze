@@ -351,7 +351,7 @@ execute ─► pending ─script failed / timeout / os_mismatch─────�
 |---|---|---|
 | **W1: Foundation** | Tables + RLS + all registrations; the signature module; inline script-terminal hooks; the outcome watcher + sweeper, with probes extracted from `fixWatch`; free memory attach on new alerts; the `find_proven_fixes` tool; 👍/👎 and Done in the current panel (learning starts on the #7124 matcher) | #7124 merged |
 | **W2: Research** | The `research` agent kind + provisioning; the `remediation_research` profile + `submit_suggestions` + finalizer; the panel redesign; the Fix memory list; the eval; retiring the keyword matcher from Generate | W1 |
-| **W3: Consumers** | The triage verdict and full runs call memory first; the patch agent recognizes known false failures via memory | W1 (W2 optional) |
+| **W3: Consumers** | The triage verdict and full runs call memory first; in shadow mode a proven hit replaces the full run, in act mode the full run still runs with the proven fix in its prompt | W1 (W2 optional) |
 
 **Rollout.** Both memory and research sit behind the existing `ml.remediation_suggestions.enabled` flag. Research additionally requires AI enabled and credits available for the org.
 
@@ -364,6 +364,7 @@ Adopted after the W1 plan was cross-checked by Codex:
 - **One attempt per source + script.** The existing unique index and `/execute`'s 409 stay; "a re-run creates a new suggestion row" is dropped.
 - **`fix_outcomes` stays with the source org on a device move**, listed in `INTENTIONALLY_NO_ORG_ID` like `ai_agent_fix_watches`, rather than in `CORE_DEVICE_ORG_DENORMALIZED_TABLES`.
 - **`find_proven_fixes` `deviceId + problem` input moves to W2.**
+- **Patch-agent false-failure recognition is dropped from W3.** Its motivating false failures (winget "no applicable upgrade", superseded Defender definitions) were fixed at the source in #6910.
 - **Script-failure attempts reach `fix_memory` via the sweeper (≤5 min), not in the same transaction.** The inline hook runs inside agent result ingestion under the org's context; updating the partner-wide aggregate there would need a second system-scoped connection, which the DB-context rules forbid. The hook marks the attempt for recount and the sweeper applies it under the shared per-aggregate lock. Recovery-driven transitions still commit their aggregate delta atomically.
 - **Lookup re-checks the fix script's current ownership** at attach and read time, independent of ambient RLS, because scripts can be re-scoped (partner→org, org→org) without a new version.
 
