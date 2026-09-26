@@ -6,6 +6,9 @@ import { readFileSync } from 'node:fs';
 import { FIX_KINDS, FIX_MEMORY_STATUSES, FIX_OUTCOME_STATES, FIX_VOTES } from '@breeze/shared';
 import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 import { fixMemory, fixOutcomes } from './fixMemory';
+import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
+import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
+import { __testOnly as orgMergeRegistryTestOnly } from '../../services/orgMergeRegistry';
 
 const TABLES_SQL = readFileSync(
   new URL('../../../migrations/2026-11-03-100000-fix-memory-tables.sql', import.meta.url),
@@ -58,5 +61,30 @@ describe('fix memory schema contract', () => {
       'rollingSuccessRate', 'consecutiveFailures', 'consecutiveVerified', 'recentOutcomes', 'status',
       'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'createdAt', 'updatedAt',
     ]) expect(fixMemory, `fixMemory.${key}`).toHaveProperty(key);
+  });
+});
+
+describe('fix memory registrations', () => {
+  it('both tables are in the org cascade order, alphabetically between executive_summaries and fleet_design_applied_items', () => {
+    const order = getOrgCascadeDeleteOrder();
+    const at = (t: string) => order.indexOf(t);
+    expect(at('fix_memory')).toBeGreaterThan(at('executive_summaries'));
+    expect(at('fix_outcomes')).toBeGreaterThan(at('fix_memory'));
+    expect(at('fleet_design_applied_items')).toBeGreaterThan(at('fix_outcomes'));
+  });
+
+  it('both tables are leave-for-erasure in the merge registry', () => {
+    expect(orgMergeRegistryTestOnly.SPECIAL['fix_outcomes']?.kind).toBe('leave-for-erasure');
+    expect(orgMergeRegistryTestOnly.SPECIAL['fix_memory']?.kind).toBe('leave-for-erasure');
+  });
+
+  it('export policy classifies signature_facets as an excluded open container and keys by org_id', () => {
+    const outcomes = CORE_TENANT_EXPORT_POLICY['fix_outcomes'];
+    const memory = CORE_TENANT_EXPORT_POLICY['fix_memory'];
+    expect(outcomes).toBeDefined();
+    expect(memory).toBeDefined();
+    expect(outcomes!.columns['signature_facets']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
+    expect(outcomes!.columns['signature_key']?.decision).toBe('include');
+    expect(memory!.columns['recent_outcomes']?.decision).toBe('include');
   });
 });

@@ -261,6 +261,15 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
+ * fix_outcomes is deliberately ABSENT too (AI Suggested Fixes W1): it has
+ * org_id and device_id but is cascade-deleted, not moved — identical
+ * reasoning to ai_agent_fix_watches: an attempt's proof belongs to the org it
+ * ran in, and its (org_id, partner_id) composite FK would 23503 on a
+ * cross-partner move. It is excluded from breeze_device_child_orgid_tables()
+ * by 2026-11-03-100000-fix-memory-tables.sql and listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. The outcome sweeper
+ * cancels in-flight rows whose device left the org.
+ *
  * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
  * org_id and device_id, but its org_id belongs to the INVOICE, which does not
  * move. Re-stamping it would break the (invoice_line_id, org_id) and
@@ -616,6 +625,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // company here — that table has no device_id column at all (org_id +
   // agent_id only), so it needs no entry in this device-cascade list.
   'ai_agent_fix_watches',
+  // AI Suggested Fixes W1 — attempt history for a deleted device goes with it
+  // (no device FK; leaf table). The org-cascade + rebuild keeps partner memory
+  // consistent on the next rebuild.
+  'fix_outcomes',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
