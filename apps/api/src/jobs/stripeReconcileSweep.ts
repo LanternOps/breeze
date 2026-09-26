@@ -6,7 +6,7 @@ import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { invoices } from '../db/schema/invoices';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { settleCheckoutSession } from '../services/stripeSettle';
+import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { pollStripeFinancialEvents } from '../services/stripeFinancialEventPoller';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -29,12 +29,12 @@ const MAX_AGE = "interval '7 days'";     // stop chasing abandoned checkouts
 
 type SweepJobData = { type: 'reconcile-stripe-payments'; queuedAt: string };
 
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>, label?: string): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   if (typeof withSystem !== 'function') {
     throw new Error('[StripeReconcileSweep] withSystemDbAccessContext not available');
   }
-  return withSystem(fn);
+  return withSystem(fn, label);
 };
 
 let sweepQueue: Queue<SweepJobData> | null = null;
@@ -50,9 +50,18 @@ function getQueue(): Queue<SweepJobData> {
  * partner from its invoice, and try to settle via Stripe. Best-effort per row — an
  * unpaid/abandoned session just stays pending; a transient error is logged and the
  * row is retried next sweep. Returns the number of mappings actually settled.
+ *
+ * Transaction scope (#7065): must be called with NO DB context held. The
+ * candidate SELECT runs in its own short system context; each row is then
+ * settled outside any context, and `settleCheckoutSession` opens its own short
+ * transactions around (never across) the Stripe call. So every settled session
+ * commits — and releases its invoice row lock — before the next Stripe call,
+ * its post-commit events fire after a real commit, and one row's failure cannot
+ * roll back another's payment.
  */
 export async function reconcilePendingStripePayments(): Promise<number> {
-  const rows = (await db.execute<{ partner_id: string; stripe_object_id: string }>(sql`
+  assertNoHeldDbContextForStripe('reconcilePendingStripePayments');
+  const rows = (await runWithSystemDbAccess(() => db.execute<{ partner_id: string; stripe_object_id: string }>(sql`
     SELECT i.partner_id, m.stripe_object_id
     FROM ${invoiceStripePayments} m
     JOIN ${invoices} i ON i.id = m.invoice_id
@@ -63,7 +72,7 @@ export async function reconcilePendingStripePayments(): Promise<number> {
       AND m.created_at > now() - ${sql.raw(MAX_AGE)}
     ORDER BY m.created_at ASC
     LIMIT ${MAX_PER_RUN}
-  `)) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
+  `), 'stripeReconcileSweep.candidates')) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
   const list = rows.rows ?? (rows as unknown as Array<{ partner_id: string; stripe_object_id: string }>);
   if (!Array.isArray(list) || list.length === 0) return 0;
 
@@ -73,6 +82,9 @@ export async function reconcilePendingStripePayments(): Promise<number> {
       const res = await settleCheckoutSession(r.partner_id, r.stripe_object_id);
       if (res.settled) settled++;
     } catch (err) {
+      // A held-context assertion is a programming error, not a per-row hiccup:
+      // abort the pass so the worker reports it (#7065).
+      if (err instanceof HeldDbContextForStripeError) throw err;
       // Best-effort: a partner who disconnected their key, or a transient Stripe
       // error, must not abort the whole sweep. Log and move on.
       console.error('[StripeReconcileSweep] settle failed', { partnerId: r.partner_id, session: r.stripe_object_id, message: err instanceof Error ? err.message : String(err) });
@@ -88,7 +100,8 @@ function createWorker(): Worker<SweepJobData> {
     QUEUE_NAME,
     async (_job: Job<SweepJobData>) => {
       try {
-        const settled = await runWithSystemDbAccess(reconcilePendingStripePayments);
+        // No wrapping context: the pass owns its own short transactions (#7065).
+        const settled = await reconcilePendingStripePayments();
         const financialEvents = await pollStripeFinancialEvents();
         return { settled, financialEvents };
       } catch (err) {

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { optionalQueryBoolean } from '@breeze/shared';
-import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext as RequestAuthContext } from '../middleware/auth';
 import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, snmpAlertThresholds, serviceProcessCheckResults } from '../db/schema';
@@ -885,17 +885,26 @@ monitoringRoutes.delete(
     if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
     const { asset } = assetResult;
 
+    const checks = await db.select({
+      id: networkMonitors.id,
+      name: networkMonitors.name,
+      managedByMonitorId: networkMonitors.managedByMonitorId,
+    })
+      .from(networkMonitors)
+      .where(and(
+        eq(networkMonitors.assetId, assetId),
+        eq(networkMonitors.orgId, asset.orgId),
+        eq(networkMonitors.isActive, true),
+        isNull(networkMonitors.retiredAt),
+      ));
+    if (checks.length > 0) return c.json({ error: 'network_checks_active', checks }, 409);
+
     const disabledSnmp = await db.update(snmpDevices)
       .set({ isActive: false })
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), eq(snmpDevices.isActive, true)))
       .returning({ id: snmpDevices.id });
 
-    const disabledNetworkMonitors = await db.update(networkMonitors)
-      .set({ isActive: false, updatedAt: new Date() })
-      .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, asset.orgId), eq(networkMonitors.isActive, true)))
-      .returning({ id: networkMonitors.id });
-
-    if (disabledSnmp.length === 0 && disabledNetworkMonitors.length === 0) {
+    if (disabledSnmp.length === 0) {
       return c.json({ error: 'No active monitoring found for this asset' }, 404);
     }
 
@@ -906,7 +915,7 @@ monitoringRoutes.delete(
       resourceId: assetId,
       details: {
         disabledSnmpDeviceCount: disabledSnmp.length,
-        disabledNetworkMonitorCount: disabledNetworkMonitors.length,
+        disabledNetworkMonitorCount: 0,
         redisAvailable: isRedisAvailable()
       }
     });

@@ -7,7 +7,7 @@ const { dbMock, updateWheres, updateReturnResults, publishEventMock } = vi.hoist
   const dbMock = {
     _selectResults: selectResults,
     select: vi.fn(() => ({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve(selectResults.shift() ?? []) }) })
+      from: vi.fn((_table: unknown) => ({ where: () => ({ limit: () => Promise.resolve(selectResults.shift() ?? []) }) }))
     })),
     update: vi.fn(() => ({
       set: () => ({
@@ -49,14 +49,14 @@ vi.mock('./alertConditions', () => ({
 vi.mock('./alertCooldown', () => ({
   isCooldownActive: vi.fn(() => Promise.resolve(false)),
   setCooldown: vi.fn(() => Promise.resolve()),
-  isConfigPolicyRuleCooling: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
   recordStateTransition: vi.fn(() => Promise.resolve()),
   isFlapping: vi.fn(() => Promise.resolve(false))
 }));
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
 vi.mock('./alertCorrelationQueue', () => ({ enqueueAlertCorrelation: vi.fn() }));
 
+import { setCooldown } from './alertCooldown';
+import { configPolicyAlertRules } from '../db/schema';
 import { resolveAlert } from './alertService';
 
 // The RETURNING row: triggeredAt is NOT NULL and this same UPDATE sets resolvedAt —
@@ -106,4 +106,14 @@ describe('resolveAlert is a compare-and-swap', () => {
     expect(where).toContain('alerts.status');
     expect(where).toContain('inArray');
   });
+});
+
+it('resolving history-only policy alerts does not read their source or write cooldown', async () => {
+  vi.mocked(setCooldown).mockClear();
+  dbMock.select.mockClear();
+  updateReturnResults.push([{ ...WINNER[0], configPolicyId: 'legacy-source', ruleId: null }]);
+  await expect(resolveAlert('alert-1')).resolves.toBe(true);
+  expect(setCooldown).not.toHaveBeenCalled();
+  const tables = dbMock.select.mock.results.map(result => result.value.from.mock.calls[0]?.[0]);
+  expect(tables).not.toContain(configPolicyAlertRules);
 });

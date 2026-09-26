@@ -774,7 +774,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   // Route every db.select() call by the shape of its column-selector argument
   // (all these queries hit different tables/columns, real schema refs — not
   // stringly-typed, so we key off which fields were requested).
-  function wireSelects(currentOrgId = 'org-1') {
+  function wireSelects(currentOrgId = 'org-1', jobRowVisible = true) {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
       let rows: unknown[];
@@ -787,7 +787,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       } else if (keys.length === 1 && keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
-        rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }]; // job mode lookup
+        // job mode lookup
+        rows = jobRowVisible ? [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }] : [];
       } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
         rows = []; // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup — no eligible base by default
       } else if (keys.includes('retirementId')) {
@@ -896,6 +897,34 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     ).toBe(true);
     expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(false);
     warn.mockRestore();
+  });
+
+  // #6597: a dispatch whose job row is not visible (enqueued before the
+  // creating transaction committed) used to be resolved as a pathless FILE
+  // backup — whatever the job's real mode — and "failed" with a 0-row UPDATE
+  // the committed row never saw, stranding it `pending` for the stale reaper
+  // with no trace of why. It must refuse loudly and name the condition.
+  it('refuses loudly, without resolving a default file backup, when the job row is not visible', async () => {
+    wireSelects('org-1', false);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/Backup job job-1 .*not visible/));
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { backup_dispatch_issue: 'job-row-not-visible' },
+    );
+    // Never the misleading "no paths configured" resolution of a job whose
+    // mode was never read.
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringMatching(/target resolution refused/));
+    expect(updateLog.some((u) => String(u.payload.errorLog ?? '').includes('no paths'))).toBe(false);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('calls recordDispatchedExpectation BEFORE dispatchCommandToAgent (expectation-first, backupWorker.ts:645-651)', async () => {

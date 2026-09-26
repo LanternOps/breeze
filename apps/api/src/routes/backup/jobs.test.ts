@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { selectMock, updateMock, enqueueBackupDispatchMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, enqueueBackupDispatchMock, authDbContexts } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   enqueueBackupDispatchMock: vi.fn(),
+  // #6597: models withAuthDbAccessContext as a fresh transaction that COMMITS
+  // when its callback resolves. `stack` is the currently-open contexts,
+  // `committed` the ids whose callback has finished.
+  authDbContexts: { seq: 0, stack: [] as number[], committed: new Set<number>() },
 }));
 
 const SITE_A = '11111111-1111-4111-8111-111111111111';
@@ -89,6 +93,16 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: any, fn: any) => {
+    const id = ++authDbContexts.seq;
+    authDbContexts.stack.push(id);
+    try {
+      return await fn();
+    } finally {
+      authDbContexts.stack.pop();
+      authDbContexts.committed.add(id);
+    }
+  }),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -658,6 +672,90 @@ describe('backup jobs routes', () => {
     // The real created job is still surfaced/dispatched.
     expect(body.data.created).toBe(1);
     expect(body.data.jobIds).toEqual(['job-multi-file']);
+  });
+
+  // #6597 — the dispatch worker reads the job row on its own connection. A row
+  // still inside an uncommitted transaction is invisible to it, so the worker
+  // resolved the job as a pathless file backup, "failed" a row it could not
+  // see, and the committed row then sat `pending` until the stale reaper
+  // failed it with "Backup dispatch never completed". Every job must be
+  // created in a transaction that has COMMITTED before its dispatch is queued.
+  function trackCreateAndEnqueueContexts() {
+    authDbContexts.seq = 0;
+    authDbContexts.stack.length = 0;
+    authDbContexts.committed.clear();
+    const createdIn = new Map<string, number | undefined>();
+    const committedAtEnqueue = new Map<string, boolean>();
+    let n = 0;
+    vi.mocked(createManualBackupJobIfIdle).mockImplementation(async (input: any) => {
+      const id = `job-${input.deviceId}-${++n}`;
+      createdIn.set(id, authDbContexts.stack.at(-1));
+      return {
+        created: true,
+        job: {
+          id,
+          orgId: input.orgId,
+          configId: input.configId,
+          deviceId: input.deviceId,
+          status: 'pending',
+          type: 'manual',
+          createdAt: new Date('2026-04-01T00:00:00Z'),
+          updatedAt: new Date('2026-04-01T00:00:00Z'),
+        },
+      } as any;
+    });
+    enqueueBackupDispatchMock.mockImplementation(async (jobId: string) => {
+      const ctx = createdIn.get(jobId);
+      committedAtEnqueue.set(jobId, ctx !== undefined && authDbContexts.committed.has(ctx));
+    });
+    return { createdIn, committedAtEnqueue };
+  }
+
+  it('run-all commits every job row before enqueueing any dispatch (#6597)', async () => {
+    const { createdIn, committedAtEnqueue } = trackCreateAndEnqueueContexts();
+    vi.mocked(resolveAllBackupAssignedDevices).mockResolvedValueOnce([
+      { deviceId: 'device-1', configId: 'config-1', featureLinkId: 'feature-1' } as any,
+      { deviceId: 'device-2', configId: 'config-1', featureLinkId: 'feature-1' } as any,
+      { deviceId: 'device-3', configId: 'config-1', featureLinkId: 'feature-1' } as any,
+    ]);
+    selectMock.mockReturnValueOnce(
+      makeSelectChain([{ id: 'device-1' }, { id: 'device-2' }, { id: 'device-3' }])
+    );
+
+    const res = await app.request('/jobs/run-all', { method: 'POST' });
+
+    expect(res.status).toBe(201);
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledTimes(3);
+    for (const [jobId, ctx] of createdIn) {
+      expect(ctx, `${jobId} was not created in its own committed transaction`).toBeDefined();
+      expect(committedAtEnqueue.get(jobId), `${jobId} was enqueued before its row committed`).toBe(true);
+    }
+  });
+
+  it('single-device run commits every job row before enqueueing its dispatch (#6597)', async () => {
+    const { createdIn, committedAtEnqueue } = trackCreateAndEnqueueContexts();
+    selectMock.mockReturnValueOnce(makeSelectChain([{ id: 'device-1', status: 'online' }]));
+    vi.mocked(resolveBackupConfigForDevice).mockResolvedValueOnce({
+      settings: null,
+      featureLinkId: 'feature-1',
+      configId: 'config-1',
+      selectionSpecs: [
+        { backupMode: 'file', targets: { paths: ['C:\\Data'], excludes: [] } },
+        { backupMode: 'system_image', targets: { volumes: ['C:'] } },
+      ],
+      selectionError: null,
+      inlineSettings: null,
+      resolvedTimezone: 'UTC',
+    } as any);
+
+    const res = await app.request('/jobs/run/device-1', { method: 'POST' });
+
+    expect(res.status).toBe(201);
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledTimes(2);
+    for (const [jobId, ctx] of createdIn) {
+      expect(ctx, `${jobId} was not created in its own committed transaction`).toBeDefined();
+      expect(committedAtEnqueue.get(jobId), `${jobId} was enqueued before its row committed`).toBe(true);
+    }
   });
 });
 

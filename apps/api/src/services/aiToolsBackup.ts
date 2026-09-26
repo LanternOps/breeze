@@ -6,7 +6,7 @@
  * Each tool wraps existing DB schema with org-scoped isolation.
  */
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import {
   backupConfigs,
   backupJobs,
@@ -557,12 +557,23 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!config || config.orgId !== orgId) return JSON.stringify({ error: 'Backup config not found or access denied' });
 
-      const result = await createManualBackupJobIfIdle({
-        orgId,
-        configId,
-        featureLinkId: null,
-        deviceId,
-      });
+      // #6597: create the row in its OWN transaction that commits before the
+      // dispatch is enqueued below. Escaping the ambient context does not close
+      // the tool's outer transaction; it opens a short one scoped to the
+      // device's org (already verified above), which the backup worker can see
+      // the moment it picks the dispatch up. Created in the ambient
+      // transaction, the row was invisible to the worker until the tool call
+      // finished, and the job was stranded `pending` until the stale reaper
+      // failed it with "Backup dispatch never completed".
+      const result = await runOutsideDbContext(() => withDbAccessContext(
+        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+        () => createManualBackupJobIfIdle({
+          orgId,
+          configId,
+          featureLinkId: null,
+          deviceId,
+        }),
+      ));
 
       if (!result) {
         return JSON.stringify({ error: 'Failed to create backup job' });

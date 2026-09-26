@@ -1,22 +1,18 @@
+import { legacyAlertingGone } from '../legacyAlertingGone';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { alertRules, alertTemplates, organizations } from '../../db/schema';
 import { eq, and, like, or, desc, isNull, type SQL } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { writeRouteAudit } from '../../services/auditEvents';
-import { listRulesSchema, createRuleSchema, updateRuleSchema, toggleRuleSchema } from './schemas';
+import { listRulesSchema } from './schemas';
 import { resolveScopedOrgId, parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
-import { retiredConditionTypeError } from '../../services/alertConditions';
-import { retiredConditionReactivationError } from '../alerts/helpers';
 import {
   canAccessAlertRuleTargets,
-  legacyRuleTarget,
   persistedRuleTargets,
 } from './siteScope';
-import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 
 export const ruleRoutes = new Hono();
 
@@ -27,7 +23,7 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 // own rules PLUS the partner-wide rules (org_id NULL) of the org's partner —
 // those govern this org's devices too, so hiding them here would misrepresent
 // what alerting applies. Partner-wide rules are read-only on this route; they
-// are managed via /alerts/rules at partner scope.
+// are retained for alert history.
 async function ruleOwnershipConditionForOrg(orgId: string): Promise<SQL> {
   const [orgRow] = await db
     .select({ partnerId: organizations.partnerId })
@@ -41,9 +37,6 @@ async function ruleOwnershipConditionForOrg(orgId: string): Promise<SQL> {
     and(isNull(alertRules.orgId), eq(alertRules.partnerId, partnerId))
   ) as SQL;
 }
-
-const PARTNER_WIDE_RULE_READONLY_HERE =
-  'This is a partner-wide alert rule; manage it via /alerts/rules at partner scope';
 
 ruleRoutes.get(
   '/rules',
@@ -130,100 +123,7 @@ ruleRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  zValidator('json', createRuleSchema),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const orgId = resolveScopedOrgId(auth);
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for this scope' }, 400);
-      }
-
-      const data = c.req.valid('json');
-      if (data.orgId && data.orgId !== orgId) {
-        return c.json({ error: 'Forbidden' }, 403);
-      }
-
-      // #2948 — this route writes the same overrideSettings.conditions the
-      // evaluator reads, so it needs the same boundary as POST /alerts/rules.
-      const createConditionTypeError = retiredConditionTypeError(data.conditions);
-      if (createConditionTypeError) {
-        return c.json({ error: createConditionTypeError }, 400);
-      }
-
-      const requestedTarget = legacyRuleTarget(data.targets, orgId);
-      if (!await canAccessAlertRuleTargets(
-        auth,
-        orgId,
-        requestedTarget.targetType,
-        requestedTarget.targetType === 'all' || requestedTarget.targetType === 'org'
-          ? []
-          : [requestedTarget.targetId],
-        true,
-      )) {
-        return c.json({ error: 'Access to alert rule target denied' }, 403);
-      }
-
-      // Verify template exists and is accessible
-      const [template] = await db
-        .select()
-        .from(alertTemplates)
-        .where(
-          and(
-            eq(alertTemplates.id, data.templateId),
-            or(
-              // Global built-ins only — an org-owned is_built_in row belongs to
-              // that org (security review 2026-08-16 §1.5, same class).
-              and(eq(alertTemplates.isBuiltIn, true), isNull(alertTemplates.orgId)),
-              eq(alertTemplates.orgId, orgId)
-            )
-          )
-        )
-        .limit(1);
-
-      if (!template) {
-        return c.json({ error: 'Template not found' }, 404);
-      }
-
-      const overrideSettings: Record<string, unknown> = {};
-      if (data.severity) overrideSettings.severity = data.severity;
-      if (data.conditions) overrideSettings.conditions = data.conditions;
-      if (data.cooldownMinutes !== undefined) overrideSettings.cooldownMinutes = data.cooldownMinutes;
-
-      const [rule] = await db
-        .insert(alertRules)
-        .values({
-          orgId,
-          templateId: template.id,
-          name: data.name.trim(),
-          targetType: requestedTarget.targetType,
-          targetId: requestedTarget.targetId,
-          overrideSettings: Object.keys(overrideSettings).length > 0 ? overrideSettings : null,
-          isActive: data.enabled ?? true,
-        })
-        .returning();
-
-      if (!rule) {
-        return c.json({ error: 'Failed to create rule' }, 500);
-      }
-
-      writeRouteAudit(c, {
-        orgId,
-        action: 'alert_rule.create',
-        resourceType: 'alert_rule',
-        resourceId: rule.id,
-        resourceName: rule.name,
-        details: {
-          templateId: rule.templateId,
-          enabled: rule.isActive,
-        },
-      });
-      return c.json({ data: { ...rule, templateName: template.name, enabled: rule.isActive } }, 201);
-    } catch (err) {
-      console.error('[alertTemplates/rules] create failed:', err);
-      return c.json({ error: 'Failed to create rule' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
 
 ruleRoutes.get(
@@ -263,100 +163,7 @@ ruleRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  zValidator('json', updateRuleSchema),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const orgId = resolveScopedOrgId(auth);
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for this scope' }, 400);
-      }
-
-      const ruleId = c.req.param('id')!;
-      const updates = c.req.valid('json');
-
-      const [existing] = await db
-        .select()
-        .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
-        .limit(1);
-
-      if (!existing) {
-        return c.json({ error: 'Rule not found' }, 404);
-      }
-
-      // #5289 — a rule compiled from a monitor definition must be edited only
-      // by the compiler; a side edit here would silently drift from the
-      // definition until the next compile pass overwrote it.
-      if (existing.managedByMonitorId) {
-        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
-      }
-
-      if (existing.orgId === null) {
-        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
-      }
-
-      const existingTarget = persistedRuleTargets(existing);
-      if (!await canAccessAlertRuleTargets(
-        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
-      )) {
-        return c.json({ error: 'Access to alert rule target denied' }, 403);
-      }
-
-      if (Object.keys(updates).length === 0) {
-        return c.json({ error: 'No updates provided' }, 400);
-      }
-
-      // Narrower than the /alerts/rules guard on purpose: updateRuleSchema
-      // (./schemas.ts) has no overrideSettings/overrides passthrough, so there
-      // is no second key to smuggle conditions through. Add one and this must
-      // widen to match.
-      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
-      if (updateConditionTypeError) {
-        return c.json({ error: updateConditionTypeError }, 400);
-      }
-
-      // This route accepts `enabled` too, so it is a second re-activation path
-      // alongside the toggle below — and it carries no conditions either.
-      if (updates.enabled === true && !existing.isActive) {
-        const reactivationError = await retiredConditionReactivationError(existing);
-        if (reactivationError) {
-          return c.json({ error: reactivationError }, 400);
-        }
-      }
-
-      const setValues: Record<string, unknown> = {};
-      if (updates.name !== undefined) setValues.name = updates.name.trim();
-      if (updates.enabled !== undefined) setValues.isActive = updates.enabled;
-
-      // Merge override settings
-      const existingOverrides = (existing.overrideSettings as Record<string, unknown>) ?? {};
-      const newOverrides = { ...existingOverrides };
-      if (updates.severity !== undefined) newOverrides.severity = updates.severity;
-      if (updates.conditions !== undefined) newOverrides.conditions = updates.conditions;
-      if (updates.cooldownMinutes !== undefined) newOverrides.cooldownMinutes = updates.cooldownMinutes;
-      setValues.overrideSettings = newOverrides;
-
-      const [updated] = await db
-        .update(alertRules)
-        .set(setValues)
-        .where(eq(alertRules.id, ruleId))
-        .returning();
-
-      writeRouteAudit(c, {
-        orgId,
-        action: 'alert_rule.update',
-        resourceType: 'alert_rule',
-        resourceId: ruleId,
-        resourceName: updated?.name ?? existing.name,
-        details: { updatedFields: Object.keys(updates) },
-      });
-      return c.json({ data: { ...updated, enabled: updated?.isActive } });
-    } catch (err) {
-      console.error('[alertTemplates/rules] update failed:', err);
-      return c.json({ error: 'Failed to update rule' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
 
 ruleRoutes.delete(
@@ -364,56 +171,7 @@ ruleRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const orgId = resolveScopedOrgId(auth);
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for this scope' }, 400);
-      }
-
-      const ruleId = c.req.param('id')!;
-      const [existing] = await db
-        .select()
-        .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
-        .limit(1);
-
-      if (!existing) {
-        return c.json({ error: 'Rule not found' }, 404);
-      }
-
-      // #5289 — see the guard in PATCH above.
-      if (existing.managedByMonitorId) {
-        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
-      }
-
-      if (existing.orgId === null) {
-        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
-      }
-
-      const existingTarget = persistedRuleTargets(existing);
-      if (!await canAccessAlertRuleTargets(
-        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
-      )) {
-        return c.json({ error: 'Access to alert rule target denied' }, 403);
-      }
-
-      await db.delete(alertRules).where(eq(alertRules.id, ruleId));
-
-      writeRouteAudit(c, {
-        orgId,
-        action: 'alert_rule.delete',
-        resourceType: 'alert_rule',
-        resourceId: existing.id,
-        resourceName: existing.name,
-      });
-      return c.json({ data: { id: ruleId, deleted: true } });
-    } catch (err) {
-      console.error('[alertTemplates/rules] delete failed:', err);
-      return c.json({ error: 'Failed to delete rule' }, 500);
-    }
-  }
+  legacyAlertingGone
 );
 
 ruleRoutes.post(
@@ -421,71 +179,5 @@ ruleRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   requireMfa(),
-  zValidator('json', toggleRuleSchema),
-  async (c) => {
-    try {
-      const auth = c.get('auth');
-      const orgId = resolveScopedOrgId(auth);
-      if (!orgId) {
-        return c.json({ error: 'orgId is required for this scope' }, 400);
-      }
-
-      const ruleId = c.req.param('id')!;
-      const { enabled } = c.req.valid('json');
-
-      const [existing] = await db
-        .select()
-        .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
-        .limit(1);
-
-      if (!existing) {
-        return c.json({ error: 'Rule not found' }, 404);
-      }
-
-      // #5289 — see the guard in PATCH above.
-      if (existing.managedByMonitorId) {
-        return managedByMonitorResponse(c, 'alert_rules', existing.managedByMonitorId);
-      }
-
-      if (existing.orgId === null) {
-        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
-      }
-
-      const existingTarget = persistedRuleTargets(existing);
-      if (!await canAccessAlertRuleTargets(
-        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
-      )) {
-        return c.json({ error: 'Access to alert rule target denied' }, 403);
-      }
-
-      // #2948 — same gate as PUT /alerts/rules. Without it this is the one-click
-      // path back to a rule that is enabled, looks healthy, and can never fire.
-      if (enabled && !existing.isActive) {
-        const reactivationError = await retiredConditionReactivationError(existing);
-        if (reactivationError) {
-          return c.json({ error: reactivationError }, 400);
-        }
-      }
-
-      const [updated] = await db
-        .update(alertRules)
-        .set({ isActive: enabled })
-        .where(eq(alertRules.id, ruleId))
-        .returning();
-
-      writeRouteAudit(c, {
-        orgId,
-        action: 'alert_rule.toggle',
-        resourceType: 'alert_rule',
-        resourceId: ruleId,
-        resourceName: updated?.name ?? existing.name,
-        details: { enabled },
-      });
-      return c.json({ data: { ...updated, enabled: updated?.isActive } });
-    } catch (err) {
-      console.error('[alertTemplates/rules] toggle failed:', err);
-      return c.json({ error: 'Failed to toggle rule' }, 500);
-    }
-  }
+  legacyAlertingGone
 );

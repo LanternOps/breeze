@@ -291,7 +291,7 @@ export const TOOL_TIERS = {
   propose_action_plan: 1,
   // Monitoring tools
   query_monitors: 1,
-  manage_monitors: 1,           // Action-level escalation in guardrails
+  manage_monitors: 1,           // Read-only; retired mutations return guidance
   get_service_monitoring_status: 1,
   // W01 (spec §4.4) — read-only reachability for a discovered network asset,
   // with the source and age of the evidence. Wired here rather than added to
@@ -2146,15 +2146,8 @@ export function buildBreezeSdkTools(
       'manage_alert_rules',
       registryDescription('manage_alert_rules'),
       {
-        action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
+        action: z.enum(['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary']),
         ruleId: uuid.optional(),
-        name: z.string().max(200).optional(),
-        templateId: uuid.optional(),
-        targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
-        targetId: uuid.optional(),
-        overrideSettings: z.record(z.string(), z.unknown()).optional(),
-        isActive: z.boolean().optional(),
-        category: z.string().max(100).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },

@@ -75,7 +75,6 @@ vi.mock('./helpers', () => ({
 
 vi.mock('../../services/alertCooldown', () => ({
   setCooldown: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn()
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: vi.fn() }));

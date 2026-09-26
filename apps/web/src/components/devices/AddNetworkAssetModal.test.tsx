@@ -19,6 +19,9 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+import { navigateTo } from '@/lib/navigation';
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
 import AddNetworkAssetModal from './AddNetworkAssetModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -220,14 +223,7 @@ describe('AddNetworkAssetModal', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    // The hand-off opens CreateMonitorForm pre-selected on http_check (via
-    // its `defaultMonitorType` prop) rather than the component's own
-    // icmp_ping default — this test never clicks the "HTTP Check" tile, so a
-    // regression back to the default type would fail it (either the
-    // name-field placeholder wouldn't be the one asserted below, since
-    // icmp_ping shows a different field set, or the submitted monitorType
-    // would be wrong).
-    it('creates an http_check monitor pre-targeted at the asset URL via the hand-off, with no extra clicks', async () => {
+    it('hands off the asset, HTTP type and URL to the monitor editor', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({ id: 'web-2', assetType, url: 'https://shop.example', source: 'manual' }),
       );
@@ -242,20 +238,8 @@ describe('AddNetworkAssetModal', () => {
       await waitFor(() => expect(screen.getByTestId('asset-post-create-add-http-check')).toBeInTheDocument());
       await userEvent.click(screen.getByTestId('asset-post-create-add-http-check'));
 
-      await userEvent.type(screen.getByPlaceholderText(/production web server/i), 'Shop check');
-
-      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ id: 'mon-1' }));
-      await userEvent.click(screen.getByRole('button', { name: /create monitor/i }));
-
-      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        '/monitors',
-        expect.objectContaining({ method: 'POST' }),
-      ));
-      const monitorCall = fetchWithAuthMock.mock.calls.find(([url]) => url === '/monitors')!;
-      const monitorBody = JSON.parse((monitorCall[1] as RequestInit).body as string);
-      expect(monitorBody).toMatchObject({
-        assetId: 'web-2', monitorType: 'http_check', target: 'https://shop.example',
-      });
+      expect(navigateTo).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check&assetId=web-2&checkType=http_check&target=https%3A%2F%2Fshop.example');
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
     });
   });
 });

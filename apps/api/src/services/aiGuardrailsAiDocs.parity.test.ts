@@ -137,6 +137,11 @@ let toolTableRows = 0;
 }
 
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['get', 'create', 'update', 'delete'])('documents manage_monitors:%s at Tier 1', (action) => {
+    const entries = claims.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
+    expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);
+  });
+
   it('found the tier tables it expects to guard', () => {
     // Guards against a rename/restructure silently emptying the sweep.
     expect(tierMatrixRows).toBeGreaterThanOrEqual(4);

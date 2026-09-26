@@ -1507,6 +1507,26 @@ describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
     expect(String(written.errorMessage)).not.toContain('no response from agent');
   });
 
+  // #3445: `reapStaleDeviceCommands` runs first in the same tick and stamps a
+  // timed-out command `failed` with `result.timedOutBy = 'server'`. That row is
+  // terminal, but it is the SERVER's verdict, not an agent reply — reporting
+  // "Agent result was delivered" for it sent the #3445 investigation down the
+  // wrong path. It is a timeout with no response from the agent.
+  it('reports a command the server itself timed out as a timeout, not as a delivered agent result (#3445)', async () => {
+    const { execSet } = arrange({
+      payload: { executionId: 'exec-1' },
+      status: 'failed',
+      result: { status: 'timeout', error: 'Server-side timeout: no response from agent', timedOutBy: 'server' },
+    });
+
+    await reapStaleScriptExecutions();
+
+    const written = execSet.mock.calls[0]![0];
+    expect(written.status).toBe('timeout');
+    expect(String(written.errorMessage)).toContain('no response from agent');
+    expect(String(written.errorMessage)).not.toContain('was delivered');
+  });
+
   // #5128: a `pending`/`queued` execution whose command is still `sent` is now
   // skipped entirely by reapStaleScriptExecutions' own delivery-clock guard
   // (change 4 — reapStaleDeviceCommands owns that clock). So "genuine agent

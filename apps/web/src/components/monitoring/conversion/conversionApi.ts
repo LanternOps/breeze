@@ -39,7 +39,12 @@ export type PartnerConversionPreview = {
 };
 export const readPartnerPreview = (body: unknown): PartnerConversionPreview => unwrap(body);
 export const readRetireResult = (body: unknown): { conversionId: string } => unwrap(body);
-export type PendingCounts = { policies: number; rows: number; pendingPolicies?: Array<{ id: string; name: string }> };
+export type PendingCounts = {
+  policies: number; rows: number; pendingPolicies?: Array<{ id: string; name: string }>;
+  unconvertible: Array<{ sourceTable: ConversionSourceTable; sourceId: string; name: string;
+    reason: string; policyId: string | null; policyName: string | null; retiredAt: string }>;
+  sweep: { sweptAt: string; converted: number; retired: number } | null;
+};
 export type ConvertResult = { conversionIds: string[]; retired: number; monitorsCreated: number };
 export type PartnerConvertResult = { policies: number; converted: number; unconvertible: number };
 
@@ -85,7 +90,8 @@ const TOKEN_SHAPE = /^[A-Za-z]+(?:_[A-Za-z0-9]+)+$/;
  */
 export function conversionErrorMessage(body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
-  const { error, message } = body as { error?: unknown; message?: unknown };
+  const { error: rawError, message } = body as { error?: unknown; message?: unknown };
+  const error = rawError === 'stale_preview' ? 'preview_stale' : rawError;
   if (typeof error === 'string' && (CONVERSION_ERROR_CODES as readonly string[]).includes(error)) {
     return i18n.t(/* i18n-dynamic */ `monitoring:conversion.errorCodes.${error}`);
   }

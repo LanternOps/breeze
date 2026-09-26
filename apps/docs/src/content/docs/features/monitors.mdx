@@ -19,7 +19,8 @@ A monitor combines **what to watch**, **severity and noise**, **responses**,
 
 Policy **Monitors** tabs also offer **Attach existing**, **Create monitor** and
 recommendations for unattached built-ins. Creating a definition alone does not
-deploy it. Definitions retain their organization or partner ownership; incompatible
+enable policy-based alert evaluation. An enabled network-check definition does
+provision an active probe before attachment. Definitions retain their organization or partner ownership; incompatible
 attachments are refused rather than widening access.
 
 ## Conditions
@@ -34,11 +35,40 @@ Composite monitors contain two to ten server-evaluated child conditions,
 matching all or any. They cannot nest or contain agent-delivered/worker-provisioned
 children. Composite conditions do not support per-policy threshold overrides.
 
-Service/process monitors run on the device; no separate legacy watch is required.
+**Service stopped**, **Process stopped** and **Process resource** monitors are
+delivered to the agent directly from the policy's attached monitors; the per-policy
+*Check interval* on the **Monitors** tab sets how often the agent evaluates them.
 Their consecutive-failure setting accepts 1–100. A service restart response carries
 its own maximum attempts (0–50, default 3) and cooldown (30–86400 seconds, default
 300). Agent-local restarts continue through the delivered watch configuration.
 The policy's **Agent collection → Check interval** accepts 10–3600 seconds, default 60.
+
+### Network check
+
+| Kind | Condition | Default severity | Evaluation |
+|---|---|---|---|
+| Network check | An ICMP, TCP, HTTP or DNS probe run from an agent fails N times in a row (optionally: is degraded or slow) | High | Agent (probe) + server (verdict) |
+
+Create network checks here; inspect their history under **Network → Results**.
+The optional asset picker binds an organization-owned check to an asset's site
+and guides alert-device selection. Evaluation is once per check per organization,
+even if that alert device is offline; an online agent runs the probe.
+
+#### Network check fields
+
+| Field | Values |
+|---|---|
+| Check type and target | ICMP, TCP, HTTP or DNS; IP address, hostname or URL |
+| Asset | Optional asset in the same organization |
+| Type options | Ping count; TCP port/banner; HTTP method, expected status/body, TLS and redirects; DNS record/value/nameserver |
+| Treat degraded as failure | Optional; default false |
+| Fail when slower than | Optional response limit, 1–600,000 ms |
+| Poll interval / timeout | 10–86,400 seconds / 1–300 seconds |
+| Consecutive failures | 1–100; default 2 |
+
+The HTTP API field is `expectStatus`, sent as `expectedStatus` to the agent.
+See [Network Checks](/features/network-monitors/) for per-type options, delivery,
+asset binding, operational probes and retained history.
 
 ## Inheritance and overrides
 
@@ -52,24 +82,31 @@ behavior. The policy tab shows inherited attachments being ignored. Conversion m
 set this mode automatically; change it only after reviewing the resulting device
 coverage. The device Monitoring tab shows the effective result.
 
-## Needs conversion
+## Legacy rules
 
-Preview the legacy rows on a policy's **Monitors** tab. A watch may produce a
-state monitor plus separate CPU and memory monitors. Preview reports proposed
-definitions, delivery, open alerts and unconvertible reasons. Convert the parent
-first when required. Missing prerequisite fixes, behavioral differences or a stale
-preview block confirmation; refresh and review before retrying.
+The previous release introduced conversion of legacy alert rules and service/process
+watches to monitors. This release processes remaining sources at startup and retires
+those that cannot convert with a reason. **Alerts → Monitors** lists these items in a
+banner that you can dismiss after review. Source rows and alert history are retained.
+Open alerts from unconvertible retired rules stay open until someone resolves them;
+converted sources' open alerts move to the compiled monitor path.
 
-Conversion retires source rows in place. Active, acknowledged and suppressed
-alerts move to the compiled monitor path with their provenance retained. No source
-row is deleted. **Conversion history → Undo** restores an available ledger entry,
-including retirement entries. W05d disables Undo for sources whose runtime was removed. A flat supported AND/OR group can become a composite;
-nested groups, unsupported process-count conditions and templates with no evaluable
-condition show an explicit reason. **Retire** is a deliberate operator action.
+**Conversion history → Undo** is no longer available for legacy alert rules,
+templates, inline policy rules or service/process watches after upgrading to this
+release. Review and complete conversion on the previous release before upgrading.
+Network checks retain their runtime and are excluded from automatic conversion and retirement.
 
-Complete conversion before the W05d retirement release, at least one release after
-W05c. W05d will process leftovers and list unconvertible retirements for review.
-Until then, review pending rows; a zero count is the completion signal.
+**Converting network checks:** use the banner on **Network → Results** to preview
+and confirm supported checks, or explicitly retire unwanted ones. Conversion
+adopts the probe, keeps results and open-alert status/provenance, and attaches the
+monitor to a cumulative organization-level **Network checks — &lt;org name&gt;**
+policy. Non-alerting probes, mixed rules and unsupported predicates or thresholds
+are refused; a missing runtime prerequisite blocks network preview. Network
+**Conversion history → Undo** remains available while that runtime is retained.
+See [conversion details](/features/network-monitors/#converting-existing-checks).
+
+The retired legacy write endpoints, including `POST /alerts/rules/:id/test`, return `410 Gone`; historical reads remain available.
+Test monitors with `POST /monitor-definitions/:id/test`.
 
 ## Device Monitoring and recurrence
 
@@ -105,3 +142,7 @@ inheritance and enabled state. If notifications are missing, inspect the resolve
 delivery preview and [Delivery](/features/notifications/). If a response is paused,
 inspect recurrence escalation before resetting it. Compiler-managed rows are
 implementation details; change the monitor definition rather than editing them.
+
+**The Monitors page shows *N legacy rules could not be converted*.** Open the list;
+each row names the policy and the reason. Recreate the condition as a monitor
+(Composite for multi-condition rules), then dismiss the banner.

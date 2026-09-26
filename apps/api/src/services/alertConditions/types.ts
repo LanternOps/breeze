@@ -148,6 +148,10 @@ export interface NetworkCheckCondition {
   type: 'network_check';
   monitorId: string;
   consecutiveFailures?: number;
+  /** A degraded result counts as a failure (legacy degraded rule). */
+  degradedIsFailure?: boolean;
+  /** A response slower than this counts as a failure (legacy response_time_gt). */
+  maxResponseMs?: number;
 }
 
 // --- W03 (hardware & RAID monitoring) -------------------------------------
