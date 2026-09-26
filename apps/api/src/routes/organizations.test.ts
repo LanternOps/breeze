@@ -7,9 +7,21 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
 }));
 // PR #7117 T3 — site delete removes the site's owned topology alerts first
 // (proven against real Postgres in siteDeleteTopologyAlerts.integration).
+// M4-D2 (#6000) — it also deletes the site's pinned topology AI investigations
+// in the same transaction (children-first order proven against real Postgres
+// in topologyAiSessionLifecycle / siteTopologySessions integration suites).
+const siteDelete = vi.hoisted(() => ({
+  calls: [] as string[],
+  lockSiteForDelete: vi.fn(async () => true),
+  deleteSiteOwnedTopologyAlerts: vi.fn(async () => 0),
+  deleteSiteTopologyAiSessions: vi.fn(async () => ({ investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0 })),
+}));
 vi.mock('../services/siteOwnedAlerts', () => ({
-  lockSiteForDelete: async () => true,
-  deleteSiteOwnedTopologyAlerts: async () => 0,
+  lockSiteForDelete: siteDelete.lockSiteForDelete,
+  deleteSiteOwnedTopologyAlerts: siteDelete.deleteSiteOwnedTopologyAlerts,
+}));
+vi.mock('../services/topology/siteTopologySessions', () => ({
+  deleteSiteTopologyAiSessions: siteDelete.deleteSiteTopologyAiSessions,
 }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
@@ -169,6 +181,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 describe('organization routes', () => {
   let app: Hono;
@@ -691,8 +704,15 @@ describe('organization routes', () => {
         })
       } as any);
 
+      siteDelete.calls.length = 0;
+      siteDelete.lockSiteForDelete.mockImplementation(async () => { siteDelete.calls.push('lock'); return true; });
+      siteDelete.deleteSiteOwnedTopologyAlerts.mockImplementation(async () => { siteDelete.calls.push('alerts'); return 2; });
+      siteDelete.deleteSiteTopologyAiSessions.mockImplementation(async () => {
+        siteDelete.calls.push('topologySessions');
+        return { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 };
+      });
       vi.mocked(db.delete).mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
+        where: vi.fn(async () => { siteDelete.calls.push('site'); })
       } as any);
 
       const res = await app.request('/orgs/sites/site-1', {
@@ -703,6 +723,17 @@ describe('organization routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // Pinned topology investigations and owned alerts go first, under the
+      // site row lock, in the same transaction as the site row.
+      expect(siteDelete.calls).toEqual(['lock', 'alerts', 'topologySessions', 'site']);
+      expect(siteDelete.deleteSiteTopologyAiSessions).toHaveBeenCalledWith(db, { orgId, siteId: 'site-1' });
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'site.delete',
+        details: {
+          removedTopologyAlerts: 2,
+          topologyInvestigationsDeleted: { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 },
+        },
+      }));
     });
   });
 
