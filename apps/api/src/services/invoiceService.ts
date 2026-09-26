@@ -28,7 +28,8 @@ import {
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
 import type { DbContextRunner } from './accounting/dbContextGuard';
-import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
+import { INVOICE_REMOTE_DELETED_ERROR, type AccountingProviderId } from './accounting/types';
+import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -691,7 +692,7 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
 }
 
 export interface InvoiceAccountingSync {
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   syncStatus: MappingSyncStatus;
   lastSyncedAt: string | null;
   lastError: string | null;
@@ -722,6 +723,7 @@ export interface InvoiceAccountingSync {
 async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): Promise<InvoiceAccountingSync | null> {
   const rows = await db
     .select({
+      provider: accountingConnections.provider,
       syncStatus: accountingEntityMappings.syncStatus,
       lastSyncedAt: accountingEntityMappings.lastSyncedAt,
       lastError: accountingEntityMappings.lastError,
@@ -731,7 +733,6 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     .innerJoin(accountingConnections, and(
       eq(accountingConnections.id, accountingEntityMappings.integrationId),
       eq(accountingConnections.partnerId, partnerId),
-      eq(accountingConnections.provider, 'quickbooks'),
     ))
     .where(and(
       eq(accountingEntityMappings.partnerId, partnerId),
@@ -742,7 +743,7 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
   const row = rows[0];
   if (!row) return null;
   return {
-    provider: 'quickbooks',
+    provider: row.provider as AccountingProviderId,
     syncStatus: row.syncStatus as MappingSyncStatus,
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
@@ -1869,27 +1870,30 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
           eq(accountingEntityMappings.breezeEntityId, paymentId),
         ))
         .limit(1);
-      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false };
+      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false, provider: null };
       const [inv] = await db
         .select({ partnerId: invoices.partnerId })
         .from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1);
-      if (!inv) return { mapping, quickbooksWillReimport: false };
+      if (!inv) return { mapping, quickbooksWillReimport: false, provider: null };
+      // The partner's ONE accounting connection (accounting_connections_partner_idx).
       const [conn] = await db
-        .select({ status: accountingConnections.status, pullPayments: accountingConnections.pullPayments })
+        .select({
+          provider: accountingConnections.provider,
+          status: accountingConnections.status,
+          pullPayments: accountingConnections.pullPayments,
+        })
         .from(accountingConnections)
-        .where(and(
-          eq(accountingConnections.partnerId, inv.partnerId),
-          eq(accountingConnections.provider, 'quickbooks'),
-        ))
+        .where(eq(accountingConnections.partnerId, inv.partnerId))
         .limit(1);
       return {
         mapping,
         quickbooksWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
+        provider: (conn?.provider ?? null) as AccountingProviderId | null,
       };
     }))
     : null;
 
-  const { inv, audit, deleteMappingId } = await db.transaction(async (tx) => {
+  const { inv, audit, deleteMappingId, owningProvider } = await db.transaction(async (tx) => {
     // The payment row carries orgId but not siteId; the parent invoice drives the
     // site-axis guard (a site-restricted caller must not void a payment on an
     // out-of-site invoice) — run it against the LOCKED row.
@@ -1938,24 +1942,32 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // surviving is the part a reader must not have to infer.
     let quickbooksRecordUntouched = false;
     let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
+    // The provider that owns the payment. A remote-origin mapping row cannot
+    // outlive its connection (composite FK, ON DELETE CASCADE), so the fallback
+    // only covers the "no connection" shape, where every pre-Xero row was
+    // QuickBooks by construction.
+    let owningProvider: AccountingProviderId = LEGACY_UNTARGETED_JOB_PROVIDER;
     if (existingMapping && !existingMapping.breezeOrigin) {
+      // The partner's ONE accounting connection (accounting_connections_partner_idx).
       const [conn] = orgScoped ? [undefined] : await tx
         .select({
+          provider: accountingConnections.provider,
           status: accountingConnections.status,
           pullPayments: accountingConnections.pullPayments,
         })
         .from(accountingConnections)
-        .where(and(
-          eq(accountingConnections.partnerId, parentInv.partnerId),
-          eq(accountingConnections.provider, 'quickbooks'),
-        ))
+        .where(eq(accountingConnections.partnerId, parentInv.partnerId))
         .limit(1);
+      const connProvider = orgScoped ? preCheck!.provider : (conn?.provider ?? null) as AccountingProviderId | null;
+      owningProvider = connProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER;
       const willReimport = orgScoped
         ? preCheck!.quickbooksWillReimport
         : !!conn && conn.status === 'connected' && conn.pullPayments;
       if (willReimport) {
+        const label = accountingProviderDisplayName(owningProvider);
+        // The code keeps its QuickBooks name: apps/web reads it (plan preamble item 8).
         throw new InvoiceServiceError(
-          'This payment came from QuickBooks; reverse it in QuickBooks instead',
+          `This payment came from ${label}; reverse it in ${label} instead`,
           409, 'QUICKBOOKS_OWNED_PAYMENT',
         );
       }
@@ -2013,7 +2025,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
-    return { inv, audit, deleteMappingId };
+    return { inv, audit, deleteMappingId, owningProvider };
   });
   // PERSISTED HERE, not left to the caller (review wave 3, finding D2). The
   // route's own `invoice.payment.voided` entry carries the flag too, but the
@@ -2036,7 +2048,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         invoiceId: audit.invoiceId,
         amount: audit.amount,
         reason: audit.untouchedReason,
-        provider: 'quickbooks',
+        provider: owningProvider,
       },
     });
   }
@@ -2101,8 +2113,14 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
       breezeOrigin: accountingEntityMappings.breezeOrigin,
       syncStatus: accountingEntityMappings.syncStatus,
       lastError: accountingEntityMappings.lastError,
+      // The provider that owns the mapping: its own connection (integration_id).
+      provider: accountingConnections.provider,
     })
     .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
     .where(and(
       eq(accountingEntityMappings.partnerId, inv.partnerId),
       eq(accountingEntityMappings.breezeEntityType, 'payment'),
@@ -2119,7 +2137,7 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
     // and the void propagates the deletion — and instead carries a sync badge.
     const source = stripeIds.has(r.id)
       ? ('stripe' as const)
-      : mapping && !mapping.breezeOrigin ? ('quickbooks' as const) : ('manual' as const);
+      : mapping && !mapping.breezeOrigin ? (mapping.provider as AccountingProviderId) : ('manual' as const);
     return {
       ...r,
       source,

@@ -1314,7 +1314,7 @@ accountingRoutes.get(
     const { entityType, q } = c.req.valid('query');
 
     try {
-      const { liveConn } = await resolveConnectionAndToken(partner.partnerId, provider, (fn) => withAuthDbAccessContext(auth, fn));
+      const { liveConn } = await resolveConnectionAndToken(partner.partnerId, { provider }, (fn) => withAuthDbAccessContext(auth, fn));
       const providerImpl = getAccountingProvider(provider);
       const data = entityType === 'org'
         ? (await runOutsideDbContext(() => providerImpl.listRemoteCustomers(liveConn, q))).map((r) => ({

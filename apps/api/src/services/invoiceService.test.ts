@@ -1835,6 +1835,7 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
     queueResult([]); // grouped evidence counts
     queueResult([]); // stripe connection (not connected)
     queueResult([{
+      provider: 'quickbooks',
       syncStatus: 'synced',
       lastSyncedAt: new Date('2026-09-01T12:00:00.000Z'),
       lastError: null,
@@ -1860,6 +1861,7 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
     queueResult([]);
     queueResult([]);
     queueResult([{
+      provider: 'quickbooks',
       syncStatus: 'error',
       lastSyncedAt: null,
       lastError: 'Deleted in QuickBooks',
@@ -2520,6 +2522,38 @@ describe('voidPayment -> QuickBooks delete hook', () => {
 
     expect(res.audit).not.toHaveProperty('quickbooksRecordUntouched');
   });
+
+  // Xero W01: the refusal and the untouched audit name the connection's provider.
+  it('keeps the exact QuickBooks refusal message for a QuickBooks connection', async () => {
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ provider: 'quickbooks', status: 'connected', pullPayments: true }]);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      message: 'This payment came from QuickBooks; reverse it in QuickBooks instead',
+    });
+  });
+
+  it('names the owning provider in the refusal, keeping the QUICKBOOKS_OWNED_PAYMENT code', async () => {
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ provider: 'xero', status: 'connected', pullPayments: true }]);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      message: 'This payment came from Xero; reverse it in Xero instead',
+    });
+  });
+
+  it('the untouched audit carries the connection\'s provider, and the returned audit shape is unchanged', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ provider: 'quickbooks', status: 'connected', pullPayments: false }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      details: { invoiceId: 'i1', amount: '40.00', reason: 'pull_disabled', provider: 'quickbooks' },
+    }));
+    expect(res.audit).not.toHaveProperty('provider');
+  });
 });
 
 describe('listPayments source tagging + accountingSync', () => {
@@ -2540,7 +2574,9 @@ describe('listPayments source tagging + accountingSync', () => {
   }
 
   const mapping = (over: Record<string, unknown> = {}) => ({
-    breezeEntityId: 'pay1', breezeOrigin: true, syncStatus: 'synced', lastError: null, ...over,
+    breezeEntityId: 'pay1', breezeOrigin: true, syncStatus: 'synced', lastError: null,
+    provider: 'quickbooks', // the joined accounting_connections.provider (Xero W01)
+    ...over,
   });
 
   it('classifies a QUICKBOOKS-ORIGIN mapped payment as quickbooks with no sync card', async () => {
@@ -2551,6 +2587,14 @@ describe('listPayments source tagging + accountingSync', () => {
     const rows = await svc.listPayments('i1', actor);
 
     expect(rows).toEqual([expect.objectContaining({ id: 'pay1', source: 'quickbooks', accountingSync: null })]);
+  });
+
+  it('tags a remote-origin payment with the provider of the mapping\'s own connection (Xero W01)', async () => {
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ breezeOrigin: false, provider: 'xero' })]);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({ source: 'xero', accountingSync: null });
   });
 
   it('classifies a BREEZE-ORIGIN mapped payment as manual, with its sync state attached', async () => {

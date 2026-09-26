@@ -92,6 +92,17 @@ vi.mock('./accountingMappingService', () => ({
 }));
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ createPayment: createPaymentMock, deletePayment: deletePaymentMock }),
+  providerSupports: (id: string) => id === 'quickbooks',
+  LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
+}));
+// Xero W01: a payment mapping's audit names ITS connection's provider. Resolved
+// against the same stateful fake below: the mapping row -> its integration_id's
+// connection, partner-guarded exactly like the real join.
+vi.mock('./accountingConnectionService', () => ({
+  getConnectionForMapping: async (_dbc: unknown, mappingId: string, partnerId: string) => {
+    const row = currentMappings.find((m) => m.id === mappingId && m.partnerId === partnerId);
+    return row ? currentConns.find((c) => c.id === row.integrationId && c.partnerId === partnerId) ?? null : null;
+  },
 }));
 vi.mock('../auditEvents', () => ({
   writeAuditEvent: writeAuditEventMock,
@@ -378,7 +389,12 @@ const HANDLED_MAPPING_COLUMNS: ReadonlySet<string> = new Set([
 /** Live row references (so an UPDATE's `Object.assign` sticks). */
 function matchedRows(table: unknown, cond: unknown): unknown[] {
   if (table === accountingConnections) {
-    return currentConns.filter((r) => boundTo(cond, r.partnerId) && boundTo(cond, r.provider) && boundTo(cond, r.status));
+    // `provider` is evaluated only when the condition references it: the
+    // partner's ONE connection is read without a provider filter (Xero W01).
+    const text = compiledSql(cond);
+    const providerOk = (r: ConnRow): boolean =>
+      !text.includes('"accounting_connections"."provider"') || boundTo(cond, r.provider);
+    return currentConns.filter((r) => boundTo(cond, r.partnerId) && providerOk(r) && boundTo(cond, r.status));
   }
   if (table === invoices) {
     return currentInvoices.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId));
@@ -616,15 +632,24 @@ describe('requestPaymentPush gating (spec decision 10)', () => {
     expect(mapping()).toMatchObject({ id, pendingOp: 'push', breezeOrigin: true });
   });
 
-  it('reads the connection partner-scoped, connected and provider-filtered', async () => {
+  it('reads the partner\'s ONE connection partner-scoped and connected, with no provider filter (Xero W01)', async () => {
     currentMappings = [invoiceMapRow(), orgMapRow()];
     await runCtx(request);
 
     const connSelect = stmtsOf('select', 'accounting_connections')[0]!;
     expect(compiledSql(connSelect.where)).toMatch(
-      /"accounting_connections"\."partner_id" = \$\d+ and "accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+/i,
+      /"accounting_connections"\."partner_id" = \$\d+ and "accounting_connections"\."status" = \$\d+/i,
     );
-    expect(paramsOf(connSelect.where)).toEqual([PARTNER, 'quickbooks', 'connected']);
+    expect(compiledSql(connSelect.where)).not.toContain('"accounting_connections"."provider"');
+    expect(paramsOf(connSelect.where)).toEqual([PARTNER, 'connected']);
+  });
+
+  it('treats a connection whose provider cannot push payments as not connected (capability gate)', async () => {
+    currentConns = [connRow({ provider: 'xero' })];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await expect(runCtx(request)).resolves.toBeNull();
+    expect(stmtsOf('insert', 'accounting_entity_mappings')).toHaveLength(0);
   });
 
   it('returns null when push_payments is off — no row, nothing to enqueue', async () => {
@@ -2331,6 +2356,67 @@ describe('listOwedPaymentMappings (the sweep query)', () => {
     expect(sql).toContain('"accounting_entity_mappings"."breeze_entity_type" = $1');
     expect(sql).toMatch(/"accounting_entity_mappings"\."pending_op" in \(\$\d+, \$\d+\)/i);
     expect(paramsOf(sweep.where).slice(0, 3)).toEqual(['payment', 'push', 'delete']);
+  });
+});
+
+describe('connection targets and audit providers (Xero W01)', () => {
+  it('pushPaymentToAccounting passes its target to the connection resolve', async () => {
+    const target = { connectionId: CONN_ID };
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx, target)).resolves.toBe('pushed');
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+  });
+
+  it('deletePaymentInAccounting passes its target to the connection resolve', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending',
+    })];
+    const target = { connectionId: CONN_ID };
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx, target)).resolves.toBe('deleted');
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+  });
+
+  it('the orphan_retained audit names the mapping\'s own connection provider (byte-identical for QuickBooks)', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null, pendingSince: null, remoteEntityId: null,
+      syncStatus: 'error', terminalReason: 'orphaned', lastError: 'x',
+    })];
+
+    await runCtx(() => requestPaymentDelete(db, PAYMENT));
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.orphan_retained',
+      details: { provider: 'quickbooks', invoicePaymentId: PAYMENT, mappingId: MAPPING },
+    }));
+  });
+
+  it('the delete_unresolved audit names the dropped row\'s connection provider, read BEFORE the row is deleted', async () => {
+    currentConns = [connRow({ provider: 'xero' })];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete', remoteEntityId: null,
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
+
+    expect(mapping()).toBeNull();
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.delete_unresolved',
+      details: expect.objectContaining({ provider: 'xero', mappingId: MAPPING }),
+    }));
+  });
+
+  it('the delete_unresolved audit keeps provider quickbooks for a QuickBooks row', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete', remoteEntityId: null,
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.delete_unresolved',
+      details: expect.objectContaining({ provider: 'quickbooks' }),
+    }));
   });
 });
 

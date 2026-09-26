@@ -9,6 +9,7 @@ const {
   updateMock,
   deleteMock,
   getConnectionMock,
+  resolveActiveConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
   listRemoteItemsMock,
@@ -28,6 +29,7 @@ const {
     updateMock: vi.fn(),
     deleteMock: vi.fn(),
     getConnectionMock: vi.fn(),
+    resolveActiveConnectionMock: vi.fn(),
     getValidAccessTokenMock: vi.fn(),
     listRemoteCustomersMock: vi.fn(),
     listRemoteItemsMock: vi.fn(),
@@ -73,6 +75,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('./accountingConnectionService', () => ({
   getConnection: getConnectionMock,
+  resolveActiveConnection: resolveActiveConnectionMock,
 }));
 
 vi.mock('./accountingTokens', () => ({
@@ -88,6 +91,7 @@ vi.mock('./providerRegistry', () => ({
     upsertCustomer: upsertCustomerMock,
     upsertItem: upsertItemMock,
   }),
+  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
 
 vi.mock('../auditEvents', () => ({ writeAuditEvent: writeAuditEventMock, requestLikeFromSnapshot: () => ({}) }));
@@ -331,6 +335,9 @@ beforeEach(() => {
   stubUpdate();
   stubReads();
   getConnectionMock.mockResolvedValue(connectedConn());
+  // Xero W01: the core resolves the partner's ONE active connection. Delegate to
+  // the pre-existing getConnection fixture so every older test is unchanged.
+  resolveActiveConnectionMock.mockImplementation((_db: unknown, partnerId: string) => getConnectionMock(_db, partnerId, 'quickbooks'));
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
   listRemoteCustomersMock.mockResolvedValue([]);
   listRemoteItemsMock.mockResolvedValue([]);
@@ -1448,5 +1455,40 @@ describe('syncMappedEntity', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error), undefined, expect.objectContaining({ remote_entity_id: 'qb-created' }),
     );
+  });
+});
+
+describe('resolveConnection targets (Xero W01)', () => {
+  it('no target: returns the partner\'s active connection whatever its provider', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c1', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1')).resolves.toMatchObject({ id: 'c1' });
+  });
+
+  it('provider target that does not match the active connection is not_connected, named after the TARGET provider', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c1', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { provider: 'xero' })).rejects.toMatchObject({
+      code: 'not_connected', status: 404, message: 'Xero is not connected for this partner',
+    });
+  });
+
+  it('connectionId target that no longer matches the active row is not_connected (the destination is never reinterpreted)', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c-new', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { connectionId: 'c-old' })).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('no row at all keeps the QuickBooks wording for a quickbooks route and a neutral one otherwise', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(null);
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { provider: 'quickbooks' })).rejects.toMatchObject({ message: 'QuickBooks is not connected for this partner' });
+    await expect(resolveConnection('p1')).rejects.toMatchObject({ message: 'No accounting system is connected for this partner' });
+  });
+
+  it('reauth_required keeps its exact QuickBooks message', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks', status: 'reauth_required' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1')).rejects.toMatchObject({ code: 'reauth_required', message: 'QuickBooks needs to be reconnected' });
   });
 });

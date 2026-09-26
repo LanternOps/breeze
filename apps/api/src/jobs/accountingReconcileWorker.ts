@@ -357,7 +357,7 @@ export async function processReconcileConnectionJob(
       return null;
     }
 
-    const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
+    const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, { provider: 'quickbooks' }, runInDbContext);
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting
     // to a different QuickBooks company reuses this same connection row, so every
     // write below re-checks this value inside its own transaction and the final

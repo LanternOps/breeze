@@ -424,7 +424,8 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
-    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks', expect.any(Function));
+    // Xero W01: the route's :provider is the connection target.
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', { provider: 'quickbooks' }, expect.any(Function));
     await expectAuthContextRunner(resolveConnectionAndTokenMock.mock.calls[0]![2]);
     expect(listRemoteCustomersMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Acme');
     expect(listRemoteItemsMock).not.toHaveBeenCalled();

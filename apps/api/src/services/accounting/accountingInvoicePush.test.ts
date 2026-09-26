@@ -102,6 +102,7 @@ vi.mock('./providerRegistry', () => ({
     pushInvoice: pushInvoiceMock,
     voidInvoice: voidInvoiceMock,
   }),
+  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
 
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
@@ -1576,5 +1577,42 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
 
     expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('connection target threading (Xero W01)', () => {
+  it('passes the caller\'s target to the connection resolve, and no target means the partner\'s active connection', async () => {
+    const target = { connectionId: CONN_ID };
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx, target);
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+
+    resolveConnectionMock.mockClear();
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, undefined);
+  });
+
+  it('re-resolves the SAME target when persisting a pre-flight refusal in its own context', async () => {
+    setup({ invoice: { currencyCode: 'EUR' } });
+    resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+    const target = { provider: 'quickbooks' as const };
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx, target)).rejects.toMatchObject({ code: 'currency_mismatch' });
+    expect(resolveConnectionMock).toHaveBeenCalledTimes(2);
+    expect(resolveConnectionMock.mock.calls.every((call) => call[1] === target)).toBe(true);
+  });
+
+  it('syncs a stale customer mapping under the RESOLVED connection\'s provider', async () => {
+    setup({ mappings: [orgMappingRow({ syncStatus: 'pending' })] });
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+    expect(syncMappedEntityMock).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'quickbooks', breezeEntityType: 'org' }), runCtx,
+    );
+  });
+
+  it('voidInvoiceInAccounting passes its target through', async () => {
+    setup({ mappings: [orgMappingRow()] });
+    const target = { connectionId: CONN_ID };
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx, target);
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
   });
 });
