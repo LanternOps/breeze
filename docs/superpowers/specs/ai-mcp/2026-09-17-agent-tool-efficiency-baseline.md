@@ -255,11 +255,11 @@ Production output-size report: `not run` — needs `docs/superpowers/specs/ai-mc
 
 | Surface | Tools sent (main) | Tools sent (branch) | Δ tools | Registry bytes (main) | Registry bytes (branch) | Δ bytes | Turn-1 tokens (main/branch/Δ) |
 |---|---|---|---|---|---|---|---|
-| chat | 136 | 166 | +30 | 119280 | 138964 | +19684 | not measured: ANTHROPIC_API_KEY absent |
-| agent-full | 136 | 166 | +30 | 119280 | 138964 | +19684 | not measured: ANTHROPIC_API_KEY absent |
-| helper-standard | 136 | 166 | +30 | 119280 | 138964 | +19684 | not measured: ANTHROPIC_API_KEY absent |
+| chat | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| agent-full | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| helper-standard | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
 
-`list_monitors` and `get_monitor` were dropped from this PR's wiring after this table was first measured (held for a follow-up PR) and the branch/Δ columns above are re-measured against the same method to reflect that. The +30 tool delta is this PR's wiring total: 26 newly tiered read-only tools plus the 4 script-library reads newly declared on the main server. The by-domain tool index (`renderToolIndexByDomain(listChatSurfaceToolNames())`) grows from 4943 to 5662 bytes. The registry counts are lower than the `TOOL_TIERS` counts because `TOOL_TIERS` also includes env-gated tool sets (M365, Google Workspace, script authoring) that are off by default and therefore absent from `buildBreezeSdkTools`'s output under this measurement's unset env — see §1's "Env-gating caveat" for the same floor-vs-ceiling distinction on the original A-W01 numbers.
+The +32 tool delta is this PR's wiring total: 28 newly tiered read-only tools plus the 4 script-library reads newly declared on the main server. The by-domain tool index (`renderToolIndexByDomain(listChatSurfaceToolNames())`) grows from 4943 to 5690 bytes. The registry counts are lower than the `TOOL_TIERS` counts because `TOOL_TIERS` also includes env-gated tool sets (M365, Google Workspace, script authoring) that are off by default and therefore absent from `buildBreezeSdkTools`'s output under this measurement's unset env — see §1's "Env-gating caveat" for the same floor-vs-ceiling distinction on the original A-W01 numbers.
 
 **W01 is recorded, not gated (spec D5); W02–W04 each carry +8k against the post-W01 main.**
 
