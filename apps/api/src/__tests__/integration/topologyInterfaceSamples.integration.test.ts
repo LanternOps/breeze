@@ -24,7 +24,7 @@ import { TOPOLOGY_METRIC_NAMES } from '../../services/topology/metrics';
 import { canonicalIdentityKey } from '../../services/topology/identity';
 
 const TARGET = 'snmp:192.0.2.10';
-const MIGRATION = '2026-11-02-100000-topology-interface-samples.sql';
+const MIGRATION = '2026-11-03-090000-topology-interface-samples.sql';
 const UINT64_MAX = '18446744073709551615';
 const base = fixtureFile.valid.samples[0]!;
 const iso = (ms: number) => new Date(ms).toISOString();

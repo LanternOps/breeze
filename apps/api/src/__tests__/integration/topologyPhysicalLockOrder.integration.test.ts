@@ -89,7 +89,7 @@ describe('physical ingest lock order vs the device lifecycle trigger (#5998 revi
     expect(ingest).toMatchObject(bothSitesAccepted);
   });
 
-  // The source-lifecycle trigger (2026-11-01-100000) walks the moved device's
+  // The source-lifecycle trigger (2026-11-03-080000) walks the moved device's
   // sites in site_id order: state(S), then S's sources. It cannot interleave
   // with an upload by the same device: a site_id change rewrites the
   // devices(id, org_id, site_id) unique key, so the move takes the device row

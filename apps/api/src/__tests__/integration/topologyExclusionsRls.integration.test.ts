@@ -13,7 +13,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { createSite } from './db-utils';
 import { createTopologyGraph, createTopologyTenant, orgContext } from './topology-fixtures';
 
-const migrationFile = '2026-11-01-130000-topology-view-exclusions.sql';
+const migrationFile = '2026-11-03-080400-topology-view-exclusions.sql';
 const migration = () => readFile(new URL(`../../../migrations/${migrationFile}`, import.meta.url), 'utf8');
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext(orgContext(orgId), action);
 const rejected = (work: Promise<unknown>, code: string) => expect(work).rejects.toMatchObject({ cause: { code } });

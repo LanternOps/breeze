@@ -8,7 +8,7 @@ import { getTestDb } from './setup';
 // but no migration ever created that permission — so no role could grant it and topology
 // diagnostics / policy arming were reachable only by wildcard roles. Fixture helpers create
 // permission rows on demand, so assert against the migration itself on a cleared slate.
-const MIGRATION = '../../../migrations/2026-11-02-135000-topology-execute-permission.sql';
+const MIGRATION = '../../../migrations/2026-11-03-090700-topology-execute-permission.sql';
 
 describe('topology:execute permission migration', () => {
   it('creates the permission and grants it to the admin roles only, idempotently', async () => {

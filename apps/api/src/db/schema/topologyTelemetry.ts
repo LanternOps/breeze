@@ -6,7 +6,7 @@ import { topologyCollectionSources, topologyInterfaces } from './topologyCollect
 export type TopologyInterfaceSampleResolution = typeof TOPOLOGY_INTERFACE_SAMPLE_RESOLUTIONS[number];
 
 /**
- * M3 interface measurements (migration 2026-11-02-100000). Partitioned LIST
+ * M3 interface measurements (migration 2026-11-03-090000). Partitioned LIST
  * (resolution) -> RANGE (sampled_at) with bounded daily leaves and no default
  * partition; Drizzle models the parent only, leaves are created by
  * `breeze_ensure_topology_interface_sample_partition`. Identity is

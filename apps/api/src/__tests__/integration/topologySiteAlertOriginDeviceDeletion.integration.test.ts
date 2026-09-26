@@ -1,7 +1,7 @@
 /**
  * PR #7117 re-review: a SITE-OWNED topology alert (M3-D6, alerts.topology_site_id
  * NOT NULL) keeps its org when its origin device moves org — the ownership
- * guard (migrations/2026-11-02-110200-topology-alert-ownership.sql) pins
+ * guard (migrations/2026-11-03-090400-topology-alert-ownership.sql) pins
  * org_id to the site — but it keeps `device_id` → the moved device, whose FK
  * is NO ACTION. So after a move-org the device's NEW org holds a device that a
  * row in ANOTHER org still references:

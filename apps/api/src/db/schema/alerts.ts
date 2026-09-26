@@ -139,7 +139,7 @@ export const alerts = pgTable('alerts', {
   // `alerts_open_rule_device_subject_uidx` enforces open-alert identity below.
   subjectKey: text('subject_key'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  // Topology M3 (M3-D6, migration 2026-11-02-110200): a recurring topology
+  // Topology M3 (M3-D6, migration 2026-11-03-090400): a recurring topology
   // check alert is OWNED by the topology site (immutable), not by the origin
   // device (`device_id`, provenance only). Set together at insert, or both
   // NULL for every other alert; site authorization follows this column.
