@@ -467,7 +467,9 @@ export async function decideIntentApproval(
     if (err instanceof ActionError && (err.status === 401 || err.status === 403)) {
       stepUpGrant = null;
     }
-    if (isFreshFactorRequired(err)) return 'fresh_factor_required';
+    // Only a caller that asked for the fresh-factor path handles this outcome;
+    // everyone else (e.g. the approvals inbox) keeps the pre-existing mapping.
+    if (freshFactor && isFreshFactorRequired(err)) return 'fresh_factor_required';
     if (isStepUpRequired(err)) return 'needs_device';
     if (isNotSoleApprover(err)) return 'not_sole_approver';
     throw err;

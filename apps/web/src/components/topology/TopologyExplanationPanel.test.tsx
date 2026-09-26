@@ -39,6 +39,14 @@ const turn = (explanation: unknown, extra: unknown[] = []) => [
   { type: 'message_start', messageId: 'm1' }, { type: 'topology_progress', phase: 'analyzing' }, ...extra,
   { type: 'topology_explanation', explanation }, { type: 'done' },
 ];
+/**
+ * A turn blocked on a proposal: the server holds the turn open while the
+ * approval wait runs, so no `done` arrives while the card is actionable.
+ */
+const proposalTurn = (explanation: unknown, extra: unknown[]) => [
+  { type: 'message_start', messageId: 'm1' }, { type: 'topology_progress', phase: 'analyzing' },
+  { type: 'topology_explanation', explanation }, ...extra,
+];
 
 function renderPanel(props: Partial<Parameters<typeof TopologyExplanationPanel>[0]> = {}) {
   const handlers = { onInvestigation: vi.fn(), onRun: vi.fn(), onEvidenceSelect: vi.fn() };
@@ -152,7 +160,7 @@ describe('Explain this (M4 Task 5)', () => {
   });
 
   it('keeps a completed answer as explicitly historical after the map changes, with its proposal disabled', async () => {
-    serve(turn(aiExplanationFixture(), [
+    serve(proposalTurn(aiExplanationFixture(), [
       { type: 'approval_required', executionId: 'e1', toolName: 'diagnose_connectivity', description: 'Run gateway reachability check from Core switch', input: { recipe_id: 'gateway_basic', origin_device_id: AI.device, family: 'ipv4', context_key: 'default', proposal_expires_at: '2026-09-26T12:15:00.000Z' }, intentBacked: true, selfApprovalRequestId: 'ap-1', approvalScope: 'supervised' },
     ]));
     const { rerender } = renderPanel();
@@ -177,7 +185,7 @@ describe('proposed diagnostic approval (M4-D3)', () => {
 
   it('shows the pinned origin, recipe, destinations and limits, and approves with a fresh factor — nothing is dispatched by the panel', async () => {
     decideIntentApproval.mockResolvedValue('decided');
-    serve(turn(aiExplanationFixture(), [{ type: 'topology_progress', phase: 'awaiting_approval' }, proposalEvent]));
+    serve(proposalTurn(aiExplanationFixture(), [{ type: 'topology_progress', phase: 'awaiting_approval' }, proposalEvent]));
     renderPanel();
     fireEvent.click(screen.getByTestId('topology-explain'));
     const card = await screen.findByTestId('topology-proposed-check');
@@ -191,7 +199,7 @@ describe('proposed diagnostic approval (M4-D3)', () => {
   });
 
   it('a read-only viewer sees the proposal but cannot approve it', async () => {
-    serve(turn(aiExplanationFixture(), [proposalEvent]));
+    serve(proposalTurn(aiExplanationFixture(), [proposalEvent]));
     renderPanel({ canApprove: false });
     fireEvent.click(screen.getByTestId('topology-explain'));
     expect(await screen.findByTestId('topology-proposal-disabled')).toHaveTextContent("can't run diagnostics");
@@ -200,7 +208,7 @@ describe('proposed diagnostic approval (M4-D3)', () => {
 
   it('an invalidated approval (content changed) is terminal: the card is withdrawn, never re-offered', async () => {
     decideIntentApproval.mockRejectedValue(new ActionError('changed', 409, undefined, { error: 'digest_mismatch' }));
-    serve(turn(aiExplanationFixture(), [proposalEvent]));
+    serve(proposalTurn(aiExplanationFixture(), [proposalEvent]));
     renderPanel();
     fireEvent.click(screen.getByTestId('topology-explain'));
     fireEvent.click(await screen.findByTestId('topology-proposal-approve'));
@@ -211,7 +219,7 @@ describe('proposed diagnostic approval (M4-D3)', () => {
 
   it('a rejection sends deny with no ceremony', async () => {
     decideIntentApproval.mockResolvedValue('decided');
-    serve(turn(aiExplanationFixture(), [proposalEvent]));
+    serve(proposalTurn(aiExplanationFixture(), [proposalEvent]));
     renderPanel();
     fireEvent.click(screen.getByTestId('topology-explain'));
     fireEvent.click(await screen.findByTestId('topology-proposal-deny'));

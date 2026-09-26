@@ -278,6 +278,11 @@ export const useAiStore = create<AiState>()(
       // refuses a device or M365 binding.
       const selection = topologySelectionOf(pageContext);
       const errorFallback = i18n.t('topology:ai.startFailed');
+      // Take the shared store over from whatever it was streaming: a superseded
+      // stream must stop writing, and a stale `isStreaming` would make the
+      // investigation's first sendMessage a silent no-op.
+      activeStreamToken += 1;
+      set({ isStreaming: false, isInterrupting: false, pendingApproval: null, pendingPlan: null, activePlan: null });
       try {
         const data = await runAction<{ id: string; orgId?: string | null }>({
           request: () => fetchWithAuth('/ai/sessions', {
@@ -524,6 +529,10 @@ export const useAiStore = create<AiState>()(
               if (!ownsStream()) break;
               if (topologyTurn && !TOPOLOGY_TURN_EVENTS.has(event.type)) continue;
               currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
+              // The tool_result / unattended_release events that normally withdraw
+              // an approval card never reach a topology turn: withdraw it when the
+              // run is announced or the turn ends (decided elsewhere, or timed out).
+              if (topologyTurn && (event.type === 'done' || event.type === 'topology_diagnostic_run')) set({ pendingApproval: null });
             } catch (parseErr) {
               console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
             }

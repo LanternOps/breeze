@@ -76,6 +76,16 @@ describe('topology session creation', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
+  it('takes over a store still streaming another session, so the first question is actually sent', async () => {
+    useAiStore.setState({ sessionId: 'sess-old', isStreaming: true, pendingPlan: { planId: 'p', steps: [] } as never });
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ id: 'sess-topo', orgId: 'org-1' }));
+    await useAiStore.getState().createSession({ pageContext: topologyContext });
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-topo', isStreaming: false, pendingPlan: null });
+    fetchWithAuthMock.mockResolvedValueOnce(sseResponse([{ type: 'message_start', messageId: 'm1' }, { type: 'done' }]));
+    await useAiStore.getState().sendMessage('Explain this selection.');
+    expect(fetchWithAuthMock).toHaveBeenLastCalledWith('/ai/sessions/sess-topo/messages', expect.anything());
+  });
+
   it('an ordinary session clears any topology pin', async () => {
     useAiStore.setState({ topologySiteId: SITE, topologySelection: { siteId: SITE, subject: { kind: 'node', id: NODE }, view: 'physical', graphRevision: '7' } });
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ id: 'sess-chat', orgId: 'org-1' }));
@@ -109,9 +119,20 @@ describe('topology turn streaming', () => {
     expect(transcript).not.toContain('RAW TOOL OUTPUT');
     expect(state.messages.some((m) => m.role === 'tool_use' || m.role === 'tool_result')).toBe(false);
     expect(state.messages.find((m) => m.role === 'assistant')?.topologyExplanation).toEqual(explanation);
-    expect(state.pendingApproval).toMatchObject({ toolName: 'diagnose_connectivity', selfApprovalRequestId: 'ap-1' });
+    // The approval passed the filter, then was withdrawn when its run was announced.
+    expect(state.pendingApproval).toBeNull();
     expect(state.topologyRunId).toBe(RUN);
     expect(state.topologyPhase).toBeNull();
+  });
+
+  it('withdraws a proposal card when the turn ends or its run is announced (decided elsewhere or timed out)', async () => {
+    const approval = { type: 'approval_required', executionId: 'e1', toolName: 'diagnose_connectivity', input: {}, description: 'x', intentBacked: true, selfApprovalRequestId: 'ap-1', approvalScope: 'supervised' };
+    fetchWithAuthMock.mockResolvedValueOnce(sseResponse([{ type: 'message_start', messageId: 'm1' }, approval, { type: 'topology_diagnostic_run', runId: RUN, state: 'queued' }]));
+    await useAiStore.getState().sendMessage('Explain this selection.');
+    expect(useAiStore.getState().pendingApproval).toBeNull();
+    fetchWithAuthMock.mockResolvedValueOnce(sseResponse([{ type: 'message_start', messageId: 'm2' }, approval, { type: 'done' }]));
+    await useAiStore.getState().sendMessage('Explain this selection.');
+    expect(useAiStore.getState().pendingApproval).toBeNull();
   });
 
   it('keeps the current progress phase while the turn runs', async () => {

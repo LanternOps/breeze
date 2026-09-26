@@ -294,6 +294,13 @@ describe('decideIntentApproval — fresh approver factor (topology M4-D3)', () =
     expect(JSON.parse((fetchWithAuth.mock.calls[1] as [string, RequestInit])[1].body as string)).toEqual({ proof: PROOF });
   });
 
+  it("without the flag, a refusal still maps to needs_device (callers such as the approvals inbox never see the new outcome)", async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3, reason: 'fresh_mfa_required' }), { status: 403 }));
+    expect(await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes')).toBe('needs_device');
+  });
+
   it('deny with freshFactor needs no ceremony', async () => {
     await decideIntentApproval('ap-1', 'deny', undefined, 'supervised', { freshFactor: true });
     expect(getApprovalAssertion).not.toHaveBeenCalled();
