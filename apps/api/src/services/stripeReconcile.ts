@@ -64,6 +64,35 @@ export interface RecordStripePaymentOptions {
   markChargedRepairIfRevoked?: boolean;
 }
 
+/**
+ * Runs one post-commit side effect of a Stripe capture (#7069). By the time these
+ * run, the capture's transaction has COMMITTED: the payment row, mapping link and
+ * invoice status are durable. A throw from here would make recordStripePayment
+ * reject, so the portal settle route would answer { settled:false } and the sweep
+ * would count a failure for money that is already recorded (and a webhook would
+ * 500 into a Stripe retry that short-circuits on the linked mapping). So a failure
+ * is logged and reported to Sentry, never propagated. Returns false on failure so
+ * a caller that depends on the step's result can react.
+ */
+async function afterCommit(
+  stage: string,
+  ctx: { partnerId: string; invoiceId: string; stripeObjectId: string },
+  fn: () => Promise<void>,
+): Promise<boolean> {
+  try {
+    await fn();
+    return true;
+  } catch (err) {
+    console.error(`[stripeReconcile] post-commit ${stage} failed (capture already committed)`,
+      `invoiceId=${ctx.invoiceId}`, `stripeObjectId=${ctx.stripeObjectId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      partner_id: ctx.partnerId,
+      stripe_reconcile_stage: stage,
+    });
+    return false;
+  }
+}
+
 export async function recordStripePayment(
   input: CaptureInput,
   options: RecordStripePaymentOptions = {},
@@ -199,16 +228,21 @@ export async function recordStripePayment(
   });
 
   // Side effects AFTER the transaction commits (and the row locks release).
+  // Every one of them is best-effort — see afterCommit (#7069).
   if (outcome.kind === 'terminal') {
+    const commitCtx = { partnerId: outcome.partnerId, invoiceId: outcome.invoiceId, stripeObjectId: input.stripeObjectId };
     console.warn('[stripeReconcile] terminal payment failure', { stripeObjectId: input.stripeObjectId, invoiceId: outcome.invoiceId, reason: outcome.reason });
     // A customer was charged on Stripe and we are refusing to record it (currency
     // mismatch, overpayment, account mismatch, void/draft invoice). That is a money
     // divergence requiring human reconciliation — surface it to Sentry, not just logs.
     captureException(new Error(`[stripeReconcile] terminal payment failure (${outcome.reason}) stripeObjectId=${input.stripeObjectId} invoiceId=${outcome.invoiceId}`));
-    await emitInvoiceEvent({ type: 'payment.failed', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId });
+    await afterCommit('settle-emit-payment.failed', commitCtx, () => emitInvoiceEvent({
+      type: 'payment.failed', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId }));
   } else if (outcome.kind === 'recorded') {
-    await emitInvoiceEvent({ type: 'payment.recorded', invoiceId: outcome.invoiceId, orgId: outcome.orgId,
-      partnerId: outcome.partnerId, paymentId: outcome.paymentId });
+    const commitCtx = { partnerId: outcome.partnerId, invoiceId: outcome.invoiceId, stripeObjectId: input.stripeObjectId };
+    await afterCommit('settle-emit-payment.recorded', commitCtx, () => emitInvoiceEvent({
+      type: 'payment.recorded', invoiceId: outcome.invoiceId, orgId: outcome.orgId,
+      partnerId: outcome.partnerId, paymentId: outcome.paymentId }));
     // Fire-and-forget nudge. The enqueue helper is itself Redis-outage-safe: the
     // mapping row is the durable record, so a lost job only delays the push
     // until the reconcile sweep re-enqueues it. The extra try/catch matters more
@@ -243,12 +277,19 @@ export async function recordStripePayment(
     }
     let paidAfterReversals = outcome.paid;
     if (appliedReversals > 0) {
-      const [current] = await withSystemDbAccessContext(() => db.select({ status: invoices.status })
-        .from(invoices).where(eq(invoices.id, outcome.invoiceId)).limit(1));
-      paidAfterReversals = current?.status === 'paid';
+      // A reversal may have un-paid the invoice. If the re-read fails we cannot
+      // confirm it is still paid, so invoice.paid is NOT announced (a false
+      // "paid" is worse than a missing one; the invoice row itself is correct).
+      paidAfterReversals = false;
+      await afterCommit('settle-post-reversal-status', commitCtx, async () => {
+        const [current] = await withSystemDbAccessContext(() => db.select({ status: invoices.status })
+          .from(invoices).where(eq(invoices.id, outcome.invoiceId)).limit(1));
+        paidAfterReversals = current?.status === 'paid';
+      });
     }
     if (paidAfterReversals) {
-      await emitInvoiceEvent({ type: 'invoice.paid', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId });
+      await afterCommit('settle-emit-invoice.paid', commitCtx, () => emitInvoiceEvent({
+        type: 'invoice.paid', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId }));
     }
   }
   return { invoiceId: outcome.invoiceId };
