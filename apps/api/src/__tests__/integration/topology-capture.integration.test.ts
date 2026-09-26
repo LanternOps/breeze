@@ -13,7 +13,7 @@ const captureMigration = '2026-10-22-150200-topology-legacy-capture.sql';
 // Later migrations CREATE OR REPLACE the capture functions (M2 D5 delete cause).
 // A replay must re-apply the whole chain, or it leaves the M0 bodies installed
 // for every suite that runs after this one in the same database.
-const captureMigrationChain = [captureMigration, '2026-11-01-110100-topology-legacy-delete-cause.sql'];
+const captureMigrationChain = [captureMigration, '2026-11-03-080200-topology-legacy-delete-cause.sql'];
 type Scope = { orgId: string; siteId: string };
 async function manual(scope: Scope, id = crypto.randomUUID()) {
   await scoped(scope.orgId, () => db.execute(sql`INSERT INTO topology_manual_nodes (id, org_id, site_id, label, role)
