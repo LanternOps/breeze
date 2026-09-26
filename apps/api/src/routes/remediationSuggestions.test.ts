@@ -753,6 +753,31 @@ describe('remediation suggestion routes', () => {
       expect(res.status).toBe(201);
       expect(depths).toEqual({ load: 1, service: 0, update: 1, feedback: 1 });
     });
+
+    // The execution is already committed and sent when the link fails, so the
+    // route must say so with a 500 and write neither feedback nor a success
+    // audit for a link that never happened.
+    it('returns 500 without feedback or audit when the link update matches no row', async () => {
+      const accepted = { ...baseSuggestion, status: 'accepted' };
+      mockSuggestionLoad(accepted);
+      dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(admitted());
+      dbMocks.updateMock.mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+        }),
+      });
+
+      const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Failed to update suggestion' });
+      expect(dbMocks.executeScriptOnDevicesMock).toHaveBeenCalledTimes(1);
+      expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+      expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 422 for rejected admission without mutating or auditing the suggestion', async () => {

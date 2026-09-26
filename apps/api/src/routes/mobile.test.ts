@@ -30,13 +30,15 @@ const {
   rateLimitState,
   authState,
   dbContextState,
-  withAuthDbAccessContextMock
+  withAuthDbAccessContextMock,
+  dispatchWakeMock
 } = vi.hoisted(() => {
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns: `depth` says whether a DB call ran inside one, `events`
   // records the commit so a test can order it against the agent send.
   const dbContextState = { depth: 0, events: [] as string[] };
   return {
+  dispatchWakeMock: vi.fn(),
   dbContextState,
   withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
     dbContextState.depth += 1;
@@ -123,6 +125,11 @@ vi.mock('../services/auditEvents', async (importOriginal) => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: setCooldownMock
+}));
+
+vi.mock('../services/wakeOnLan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wakeOnLan')>()),
+  dispatchWake: dispatchWakeMock
 }));
 
 vi.mock('../services/scriptExecution', () => ({
@@ -2521,6 +2528,53 @@ describe('mobile routes', () => {
         expect(depths).toEqual({ select: 1, trust: 1, insert: 1 });
         expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
         expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
+      });
+
+      it('keeps wake in one context: lookup and the relay dispatch', async () => {
+        const depths: Record<string, number> = {};
+        vi.mocked(db.select).mockImplementation((() => {
+          depths.select = dbContextState.depth;
+          return mockSelectLimitChain([onlineDevice]);
+        }) as any);
+        dispatchWakeMock.mockImplementationOnce(async () => {
+          depths.wake = dbContextState.depth;
+          return {
+            ok: true,
+            commandId: 'cmd-wake',
+            wakeAttemptId: 'attempt-1',
+            relayDeviceId: 'relay-1',
+            relayHostname: 'relay-host',
+            network: '10.0.0.0/24',
+            broadcast: '10.0.0.255',
+            macs: ['aa:bb:cc:dd:ee:ff'],
+          };
+        });
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'wake' })
+        });
+
+        expect(res.status).toBe(202);
+        expect(await res.json()).toMatchObject({ action: 'wake', commandId: 'cmd-wake', wakeAttemptId: 'attempt-1' });
+        expect(depths).toEqual({ select: 1, wake: 1 });
+        expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+        expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
+      });
+
+      it('returns the device gate result from inside the context without running the action', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([{ ...onlineDevice, status: 'decommissioned' }]) as any);
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'wake' })
+        });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: 'Device is decommissioned' });
+        expect(dispatchWakeMock).not.toHaveBeenCalled();
       });
     });
 
