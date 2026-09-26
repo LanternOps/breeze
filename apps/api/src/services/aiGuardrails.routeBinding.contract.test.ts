@@ -396,8 +396,12 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'get_ip_history', routeFile: 'devices/hardware.ts', method: 'get', path: '/:id/ip-history' },
   { tool: 'get_network_changes', routeFile: 'networkChanges.ts', method: 'get', path: '/' },
   {
-    tool: 'list_remote_sessions', routeFile: 'remote/sessions.ts', method: 'get', path: '/sessions',
-    toolOnly: { extra: ['remote:access'], reason: 'GET /sessions is gated on devices:read only; the tool keeps remote:access (TOOL_EXTRA_PERMISSIONS) because remote session listings are remote-access data, matching create_remote_session\'s own remote:access requirement.' },
+    tool: 'list_remote_sessions',
+    routeFile: 'remote/sessions.ts',
+    method: 'get',
+    path: '/sessions',
+    // remote:access comes from the parent router (remote/index.ts), not the session route.
+    parents: ['remote/index.ts'],
   },
   { tool: 'query_custom_fields', action: 'list_definitions', routeFile: 'customFields.ts', method: 'get', path: '/' },
   { tool: 'query_psa_status', routeFile: 'psa.ts', method: 'get', path: '/connections' },
