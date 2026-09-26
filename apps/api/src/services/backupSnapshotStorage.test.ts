@@ -569,6 +569,18 @@ describe('local-provider GC I/O (real filesystem)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('deletes a local snapshot under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
+    await deleteBackupSnapshotArtifacts({
+      provider: 'local',
+      providerConfig: { path: root, prefix: 'w05' },
+      snapshotId: 'snapA',
+      metadata: {},
+    });
+
+    expect(await readdir(join(root, 'snapshots'))).toEqual([]);
+    expect(await readdir(join(root, 'other'))).toEqual(['unrelated.dat']);
+  });
+
   it('walks the snapshot root and reports every file key with a real mtime', async () => {
     const listing = await listBackupObjectsUnderPrefix({
       provider: 'local',
