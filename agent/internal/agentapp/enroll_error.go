@@ -174,7 +174,7 @@ func enrollError(cat enrollErrCategory, friendly string, detail error) {
 var identityConflictReasons = map[string]string{
 	"hostname_collision_requires_existing_device_token": "an existing device already uses this hostname and this install could not present that device's token",
 	"existing_decommissioned_row_has_suspended_token":   "the existing device row for this hostname is decommissioned but its agent token was suspended after a cross-tenant probe alarm",
-	"device_quarantined": "the existing device for this hostname is quarantined pending administrator review",
+	"device_quarantined":                                "the existing device for this hostname is quarantined pending administrator review",
 }
 
 // classifyIdentityConflict inspects httpErr's JSON body for a `reason` field
