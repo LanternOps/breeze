@@ -591,6 +591,15 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     expect(incidents).toEqual([]);
   });
 
+  it('persistence gate: detection turned off clears rows still pending, so none stay open without an episode', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const pending = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10) });
+
+    await withSystemDbAccessContext(() => closeEpisodesForDisabledDetection(orgId, now));
+
+    expect(await anomalyById(pending)).toMatchObject({ status: 'cleared', episodeId: null });
+  });
+
   it('persistence gate control: a second bucket opens the episode before the island settles', async () => {
     const device = await insertDevice(orgId, siteId);
     const first = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10) });

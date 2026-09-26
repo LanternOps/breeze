@@ -509,6 +509,30 @@ describe('metric anomaly detector tuning (2026-09-26)', () => {
     const byMetric = new Map(rows.map((row) => [row.metricName, row]));
     expect(byMetric.get('ram_percent')?.score).toBeCloseTo((4 * 20) / 15, 5);
     expect(byMetric.get('ram_used_mb')?.score).toBeCloseTo((4 * 2500) / 2000, 5);
+    // A row at the gate (score 4) must land below the promotion 'critical'
+    // confidence line (0.95): confidence = 0.55 + score / 20.
+    expect(byMetric.get('ram_percent')?.confidence).toBeCloseTo(0.55 + (4 * 20) / 15 / 20, 5);
+    expect(byMetric.get('ram_used_mb')!.confidence).toBeLessThan(0.95);
+  });
+
+  it('a pending (not yet episode) bucket is excluded from the baseline, so a return inside the gap still counts', async () => {
+    const device = await insertDevice({ orgId: org, siteId: site, hostname: 'pending-return' });
+    const anchor = new Date('2026-06-18T18:00:00.000Z');
+    await seedSeries(device, CPU, anchor, Array.from({ length: MIN_BASELINE_BUCKETS + 2 }, () => 10), 97);
+    // 25 min earlier the same level was flagged; that row is still pending
+    // (open, no episode) waiting for a second bucket.
+    const earlier = bucketAt(anchor, -5);
+    await insertRollup({ orgId: org, deviceId: device, ...CPU, bucketStart: earlier, avgValue: 97 });
+    await getTestDb().insert(metricAnomalies).values({
+      orgId: org, deviceId: device, sourceTable: 'device_metrics', metricType: 'cpu', metricName: 'cpu_percent',
+      anomalyType: 'spike', status: 'open', windowStart: earlier, windowEnd: bucketAt(earlier, 1),
+      observedValue: 97, baselineValue: 10, score: 87, confidence: 0.99,
+    });
+
+    await runDetection(org, anchor, bucketAt(anchor, 1));
+
+    const spikes = await selectAnomaliesByType(org, device, 'spike');
+    expect(spikes.map((spike) => spike.windowStart.toISOString())).toContain(anchor.toISOString());
   });
 });
 

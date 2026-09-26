@@ -385,12 +385,23 @@ function candidateUpsertAssignments(): SQL {
  */
 function openEpisodeBucketsSql(orgId: string, sourceTable: 'device_metrics' | 'device_process_samples'): SQL {
   return sql`
-    SELECT DISTINCT ma.device_id, ma.metric_name, ma.window_start
+    SELECT ma.device_id, ma.metric_name, ma.window_start
     FROM metric_anomaly_episodes e
     JOIN metric_anomalies ma ON ma.episode_id = e.id
     WHERE e.org_id = ${orgId}
       AND e.status = 'open'
       AND ma.org_id = ${orgId}
+      AND ma.source_table = ${sourceTable}
+      AND ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')
+    UNION
+    -- Rows still waiting on the persistence gate (open, no episode yet): left
+    -- in, a pending bucket would raise baseline_max and the novelty gate would
+    -- hide the second bucket of the very island it is waiting for.
+    SELECT ma.device_id, ma.metric_name, ma.window_start
+    FROM metric_anomalies ma
+    WHERE ma.org_id = ${orgId}
+      AND ma.episode_id IS NULL
+      AND ma.status = 'open'
       AND ma.source_table = ${sourceTable}
       AND ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')
   `;
@@ -759,7 +770,9 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
       t.min_value,
       t.max_value,
       t.score,
-      least(0.98, greatest(0.55, 0.55 + (t.score / 10)))::double precision,
+      -- At the gate (score 4) this is 0.75: 'medium' on promotion; 'critical'
+      -- (>= 0.95, or score >= 10) needs 2.5x the gate.
+      least(0.98, greatest(0.55, 0.55 + (t.score / 20)))::double precision,
       t.sample_count,
       jsonb_build_object(
         'modelVersion', ${METRIC_ANOMALY_VERSION}::text,

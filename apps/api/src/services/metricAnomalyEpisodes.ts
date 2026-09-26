@@ -594,13 +594,6 @@ export async function loadEpisodeAssemblyInputs(
 }
 
 /**
- * Write side of the `episodes` stage, in a fixed order: lock the live anchors
- * (A1) -> attach to them -> recompute them -> close superseded ones (their
- * last_seen_at is now current) -> insert new episodes -> attach their members
- * -> recompute them -> attribution. Returns the episodes it superseded.
- * Exported for the A1 race test.
- */
-/**
  * Persistence gate: rows of a settled island shorter than EPISODE_MIN_BUCKETS
  * close `cleared` with no episode. `cleared` is never a human label, so the
  * evaluation excludes them like any auto-closed member. Guarded on still
@@ -619,6 +612,13 @@ async function closeTransientRows(orgId: string, ids: readonly string[], now: Da
     ));
 }
 
+/**
+ * Write side of the `episodes` stage, in a fixed order: lock the live anchors
+ * (A1) -> attach to them -> recompute them -> close superseded ones (their
+ * last_seen_at is now current) -> insert new episodes -> attach their members
+ * -> recompute them -> attribution. Returns the episodes it superseded.
+ * Exported for the A1 race test.
+ */
 export async function applyEpisodeAssemblyPlan(
   orgId: string,
   plan: EpisodeAssemblyPlan,
@@ -841,6 +841,19 @@ export async function closeEpisodesForDisabledDetection(orgId: string, now: Date
       FROM closed c
       WHERE ma.episode_id = c.id
         AND ma.org_id = ${orgId}
+        AND ma.status = 'open'
+      RETURNING ma.id
+    ),
+    -- Rows still pending on the persistence gate would otherwise stay open
+    -- with no episode: assembly stops with the flag, and its 24 h lookback
+    -- never reaches them again.
+    cleared_pending AS (
+      UPDATE metric_anomalies ma
+      SET status = 'cleared',
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      WHERE ma.org_id = ${orgId}
+        AND ma.episode_id IS NULL
         AND ma.status = 'open'
       RETURNING ma.id
     )
