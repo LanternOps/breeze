@@ -292,6 +292,13 @@ export default function UsersPage() {
           errorFallback: t('usersPage.errors.updateRole'),
           onUnauthorized: handleSessionExpired,
         });
+        // The role is committed. Record it so that if the org-access call
+        // below fails, the still-open modal reflects the new role and a retry
+        // does not POST the role (and audit it) a second time.
+        const newRoleName = roles.find(r => r.id === values.roleId)?.name;
+        if (newRoleName) {
+          setSelectedUser(prev => (prev ? { ...prev, role: newRoleName } : prev));
+        }
       }
 
       // #7034: organization access has its own endpoint (partner scope only),

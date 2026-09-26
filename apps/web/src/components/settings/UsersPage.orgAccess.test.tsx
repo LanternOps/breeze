@@ -31,6 +31,7 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   }) as unknown as Response;
 
 const ROLE_TECH = { id: 'role-tech-uuid', name: 'Partner Technician', scope: 'partner' };
+const ROLE_ADMIN = { id: 'role-admin-uuid', name: 'Partner Admin', scope: 'partner' };
 
 const TECH = {
   id: 'user-tech-uuid',
@@ -42,13 +43,18 @@ const TECH = {
   orgIds: [ORG_A.id],
 };
 
-function seed(userRows: Array<Record<string, unknown>>) {
+function seed(userRows: Array<Record<string, unknown>>, orgAccessStatus = 200) {
   fetchMock.mockImplementation(async (url, opts) => {
     const method = (opts as RequestInit | undefined)?.method ?? 'GET';
     if (url === '/users' && method === 'GET') return jsonResponse({ data: userRows });
-    if (url === '/users/roles' && method === 'GET') return jsonResponse({ data: [ROLE_TECH] });
+    if (url === '/users/roles' && method === 'GET') return jsonResponse({ data: [ROLE_TECH, ROLE_ADMIN] });
+    if (typeof url === 'string' && url.endsWith('/role') && method === 'POST') {
+      return jsonResponse({ success: true });
+    }
     if (typeof url === 'string' && url.endsWith('/org-access') && method === 'POST') {
-      return jsonResponse({ success: true, changed: true });
+      return orgAccessStatus === 200
+        ? jsonResponse({ success: true, changed: true })
+        : jsonResponse({ error: 'One or more organizations are not part of your partner' }, orgAccessStatus);
     }
     return jsonResponse({});
   });
@@ -125,6 +131,27 @@ describe('UsersPage — edit organization access (#7034)', () => {
     expect(await screen.findByText(/at least one organization/i)).toBeInTheDocument();
     expect(orgAccessCalls()).toHaveLength(0);
     expect(screen.getByLabelText(/^Role$/)).toBeInTheDocument();
+  });
+
+  it('keeps the modal open on an org-access failure and does not re-POST an already-committed role', async () => {
+    seed([TECH], 403);
+    await openEdit('Tessa');
+    const roleCalls = () =>
+      fetchMock.mock.calls.filter(([u]) => typeof u === 'string' && u.endsWith('/role'));
+
+    fireEvent.change(screen.getByLabelText(/^Role$/), { target: { value: ROLE_ADMIN.id } });
+    fireEvent.change(screen.getByLabelText(/^Access level$/), { target: { value: 'all' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(orgAccessCalls()).toHaveLength(1));
+    expect(roleCalls()).toHaveLength(1);
+    // Failure → the modal stays open for a retry.
+    expect(screen.getByLabelText(/^Role$/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(orgAccessCalls()).toHaveLength(2));
+    // The role already landed on the first save; the retry only re-sends org access.
+    expect(roleCalls()).toHaveLength(1);
   });
 
   it('hides organization access for organization-scoped users (no orgAccess in payload)', async () => {
