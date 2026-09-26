@@ -127,6 +127,7 @@ const baseVersion: VersionRow = {
   preInstallScript: null,
   postInstallScript: null,
   detectionRules: null,
+  successExitCodes: [],
   isLatest: true,
 };
 
