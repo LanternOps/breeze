@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { updateReturning, selectRows, executeRows, calls, updates, insertMock, executeMock, sigMock } = vi.hoisted(() => {
+const {
+  updateReturning, selectRows, executeRows, calls, updates, insertMock, executeMock, sigMock, dbAccessContextMock,
+} = vi.hoisted(() => {
   const calls: string[] = [];
   const executeRows: unknown[][] = [];
   return {
@@ -12,6 +15,7 @@ const { updateReturning, selectRows, executeRows, calls, updates, insertMock, ex
     insertMock: vi.fn(),
     executeMock: vi.fn(async (_q: unknown) => { calls.push('execute'); return executeRows.shift() ?? []; }),
     sigMock: { sourceRefFor: vi.fn(), signatureForSource: vi.fn() },
+    dbAccessContextMock: vi.fn(() => ({ scope: 'system' })),
   };
 });
 vi.mock('../../db', () => {
@@ -34,12 +38,16 @@ vi.mock('../../db', () => {
     chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(selectRows.shift() ?? []).then(res, rej);
     return chain;
   });
-  return { db: { update, insert: insertMock, execute: executeMock, select, selectDistinct: select, delete: vi.fn() } };
+  return {
+    db: { update, insert: insertMock, execute: executeMock, select, selectDistinct: select, delete: vi.fn() },
+    getCurrentDbAccessContext: dbAccessContextMock,
+  };
 });
 vi.mock('./signatureLoader', () => sigMock);
 
 import {
-  fillOutcomeSignature, groupContributions, identityLockKey, recomputeIdentity, transitionOutcome, type ContributingRow,
+  fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure, markOwnerDriftStale,
+  recomputeForOutcome, recomputeIdentity, rebuildFixMemory, transitionOutcome, type ContributingRow,
 } from './store';
 
 /** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
@@ -58,6 +66,7 @@ function flatten(node: unknown, out = { text: '', params: [] as unknown[] }, see
 beforeEach(() => {
   updateReturning.length = 0; selectRows.length = 0; executeRows.length = 0; calls.length = 0; updates.length = 0;
   insertMock.mockReset(); executeMock.mockClear(); sigMock.sourceRefFor.mockReset(); sigMock.signatureForSource.mockReset();
+  dbAccessContextMock.mockReset().mockReturnValue({ scope: 'system' });
 });
 
 const row = (over: Partial<ContributingRow> = {}): ContributingRow => ({
@@ -109,6 +118,18 @@ describe('transitionOutcome', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
+  it('the CAS predicate is (id, prior state) AND counted_at IS NULL — the exactly-once guard, not just the mock call shape', async () => {
+    updateReturning.push([]);
+    await transitionOutcome(
+      { id: 'o-1', state: 'holding', countedAt: null } as never,
+      { to: 'verified', reason: 'x' }, new Date(),
+    );
+    const q = new PgDialect().sqlToQuery(updates.at(-1)!.where as never);
+    expect(q.sql.toLowerCase()).toContain('"counted_at" is null');
+    expect(q.sql.toLowerCase()).toMatch(/"state" = \$\d/);
+    expect(q.sql.toLowerCase()).toMatch(/"id" = \$\d/);
+  });
+
   it('a non-terminal transition never recomputes', async () => {
     updateReturning.push([{ id: 'o-1' }]);
     const won = await transitionOutcome(
@@ -154,6 +175,10 @@ describe('fillOutcomeSignature', () => {
     const row = await fillOutcomeSignature({ id: 'o-1', state: 'holding', sourceType: 'alert', sourceId: 'a-1', signatureKey: null, alertId: 'a-1', anomalyEpisodeId: null } as never, new Date());
     expect(row.signatureKey).toBe('k'.repeat(64));
     expect(calls).toEqual(['update', 'select']); // CAS, then reload
+    // The CAS predicate itself guards against overwriting a signature another
+    // writer already stamped — not just the mocked call shape.
+    const q = new PgDialect().sqlToQuery(updates.at(-1)!.where as never);
+    expect(q.sql.toLowerCase()).toContain('"signature_key" is null');
   });
 });
 
@@ -190,5 +215,102 @@ describe('recomputeIdentity(clearStale) — the durable org-erasure rebuild requ
     await recomputeIdentity(identity, new Date());
     expect(executeMock).toHaveBeenCalledTimes(1); // the identity lock only
     expect(memoryWrites()).toEqual([]);
+  });
+});
+
+describe('markFixMemoryStaleForOrgErasure — identity locks before the UPDATE (no deadlock with a concurrent rebuild)', () => {
+  it('locks every affected identity (sorted) before writing the erasure mark, and only touches those rows', async () => {
+    selectRows.push([{ partnerId: 'p-1' }]); // org lookup
+    selectRows.push([
+      { id: 'm-2', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' },
+      { id: 'm-1', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' },
+    ]); // target identities, selected in arbitrary (not sorted) order
+    executeRows.push([], []); // two advisory locks
+    const partnerId = await markFixMemoryStaleForOrgErasure('org-a');
+    expect(partnerId).toBe('p-1');
+    expect(calls).toEqual(['select', 'select', 'execute', 'execute', 'update']);
+    const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' });
+    // Locks are taken in SORTED key order regardless of the select's row order —
+    // the same order rebuildFixMemory uses, so the two can never deadlock.
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(keyA);
+    expect(flatten(executeMock.mock.calls[1]![0]).params).toContain(keyB);
+    // The final UPDATE is restricted to the resolved target ids, not a re-run
+    // of the original scan predicate (which could race a concurrent writer).
+    const q = new PgDialect().sqlToQuery(updates.at(-1)!.where as never);
+    expect(q.sql.toLowerCase()).toContain('"id" in');
+  });
+
+  it('does nothing — no locks, no update — when the org has no matching fix_memory rows', async () => {
+    selectRows.push([{ partnerId: 'p-1' }]);
+    selectRows.push([]); // no targets
+    const partnerId = await markFixMemoryStaleForOrgErasure('org-a');
+    expect(partnerId).toBe('p-1');
+    expect(calls).toEqual(['select', 'select']);
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
+});
+
+describe('markOwnerDriftStale — identity locks before the UPDATE', () => {
+  it('locks every affected identity (sorted; an org row is resolved via its organization\'s partner) before marking drift stale', async () => {
+    selectRows.push([
+      { id: 'm-1', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' },
+    ]);
+    executeRows.push([]);
+    updateReturning.push([{ id: 'm-1' }]);
+    const n = await markOwnerDriftStale();
+    expect(n).toBe(1);
+    expect(calls).toEqual(['select', 'execute', 'update']);
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(
+      identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' }),
+    );
+  });
+
+  it('does nothing — no locks, no update — when nothing has drifted', async () => {
+    selectRows.push([]);
+    expect(await markOwnerDriftStale()).toBe(0);
+    expect(calls).toEqual(['select']);
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('system-scope guard — every fix_memory writer requires an open system-scoped DB context', () => {
+  const outsideSystem = () => dbAccessContextMock.mockReturnValue({ scope: 'organization' });
+
+  it('transitionOutcome refuses outside system scope, before touching the DB at all', async () => {
+    outsideSystem();
+    await expect(transitionOutcome({ id: 'o-1', state: 'pending', countedAt: null } as never, { to: 'verified', reason: 'x' }, new Date()))
+      .rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('recomputeForOutcome refuses outside system scope', async () => {
+    outsideSystem();
+    await expect(recomputeForOutcome('o-1')).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rebuildFixMemory refuses outside system scope', async () => {
+    outsideSystem();
+    await expect(rebuildFixMemory({ partnerId: 'p-1' })).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('markFixMemoryStaleForOrgErasure refuses outside system scope', async () => {
+    outsideSystem();
+    await expect(markFixMemoryStaleForOrgErasure('org-a')).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('markOwnerDriftStale refuses outside system scope', async () => {
+    outsideSystem();
+    await expect(markOwnerDriftStale()).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('the ambient scope is CHECKED, not merely a truthy context — reports "none" when unset', async () => {
+    dbAccessContextMock.mockReturnValue(undefined as never);
+    await expect(recomputeForOutcome('o-1')).rejects.toThrow(/ambient scope: none/);
   });
 });

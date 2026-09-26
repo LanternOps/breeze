@@ -18,7 +18,7 @@ import {
   FIX_OUTCOME_TERMINAL_STATES,
   type FixKind, type FixOutcomeState, type FixVote,
 } from '@breeze/shared';
-import { db } from '../../db';
+import { db, getCurrentDbAccessContext } from '../../db';
 import { fixMemory, fixOutcomes, organizations, playbookDefinitions, scripts, type FixOutcomeRow } from '../../db/schema';
 import {
   effectiveResult, fixKindForScript, replayAggregate, resolveFixOwner,
@@ -182,6 +182,35 @@ async function lock(key: string): Promise<void> {
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 
+/**
+ * Every exported fix_memory writer runs inside a system-scoped transaction
+ * (background sweeper/watcher/erasure hook via inSystemDbContext) — never a
+ * request context. This is not merely a convention: `pg_advisory_xact_lock`
+ * and `FOR UPDATE` are released the instant their enclosing transaction ends,
+ * so if any of these ran on a short-lived, non-transactional connection (or
+ * inside a request context this module was never meant to share), the lock
+ * would release before — or between — the statements it is supposed to
+ * serialise, and the whole exactly-once/no-deadlock protocol would silently
+ * no-op instead of failing loudly. Checked, not trusted (same rationale as
+ * `loadTenantVariableScope`'s `opts.database` guard in
+ * tenantVariableResolution.ts): a caller that got the context wrong deserves a
+ * thrown Error, not a quietly-unprotected write.
+ */
+function assertSystemScope(fnName: string): void {
+  const scope = getCurrentDbAccessContext()?.scope;
+  if (scope !== 'system') {
+    throw new Error(
+      `fixMemory/store.${fnName}: requires an open system-scoped DB context (ambient scope: ${scope ?? 'none'})`,
+    );
+  }
+}
+
+/** Sorted-key advisory locks for a batch of identities — same lock, same order as recomputeIdentity/rebuildFixMemory, so a bulk mark can never deadlock against a rebuild. */
+async function lockIdentitiesSorted(identities: readonly IdentityKey[]): Promise<void> {
+  const keys = [...new Set(identities.map(identityLockKey))].sort();
+  for (const key of keys) await lock(key);
+}
+
 export interface IdentityKey { partnerId: string; signatureVersion: number; signatureKey: string; osType: string; fixIdentity: string }
 
 /** THE lock key for one aggregate identity — shared by recompute, recount and rebuild. */
@@ -294,6 +323,7 @@ const TERMINAL = new Set<string>(FIX_OUTCOME_TERMINAL_STATES);
  * skip the recompute, so the attempt would count and never aggregate.
  */
 export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransition, now: Date): Promise<boolean> {
+  assertSystemScope('transitionOutcome');
   const terminal = TERMINAL.has(t.to);
   const set: Partial<typeof fixOutcomes.$inferInsert> = { state: t.to, stateReason: t.reason, updatedAt: now };
   if (terminal) {
@@ -321,8 +351,11 @@ export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransi
     }, now);
   } else if (!won.signatureKey) {
     // Counted but not aggregatable yet (the signature loader had nothing when
-    // this ran). Hand it to the sweeper's recount pass, which signs it
-    // (fillOutcomeSignature) and recomputes, so the attempt is never counted-but-lost.
+    // this ran). Hand it to the sweeper's recount pass (recomputeForOutcome),
+    // which retries fillOutcomeSignature and recomputes on success. If the
+    // source row is still gone by the time the sweeper runs, recomputeForOutcome
+    // logs a warning and clears the request anyway — the attempt then stays
+    // permanently counted but never aggregated (see recomputeForOutcome).
     await db.update(fixOutcomes).set({ recountRequestedAt: now }).where(eq(fixOutcomes.id, won.id));
   }
   return true;
@@ -336,6 +369,7 @@ export async function transitionOutcome(outcome: FixOutcomeRow, t: OutcomeTransi
  * cycle with a rebuild.
  */
 export async function rebuildFixMemory(scope: { partnerId: string }, now: Date = new Date()): Promise<{ identities: number }> {
+  assertSystemScope('rebuildFixMemory');
   const identityColumns = (t: typeof fixOutcomes | typeof fixMemory) => ({
     signatureVersion: t.signatureVersion, signatureKey: t.signatureKey, osType: t.osType, fixIdentity: t.fixIdentity,
   });
@@ -366,16 +400,23 @@ export async function rebuildFixMemory(scope: { partnerId: string }, now: Date =
  * org's organizations row already gone before reading contributions removes it
  * (recomputeIdentity). Rows that are already stale (e.g. owner drift) still get
  * the request, and a re-run never appends the same org twice.
+ *
+ * Locking: this touches every identity the org contributed to under one
+ * partner in a single pass, so it must take EVERY one of those identities'
+ * advisory locks, in the same sorted order rebuildFixMemory does, before
+ * writing — otherwise this (holding row locks R2, waiting on identity lock
+ * held by a rebuild) and a concurrent rebuild (holding that identity lock,
+ * waiting on this UPDATE's row locks) form a classic lock-order-inversion
+ * deadlock (40P01), and an aborted erasure mark fails the tenant-erasure job.
+ * So: SELECT the target identities first, lock them all (sorted), THEN
+ * restrict the UPDATE to exactly those rows.
  * Returns the org's partner.
  */
 export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date = new Date()): Promise<string | null> {
+  assertSystemScope('markFixMemoryStaleForOrgErasure');
   const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   if (!org) return null;
-  await db.update(fixMemory).set({
-    staleSince: sql`COALESCE(${fixMemory.staleSince}, ${now.toISOString()}::timestamptz)`,
-    rebuildPendingOrgIds: sql`array_append(${fixMemory.rebuildPendingOrgIds}, ${orgId}::uuid)`,
-    updatedAt: now,
-  }).where(and(
+  const predicate = and(
     isNull(fixMemory.orgId),
     eq(fixMemory.partnerId, org.partnerId),
     sql`NOT (${orgId}::uuid = ANY(fix_memory.rebuild_pending_org_ids))`,
@@ -384,7 +425,23 @@ export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date =
     sql`EXISTS (SELECT 1 FROM fix_outcomes o WHERE o.org_id = ${orgId} AND o.counted_at IS NOT NULL
          AND o.signature_key = fix_memory.signature_key AND o.os_type = fix_memory.os_type
          AND o.fix_identity = fix_memory.fix_identity)`,
-  ));
+  )!;
+  const targets = await db.select({
+    id: fixMemory.id, partnerId: fixMemory.partnerId, signatureVersion: fixMemory.signatureVersion,
+    signatureKey: fixMemory.signatureKey, osType: fixMemory.osType, fixIdentity: fixMemory.fixIdentity,
+  }).from(fixMemory).where(predicate);
+  if (targets.length === 0) return org.partnerId;
+  // partnerId is non-null for every row here (predicate requires org_id IS NULL,
+  // and fix_memory is org XOR partner).
+  await lockIdentitiesSorted(targets.map((t) => ({
+    partnerId: t.partnerId!, signatureVersion: t.signatureVersion, signatureKey: t.signatureKey,
+    osType: t.osType, fixIdentity: t.fixIdentity,
+  })));
+  await db.update(fixMemory).set({
+    staleSince: sql`COALESCE(${fixMemory.staleSince}, ${now.toISOString()}::timestamptz)`,
+    rebuildPendingOrgIds: sql`array_append(${fixMemory.rebuildPendingOrgIds}, ${orgId}::uuid)`,
+    updatedAt: now,
+  }).where(inArray(fixMemory.id, targets.map((t) => t.id)));
   return org.partnerId;
 }
 
@@ -397,15 +454,37 @@ export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date =
  * Anything else (including an org_id or partner_id change) is drift: mark stale
  * so lookup stops calling it proven and the next sweep rebuilds under the
  * current owner. Outer columns are table-qualified inside the subquery on purpose.
+ *
+ * Locking: same reasoning as markFixMemoryStaleForOrgErasure — this can touch
+ * many identities across many partners in one pass, so every affected
+ * identity's advisory lock is taken (sorted) before the UPDATE, to avoid a
+ * lock-order-inversion deadlock against a concurrent rebuild. An org row's
+ * identity partner is its organization's partner (fix_memory.partner_id is
+ * NULL for org rows), so the org's partner is resolved via a LEFT JOIN.
  */
 export async function markOwnerDriftStale(now: Date = new Date()): Promise<number> {
-  const rows = await db.update(fixMemory).set({ staleSince: now }).where(and(
+  assertSystemScope('markOwnerDriftStale');
+  const predicate = and(
     isNull(fixMemory.staleSince),
     isNotNull(fixMemory.scriptId),
     sql`EXISTS (SELECT 1 FROM scripts s WHERE s.id = fix_memory.script_id AND NOT (
           (fix_memory.org_id IS NULL AND (s.is_system OR (s.org_id IS NULL AND s.partner_id = fix_memory.partner_id)))
           OR (fix_memory.org_id IS NOT NULL AND NOT s.is_system AND s.org_id = fix_memory.org_id)))`,
-  )).returning({ id: fixMemory.id });
+  )!;
+  const targets = await db.select({
+    id: fixMemory.id,
+    partnerId: sql<string>`COALESCE(${fixMemory.partnerId}, ${organizations.partnerId})`,
+    signatureVersion: fixMemory.signatureVersion, signatureKey: fixMemory.signatureKey,
+    osType: fixMemory.osType, fixIdentity: fixMemory.fixIdentity,
+  }).from(fixMemory).leftJoin(organizations, eq(organizations.id, fixMemory.orgId)).where(predicate);
+  if (targets.length === 0) return 0;
+  await lockIdentitiesSorted(targets.map((t) => ({
+    partnerId: t.partnerId, signatureVersion: t.signatureVersion, signatureKey: t.signatureKey,
+    osType: t.osType, fixIdentity: t.fixIdentity,
+  })));
+  const rows = await db.update(fixMemory).set({ staleSince: now })
+    .where(inArray(fixMemory.id, targets.map((t) => t.id)))
+    .returning({ id: fixMemory.id });
   return rows.length;
 }
 
@@ -447,11 +526,19 @@ export async function recomputeForOutcome(
   now: Date = new Date(),
   hooks: { afterRecompute?: () => Promise<void> } = {},
 ): Promise<void> {
+  assertSystemScope('recomputeForOutcome');
   const [locked] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, outcomeId)).limit(1).for('update');
   if (!locked || !locked.countedAt) return;
   const o = await fillOutcomeSignature(locked, now);
   if (o.signatureVersion !== null && o.signatureKey && o.osType && o.fixIdentity) {
     await recomputeIdentity({ partnerId: o.partnerId, signatureVersion: o.signatureVersion, signatureKey: o.signatureKey, osType: o.osType, fixIdentity: o.fixIdentity }, now);
+  } else {
+    // The signature still couldn't be resolved (e.g. the source alert/anomaly
+    // row is gone by the time the sweeper ran). There is nothing left to retry
+    // against, so clearing the request below is the best available action —
+    // but it means this attempt is now permanently counted-but-never-aggregated.
+    // Surface it for an operator to notice; outcome id only, no PII.
+    console.warn(`fixMemory.recomputeForOutcome: outcome ${outcomeId} is counted but unaggregatable (no resolvable signature); clearing its recount request`);
   }
   if (hooks.afterRecompute) await hooks.afterRecompute();
   await db.update(fixOutcomes).set({ recountRequestedAt: null, updatedAt: now }).where(eq(fixOutcomes.id, outcomeId));
