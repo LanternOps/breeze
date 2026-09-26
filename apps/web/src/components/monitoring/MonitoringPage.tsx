@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { useHashState } from '@/lib/useHashState';
@@ -26,6 +26,7 @@ export default function MonitoringPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
+  const assetTab = useRef<MonitoringTab | null>(null);
   // Manual network asset (#5213 W02) — second entry point, mirroring the one
   // on the Devices page. Own hash entry, same modal.
   const [showAddNetworkAsset, setShowAddNetworkAsset] = useHashState<boolean>(false, (h) =>
@@ -34,10 +35,17 @@ export default function MonitoringPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const assetId = params.get('assetId');
-    setInitialAssetId(assetId);
-  }, []);
+    if (assetTab.current === null) {
+      // Wait for initial hash adoption before associating the deep-link asset
+      // with its tab. Later tab changes, including back/forward, clear it.
+      const initialTab = parseTab(window.location.hash.slice(1)) ?? 'assets';
+      if (activeTab !== initialTab) return;
+      setInitialAssetId(new URLSearchParams(window.location.search).get('assetId'));
+    } else if (assetTab.current !== activeTab) {
+      setInitialAssetId(null);
+    }
+    assetTab.current = activeTab;
+  }, [activeTab]);
 
   const tabLabels: Record<MonitoringTab, string> = {
     assets: t('longTail.monitoring.MonitoringPage.tabs.assets'),

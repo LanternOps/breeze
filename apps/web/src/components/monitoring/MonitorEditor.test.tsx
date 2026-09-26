@@ -846,6 +846,27 @@ describe('network check authoring', () => {
     expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/discovery/assets/'))).toBe(false);
   });
 
+  it('resolves an asset outside the selected org and saves under its actual owner', async () => {
+    // The partner has org-1 selected, while the handoff asset belongs to another org.
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === `/discovery/assets/${asset.id}` && !init?.skipOrgIdInjection) {
+        return json({ error: 'Asset not found' }, false, 404);
+      }
+      return previous(input, init);
+    });
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('condition-field-target')).toHaveValue(asset.ipAddress));
+    expect(fetchMock).toHaveBeenCalledWith(`/discovery/assets/${asset.id}`, expect.objectContaining({ skipOrgIdInjection: true }));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions', expect.objectContaining({ method: 'POST' })));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && init?.method === 'POST')!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({
+      ownerScope: 'organization', orgId: asset.orgId, condition: { assetId: asset.id },
+    });
+  });
+
   it('retries a failed asset prefill without an unhandled rejection', async () => {
     window.history.replaceState(null, '', `/alerts/monitors/new#kind=network_check&assetId=${asset.id}`);
     const previous = fetchMock.getMockImplementation()!;
@@ -898,7 +919,7 @@ describe('network check authoring', () => {
     { checkType: 'http_check', headers: { 'X-Probe': 'breeze' } },
   ])('PATCH preserves API-only options through binding and unbinding: $checkType', async option => {
     const fixture = { ...MONITOR_M1_FIXTURE, name: 'Network test', kind: 'network_check', condition: {
-      ...option, target: option.checkType === 'http_check' ? 'https://example.com' : 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2, degradedIsFailure: false,
+      ...option, target: option.checkType === 'http_check' ? 'https://example.com:8443/health' : 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2, degradedIsFailure: false,
     } };
     const previous = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation(async (input, init) => input === '/monitor-definitions/m1' ? json({ data: fixture }) : previous(input, init));
@@ -907,10 +928,10 @@ describe('network check authoring', () => {
     await screen.findByRole('option', { name: 'Core switch' });
     fireEvent.change(screen.getByTestId('network-check-asset-picker'), { target: { value: asset.id } });
     fireEvent.change(screen.getByTestId('network-check-asset-picker'), { target: { value: '' } });
-    if (option.checkType === 'http_check') fireEvent.change(screen.getByTestId('condition-field-target'), { target: { value: 'https://example.com' } });
+    expect(screen.getByTestId('condition-field-target')).toHaveValue(fixture.condition.target);
     fireEvent.click(screen.getByTestId('monitor-editor-save'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'PATCH' })));
     const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions/m1' && init?.method === 'PATCH')!;
-    expect(JSON.parse(String(call[1]?.body)).condition).toMatchObject(option);
+    expect(JSON.parse(String(call[1]?.body)).condition).toMatchObject({ ...option, target: fixture.condition.target });
   });
 });

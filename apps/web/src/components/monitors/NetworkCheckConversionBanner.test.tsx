@@ -26,9 +26,33 @@ it('reviews both outcomes and converts only representable checks', async () => {
   expect(screen.getByText('unconvertible:network_predicate_unsupported')).toBeInTheDocument();
   fireEvent.click(screen.getByTestId('network-check-conversion-confirm'));
   await waitFor(() => expect(request).toHaveBeenCalledWith('/monitor-definitions/conversion/network-checks/convert', {
-    method: 'POST', body: JSON.stringify({ orgId: 'org-1', previewHash: 'a'.repeat(64), sourceIds: ['check-1'] }),
+    method: 'POST', body: JSON.stringify({ orgId: 'org-1', previewHash: 'a'.repeat(64) }),
   }));
   await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+});
+
+it('converts all 501 checks without sending the capped sourceIds selection', async () => {
+  const items = Array.from({ length: 501 }, (_, index) => ({ ...item, sourceId: `check-${index}`, name: `Check ${index}` }));
+  const changed = vi.fn();
+  request.mockImplementation(async (url, init) => {
+    if (init?.method) {
+      const body = JSON.parse(String(init.body)) as { sourceIds?: string[] };
+      if (body.sourceIds && body.sourceIds.length > 500) return json({ error: 'too_many_source_ids' }, 400);
+      return json({ monitorsCreated: items.length });
+    }
+    if (String(url).includes('/ledger?')) return json({ items: [], nextCursor: null });
+    return json(preview(items));
+  });
+  render(<NetworkCheckConversionBanner orgId="org-1" onConverted={changed} />);
+  fireEvent.click(await screen.findByTestId('network-check-conversion-review'));
+  expect(screen.getAllByTestId('network-check-conversion-item-convertible')).toHaveLength(501);
+  fireEvent.click(screen.getByTestId('network-check-conversion-confirm'));
+  await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+  expect(request).toHaveBeenCalledWith('/monitor-definitions/conversion/network-checks/convert', {
+    method: 'POST', body: JSON.stringify({ orgId: 'org-1', previewHash: 'a'.repeat(64) }),
+  });
+  expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
 });
 
 it.each(['convertible', 'unconvertible'])('retires a %s check, retains empty history, and undoes it', async outcome => {

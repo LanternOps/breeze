@@ -12,7 +12,12 @@ export type NetworkAsset = {
 export function bindNetworkAsset(condition: Record<string, unknown>, asset: NetworkAsset | null): Record<string, unknown> {
   const { assetId: _old, ...rest } = condition;
   // Keep API-only options such as headers and packetSize when changing binding.
-  return asset ? { ...rest, assetId: asset.id, target: asset.ipAddress ?? asset.hostname ?? rest.target } : rest;
+  if (!asset) return rest;
+  // Preserve authored targets, including an HTTP URL's scheme, port, and path.
+  const target = rest.target === '' || rest.target == null
+    ? asset.ipAddress ?? asset.hostname ?? rest.target
+    : rest.target;
+  return { ...rest, assetId: asset.id, target };
 }
 
 export default function NetworkCheckAssetBinding({ orgId, assetId, onSelect }: {

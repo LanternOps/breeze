@@ -44,10 +44,28 @@ it.each([{ checkType: 'icmp_ping', packetSize: 1400 }, { checkType: 'http_check'
   'preserves API-only options through binding and unbinding', option => {
     const original = { target: 'example.com', ...option };
     const bound = bindNetworkAsset(original, asset);
-    expect(bound).toMatchObject({ ...option, assetId: asset.id, target: asset.ipAddress });
+    expect(bound).toMatchObject({ ...option, assetId: asset.id, target: original.target });
     const unbound = bindNetworkAsset(bound, null);
     expect(unbound).toMatchObject(option);
     expect(unbound.assetId).toBeUndefined();
     expect(original).not.toHaveProperty('assetId');
+  },
+);
+
+it.each([
+  { checkType: 'http_check', target: 'https://example.com:8443/health?probe=1' },
+  { checkType: 'icmp_ping', target: 'example.com' },
+  { checkType: 'tcp_port', target: 'example.com' },
+  { checkType: 'dns_check', target: 'example.com' },
+])('preserves an authored $checkType target when binding or rebinding', condition => {
+  expect(bindNetworkAsset(condition, asset)).toEqual({ ...condition, assetId: asset.id });
+  expect(bindNetworkAsset({ ...condition, assetId: 'old-asset' }, asset)).toEqual({ ...condition, assetId: asset.id });
+});
+
+it.each(['http_check', 'icmp_ping', 'tcp_port', 'dns_check'])(
+  'fills an empty %s target from the asset', checkType => {
+    expect(bindNetworkAsset({ checkType, target: '' }, asset)).toEqual({
+      checkType, target: asset.ipAddress, assetId: asset.id,
+    });
   },
 );

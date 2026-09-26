@@ -7,11 +7,11 @@ const navigateToMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 vi.mock('./MonitoringAssetsDashboard', () => ({
-  default: () => <div>Assets tab</div>
+  default: ({ initialAssetId }: { initialAssetId: string | null }) => <div data-testid="assets-tab" data-asset-id={initialAssetId}>Assets tab</div>
 }));
 
 vi.mock('../monitors/NetworkMonitorList', () => ({
-  default: () => <div>Checks tab</div>
+  default: ({ assetId }: { assetId: string | null }) => <div data-testid="checks-tab" data-asset-id={assetId}>Checks tab</div>
 }));
 
 vi.mock('../snmp/SNMPTemplateList', () => ({
@@ -61,6 +61,25 @@ describe('MonitoringPage', () => {
 
     expect(screen.getByText('Assets tab')).toBeInTheDocument();
     expect(screen.queryByTestId('monitoring-page-new-check')).toBeNull();
+  });
+
+  it.each(['results', 'checks', 'assets'])('clears the initial asset on hash-driven tab changes from #%s', initialTab => {
+    const assetId = '11111111-1111-4111-8111-111111111111';
+    const baseUrl = `/monitoring?assetId=${assetId}`;
+    window.history.pushState({}, '', `${baseUrl}#${initialTab}`);
+    render(<MonitoringPage />);
+    const initialPanel = initialTab === 'assets' ? 'assets-tab' : 'checks-tab';
+    expect(screen.getByTestId(initialPanel)).toHaveAttribute('data-asset-id', assetId);
+
+    // Back/forward changes the hash without calling the tab button handler.
+    window.history.replaceState({}, '', `${baseUrl}#templates`);
+    fireEvent(window, new HashChangeEvent('hashchange'));
+    expect(screen.getByText('Templates list')).toBeInTheDocument();
+    window.history.replaceState({}, '', `${baseUrl}#results`);
+    fireEvent(window, new HashChangeEvent('hashchange'));
+    expect(screen.getByTestId('checks-tab')).not.toHaveAttribute('data-asset-id');
+    fireEvent.click(screen.getByTestId('monitoring-page-new-check'));
+    expect(navigateToMock).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check');
   });
 
   it('updates the hash and switches tabs when a tab is clicked', () => {

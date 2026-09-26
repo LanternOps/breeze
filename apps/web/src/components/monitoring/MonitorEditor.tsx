@@ -458,7 +458,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     const initialBinding = [initialCondition.checkType, initialCondition.target, initialCondition.assetId];
     void (async () => {
       try {
-        const res = await fetchWithAuth(`/discovery/assets/${encodeURIComponent(assetId)}`);
+        const res = await fetchWithAuth(`/discovery/assets/${encodeURIComponent(assetId)}`, { skipOrgIdInjection: true });
         if (!res.ok) throw new Error('asset_read_failed');
         const body = await res.json();
         const asset = body.data as NetworkAsset & { orgId: string };
@@ -466,8 +466,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         if (cancelled || getValues('kind') !== 'network_check' || getValues('ownerScope') !== 'organization'
           || ['checkType', 'target', 'assetId'].some((key, index) => getValues('condition')[key] !== initialBinding[index])) return;
         setPrefillOrgId(asset.orgId);
-        const bound = bindNetworkAsset(getValues('condition'), asset);
-        if (params.get('target')) bound.target = params.get('target');
+        // A new asset handoff without a target should use the asset, not the
+        // condition's sample target. The guard above preserves any user edits.
+        const bound = bindNetworkAsset({ ...getValues('condition'), target: params.get('target') ?? '' }, asset);
         setValue('condition', bound, { shouldDirty: true });
         if (!getValues('name')) {
           const label = asset.label ?? asset.hostname ?? asset.ipAddress ?? asset.id;

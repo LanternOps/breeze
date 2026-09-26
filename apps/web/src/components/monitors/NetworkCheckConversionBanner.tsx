@@ -57,7 +57,7 @@ export default function NetworkCheckConversionBanner({ orgId, onConverted }: { o
     try {
       await runAction({
         request: () => fetchWithAuth('/monitor-definitions/conversion/network-checks/convert', {
-          method: 'POST', body: JSON.stringify({ orgId, previewHash: preview.previewHash, sourceIds: convertible.map(item => item.sourceId) }),
+          method: 'POST', body: JSON.stringify({ orgId, previewHash: preview.previewHash }),
         }),
         friendly: conversionFriendly,
         successMessage: t('longTail.monitors.NetworkCheckConversionBanner.converted', { count: convertible.length }),
