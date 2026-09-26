@@ -82,8 +82,13 @@ export function AlertDetailScreen({ route }: Props) {
   const { alert } = route.params;
   const [acking, setAcking] = useState(false);
   const [rebooting, setRebooting] = useState(false);
-  const [rebootSent, setRebootSent] = useState(false);
-  const [fresh, setFresh] = useState<AlertModel | null>(null);
+  // Both are keyed to the alert id: navigating to this route again can reuse
+  // the mounted screen with a different alert, and a read or sent restart for
+  // the previous alert must not carry over to it.
+  const [rebootSentFor, setRebootSentFor] = useState<string | null>(null);
+  const [fetched, setFetched] = useState<AlertModel | null>(null);
+  const fresh = fetched && fetched.id === alert.id ? fetched : null;
+  const rebootSent = rebootSentFor === alert.id;
   // Reboot now is decided on, and aimed at, the fetched copy alone: it has
   // the current status, the source a chat-built alert lacks, and the device
   // the server says the alert belongs to (a chat payload's own deviceId is
@@ -93,11 +98,12 @@ export function AlertDetailScreen({ route }: Props) {
   const showReboot = plan !== null;
 
   useEffect(() => {
+    setFetched(null);
     if (!needsAlertLookup(alert)) return;
     let mounted = true;
     getAlert(alert.id)
-      .then((fetched) => {
-        if (mounted) setFresh(fetched);
+      .then((read) => {
+        if (mounted) setFetched(read);
       })
       // Only the Reboot now button depends on this; without it the screen
       // shows Acknowledge alone, as before.
@@ -120,11 +126,11 @@ export function AlertDetailScreen({ route }: Props) {
     }
   }
 
-  async function sendReboot(deviceId: string) {
+  async function sendReboot(alertId: string, deviceId: string) {
     try {
       setRebooting(true);
       await sendDeviceAction(deviceId, 'reboot');
-      setRebootSent(true);
+      setRebootSentFor(alertId);
       Alert.alert(
         'Restart sent',
         'The device restarts when its agent picks up the command. This alert stays open; acknowledge it once the device is back.',
@@ -140,9 +146,10 @@ export function AlertDetailScreen({ route }: Props) {
   function handleReboot() {
     if (!plan) return;
     const { deviceId, message } = plan;
+    const alertId = alert.id;
     Alert.alert('Restart device', message, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Restart now', style: 'destructive', onPress: () => void sendReboot(deviceId) },
+      { text: 'Restart now', style: 'destructive', onPress: () => void sendReboot(alertId, deviceId) },
     ]);
   }
 

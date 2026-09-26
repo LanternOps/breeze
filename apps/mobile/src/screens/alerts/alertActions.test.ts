@@ -59,13 +59,14 @@ describe('needsAlertLookup', () => {
     expect(needsAlertLookup(alert())).toBe(true);
   });
 
-  it('looks up a device alert that arrived without a source', () => {
+  it('looks up an alert that arrived without a source, with or without a device', () => {
     expect(needsAlertLookup(alert({ source: undefined }))).toBe(true);
+    // The server's copy supplies the device a chat payload may leave out.
+    expect(needsAlertLookup(alert({ source: undefined, deviceId: undefined }))).toBe(true);
   });
 
-  it('skips the lookup for other alerts or when there is no device', () => {
+  it('skips the lookup for other alerts or when there is no alert id', () => {
     expect(needsAlertLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
-    expect(needsAlertLookup(alert({ source: undefined, deviceId: undefined }))).toBe(false);
     expect(needsAlertLookup(alert({ id: '' }))).toBe(false);
   });
 });
