@@ -1,9 +1,9 @@
-import { and, eq, isNotNull, isNull, like, or, type SQL } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, like, or, sql, type SQL } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
-import { getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingProviderId } from './types';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
@@ -166,6 +166,74 @@ export async function getConnection(
   return row ? mapConnection(row) : null;
 }
 
+/**
+ * The partner's ONE accounting connection, any provider (Xero W01, spec D2 —
+ * enforced by accounting_connections_partner_idx). Null when none exists.
+ * Replaces every `getConnection(db, partnerId, 'quickbooks')` in the core.
+ * W02 adds the `pending_tenant` exclusion HERE, and only here.
+ */
+export async function resolveActiveConnection(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row ? mapConnection(row) : null;
+}
+
+/** Load one connection by id, partner-guarded. Jobs carry this id (spec: "a job's destination is never reinterpreted"). */
+export async function getConnectionById(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(and(eq(accountingConnections.id, connectionId), eq(accountingConnections.partnerId, partnerId)))
+    .limit(1);
+  return row ? mapConnection(row) : null;
+}
+
+/**
+ * The connection a mapping row belongs to (its integration_id). Payment jobs
+ * bind to their connection THROUGH the outbox row (plan preamble item 4): the
+ * composite FK cascades on disconnect, so a job whose connection is gone finds
+ * no mapping at all rather than a different connection.
+ */
+export async function getConnectionForMapping(
+  dbc: DbExecutor,
+  mappingId: string,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select({ connection: accountingConnections })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
+    .limit(1);
+  return row ? mapConnection(row.connection) : null;
+}
+
+/** 409 — the partner already has a connection to a DIFFERENT provider (spec D2). */
+export class AccountingProviderConflictError extends Error {
+  readonly code = 'accounting_provider_conflict' as const;
+  readonly status = 409 as const;
+  constructor(
+    readonly existingProvider: AccountingProviderId,
+    readonly requestedProvider: AccountingProviderId,
+  ) {
+    super(`Disconnect ${accountingProviderDisplayName(existingProvider)} before connecting ${accountingProviderDisplayName(requestedProvider)}`);
+    this.name = 'AccountingProviderConflictError';
+  }
+}
+
 export async function upsertConnection(
   db: DbExecutor,
   partnerId: string,
@@ -238,12 +306,21 @@ export async function upsertConnection(
     .insert(accountingConnections)
     .values(values)
     .onConflictDoUpdate({
-      target: [accountingConnections.partnerId, accountingConnections.provider],
+      // accounting_connections_partner_idx (Xero W01): one row per partner. The
+      // update fires ONLY for a same-provider reconnect; a different provider's
+      // row makes this a no-op that returns nothing (handled below), so a Xero
+      // connect can never overwrite a QuickBooks row's tokens or settings.
+      target: accountingConnections.partnerId,
       set: updateSet,
+      setWhere: sql`${accountingConnections.provider} = excluded.provider`,
     })
     .returning();
 
   if (!row) {
+    const existing = await resolveActiveConnection(db, partnerId);
+    if (existing && existing.provider !== provider) {
+      throw new AccountingProviderConflictError(existing.provider, provider);
+    }
     throw new Error('Failed to persist accounting connection');
   }
 
@@ -373,19 +450,15 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
  */
 export async function listReconcilableConnections(
   dbc: DbExecutor,
-  provider: AccountingProviderId,
-): Promise<Array<{ id: string; partnerId: string }>> {
-  return dbc
-    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId })
+): Promise<Array<{ id: string; partnerId: string; provider: AccountingProviderId }>> {
+  const rows = await dbc
+    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId, provider: accountingConnections.provider })
     .from(accountingConnections)
     .where(and(
-      eq(accountingConnections.provider, provider),
       eq(accountingConnections.status, 'connected'),
-      or(
-        eq(accountingConnections.pullPayments, true),
-        eq(accountingConnections.pushPayments, true),
-      ),
+      or(eq(accountingConnections.pullPayments, true), eq(accountingConnections.pushPayments, true)),
     ));
+  return rows as Array<{ id: string; partnerId: string; provider: AccountingProviderId }>;
 }
 
 /**

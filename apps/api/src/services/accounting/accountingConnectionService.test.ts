@@ -66,6 +66,9 @@ vi.mock('./accountingTokens', () => ({
 
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ fetchRealmSettings: fetchRealmSettingsMock }),
+  // AccountingProviderConflictError (Xero W01) reads the display name for its
+  // message; the real registry's names are stable enough to hardcode here.
+  accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : id === 'xero' ? 'Xero' : id),
 }));
 
 /**
@@ -139,7 +142,7 @@ function ambientConnectionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }) {
+function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any; conflictArg?: any }) {
   const ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
   return {
     insert: vi.fn(() => ({
@@ -158,6 +161,7 @@ function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }
         return {
           onConflictDoUpdate: vi.fn((arg: any) => {
             captured.updateSet = arg?.set;
+            captured.conflictArg = arg;
             return { returning: vi.fn(async () => [captured.row]) };
           }),
         };
@@ -917,11 +921,15 @@ describe('accountingConnectionService', () => {
       return { db, whereMock };
     }
 
-    it('filters to provider AND status connected AND (pull_payments OR push_payments) — spec decision 6', async () => {
+    // Xero W01: listReconcilableConnections drops the provider filter — every
+    // provider's connected rows are candidates now, and the worker (Task 5)
+    // filters by capability instead. Deviation from the pre-W01 test, which
+    // asserted a provider = $1 clause that no longer exists.
+    it('filters to status connected AND (pull_payments OR push_payments), with no provider filter', async () => {
       const { db, whereMock } = makeSelectWhereDb();
       const { listReconcilableConnections } = await import('./accountingConnectionService');
 
-      await listReconcilableConnections(db, 'quickbooks');
+      await listReconcilableConnections(db);
 
       const dialect = new PgDialect();
       // Compiling the captured `and(...)` node standalone (outside the full
@@ -930,8 +938,8 @@ describe('accountingConnectionService', () => {
       // on a single-table query, but the compiled clause and bound params
       // below are the actual filter Drizzle applies either way.
       const { sql, params } = dialect.sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
-      expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and \("accounting_connections"\."pull_payments" = \$\d+ or "accounting_connections"\."push_payments" = \$\d+\)/i);
-      expect(params).toEqual(['quickbooks', 'connected', true, true]);
+      expect(sql).toMatch(/"accounting_connections"\."status" = \$\d+ and \("accounting_connections"\."pull_payments" = \$\d+ or "accounting_connections"\."push_payments" = \$\d+\)/i);
+      expect(params).toEqual(['connected', true, true]);
     });
   });
 });
@@ -1013,5 +1021,50 @@ describe('owed QuickBooks payment deletes on disconnect / realm change (review w
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('one connection per partner (Xero W01)', () => {
+  it('upsertConnection targets partner_id and only updates a SAME-provider row', async () => {
+    const captured: { row?: any; insertValues?: any; updateSet?: any; conflictArg?: any } = {};
+    const db = makeMockDb(captured); // makeMockDb gains one line in its onConflictDoUpdate: `captured.conflictArg = arg;`
+    const { upsertConnection } = await import('./accountingConnectionService');
+    const { accountingConnections } = await import('../../db/schema');
+
+    await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+    expect(captured.conflictArg.target).toBe(accountingConnections.partnerId);
+    const whereSql = new PgDialect().sqlToQuery(captured.conflictArg.setWhere as SQL).sql;
+    expect(whereSql).toBe('"accounting_connections"."provider" = excluded.provider');
+  });
+
+  it('upsertConnection raises AccountingProviderConflictError when the partner already holds another provider', async () => {
+    const existing = { id: 'c-qbo', partnerId: 'p1', provider: 'quickbooks' };
+    const db = {
+      insert: vi.fn(() => ({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(() => ({ returning: vi.fn(async () => []) })) })) })),
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [existing]) })) })) })),
+    };
+    const { upsertConnection, AccountingProviderConflictError } = await import('./accountingConnectionService');
+
+    const err = await upsertConnection(db as any, 'p1', 'xero', { accessToken: 'a' }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingProviderConflictError);
+    expect(err).toMatchObject({ code: 'accounting_provider_conflict', status: 409, existingProvider: 'quickbooks', requestedProvider: 'xero' });
+    expect(err.message).toBe('Disconnect QuickBooks before connecting Xero');
+  });
+
+  it('resolveActiveConnection returns the partner\'s single row whatever its provider', async () => {
+    const captured: { row?: any } = { row: { id: 'c1', partnerId: 'p1', provider: 'quickbooks', status: 'connected', pushMode: 'auto', environment: 'production', pullPayments: true, pushPayments: true } };
+    const db = makeMockDb(captured);
+    const { resolveActiveConnection } = await import('./accountingConnectionService');
+    const conn = await resolveActiveConnection(db as any, 'p1');
+    expect(conn?.id).toBe('c1');
+    expect(conn?.provider).toBe('quickbooks');
+  });
+
+  it('resolveActiveConnection returns null when the partner has no row', async () => {
+    const db = makeMockDb({});
+    const { resolveActiveConnection } = await import('./accountingConnectionService');
+    expect(await resolveActiveConnection(db as any, 'p1')).toBeNull();
   });
 });

@@ -585,7 +585,7 @@ export async function processReconcileSweep(): Promise<{
     let connectionsReadFailed = false;
     try {
       connections = await withSystemDbAccessContext(
-        () => listReconcilableConnections(db, 'quickbooks'),
+        () => listReconcilableConnections(db),
         'accountingReconcile.sweep.list',
       );
     } catch (err) {
