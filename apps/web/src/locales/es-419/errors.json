@@ -10,5 +10,10 @@
   "EXPIRED": "Expired",
   "AGENT_EXECUTION_FAILED": "Unable to reach the device's agent",
   "DEVICE_UNREACHABLE": "Agent is not currently connected",
+  "DEVICE_OFFLINE": "The device is offline",
+  "AGENT_TIMEOUT": "The device didn't respond in time",
+  "PATH_NOT_FOUND": "Path not found",
+  "PATH_CONFLICT": "The path already exists",
+  "AGENT_COMMAND_REJECTED": "The device rejected the command",
   "tool_source_unavailable": "La fuente de esta herramienta no está disponible en este momento"
 }

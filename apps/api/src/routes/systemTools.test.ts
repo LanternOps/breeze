@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { systemToolsRoutes } from './systemTools';
+import { ERROR_CODES } from '@breeze/shared';
 
 const mockExecuteCommand = vi.fn();
 
@@ -962,7 +963,7 @@ describe('system tools routes', () => {
       expect(body.results).toHaveLength(1);
       expect(body.results[0].status).toBe('failure');
       expect(body.results[0].error).toBe('Permission denied');
-      expect(body.results[0].code).toBe('agent_execution_failed');
+      expect(body.results[0].code).toBe(ERROR_CODES.AGENT_EXECUTION_FAILED);
     });
   });
 
@@ -1279,7 +1280,7 @@ describe('system tools routes', () => {
       // at the first failure, so they are never reached in a red run.
       expect(res.status).toBe(503);
       const body = await res.json();
-      expect(body.code).toBe('agent_timeout');
+      expect(body.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
       expect(body.error).toContain("didn't respond in time");
       expect(body.success).toBeUndefined();
       expect(body.data).toBeUndefined();
@@ -1359,7 +1360,7 @@ describe('system tools routes', () => {
 
       expect(res.status).toBe(503);
       const body = await res.json();
-      expect(body.code).toBe('agent_timeout');
+      expect(body.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
       expect(body.unverified).toBe(true);
     });
 
@@ -1372,7 +1373,7 @@ describe('system tools routes', () => {
       expect(res.status).toBe(500);
       const body = await res.json();
       expect(body.error).toBe('access is denied');
-      expect(body.code).toBe('agent_execution_failed');
+      expect(body.code).toBe(ERROR_CODES.AGENT_EXECUTION_FAILED);
       expect(body.unverified).toBeUndefined();
     });
 
@@ -1384,7 +1385,7 @@ describe('system tools routes', () => {
 
       expect(res.status).toBe(404);
       const body = await res.json();
-      expect(body.code).toBe('path_not_found');
+      expect(body.code).toBe(ERROR_CODES.PATH_NOT_FOUND);
     });
 
     // Verbatim from commandQueue.ts:832,1013 — `Device is ${device.status},
@@ -1402,7 +1403,7 @@ describe('system tools routes', () => {
 
       expect(res.status).toBe(503);
       const body = await res.json();
-      expect(body.code).toBe('device_offline');
+      expect(body.code).toBe(ERROR_CODES.DEVICE_OFFLINE);
       expect(body.error).toBe('The device is offline.');
       expect(body.unverified).toBeUndefined();
     });
@@ -1427,7 +1428,7 @@ describe('system tools routes', () => {
 
         expect(res.status).toBe(503);
         const body = await res.json();
-        expect(body.code).toBe('device_offline');
+        expect(body.code).toBe(ERROR_CODES.DEVICE_OFFLINE);
         expect(body.error).toBe(`The device is ${deviceState} and cannot run commands.`);
         expect(body.error).not.toContain('offline');
       },

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { basename } from 'node:path';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requireScope } from '../../middleware/auth';
@@ -316,7 +317,7 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
-          code: 'agent_execution_failed',
+          code: ERROR_CODES.AGENT_EXECUTION_FAILED,
         });
       }
     }
@@ -389,7 +390,7 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
-          code: 'agent_execution_failed',
+          code: ERROR_CODES.AGENT_EXECUTION_FAILED,
         });
       }
     }
@@ -462,7 +463,7 @@ fileBrowserRoutes.post(
           path,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
-          code: 'agent_execution_failed',
+          code: ERROR_CODES.AGENT_EXECUTION_FAILED,
         });
       }
     }
@@ -579,7 +580,7 @@ fileBrowserRoutes.post(
           trashId,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
-          code: 'agent_execution_failed',
+          code: ERROR_CODES.AGENT_EXECUTION_FAILED,
         });
       }
     }

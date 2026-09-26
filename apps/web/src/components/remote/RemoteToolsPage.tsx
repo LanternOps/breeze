@@ -604,7 +604,7 @@ export default function RemoteToolsPage({
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=500`);
       if (!res.ok) {
         // An offline device answers 503 with
-        // `{ error: 'The device is offline.', code: 'device_offline' }`
+        // `{ error: 'The device is offline.', code: 'DEVICE_OFFLINE' }`
         // (apps/api/src/routes/systemTools/fileBrowserHelpers.ts). Discarding
         // that body and logging in the catch below is what made this tab read
         // "Processes 0 / No Data" — indistinguishable from a genuinely idle
@@ -664,7 +664,7 @@ export default function RemoteToolsPage({
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services?limit=500`);
       if (!res.ok) {
         // Same reasoning as fetchProcesses above (#4935): an offline device's
-        // 503 body carries `{ error, code: 'device_offline' }` — discarding it
+        // 503 body carries `{ error, code: 'DEVICE_OFFLINE' }` — discarding it
         // here made the Services tab read "0 of 0 / No Services Available",
         // indistinguishable from a device that genuinely has none.
         const body = await res.json().catch(() => null);
@@ -686,6 +686,20 @@ export default function RemoteToolsPage({
     }
   }, [deviceId]);
 
+  // Services actions (start/stop/restart) must keep the device's own error
+  // prose (permission denied, dependent services running, restart timeout,
+  // etc.) intact -- it's specific and actionable. runAction's `errors:<CODE>`
+  // i18n branch would otherwise flatten it to the generic AGENT_EXECUTION_FAILED
+  // copy now that the API sends the correctly-cased code (Part of #3859, E2b).
+  const keepServiceActionErrorMessage = (
+    _code: string,
+    _message: string,
+    body?: unknown,
+  ): string | undefined => {
+    const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).error : undefined;
+    return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+  };
+
   const handleStartService = useCallback(async (name: string) => {
     try {
       await runAction({
@@ -693,6 +707,7 @@ export default function RemoteToolsPage({
           method: 'POST'
         }),
         errorFallback: t('remoteToolsPage.errors.startService'),
+        friendly: keepServiceActionErrorMessage,
         onUnauthorized: handleSessionExpired,
       });
     } finally {
@@ -710,6 +725,7 @@ export default function RemoteToolsPage({
           method: 'POST'
         }),
         errorFallback: t('remoteToolsPage.errors.stopService'),
+        friendly: keepServiceActionErrorMessage,
         onUnauthorized: handleSessionExpired,
       });
     } finally {
@@ -727,6 +743,7 @@ export default function RemoteToolsPage({
           { method: 'POST' }
         ),
         errorFallback: t('remoteToolsPage.errors.restartService'),
+        friendly: keepServiceActionErrorMessage,
         onUnauthorized: handleSessionExpired,
       });
     } catch (err) {
