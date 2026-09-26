@@ -231,6 +231,36 @@ describe('canonical physical publication (M2 Task 6)', () => {
     expect((await f.relationships()).find(r => r.id === candidate!.id)!.lifecycle).toBe('archived');
   });
 
+  // #5998 review: a same-digest confirmation queues a revival of archived,
+  // stale support. A partial read omitting that row, admitted BEFORE the
+  // revival publishes, pruned the key from _knownKeys (the DB support was
+  // still archived) while publication then revived the support and kept its
+  // row mapping: later complete-empty reads could never withdraw it.
+  it('keeps a key with a queued revival known, so complete-empty reads still withdraw it', async () => {
+    const f = await fixture();
+    await f.baseInterfaces();
+    const base = await f.report.lldp('A', [lldp(1, mac('B', 1), 1)], '1', -3_000_000);
+    await f.reconcile();
+    const link = links(await f.relationships())[0]!;
+    const future = new Date(Date.now() + 8 * 86400_000);
+    expect(await f.scoped(() => withDbTransaction(() => queueTopologyAging(f.scope, future)))).toBe(1);
+    await f.reconcile();
+    expect((await f.support(link.id)).map(s => s.lifecycle)).toEqual(['archived']);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(future);
+    expect((await f.unchanged('A', base, '2', new Date(future.getTime() - 1_200_000))).accepted).toBe(true);
+    await f.report.lldp('A', [lldp(7, '02:00:00:00:ee:01', 3)], '3', -900_000, { outcome: 'partial', reasonCode: 'timeout' });
+    const known = async () => (await f.q<{ keys: string[] }>(sql`SELECT current_baseline->'_knownKeys' AS keys FROM topology_collection_sources
+      WHERE org_id=${f.scope.orgId}::uuid AND protocol='lldp' AND context_key=${`${auth('A')}/default`}`))[0]!.keys;
+    expect(await known()).toContain('1.1');
+    await f.reconcile();
+    expect((await f.support(link.id)).map(s => s.lifecycle)).toEqual(['active']);
+    const empty = await f.report.lldp('A', [], '4', -600_000);
+    expect((await f.unchanged('A', empty, '5', future)).accepted).toBe(true);
+    await f.reconcile();
+    vi.useRealTimers();
+    expect((await f.support(link.id)).map(s => s.lifecycle)).toEqual(['withdrawn']);
+  });
+
   it('a new interface generation does not inherit the old link', async () => {
     const f = await fixture();
     await f.baseInterfaces();

@@ -115,6 +115,10 @@ describe('known-key pruning for physical sources (partial-only growth)',()=>{
     const state={active:[{generation:'g',firstSequence:'1',firstEffectiveAt:now.toISOString(),digest:'x',rowKeys:['a']}],transitions:[]};
     expect(prunableTopologyKnownKeys({knownKeys:['a'],positives:[],rowRelationships:rows,support,absence:state,now})).toEqual([]);
   });
+  it('never prunes a key whose relationship has a queued lifecycle change (an unpublished revival)',()=>{
+    const revival={generation:'r',relationshipId:'r-a',producerEpoch:'e',sequence:'2',contentDigest:'d',inputRevision:'5',lifecycle:'active' as const,effectiveAt:now.toISOString(),freshUntil:now.toISOString()};
+    expect(prunableTopologyKnownKeys({knownKeys:['a'],positives:[],rowRelationships:rows,support,absence:{active:[],transitions:[],lifecycle:[revival]},now})).toEqual([]);
+  });
   it('keeps unmapped keys (their publication may still be pending)',()=>{
     expect(prunableTopologyKnownKeys({knownKeys:['f'],positives:[],rowRelationships:rows,support,absence:{active:[],transitions:[]},now})).toEqual([]);
   });
