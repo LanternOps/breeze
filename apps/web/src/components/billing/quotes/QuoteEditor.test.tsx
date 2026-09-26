@@ -310,6 +310,36 @@ describe('QuoteEditor', () => {
     expect(seen).toEqual(['Net 45']);
   });
 
+  // #4296: the blur-save fires a refetch it does not await, and the field
+  // re-enables as soon as the PATCH resolves. Text typed before that refetch
+  // lands is NEWER than the echo it carries, so the resync must keep it — and
+  // keep it dirty, or the next blur no-ops and the edit is silently lost.
+  it.each([
+    // [prop, testId, value the server stores for the first save]
+    ['termsAndConditions', 'quote-terms', 'First save '],
+    // The footer PATCH trims, so the echo is the TRIMMED value.
+    ['terms', 'quote-footer', 'First save'],
+  ] as const)('keeps %s typed during the save round-trip when the refetch echoes the saved value (#4296)', async (field, testId, echo) => {
+    const onChanged = vi.fn();
+    const { rerender } = render(<QuoteEditor detail={draftDetail({ [field]: 'Original' })} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId(testId), { target: { value: 'First save ' } });
+    fireEvent.blur(screen.getByTestId(testId));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId(testId)).not.toBeDisabled());
+
+    fireEvent.change(screen.getByTestId(testId), { target: { value: 'First save, then more' } });
+    rerender(<QuoteEditor detail={draftDetail({ [field]: echo })} onChanged={onChanged} />);
+    expect(screen.getByTestId(testId)).toHaveValue('First save, then more');
+
+    fireEvent.blur(screen.getByTestId(testId));
+    await waitFor(() => expect(fetchMock.mock.calls.some(
+      (c) => (c[1] as RequestInit)?.method === 'PATCH'
+        && String((c[1] as RequestInit)?.body).includes('First save, then more'),
+    )).toBe(true));
+  });
+
   // The deposit-percent draft has the identical shape: a live-typed numeric
   // field re-seeded from `quote.depositPercent` in a passive effect (#4807).
   it('re-seeds a changed depositPercent prop within the same commit, not a later one (#4807)', async () => {
