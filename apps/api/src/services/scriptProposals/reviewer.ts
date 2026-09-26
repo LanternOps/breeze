@@ -196,13 +196,21 @@ type CatalogPricing = ReturnType<typeof resolveWireModel>['catalogPricing'];
 
 /**
  * Thrown when the proposal is not in a reviewable state and no model review
- * exists to return (e.g. it was superseded or expired before the worker got
- * to it). Not retryable — the worker maps it to BullMQ's UnrecoverableError.
+ * exists to return. `status` is the proposal's status, or `'missing'` when
+ * the row was not found at all.
+ *
+ * The worker maps every status EXCEPT `'missing'` to BullMQ's
+ * UnrecoverableError (superseded/expired/decided before the worker got to it:
+ * nothing a retry could change). `'missing'` stays retryable (#7128): a job
+ * that runs before the producer's insert is visible to it is a race, not a
+ * terminal state.
  */
 export class ProposalNotReviewableError extends Error {
+  readonly status: string;
   constructor(proposalId: string, status: string) {
     super(`script-review: proposal ${proposalId} is '${status}', not 'proposed', and has no model review`);
     this.name = 'ProposalNotReviewableError';
+    this.status = status;
   }
 }
 

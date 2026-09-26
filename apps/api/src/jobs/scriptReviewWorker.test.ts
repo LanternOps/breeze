@@ -43,10 +43,14 @@ vi.mock('../services/scriptProposals/reviewQueue', () => ({
 }));
 vi.mock('../services/scriptProposals/reviewer', () => ({
   runScriptReview: shared.runScriptReviewMock,
+  // Mirrors the real constructor shape (proposalId, status): the worker keys
+  // its retry decision off `status` (#7128).
   ProposalNotReviewableError: class ProposalNotReviewableError extends Error {
-    constructor(message = 'not reviewable') {
-      super(message);
+    readonly status: string;
+    constructor(proposalId = 'p', status = 'superseded') {
+      super(`script-review: proposal ${proposalId} is '${status}', not 'proposed', and has no model review`);
       this.name = 'ProposalNotReviewableError';
+      this.status = status;
     }
   },
 }));
@@ -75,6 +79,7 @@ describe('processScriptReviewJob', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     shared.tryAcquireOrgReviewSlotMock.mockResolvedValue(true);
   });
 
@@ -105,6 +110,28 @@ describe('processScriptReviewJob', () => {
     await expect(processScriptReviewJob(job() as never, 'lock-token-1')).rejects.toMatchObject({ name: 'UnrecoverableError' });
     expect(shared.releaseOrgReviewSlotMock).toHaveBeenCalledWith(ORG_ID);
   });
+
+  // #7128: a 'missing' proposal is a visibility race (the producer's insert
+  // had not committed when the job ran), not a terminal state. BullMQ must be
+  // allowed to retry it under the job's bounded attempts/backoff.
+  it("rethrows a 'missing' proposal as a RETRYABLE error, not UnrecoverableError (#7128)", async () => {
+    shared.runScriptReviewMock.mockRejectedValueOnce(new ProposalNotReviewableError('p', 'missing'));
+
+    const err = await processScriptReviewJob(job() as never, 'lock-token-1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).not.toBe('UnrecoverableError');
+    expect((err as Error).message).toContain("'missing'");
+    expect(shared.releaseOrgReviewSlotMock).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it.each(['superseded', 'expired', 'reviewed', 'scan_rejected'])(
+    "keeps a '%s' proposal with no model review unrecoverable",
+    async (status) => {
+      shared.runScriptReviewMock.mockRejectedValueOnce(new ProposalNotReviewableError('p', status));
+      await expect(processScriptReviewJob(job() as never, 'tok')).rejects.toMatchObject({ name: 'UnrecoverableError' });
+    },
+  );
 
   it('a release failure in finally never masks the try-block outcome (UnrecoverableError stays unrecoverable; success stays success)', async () => {
     shared.releaseOrgReviewSlotMock.mockRejectedValueOnce(new Error('redis reset'));

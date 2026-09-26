@@ -61,9 +61,22 @@ export async function processScriptReviewJob(job: Job<unknown>, token?: string):
   try {
     await runScriptReview(data);
   } catch (error) {
-    // The proposal left `proposed` with no model review (superseded/expired
-    // before we got to it): nothing a retry could change, and no spend.
     if (error instanceof ProposalNotReviewableError) {
+      // Row not found: a visibility race, not a terminal state (#7128). The
+      // producer commits the proposal before it enqueues, so this should not
+      // happen, but a job that runs before the insert is visible must still be
+      // retried rather than dropped. Rethrowing keeps it on the job's own
+      // bounded `attempts` + exponential backoff (reviewQueue.ts). Nothing was
+      // spent: the load runs before the static-scan row and the budget
+      // reservation.
+      if (error.status === 'missing') {
+        console.warn(`[${WORKER_NAME}] ${error.message}; will retry`, {
+          proposalId: data.proposalId, orgId: data.orgId, attemptsMade: job.attemptsMade,
+        });
+        throw error;
+      }
+      // The proposal left `proposed` with no model review (superseded/expired
+      // before we got to it): nothing a retry could change, and no spend.
       console.error(`[${WORKER_NAME}] ${error.message}`);
       throw new UnrecoverableError(error.message);
     }

@@ -640,12 +640,21 @@ function makeToolHandler(
         ...(verifiedContext ? { context: verifiedContext } : {}),
         ...(capture ? { capture } : {}),
       };
+      const runTool = () =>
+        Object.keys(execOptions).length > 0
+          ? executeTool(toolName, args, auth, execOptions)
+          : executeTool(toolName, args, auth);
+      // A self-managed tool (#7128) gets NO per-call transaction: it hands work
+      // to another process and waits on it, which under this wrapper meant an
+      // uncommitted row the other process could not see and a pooled
+      // connection idle-in-transaction for the whole wait. `executeTool` and
+      // the handler open their own short contexts built from the same `auth`.
+      // This whole handler already runs under `runOutsideDbContext`, so there
+      // is no ambient context for the tool to join by accident.
       const result = await withToolTimeout(
-        withDbAccessContext(dbContext, () =>
-          Object.keys(execOptions).length > 0
-            ? executeTool(toolName, args, auth, execOptions)
-            : executeTool(toolName, args, auth),
-        ),
+        aiTools.get(toolName)?.selfManagedDbContext
+          ? runTool()
+          : withDbAccessContext(dbContext, runTool),
         toolTimeout,
         toolName,
       );
