@@ -91,4 +91,31 @@ describe('DevicePerformanceGraphs request lifecycle (#4513)', () => {
     expect(container.querySelector('.text-destructive')).toBeNull();
     expect(container.querySelector('.animate-spin')).not.toBeNull();
   });
+
+  // A caller signal replaces fetchWithAuth's own 30s ceiling; the helper's
+  // timeout must still reach the user as an error, unlike a cancellation.
+  it('surfaces a request timeout as a load error with Retry', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockImplementation((_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+      );
+
+      const { container } = render(<DevicePerformanceGraphs deviceId="dev-1" />);
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+
+      expect(container.querySelector('.animate-spin')).toBeNull();
+      // Error banner rendered (not dropped like a cancellation). The exact text
+      // depends on whether the runtime's DOMException extends Error.
+      expect(container.querySelector('.text-destructive')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
