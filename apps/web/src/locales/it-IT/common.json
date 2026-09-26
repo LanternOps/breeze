@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
     "aiForOffice": "AI per Office",
-    "networkMonitor": "Monitoraggio rete",
+    "networkMonitor": "Rete",
     "jobs": "Attività",
     "monitoring": "Monitoraggio",
     "networkDiscovery": "Rilevamento rete",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Risorse",
-          "checks": "Controlli di rete",
-          "templates": "Modelli SNMP"
+          "templates": "Modelli SNMP",
+          "results": "Risultati"
         },
-        "title": "Monitoraggio",
-        "description": "Polling SNMP e controlli di rete. Il rilevamento può alimentare il monitoraggio, che viene gestito qui."
+        "title": "Rete",
+        "description": "Asset, modelli SNMP e risultati dei controlli di rete. I controlli si creano come monitor in Avvisi.",
+        "newCheck": "Nuovo controllo"
       }
     },
     "fleet": {

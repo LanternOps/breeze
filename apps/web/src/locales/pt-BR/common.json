@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
     "aiForOffice": "IA para Office",
-    "networkMonitor": "Monitoramento de Rede",
+    "networkMonitor": "Rede",
     "jobs": "Jobs",
     "monitoring": "Monitoramento",
     "networkDiscovery": "Descoberta de Rede",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Ativos",
-          "checks": "Verificações de Rede",
-          "templates": "Modelos SNMP"
+          "templates": "Modelos SNMP",
+          "results": "Resultados"
         },
-        "title": "Monitoramento",
-        "description": "Polling SNMP e verificações de rede. A descoberta pode alimentar o monitoramento, mas o monitoramento é gerenciado aqui."
+        "title": "Rede",
+        "description": "Ativos, modelos SNMP e resultados das verificações de rede. As verificações são criadas como monitores em Alertas.",
+        "newCheck": "Nova verificação"
       }
     },
     "fleet": {

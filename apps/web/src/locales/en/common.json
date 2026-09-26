@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
     "aiForOffice": "AI for Office",
-    "networkMonitor": "Network Monitor",
+    "networkMonitor": "Network",
     "jobs": "Jobs",
     "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Assets",
-          "checks": "Network Checks",
-          "templates": "SNMP Templates"
+          "templates": "SNMP Templates",
+          "results": "Results"
         },
-        "title": "Monitoring",
-        "description": "SNMP polling and network checks. Discovery can feed into monitoring, but monitoring is managed here."
+        "title": "Network",
+        "description": "Assets, SNMP templates and network-check results. Checks are authored as monitors under Alerts.",
+        "newCheck": "New check"
       }
     },
     "fleet": {

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MonitoringPage from './MonitoringPage';
 
+const navigateToMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
+
 vi.mock('./MonitoringAssetsDashboard', () => ({
   default: () => <div>Assets tab</div>
 }));
@@ -21,15 +24,34 @@ vi.mock('../snmp/SNMPTemplateEditor', () => ({
 
 describe('MonitoringPage', () => {
   beforeEach(() => {
+    navigateToMock.mockClear();
     window.history.pushState({}, '', '/monitoring');
   });
 
-  it('derives the initial tab from window.location.hash', () => {
+  it('renders Assets · Templates · Results and maps the legacy #checks hash to Results', () => {
     window.history.pushState({}, '', '/monitoring#checks');
 
     render(<MonitoringPage />);
 
     expect(screen.getByText('Checks tab')).toBeInTheDocument();
+    expect(screen.getAllByRole('button').map((button) => button.textContent).filter(
+      (label) => ['Assets', 'SNMP Templates', 'Results'].includes(label ?? '')
+    )).toEqual(['Assets', 'SNMP Templates', 'Results']);
+  });
+
+  it('New check opens the monitor editor with kind network_check', () => {
+    window.history.pushState({}, '', '/monitoring#results');
+    render(<MonitoringPage />);
+    fireEvent.click(screen.getByTestId('monitoring-page-new-check'));
+    expect(navigateToMock).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check');
+  });
+
+  it('preserves the initial asset when opening the monitor editor', () => {
+    const assetId = '11111111-1111-4111-8111-111111111111';
+    window.history.pushState({}, '', '/monitoring?assetId=' + assetId + '#results');
+    render(<MonitoringPage />);
+    fireEvent.click(screen.getByTestId('monitoring-page-new-check'));
+    expect(navigateToMock).toHaveBeenCalledWith('/alerts/monitors/new#kind=network_check&assetId=' + assetId);
   });
 
   it('defaults to the Assets tab when there is no hash', () => {
@@ -38,6 +60,7 @@ describe('MonitoringPage', () => {
     render(<MonitoringPage />);
 
     expect(screen.getByText('Assets tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('monitoring-page-new-check')).toBeNull();
   });
 
   it('updates the hash and switches tabs when a tab is clicked', () => {
@@ -60,7 +83,7 @@ describe('MonitoringPage', () => {
 
       expect(screen.getByTestId('monitoring-page-add-network-asset')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Network Checks' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Results' }));
       expect(screen.queryByTestId('monitoring-page-add-network-asset')).toBeNull();
     });
 

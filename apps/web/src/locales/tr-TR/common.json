@@ -28,7 +28,7 @@
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
     "aiForOffice": "Office için AI",
-    "networkMonitor": "Ağ İzleyicisi",
+    "networkMonitor": "Ağ",
     "jobs": "İşler",
     "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Varlıklar",
-          "checks": "Ağ Kontrolleri",
-          "templates": "SNMP Şablonlar"
+          "templates": "SNMP Şablonlar",
+          "results": "Sonuçlar"
         },
-        "title": "İzleme",
-        "description": "SNMP yoklama ve ağ kontrolleri. Keşif izlemeyi besleyebilir ancak izleme burada yönetilir."
+        "title": "Ağ",
+        "description": "Varlıklar, SNMP şablonları ve ağ denetimi sonuçları. Denetimler Uyarılar altında monitör olarak oluşturulur.",
+        "newCheck": "Yeni denetim"
       }
     },
     "fleet": {

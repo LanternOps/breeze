@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
-import { useHashState, useHashTab } from '@/lib/useHashState';
+import { useHashState } from '@/lib/useHashState';
+import { navigateTo } from '@/lib/navigation';
 import MonitoringAssetsDashboard from './MonitoringAssetsDashboard';
 import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
@@ -12,13 +13,16 @@ import AddNetworkAssetModal from '../devices/AddNetworkAssetModal';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
-const MONITORING_TABS = ['assets', 'checks', 'templates'] as const;
+const MONITORING_TABS = ['assets', 'templates', 'results'] as const;
 type MonitoringTab = (typeof MONITORING_TABS)[number];
+// Keep bookmarks using the pre-W05e tab name working.
+const parseTab = (hash: string): MonitoringTab | undefined =>
+  hash === 'checks' ? 'results' : (MONITORING_TABS as readonly string[]).includes(hash) ? (hash as MonitoringTab) : undefined;
 
 export default function MonitoringPage() {
   const { t } = useTranslation('common');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
-  const [activeTab, setActiveTab] = useHashTab<MonitoringTab>(MONITORING_TABS, 'assets');
+  const [activeTab, setActiveTab] = useHashState<MonitoringTab>('assets', parseTab);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
@@ -35,20 +39,16 @@ export default function MonitoringPage() {
     setInitialAssetId(assetId);
   }, []);
 
-  // Clear initialAssetId after first use so tab switches don't re-apply it.
-  useEffect(() => {
-    if (initialAssetId) setInitialAssetId(null);
-  }, [activeTab]);
-
   const tabLabels: Record<MonitoringTab, string> = {
     assets: t('longTail.monitoring.MonitoringPage.tabs.assets'),
-    checks: t('longTail.monitoring.MonitoringPage.tabs.checks'),
+    results: t('longTail.monitoring.MonitoringPage.tabs.results'),
     templates: t('longTail.monitoring.MonitoringPage.tabs.templates')
   };
   const tabButtons = MONITORING_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const navigateToTab = useCallback((tab: MonitoringTab) => {
     if (typeof window !== 'undefined') window.location.hash = tab;
+    setInitialAssetId(null);
     setActiveTab(tab);
   }, [setActiveTab]);
 
@@ -62,7 +62,7 @@ export default function MonitoringPage() {
           </p>
         </div>
         {/* Second entry point for the manual-network-asset modal (#5213 W02),
-            alongside the Devices page one. Assets-tab only — Checks and
+            alongside the Devices page one. Assets-tab only — Results and
             Templates aren't asset-creation surfaces. */}
         {activeTab === 'assets' && (
           <button
@@ -76,6 +76,17 @@ export default function MonitoringPage() {
           >
             <Plus className="h-4 w-4" />
             {t('devices:devicesPage.addMenu.addNetworkAsset')}
+          </button>
+        )}
+        {activeTab === 'results' && (
+          <button
+            type="button"
+            data-testid="monitoring-page-new-check"
+            onClick={() => void navigateTo(`/alerts/monitors/new#kind=network_check${initialAssetId ? `&assetId=${encodeURIComponent(initialAssetId)}` : ''}`)}
+            className="flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            {t('longTail.monitoring.MonitoringPage.newCheck')}
           </button>
         )}
       </div>
@@ -98,11 +109,11 @@ export default function MonitoringPage() {
       {activeTab === 'assets' && (
         <MonitoringAssetsDashboard
           initialAssetId={initialAssetId}
-          onOpenChecks={() => navigateToTab('checks')}
+          onOpenChecks={() => navigateToTab('results')}
         />
       )}
 
-      {activeTab === 'checks' && <NetworkMonitorList assetId={initialAssetId} />}
+      {activeTab === 'results' && <NetworkMonitorList assetId={initialAssetId} />}
 
       {activeTab === 'templates' && (
         <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">

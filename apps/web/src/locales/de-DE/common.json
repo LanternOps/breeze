@@ -28,7 +28,7 @@
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
     "aiForOffice": "KI für Office",
-    "networkMonitor": "Netzwerküberwachung",
+    "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
     "monitoring": "Überwachung",
     "networkDiscovery": "Netzwerkerkennung",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Assets",
-          "checks": "Netzwerkprüfungen",
-          "templates": "SNMP Vorlagen"
+          "templates": "SNMP Vorlagen",
+          "results": "Ergebnisse"
         },
-        "title": "Überwachung",
-        "description": "SNMP-Abfragen und Netzwerkprüfungen. Die Erkennung kann in die Überwachung einfließen, aber die Überwachung wird hier verwaltet."
+        "title": "Netzwerk",
+        "description": "Assets, SNMP-Vorlagen und Ergebnisse der Netzwerkprüfungen. Prüfungen werden als Monitore unter Warnungen erstellt.",
+        "newCheck": "Neue Prüfung"
       }
     },
     "fleet": {

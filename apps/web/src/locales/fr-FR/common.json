@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
     "aiForOffice": "IA pour Office",
-    "networkMonitor": "Moniteur réseau",
+    "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "monitoring": "Supervision",
     "networkDiscovery": "Découverte du réseau",
@@ -1943,11 +1943,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Actifs",
-          "checks": "Contrôles réseau",
-          "templates": "Modèles SNMP"
+          "templates": "Modèles SNMP",
+          "results": "Résultats"
         },
-        "title": "Surveillance",
-        "description": "Interrogation SNMP et contrôles réseau. La découverte peut alimenter la surveillance, qui se gère ici."
+        "title": "Réseau",
+        "description": "Actifs, modèles SNMP et résultats des vérifications réseau. Les vérifications sont créées comme moniteurs sous Alertes.",
+        "newCheck": "Nouvelle vérification"
       }
     },
     "fleet": {
