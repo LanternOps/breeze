@@ -30,6 +30,7 @@ vi.mock('../../db', () => ({
 }));
 
 import { devices } from '../../db/schema/devices';
+import { metricAnomalyEpisodes } from '../../db/schema/metricAnomalyEpisodes';
 import { deviceReliability } from '../../db/schema/reliability';
 import {
   produceLogCorrelationFindings,
@@ -55,46 +56,83 @@ beforeEach(() => {
 });
 
 describe('produceMetricAnomalyPatterns', () => {
-  function anomalyRow(overrides: Partial<Record<string, unknown>> = {}) {
+  // Rows come from metric_anomaly_episodes (open episodes only), not raw
+  // metric_anomalies rows — see #6650 follow-up: raw rows orphaned before
+  // assembly shipped kept fleet findings open for days.
+  function episodeRow(overrides: Partial<Record<string, unknown>> = {}) {
     return {
-      id: 'anomaly-1',
+      id: 'episode-1',
       deviceId: 'device-a',
-      metricName: 'cpu_percent',
       anomalyType: 'spike',
-      score: 3,
-      observedValue: 95,
-      baselineValue: 40,
+      metricFamily: 'cpu',
+      peakMetricName: 'cpu_percent',
+      peakScore: 3,
+      peakValue: 95,
+      peakBaselineValue: 40,
       ...overrides,
     };
   }
 
-  it('groups open anomalies by (metric_name, anomaly_type) and requires >=2 devices', async () => {
+  it('reads open metric_anomaly_episodes, not raw metric_anomalies rows', async () => {
+    dbMocks.state.queue = [[]];
+    await produceMetricAnomalyPatterns(ORG_ID);
+    const fromMock = (dbMocks.select.mock.results[0]!.value as { from: ReturnType<typeof vi.fn> }).from;
+    expect(fromMock).toHaveBeenCalledWith(metricAnomalyEpisodes);
+    expect(drizzleSpies.eq).toHaveBeenCalledWith(metricAnomalyEpisodes.orgId, ORG_ID);
+    expect(drizzleSpies.eq).toHaveBeenCalledWith(metricAnomalyEpisodes.status, 'open');
+  });
+
+  it('groups open episodes by (anomaly_type, metric_family) and requires >=2 devices', async () => {
     dbMocks.state.queue = [[
-      anomalyRow({ id: 'a1', deviceId: 'device-a' }),
-      anomalyRow({ id: 'a2', deviceId: 'device-b' }),
-      // A different metric/anomalyType pair with only one device — must be dropped.
-      anomalyRow({ id: 'a3', deviceId: 'device-c', metricName: 'disk_io', anomalyType: 'drift' }),
+      episodeRow({ id: 'e1', deviceId: 'device-a' }),
+      episodeRow({ id: 'e2', deviceId: 'device-b' }),
+      // A different family/anomalyType pair with only one device — must be dropped.
+      episodeRow({ id: 'e3', deviceId: 'device-c', metricFamily: 'disk_write', anomalyType: 'drift' }),
     ]];
 
     const result = await produceMetricAnomalyPatterns(ORG_ID);
 
     expect(result).toHaveLength(1);
     expect(result[0]!.kind).toBe('metric_anomaly_pattern');
-    expect(result[0]!.semanticKey).toBe('metric:cpu_percent:spike');
+    expect(result[0]!.semanticKey).toBe('episode:spike:cpu');
     expect(result[0]!.members.map((m) => m.deviceId).sort()).toEqual(['device-a', 'device-b']);
   });
 
-  it('sets severity critical when any member score >= 4, else warning', async () => {
+  it('collapses the _sum/_max metric pair into ONE finding per family', async () => {
+    // Prod: top_process_cpu_percent_sum and _max each produced their own
+    // finding; episodes already fold them into the process_cpu family.
     dbMocks.state.queue = [[
-      anomalyRow({ id: 'a1', deviceId: 'device-a', score: 4.2 }),
-      anomalyRow({ id: 'a2', deviceId: 'device-b', score: 2.1 }),
+      episodeRow({ id: 'e1', deviceId: 'device-a', anomalyType: 'process_runaway', metricFamily: 'process_cpu', peakMetricName: 'top_process_cpu_percent_max' }),
+      episodeRow({ id: 'e2', deviceId: 'device-b', anomalyType: 'process_runaway', metricFamily: 'process_cpu', peakMetricName: 'top_process_cpu_percent_sum' }),
+    ]];
+
+    const result = await produceMetricAnomalyPatterns(ORG_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.semanticKey).toBe('episode:process_runaway:process_cpu');
+    expect(result[0]!.title).toBe('Process CPU process_runaway pattern on 2 devices');
+  });
+
+  it('titles unknown families by title-casing the family name', async () => {
+    dbMocks.state.queue = [[
+      episodeRow({ id: 'e1', deviceId: 'device-a', metricFamily: 'gpu_temp' }),
+      episodeRow({ id: 'e2', deviceId: 'device-b', metricFamily: 'gpu_temp' }),
+    ]];
+    const result = await produceMetricAnomalyPatterns(ORG_ID);
+    expect(result[0]!.title).toBe('Gpu temp spike pattern on 2 devices');
+  });
+
+  it('sets severity critical when any member peak score >= 4, else warning', async () => {
+    dbMocks.state.queue = [[
+      episodeRow({ id: 'e1', deviceId: 'device-a', peakScore: 4.2 }),
+      episodeRow({ id: 'e2', deviceId: 'device-b', peakScore: 2.1 }),
     ]];
     let result = await produceMetricAnomalyPatterns(ORG_ID);
     expect(result[0]!.severity).toBe('critical');
 
     dbMocks.state.queue = [[
-      anomalyRow({ id: 'a1', deviceId: 'device-a', score: 3.9 }),
-      anomalyRow({ id: 'a2', deviceId: 'device-b', score: 2.1 }),
+      episodeRow({ id: 'e1', deviceId: 'device-a', peakScore: 3.9 }),
+      episodeRow({ id: 'e2', deviceId: 'device-b', peakScore: 2.1 }),
     ]];
     result = await produceMetricAnomalyPatterns(ORG_ID);
     expect(result[0]!.severity).toBe('warning');
@@ -102,7 +140,7 @@ describe('produceMetricAnomalyPatterns', () => {
 
   it('caps evidence samples at 20 members while keeping all members', async () => {
     const rows = Array.from({ length: 25 }, (_, i) =>
-      anomalyRow({ id: `a${i}`, deviceId: `device-${i}`, score: i }));
+      episodeRow({ id: `e${i}`, deviceId: `device-${i}`, peakScore: i }));
     dbMocks.state.queue = [rows];
 
     const result = await produceMetricAnomalyPatterns(ORG_ID);
@@ -112,18 +150,32 @@ describe('produceMetricAnomalyPatterns', () => {
     expect(evidence.samples.length).toBeLessThanOrEqual(20);
   });
 
-  it('deduplicates multiple open rows for the same device (keeps the worst)', async () => {
+  it('keeps one member per device (highest peak_score) and maps evidence from the episode', async () => {
     dbMocks.state.queue = [[
-      anomalyRow({ id: 'a1', deviceId: 'device-a', score: 2 }),
-      anomalyRow({ id: 'a2', deviceId: 'device-a', score: 5 }),
-      anomalyRow({ id: 'a3', deviceId: 'device-b', score: 1 }),
+      episodeRow({ id: 'e1', deviceId: 'device-a', peakScore: 2 }),
+      episodeRow({ id: 'e2', deviceId: 'device-a', peakScore: 5, peakValue: 99, peakBaselineValue: 30, peakMetricName: 'cpu_percent' }),
+      episodeRow({ id: 'e3', deviceId: 'device-b', peakScore: 1 }),
     ]];
 
     const result = await produceMetricAnomalyPatterns(ORG_ID);
 
     expect(result[0]!.members).toHaveLength(2);
     const deviceA = result[0]!.members.find((m) => m.deviceId === 'device-a')!;
-    expect(deviceA.memberEvidence).toMatchObject({ score: 5 });
+    expect(deviceA.sourceKind).toBe('metric_anomaly_episode');
+    expect(deviceA.sourceRowId).toBe('e2');
+    expect(deviceA.memberEvidence).toEqual({
+      score: 5,
+      observedValue: 99,
+      baselineValue: 30,
+      metricName: 'cpu_percent',
+      metricFamily: 'cpu',
+    });
+    const evidence = result[0]!.evidence as { maxScore: number; metricFamily: string; samples: Array<Record<string, unknown>> };
+    expect(evidence.maxScore).toBe(5);
+    expect(evidence.metricFamily).toBe('cpu');
+    expect(evidence.samples[0]).toEqual({
+      deviceId: 'device-a', score: 5, observedValue: 99, baselineValue: 30, metricName: 'cpu_percent',
+    });
   });
 
   it('scopes the query to this org and open status', async () => {
@@ -132,8 +184,8 @@ describe('produceMetricAnomalyPatterns', () => {
     expect(drizzleSpies.and).toHaveBeenCalled();
     const andArgs = drizzleSpies.and.mock.calls[0]!;
     expect(andArgs).toEqual(expect.arrayContaining([
-      { __op: 'eq', column: expect.anything(), value: ORG_ID },
-      { __op: 'eq', column: expect.anything(), value: 'open' },
+      { __op: 'eq', column: metricAnomalyEpisodes.orgId, value: ORG_ID },
+      { __op: 'eq', column: metricAnomalyEpisodes.status, value: 'open' },
     ]));
   });
 

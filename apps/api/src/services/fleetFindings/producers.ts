@@ -1,9 +1,10 @@
 import { and, eq, lt, ne } from 'drizzle-orm';
 import { db } from '../../db';
-import { metricAnomalies } from '../../db/schema/analytics';
 import { logCorrelationRules, logCorrelations, type LogCorrelationAffectedDevice } from '../../db/schema/eventLogs';
 import { devices } from '../../db/schema/devices';
+import { metricAnomalyEpisodes } from '../../db/schema/metricAnomalyEpisodes';
 import { deviceReliability } from '../../db/schema/reliability';
+import { metricFamilyLabel } from '../metricAnomalyEpisodeKeys';
 import type { CandidateFinding, CandidateMember } from './types';
 
 // Anomaly scores are sigma-like; >=4 matches the detectors' own hard-threshold
@@ -39,10 +40,25 @@ async function loadEligibleDeviceIds(orgId: string): Promise<Set<string>> {
 }
 
 /**
- * Groups open `metric_anomalies` rows by (metric_name, anomaly_type) into
+ * Groups OPEN `metric_anomaly_episodes` by (anomaly_type, metric_family) into
  * fleet-wide candidate findings. A group only becomes a candidate once at
  * least ANOMALY_MIN_DEVICES distinct devices are affected — a single device
  * spiking isn't a fleet pattern.
+ *
+ * Episodes, not raw `metric_anomalies` rows (#6650 follow-up): raw rows never
+ * assembled into an episode (the pre-release backlog) stay `open` forever and
+ * kept findings alive for days, and the raw grain split one pattern across the
+ * `_sum`/`_max` metric pair that an episode family already folds into one.
+ * Episodes auto-resolve, so a finding clears when its episodes do. Snoozed
+ * episodes are `dismissed`, so `status = 'open'` excludes them too.
+ *
+ * The semantic key is `episode:<anomaly_type>:<metric_family>`. Moving off the
+ * old `metric:<metric_name>:<anomaly_type>` form deliberately did NOT bump
+ * FLEET_FINDINGS_ALGORITHM_VERSION: reconcile resolves every live row of the
+ * current version that no candidate re-emits (`source_cleared`), which closes
+ * the old-key rows on the first pass. A version bump would hide them from
+ * reconcile (its live query is version-scoped) while the feed, which is not,
+ * kept showing them — open forever.
  *
  * Ineligible devices are dropped by the `devices` innerJoin, BEFORE the
  * ANOMALY_MIN_DEVICES test — a pattern that only holds because two Quick
@@ -51,28 +67,29 @@ async function loadEligibleDeviceIds(orgId: string): Promise<Set<string>> {
 export async function produceMetricAnomalyPatterns(orgId: string): Promise<CandidateFinding[]> {
   const rows = await db
     .select({
-      id: metricAnomalies.id,
-      deviceId: metricAnomalies.deviceId,
-      metricName: metricAnomalies.metricName,
-      anomalyType: metricAnomalies.anomalyType,
-      score: metricAnomalies.score,
-      observedValue: metricAnomalies.observedValue,
-      baselineValue: metricAnomalies.baselineValue,
+      id: metricAnomalyEpisodes.id,
+      deviceId: metricAnomalyEpisodes.deviceId,
+      anomalyType: metricAnomalyEpisodes.anomalyType,
+      metricFamily: metricAnomalyEpisodes.metricFamily,
+      peakMetricName: metricAnomalyEpisodes.peakMetricName,
+      peakScore: metricAnomalyEpisodes.peakScore,
+      peakValue: metricAnomalyEpisodes.peakValue,
+      peakBaselineValue: metricAnomalyEpisodes.peakBaselineValue,
     })
-    .from(metricAnomalies)
-    .innerJoin(devices, eq(metricAnomalies.deviceId, devices.id))
+    .from(metricAnomalyEpisodes)
+    .innerJoin(devices, eq(metricAnomalyEpisodes.deviceId, devices.id))
     .where(and(
-      eq(metricAnomalies.orgId, orgId),
-      eq(metricAnomalies.status, 'open'),
+      eq(metricAnomalyEpisodes.orgId, orgId),
+      eq(metricAnomalyEpisodes.status, 'open'),
       eq(devices.isEphemeral, false),
       ne(devices.status, 'decommissioned'),
     ));
 
-  type AnomalyRow = (typeof rows)[number];
+  type EpisodeRow = (typeof rows)[number];
 
-  const groups = new Map<string, AnomalyRow[]>();
+  const groups = new Map<string, EpisodeRow[]>();
   for (const row of rows) {
-    const key = `${row.metricName}:${row.anomalyType}`;
+    const key = `${row.anomalyType}:${row.metricFamily}`;
     const group = groups.get(key);
     if (group) group.push(row);
     else groups.set(key, [row]);
@@ -80,42 +97,55 @@ export async function produceMetricAnomalyPatterns(orgId: string): Promise<Candi
 
   const candidates: CandidateFinding[] = [];
   for (const groupRows of groups.values()) {
-    // A device can have multiple open anomaly rows for the same metric/type
-    // (different time windows) — collapse to one member per device, keeping
-    // the worst (highest-score) observation so the finding-devices junction
+    // At most one OPEN episode exists per (device, episode_key), but the key
+    // also carries source_table, so one (anomaly_type, family) pair can still
+    // map to several episodes on a device — collapse to one member per device,
+    // keeping the worst (highest peak_score) so the finding-devices junction
     // never sees a duplicate (finding_id, device_id) pair.
-    const byDevice = new Map<string, AnomalyRow>();
+    const byDevice = new Map<string, EpisodeRow>();
     for (const row of groupRows) {
       const existing = byDevice.get(row.deviceId);
-      if (!existing || row.score > existing.score) byDevice.set(row.deviceId, row);
+      if (!existing || row.peakScore > existing.peakScore) byDevice.set(row.deviceId, row);
     }
     const deviceRows = [...byDevice.values()];
     if (deviceRows.length < ANOMALY_MIN_DEVICES) continue;
 
-    const { metricName, anomalyType } = deviceRows[0]!;
-    const maxScore = Math.max(...deviceRows.map((r) => r.score));
+    const { metricFamily, anomalyType } = deviceRows[0]!;
+    const maxScore = Math.max(...deviceRows.map((r) => r.peakScore));
     const severity: CandidateFinding['severity'] = maxScore >= ANOMALY_CRITICAL_SCORE ? 'critical' : 'warning';
-    const metricLabel = (metricName.split('_')[0] || metricName).toUpperCase();
+    const familyLabel = metricFamilyLabel(metricFamily);
 
     const members: CandidateMember[] = deviceRows.map((r) => ({
       deviceId: r.deviceId,
-      sourceKind: 'metric_anomaly',
+      sourceKind: 'metric_anomaly_episode',
       sourceRowId: r.id,
-      memberEvidence: { score: r.score, observedValue: r.observedValue, baselineValue: r.baselineValue },
+      memberEvidence: {
+        score: r.peakScore,
+        observedValue: r.peakValue,
+        baselineValue: r.peakBaselineValue,
+        metricName: r.peakMetricName,
+        metricFamily: r.metricFamily,
+      },
     }));
 
     const samples = [...deviceRows]
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.peakScore - a.peakScore)
       .slice(0, MAX_EVIDENCE_SAMPLES)
-      .map((r) => ({ deviceId: r.deviceId, score: r.score, observedValue: r.observedValue, baselineValue: r.baselineValue }));
+      .map((r) => ({
+        deviceId: r.deviceId,
+        score: r.peakScore,
+        observedValue: r.peakValue,
+        baselineValue: r.peakBaselineValue,
+        metricName: r.peakMetricName,
+      }));
 
     candidates.push({
       kind: 'metric_anomaly_pattern',
-      semanticKey: `metric:${metricName}:${anomalyType}`,
+      semanticKey: `episode:${anomalyType}:${metricFamily}`,
       severity,
-      title: `${metricLabel} ${anomalyType} pattern: ${metricName} on ${deviceRows.length} devices`,
-      summary: `${deviceRows.length} devices showing ${anomalyType} anomalies on ${metricName} (max score ${maxScore.toFixed(2)}).`,
-      evidence: { totalDevices: deviceRows.length, maxScore, samples },
+      title: `${familyLabel} ${anomalyType} pattern on ${deviceRows.length} devices`,
+      summary: `${deviceRows.length} devices have an open ${anomalyType} episode on ${familyLabel} (max score ${maxScore.toFixed(2)}).`,
+      evidence: { totalDevices: deviceRows.length, metricFamily, anomalyType, maxScore, samples },
       members,
     });
   }
