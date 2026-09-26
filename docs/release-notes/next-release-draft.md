@@ -14,16 +14,17 @@ Last release: **v0.115.0** (2026-09-21).
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
-- [ ] Deploy prerequisites and W05c1 before enabling the conversion UI.
-- [ ] Run the platform-admin conversion page for each hosted partner. Record
-  pending policies/rows before and after, converted and unconvertible counts,
-  actor and run time in the release checklist. Review every non-zero remainder.
+- [ ] Before deploying to hosted, run the platform-admin conversion page for each
+  hosted partner. Record pending policies/rows before and after, converted and
+  unconvertible counts, actor and run time in the release checklist. After the
+  deploy, confirm the boot sweep logged no failed partners and no unretired rows.
 - [ ] Hardware & RAID monitoring requires an agent release containing W02a, W02b and
   W05 (#6854). Follow `docs/superpowers/plans/monitoring/evidence/w06-release-request.md`
   (controlled rollout, `AGENT_AUTO_PROMOTE=false`, Windows + Linux canaries) and
   decide whether #6895 must land first.
-- [ ] Announce the W05d retirement release at least one release after W05c.
-  Self-hosters must review Needs conversion before upgrading to that release.
+- [ ] This is the legacy alerting retirement release (W05d, #6372). Conversion
+  shipped in v0.117.0; the announcement must tell self-hosters to run **Convert
+  everything** on v0.117.0 before upgrading.
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
@@ -70,23 +71,6 @@ Last release: **v0.115.0** (2026-09-21).
   the `time-read` capability **and** `billing_profiles:read`, the same permission as the
   web picker. `POST /office-addin/time/log` and `/time/start` accept an optional
   `workTypeId` (UUID); a malformed value returns 400.
-- **Alerting conversion (W05c):** Alerts now has Inbox, Monitors and Delivery.
-  Open Alerts → Monitors → Needs conversion, then review each policy preview.
-  Convert only after reviewing device equivalence and the proposed delivery.
-  Unconvertible rows show reasons and require deliberate replacement or retirement.
-  Source rows and alert history are retained. Conversion history provides persistent
-  Undo until W05d removes the source runtime; unavailable entries disable Undo. Partner managers can Convert everything;
-  review the returned unconvertible count afterward.
-- **Deadline:** complete review before W05d, which will ship at least one release
-  later. W05d performs the remaining sweep and lists unconvertible retirements.
-  The legacy policy tabs still exist during W05c. Alert Templates settings URLs
-  redirect to Monitors immediately; condition authoring belongs to Monitors.
-- **Delivery defaults:** the explicit Everything else row controls fallback.
-  New channels are not subscribed until added to a routing row or monitor override.
-- **Device and automation views:** device Monitoring shows effective monitors,
-  source policy, episodes and escalation. Reset escalation resumes responses but
-  does not resolve an alert. Jobs → Alert workflows supports severity/kind filters.
-  Fleet Designer applies monitor attachments; regenerate old rule-shaped proposals.
 - **Hardware & RAID monitoring (#6854) — needs the agent update too.** The device
   Hardware tab shows RAID arrays, physical disks, controller cache batteries and
   collection status. Attach the four built-in hardware monitors to a configuration
@@ -96,3 +80,46 @@ Last release: **v0.115.0** (2026-09-21).
   installed. A rebuilding array is a warning, and a critical array alert resolves
   after two below-critical polls. Known issue: on Windows Storage Spaces, a member
   that disconnects and returns can leave its physical-disk alert open (#6895).
+
+## Legacy alerting retirement
+
+- **Removed authoring paths.** The policy **Alerts** and **Service & Process
+  Monitoring** tabs are removed, and the old `/alerts/rules` page redirects to
+  **Alerts → Monitors**. Legacy rule and template write endpoints under
+  `/alerts/rules*` and `/alert-templates*`, including rule tests and toggles, return
+  `410 Gone`; reads remain for history. The retired configuration feature types
+  `alert_rule` and `monitoring` also return `410 Gone`. Author and test monitors
+  through `/monitor-definitions` and attach them using `featureType: "monitors"`.
+- **Before upgrading:** run the previous release's **Convert everything** and
+  review every refusal. Conversion must have been available for one full release
+  before this upgrade. This avoids a gap in evaluation while the startup sweep
+  runs after the API starts serving requests. Undo for removed legacy runtimes
+  ends at this upgrade.
+- **Unattended conversion on boot.** The API processes remaining legacy sources
+  per partner, converts supported sources and retires unconvertible sources with
+  reasons. **Alerts → Monitors** shows a dismissible review banner listing them.
+  Recreate needed conditions as monitors before dismissing it. Open alerts from
+  unconvertible retired sources stay open until a person resolves them; converted
+  sources' open alerts move to the compiled monitor path. Network checks retain
+  their runtime and are excluded from automatic retirement.
+- **Startup verification.** After the sweep, every boot counts unretired
+  `config_policy_alert_rules` and `config_policy_monitoring_watches`. Non-zero
+  counts are logged at error level and reported to Sentry: those rows no longer
+  have an evaluator. Review the banner and startup errors, including any failed
+  partner conversions. `BREEZE_LEGACY_ALERTING_SWEEP=false` skips conversion but
+  still runs the count check.
+- **Maintenance windows suppress monitor alerts again.** On v0.117.0, a window
+  with **Suppress alerts** did not stop alerts from monitors, including rules
+  converted to monitors (CPU, disk, service, event log); only the legacy evaluator
+  checked it. The monitor evaluator now checks the window: no new alerts open
+  during it, and alerts already open can still recover. Expect fewer alerts during
+  maintenance than on v0.117.0.
+- **Delivery boundary.** Queued legacy alerts and unconverted standalone rules
+  no longer use their old channel or escalation overrides. Delivery follows
+  monitor settings, routing rows and the explicit **Everything else** row;
+  without a matching destination, no notification is sent. Review routing before
+  upgrading.
+- **Migration `2026-10-31-110000-legacy-alerting-retirement-sweep.sql`** moves each
+  policy's check interval to its `monitors` feature link and prints warning counts
+  of remaining unretired sources. It is idempotent and deletes no data. The
+  **Monitors** tab owns **Check interval**; legacy source rows remain for history.

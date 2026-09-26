@@ -93,7 +93,7 @@ If the user wants customer-facing tracking, open or link a ticket with manage_ti
     name: 'breeze-turnkey-setup',
     description: 'Opinionated baseline configuration wizard — partner-wide by default.',
     arguments: [{ name: 'scope', description: 'partner (all orgs) or a specific org; defaults to partner-wide', required: false }],
-    referencedTools: ['manage_configuration_policy', 'manage_update_rings', 'manage_backup_configs', 'manage_backup_profiles', 'manage_software_policies', 'manage_peripheral_policies', 'manage_dns_policy', 'manage_policy_feature_link', 'apply_configuration_policy'],
+    referencedTools: ['manage_monitor_definitions', 'manage_configuration_policy', 'manage_update_rings', 'manage_backup_configs', 'manage_backup_profiles', 'manage_software_policies', 'manage_peripheral_policies', 'manage_dns_policy', 'manage_policy_feature_link', 'apply_configuration_policy'],
     render: (a) => `Set up a recommended baseline configuration in Breeze RMM${a.scope ? ` for ${a.scope}` : ''}. DEFAULT to partner-wide ownership (ownerScope=partner) so one policy applies to all of the MSP's organizations — ECHO the resolved organization/partner scope back to the user, CONFIRM the ownerScope=partner default, and PREVIEW each policy before applying it.
 
 Before authoring settings, call manage_policy_feature_link (action=describe, featureType) — no existing policy ID is needed. For a link-only feature, create the standalone policy first (manage_software_policies or manage_peripheral_policies), then link its returned UUID as featurePolicyId. Create patch rings with manage_update_rings before linking their IDs. For backup, create the selection profile with manage_backup_profiles and use its ID as featurePolicyId; create storage with manage_backup_configs and put its ID in inlineSettings.destinationConfigId. Backup cadence and retention use nested inlineSettings.schedule and inlineSettings.retention. A partner-owned configuration policy applies to no organizations until assigned.
@@ -104,7 +104,7 @@ Walk through these categories, creating each via a Configuration Policy (manage_
 3. DNS security (manage_dns_policy): enable filtering; block malware/phishing/C2/newly-registered-domain categories.
 4. Peripheral policy (manage_peripheral_policies): block unauthorized USB mass-storage by default; allow HID.
 5. Config/CIS baseline: apply CIS Level 1 baseline for the device OS via the policy's security/compliance feature (inlineSettings).
-6. Core alert rules via the policy's alert_rule feature (inlineSettings): device offline > 15 min; disk > 90%; sustained CPU > 95% for 10 min; failed backup; critical patch missing > 7 days; reliability-score drop.
+6. Core alert conditions as monitors (manage_monitor_definitions, attached via the policy's "monitors" feature link): device offline > 15 min; disk > 90%; sustained CPU > 95% for 10 min; failed backup; critical patch missing > 7 days; reliability-score drop.
 
 These are recommended defaults — let the user adjust values before applying. Never assign a policy without confirming the target scope.`,
   },

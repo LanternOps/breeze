@@ -1,12 +1,10 @@
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-// #5289 — an alert rule compiled from a monitor definition
-// (managed_by_monitor_id set) must refuse PUT and DELETE. Side editing a
-// compiled row would silently drift from its monitor definition until the
-// next compile overwrote it.
+// Retired write endpoints keep authentication and return the shared migration guidance.
 
-const { authRef, grantedRef } = vi.hoisted(() => ({
+const { authRef, grantedRef, mfaRef } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'organization' as string,
@@ -17,6 +15,7 @@ const { authRef, grantedRef } = vi.hoisted(() => ({
       canAccessOrg: (_id: string) => true as boolean,
     },
   },
+  mfaRef: { current: true },
   grantedRef: { current: new Set<string>(['alerts:read', 'alerts:write']) },
 }));
 
@@ -33,7 +32,10 @@ vi.mock('../../middleware/auth', () => ({
     }
     await next();
   },
-  requireMfa: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (c: any, next: any) => {
+    if (!mfaRef.current) return c.json({ error: 'MFA required' }, 403);
+    await next();
+  },
 }));
 
 vi.mock('../../db', () => ({ db: {} }));
@@ -53,7 +55,6 @@ vi.mock('./helpers', () => ({
 }));
 
 import { rulesRoutes } from './rules';
-import * as helpers from './helpers';
 
 function makeApp() {
   const app = new Hono();
@@ -62,11 +63,11 @@ function makeApp() {
 }
 
 const RULE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
-const MONITOR_ID = '6d4c3b2a-1111-4222-8333-444455556677';
 
-describe('alert rules — managed-by-monitor guard (#5289)', () => {
+describe('alert rules — retired writes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaRef.current = true;
     grantedRef.current = new Set(['alerts:read', 'alerts:write']);
     authRef.current = {
       scope: 'organization',
@@ -75,29 +76,39 @@ describe('alert rules — managed-by-monitor guard (#5289)', () => {
     } as typeof authRef.current;
   });
 
-  it('PUT /alerts/rules/:id on a monitor-managed rule is 409 alert_rule_managed_by_monitor', async () => {
-    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
-      id: RULE_ID, orgId: 'org-1', partnerId: null, name: 'Compiled rule',
-      overrideSettings: null, managedByMonitorId: MONITOR_ID,
-    } as never);
-
-    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Hijacked' }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'alert_rule_managed_by_monitor', monitorId: MONITOR_ID });
+  it.each([
+    ['POST', `/alerts/rules`],
+    ['PUT', `/alerts/rules/${RULE_ID}`],
+    ['DELETE', `/alerts/rules/${RULE_ID}`],
+    ['POST', `/alerts/rules/${RULE_ID}/test`],
+  ].flatMap(([method, path]) => ['{}', '{invalid'].map(body => [method!, path!, body])))('%s %s is retired (body %s)', async (method, path, body) => {
+    const response = await makeApp().request(path, { method,
+      headers: { 'content-type': 'application/json' }, body: method === 'DELETE' ? undefined : body });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual(LEGACY_ALERTING_GONE);
+  });
+  it('auth still precedes retirement', async () => {
+    authRef.current = null as never;
+    expect((await makeApp().request('/alerts/rules', { method: 'POST', body: '{}' })).status).toBe(401);
+  });
+  it('write permission still precedes retirement', async () => {
+    grantedRef.current = new Set(['alerts:read']);
+    expect((await makeApp().request('/alerts/rules', { method: 'POST', body: '{}' })).status).toBe(403);
+  });
+  it.each([
+    ['POST', '/alerts/rules'],
+    ['PUT', `/alerts/rules/${RULE_ID}`],
+    ['DELETE', `/alerts/rules/${RULE_ID}`],
+  ])('MFA still precedes retirement for %s %s', async (method, path) => {
+    mfaRef.current = false;
+    expect((await makeApp().request(path, { method })).status).toBe(403);
+  });
+  it('retains read permission without MFA for the retired simulation endpoint', async () => {
+    mfaRef.current = false;
+    grantedRef.current = new Set(['alerts:read']);
+    expect((await makeApp().request(`/alerts/rules/${RULE_ID}/test`, { method: 'POST' })).status).toBe(410);
+    grantedRef.current = new Set(['alerts:write']);
+    expect((await makeApp().request(`/alerts/rules/${RULE_ID}/test`, { method: 'POST' })).status).toBe(403);
   });
 
-  it('DELETE /alerts/rules/:id on a monitor-managed rule is 409 alert_rule_managed_by_monitor', async () => {
-    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
-      id: RULE_ID, orgId: 'org-1', partnerId: null, name: 'Compiled rule',
-      overrideSettings: null, managedByMonitorId: MONITOR_ID,
-    } as never);
-
-    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'alert_rule_managed_by_monitor', monitorId: MONITOR_ID });
-  });
 });

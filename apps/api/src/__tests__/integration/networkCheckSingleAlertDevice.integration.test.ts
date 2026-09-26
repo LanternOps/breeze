@@ -22,6 +22,7 @@ import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configPolicyMonitors,
+  configPolicyMaintenanceSettings,
   configurationPolicies,
   deviceGroupMemberships,
   deviceGroups,
@@ -258,6 +259,44 @@ describe('network_check — one alert per check, on the alert device, online or 
     // And a healthy check stays quiet on the next tick.
     const quiet = await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId));
     expect(quiet.alertIds).toEqual([]);
+    expect(await activeAlerts(f.orgId)).toHaveLength(0);
+  });
+
+  it('suppresses monitor alerts during policy maintenance, resumes outside, and still auto-resolves open alerts', async () => {
+    const f = await fixture();
+    await pushResults(f, 'offline', 2);
+    const maintenanceId = await system(async () => {
+      const [policy] = await db.insert(configurationPolicies).values({
+        orgId: f.orgId, name: 'Maintenance', status: 'active',
+      }).returning();
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id, featureType: 'maintenance',
+      }).returning();
+      const [settings] = await db.insert(configPolicyMaintenanceSettings).values({
+        featureLinkId: link!.id, recurrence: 'once', durationHours: 2,
+        windowStart: new Date(Date.now() - 60_000).toISOString(),
+        timezone: 'UTC', suppressAlerts: true,
+      }).returning();
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id, level: 'organization', targetId: f.orgId, priority: 0,
+      });
+      return settings!.id;
+    });
+
+    expect((await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId))).alertIds).toEqual([]);
+    expect(await activeAlerts(f.orgId)).toHaveLength(0);
+
+    await system(() => db.update(configPolicyMaintenanceSettings).set({
+      windowStart: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+    }).where(eq(configPolicyMaintenanceSettings.id, maintenanceId)));
+    expect((await system(() => evaluateNetworkCheckAlertsForOrg(f.orgId))).alertIds).toHaveLength(1);
+    expect(await activeAlerts(f.orgId)).toHaveLength(1);
+
+    await system(() => db.update(configPolicyMaintenanceSettings).set({
+      windowStart: new Date(Date.now() - 60_000).toISOString(),
+    }).where(eq(configPolicyMaintenanceSettings.id, maintenanceId)));
+    await pushResults(f, 'online', 2);
+    expect(await system(() => checkAllAutoResolve(f.orgId))).toBe(1);
     expect(await activeAlerts(f.orgId)).toHaveLength(0);
   });
 

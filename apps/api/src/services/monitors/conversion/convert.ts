@@ -14,7 +14,7 @@ import { restoreMovedAlertRefs, carryOpenAlerts, canDeleteConversionMonitor } fr
 import { isRevertAvailable, findLiveTargetDependencies } from './lifecycle';
 import { createConfigPolicy, assignPolicy, addFeatureLink } from '../../configurationPolicy';
 import { assignmentForRule } from '../ruleConversionService';
-import { resolveDelivery } from '../../delivery/resolveDelivery';
+import { resolveLegacyDeliveryBaseline } from './legacyDeliveryBaseline';
 import { getRedis } from '../../redis';
 import { computeEquivalence, applyProposalInTx, type EquivalenceProposal, signatureMapForLegacy, signatureMapForMonitors, diffSignatureSets } from './equivalence';
 import { resolveDeviceIdsForPolicy, resolveLegacyBaseline, type DbExecutor } from './legacyBaseline';
@@ -655,12 +655,11 @@ async function templateGroupPreviewInTx(templateId: string, auth: AuthContext, t
       if (!matches) continue;
       for (const proposed of mapped.proposed) {
         const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
-        const delivery = await resolveDelivery({
+        const delivery = await resolveLegacyDeliveryBaseline({
           orgId: device.orgId, siteId: device.siteId, severity: proposed.severity, kind: null,
-          legacyOverride: {
-            channelIds: Array.isArray(overrides.notificationChannelIds) ? overrides.notificationChannelIds as string[] : [],
-            escalationPolicyId: typeof overrides.escalationPolicyId === 'string' ? overrides.escalationPolicyId : null
-          },
+        }, {
+          channelIds: Array.isArray(overrides.notificationChannelIds) ? overrides.notificationChannelIds as string[] : [],
+          escalationPolicyId: typeof overrides.escalationPolicyId === 'string' ? overrides.escalationPolicyId : null
         }, tx);
         before.set(`standalone:${rule.id}:${proposed.role}`, sha(canonical({
           behavior: monitorSignature({

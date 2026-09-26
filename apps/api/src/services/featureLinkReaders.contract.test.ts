@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 // Files allowed to read config_policy_feature_links DIRECTLY: they edit or
@@ -69,6 +69,10 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // parent's link into every child policy and count the same rows repeatedly.
   'services/monitors/conversion/partnerBacklog.ts',
 
+  // The retirement sweep counts source rows attached to authored links. An
+  // effective projection would count a parent's source once for every child.
+  'services/monitors/conversion/retirementSweep.ts',
+
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
   'services/configurationPolicy.ts',
@@ -100,6 +104,9 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // through the view a parent's link would read as "extra" drift on a child
   // policy nobody edited. Never decides what a device gets.
   'services/fleetDesign/drift.ts',
+  // Rollback checks the authored link's identity under an authorized policy
+  // before refusing restoration of retired formats. It never resolves config.
+  'services/fleetDesign/rollback.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
@@ -109,7 +116,6 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'routes/softwareInventory.ts',
   // Partner API exports the AUTHORED form; consumers derive the effective set.
   'routes/partnerApi/configuration.ts',
-  'scripts/migrateToConfigPolicies.ts',
 ]);
 
 const SRC = join(__dirname, '..');
@@ -130,10 +136,25 @@ function walk(dir: string, out: string[] = []): string[] {
 // a table reference — the trailing \b keeps it from matching, and the same goes
 // for any other `config_policy_feature_links_*` identifier.
 function readsBaseTable(src: string): boolean {
-  return /\bconfigPolicyFeatureLinks\b/.test(src) || /\bconfig_policy_feature_links\b/.test(src);
+  // Documentation naming a table does not constitute a direct read.
+  const code = src.replace(/^\s*\/\/.*$/gm, '');
+  return /\bconfigPolicyFeatureLinks\b/.test(code) || /\bconfig_policy_feature_links\b/.test(code);
 }
 
 describe('feature-link readers contract', () => {
+  it('removes the one-shot legacy migration script', () => {
+    expect(existsSync(join(SRC, 'scripts/migrateToConfigPolicies.ts'))).toBe(false);
+  });
+
+  it('scripts cannot recreate retired config-policy alert rules', () => {
+    // Retirement removed the last script, so a checkout may have no directory.
+    const scripts = join(SRC, 'scripts');
+    const writers = (existsSync(scripts) ? walk(scripts) : []).filter((file) =>
+      /(?:insert\s*\(\s*configPolicyAlertRules\b|INSERT\s+INTO\s+config_policy_alert_rules\b)/i.test(readFileSync(file, 'utf8'))
+    );
+    expect(writers.map((file) => relative(SRC, file))).toEqual([]);
+  });
+
   it('only allowlisted files read config_policy_feature_links directly', () => {
     const offenders: string[] = [];
     for (const file of walk(SRC)) {

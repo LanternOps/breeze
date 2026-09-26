@@ -103,7 +103,7 @@ From the alert detail screen, technicians can:
 - **Acknowledge** an active alert with a single tap (`POST /alerts/:id/acknowledge`).
 - **Resolve** an alert with an optional resolution note (`POST /alerts/:id/resolve`).
 
-Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving an alert also sets the appropriate cooldown period based on the alert rule or configuration policy settings.
+Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving a monitor alert applies its configured cooldown period. Historical alerts from retired policy rules can still be resolved; they no longer set a policy-rule cooldown.
 
 ### Tickets
 

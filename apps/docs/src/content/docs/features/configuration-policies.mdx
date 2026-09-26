@@ -92,16 +92,15 @@ A policy can bundle multiple feature types:
 
 Each feature can be configured in one of two modes:
 
-- **Linked** — points to an existing policy object by ID (e.g., an existing update ring). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
-- **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `monitoring`, `backup`, and `security` feature types.
+- **Linked** — points to an existing policy object by ID (e.g., an existing update ring). Changes to the linked object propagate automatically.
+- **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `backup` and `security` feature types.
 
 ## Monitors and alerting
 
-Author conditions and responses in [Monitors](/features/monitors/). A policy's
-**Monitors** tab attaches definitions, controls inheritance and the agent check
-interval, and previews pending legacy conversion. New conditions have one home.
-The legacy Alerts and Service & Process Monitoring tabs remain during W05c for
-conversion compatibility; do not create new conditions there.
+A single policy carries every alert condition — service and process watches,
+thresholds, offline detection, event-log patterns — as monitors attached on its
+**Monitors** tab, plus one agent-collection setting, *Check interval*.
+See [Monitors](/features/monitors/).
 
 Select **Add to inherited monitors** for cumulative deployment, or review
 **Replace inherited monitors** when preserving converted inline-rule behavior.
@@ -371,7 +370,7 @@ When creating a policy, set `ownerScope` to `organization` (the default) or `par
 
 To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `monitors`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`. `monitors` is the authoring/deployment feature. `alert_rule` and `monitoring` remain accepted only for transitional compatibility during W05c; use the conversion panel for their existing rows.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `backup`, `security`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`, `monitors`, `hardware_monitoring`. `monitors` is the authoring/deployment feature. The retired values `alert_rule` and `monitoring` are rejected with `410 Gone`.
 
 ## Troubleshooting
 
