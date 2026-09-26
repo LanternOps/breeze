@@ -28,8 +28,25 @@ const {
   executeScriptOnDevicesMock,
   assertDeviceExecuteAllowedMock,
   rateLimitState,
-  authState
-} = vi.hoisted(() => ({
+  authState,
+  dbContextState,
+  withAuthDbAccessContextMock
+} = vi.hoisted(() => {
+  // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
+  // callback returns: `depth` says whether a DB call ran inside one, `events`
+  // records the commit so a test can order it against the agent send.
+  const dbContextState = { depth: 0, events: [] as string[] };
+  return {
+  dbContextState,
+  withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+    dbContextState.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbContextState.depth -= 1;
+      dbContextState.events.push('commit');
+    }
+  }),
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
@@ -41,7 +58,8 @@ const {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
     token: undefined as { mdid?: string } | undefined
   }
-}));
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -88,7 +106,8 @@ vi.mock('../middleware/auth', () => ({
     if (authState.permissions) c.set('permissions', authState.permissions);
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: withAuthDbAccessContextMock
 }));
 
 vi.mock('../services/eventBus', () => ({
@@ -371,6 +390,8 @@ describe('mobile routes', () => {
     vi.mocked(db.transaction).mockReset();
     executeScriptOnDevicesMock.mockReset();
     assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
+    dbContextState.depth = 0;
+    dbContextState.events = [];
     _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
@@ -2390,6 +2411,117 @@ describe('mobile routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect('ignoredParameters' in body).toBe(false);
+    });
+
+    // #7109 — the route is registered in selfManagedDbContextRoutes.ts, so no
+    // request transaction wraps it. run_script must hand the service a runner
+    // that opens (and commits) the caller's own context, so the command is sent
+    // only after its rows are visible to the agent-result path.
+    describe('commit-before-send (#7109)', () => {
+      const onlineDevice = { id: mobileDeviceId, orgId: 'org-123', status: 'online', osType: 'linux', siteId: null };
+
+      // Stands in for executeScriptOnDevices' contract (#7103, pinned in
+      // scriptExecution.commitBeforeSend.test.ts): rows are created through the
+      // runner when one is given, else inline in the ambient context; the send
+      // happens after that. Only the route's choice is under test here.
+      const serviceThatSends = () => async (input: { runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T> }) => {
+        const createRows = async () => {
+          dbContextState.events.push(dbContextState.depth > 0 ? 'rows:in-context' : 'rows:contextless');
+        };
+        if (input.runInDbContext) await input.runInDbContext(createRows);
+        else await createRows();
+        dbContextState.events.push('send');
+        return admittedScriptResult();
+      };
+
+      it('sends the run_script command only after the context that created its rows committed', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
+        executeScriptOnDevicesMock.mockImplementationOnce(serviceThatSends());
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: mobileScriptId })
+        });
+
+        expect(res.status).toBe(201);
+        const { events } = dbContextState;
+        const rows = events.indexOf('rows:in-context');
+        const send = events.indexOf('send');
+        expect(rows).toBeGreaterThanOrEqual(0);
+        expect(send).toBeGreaterThan(rows);
+        // A commit lands strictly between row creation and the send.
+        expect(events.slice(rows + 1, send)).toContain('commit');
+      });
+
+      it('passes a runner that opens the caller\'s own DB access context', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
+        executeScriptOnDevicesMock.mockResolvedValueOnce(admittedScriptResult());
+
+        await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: mobileScriptId })
+        });
+
+        const input = executeScriptOnDevicesMock.mock.calls[0]![0];
+        expect(typeof input.runInDbContext).toBe('function');
+        withAuthDbAccessContextMock.mockClear();
+        const inner = vi.fn(async () => 'ran');
+        await expect(input.runInDbContext(inner)).resolves.toBe('ran');
+        expect(withAuthDbAccessContextMock).toHaveBeenCalledWith(input.auth, inner);
+      });
+
+      it('reads the device inside a context, and not while the service runs', async () => {
+        let lookupDepth = -1;
+        vi.mocked(db.select).mockImplementation((() => {
+          lookupDepth = dbContextState.depth;
+          return mockSelectLimitChain([onlineDevice]);
+        }) as any);
+        let serviceDepth = -1;
+        executeScriptOnDevicesMock.mockImplementationOnce(async () => {
+          serviceDepth = dbContextState.depth;
+          return admittedScriptResult();
+        });
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'run_script', scriptId: mobileScriptId })
+        });
+
+        expect(res.status).toBe(201);
+        expect(lookupDepth).toBe(1);
+        // #6671 — the service opens its own contexts; the route must not hold
+        // one across it.
+        expect(serviceDepth).toBe(0);
+      });
+
+      it('keeps a non-script action in one context: lookup, trust check and insert', async () => {
+        const depths: Record<string, number> = {};
+        vi.mocked(db.select).mockImplementation((() => {
+          depths.select = dbContextState.depth;
+          return mockSelectLimitChain([onlineDevice]);
+        }) as any);
+        assertDeviceExecuteAllowedMock.mockImplementationOnce(async () => {
+          depths.trust = dbContextState.depth;
+        });
+        vi.mocked(db.insert).mockImplementation((() => {
+          depths.insert = dbContextState.depth;
+          return mockInsertReturning([{ id: 'cmd-1' }]);
+        }) as any);
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reboot' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(depths).toEqual({ select: 1, trust: 1, insert: 1 });
+        expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+        expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
+      });
     });
 
     it('returns a trust probation denial without inserting a device command', async () => {

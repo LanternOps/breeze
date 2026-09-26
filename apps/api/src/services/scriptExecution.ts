@@ -47,9 +47,9 @@ type ExecuteScriptOnDevicesInput = {
    * Without it, everything runs in the caller's ambient context and each
    * device's command is sent the moment its rows are inserted — before the
    * caller commits. A fast agent can answer a row the result path cannot see
-   * yet. Callers that still omit it are the single-device mobile and
-   * remediation routes; they stay exposed to that race until they move to the
-   * self-managed shape too (#7109).
+   * yet. Every route caller passes it (POST /scripts/:id/execute, the mobile
+   * run_script quick action and remediation execute — #7109); a new caller
+   * must too, or it reopens that race.
    */
   runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T>;
 };
@@ -220,7 +220,8 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // #7103 — with a runner, every read and write below runs in a context that
   // COMMITS when the runner returns, and delivery waits for that commit.
   // Without one, the caller's ambient context is used and each command is sent
-  // inline (the pre-#7103 behaviour, kept for the in-transaction callers).
+  // inline (the pre-#7103 behaviour). No route caller takes that path any
+  // more (#7109); it stays for callers that already hold the only context.
   const deferDelivery = input.runInDbContext !== undefined;
   const run = input.runInDbContext ?? (<T>(fn: () => Promise<T>): Promise<T> => fn());
 

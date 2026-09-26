@@ -9,6 +9,19 @@ const dbMocks = vi.hoisted(() => ({
   generateMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
+  // callback returns; `depth` says whether a DB call ran inside one.
+  dbContextState: { depth: 0, events: [] as string[] },
+}));
+
+const withAuthDbAccessContextMock = vi.hoisted(() => vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+  dbMocks.dbContextState.depth += 1;
+  try {
+    return await fn();
+  } finally {
+    dbMocks.dbContextState.depth -= 1;
+    dbMocks.dbContextState.events.push('commit');
+  }
 }));
 
 let currentPermissions: { allowedSiteIds?: string[] } | undefined;
@@ -77,6 +90,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: withAuthDbAccessContextMock,
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -224,6 +238,8 @@ describe('remediation suggestion routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     currentPermissions = undefined;
+    dbMocks.dbContextState.depth = 0;
+    dbMocks.dbContextState.events = [];
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -616,6 +632,127 @@ describe('remediation suggestion routes', () => {
     expect(body.data.status).toBe('executed');
     expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
     expect(body.execution.targets[0].executionId).toBe(scriptExecutionId);
+  });
+
+  // #7109 — the route is registered in selfManagedDbContextRoutes.ts, so no
+  // request transaction wraps it. The execution rows must commit before the
+  // command is sent, and the suggestion's own reads and writes run in short
+  // contexts of their own — never one held across the service (#6671).
+  describe('commit-before-send (#7109)', () => {
+    const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    const admitted = () => ({
+      ok: true,
+      admission: {
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'queued',
+        targets: [{
+          requestedDeviceId: baseSuggestion.deviceId,
+          admission: 'admitted',
+          executionId: scriptExecutionId,
+          commandId: '77777777-7777-4777-8777-777777777777',
+        }],
+      },
+      script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
+      ignoredParameters: [],
+      triggerType: 'manual',
+      runAs: 'system',
+      auditOrgId: baseSuggestion.orgId,
+    });
+    const depths: Record<string, number> = {};
+    const mockExecutedUpdate = (accepted: Record<string, unknown>) => {
+      dbMocks.updateMock.mockImplementationOnce(() => {
+        depths.update = dbMocks.dbContextState.depth;
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...accepted, status: 'executed', scriptExecutionId }]),
+            }),
+          }),
+        };
+      });
+    };
+
+    beforeEach(() => {
+      for (const key of Object.keys(depths)) delete depths[key];
+    });
+
+    it('sends only after the context that created the execution rows committed', async () => {
+      const accepted = { ...baseSuggestion, status: 'accepted' };
+      mockSuggestionLoad(accepted);
+      // Stands in for executeScriptOnDevices' contract (#7103, pinned in
+      // scriptExecution.commitBeforeSend.test.ts): rows are created through
+      // the runner when one is given, else inline; the send follows.
+      dbMocks.executeScriptOnDevicesMock.mockImplementationOnce(async (input: { runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T> }) => {
+        const createRows = async () => {
+          dbMocks.dbContextState.events.push(dbMocks.dbContextState.depth > 0 ? 'rows:in-context' : 'rows:contextless');
+        };
+        if (input.runInDbContext) await input.runInDbContext(createRows);
+        else await createRows();
+        dbMocks.dbContextState.events.push('send');
+        return admitted();
+      });
+      mockExecutedUpdate(accepted);
+
+      const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(201);
+      const { events } = dbMocks.dbContextState;
+      const rows = events.indexOf('rows:in-context');
+      const send = events.indexOf('send');
+      expect(rows).toBeGreaterThanOrEqual(0);
+      expect(send).toBeGreaterThan(rows);
+      expect(events.slice(rows + 1, send)).toContain('commit');
+    });
+
+    it('passes a runner that opens the caller\'s own DB access context', async () => {
+      const accepted = { ...baseSuggestion, status: 'accepted' };
+      mockSuggestionLoad(accepted);
+      dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(admitted());
+      mockExecutedUpdate(accepted);
+
+      await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const input = dbMocks.executeScriptOnDevicesMock.mock.calls[0]![0];
+      expect(typeof input.runInDbContext).toBe('function');
+      withAuthDbAccessContextMock.mockClear();
+      const inner = vi.fn(async () => 'ran');
+      await expect(input.runInDbContext(inner)).resolves.toBe('ran');
+      expect(withAuthDbAccessContextMock).toHaveBeenCalledWith(input.auth, inner);
+    });
+
+    it('loads and updates the suggestion in contexts, never holding one across the service', async () => {
+      const accepted = { ...baseSuggestion, status: 'accepted' };
+      dbMocks.selectMock.mockImplementationOnce(() => {
+        depths.load = dbMocks.dbContextState.depth;
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([accepted]) }),
+          }),
+        };
+      });
+      dbMocks.executeScriptOnDevicesMock.mockImplementationOnce(async () => {
+        depths.service = dbMocks.dbContextState.depth;
+        return admitted();
+      });
+      mockExecutedUpdate(accepted);
+      dbMocks.emitFeedbackMock.mockImplementationOnce(async () => {
+        depths.feedback = dbMocks.dbContextState.depth;
+      });
+
+      const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(201);
+      expect(depths).toEqual({ load: 1, service: 0, update: 1, feedback: 1 });
+    });
   });
 
   it('returns 422 for rejected admission without mutating or auditing the suggestion', async () => {

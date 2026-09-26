@@ -434,3 +434,23 @@ it('self-manages POST /scripts/:id/execute and no sibling script route', () => {
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/scripts/abc-123/executions')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/duplicate')).toBe(false);
 });
+
+// #7109 — the mobile quick-action POST and the remediation execute POST both
+// reach executeScriptOnDevices, which must commit its rows before sending.
+// Only those two POSTs opt out; their sibling routes keep the ambient tx.
+it('self-manages POST /mobile/devices/:id/actions and no sibling mobile route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/devices/abc-123/actions')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/devices/abc-123/actions/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/mobile/devices/abc-123/actions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/mobile/devices/abc-123/settings')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/mobile/alerts/abc-123/acknowledge')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/actions')).toBe(false);
+});
+
+it('self-manages POST /remediation-suggestions/:id/execute and no sibling route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/elevation-request')).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/remediation-suggestions/abc-123')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(false);
+});
