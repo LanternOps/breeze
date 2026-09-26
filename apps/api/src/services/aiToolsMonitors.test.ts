@@ -126,25 +126,25 @@ describe('aiToolsMonitors registration (#5289)', () => {
 describe('list_monitors', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  /** Any builder chain that resolves to `rows` when awaited (subqueries are never awaited). */
+  function chainResolving(rows: unknown[]) {
+    const chain: Record<string, unknown> = {};
+    for (const m of ['from', 'where', 'orderBy', 'limit', 'offset', 'leftJoin', 'groupBy']) chain[m] = () => chain;
+    chain.as = () => ({ total: 'counted.total' });
+    chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject);
+    return chain;
+  }
+
   it('returns the monitor definitions the caller can see, with attachment counts', async () => {
-    let selectCall = 0;
-    mockDb.select.mockImplementation(() => {
-      selectCall++;
-      if (selectCall === 1) {
-        return {
-          from: () => ({
-            where: () => ({
-              orderBy: () =>
-                Promise.resolve([
-                  { id: 'm1', name: 'CPU high', kind: 'cpu', severity: 'high', enabled: true, orgId: ORG, partnerId: null },
-                  { id: 'm2', name: 'Disk full', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: PARTNER },
-                ]),
-            }),
-          }),
-        };
-      }
-      return { from: () => ({ where: () => ({ groupBy: () => Promise.resolve([{ monitorId: 'm1', count: 2 }]) }) }) };
-    });
+    mockDb.select
+      .mockReturnValueOnce(chainResolving([])) // count subquery
+      .mockReturnValueOnce(chainResolving([])) // page-id subquery
+      .mockReturnValueOnce(chainResolving([
+        { total: 2, row: { id: 'm1', name: 'CPU high', kind: 'cpu', severity: 'high', enabled: true, orgId: ORG, partnerId: null } },
+        { total: 2, row: { id: 'm2', name: 'Disk full', kind: 'disk', severity: 'critical', enabled: true, orgId: null, partnerId: PARTNER } },
+      ]))
+      .mockReturnValueOnce(chainResolving([{ monitorId: 'm1', count: 2 }])); // attachment counts
 
     const result = await call('list_monitors', {});
 
@@ -157,13 +157,17 @@ describe('list_monitors', () => {
   });
 
   it('returns an empty list without querying attachment counts', async () => {
-    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) });
+    mockDb.select
+      .mockReturnValueOnce(chainResolving([]))
+      .mockReturnValueOnce(chainResolving([]))
+      .mockReturnValueOnce(chainResolving([{ total: 0, row: null }]));
     const result = await call('list_monitors', { kind: 'cpu' });
     expect(result).toEqual({
       monitors: [], total: 0, totalMode: 'exact', showing: 0,
       limit: 25, offset: 0, hasMore: false, nextCursor: null,
     });
-    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    // The three builders of the one page statement; no attachment-count query.
+    expect(mockDb.select).toHaveBeenCalledTimes(3);
   });
 });
 

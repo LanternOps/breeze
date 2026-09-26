@@ -34,6 +34,8 @@ import {
   updateMonitorDefinition,
   deleteMonitorDefinition,
   getMonitorDefinition,
+  listMonitorDefinitions,
+  listMonitorDefinitionsPage,
   MonitorHasDependentsError,
   MonitorOwnershipError,
   MonitorValidationError,
@@ -573,6 +575,90 @@ describe('Fleet Design savepoint executor propagation (W05c2 Task 16)', () => {
   });
 });
 
+describe('listMonitorDefinitions / listMonitorDefinitionsPage paging (#6735)', () => {
+  /** A select chain that records every builder call and resolves to `rows`. */
+  function recordingChain(rows: unknown[]) {
+    type Method = 'from' | 'where' | 'orderBy' | 'limit' | 'offset' | 'leftJoin';
+    const calls: Record<Method, unknown[][]> = { from: [], where: [], orderBy: [], limit: [], offset: [], leftJoin: [] };
+    const chain: Record<string, unknown> = {};
+    for (const method of Object.keys(calls) as Method[]) {
+      chain[method] = vi.fn((...args: unknown[]) => { calls[method].push(args); return chain; });
+    }
+    // A subquery alias: exposes a `total` field for the outer projection.
+    chain.as = vi.fn(() => ({ total: 'counted.total' }));
+    const executed = { count: 0 };
+    chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
+      executed.count++;
+      return Promise.resolve(rows).then(resolve, reject);
+    };
+    return { chain, calls, executed };
+  }
+
+  /** The three builders listMonitorDefinitionsPage makes: count, page ids, outer statement. */
+  function pageChains(outerRows: unknown[]) {
+    const counted = recordingChain([]);
+    const pageIds = recordingChain([]);
+    const outer = recordingChain(outerRows);
+    dbMock.select
+      .mockReturnValueOnce(counted.chain)
+      .mockReturnValueOnce(pageIds.chain)
+      .mockReturnValueOnce(outer.chain);
+    return { counted, pageIds, outer };
+  }
+
+  it('without a page argument issues no LIMIT/OFFSET and keeps the name-only ordering', async () => {
+    const { chain, calls } = recordingChain([{ id: 'a' }]);
+    dbMock.select.mockReturnValue(chain);
+
+    const rows = await listMonitorDefinitions(auth(), { kind: 'cpu' });
+
+    expect(rows).toEqual([{ id: 'a' }]);
+    expect(calls.limit).toHaveLength(0);
+    expect(calls.offset).toHaveLength(0);
+    expect(calls.orderBy).toHaveLength(1);
+    expect(calls.orderBy[0]).toHaveLength(1);
+  });
+
+  it('executes ONE statement: a count LEFT JOINed to the LIMIT/OFFSET page, over the same WHERE, with an id tiebreaker', async () => {
+    const { counted, pageIds, outer } = pageChains([
+      { total: 60, row: { id: 'a' } },
+      { total: 60, row: { id: 'b' } },
+    ]);
+
+    const out = await listMonitorDefinitionsPage(auth(), { kind: 'cpu', enabled: true }, { limit: 25, offset: 50 });
+
+    expect(out).toEqual({ rows: [{ id: 'a' }, { id: 'b' }], total: 60 });
+    // Only the outer builder is executed; the other two are embedded in it,
+    // so the page and its total come from one snapshot.
+    expect(outer.executed.count).toBe(1);
+    expect(counted.executed.count).toBe(0);
+    expect(pageIds.executed.count).toBe(0);
+    expect(dbMock.select).toHaveBeenCalledTimes(3);
+    expect(outer.calls.leftJoin).toHaveLength(1);
+    expect(pageIds.calls.limit).toEqual([[25]]);
+    expect(pageIds.calls.offset).toEqual([[50]]);
+    expect(pageIds.calls.orderBy[0]).toHaveLength(2);
+    expect(outer.calls.orderBy[0]).toHaveLength(2);
+    // The count is never paged, and it counts over exactly the page's WHERE.
+    expect(counted.calls.limit).toHaveLength(0);
+    expect(counted.calls.offset).toHaveLength(0);
+    expect(counted.calls.where[0]).toEqual(pageIds.calls.where[0]);
+    expect(counted.calls.where[0]![0]).toBeDefined();
+  });
+
+  it('an empty page past the end still carries the total from the same statement', async () => {
+    const { outer } = pageChains([{ total: 42, row: null }]);
+    const out = await listMonitorDefinitionsPage(auth(), { kind: 'cpu', enabled: false }, { limit: 10, offset: 500 });
+    expect(out).toEqual({ rows: [], total: 42 });
+    expect(outer.executed.count).toBe(1);
+    expect(dbMock.select).toHaveBeenCalledTimes(3);
+  });
+
+  it('nothing visible is an empty page with total 0, not NaN', async () => {
+    pageChains([{ total: 0, row: null }]);
+    expect(await listMonitorDefinitionsPage(auth(), undefined, { limit: 25, offset: 0 })).toEqual({ rows: [], total: 0 });
+  });
+});
 
 describe('network check asset ownership', () => {
   const assetId = '33333333-3333-4333-8333-333333333333';
