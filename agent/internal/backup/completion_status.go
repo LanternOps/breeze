@@ -20,6 +20,11 @@ package backup
 // a tunable would need a policy column, a UI and a fan-out story, and there is
 // no evidence yet that one threshold does not fit. Revisit if the field says
 // otherwise.
+//
+// Under the threshold a run with ANY failed file is still reported here as
+// `completed`, but the server records it as `completed_with_errors` (#5396):
+// backupResultPersistence derives that from ErrorCount > 0, so the honest
+// status reaches every agent version without an agent release.
 const partialFailureThreshold = 0.10
 
 // classifyCompletionStatus decides whether a run that produced a real snapshot

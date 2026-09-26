@@ -71,6 +71,7 @@ export async function backupTile(orgId: string, now: Date) {
 import {
   backupSlaEvents,
   recoveryReadiness,
+  DEGRADED_BACKUP_JOB_STATUSES,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { asc, isNull, sql } from 'drizzle-orm';
@@ -275,7 +276,11 @@ export async function backupDevicesPage(
     name: row.displayName ?? row.hostname,
     configured: row.configured,
     lastRestorePointAt: sqlTimestamp(row.lastBackupAt)?.toISOString() ?? null,
-    lastRestorePointDegraded: row.lastBackupStatus === 'partial',
+    // #5396: any restore point that missed files is degraded, whether under
+    // the threshold (completed_with_errors) or over it (partial).
+    lastRestorePointDegraded: (DEGRADED_BACKUP_JOB_STATUSES as readonly string[]).includes(
+      row.lastBackupStatus ?? '',
+    ),
     lastTestRestore: row.testRestoreStatus
       ? {
           status: row.testRestoreStatus,

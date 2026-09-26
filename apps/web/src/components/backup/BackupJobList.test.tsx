@@ -837,6 +837,121 @@ describe('BackupJobList', () => {
     expect(savings.textContent).toContain('6.00 MB');
   });
 
+  it('renders a completed_with_errors job as its own amber status, never green Completed and never Partial', async () => {
+    // Issue #5396: `completed_with_errors` contains the substring "complete", so
+    // normalizeStatus() used to launder it into the green `completed` bucket.
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob({ status: 'completed_with_errors' })] });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    expect(within(row).getByText('Completed with errors')).toBeTruthy();
+    expect(within(row).queryByText('Completed')).toBeNull();
+    expect(within(row).queryByText('Partial')).toBeNull();
+    expect(within(row).queryByText('Queued')).toBeNull();
+  });
+
+  it('shows the incremental savings line for a completed_with_errors job with referencedSize', async () => {
+    // A completed_with_errors run still produced a restorable snapshot, so the
+    // dedup detail is as meaningful as it is for a completed/partial run.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [partialJob({ status: 'completed_with_errors', totalSize: 10_485_760 })],
+        });
+      }
+      if (url === '/backup/jobs/job-partial') {
+        return makeJsonResponse({
+          id: 'job-partial',
+          type: 'file',
+          deviceId: 'device-2',
+          configId: 'config-1',
+          status: 'completed_with_errors',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          updatedAt: '2026-04-01T18:05:00.000Z',
+          totalSize: 10_485_760,
+          referencedSize: 4_194_304,
+          fileCount: 1,
+          errorLog: 'access denied',
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Gamma Laptop');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+
+    const savings = await screen.findByTestId('backup-job-savings');
+    expect(savings.textContent).toContain('10.0 MB');
+    expect(savings.textContent).toContain('6.00 MB');
+  });
+
+  it('shows a prominent "files not backed up" block for a completed_with_errors job with the failed count and error log', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob({ status: 'completed_with_errors', errorCount: 3 })] });
+      }
+      if (url === '/backup/jobs/job-partial') {
+        return makeJsonResponse({
+          id: 'job-partial',
+          type: 'file',
+          deviceId: 'device-2',
+          configId: 'config-1',
+          status: 'completed_with_errors',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          errorCount: 3,
+          errorLog: '3 file(s) could not be read during collection: C:\\x: permission denied',
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Gamma Laptop');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+
+    const block = await screen.findByTestId('backup-job-files-not-backed-up');
+    expect(block.textContent).toContain('3');
+    expect(block.textContent).toContain('permission denied');
+  });
+
+  it('shows the same prominent "files not backed up" block for a partial job', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob()] });
+      }
+      if (url === '/backup/jobs/job-partial') {
+        return makeJsonResponse({
+          id: 'job-partial',
+          type: 'file',
+          deviceId: 'device-2',
+          configId: 'config-1',
+          status: 'partial',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          errorCount: 21,
+          errorLog: 'access denied: C:\\Users\\a\\Documents',
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Gamma Laptop');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+
+    const block = await screen.findByTestId('backup-job-files-not-backed-up');
+    expect(block.textContent).toContain('21');
+  });
+
   it('labels the running-job action button "Stop"', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {

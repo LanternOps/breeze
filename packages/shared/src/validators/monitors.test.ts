@@ -150,6 +150,11 @@ describe('W04 coverage condition schemas (#5291)', () => {
     expect(monitorConditionSchemas.antivirus.safeParse({ check: 'definitions_stale' }).success).toBe(false);
   });
 
+  it('backup_continuity: completed_with_errors is a valid check with no extra fields (#5396)', () => {
+    expect(monitorConditionSchemas.backup_continuity.safeParse({ check: 'completed_with_errors' }).success).toBe(true);
+    expect(monitorConditionSchemas.backup_continuity.safeParse({ check: 'completed' }).success).toBe(false);
+  });
+
   it('software_presence: version_below requires a version', () => {
     expect(monitorConditionSchemas.software_presence.safeParse({ name: 'TeamViewer', presence: 'installed' }).success).toBe(true);
     expect(monitorConditionSchemas.software_presence.safeParse({ name: 'Java', presence: 'version_below', version: '10.2' }).success).toBe(true);

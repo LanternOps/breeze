@@ -19,6 +19,7 @@
     "running": "Running",
     "failed": "Failed",
     "completed": "Completed",
+    "completedWithErrors": "Completed with errors",
     "partial": "Partial",
     "queued": "Queued",
     "cancelled": "Cancelled",
@@ -52,7 +53,9 @@
     "errorCount_other": "{{count}} errors",
     "failedCount_one": "{{count}} failed",
     "failedCount_other": "{{count}} failed",
-    "failedFilesTooltip": "Files that failed during this backup"
+    "failedFilesTooltip": "Files that failed during this backup",
+    "filesNotBackedUp_one": "{{count}} file not backed up",
+    "filesNotBackedUp_other": "{{count}} files not backed up"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "No provider timeline available yet.",
@@ -175,6 +178,7 @@
     "vssUnprotectedVolumes": "Read from the live volume, not a VSS shadow copy: {{volumes}}. In-use files on these volumes may have been skipped or captured in an inconsistent state.",
     "lastBackupFailed": "Last backup failed",
     "lastBackupCompletedWithWarnings": "Last backup completed with warnings",
+    "lastBackupCompletedWithErrors": "Last backup completed with errors",
     "writer": "Writer",
     "state": "State",
     "noVssWriterDetailsWereReportedForThe": "No VSS writer details were reported for the latest backup.",

@@ -128,7 +128,25 @@ async function resolveAttentionItems(
       // stored a sliver of its data is exactly the case the issue reported as
       // invisible — it is not a success, and a dashboard that only surfaces
       // hard failures never mentions it.
-      if (!latest || !NEEDS_ATTENTION_JOB_STATUSES.has(latest.status)) continue;
+      if (!latest) continue;
+
+      // #5396: a latest run that missed files under the threshold is a
+      // restore point, so it is never part of a failure streak — but the
+      // operator must still see it. Its own single warning item.
+      if (latest.status === 'completed_with_errors') {
+        const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
+        const lastFailureAt = (latest.completedAt ?? latest.createdAt).toISOString();
+        items.push({
+          id: `backup-failing-${deviceId}`,
+          title: `${deviceName}: latest backup completed with file errors`,
+          description: [latest.errorLog, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
+          severity: 'warning',
+          lastFailureAt,
+        });
+        continue;
+      }
+
+      if (!NEEDS_ATTENTION_JOB_STATUSES.has(latest.status)) continue;
 
       let consecutiveFailures = 0;
       let reason: string | null = null;
@@ -350,9 +368,12 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .from(backupSnapshots)
         .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
         .then((r) => r[0]?.count ?? 0),
-      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }) : db
+      noSiteAllowedDevices ? Promise.resolve({ completed: 0, completedWithErrors: 0, failed: 0, partial: 0, running: 0, pending: 0 }) : db
         .select({
           completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')::int`,
+          // #5396: restore points that missed files under the threshold. Own
+          // counter so the web success rate counts them without greening them.
+          completedWithErrors: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed_with_errors')::int`,
           failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')::int`,
           // #3000: without its own counter a partial job vanishes from BOTH
           // sides of the dashboard's success-rate fraction, so a device whose
@@ -369,7 +390,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
             jobDeviceScope
           )
         )
-        .then((r) => r[0] ?? { completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }),
+        .then((r) => r[0] ?? { completed: 0, completedWithErrors: 0, failed: 0, partial: 0, running: 0, pending: 0 }),
       noSiteAllowedDevices ? Promise.resolve({ totalBytes: 0, count: 0 }) : db
         .select({
           totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
@@ -469,6 +490,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       },
       jobsLast24h: {
         completed: last24hStats.completed,
+        completedWithErrors: last24hStats.completedWithErrors,
         failed: last24hStats.failed,
         // Must be serialized, not just counted: the web success-rate fraction
         // reads `partial` off this object, and omitting it here silently makes

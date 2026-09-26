@@ -101,6 +101,15 @@ export const statusConfig = {
     label: 'Partial',
     className: 'text-warning bg-warning/10'
   },
+  // completed_with_errors (#5396) is a milder, distinct degraded outcome from
+  // `partial`: a restorable snapshot with some (under-threshold) file
+  // failures. Warning severity, never green, and never the same label as
+  // `partial` or the generic `warning` bucket.
+  completed_with_errors: {
+    icon: AlertTriangle,
+    label: 'Completed with errors',
+    className: 'text-warning bg-warning/10'
+  },
   warning: {
     icon: AlertTriangle,
     label: 'Warning',

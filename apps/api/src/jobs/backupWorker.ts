@@ -808,6 +808,16 @@ export interface BaseCandidateProbe {
  * query's WHERE clause, in the same order, so the reason it reports is the
  * first filter the newest snapshot actually fails.
  */
+/**
+ * Job statuses whose snapshot may serve as an incremental base. `partial`
+ * stays excluded, unchanged by #5396.
+ * `completed_with_errors` (#5396) is a run that missed a few files under the
+ * threshold — it was a valid base while it was still recorded as `completed`,
+ * and excluding it would turn every run after one locked file into a full
+ * backup.
+ */
+const INCREMENTAL_BASE_JOB_STATUSES = ['completed', 'completed_with_errors'] as const;
+
 export function classifyMissingBaseReason(
   probe: BaseCandidateProbe | null,
   ctx: { storageIdentity: string; mode: 'file' | 'system_image'; now: Date },
@@ -820,7 +830,9 @@ export function classifyMissingBaseReason(
       : probe.backupType === 'file' || probe.backupType === null;
   if (!typeMatches) return 'backup_type_mismatch';
   if (probe.expiresAt !== null && probe.expiresAt <= ctx.now) return 'base_expired';
-  if (probe.jobStatus !== 'completed') return 'base_job_not_completed';
+  if (!(INCREMENTAL_BASE_JOB_STATUSES as readonly (string | null)[]).includes(probe.jobStatus)) {
+    return 'base_job_not_completed';
+  }
   if (probe.retired) return 'base_retired';
   // Every mirrored filter passed, so the newest snapshot was not the blocker
   // (e.g. it belongs to a different device row than the one queried). Report
@@ -994,7 +1006,7 @@ async function stampDispatchPinAndIdentity(params: {
           // child's own manifest in the mark-and-sweep root set, so letting
           // the parent ROW expire on schedule is safe.
           or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, dispatchedAt)),
-          eq(backupJobs.status, 'completed'),
+          inArray(backupJobs.status, INCREMENTAL_BASE_JOB_STATUSES),
           isNull(backupSnapshotRetirements.id),
         ),
       )

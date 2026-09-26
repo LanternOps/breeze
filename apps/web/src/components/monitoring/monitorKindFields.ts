@@ -164,7 +164,7 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       key: 'check',
       labelKey: 'monitoring:fields.backupCheck',
       kind: 'select',
-      options: ['no_successful_backup', 'consecutive_failures'],
+      options: ['no_successful_backup', 'consecutive_failures', 'completed_with_errors'],
     },
     {
       key: 'maxAgeHours',

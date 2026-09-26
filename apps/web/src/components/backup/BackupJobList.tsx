@@ -27,7 +27,11 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 // `partial` is a terminal outcome of its own: a restorable snapshot exists, but
 // a large share of the scanned data never made it. It is neither a success nor
 // a hard failure, so it renders amber — never green, never red.
-type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled' | 'partial';
+// `completed_with_errors` (#5396) is also its own outcome: a restorable
+// snapshot with SOME file failures, under the `partial` threshold. It renders
+// amber too, but is a distinct, more-successful outcome than `partial` and
+// must never be laundered into the green `completed` bucket.
+type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled' | 'partial' | 'completed_with_errors';
 
 type BackupJobRaw = {
   id: string;
@@ -82,7 +86,7 @@ const POLL_MS = 5000;
 const STALL_MS = 2 * 60 * 1000;
 // Statuses a job can no longer leave — used to reconcile optimistic cancels
 // against a possibly-stale poll response.
-const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled', 'partial'];
+const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled', 'partial', 'completed_with_errors'];
 
 type BackupJobDetails = BackupJobRaw & {
   deviceName?: string | null;
@@ -106,6 +110,10 @@ const statusConfig: Record<JobStatus, { icon: typeof CheckCircle2; className: st
     icon: AlertTriangle,
     className: 'text-warning bg-warning/10'
   },
+  completed_with_errors: {
+    icon: AlertTriangle,
+    className: 'text-warning bg-warning/10'
+  },
   queued: {
     icon: Clock,
     className: 'text-muted-foreground bg-muted'
@@ -123,6 +131,10 @@ function normalizeStatus(status?: string): JobStatus {
   // `partial` must be tested before the completed/failed substring checks so a
   // future value like "partial_complete" can't be laundered into a clean green.
   if (s === 'partial' || s.includes('partial')) return 'partial';
+  // Exact check ahead of the includes('complete') branch below: raw
+  // "completed_with_errors" contains "complete" and would otherwise be
+  // laundered into a clean green `completed` (#5396).
+  if (s === 'completed_with_errors') return 'completed_with_errors';
   if (s === 'completed' || s.includes('success') || s.includes('complete')) return 'completed';
   if (s === 'failed' || s.includes('fail') || s.includes('error')) return 'failed';
   if (s === 'cancelled' || s === 'canceled') return 'cancelled';
@@ -209,6 +221,7 @@ export default function BackupJobList() {
     running: t('backupJobList.running'),
     failed: t('backupJobList.failed'),
     partial: t('backupJobList.partial'),
+    completed_with_errors: t('backupJobList.completedWithErrors'),
     queued: t('backupJobList.queued'),
     cancelled: t('backupJobList.cancelled')
   };
@@ -474,6 +487,7 @@ export default function BackupJobList() {
             <option value="running">{t('backupJobList.running')}</option>
             <option value="failed">{t('backupJobList.failed')}</option>
             <option value="completed">{t('backupJobList.completed')}</option>
+            <option value="completed_with_errors">{t('backupJobList.completedWithErrors')}</option>
             <option value="partial">{t('backupJobList.partial')}</option>
             <option value="queued">{t('backupJobList.queued')}</option>
             <option value="cancelled">{t('backupJobList.cancelled')}</option>
@@ -698,9 +712,10 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
-                          {/* A partial run still produced a restorable snapshot,
-                              so its dedup savings are as real as a completed run's. */}
-                          {(job.status === 'completed' || job.status === 'partial') && details.referencedSize != null && (
+                          {/* A partial or completed_with_errors run still produced
+                              a restorable snapshot, so its dedup savings are as
+                              real as a completed run's. */}
+                          {(job.status === 'completed' || job.status === 'partial' || job.status === 'completed_with_errors') && details.referencedSize != null && (
                             <p
                               data-testid="backup-job-savings"
                               className="mt-4 text-xs text-muted-foreground"
@@ -711,12 +726,32 @@ export default function BackupJobList() {
                               })}
                             </p>
                           )}
-                          <div className="mt-4">
-                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
-                            <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
-                              {details.errorLog ?? 'No error log recorded.'}
-                            </pre>
-                          </div>
+                          {(job.status === 'partial' || job.status === 'completed_with_errors') &&
+                          (job.errorCount > 0 || details.errorLog) ? (
+                            // #5396: the failed-file information used to be
+                            // indistinguishable from a generic "Error Log" label,
+                            // which buried the one piece of data that actually
+                            // matters for a restorable-but-degraded run.
+                            <div
+                              data-testid="backup-job-files-not-backed-up"
+                              className="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3"
+                            >
+                              <p className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-warning">
+                                <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                                {t('backupJobList.filesNotBackedUp', { count: job.errorCount })}
+                              </p>
+                              <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
+                                {details.errorLog ?? 'No error log recorded.'}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div className="mt-4">
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
+                              <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
+                                {details.errorLog ?? 'No error log recorded.'}
+                              </pre>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     )}

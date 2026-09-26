@@ -164,7 +164,7 @@ function rawInputs(overrides: Partial<RawNarrativeInputs> = {}): RawNarrativeInp
       patchScoreThisWeek: 88.2, patchScorePriorWeek: 81.5, overallScoreThisWeek: 76,
       pendingPatches: 31, devicesPending: 6, installed7d: 54,
     },
-    backups: { ok: 18, failed: 2, partial: 0, devicesFailed: 1 },
+    backups: { ok: 18, withErrors: 0, failed: 2, partial: 0, devicesFailed: 1 },
     fleet: {
       total: 12, online: 10, offline: 2, decommissioned: 0,
       enrolled7d: 1, stale: 1, avgUptime7dPct: 97.4,
@@ -208,8 +208,17 @@ describe('assembleNarrativeContext', () => {
     expect(ctx.backups.successRatePct).toBe(90);
   });
 
+  // #5396: a run that missed files under the threshold is a restore point, so it
+  // counts toward the success rate, but the narrative must be able to say so.
+  it('counts completed_with_errors runs as terminal successes and reports them separately', () => {
+    const ctx = assembleNarrativeContext(rawInputs({ backups: { ok: 6, withErrors: 3, failed: 1, partial: 0, devicesFailed: 1 } }));
+    expect(ctx.backups.terminal).toBe(10);
+    expect(ctx.backups.withErrors).toBe(3);
+    expect(ctx.backups.successRatePct).toBe(90);
+  });
+
   it('reports a null success rate — not 0 — when no backup job reached a terminal state', () => {
-    const ctx = assembleNarrativeContext(rawInputs({ backups: { ok: 0, failed: 0, partial: 0, devicesFailed: 0 } }));
+    const ctx = assembleNarrativeContext(rawInputs({ backups: { ok: 0, withErrors: 0, failed: 0, partial: 0, devicesFailed: 0 } }));
     expect(ctx.backups.terminal).toBe(0);
     expect(ctx.backups.successRatePct).toBeNull();
   });

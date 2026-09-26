@@ -473,6 +473,78 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText('Warning')).toBeNull();
   });
 
+  it('counts completed_with_errors jobs as successful restore points in the 24h success rate (#5396)', async () => {
+    // completed_with_errors is a restorable snapshot, so it belongs in the
+    // numerator (like completed) as well as the denominator — not just the
+    // denominator the way `partial` is.
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            jobsLast24h: { completed: 1, completedWithErrors: 1, failed: 0, partial: 0, running: 0, pending: 0 },
+            recentJobs: [],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('Success Rate (24h)');
+    // (1 completed + 1 completed_with_errors) of 2 total = 100%.
+    expect(screen.getByText('100%')).toBeTruthy();
+  });
+
+  it('renders a completed_with_errors recent job as its own amber state, never green "Success"', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              {
+                id: 'job-cwe',
+                device: 'edge-03',
+                config: 'Primary S3',
+                status: 'completed_with_errors',
+                started: '5m ago',
+                duration: '3m',
+                size: '85 B',
+              },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-03');
+    expect(screen.getByText('Completed with errors')).toBeTruthy();
+    expect(screen.queryByText('Success')).toBeNull();
+    expect(screen.queryByText('Warning')).toBeNull();
+  });
+
   it('renders the health view alone in all-organizations mode, calling neither org-only endpoint', async () => {
     scopeState.scope = 'all';
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields } from './schemas';
+import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields, jobListSchema } from './schemas';
 
 // D14: a bare-metal recovery completion report was answering "Request body
 // too large" for a payload carrying ~9,900 unbounded `warnings` strings (the
@@ -148,5 +148,12 @@ describe('canonicalizeS3CredentialFields', () => {
     const details: Record<string, unknown> = { accessKey: 'AK', secretKey: 'SK' };
     canonicalizeS3CredentialFields(details);
     expect(details).toEqual({ accessKey: 'AK', secretKey: 'SK' });
+  });
+});
+
+// #5396: the job list must accept filtering on the new terminal status.
+describe('jobListSchema status (#5396)', () => {
+  it('accepts completed_with_errors', () => {
+    expect(jobListSchema.safeParse({ status: 'completed_with_errors' }).success).toBe(true);
   });
 });

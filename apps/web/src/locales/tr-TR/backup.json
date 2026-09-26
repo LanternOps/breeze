@@ -19,6 +19,7 @@
     "running": "Koşuyor",
     "failed": "Başarısız",
     "completed": "Tamamlandı",
+    "completedWithErrors": "Hatalarla tamamlandı",
     "partial": "Kısmi",
     "queued": "Sıraya alındı",
     "cancelled": "İptal edildi",
@@ -52,7 +53,9 @@
     "errorCount_other": "{{count}} hatalar",
     "failedCount_one": "{{count}} başarısız oldu",
     "failedCount_other": "{{count}} başarısız oldu",
-    "failedFilesTooltip": "Bu yedekleme sırasında başarısız olan dosyalar"
+    "failedFilesTooltip": "Bu yedekleme sırasında başarısız olan dosyalar",
+    "filesNotBackedUp_one": "{{count}} dosya yedeklenmedi",
+    "filesNotBackedUp_other": "{{count}} dosya yedeklenmedi"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Henüz sağlayıcı zaman çizelgesi mevcut değil.",
@@ -175,6 +178,7 @@
     "vssUnprotectedVolumes": "VSS gölge kopyasından değil, canlı ciltten okuyun: {{volumes}}. Bu birimlerdeki kullanımdaki dosyalar atlanmış veya tutarsız bir durumda yakalanmış olabilir.",
     "lastBackupFailed": "Son yedekleme başarısız oldu",
     "lastBackupCompletedWithWarnings": "Son yedekleme uyarılarla tamamlandı",
+    "lastBackupCompletedWithErrors": "Son yedekleme hatalarla tamamlandı",
     "writer": "Yazar",
     "state": "Eyalet",
     "noVssWriterDetailsWereReportedForThe": "En son yedekleme için VSS yazıcı ayrıntıları bildirilmedi.",
