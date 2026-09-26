@@ -108,9 +108,6 @@
       "createTicket": "Impossibile creare il ticket"
     },
     "summary": {
-      "devices": "{{count}} dispositivi",
-      "devices_one": "{{count}} dispositivo",
-      "devices_other": "{{count}} dispositivi",
       "maxRisk": "rischio massimo {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVE ({{count}})",
-      "devices": "Dispositivi ({{count}} rilevamenti)",
-      "devices_one": "Dispositivi ({{count}} rilevamento)",
-      "devices_other": "Dispositivi ({{count}} rilevamenti)"
+      "devicesHeading": "Dispositivi ({{count}})",
+      "versions": "Versioni installate"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} di {{count}} dispositivo aperto",
+      "devicesOpen_other": "{{open}} di {{count}} dispositivi aperti"
     },
     "selection": {
       "selectAll": "Seleziona tutto",
-      "selectAllAria": "Seleziona tutti i rilevamenti",
-      "deselectAllAria": "Deseleziona tutti i rilevamenti",
-      "selectFindingAria": "Seleziona il rilevamento {{cveId}} su {{deviceName}}",
-      "selected": "{{count}} selezionati",
-      "selected_one": "{{count}} selezionato",
-      "selected_other": "{{count}} selezionati"
+      "selectAllAria": "Seleziona tutti i dispositivi",
+      "deselectAllAria": "Deseleziona tutti i dispositivi",
+      "selectDeviceAria": "Seleziona {{deviceName}}",
+      "selectedDevices_one": "{{count}} dispositivo selezionato · {{findings}} rilevamenti aperti",
+      "selectedDevices_other": "{{count}} dispositivi selezionati · {{findings}} rilevamenti aperti"
     },
     "empty": {
       "noFindings": "Non restano rilevamenti sui dispositivi in questo gruppo — non ci sono azioni da eseguire."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Correggi {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} dispositivo necessita di aggiornamento",
+      "needUpdating_other": "{{count}} dispositivi necessitano di aggiornamento",
+      "nothingOpen": "Nessun dispositivo ha rilevamenti aperti",
+      "scope_one": "{{count}} CVE su {{devices}} dispositivi",
+      "scope_other": "{{count}} CVE su {{devices}} dispositivi",
+      "scopeSingleDevice_one": "{{count}} CVE su 1 dispositivo",
+      "scopeSingleDevice_other": "{{count}} CVE su 1 dispositivo"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivi"
+    },
+    "device": {
+      "openOf_one": "{{open}} aperto su {{count}} CVE",
+      "openOf_other": "{{open}} aperti su {{count}} CVE",
+      "accepted": "{{count}} accettati",
+      "mitigated": "{{count}} mitigati",
+      "patched": "{{count}} corretti",
+      "patchReady": "{{count}} pronti per la patch",
+      "show": "Rilevamenti",
+      "hide": "Nascondi",
+      "expandAria": "Mostra i rilevamenti su {{deviceName}}",
+      "collapseAria": "Nascondi i rilevamenti su {{deviceName}}",
+      "loading": "Caricamento rilevamenti…",
+      "loadError": "Impossibile caricare i rilevamenti del dispositivo"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Software",
       "severity": "Gravità",
       "risk": "Rischio",
-      "cves": "CVE",
-      "devices": "Dispositivi",
+      "devices": "Dispositivi interessati",
       "patch": "Patch"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Pronto · {{ready}}/{{total}} dispositivo",
       "ready_other": "Pronto · {{ready}}/{{total}} dispositivi"
     },
-    "hasMore": "Sono mostrati i primi 500 gruppi per rischio — restringi i filtri per vedere gli altri."
+    "hasMore": "Sono mostrati i primi 500 gruppi per rischio — restringi i filtri per vedere gli altri.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivi",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVE"
   },
   "vulnBulkActionModal": {
     "headings": {

@@ -445,7 +445,8 @@ The vulnerabilities dashboard is a fleet-wide, fix-first queue. The `/software` 
 |---|---|---|
 | `GET` | `/vulnerabilities` | List open findings, one row per CVE (By CVE view) |
 | `GET` | `/vulnerabilities/software` | List findings grouped by remediation unit (By software view) |
-| `GET` | `/vulnerabilities/software/:groupKey` | Devices and findings within one software group |
+| `GET` | `/vulnerabilities/software/:groupKey` | One software group: per-device rollup, installed-version breakdown, and per-CVE device counts |
+| `GET` | `/vulnerabilities/software/:groupKey/devices/:deviceId` | One device's findings within a software group |
 | `GET` | `/vulnerabilities/stats` | Priority stat-card counts (Critical open, KEV exposure, Patch ready, Accepted expiring soon) |
 | `GET` | `/vulnerabilities/:cveId/devices` | Devices affected by a specific CVE |
 | `POST` | `/vulnerabilities/remediate` | Schedule the fixing patch across affected devices (requires `devices:execute` + MFA) |

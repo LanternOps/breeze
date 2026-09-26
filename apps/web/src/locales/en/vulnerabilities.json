@@ -108,9 +108,6 @@
       "createTicket": "Failed to create ticket"
     },
     "summary": {
-      "devices": "{{count}} devices",
-      "devices_one": "{{count}} device",
-      "devices_other": "{{count}} devices",
       "maxRisk": "max risk {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Devices ({{count}} findings)",
-      "devices_one": "Devices ({{count}} finding)",
-      "devices_other": "Devices ({{count}} findings)"
+      "devicesHeading": "Devices ({{count}})",
+      "versions": "Installed versions"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} of {{count}} device open",
+      "devicesOpen_other": "{{open}} of {{count}} devices open"
     },
     "selection": {
       "selectAll": "Select all",
-      "selectAllAria": "Select all findings",
-      "deselectAllAria": "Deselect all findings",
-      "selectFindingAria": "Select {{cveId}} finding on {{deviceName}}",
-      "selected": "{{count}} selected",
-      "selected_one": "{{count}} selected",
-      "selected_other": "{{count}} selected"
+      "selectAllAria": "Select all devices",
+      "deselectAllAria": "Deselect all devices",
+      "selectDeviceAria": "Select {{deviceName}}",
+      "selectedDevices_one": "{{count}} device selected · {{findings}} open findings",
+      "selectedDevices_other": "{{count}} devices selected · {{findings}} open findings"
     },
     "empty": {
       "noFindings": "No device findings remain in this group — nothing to act on."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Remediate {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} device needs updating",
+      "needUpdating_other": "{{count}} devices need updating",
+      "nothingOpen": "No devices have open findings",
+      "scope_one": "{{count}} CVE across {{devices}} devices",
+      "scope_other": "{{count}} CVEs across {{devices}} devices",
+      "scopeSingleDevice_one": "{{count}} CVE on 1 device",
+      "scopeSingleDevice_other": "{{count}} CVEs on 1 device"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} device",
+      "deviceCount_other": "{{count}} devices"
+    },
+    "device": {
+      "openOf_one": "{{open}} open of {{count}} CVE",
+      "openOf_other": "{{open}} open of {{count}} CVEs",
+      "accepted": "{{count}} accepted",
+      "mitigated": "{{count}} mitigated",
+      "patched": "{{count}} patched",
+      "patchReady": "{{count}} patch-ready",
+      "show": "Findings",
+      "hide": "Hide",
+      "expandAria": "Show findings on {{deviceName}}",
+      "collapseAria": "Hide findings on {{deviceName}}",
+      "loading": "Loading findings…",
+      "loadError": "Failed to load device findings"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Software",
       "severity": "Severity",
       "risk": "Risk",
-      "cves": "CVEs",
-      "devices": "Devices",
+      "devices": "Devices affected",
       "patch": "Patch"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Ready · {{ready}}/{{total}} device",
       "ready_other": "Ready · {{ready}}/{{total}} devices"
     },
-    "hasMore": "Showing the top 500 groups by risk — narrow the filters to see the rest."
+    "hasMore": "Showing the top 500 groups by risk — narrow the filters to see the rest.",
+    "devices_one": "{{count}} device",
+    "devices_other": "{{count}} devices",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVEs"
   },
   "vulnBulkActionModal": {
     "headings": {

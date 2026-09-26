@@ -108,9 +108,6 @@
       "createTicket": "Impossible de créer un ticket"
     },
     "summary": {
-      "devices": "{{count}} dispositifs",
-      "devices_one": "dispositif {{count}}",
-      "devices_other": "{{count}} appareils",
       "maxRisk": "Risque max {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Appareils ({{count}} constats)",
-      "devices_one": "Appareils ({{count}} constat)",
-      "devices_other": "Appareils ({{count}} constats)"
+      "devicesHeading": "Appareils ({{count}})",
+      "versions": "Versions installées"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} sur {{count}} appareil ouvert",
+      "devicesOpen_other": "{{open}} sur {{count}} appareils ouverts"
     },
     "selection": {
       "selectAll": "Sélectionner tout",
-      "selectAllAria": "Sélectionner tous les constats",
-      "deselectAllAria": "Désélectionner tous les constats",
-      "selectFindingAria": "Sélectionner le constat {{cveId}} sur {{deviceName}}",
-      "selected": "{{count}} sélectionné",
-      "selected_one": "{{count}} sélectionné",
-      "selected_other": "{{count}} sélectionné"
+      "selectAllAria": "Sélectionner tous les appareils",
+      "deselectAllAria": "Désélectionner tous les appareils",
+      "selectDeviceAria": "Sélectionner {{deviceName}}",
+      "selectedDevices_one": "{{count}} appareil sélectionné · {{findings}} constats ouverts",
+      "selectedDevices_other": "{{count}} appareils sélectionnés · {{findings}} constats ouverts"
     },
     "empty": {
       "noFindings": "Aucun constat concernant un appareil ne subsiste dans ce groupe — aucune action requise."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Remédier {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} appareil doit être mis à jour",
+      "needUpdating_other": "{{count}} appareils doivent être mis à jour",
+      "nothingOpen": "Aucun appareil n’a de constat ouvert",
+      "scope_one": "{{count}} CVE sur {{devices}} appareils",
+      "scope_other": "{{count}} CVEs sur {{devices}} appareils",
+      "scopeSingleDevice_one": "{{count}} CVE sur 1 appareil",
+      "scopeSingleDevice_other": "{{count}} CVEs sur 1 appareil"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} appareil",
+      "deviceCount_other": "{{count}} appareils"
+    },
+    "device": {
+      "openOf_one": "{{open}} ouvert sur {{count}} CVE",
+      "openOf_other": "{{open}} ouverts sur {{count}} CVEs",
+      "accepted": "{{count}} acceptés",
+      "mitigated": "{{count}} atténués",
+      "patched": "{{count}} corrigés",
+      "patchReady": "{{count}} prêts pour le correctif",
+      "show": "Constats",
+      "hide": "Masquer",
+      "expandAria": "Afficher les constats sur {{deviceName}}",
+      "collapseAria": "Masquer les constats sur {{deviceName}}",
+      "loading": "Chargement des constats…",
+      "loadError": "Impossible de charger les constats de l’appareil"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Logiciels",
       "severity": "Gravité",
       "risk": "Risque",
-      "cves": "CVE",
-      "devices": "Appareils",
+      "devices": "Appareils concernés",
       "patch": "Correctif"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Prêt · {{ready}}/{{total}} appareil",
       "ready_other": "Prêt · {{ready}}/{{total}} appareils"
     },
-    "hasMore": "Affichage des 500 groupes présentant le risque le plus élevé — affinez les filtres pour voir les autres."
+    "hasMore": "Affichage des 500 groupes présentant le risque le plus élevé — affinez les filtres pour voir les autres.",
+    "devices_one": "{{count}} appareil",
+    "devices_other": "{{count}} appareils",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVEs"
   },
   "vulnBulkActionModal": {
     "headings": {
