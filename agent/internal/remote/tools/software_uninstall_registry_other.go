@@ -11,7 +11,7 @@ import (
 // planning/wait logic buildable (and unit-testable) on every platform.
 
 func listWindowsUninstallEntriesOS() ([]windowsUninstallEntry, error) {
-	return nil, fmt.Errorf("Uninstall registry keys are not available on %s", runtime.GOOS)
+	return nil, fmt.Errorf("uninstall registry keys are not available on %s", runtime.GOOS)
 }
 
 func startRegistryUninstallerOS(registryUninstallPlan) (uninstallerProcess, error) {
@@ -19,5 +19,5 @@ func startRegistryUninstallerOS(registryUninstallPlan) (uninstallerProcess, erro
 }
 
 func uninstallEntryPresentOS(windowsUninstallEntry) (bool, error) {
-	return false, fmt.Errorf("Uninstall registry keys are not available on %s", runtime.GOOS)
+	return false, fmt.Errorf("uninstall registry keys are not available on %s", runtime.GOOS)
 }
