@@ -276,7 +276,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'topology_probe_targets.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_monitoring_policies.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_diagnostic_runs.breeze_topology_diagnostic_run_guard': 'guards accepted content and terminal state, permits org-only ownership transfer',
-  'topology_diagnostic_runs.breeze_topology_diagnostic_run_authority_guard': 'fires only on requester_authority changes (UPDATE OF requester_authority); an org-only merge never rewrites it — the frozen requester org is re-checked live and fences the run instead',
+  'topology_diagnostic_runs.breeze_topology_diagnostic_run_authority_guard': 'fires only on requester_authority changes (UPDATE OF requester_authority); an org-only merge never rewrites it — the frozen requester org is re-checked live and fences the run instead (also for scheduled policy occurrences, M3-D13)',
+  // M3 Task 7: validates alert_state entries on UPDATE OF alert_state only; never reads or reverts org_id.
+  'topology_monitoring_policies.breeze_topology_policy_alert_state_guard': 'validates alert_state shape on UPDATE OF alert_state only; org_id repoint untouched',
   'devices.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; prepare hook fences authority',
   'discovered_assets.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; collision executor detaches before deletion',
   'network_monitors.breeze_topology_monitor_site': 'only asset/site updates bind monitor scope; org-only merge uses deferred composite FKs',

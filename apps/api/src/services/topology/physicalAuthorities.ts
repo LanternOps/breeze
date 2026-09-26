@@ -1,6 +1,7 @@
 import { ensureDiscoveryTopologyAuthority } from './discoveryDispatch';
 import { ensureUnifiTopologyAuthority } from './unifiAuthority';
 import { ensureUnifiTelemetryAuthority } from './unifiInterfaceMetrics';
+import { ensureTopologyTelemetryArmAuthority } from './telemetryArmFence';
 
 /**
  * Installs the server-owned physical producer authorities (M2 D1): discovery
@@ -18,4 +19,6 @@ export function registerTopologyPhysicalAuthorities(): void {
   ensureUnifiTopologyAuthority();
   // M3 Task 4: UniFi port link-state telemetry shares the controller-site authority.
   ensureUnifiTelemetryAuthority();
+  // M3-D2: the standing telemetry arm is the only `snmp` telemetry authority.
+  ensureTopologyTelemetryArmAuthority();
 }

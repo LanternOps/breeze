@@ -35,6 +35,9 @@ const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
   // W05a: the payload carries a server-minted recovery token (a bearer
   // credential for the public /bmr/recover/* routes) — never the 9-char code.
   bare_metal_rebuild: ['token'],
+  // M3-D2: the standing interface poll carries the discovery profile's SNMP
+  // communities/v3 secrets as one JSON string, encrypted before enqueue.
+  topology_interface_poll: ['credentials'],
 };
 
 /**

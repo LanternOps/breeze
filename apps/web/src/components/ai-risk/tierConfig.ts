@@ -82,6 +82,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_link_health', description: 'Current topology link health per endpoint', category: 'Network & DNS' },
       { name: 'get_topology_impact', description: 'Possible topology impact with cited evidence', category: 'Network & DNS' },
       { name: 'get_recent_network_changes', description: 'Bounded topology change history', category: 'Network & DNS' },
+      { name: 'get_topology_monitoring_status', description: 'Recurring topology monitoring status for a site', category: 'Network & DNS' },
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
@@ -463,6 +464,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_link_health: 'topology.read',
   get_topology_impact: 'topology.read',
   get_recent_network_changes: 'topology.read',
+  get_topology_monitoring_status: 'topology.read',
   get_dns_security: 'devices.read',
   acknowledge_network_device: 'devices.write',
   configure_network_baseline: 'devices.write',

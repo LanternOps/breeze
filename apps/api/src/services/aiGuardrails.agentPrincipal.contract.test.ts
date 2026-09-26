@@ -225,6 +225,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_site', // A-W06 Tier-1 read
   'get_timesheet', // A-W06 Tier-1 read
   'get_topology_impact', // M3 Task 10 topology read
+  'get_topology_monitoring_status', // M3-D12 (#5999) one-site monitoring status, Tier 1 read
   'get_user_experience_metrics',
   'get_vulnerability_report',
   'google_email_report',

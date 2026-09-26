@@ -29,6 +29,16 @@ export type McpExemptReason =
    */
   | 'human_only_migration'
   /**
+   * Topology recurring-monitoring ARMING (#5999, amendments M3-D2/D3/D12).
+   * Arming a policy or a standing interface poll hands unattended, repeating
+   * execution on customer machines to a stored frozen actor, so every write
+   * here is an interactive user session with a satisfied second factor and a
+   * fresh `topology_arm` step-up grant bound to the exact site/action/subject.
+   * The operations spec forbids AI scheduling; an agent-reachable tool would
+   * be exactly that. The read side (`topology/monitoringStatus.ts`) has a tool.
+   */
+  | 'human_only_arming'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -563,6 +573,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/investigation.ts': { tools: ['get_topology_impact', 'get_recent_network_changes'] },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },
   'topology/manual.ts': { gap: '#6778' },
+  'topology/monitoringArms.ts': { exempt: 'human_only_arming' },
+  'topology/monitoringStatus.ts': { tools: ['get_topology_monitoring_status'] },
   'topology/middleware.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'topology/mutations.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   // Shared permission middleware and response/error wrappers register no endpoints.

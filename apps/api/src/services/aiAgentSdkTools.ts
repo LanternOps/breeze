@@ -308,6 +308,8 @@ export const TOOL_TIERS = {
   // M3 Task 10 — cautious impact and topology change history (read-only).
   get_topology_impact: 1,
   get_recent_network_changes: 1,
+  // M3-D12 (#5999): read-only topology monitoring status for one site.
+  get_topology_monitoring_status: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -2728,6 +2730,16 @@ export function buildBreezeSdkTools(
         cursor: z.string().max(2048).optional(),
       },
       makeHandler('get_recent_network_changes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M3-D12 (#5999): bounded, read-only recurring monitoring status for one
+    // site. Arming is human-only and has no tool.
+    tool(
+      'get_topology_monitoring_status',
+      registryDescription('get_topology_monitoring_status'),
+      {
+        site_id: uuid,
+      },
+      makeHandler('get_topology_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

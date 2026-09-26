@@ -1,0 +1,141 @@
+import { createHash } from 'node:crypto';
+import { and, eq, inArray } from 'drizzle-orm';
+import { canonicalizeArguments } from '@breeze/shared/canonicalize';
+import { TOPOLOGY_INTERFACE_POLL_COMMAND, topologyInterfacePollCommandSchema, type TopologyScope } from '@breeze/shared';
+import { db } from '../../db';
+import { deviceCommands, devices, discoveryProfiles, topologyInterfaces, topologyTelemetryArms, users, type TopologyTelemetryArmInterface } from '../../db/schema';
+import {
+  isTopologyTelemetryAuthorityRegistered,
+  registerTopologyTelemetryAuthority,
+  type TopologyTelemetryAuthorityDecision,
+  type TopologyTelemetryAuthorityRequest,
+} from './collectionAuthority';
+import { topologyArmAuthorityRecordSchema } from './monitoringAuthorityRecord';
+
+/**
+ * Telemetry-arm fences that run inside a claim or sink transaction (M3-D2/D13).
+ * A leaf on purpose: it sits in commandDispatch.ts's import closure (delivery
+ * revalidation) and in the telemetry sink, so it reaches no request-side module.
+ */
+type ArmRow = typeof topologyTelemetryArms.$inferSelect;
+type Reader = Pick<typeof db, 'select'>;
+const scopedWrite = (scope: TopologyScope, table: { orgId: typeof topologyInterfaces.orgId; siteId: typeof topologyInterfaces.siteId } | { orgId: typeof topologyTelemetryArms.orgId; siteId: typeof topologyTelemetryArms.siteId }) =>
+  and(eq(table.orgId, scope.orgId), eq(table.siteId, scope.siteId));
+const sha256 = (value: Record<string, unknown>) => createHash('sha256').update(canonicalizeArguments(value)).digest('hex');
+
+/** Credential revision of a discovery profile: ciphertext + enabled + SNMP method. Never the plaintext. */
+export function topologyCredentialDigest(profile: { id: string; enabled: boolean; methods: readonly string[] | null; snmpCommunities: readonly string[] | null; snmpCredentials: unknown }): string {
+  return sha256({
+    kind: 'topology-telemetry-credential-v1',
+    profileId: profile.id,
+    enabled: profile.enabled,
+    snmp: (profile.methods ?? []).includes('snmp'),
+    communities: [...(profile.snmpCommunities ?? [])],
+    credentials: profile.snmpCredentials ?? null,
+  });
+}
+
+export const topologyTelemetryConfigurationGeneration = (arm: Pick<ArmRow, 'id' | 'generation' | 'effectDigest'>) =>
+  `arm:${arm.id}:${arm.generation.toString()}:${arm.effectDigest}`;
+
+export async function readTelemetryCredentialProfile(reader: Reader, scope: TopologyScope, profileId: string) {
+  const [profile] = await reader
+    .select({
+      id: discoveryProfiles.id, orgId: discoveryProfiles.orgId, siteId: discoveryProfiles.siteId, enabled: discoveryProfiles.enabled,
+      methods: discoveryProfiles.methods, snmpCommunities: discoveryProfiles.snmpCommunities, snmpCredentials: discoveryProfiles.snmpCredentials,
+    })
+    .from(discoveryProfiles)
+    .where(and(eq(discoveryProfiles.id, profileId), eq(discoveryProfiles.orgId, scope.orgId), eq(discoveryProfiles.siteId, scope.siteId)))
+    .limit(1);
+  return profile ?? null;
+}
+
+/** The interfaces still at their armed generation (not retired, same epoch and ifIndex, same owner). */
+export async function currentArmInterfaces(reader: Reader, scope: TopologyScope, targetNodeId: string, armed: ReadonlyArray<TopologyTelemetryArmInterface>) {
+  if (!armed.length) return [];
+  const rows = await reader
+    .select({ id: topologyInterfaces.id, epoch: topologyInterfaces.epoch, osIndex: topologyInterfaces.osIndex, retiredAt: topologyInterfaces.retiredAt })
+    .from(topologyInterfaces)
+    .where(and(scopedWrite(scope, topologyInterfaces), eq(topologyInterfaces.ownerNodeId, targetNodeId), inArray(topologyInterfaces.id, armed.map((i) => i.interfaceId))));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return armed.filter((i) => {
+    const row = byId.get(i.interfaceId);
+    return row && row.retiredAt === null && row.epoch === i.interfaceEpoch && row.osIndex !== null && Number(row.osIndex) === i.ifIndex;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Fast fence shared by delivery and publication. These run inside a claim or
+// sink transaction that already holds locks, so they read ONLY through the
+// supplied reader (never a second pooled connection): the frozen actor's user
+// row must still be active at the same epochs, and the arm/credential/interface
+// state must be exactly what was armed. The permission re-derivation happens at
+// enqueue, where no lock is held.
+// ---------------------------------------------------------------------------
+async function actorStillCurrent(reader: Reader, record: unknown): Promise<boolean> {
+  const parsed = topologyArmAuthorityRecordSchema.safeParse(record);
+  if (!parsed.success) return false;
+  const actor = parsed.data.actor;
+  const [user] = await reader.select({ status: users.status, authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch, partnerId: users.partnerId, orgId: users.orgId })
+    .from(users).where(eq(users.id, actor.user.id)).limit(1);
+  return !!user && user.status === 'active' && user.authEpoch === actor.authEpoch && user.mfaEpoch === actor.mfaEpoch
+    && (user.partnerId ?? null) === actor.partnerId && (actor.scope !== 'organization' || user.orgId === actor.orgId);
+}
+
+export type TelemetryArmFence = { ok: true; arm: ArmRow; interfaces: TopologyTelemetryArmInterface[] } | { ok: false; reason: string };
+
+export async function fenceTopologyTelemetryArm(reader: Reader, arm: ArmRow | undefined, input: { deviceId: string; now: Date }): Promise<TelemetryArmFence> {
+  if (!arm || arm.state !== 'armed') return { ok: false, reason: 'arm_revoked' };
+  if (arm.expiresAt.getTime() <= input.now.getTime()) return { ok: false, reason: 'arm_expired' };
+  if (arm.collectorDeviceId !== input.deviceId) return { ok: false, reason: 'collector_changed' };
+  const [device] = await reader.select({ orgId: devices.orgId, siteId: devices.siteId }).from(devices).where(eq(devices.id, arm.collectorDeviceId)).limit(1);
+  if (!device || device.orgId !== arm.orgId || device.siteId !== arm.siteId) return { ok: false, reason: 'collector_moved' };
+  const profile = await readTelemetryCredentialProfile(reader, arm, arm.credentialProfileId);
+  if (!profile || topologyCredentialDigest(profile) !== arm.credentialDigest) return { ok: false, reason: 'credential_changed' };
+  if (!(await actorStillCurrent(reader, arm.authorityActor))) return { ok: false, reason: 'authority_changed' };
+  const interfaces = await currentArmInterfaces(reader, arm, arm.targetNodeId, arm.interfaces);
+  if (!interfaces.length) return { ok: false, reason: 'interface_generation_changed' };
+  return { ok: true, arm, interfaces };
+}
+
+/**
+ * The registered `snmp` telemetry authority (collectionAuthority seam). The
+ * sink calls it after the site-state lock with the batch's command id; the
+ * command must be a poll this arm minted at its CURRENT generation.
+ */
+export async function topologyTelemetryArmAuthority(request: TopologyTelemetryAuthorityRequest, reader: Reader = db): Promise<TopologyTelemetryAuthorityDecision> {
+  if (request.producerKind !== 'snmp' || request.commandId === null) return { authorized: false, reason: 'producer_authority_denied' };
+  if (request.device.orgId !== request.scope.orgId || request.device.siteId !== request.scope.siteId) return { authorized: false, reason: 'collector_moved' };
+  const [command] = await reader.select({ type: deviceCommands.type, deviceId: deviceCommands.deviceId, payload: deviceCommands.payload })
+    .from(deviceCommands).where(eq(deviceCommands.id, request.commandId)).limit(1);
+  const armId = (command?.payload as { armId?: unknown } | null)?.armId;
+  const generation = (command?.payload as { generation?: unknown } | null)?.generation;
+  if (!command || command.type !== TOPOLOGY_INTERFACE_POLL_COMMAND || command.deviceId !== request.device.id || typeof armId !== 'string' || typeof generation !== 'string') {
+    return { authorized: false, reason: 'producer_authority_denied' };
+  }
+  const [arm] = await reader.select().from(topologyTelemetryArms)
+    .where(and(eq(topologyTelemetryArms.id, armId), scopedWrite(request.scope, topologyTelemetryArms), eq(topologyTelemetryArms.authorityKey, request.authorityKey)))
+    .limit(1);
+  if (arm && arm.generation.toString() !== generation) return { authorized: false, reason: 'arm_generation_changed' };
+  const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: request.device.id, now: new Date() });
+  if (!fence.ok) return { authorized: false, reason: fence.reason };
+  return { authorized: true, configurationGeneration: topologyTelemetryConfigurationGeneration(fence.arm), interfaceIds: fence.interfaces.map((i) => i.interfaceId) };
+}
+
+/** Idempotent explicit registration; called at API boot and by the monitoring worker. */
+export function ensureTopologyTelemetryArmAuthority(): void {
+  if (!isTopologyTelemetryAuthorityRegistered('snmp')) registerTopologyTelemetryAuthority('snmp', (request) => topologyTelemetryArmAuthority(request));
+}
+
+/** Delivery revalidation for `topology_interface_poll` (registered in the mandatory set). */
+export async function validateTopologyInterfacePollDelivery(reader: Reader, row: { id: string; deviceId: string; payload: unknown }, now = new Date()): Promise<string | null> {
+  const parsed = topologyInterfacePollCommandSchema.safeParse(row.payload);
+  if (!parsed.success || parsed.data.commandId !== row.id) return 'scope_changed';
+  if (Date.parse(parsed.data.expiresAt) <= now.getTime()) return 'expired';
+  const [arm] = await reader.select().from(topologyTelemetryArms).where(eq(topologyTelemetryArms.id, parsed.data.armId)).limit(1);
+  if (!arm || arm.generation.toString() !== parsed.data.generation || arm.authorityKey !== parsed.data.authorityKey) return 'scope_changed';
+  const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: row.deviceId, now });
+  return fence.ok ? null : 'scope_changed';
+}
+
+

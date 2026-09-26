@@ -1513,6 +1513,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_link_health: { resource: 'topology', action: 'read' },
   get_topology_impact: { resource: 'topology', action: 'read' },
   get_recent_network_changes: { resource: 'topology', action: 'read' },
+  // M3-D12: the devices:read floor comes from requireTopologySiteAccess('read').
+  get_topology_monitoring_status: { resource: 'topology', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

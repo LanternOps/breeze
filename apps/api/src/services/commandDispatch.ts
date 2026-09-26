@@ -8,6 +8,8 @@ import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 // place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
 // fails the row closed if it ever is not.
 import './topology/diagnosticDispatch';
+// Side-effect import: registers the `topology_interface_poll` revalidation (M3-D2).
+import './topology/telemetryPollDelivery';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 

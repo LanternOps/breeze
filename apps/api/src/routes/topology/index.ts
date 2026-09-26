@@ -13,6 +13,8 @@ import { topologyInvestigationRoutes } from './investigation';
 import { topologyManualRoutes } from './manual';
 import { topologyExclusionRoutes } from './exclusions';
 import { topologyLayoutRoutes } from './layouts';
+import { topologyMonitoringArmRoutes } from './monitoringArms';
+import { topologyMonitoringStatusRoutes } from './monitoringStatus';
 
 export { requireTopologySiteCapability } from './middleware';
 
@@ -35,6 +37,8 @@ export function createTopologyRoutes(): Hono {
   routes.route('/', topologyExclusionRoutes);
   routes.route('/', topologyLayoutRoutes);
   routes.route('/', topologyDiagnosticRoutes);
+  routes.route('/', topologyMonitoringArmRoutes);
+  routes.route('/', topologyMonitoringStatusRoutes);
   return routes;
 }
 

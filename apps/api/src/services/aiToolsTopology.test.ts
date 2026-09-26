@@ -1,15 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ permissions: vi.fn(), access: vi.fn(), history: vi.fn(), link: vi.fn(), command: vi.fn(), impact: vi.fn(), changes: vi.fn() }));
+const mocks = vi.hoisted(() => ({ permissions: vi.fn(), access: vi.fn(), history: vi.fn(), link: vi.fn(), command: vi.fn(), impact: vi.fn(), changes: vi.fn(), status: vi.fn() }));
 vi.mock('./permissions', async (original) => ({ ...await original<object>(), getUserPermissions: mocks.permissions }));
 vi.mock('./topology/access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./topology/interfaceHistory', () => ({ getTopologyInterfaceHistory: mocks.history }));
 vi.mock('./topology/graph', () => ({ getTopologyLinkHealth: mocks.link }));
 vi.mock('./topology/impact', () => ({ getTopologyImpact: mocks.impact }));
 vi.mock('./topology/changes', () => ({ getRecentTopologyChanges: mocks.changes }));
+vi.mock('./topology/monitoringStatus', () => ({ getTopologyMonitoringStatus: mocks.status }));
 vi.mock('./commandQueue', () => ({ executeCommand: mocks.command, queueCommand: mocks.command, queueCommandForExecution: mocks.command }));
 import type { AiTool } from './aiTools';
-import { AI_INTERFACE_HISTORY_MAX_BUCKETS, AI_TOPOLOGY_CHANGES_MAX_LIMIT, registerTopologyTools } from './aiToolsTopology';
+import { AI_INTERFACE_HISTORY_MAX_BUCKETS, AI_TOPOLOGY_CHANGES_MAX_LIMIT, registerTopologyTools, topologyMonitoringStatusTool } from './aiToolsTopology';
 import { TopologyError } from './topology/access';
 
 const SITE = '20000000-0000-4000-8000-000000000001';
@@ -31,8 +32,8 @@ beforeEach(() => {
 });
 
 describe('topology AI tools', () => {
-  it('registers four Tier-1 network reads', () => {
-    for (const name of ['get_interface_history', 'get_link_health', 'get_topology_impact', 'get_recent_network_changes']) expect(tools.get(name)).toMatchObject({ tier: 1, domain: 'network' });
+  it('registers five Tier-1 network reads', () => {
+    for (const name of ['get_interface_history', 'get_link_health', 'get_topology_impact', 'get_recent_network_changes', 'get_topology_monitoring_status']) expect(tools.get(name)).toMatchObject({ tier: 1, domain: 'network' });
   });
 
   it('authorizes the exact site before reading, and never dispatches', async () => {
@@ -75,6 +76,35 @@ describe('topology AI tools', () => {
     mocks.changes.mockResolvedValue({ siteId: SITE, changes: [], cursor: null });
     await call('get_recent_network_changes', { site_id: SITE, since: '2026-09-26T00:00:00Z', until: '2026-09-26T01:00:00Z', limit: 500, cursor: 'a.b' });
     expect(mocks.changes).toHaveBeenCalledWith(expect.anything(), { since: '2026-09-26T00:00:00Z', until: '2026-09-26T01:00:00Z', limit: AI_TOPOLOGY_CHANGES_MAX_LIMIT, cursor: 'a.b' });
+    expect(mocks.command).not.toHaveBeenCalled();
+  });
+});
+
+describe('get_topology_monitoring_status', () => {
+  const siteId = '22222222-2222-4222-8222-222222222222';
+  beforeEach(() => { mocks.permissions.mockReset(); mocks.access.mockReset(); mocks.status.mockReset(); });
+
+  it('rejects a malformed site id before any read', async () => {
+    expect(JSON.parse(await topologyMonitoringStatusTool({ site_id: 'nope' }, auth))).toEqual({ error: 'site_id must be a site UUID' });
+    expect(mocks.permissions).not.toHaveBeenCalled();
+  });
+
+  it('hides a site the caller cannot read, with one indistinguishable answer', async () => {
+    mocks.permissions.mockResolvedValueOnce(null);
+    const noPermissions = await topologyMonitoringStatusTool({ site_id: siteId }, auth);
+    mocks.permissions.mockResolvedValueOnce({});
+    mocks.access.mockRejectedValueOnce(new TopologyError('topology_site_not_found', 404, 'x'));
+    const hidden = await topologyMonitoringStatusTool({ site_id: siteId }, auth);
+    expect(hidden).toBe(noPermissions);
+    expect(mocks.status).not.toHaveBeenCalled();
+  });
+
+  it('returns the same status the read route serves, under the read capability', async () => {
+    mocks.permissions.mockResolvedValueOnce({});
+    mocks.access.mockResolvedValueOnce({ scope: { orgId: 'o', siteId } });
+    mocks.status.mockResolvedValueOnce({ siteId, policies: [], telemetryArms: [] });
+    expect(JSON.parse(await call('get_topology_monitoring_status', { site_id: siteId }))).toEqual({ siteId, policies: [], telemetryArms: [] });
+    expect(mocks.access).toHaveBeenCalledWith(auth, {}, siteId, 'read');
     expect(mocks.command).not.toHaveBeenCalled();
   });
 });

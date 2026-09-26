@@ -176,6 +176,7 @@ export * from './topology';
 export * from "./topologyCollections";
 export * from './topologyTelemetry';
 export * from './topologyOperations';
+export * from './topologyMonitoring';
 
 export * from './topologyTemplates';
 export * from './emailSendingDomains';

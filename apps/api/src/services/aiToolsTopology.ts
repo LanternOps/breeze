@@ -9,8 +9,14 @@
  * - get_recent_network_changes (Tier 1, M3 Task 10): bounded ≤ 24 h topology
  *   change history (attachment/route/source/gap/measurement), distinct from
  *   the older device-level get_network_changes
+ * - get_topology_monitoring_status (Tier 1, M3-D12 #5999): recurring-policy
+ *   arm state, thresholds and per-context streaks plus standing telemetry arms
+ *   for ONE site, under the same site access check as
+ *   GET /topology/sites/:siteId/monitoring. Arming and scheduling are
+ *   human-only by design (the operations spec forbids AI scheduling), so no
+ *   write tool exists here.
  *
- * Both authorize through `requireTopologySiteAccess` (exact site, topology:read
+ * All authorize through `requireTopologySiteAccess` (exact site, topology:read
  * + devices:read), read stored measurements only, and never poll, probe or
  * queue a command. M4-D1 will additionally pin invocation to a server-owned
  * site-bound session; until then the site is an explicit argument and is
@@ -27,6 +33,8 @@ import { GraphReadError } from './topology/graphCursor';
 import { getTopologyInterfaceHistory } from './topology/interfaceHistory';
 import { getTopologyImpact } from './topology/impact';
 import { getRecentTopologyChanges } from './topology/changes';
+import { getTopologyMonitoringStatus } from './topology/monitoringStatus';
+import { TopologyOperationError } from './topology/operationErrors';
 
 /** AI-facing bound: a model never needs the UI's 1,000-bucket resolution. */
 export const AI_INTERFACE_HISTORY_MAX_BUCKETS = 120;
@@ -51,6 +59,30 @@ async function topologyContext(auth: AuthContext, siteId: unknown): Promise<Topo
     return await requireTopologySiteAccess(auth, permissions, parsed.data, 'read');
   } catch (error) {
     if (error instanceof TopologyError) return error.message;
+    throw error;
+  }
+}
+
+/**
+ * Monitoring status answers every unreadable site with ONE indistinguishable
+ * message (no permission, not found, and operation errors all collapse).
+ */
+const HIDDEN = JSON.stringify({ error: 'Site not found or access denied' });
+
+export async function topologyMonitoringStatusTool(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
+  const siteId = typeof input.site_id === 'string' ? input.site_id : '';
+  if (!uuid.safeParse(siteId).success) return JSON.stringify({ error: 'site_id must be a site UUID' });
+  const permissions = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  });
+  if (!permissions) return HIDDEN;
+  try {
+    const ctx = await requireTopologySiteAccess(auth, permissions, siteId, 'read');
+    return JSON.stringify(await getTopologyMonitoringStatus(ctx));
+  } catch (error) {
+    if (error instanceof TopologyError || error instanceof TopologyOperationError) return HIDDEN;
     throw error;
   }
 }
@@ -199,5 +231,25 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
         ...(typeof input.cursor === 'string' && input.cursor ? { cursor: input.cursor } : {}),
       }));
     }),
+  });
+
+  aiTools.set('get_topology_monitoring_status', {
+    tier: 1,
+    domain: 'network',
+    deviceArgs: [],
+    searchHint: 'recurring network checks, gateway/DNS/internet monitoring policy status, port telemetry arms for a site',
+    definition: {
+      name: 'get_topology_monitoring_status',
+      description:
+        'Read one site\'s recurring topology monitoring: each policy\'s armed state, blocked reason, cadence, alert thresholds and per-context failure/success streaks, plus standing port-telemetry arms. Read-only; arming is a human action in the topology UI.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          site_id: { type: 'string', description: 'Site UUID' },
+        },
+        required: ['site_id'],
+      },
+    },
+    handler: (input, auth) => topologyMonitoringStatusTool(input, auth),
   });
 }

@@ -74,7 +74,13 @@ export type StepUpOperation =
   // STEP_UP_OPERATIONS in routes/auth/schemas.ts, by the compiler. Letting a
   // client mint one would turn an ordinary TOTP step-up into a bypass of the
   // enforcing-partner L3 passkey floor on supervised rows.
-  | 'approval_decide';
+  | 'approval_decide'
+  // Topology M3 (#5999, amendments M3-D2/D3): arming a recurring monitoring
+  // policy or a standing interface-telemetry poll hands unattended, repeating
+  // execution on customer machines to a stored frozen actor. Bound by
+  // resourceDigest to the exact { siteId, action, subjectId } the operator saw,
+  // so a grant for one policy/target can never arm another.
+  | 'topology_arm';
 
 export interface StepUpGrant {
   id: string;
@@ -221,6 +227,20 @@ export function scriptLanePolicyResourceDigest(input: {
     orgId: input.orgId,
     unattendedEnabled: input.unattendedEnabled,
     reset: input.reset === true,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Topology arm step-up binding (M3-D2/D3): one site, one action, one subject. */
+export function topologyArmResourceDigest(input: {
+  siteId: string;
+  action: 'arm_policy' | 'arm_telemetry';
+  subjectId: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    action: input.action,
+    siteId: input.siteId.toLowerCase(),
+    subjectId: input.subjectId.toLowerCase(),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

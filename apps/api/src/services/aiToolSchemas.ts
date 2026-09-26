@@ -237,6 +237,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
     cursor: z.string().max(2048).optional(),
   }),
+  // M3-D12 topology monitoring read tool (one site, bounded response).
+  get_topology_monitoring_status: z.object({
+    site_id: uuid,
+  }),
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
