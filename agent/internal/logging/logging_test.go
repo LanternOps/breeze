@@ -138,10 +138,6 @@ func TestShippingHandlerIncludesLoggerAttrs(t *testing.T) {
 	}
 }
 
-type nilPtrError struct{ msg string }
-
-func (e *nilPtrError) Error() string { return e.msg }
-
 func TestShippingHandlerShipsErrorText(t *testing.T) {
 	var buf bytes.Buffer
 	handler := &shippingHandler{
@@ -162,7 +158,12 @@ func TestShippingHandlerShipsErrorText(t *testing.T) {
 		shipperMu.Unlock()
 	})
 
-	var typedNil *nilPtrError
+	// A nil-receiver-safe type, never one whose Error dereferences the
+	// receiver: recovering a real nil-pointer fault corrupts the heap on
+	// Windows AMX hosts (golang/go#81238, #6943), and the local text handler
+	// used to call Error on it through fmt. Were the handler to call Error,
+	// the value would read "called" instead of "<nil>".
+	var typedNil *countingNilError
 	joined := errors.Join(errors.New("first"), errors.New("second"))
 	slog.New(handler).WithGroup("ctx").Warn("failed",
 		"error", errors.New("read /proc/net/route: permission denied"),
@@ -228,5 +229,40 @@ func TestErrorTextNeverCallsErrorOnTypedNil(t *testing.T) {
 	}
 	if got := errorText(nil); got != "<nil>" {
 		t.Fatalf("errorText(nil) = %q, want %q", got, "<nil>")
+	}
+}
+
+// TestShippingHandlerLocalOutputNeverCallsErrorOnTypedNil guards the local
+// (base handler) path: slog's text handler formats error values through fmt,
+// which calls Error on a typed-nil pointer and recovers the resulting
+// nil-pointer fault. On Windows AMX hosts recovering that hardware fault
+// corrupts the Go heap (golang/go#81238, #6943), so typed-nil errors must be
+// rewritten before they reach the base handler — in record attrs, group attrs
+// and WithAttrs-attached attrs alike.
+func TestShippingHandlerLocalOutputNeverCallsErrorOnTypedNil(t *testing.T) {
+	countingNilErrorCalls.Store(0)
+	var buf bytes.Buffer
+	handler := &shippingHandler{
+		base: slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}
+	var typedNil *countingNilError
+	logger := slog.New(handler).With("attached", error(typedNil), KeyShipAlways, true)
+	logger.Warn("failed",
+		"direct", error(typedNil),
+		slog.Group("grp", "nested", error(typedNil)),
+		"real", errors.New("boom"),
+	)
+
+	if n := countingNilErrorCalls.Load(); n != 0 {
+		t.Fatalf("base handler called Error() %d times on a typed-nil error; want 0 (output: %s)", n, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{"attached=<nil>", "direct=<nil>", "grp.nested=<nil>", "real=boom"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("local output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, KeyShipAlways) {
+		t.Fatalf("local output leaked the ship-always marker: %s", out)
 	}
 }
