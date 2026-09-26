@@ -396,6 +396,25 @@ describe('AutomationRunHistory — execute_command output (#3188)', () => {
     expect(screen.getByTestId('command-stdout').textContent).toBe('No output');
   });
 
+  it('shows a terminal action reason and flags a truncated error', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'skipped',
+        commandResults: [
+          { actionIndex: 0, status: 'skipped', message: 'Suppressed by maintenance window' },
+          { actionIndex: 1, status: 'failed', error: 'long error', errorTruncated: true },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('command-output-toggle'));
+    expect(screen.getByTestId('command-message').textContent).toBe('Suppressed by maintenance window');
+    expect(screen.queryByTestId('command-awaiting')).toBeNull();
+    expect(screen.getByTestId('command-error-truncated')).toBeTruthy();
+  });
+
   it('keeps polling while a command has not reported yet', async () => {
     vi.useFakeTimers();
     try {

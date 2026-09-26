@@ -2146,7 +2146,7 @@ describe('automations routes', () => {
           status: 'failed',
           // SQL selects left(col, N+1); anything longer than N overflowed.
           output: longOutput,
-          error: 'exit status 1',
+          error: 'e'.repeat(9_000),
           message: null,
         },
         {
@@ -2170,8 +2170,9 @@ describe('automations routes', () => {
     expect(first).toHaveLength(2);
     expect(first[0]).toMatchObject({ actionIndex: 0, status: 'succeeded', output: 'ipconfig says hi' });
     expect(first[0].outputTruncated).toBeUndefined();
-    expect(first[1]).toMatchObject({ actionIndex: 2, status: 'failed', error: 'exit status 1', outputTruncated: true });
+    expect(first[1]).toMatchObject({ actionIndex: 2, status: 'failed', outputTruncated: true, errorTruncated: true });
     expect(first[1].output.length).toBe(16_384);
+    expect(first[1].error.length).toBe(8_192);
     expect(body.deviceResults[1].commandResults).toEqual([
       { actionIndex: 0, status: 'queued', message: 'Queued — device offline' },
     ]);

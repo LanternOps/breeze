@@ -402,7 +402,7 @@ function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }
                     </p>
                   )}
                   {!isCommandResultPending(command.status) && !command.output && !command.error && command.message && (
-                    <p className="mt-1 text-xs text-muted-foreground">{command.message}</p>
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="command-message">{command.message}</p>
                   )}
                 </div>
               ))}
