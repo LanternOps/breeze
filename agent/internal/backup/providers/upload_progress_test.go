@@ -53,7 +53,7 @@ func TestUploadProgressSource_NoCallbackReturnsFileUnwrapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if got := uploadProgressSource(context.Background(), f); got != uploadSource(f) {
 		t.Fatalf("without a callback the source must be the *os.File itself (keeps SDK fast paths), got %T", got)
 	}
@@ -65,7 +65,7 @@ func TestUploadProgressSource_ReportsReadSeekAndReadAtOffsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	rec := &progressRecorder{}
 	src := uploadProgressSource(WithUploadProgress(context.Background(), rec.record), f)
 
@@ -203,7 +203,7 @@ func TestUploadProgressSource_SeekAloneReportsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	rec := &progressRecorder{}
 	src := uploadProgressSource(WithUploadProgress(context.Background(), rec.record), f)
 	if _, err := src.Seek(0, io.SeekEnd); err != nil {
@@ -226,7 +226,7 @@ func TestUploadProgressSource_ConcurrentReadAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	rec := &progressRecorder{}
 	src := uploadProgressSource(WithUploadProgress(context.Background(), rec.record), f)
 	var wg sync.WaitGroup
