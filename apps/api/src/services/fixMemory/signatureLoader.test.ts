@@ -47,6 +47,19 @@ describe('signatureLoader', () => {
     expect(out!.alertId).toBe('a-9');
   });
 
+  it('correlation whose root alert is metric-anomaly-sourced keeps family correlation and rootInferred true', async () => {
+    rows.push(
+      [{ rootAlertId: 'a-10' }],
+      [{ id: 'a-10', deviceId: 'd-3', ruleId: null, context: { source: 'metric_anomaly', anomalyId: 'm-2' }, requiresHuman: false }],
+      [{ osType: 'windows' }],
+      [{ sourceTable: 'device_metrics', anomalyType: 'spike', metricName: 'ram_percent', episodeId: 'ep-3', deviceId: 'd-3' }],
+    );
+    const out = await signatureForSource({ kind: 'correlation', correlationGroupId: 'g-2' });
+    expect(out!.signature.facets).toMatchObject({ family: 'correlation', rootInferred: true, condition: 'anomaly:device_metrics:spike:ram' });
+    expect(out!.alertId).toBe('a-10');
+    expect(out!.anomalyEpisodeId).toBe('ep-3');
+  });
+
   it('returns null for a missing alert or an unknown OS', async () => {
     rows.push([]);
     expect(await alertSignature('nope')).toBeNull();

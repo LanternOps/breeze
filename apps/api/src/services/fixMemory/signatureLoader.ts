@@ -87,7 +87,18 @@ export async function alertSignature(alertId: string, family: 'alert' | 'correla
     const anomaly = await anomalySource({ anomalyId: context.anomalyId });
     if (!anomaly) return null;
     const facets = anomalyConditionFacets(anomaly.episodeKey);
-    const signature = computeSignature({ family: 'anomaly', condition: facets.condition, osFamily: os, discriminator: null, rootInferred: false });
+    // A direct alert lookup (family 'alert', the default) always maps to the
+    // anomaly family — the metric-anomaly semantics ARE the signature. A
+    // correlation lookup (root alert happens to be metric-anomaly-sourced)
+    // keeps family 'correlation' with rootInferred true, same as every other
+    // correlation path below — the root's condition, not its own family.
+    const signature = computeSignature({
+      family: family === 'correlation' ? 'correlation' : 'anomaly',
+      condition: facets.condition,
+      osFamily: os,
+      discriminator: null,
+      rootInferred: family === 'correlation',
+    });
     return signature ? { signature, deviceId: alert.deviceId, alertId: alert.id, anomalyEpisodeId: anomaly.episodeId } : null;
   }
 
