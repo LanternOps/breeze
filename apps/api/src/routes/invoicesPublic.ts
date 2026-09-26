@@ -274,7 +274,12 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
   const { sessionId } = c.req.valid('json');
   if (await overPublicOpLimit('settle', sessionId, 20)) return c.json({ error: 'Too many requests' }, 429);
 
-  const result = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  // #7065 — three phases so no transaction spans the Stripe call. This route
+  // is unauthenticated, so no ambient request transaction is held and
+  // runOutsideDbContext is a guard, not an escape from a held connection.
+  //
+  // Phase 1 (short system context): authorize the session and gate the org.
+  const pre = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     // The session must be one WE created — the mapping row is the authority.
     const [mapping] = await db.select({
       invoiceId: invoiceStripePayments.invoiceId,
@@ -295,51 +300,58 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
     // reuses THIS system transaction (resolveOrgLinkGate escalates only from a
     // narrower ambient context), so no second connection is pinned across it.
     if ((await resolveOrgLinkGate(inv.orgId)).blocked) return 'org_gone' as const;
-
-    // Only an actual SUCCESS is "settled" — a failed/refunded mapping is also
-    // not-pending, and reporting settled:true for those would paint a
-    // "Payment received" banner over a payment that failed or was refunded.
-    const alreadySettled = mapping.status === 'succeeded';
-    const terminalNonSuccess = mapping.status !== 'pending' && !alreadySettled;
-    let settled = alreadySettled;
-    let justSettled = false;
-    if (!alreadySettled && !terminalNonSuccess) {
-      try {
-        ({ settled } = await settleCheckoutSession(inv.partnerId, sessionId));
-        justSettled = settled;
-      } catch (err) {
-        // Never strand the customer — the reconcile sweep settles it within the
-        // minute; report unsettled so the page shows "confirming payment".
-        console.error('[invoicesPublic] settle-return failed', { invoiceId: inv.id, sessionId, err });
-        settled = false;
-      }
-    }
-
-    // Bound the session-id → url exchange: a customer mid-flow (pending
-    // mapping), a settlement completed just now, or one recorded within the
-    // window may recover the page URL. A stale long-settled session may NOT —
-    // otherwise any old session id would remain a permanent url oracle.
-    const recent = mapping.status === 'pending'
-      || justSettled
-      || (mapping.updatedAt != null && Date.now() - mapping.updatedAt.getTime() <= SETTLE_RETURN_URL_WINDOW_MS);
-    let publicUrl: string | null = null;
-    if (recent) {
-      try {
-        const link = await getOrMintInvoiceLink({
-          id: inv.id, dueDate: inv.dueDate,
-          publicLinkTokenHash: inv.publicLinkTokenHash,
-          publicLinkTokenCt: inv.publicLinkTokenCt,
-          publicLinkExpiresAt: inv.publicLinkExpiresAt,
-        });
-        publicUrl = buildPublicInvoiceUrl(link.token);
-      } catch (err) {
-        console.error('[invoicesPublic] could not resolve public url on return', { invoiceId: inv.id, err });
-      }
-    }
-    return { settled, publicUrl };
+    return { mapping, inv };
   }));
 
-  if (result === 'org_gone') return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
-  if (!result) return c.json({ error: 'Unknown payment session' }, 404);
-  return c.json({ data: result });
+  if (pre === 'org_gone') return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  if (!pre) return c.json({ error: 'Unknown payment session' }, 404);
+  const { mapping, inv } = pre;
+
+  // Phase 2 (NO context): settle. settleCheckoutSession owns its own short
+  // transactions around the Stripe retrieve and commits the capture before it
+  // returns.
+  //
+  // Only an actual SUCCESS is "settled" — a failed/refunded mapping is also
+  // not-pending, and reporting settled:true for those would paint a
+  // "Payment received" banner over a payment that failed or was refunded.
+  const alreadySettled = mapping.status === 'succeeded';
+  const terminalNonSuccess = mapping.status !== 'pending' && !alreadySettled;
+  let settled = alreadySettled;
+  let justSettled = false;
+  if (!alreadySettled && !terminalNonSuccess) {
+    try {
+      ({ settled } = await runOutsideDbContext(() => settleCheckoutSession(inv.partnerId, sessionId)));
+      justSettled = settled;
+    } catch (err) {
+      // Never strand the customer — the reconcile sweep settles it within the
+      // minute; report unsettled so the page shows "confirming payment".
+      console.error('[invoicesPublic] settle-return failed', { invoiceId: inv.id, sessionId, err });
+      settled = false;
+    }
+  }
+
+  // Phase 3 (short system context): the session-id → url exchange.
+  //
+  // Bound it: a customer mid-flow (pending mapping), a settlement completed
+  // just now, or one recorded within the window may recover the page URL. A
+  // stale long-settled session may NOT — otherwise any old session id would
+  // remain a permanent url oracle.
+  const recent = mapping.status === 'pending'
+    || justSettled
+    || (mapping.updatedAt != null && Date.now() - mapping.updatedAt.getTime() <= SETTLE_RETURN_URL_WINDOW_MS);
+  let publicUrl: string | null = null;
+  if (recent) {
+    try {
+      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrMintInvoiceLink({
+        id: inv.id, dueDate: inv.dueDate,
+        publicLinkTokenHash: inv.publicLinkTokenHash,
+        publicLinkTokenCt: inv.publicLinkTokenCt,
+        publicLinkExpiresAt: inv.publicLinkExpiresAt,
+      })));
+      publicUrl = buildPublicInvoiceUrl(link.token);
+    } catch (err) {
+      console.error('[invoicesPublic] could not resolve public url on return', { invoiceId: inv.id, err });
+    }
+  }
+  return c.json({ data: { settled, publicUrl } });
 });

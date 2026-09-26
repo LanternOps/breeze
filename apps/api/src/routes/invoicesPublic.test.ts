@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 
 // DB mock for the branding/lines/mapping reads (select chains resolve queued
 // row sets; orderBy joins the chain for the lines query).
-const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
+const { dbResults, ctx } = vi.hoisted(() => ({ dbResults: [] as unknown[][], ctx: { depth: 0 } }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -16,7 +16,11 @@ vi.mock('../db', () => {
     db: makeChain(),
     getCurrentDbAccessContext: () => undefined,
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // Tracks nesting so a test can prove the settle runs with NO context held (#7065).
+    withSystemDbAccessContext: async (fn: () => Promise<unknown>) => {
+      ctx.depth++;
+      try { return await fn(); } finally { ctx.depth--; }
+    },
   };
 });
 
@@ -296,6 +300,16 @@ describe('POST /invoices/public/settle-return', () => {
     expect(data.settled).toBe(true);
     expect(data.publicUrl).toBe(`https://portal.example.test/portal/invoice/${TOKEN}`);
     expect(settleMock).toHaveBeenCalledWith('p1', 'cs_test_123');
+  });
+
+  it('settles with NO DB context held — the Stripe call must not span a transaction (#7065)', async () => {
+    dbResults.push([{ invoiceId: INV_ID, status: 'pending', updatedAt: new Date() }]);
+    dbResults.push([invoice()]);
+    let depthAtSettle = -1;
+    settleMock.mockImplementation(async () => { depthAtSettle = ctx.depth; return { settled: true, invoiceId: INV_ID }; });
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(depthAtSettle).toBe(0);
   });
 
   it('reports unsettled (not an error) when instant settle hiccups', async () => {

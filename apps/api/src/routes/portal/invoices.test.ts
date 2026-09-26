@@ -33,9 +33,10 @@ vi.mock('../../services/invoicePdf', () => ({
 // DB mock for the list query: select().from().where() resolves to either the
 // count row or the data rows depending on call order. insert().values() is a
 // thenable so the pay route's mapping INSERT awaits cleanly.
-const { dbResults, insertValuesMock } = vi.hoisted(() => ({
+const { dbResults, insertValuesMock, ctx } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
+  ctx: { depth: 0 },
 }));
 // SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
 // suite's transaction and issue their own queries. This file drives a
@@ -72,7 +73,11 @@ vi.mock('../../db', () => {
   return {
     db: makeChain(),
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
-    withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    // Tracks nesting so a test can prove the settle runs with NO context held (#7065).
+    withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => {
+      ctx.depth++;
+      try { return await fn(); } finally { ctx.depth--; }
+    },
   };
 });
 
@@ -562,6 +567,19 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ settled: true, invoiceId: INV_ID });
     expect(settleCheckoutSessionMock).toHaveBeenCalledWith('p1', 'cs_123');
+  });
+
+  it('POST /invoices/:id/settle settles with NO DB context held (#7065)', async () => {
+    dbResults.push([{ id: INV_ID, partnerId: 'p1' }]);   // invoice SELECT
+    dbResults.push([{ id: 'map_1' }]);                    // mapping SELECT
+    let depthAtSettle = -1;
+    settleCheckoutSessionMock.mockImplementation(async () => {
+      depthAtSettle = ctx.depth;
+      return { settled: true, invoiceId: INV_ID };
+    });
+    const res = await settle('cs_123');
+    expect(res.status).toBe(200);
+    expect(depthAtSettle).toBe(0);
   });
 
   it('POST /invoices/:id/settle returns settled:false (no settle call) for a session not tied to this invoice', async () => {
