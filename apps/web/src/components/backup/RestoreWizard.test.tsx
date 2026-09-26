@@ -381,6 +381,36 @@ describe('RestoreWizard', () => {
     expect(screen.queryByText('2097152 B')).toBeNull();
   });
 
+  it('does not claim the default destination restores in place (#2562)', async () => {
+    // With no targetPath the agent writes under <temp>/breeze-restore/<source
+    // path> and never touches the originals. The card used to be labelled
+    // "Original location — Restore files in place", which is the opposite.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024 }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+
+    expect(screen.queryByText(/Restore files in place/i)).toBeNull();
+    expect(screen.queryByText(/^Original location$/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /Staging folder on the device/i })).toBeTruthy();
+    expect(screen.getByText(/originals are never overwritten/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    expect(screen.queryByText(/^Original path$/)).toBeNull();
+    expect(screen.getAllByText(/Staging folder on the device/i).length).toBeGreaterThan(0);
+  });
+
   it('echoes the typed alternate destination path on the Review step (#6496)', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

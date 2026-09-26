@@ -570,7 +570,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               <div>
                 <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.destination')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  {t('restoreWizard.restoreToTheOriginalLocationOrProvideAn')} </p>
+                  {t('restoreWizard.restoreToAStagingFolderOrProvideAn')} </p>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <button
@@ -584,8 +584,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <RotateCcw className="h-4 w-4 text-primary" />
-                    {t('restoreWizard.originalLocation')} </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.restoreFilesInPlace')}</p>
+                    {t('restoreWizard.stagingFolder')} </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.stagingFolderHint')}</p>
                 </button>
                 <button
                   onClick={() => setDestination('alternate')}
@@ -649,7 +649,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {t('restoreWizard.destination')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {destination === 'original'
-                      ? 'Original path'
+                      ? t('restoreWizard.stagingFolder')
                       : `Alternate path: ${alternatePath.trim() || '(none entered)'}`}
                   </p>
                 </div>
@@ -773,7 +773,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
                     <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
-                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? 'Original location'}</p>
+                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
