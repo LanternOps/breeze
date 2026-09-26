@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { ACT_MANIFEST, resolveActOperation } from './aiAgents/actManifest';
 import {
+  AGENT_DENIED_READ_TOOLS,
   AGENT_HUMAN_ONLY_TOOLS,
   BLOCKED_TOOLS,
   checkAgentGuardrails,
   checkGuardrails,
+  isNeverAgentTool,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER2_READONLY_ACTIONS,
@@ -15,6 +17,8 @@ import {
   type AgentGuardrailPolicy,
   TIER1_NON_READONLY_TOOLS,
 } from './aiGuardrails';
+import { listAgentReachableTools } from './aiAgents/agentToolCatalog';
+import { aiTools } from './aiToolNames';
 import {
   isSecretBearingTool,
   SECRET_BEARING_TOOLS,
@@ -179,10 +183,14 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'analyze_disk_usage',
   'analyze_fleet_metrics',
   'analyze_metrics',
+  // W01 (#6755)
+  'browse_snapshots',
   'configuration_policy_compliance',
   'export_dataset',
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
+  // W01 (#6755)
+  'get_backup_status',
   'get_catalog_item',
   'get_cis_compliance',
   'get_cis_device_report',
@@ -194,17 +202,29 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_device_vulnerabilities',
   'get_dns_security',
   'get_effective_configuration',
+  // W01 (#6755)
+  'get_elevation_history',
   'get_fleet_findings',
   'get_fleet_health',
   'get_huntress_incidents',
   'get_huntress_status',
+  // W01 (#6755)
+  'get_hyperv_vm_details',
   'get_invite_funnel',
   'get_invoice',
+  // W01 (#6755)
+  'get_ip_history',
   'get_log_trends',
+  // W01 (#6755)
+  'get_monitor',
+  'get_mssql_backup_status',
   'get_network_asset', // A-W06 Tier-1 read
   // W01 (spec §4.4) — read-only reachability for a discovered network asset.
   // Tier 1, reads nothing outside the caller's tenant, mutates nothing.
   'get_network_asset_reachability',
+  // W01 (#6755)
+  'get_network_changes',
+  'get_peripheral_activity',
   'get_playbook_history',
   'get_quote',
   'get_running_timer', // A-W06 Tier-1 read
@@ -220,8 +240,15 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_security_posture',
   'get_service_monitoring_status',
   'get_site', // A-W06 Tier-1 read
+  // W01 (#6755)
+  'get_sla_breaches',
+  'get_sla_compliance_report',
+  'get_software_compliance',
   'get_timesheet', // A-W06 Tier-1 read
   'get_user_experience_metrics',
+  // W01 (#6755)
+  'get_vault_status',
+  'get_vm_restore_estimate',
   'get_vulnerability_report',
   'google_email_report',
   'google_list_licenses',
@@ -235,6 +262,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
+  // W01 (#6755)
+  'list_monitors',
   'list_network_assets', // A-W06 Tier-1 read
   'list_org_contacts', // A-W06 Tier-1 read
   // W03: read-only document METADATA, same admission shape as the sibling
@@ -244,6 +273,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_playbooks',
   'list_quotes',
   'list_remediation_suggestions', // A-W06 Tier-1 read
+  // W01 (#6755)
+  'list_remote_sessions',
   'list_script_templates',
   'list_scripts',
   'list_sites', // A-W06 Tier-1 read
@@ -254,25 +285,46 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'm365_query_groups',
   'm365_query_intune_devices',
   'm365_query_org',
-  'm365_query_signins',
+  // m365_query_signins and m365_query_users are listed in
+  // AGENT_DENIED_READ_TOOLS (W01-D5, quorum amendment WQ1, #6755): both are
+  // org-wide tier-1 reads with no device axis, so they are denied to headless
+  // agents explicitly rather than through the session-only filter.
   'm365_query_sites',
-  'm365_query_users',
   'm365_recent_signins',
   'manage_alert_rules',
-  'manage_maintenance_windows',
+  // manage_maintenance_windows was admitted here (its unclassified mutation
+  // actions fell to the base tier's read-only resolution) before W01-D3
+  // (#6755) added them to TIER3_ACTIONS. Now that it carries a real
+  // escalation, it is an action-multiplexed tool and an unresolvable action
+  // (the empty-allowlist policy's {} call) denies — exactly the fail-closed
+  // behavior isActionMultiplexedTool exists for.
   'manage_monitors', // Only get executes; retired mutations return guidance before DB access.
   'manage_service_monitors',
   'preview_configuration_change',
   'propose_script',
+  // W01 (#6755)
+  'query_agent_versions',
+  'query_analytics',
   'query_audit_log',
+  // W01 (#6755)
+  'query_backup_sla',
   'query_change_log',
+  // W01 (#6755)
+  'query_compliance_policies',
   'query_devices',
+  // W01 (#6755)
+  'query_hyperv_vms',
   'query_monitors',
+  // W01 (#6755)
+  'query_mssql_instances',
+  'query_webhooks',
   'read_artifact', // A-W05 (D13a): Tier 1 read, own-run/session scoped
   'search_agent_logs',
   'search_catalog',
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
+  // W01 (#6755)
+  'search_script_library',
 ];
 
 describe('checkAgentGuardrails — fail closed for every registered tool', () => {
@@ -303,6 +355,7 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
     if (
       base.tier === 3 || base.tier === 4 || !base.allowed
       || isSecretBearingTool(toolName) || AGENT_HUMAN_ONLY_TOOLS.has(toolName)
+      || AGENT_DENIED_READ_TOOLS.has(toolName)
     ) {
       it(`${toolName}: explicit allowlisting cannot bypass unconditional denials`, () => {
         // A multiplexed tool needs a resolvable action — calling it with {} now
@@ -320,11 +373,13 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
           || !base.allowed
           || BLOCKED_TOOLS.has(toolName)
           || isSecretBearingTool(toolName)
-          || AGENT_HUMAN_ONLY_TOOLS.has(toolName);
+          || AGENT_HUMAN_ONLY_TOOLS.has(toolName)
+          || AGENT_DENIED_READ_TOOLS.has(toolName);
 
-        // Tier 4, blocked, secret-bearing and human-only tools remain denied
-        // even when the snapshot names them — these denials sit upstream of
-        // the act branch and allowlisting can never reach past them.
+        // Tier 4, blocked, secret-bearing, human-only and denied-read tools
+        // remain denied even when the snapshot names them — these denials
+        // sit upstream of the act branch and allowlisting can never reach
+        // past them.
         if (unconditionallyDenied) {
           expect(agent.allowed).toBe(false);
           return;
@@ -789,5 +844,82 @@ describe('Task 2 — act disposition matrix', () => {
     );
     expect(shadowCheck.disposition).toBe('propose');
     expect(shadowCheck.allowed).toBe(false);
+  });
+});
+
+/**
+ * AGENT_DENIED_READ_TOOLS (W01-D5, quorum amendments WQ1/WQ2, #6755): tier-1
+ * reads a headless agent may never call, whatever its allowlist says. Pinned
+ * as a literal so a membership change is a deliberate, reviewed edit.
+ */
+const EXPECTED_AGENT_DENIED_READ_TOOLS = [
+  'get_user_risk_detail',
+  'get_sensitive_data_overview',
+  'get_user_risk_scores',
+  'm365_query_signins', // WQ1
+  'm365_query_users', // WQ1
+  'query_c2c_jobs', // WQ2
+  'search_c2c_items',
+].sort();
+
+describe('AGENT_DENIED_READ_TOOLS (W01-D5 / WQ1 / WQ2, #6755)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is exactly the pinned set, each registered and each with a real reason (>= 20 chars)', () => {
+    expect([...AGENT_DENIED_READ_TOOLS.keys()].sort()).toEqual(EXPECTED_AGENT_DENIED_READ_TOOLS);
+    for (const [name, reason] of AGENT_DENIED_READ_TOOLS) {
+      expect(aiTools.has(name), `${name}: not a registered tool`).toBe(true);
+      expect(reason.trim().length, `${name}: reason must say why (>= 20 chars)`).toBeGreaterThanOrEqual(20);
+    }
+  });
+
+  it('is disjoint from AGENT_HUMAN_ONLY_TOOLS', () => {
+    for (const name of AGENT_DENIED_READ_TOOLS.keys()) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(name), `${name}: also in AGENT_HUMAN_ONLY_TOOLS`).toBe(false);
+    }
+  });
+
+  for (const name of EXPECTED_AGENT_DENIED_READ_TOOLS) {
+    it(`${name}: denied to an agent principal even when it is the ONLY allowlist entry`, () => {
+      const check = checkAgentGuardrails(name, {}, policyWith({ toolAllowlist: [name] }));
+      expect(check.disposition).toBe('deny');
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it(`${name}: chat/Helper path (checkGuardrails, not checkAgentGuardrails) is unaffected — still allowed`, () => {
+      const chatCheck = checkGuardrails(name, {});
+      expect(chatCheck.allowed).toBe(true);
+      expect(chatCheck.tier).toBe(1);
+    });
+
+    it(`${name}: excluded from listAgentReachableTools()`, () => {
+      expect(listAgentReachableTools()).not.toContain(name);
+    });
+  }
+
+  it('control: an already-exposed read (query_devices) is allowed for an agent principal', () => {
+    const check = checkAgentGuardrails('query_devices', {}, policyWith({ toolAllowlist: ['query_devices'] }));
+    expect(check.disposition).not.toBe('deny');
+    expect(check.allowed).toBe(true);
+  });
+
+  it('isNeverAgentTool agrees with checkAgentGuardrails: every denied name is unconditionally denied, and query_devices is not', () => {
+    for (const name of EXPECTED_AGENT_DENIED_READ_TOOLS) {
+      expect(isNeverAgentTool(name), `${name}: isNeverAgentTool should be true`).toBe(true);
+    }
+    expect(isNeverAgentTool('query_devices')).toBe(false);
+  });
+
+  it('isNeverAgentTool agrees with listAgentReachableTools: no reachable name is ever isNeverAgentTool', () => {
+    for (const name of listAgentReachableTools()) {
+      expect(isNeverAgentTool(name), `${name}: reachable but isNeverAgentTool is true`).toBe(false);
+    }
   });
 });

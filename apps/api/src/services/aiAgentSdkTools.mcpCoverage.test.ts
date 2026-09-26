@@ -57,31 +57,19 @@ function declaredDescription(name: string): string {
 }
 
 /**
- * Tools that are in `TOOL_TIERS` but intentionally NOT declared in
- * `createBreezeMcpServer`, with the reason. Anything not listed here must be
- * declared. Remove an entry when the tool gets registered — the last test in
- * this file fails on stale entries so the list cannot rot.
- *
- * The four below are reachable only from the script-builder MCP server. The
- * five configuration-policy tools that used to sit here (#2814 — the same
- * family as #2605) are now declared in `createBreezeMcpServer`, so their
- * entries are gone: the third test in this describe fails on a stale entry, so
- * this list cannot silently outlive the gap it documents.
+ * As of the L2 fix (spec 2026-09-23, W01-D2), every `TOOL_TIERS` name must be
+ * declared in `createBreezeMcpServer` — no exceptions. The four script-library
+ * reads that used to sit in an allowlist here (reachable only from the
+ * separate script-builder MCP server) are now declared on the main server
+ * too; the strict `registryParity` contract
+ * ("TOOL_TIERS ⊆ main chat/agent SDK server declarations") pins this so a
+ * future mismatch of the same shape (#2605) fails there before it could reach an
+ * allowlist like this one.
  */
-const NOT_IN_BREEZE_MCP_SERVER: Record<string, string> = {
-  // Exposed by the separate `script_builder` SDK MCP server (scriptBuilderTools.ts).
-  list_scripts: 'script_builder MCP server',
-  get_script_details: 'script_builder MCP server',
-  list_script_templates: 'script_builder MCP server',
-  get_script_execution_history: 'script_builder MCP server',
-};
-
 describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
-  it('declares every TOOL_TIERS tool except the documented exceptions', () => {
+  it('declares every TOOL_TIERS tool', () => {
     const declared = declaredToolNames();
-    const missing = Object.keys(TOOL_TIERS).filter(
-      (name) => !declared.has(name) && !(name in NOT_IN_BREEZE_MCP_SERVER),
-    );
+    const missing = Object.keys(TOOL_TIERS).filter((name) => !declared.has(name));
     expect(
       missing,
       'these tools are allowlisted via TOOL_TIERS/BREEZE_MCP_TOOL_NAMES but have no tool() '
@@ -94,15 +82,6 @@ describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
       (name) => !(name in (TOOL_TIERS as Record<string, number>)),
     );
     expect(unknown).toEqual([]);
-  });
-
-  it('keeps the exception list honest — every entry is still undeclared', () => {
-    const declared = declaredToolNames();
-    const stale = Object.keys(NOT_IN_BREEZE_MCP_SERVER).filter((name) => declared.has(name));
-    expect(
-      stale,
-      'these tools are now declared in createBreezeMcpServer — drop them from NOT_IN_BREEZE_MCP_SERVER',
-    ).toEqual([]);
   });
 });
 
@@ -445,12 +424,6 @@ describe('vulnerability tools reach the chat model (#2605)', () => {
     const declared = declaredToolNames();
     for (const name of VULN_TOOLS) {
       expect(declared.has(name), `tool('${name}', ...) missing from createBreezeMcpServer`).toBe(true);
-    }
-  });
-
-  it('none of them is on the exception list', () => {
-    for (const name of VULN_TOOLS) {
-      expect(name in NOT_IN_BREEZE_MCP_SERVER).toBe(false);
     }
   });
 

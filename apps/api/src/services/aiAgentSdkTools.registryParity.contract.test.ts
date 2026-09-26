@@ -30,11 +30,36 @@ import { describe, expect, it, vi } from 'vitest';
 import { aiTools } from './aiToolNames';
 import { TOOL_TIERS, SESSION_TOOL_DESCRIPTIONS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
 import { getAllRegisteredToolNames, getToolTier, getToolAlwaysLoad, getToolSearchHint } from './aiTools';
+import { HUMAN_ONLY_TOOLS } from './aiToolExposure';
+import { listAgentReachableTools } from './aiAgents/agentToolCatalog';
+
+/**
+ * Pure check extracted so the "HUMAN_ONLY_TOOLS entries are valid" rule can be
+ * exercised against a fixture, not only against the (currently empty) real
+ * map — an assertion against an empty map never fails, so it proves nothing
+ * on its own (see the vacuity-control test below).
+ */
+function humanOnlyProblems(
+  map: ReadonlyMap<string, string>,
+  registered: ReadonlySet<string>,
+  tiers: Record<string, number>,
+  missing: ReadonlySet<string>,
+): string[] {
+  return [...map].flatMap(([name, reason]) => [
+    ...(!registered.has(name) ? [`${name}: not registered`] : []),
+    ...(name in tiers ? [`${name}: also in TOOL_TIERS — human-only means never tiered`] : []),
+    ...(missing.has(name) ? [`${name}: also in KNOWN_MISSING_TOOL_TIERS`] : []),
+    ...(reason.trim().length < 20 ? [`${name}: reason must say why (>= 20 chars)`] : []),
+  ]);
+}
 
 /**
  * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
  * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
- * tiered, 86 missing).
+ * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
+ * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 28 read-only tools,
+ * leaving 60 (14 further read-only tools are held for a follow-up PR).
+ * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
  * tier and is now reachable. Adding one means a new tool shipped mute, which
@@ -44,7 +69,6 @@ import { getAllRegisteredToolNames, getToolTier, getToolAlwaysLoad, getToolSearc
 const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'acknowledge_network_device',
   'assign_security_training',
-  'browse_snapshots',
   'collect_evidence',
   'configure_backup_sla',
   'configure_network_baseline',
@@ -54,31 +78,14 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'execute_containment',
   'execute_dr_plan',
   'generate_incident_report',
-  'get_backup_status',
   'get_browser_security',
   'get_compliance_status',
   'get_dr_execution_status',
   'get_dr_plan_details',
-  'get_elevation_history',
   'get_executive_summary',
-  'get_hyperv_vm_details',
   'get_incident_timeline',
-  'get_ip_history',
-  'get_monitor',
-  'get_mssql_backup_status',
-  'get_network_changes',
-  'get_peripheral_activity',
   'get_sensitive_data_overview',
-  'get_sla_breaches',
-  'get_sla_compliance_report',
-  'get_software_compliance',
-  'get_user_risk_detail',
-  'get_user_risk_scores',
-  'get_vault_status',
-  'get_vm_restore_estimate',
   'instant_boot_vm',
-  'list_monitors',
-  'list_remote_sessions',
   'manage_backup_profiles',
   'manage_browser_policy',
   'manage_catalog',
@@ -95,20 +102,12 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'manage_software_policy',
   'manage_tags',
   'manage_tickets',
-  'query_agent_versions',
-  'query_analytics',
-  'query_backup_sla',
   'query_backups',
   'query_c2c_connections',
-  'query_c2c_jobs',
-  'query_compliance_policies',
   'query_custom_fields',
   'query_dr_plans',
-  'query_hyperv_vms',
-  'query_mssql_instances',
   'query_psa_status',
   'query_vaults',
-  'query_webhooks',
   'registry_operations',
   'remediate_sensitive_data',
   'remediate_software_violation',
@@ -119,8 +118,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'restore_mssql_database',
   'restore_snapshot',
   'revoke_elevation',
-  'search_c2c_items',
-  'search_script_library',
   'test_webhook',
   'trigger_agent_restart',
   'trigger_agent_upgrade',
@@ -146,31 +143,45 @@ const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
 ]);
 
 describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {
-  it('every registered tool has a TOOL_TIERS entry, or is a known pre-existing gap', () => {
-    const undeclared = getAllRegisteredToolNames()
-      .filter((name) => !(name in TOOL_TIERS))
-      .filter((name) => !KNOWN_MISSING_TOOL_TIERS.has(name))
+  it('every registered tool is tiered, human-only with a reason, or a known pre-existing gap', () => {
+    const uncovered = getAllRegisteredToolNames()
+      .filter((n) => !(n in TOOL_TIERS) && !HUMAN_ONLY_TOOLS.has(n) && !KNOWN_MISSING_TOOL_TIERS.has(n))
       .sort();
-
     expect(
-      undeclared,
-      'These tools are registered but have no TOOL_TIERS entry, so the AI chat ' +
-        'will tell users the capability does not exist. Add a tier to TOOL_TIERS ' +
-        '(agreeing with the tool\'s registered tier) rather than adding the name ' +
-        'to KNOWN_MISSING_TOOL_TIERS.',
+      uncovered,
+      'Give the tool a TOOL_TIERS entry, or list it in HUMAN_ONLY_TOOLS (aiToolExposure.ts) with a written reason. Never widen KNOWN_MISSING_TOOL_TIERS.',
     ).toEqual([]);
+  });
+
+  it('HUMAN_ONLY_TOOLS entries are registered, untiered, not also KNOWN_MISSING, and carry a reason', () => {
+    const registered = new Set(getAllRegisteredToolNames());
+    const bad = humanOnlyProblems(HUMAN_ONLY_TOOLS, registered, TOOL_TIERS, KNOWN_MISSING_TOOL_TIERS);
+    expect(bad).toEqual([]);
+  });
+
+  it('humanOnlyProblems is not vacuous — it flags a tiered entry and a too-short reason', () => {
+    const bad = humanOnlyProblems(
+      new Map([['query_devices', 'x']]),
+      new Set(['query_devices']),
+      TOOL_TIERS,
+      new Set(),
+    );
+    expect(bad).toEqual([
+      'query_devices: also in TOOL_TIERS — human-only means never tiered',
+      'query_devices: reason must say why (>= 20 chars)',
+    ]);
   });
 
   it('KNOWN_MISSING_TOOL_TIERS contains no stale entries — the list may only shrink', () => {
     const registered = new Set(getAllRegisteredToolNames());
     const resolved = [...KNOWN_MISSING_TOOL_TIERS]
-      .filter((name) => name in TOOL_TIERS || !registered.has(name))
+      .filter((name) => name in TOOL_TIERS || HUMAN_ONLY_TOOLS.has(name) || !registered.has(name))
       .sort();
 
     expect(
       resolved,
       'These names are in KNOWN_MISSING_TOOL_TIERS but are no longer missing ' +
-        '(they now have a tier, or are no longer registered). Delete them from ' +
+        '(they now have a tier, are human-only, or are no longer registered). Delete them from ' +
         'the allowlist so it keeps shrinking toward empty.',
     ).toEqual([]);
   });
@@ -235,6 +246,61 @@ describe('TOOL_TIERS agrees with the registry tier (#3300)', () => {
   });
 });
 
+/**
+ * Contract (a) (spec 2026-09-23, W01-D2): `TOOL_TIERS` must be a
+ * subset of what the MAIN chat/agent SDK server declares — not the union
+ * across every SDK server. The script-builder server has its own
+ * `SCRIPT_BUILDER_TOOL_TIERS` map (scriptBuilderTools.ts:40), so a tool
+ * declared only there does not make it reachable from chat or a headless
+ * agent run, both of which attach `createBreezeMcpServer` /
+ * `buildBreezeSdkTools`. A union contract would also pass when a read is
+ * declared only on the script-builder server, which is exactly the case this
+ * contract exists to catch.
+ */
+const ALL_FLAGS_ON = {
+  M365_ENABLED: 'true',
+  GOOGLE_WORKSPACE_ENABLED: 'true',
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true',
+  DELEGANT_BASE_URL: 'https://delegant.example.com',
+};
+
+function declaredOnMainServer(): Set<string> {
+  for (const [k, v] of Object.entries(ALL_FLAGS_ON)) vi.stubEnv(k, v);
+  try {
+    const built = buildBreezeSdkTools(() => { throw new Error('handlers must not run in this test'); });
+    return new Set(built.map((t) => t.name));
+  } finally {
+    vi.unstubAllEnvs();
+  }
+}
+
+/** Same declaration pass as declaredOnMainServer, but keyed by name so a
+ * caller can inspect each declaration's inputSchema. */
+function declaredToolsByName(): Map<string, ReturnType<typeof buildBreezeSdkTools>[number]> {
+  for (const [k, v] of Object.entries(ALL_FLAGS_ON)) vi.stubEnv(k, v);
+  try {
+    const built = buildBreezeSdkTools(() => { throw new Error('handlers must not run in this test'); });
+    return new Map(built.map((t) => [t.name, t]));
+  } finally {
+    vi.unstubAllEnvs();
+  }
+}
+
+describe('TOOL_TIERS ⊆ main chat/agent SDK server declarations (L2, spec 2026-09-23)', () => {
+  it('every tiered tool is declared on buildBreezeSdkTools with every env-gated builder on', () => {
+    const declared = declaredOnMainServer();
+    expect(
+      Object.keys(TOOL_TIERS).filter((n) => !declared.has(n)).sort(),
+      'Tiered (so allowlisted via BREEZE_MCP_TOOL_NAMES) but never shown to the model. A declaration on the script-builder server does not count: that server has its own tier map.',
+    ).toEqual([]);
+  });
+
+  it('every agent-reachable tool is declared on the server the agent run builds (createBreezeMcpServer → buildBreezeSdkTools)', () => {
+    const declared = declaredOnMainServer();
+    expect(listAgentReachableTools().filter((n) => !declared.has(n))).toEqual([]);
+  });
+});
+
 describe('SDK declarations carry registry search metadata (A-W02)', () => {
   const fakeAuth = () => { throw new Error('handlers must not run in this test'); };
   const raw = (() => {
@@ -274,7 +340,7 @@ describe('SDK declarations carry registry search metadata (A-W02)', () => {
 });
 
 import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
-import { validateToolInput } from './aiToolSchemas';
+import { validateToolInput, toolInputSchemas } from './aiToolSchemas';
 
 describe('manage_delivery has every registration', () => {
   it('does not add a frozen-gap exception', () => {
@@ -293,6 +359,31 @@ describe('manage_delivery has every registration', () => {
   it('fails closed on unknown actions', () => {
     expect(requiredPermissionsForTool('manage_delivery', { action: 'unknown' })).toBeNull();
     expect(validateToolInput('manage_delivery', { action: 'unknown' }).success).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W01: the read-only L1 tools wired this wave.
+ * Pinned so a later wave cannot silently un-wire one. */
+const W01_READ_TOOLS = [
+  'browse_snapshots', 'get_backup_status', 'get_elevation_history', 'get_hyperv_vm_details', 'get_ip_history',
+  'get_monitor', 'get_mssql_backup_status', 'get_network_changes', 'get_peripheral_activity', 'get_sla_breaches',
+  'get_sla_compliance_report', 'get_software_compliance', 'get_user_risk_detail', 'get_user_risk_scores',
+  'get_vault_status', 'get_vm_restore_estimate', 'list_monitors', 'list_remote_sessions', 'query_agent_versions',
+  'query_analytics', 'query_backup_sla', 'query_c2c_jobs', 'query_compliance_policies', 'query_hyperv_vms',
+  'query_mssql_instances', 'query_webhooks', 'search_c2c_items', 'search_script_library',
+] as const;
+
+describe('W01 read-only wiring (#6755)', () => {
+  it('has 28 entries', () => expect(new Set(W01_READ_TOOLS).size).toBe(28));
+
+  it.each(W01_READ_TOOLS)('%s is tier 1 in both maps, declared, and its SDK shape keys equal toolInputSchemas', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(1);
+    expect(getToolTier(name)).toBe(1);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    expect(Object.keys(decl!.inputSchema).sort()).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
   });
 });
 
