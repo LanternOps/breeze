@@ -75,4 +75,13 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g58', prompt: 'Run the onboarding playbook for the new Northwind laptops.', expect: [{ tool: 'list_playbooks' }, { tool: 'execute_playbook' }] },
   { id: 'g59', prompt: 'Any USB storage plugged in at Contoso this week?', expect: [{ tool: 'get_peripheral_activity' }] },
   { id: 'g60', prompt: 'Where is Contoso keeping credit-card numbers in files?', expect: [{ tool: 'get_sensitive_data_overview' }] },
+  // Spec 2026-09-23 W01 (#6755): one golden case per domain that had no
+  // reachable read before this wave wired its L1 reads into chat/agents.
+  { id: 'g61', prompt: 'List the Hyper-V VMs running on HV-HOST-01.', expect: [{ tool: 'query_hyperv_vms' }, { tool: 'resolve_device_context' }] },
+  { id: 'g62', prompt: 'When was the last good backup of the Payroll database on SQL-01?', expect: [{ tool: 'get_mssql_backup_status' }, { tool: 'query_mssql_instances' }, { tool: 'resolve_device_context' }] },
+  { id: 'g63', prompt: 'Is the local backup vault on FS-01 in sync?', expect: [{ tool: 'get_vault_status' }, { tool: 'resolve_device_context' }] },
+  { id: 'g64', prompt: 'Did the Microsoft 365 mailbox backups for Contoso run last night?', expect: [{ tool: 'query_c2c_jobs' }] },
+  { id: 'g65', prompt: 'Who requested admin elevation on LAB-WS-042 this week?', expect: [{ tool: 'get_elevation_history' }, { tool: 'resolve_device_context' }] },
+  { id: 'g66', prompt: 'Which Contoso users have the highest security risk score?', expect: [{ tool: 'get_user_risk_scores' }] },
+  { id: 'g67', prompt: 'Who has had a remote session open to KIOSK-1 recently?', expect: [{ tool: 'list_remote_sessions' }, { tool: 'resolve_device_context' }] },
 ];
