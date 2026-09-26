@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -209,6 +209,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_network_asset: z.object({ assetId: z.string().guid() }),
   get_network_asset_reachability: z.object({
     asset_id: uuid,
+  }),
+  get_interface_history: z.object({
+    site_id: uuid,
+    interface_id: uuid,
+    series: z.array(z.enum(TOPOLOGY_INTERFACE_METRIC_SERIES)).min(1).max(4),
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    resolution: z.enum(['auto', 'raw', '5m', '1h']).optional(),
+    max_buckets: z.number().int().min(1).max(120).optional(),
+  }),
+  get_link_health: z.object({
+    site_id: uuid,
+    relationship_id: uuid,
   }),
 
   get_ip_history: z.object({

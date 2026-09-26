@@ -8,6 +8,9 @@ import {
   TOPOLOGY_INTERFACE_METRICS_MAX_SAMPLES,
   topologyInterfaceHistoryQuerySchema,
   topologyInterfaceHistoryResponseSchema,
+  topologyLinkHealthResponseSchema,
+  TOPOLOGY_INTERFACE_HEALTH_THRESHOLDS,
+  TOPOLOGY_INTERFACE_HISTORY_MAX_EPOCHS,
   topologyInterfaceMetricEnvelopeV1Schema,
   topologyInterfaceSampleV1Schema,
   TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE,
@@ -92,14 +95,48 @@ describe('interface history contract', () => {
     expect(topologyInterfaceHistoryQuerySchema.safeParse({ ...base, from: iso(0), to: iso(-1) }).success).toBe(false);
   });
 
+  const SOURCE = '55555555-5555-4555-8555-555555555555';
+  const point = { at: iso(-60_000), value: null, min: null, max: null, validDurationMs: 0, sampleCount: 0, gapDurationMs: 60_000, reasons: ['no_samples'] };
+  const series = { name: 'in_bps', unit: 'bits_per_second', interfaceEpoch: 'gen:1', sourceId: SOURCE, sourceKind: 'snmp', producerEpoch: 'p1', coverage: 'none',
+    points: [point], gaps: [{ from: iso(-60_000), to: iso(0), reason: 'no_samples' }], reasons: [] };
+  const epoch = { interfaceEpoch: 'gen:1', sourceId: SOURCE, sourceKind: 'snmp', producerEpoch: 'p1', current: true, sourceState: 'active', from: iso(-60_000), to: iso(0) };
+  const response = { interfaceId: IF_C, interfaceEpoch: 'gen:1', resolution: 'raw', interval: { from: iso(-60_000), to: iso(0), bucketSeconds: 60 },
+    series: [series], epochs: [epoch], coverage: 'none', reasons: [], asOf: iso(0) };
+
   it('requires unit, epoch, source, coverage and gaps on every series', () => {
-    const series = { name: 'in_bps', unit: 'bits_per_second', resolution: 'raw', interfaceEpoch: 'gen:1', sourceId: null, coverage: 'partial',
-      points: [{ at: iso(0), value: null, sampleCount: 0 }], gaps: [{ from: iso(-60_000), to: iso(0), reason: 'no_samples' }], reasons: [] };
-    const response = { interfaceId: IF_C, interfaceEpoch: 'gen:1', from: iso(-60_000), to: iso(0), resolution: 'raw', series: [series] };
     expect(topologyInterfaceHistoryResponseSchema.safeParse(response).success).toBe(true);
     expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [{ ...series, unit: 'percent' }] }).success).toBe(false);
-    const { gaps: _gaps, ...withoutGaps } = series;
-    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [withoutGaps] }).success).toBe(false);
+    for (const field of ['gaps', 'coverage', 'interfaceEpoch', 'sourceId', 'unit', 'producerEpoch'] as const) {
+      const { [field]: _omitted, ...without } = series;
+      expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [without] }).success, field).toBe(false);
+    }
+  });
+
+  it('breaks a series at an interface generation: every series names a represented epoch', () => {
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [{ ...series, interfaceEpoch: 'gen:2' }] }).success).toBe(false);
+    const second = { ...epoch, interfaceEpoch: 'gen:2', current: false };
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, epochs: [epoch, second], series: [series, { ...series, interfaceEpoch: 'gen:2' }] }).success).toBe(true);
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, epochs: Array.from({ length: TOPOLOGY_INTERFACE_HISTORY_MAX_EPOCHS + 1 }, (_, i) => ({ ...epoch, producerEpoch: `p${i}` })) }).success).toBe(false);
+  });
+
+  it('bounds points per series and keeps point aggregates honest', () => {
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [{ ...series, points: Array.from({ length: 1001 }, () => point) }] }).success).toBe(false);
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [{ ...series, points: [{ ...point, sampleCount: -1 }] }] }).success).toBe(false);
+    expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, interval: { ...response.interval, bucketSeconds: 0 } }).success).toBe(false);
+  });
+
+  it('describes link health with per-endpoint measurement, never a summed rate', () => {
+    const endpoint = { interfaceId: IF_C, interfaceEpoch: 'gen:1', retired: false, status: 'failed_check', coverage: 'monitored', freshness: 'fresh',
+      reasons: ['interface_link_down'], adminStatus: 'up', operStatus: 'down', capacityBps: '1000000000', sourceId: SOURCE, sourceKind: 'snmp',
+      observedAt: iso(-30_000), freshUntil: iso(150_000), expectedIntervalSeconds: 60,
+      rates: { from: iso(-90_000), to: iso(-30_000), values: [{ name: 'in_bps', unit: 'bits_per_second', value: 12.5, reason: null }] } };
+    const health = { status: 'failed_check', coverage: 'monitored', scope: 'relationship', originNodeId: null, resultId: null, reasons: [{ code: 'interface_link_down', message: 'x' }], freshness: 'fresh' };
+    const body = { siteId: SOURCE, relationshipId: IF_C, graphRevision: '3', healthRevision: '9', health, freshUntil: iso(150_000),
+      interfaceEvidence: { applies: true, reason: null }, endpoints: { source: endpoint, target: null }, asOf: iso(0) };
+    expect(topologyLinkHealthResponseSchema.safeParse(body).success).toBe(true);
+    expect(topologyLinkHealthResponseSchema.safeParse({ ...body, endpoints: { ...body.endpoints, combined: endpoint } }).success).toBe(false);
+    expect(topologyLinkHealthResponseSchema.safeParse({ ...body, endpoints: { source: { ...endpoint, rates: { ...endpoint.rates, values: [{ name: 'in_bps', unit: 'percent', value: 1, reason: null }] } }, target: null } }).success).toBe(false);
+    expect(TOPOLOGY_INTERFACE_HEALTH_THRESHOLDS.errorsPerSecond).toBeGreaterThan(0);
   });
 });
 

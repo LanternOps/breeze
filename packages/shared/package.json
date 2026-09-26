@@ -20,7 +20,8 @@
     "./testing/topologyFleet": "./src/testing/topologyFleet.ts",
     "./validators/topology": "./src/validators/topology.ts",
     "./validators/topologyConfiguration": "./src/validators/topologyConfiguration.ts",
-    "./validators/topologyDiagnostics": "./src/validators/topologyDiagnostics.ts"
+    "./validators/topologyDiagnostics": "./src/validators/topologyDiagnostics.ts",
+    "./validators/topologyTelemetry": "./src/validators/topologyTelemetry.ts"
   },
   "scripts": {
     "test": "vitest",

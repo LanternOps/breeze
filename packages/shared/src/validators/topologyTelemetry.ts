@@ -1,6 +1,6 @@
 import './topologyZod';
 import { z } from 'zod';
-import { collectionOutcomeSchema } from './topology';
+import { collectionOutcomeSchema, freshnessSchema, graphRelationshipSchema, healthCoverageSchema, healthStatusSchema, topologyRevisionSchema } from './topology';
 import {
   topologyPortSchema, topologyReasonSchema, topologySequenceSchema, topologyTimestampSchema, topologyUtf8KeySchema, topologyWireGuard,
 } from './topologyPrimitives';
@@ -242,24 +242,118 @@ export const topologyInterfaceHistoryQuerySchema = z.object({
   const limit = query.resolution === 'auto' ? TOPOLOGY_INTERFACE_RESOLUTION_RETENTION_DAYS['1h'] : TOPOLOGY_INTERFACE_RESOLUTION_RETENTION_DAYS[query.resolution];
   if (range > limit * DAY_MS) ctx.addIssue({ code: 'custom', path: ['from'], message: 'History range exceeds the resolution retention' });
 });
-const historyPoint = z.object({ at: time, value: z.number().finite().nullable(), sampleCount: z.number().int().nonnegative() }).strict();
+/** Server bucketing grid per resolution; buckets are whole multiples of it and aligned to it. */
+export const TOPOLOGY_INTERFACE_RESOLUTION_BASE_SECONDS = { raw: 30, '5m': 300, '1h': 3600 } as const;
+/** Interface generations × sources × producer epochs one response may represent (each is its own series). */
+export const TOPOLOGY_INTERFACE_HISTORY_MAX_EPOCHS = 8;
+export const TOPOLOGY_INTERFACE_SOURCE_KINDS = ['snmp', 'unifi'] as const;
+const sourceKind = z.enum(TOPOLOGY_INTERFACE_SOURCE_KINDS);
+const coverage = z.enum(['complete', 'partial', 'none']);
+const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const reasons = (max: number) => z.array(topologyReasonSchema).max(max);
+const historyPoint = z.object({
+  at: time,
+  /** Duration-weighted mean over valid measured time; null = no valid measurement (see reasons). */
+  value: z.number().finite().nullable(),
+  min: z.number().finite().nullable(),
+  max: z.number().finite().nullable(),
+  validDurationMs: count,
+  sampleCount: count,
+  gapDurationMs: count,
+  reasons: reasons(16),
+}).strict();
 const historyGap = z.object({ from: time, to: time, reason: topologyReasonSchema }).strict();
+/**
+ * One represented identity epoch: an interface generation measured by one
+ * telemetry source under one producer epoch. A rate is never computed across
+ * two of them, so each is its own series (a generation change is a break).
+ */
+export const topologyInterfaceHistoryEpochSchema = z.object({
+  interfaceEpoch: key,
+  sourceId: z.uuid(),
+  sourceKind,
+  producerEpoch: key,
+  /** The interface generation is the interface's current one. */
+  current: z.boolean(),
+  /** `stopped`: the source's measurement authority was revoked; its rows are history only. */
+  sourceState: z.enum(['active', 'stopped']),
+  from: time,
+  to: time,
+}).strict();
 export const topologyInterfaceHistorySeriesSchema = z.object({
   name: seriesName,
   unit: z.enum(['bits_per_second', 'percent', 'per_second']),
-  resolution,
   interfaceEpoch: key,
-  sourceId: z.uuid().nullable(),
-  coverage: z.enum(['complete', 'partial', 'none']),
+  sourceId: z.uuid(),
+  sourceKind,
+  producerEpoch: key,
+  coverage,
   points: z.array(historyPoint).max(TOPOLOGY_INTERFACE_HISTORY_MAX_BUCKETS),
   gaps: z.array(historyGap).max(TOPOLOGY_INTERFACE_HISTORY_MAX_BUCKETS),
-  reasons: z.array(topologyReasonSchema).max(64),
+  reasons: reasons(64),
 }).strict().refine(series => series.unit === TOPOLOGY_INTERFACE_METRIC_UNITS[series.name], 'Unit does not match series');
+const epochKey = (value: { interfaceEpoch: string; sourceId: string; producerEpoch: string }) => JSON.stringify([value.interfaceEpoch, value.sourceId, value.producerEpoch]);
 export const topologyInterfaceHistoryResponseSchema = z.object({
   interfaceId: z.uuid(),
+  /** The interface's current generation. */
   interfaceEpoch: key,
-  from: time,
-  to: time,
   resolution,
-  series: z.array(topologyInterfaceHistorySeriesSchema).max(TOPOLOGY_INTERFACE_HISTORY_MAX_SERIES),
+  /** Server-selected, grid-aligned interval actually served. */
+  interval: z.object({ from: time, to: time, bucketSeconds: z.number().int().positive().max(TOPOLOGY_INTERFACE_RESOLUTION_RETENTION_DAYS['1h'] * 86_400) }).strict(),
+  series: z.array(topologyInterfaceHistorySeriesSchema).max(TOPOLOGY_INTERFACE_HISTORY_MAX_SERIES * TOPOLOGY_INTERFACE_HISTORY_MAX_EPOCHS),
+  epochs: z.array(topologyInterfaceHistoryEpochSchema).max(TOPOLOGY_INTERFACE_HISTORY_MAX_EPOCHS),
+  coverage,
+  reasons: reasons(64),
+  asOf: time,
+}).strict().superRefine((response, ctx) => {
+  const epochs = new Set(response.epochs.map(epochKey));
+  response.series.forEach((series, index) => {
+    if (!epochs.has(epochKey(series))) ctx.addIssue({ code: 'custom', path: ['series', index], message: 'Series epoch is not represented' });
+  });
+  if (new Set(response.series.map(series => series.name)).size > TOPOLOGY_INTERFACE_HISTORY_MAX_SERIES) {
+    ctx.addIssue({ code: 'custom', path: ['series'], message: 'Too many series names' });
+  }
+});
+
+// ---- Current interface measurement health (served by M3 Task 6) ----
+/**
+ * Fixed M3 interface thresholds. Errors/discards are per-second rates from one
+ * endpoint's latest continuous window; no percentage is claimed without packet
+ * denominators, and one endpoint's rate is never summed with its neighbour's.
+ */
+export const TOPOLOGY_INTERFACE_HEALTH_THRESHOLDS = { errorsPerSecond: 1, discardsPerSecond: 10 } as const;
+const measurementRate = z.object({ name: seriesName, unit: z.enum(['bits_per_second', 'percent', 'per_second']), value: z.number().finite().nullable(), reason: topologyReasonSchema.nullable() })
+  .strict().refine(rate => rate.unit === TOPOLOGY_INTERFACE_METRIC_UNITS[rate.name], 'Unit does not match series');
+export const topologyInterfaceMeasurementSchema = z.object({
+  interfaceId: z.uuid(),
+  interfaceEpoch: key,
+  /** The interface generation was retired; nothing current is claimed about it. */
+  retired: z.boolean(),
+  status: healthStatusSchema,
+  coverage: healthCoverageSchema,
+  freshness: freshnessSchema,
+  reasons: reasons(32),
+  adminStatus: z.enum(TOPOLOGY_INTERFACE_ADMIN_STATUSES).nullable(),
+  operStatus: z.enum(TOPOLOGY_INTERFACE_OPER_STATUSES).nullable(),
+  capacityBps: topologySequenceSchema.nullable(),
+  sourceId: z.uuid().nullable(),
+  sourceKind: sourceKind.nullable(),
+  observedAt: time.nullable(),
+  freshUntil: time.nullable(),
+  expectedIntervalSeconds: z.number().int().min(TOPOLOGY_INTERFACE_METRICS_INTERVAL_SECONDS.min).max(86_400).nullable(),
+  /** This endpoint's latest continuous window, or null when none is valid. */
+  rates: z.object({ from: time, to: time, values: z.array(measurementRate).max(TOPOLOGY_INTERFACE_METRIC_SERIES.length) }).strict().nullable(),
+}).strict();
+export const topologyLinkHealthResponseSchema = z.object({
+  siteId: z.uuid(),
+  relationshipId: z.uuid(),
+  graphRevision: topologyRevisionSchema,
+  healthRevision: topologyRevisionSchema,
+  health: graphRelationshipSchema.shape.health,
+  /** When the current assessment next changes without new evidence; revalidate by then. */
+  freshUntil: time.nullable(),
+  /** Whether port measurement may describe this relationship at all (never for membership or inferred edges). */
+  interfaceEvidence: z.object({ applies: z.boolean(), reason: topologyReasonSchema.nullable() }).strict(),
+  endpoints: z.object({ source: topologyInterfaceMeasurementSchema.nullable(), target: topologyInterfaceMeasurementSchema.nullable() }).strict(),
+  asOf: time,
 }).strict();

@@ -78,6 +78,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
       { name: 'get_ip_history', description: 'IP address history', category: 'Network & DNS' },
       { name: 'get_network_asset_reachability', description: 'Network asset reachability with source and age', category: 'Network & DNS' },
+      { name: 'get_interface_history', description: 'Bounded topology port history', category: 'Network & DNS' },
+      { name: 'get_link_health', description: 'Current topology link health per endpoint', category: 'Network & DNS' },
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
@@ -455,6 +457,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_network_changes: 'devices.read',
   get_ip_history: 'devices.read',
   get_network_asset_reachability: 'devices.read',
+  get_interface_history: 'topology.read',
+  get_link_health: 'topology.read',
   get_dns_security: 'devices.read',
   acknowledge_network_device: 'devices.write',
   configure_network_baseline: 'devices.write',

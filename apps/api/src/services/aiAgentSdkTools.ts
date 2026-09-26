@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -301,6 +301,10 @@ export const TOOL_TIERS = {
   list_network_assets: 1,
   get_network_asset: 1,
   get_network_asset_reachability: 1,
+  // M3 Task 6 (M3-D12) — thin bounded topology reads; tier and tool() both
+  // wired so they are callable (#2605).
+  get_interface_history: 1,
+  get_link_health: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -2671,6 +2675,31 @@ export function buildBreezeSdkTools(
         asset_id: uuid,
       },
       makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // M3 Task 6 (M3-D12) — bounded topology port history and link health.
+    tool(
+      'get_interface_history',
+      registryDescription('get_interface_history'),
+      {
+        site_id: uuid,
+        interface_id: uuid,
+        series: z.array(z.enum(TOPOLOGY_INTERFACE_METRIC_SERIES)).min(1).max(4),
+        from: z.string().datetime(),
+        to: z.string().datetime(),
+        resolution: z.enum(['auto', 'raw', '5m', '1h']).optional(),
+        max_buckets: z.number().int().min(1).max(120).optional(),
+      },
+      makeHandler('get_interface_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_link_health',
+      registryDescription('get_link_health'),
+      {
+        site_id: uuid,
+        relationship_id: uuid,
+      },
+      makeHandler('get_link_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

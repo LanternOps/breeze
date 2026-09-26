@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema, relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyViewSchema } from '@breeze/shared/validators/topology';
+import { topologyInterfaceHistoryResponseSchema, topologyLinkHealthResponseSchema } from '@breeze/shared/validators/topologyTelemetry';
+import type { TopologyInterfaceHistoryQuery } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({
@@ -58,4 +60,15 @@ export const topologyApi = {
     topologyRead(`${site(siteId)}/exclusions?${new URLSearchParams({ view, limit: '100', ...(cursor ? { cursor } : {}) })}`, topologyExclusionListSchema, signal),
   graph: (siteId: string, query: URLSearchParams, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/graph?${query}`, graphResponseSchema, signal),
   settings: (siteId: string, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/settings`, topologySettingsSchema, signal),
+  /** Bounded port history (M3 Task 6). A read never polls; the server picks the bucketing. */
+  interfaceHistory: (siteId: string, interfaceId: string, query: InterfaceHistoryParams, signal?: AbortSignal) =>
+    topologyRead(`${site(siteId)}/interfaces/${encodeURIComponent(interfaceId)}/history?${interfaceHistoryParams(query)}`, topologyInterfaceHistoryResponseSchema, signal),
+  /** Current link health with each endpoint port's own measurement (M3 Task 6). */
+  linkHealth: (siteId: string, relationshipId: string, signal?: AbortSignal) =>
+    topologyRead(`${site(siteId)}/relationships/${encodeURIComponent(relationshipId)}/health`, topologyLinkHealthResponseSchema, signal),
 };
+export type InterfaceHistoryParams = Pick<TopologyInterfaceHistoryQuery, 'series' | 'from' | 'to'> & Partial<Pick<TopologyInterfaceHistoryQuery, 'resolution' | 'maxBuckets'>>;
+export function interfaceHistoryParams(query: InterfaceHistoryParams): URLSearchParams {
+  return new URLSearchParams({ series: query.series.join(','), from: query.from, to: query.to,
+    ...(query.resolution ? { resolution: query.resolution } : {}), ...(query.maxBuckets ? { maxBuckets: String(query.maxBuckets) } : {}) });
+}

@@ -559,6 +559,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/diagnostics.ts': { gap: '#6778' },
   'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
   'topology/graphs.ts': { gap: '#6778' },
+  'topology/history.ts': { tools: ['get_interface_history', 'get_link_health'] },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },
   'topology/manual.ts': { gap: '#6778' },
   'topology/middleware.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

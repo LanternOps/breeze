@@ -198,8 +198,10 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_health',
   'get_huntress_incidents',
   'get_huntress_status',
+  'get_interface_history', // M3 Task 6 topology read
   'get_invite_funnel',
   'get_invoice',
+  'get_link_health', // M3 Task 6 topology read
   'get_log_trends',
   'get_network_asset', // A-W06 Tier-1 read
   // W01 (spec §4.4) — read-only reachability for a discovered network asset.
