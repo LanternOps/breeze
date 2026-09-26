@@ -943,7 +943,9 @@ describe('backup result persistence', () => {
       errorLog: string;
       errorCount: number;
     };
-    expect(setArg.status).toBe('completed');
+    // #5396: `completed` means every file was read. Any failure under the
+    // partial threshold is `completed_with_errors`, never a green `completed`.
+    expect(setArg.status).toBe('completed_with_errors');
     expect(setArg.errorCount).toBe(2);
     expect(setArg.errorLog).toContain('2 of 10 files failed to upload');
   });
@@ -1134,6 +1136,29 @@ describe('backup result persistence', () => {
     // recorded its own outcome — neither may ever be resurrected.
     expect(reconcileGuard).not.toContain('cancelled');
     expect(reconcileGuard).not.toContain('partial');
+    // #5396: the same half-written state exists for a completed_with_errors
+    // job, and must stay recoverable too.
+    expect(reconcileGuard).toContain('completed_with_errors');
+  });
+
+  // #5396: a reconcile result is synthesized from the manifest and carries no
+  // errorCount, so it cannot know whether the run had file failures. When it
+  // re-adopts a half-written completed_with_errors job it must not launder the
+  // job back to a clean `completed`.
+  it('does not launder a completed_with_errors job to completed on reconcile', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 },
+      source: 'reconcile',
+    });
+    const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof setArg.status).not.toBe('string');
+    expect(JSON.stringify(setArg.status)).toContain('completed_with_errors');
   });
 
   // #3006: a reconcile adoption can flip a job the AGENT genuinely failed (no
@@ -1747,6 +1772,113 @@ describe('partial backup terminal status (#3000)', () => {
 
     expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+// #5396: `completed` means every file was read. A run that produced a snapshot
+// but had one or more file failures (under the #3000 partial threshold) is
+// `completed_with_errors`. Derived server-side from errorCount so every agent
+// version already in the field — all of which report `completed` for such a
+// run — gets the honest status without an agent release.
+describe('completed_with_errors terminal status (#5396)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+  });
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  function setArgs() {
+    return vi.mocked(db.update).mock.results[0]?.value?.set;
+  }
+
+  async function run(agentStatus: string | undefined, errorCount: number | undefined) {
+    mockSuccessPath();
+    return applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus,
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 10047,
+        errorCount,
+        warning: errorCount ? '1 file(s) could not be read during collection: perm-denied.txt: permission denied' : undefined,
+      } as any,
+    });
+  }
+
+  it('downgrades an agent-reported completed run with one failed file (the #5396 field case)', async () => {
+    await run('completed', 1);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed_with_errors',
+      errorCount: 1,
+      errorLog: expect.stringContaining('perm-denied.txt'),
+    }));
+  });
+
+  it('downgrades a legacy agent result that carries no inner status', async () => {
+    await run(undefined, 3);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed_with_errors' }));
+  });
+
+  it('accepts completed_with_errors reported by the agent itself, without warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await run('completed_with_errors', 2);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed_with_errors' }));
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('keeps a clean run completed (errorCount 0 or absent)', async () => {
+    await run('completed', 0);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    vi.mocked(db.update).mockReset();
+    await run('completed', undefined);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('leaves partial as partial — over the threshold wins over "with errors"', async () => {
+    await run('partial', 21);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'partial' }));
+  });
+
+  it('still records the restorable snapshot for a completed_with_errors run', async () => {
+    const outcome = await run('completed', 1);
+    expect(db.insert).toHaveBeenCalled();
+    expect(outcome.snapshotDbId).toBe('snapshot-db-1');
+  });
+
+  it('keeps a failed result failed regardless of errorCount', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1' }]) as any);
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      agentStatus: 'completed',
+      result: { error: 'provider unreachable', errorCount: 4 } as any,
+    });
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 });
 

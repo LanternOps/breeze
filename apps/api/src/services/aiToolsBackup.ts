@@ -156,7 +156,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           },
           status: {
             type: 'string',
-            enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'partial'],
+            enum: ['pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial'],
             description: 'Filter jobs by status',
           },
           deviceId: { type: 'string', description: 'Filter by device UUID' },
@@ -405,6 +405,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         pending: sql<number>`count(*) filter (where ${backupJobs.status} = 'pending')`,
         running: sql<number>`count(*) filter (where ${backupJobs.status} = 'running')`,
         completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')`,
+        completedWithErrors: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed_with_errors')`,
         failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')`,
         cancelled: sql<number>`count(*) filter (where ${backupJobs.status} = 'cancelled')`,
         partial: sql<number>`count(*) filter (where ${backupJobs.status} = 'partial')`,

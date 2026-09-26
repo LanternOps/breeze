@@ -2,7 +2,7 @@ import { monitorConditionSchemas } from '@breeze/shared';
 import type { MonitorKindSpec } from './types';
 
 type C = {
-  check: 'no_successful_backup' | 'consecutive_failures';
+  check: 'no_successful_backup' | 'consecutive_failures' | 'completed_with_errors';
   maxAgeHours?: number;
   failureCount?: number;
 };

@@ -47,12 +47,17 @@ export const backupStatusEnum = pgEnum('backup_status', [
   'failed',
   'cancelled',
   'partial',
+  // #5396: a run that produced a restorable snapshot but had one or more file
+  // failures under the #3000 partial threshold. `completed` means every file
+  // was read. Added by 2026-10-31-120000-backup-status-completed-with-errors.sql.
+  'completed_with_errors',
 ]);
 
 /**
  * The two non-terminal `backup_status` values. A job in one of these is still
  * in-flight and may legitimately accept a progress update or a terminal result;
- * the other four (completed / failed / cancelled / partial) are terminal.
+ * the others (completed / completed_with_errors / failed / cancelled / partial)
+ * are terminal.
  *
  * Single source of truth for the "terminal vs in-flight" invariant over
  * backupStatusEnum — imported by both services/backupProgress.ts and
@@ -79,7 +84,16 @@ export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
  * (or attentionItems) to express "degraded"; do not express it by pretending
  * no backup exists.
  */
-export const RESTORABLE_BACKUP_JOB_STATUSES = ['completed', 'partial'] as const;
+export const RESTORABLE_BACKUP_JOB_STATUSES = ['completed', 'completed_with_errors', 'partial'] as const;
+
+/**
+ * The terminal `backup_status` values a run lands in when it produced a
+ * snapshot but at least one file failed (#5396): `completed_with_errors` under
+ * the 10% threshold, `partial` over it. Both are restorable (see above) but
+ * neither is a clean `completed`, so every surface that colours a run must
+ * render them as degraded, never green.
+ */
+export const DEGRADED_BACKUP_JOB_STATUSES = ['completed_with_errors', 'partial'] as const;
 
 /**
  * Marker the stale-backup-job reaper (jobs/staleCommandReaper.ts) stamps into a

@@ -129,8 +129,11 @@ function BackupDashboardInner() {
           // Partial runs count as attempts (denominator) but never as successes:
           // excluding them entirely made a device whose every run is partial
           // read as having no runs at all.
-          const total24h = (j.completed ?? 0) + (j.failed ?? 0) + (j.partial ?? 0);
-          const rate = total24h > 0 ? Math.round(((j.completed ?? 0) / total24h) * 100) : 0;
+          // completed_with_errors (#5396) IS a successful restore point (unlike
+          // partial), so it counts in both the denominator and the numerator.
+          const completedWithErrors24h = j.completedWithErrors ?? 0;
+          const total24h = (j.completed ?? 0) + completedWithErrors24h + (j.failed ?? 0) + (j.partial ?? 0);
+          const rate = total24h > 0 ? Math.round((((j.completed ?? 0) + completedWithErrors24h) / total24h) * 100) : 0;
           builtStats.push({ id: 'success_rate', name: 'Success Rate (24h)', value: `${rate}%`, changeType: rate >= 90 ? 'positive' : rate >= 70 ? 'neutral' : 'negative' });
         }
         if (overview.coverage) {
@@ -340,6 +343,10 @@ function BackupDashboardInner() {
     // Checked before completed/failed so a partial run is never laundered into
     // a green "success" nor collapsed into the unnamed generic warning bucket.
     if (normalized.includes('partial')) return 'partial';
+    // #5396: exact/substring check for completed_with_errors ahead of the
+    // completed/success check below, which would otherwise match on
+    // "complete" and launder it into a clean green "success".
+    if (normalized.includes('completed_with_errors')) return 'completed_with_errors';
     if (normalized.includes('success') || normalized.includes('complete')) return 'success';
     if (normalized.includes('run') || normalized.includes('progress')) return 'running';
     if (normalized.includes('fail') || normalized.includes('error')) return 'failed';

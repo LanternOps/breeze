@@ -167,7 +167,7 @@ export const jobListSchema = z.object({
   // passing one through to a pgEnum comparison makes Postgres raise
   // `invalid input value for enum backup_status` (a 500, not an empty list).
   status: z.enum([
-    'pending', 'running', 'completed', 'failed', 'cancelled', 'partial',
+    'pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial',
     'queued', 'canceled',
   ]).optional(),
   device: z.string().optional(),

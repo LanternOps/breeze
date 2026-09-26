@@ -72,10 +72,15 @@ import {
  * loop), which is precisely that half-written state; the write itself is an
  * upsert keyed on (jobId, snapshotId), so re-running is idempotent.
  *
+ * `completed_with_errors` (#5396) is a `completed` run that counted file
+ * failures; it can be half-written the same way and is adoptable on the same
+ * terms (persistence keeps its status rather than laundering it to
+ * `completed`).
+ *
  * `cancelled` and `partial` are deliberately absent: a user cancel is a
  * decision to respect, and a `partial` job already recorded its own outcome.
  */
-const ADOPTABLE_JOB_STATUSES = ['pending', 'running', 'failed', 'completed'] as const;
+const ADOPTABLE_JOB_STATUSES = ['pending', 'running', 'failed', 'completed', 'completed_with_errors'] as const;
 
 /**
  * Job statuses eligible for the WEAKER time-window matcher.

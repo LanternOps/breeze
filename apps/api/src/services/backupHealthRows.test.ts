@@ -77,7 +77,7 @@ const providerLeg = (o: Partial<ProviderLegRow> = {}): ProviderLegRow => ({
 
 describe('invertBackupJobStatus', () => {
   it('round-trips every backup_status value through mapBackupJobStatus', () => {
-    const jobStatuses: BackupJobStatus[] = ['pending', 'running', 'completed', 'failed', 'cancelled', 'partial'];
+    const jobStatuses: BackupJobStatus[] = ['pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial'];
     for (const jobStatus of jobStatuses) {
       const external = mapBackupJobStatus(jobStatus);
       expect(
@@ -107,6 +107,7 @@ describe('invertBackupJobStatus', () => {
   it('keeps partial (a degraded but restorable run) out of the failed bucket', () => {
     expect(invertBackupJobStatus('failed').jobStatuses).not.toContain('partial');
     expect(invertBackupJobStatus('completed_with_errors').jobStatuses).toContain('partial');
+    expect(invertBackupJobStatus('completed_with_errors').jobStatuses).toContain('completed_with_errors');
     expect(RESTORABLE_BACKUP_JOB_STATUSES).toContain('partial');
   });
 });

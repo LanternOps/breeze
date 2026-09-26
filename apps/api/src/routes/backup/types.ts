@@ -58,6 +58,7 @@ export type BackupJobStatus =
   | 'pending'
   | 'running'
   | 'completed'
+  | 'completed_with_errors'
   | 'failed'
   | 'cancelled'
   | 'partial';

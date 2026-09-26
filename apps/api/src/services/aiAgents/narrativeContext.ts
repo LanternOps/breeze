@@ -234,9 +234,11 @@ export interface NarrativeContext {
   backups: {
     available: boolean;
     ok: number;
+    /** #5396: `completed_with_errors` — restore points that missed files under the threshold. */
+    withErrors: number;
     failed: number;
     partial: number;
-    /** `ok + failed + partial` — jobs that reached an outcome this week. */
+    /** `ok + withErrors + failed + partial` — jobs that reached an outcome this week. */
     terminal: number;
     /** `null`, never 0, when nothing reached a terminal state. */
     successRatePct: number | null;
@@ -326,6 +328,7 @@ export interface RawPatchingInputs {
  *  a loader that reported its own total could disagree with its parts. */
 export interface RawBackupInputs {
   ok: number;
+  withErrors: number;
   failed: number;
   partial: number;
   devicesFailed: number;
@@ -525,14 +528,21 @@ export function assembleNarrativeContext(
   };
 
   if (!raw.backups) missing('backups');
-  const terminal = raw.backups ? raw.backups.ok + raw.backups.failed + raw.backups.partial : 0;
+  const terminal = raw.backups
+    ? raw.backups.ok + raw.backups.withErrors + raw.backups.failed + raw.backups.partial
+    : 0;
+  // #5396: a completed_with_errors run produced a restore point, so it is a
+  // success for the rate (as it was when it was still recorded `completed`);
+  // `withErrors` carries the fact that it missed files.
+  const succeeded = (raw.backups?.ok ?? 0) + (raw.backups?.withErrors ?? 0);
   const backups: NarrativeContext['backups'] = {
     available: raw.backups !== null,
     ok: raw.backups?.ok ?? 0,
+    withErrors: raw.backups?.withErrors ?? 0,
     failed: raw.backups?.failed ?? 0,
     partial: raw.backups?.partial ?? 0,
     terminal,
-    successRatePct: terminal > 0 ? Math.round(((raw.backups?.ok ?? 0) / terminal) * 1000) / 10 : null,
+    successRatePct: terminal > 0 ? Math.round((succeeded / terminal) * 1000) / 10 : null,
     devicesFailed: raw.backups?.devicesFailed ?? 0,
   };
 
@@ -1068,11 +1078,12 @@ async function loadPatching(orgId: string, window: Window): Promise<RawPatchingI
 async function loadBackups(orgId: string, window: Window): Promise<RawBackupInputs> {
   const { start, end } = window;
   const [row] = await query<{
-    ok: number | string | null; failed: number | string | null;
+    ok: number | string | null; with_errors: number | string | null; failed: number | string | null;
     partial: number | string | null; devices_failed: number | string | null;
   }>(sql`
     SELECT
       COUNT(*) FILTER (WHERE bj.status = 'completed')::int AS ok,
+      COUNT(*) FILTER (WHERE bj.status = 'completed_with_errors')::int AS with_errors,
       COUNT(*) FILTER (WHERE bj.status = 'failed')::int AS failed,
       COUNT(*) FILTER (WHERE bj.status = 'partial')::int AS partial,
       COUNT(DISTINCT bj.device_id) FILTER (WHERE bj.status = 'failed')::int AS devices_failed
@@ -1081,11 +1092,12 @@ async function loadBackups(orgId: string, window: Window): Promise<RawBackupInpu
     WHERE bj.org_id = ${orgId}
       AND d.org_id = ${orgId}
       AND d.is_ephemeral = false
-      AND bj.status IN ('completed', 'failed', 'partial')
+      AND bj.status IN ('completed', 'completed_with_errors', 'failed', 'partial')
       AND bj.started_at >= ${start} AND bj.started_at < ${end}
   `);
   return {
     ok: count(row?.ok),
+    withErrors: count(row?.with_errors),
     failed: count(row?.failed),
     partial: count(row?.partial),
     devicesFailed: count(row?.devices_failed),

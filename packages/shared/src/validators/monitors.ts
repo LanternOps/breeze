@@ -146,7 +146,9 @@ const leafConditionSchemas = {
     }),
   backup_continuity: z
     .object({
-      check: z.enum(['no_successful_backup', 'consecutive_failures']),
+      // completed_with_errors (#5396): newest terminal run had file failures
+      // under the partial threshold. Takes no extra fields.
+      check: z.enum(['no_successful_backup', 'consecutive_failures', 'completed_with_errors']),
       maxAgeHours: z.number().int().min(1).max(8760).optional(), // 'no_successful_backup' only
       failureCount: z.number().int().min(1).max(50).optional(), // 'consecutive_failures' only
     })

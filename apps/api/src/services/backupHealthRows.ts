@@ -23,7 +23,14 @@ import {
 import { getBackupProvider } from './backupProviders/registry';
 import { compareRowKeys } from './backupHealthCursor';
 
-export type BackupJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'partial';
+export type BackupJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed'
+  | 'cancelled'
+  | 'partial';
 
 /** What a customer is told in the portal when the connection's
  *  `show_provider_name_in_portal` toggle is off (spec D5). */
@@ -139,7 +146,8 @@ export function invertBackupJobStatus(
       return { jobStatuses: ['completed'], matchNoJobs: false };
     case 'completed_with_errors':
       // #3000: `partial` is a real, restorable, degraded run — never `failed`.
-      return { jobStatuses: ['partial'], matchNoJobs: false };
+      // #5396: so is `completed_with_errors` (file failures under the threshold).
+      return { jobStatuses: ['completed_with_errors', 'partial'], matchNoJobs: false };
     case 'failed':
       return { jobStatuses: ['failed'], matchNoJobs: false };
     case 'in_progress':

@@ -279,7 +279,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Aucune sauvegarde réussie",
-    "consecutive_failures": "Défaillances consécutives"
+    "consecutive_failures": "Défaillances consécutives",
+    "completed_with_errors": "Terminée avec des erreurs de fichiers"
   },
   "checkTypes": {
     "icmp_ping": "Ping ICMP",

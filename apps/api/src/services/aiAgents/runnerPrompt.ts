@@ -1002,6 +1002,7 @@ export function buildNarrativeTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('## Backups');
   lines.push(narrativeLine('backup jobs succeeded', backups?.ok ?? null, backupsMeasured));
   lines.push(narrativeLine('backup jobs failed', backups?.failed ?? null, backupsMeasured));
+  lines.push(narrativeLine('backup jobs completed with file errors', backups?.withErrors ?? null, backupsMeasured));
   lines.push(narrativeLine('backup jobs partial', backups?.partial ?? null, backupsMeasured));
   lines.push(narrativeLine('backup jobs that reached an outcome', backups?.terminal ?? null, backupsMeasured));
   // `null`, never 0, when nothing reached a terminal state — a rate over an

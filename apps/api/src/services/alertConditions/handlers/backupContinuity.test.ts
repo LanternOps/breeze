@@ -198,6 +198,80 @@ describe('backupContinuityHandler', () => {
     });
   });
 
+  // #5396: a run that produced a snapshot but had file failures under the
+  // partial threshold. It IS a restore point (counts as success for the age
+  // and streak checks), and it has its own check so an operator can choose to
+  // page on it.
+  describe('completed_with_errors (#5396)', () => {
+    it('counts a completed_with_errors run as a successful backup for no_successful_backup', async () => {
+      setJobs([
+        { status: 'completed_with_errors', startedAt: hoursAgo(2), completedAt: hoursAgo(2) },
+        { status: 'completed', startedAt: hoursAgo(50), completedAt: hoursAgo(50) },
+      ]);
+      const result = await backupContinuityHandler.evaluate(
+        { type: 'backup_continuity', check: 'no_successful_backup', maxAgeHours: 26 },
+        DEVICE_ID
+      );
+      expect(result.passed).toBe(false);
+      expect(result.actualValue).toBe(2);
+    });
+
+    it('lets a completed_with_errors run break a consecutive_failures streak', async () => {
+      setJobs([
+        { status: 'failed', startedAt: hoursAgo(1), completedAt: hoursAgo(1) },
+        { status: 'completed_with_errors', startedAt: hoursAgo(2), completedAt: hoursAgo(2) },
+        { status: 'failed', startedAt: hoursAgo(3), completedAt: hoursAgo(3) },
+      ]);
+      const result = await backupContinuityHandler.evaluate(
+        { type: 'backup_continuity', check: 'consecutive_failures', failureCount: 2 },
+        DEVICE_ID
+      );
+      expect(result.passed).toBe(false);
+      expect(result.actualValue).toBe(1);
+    });
+
+    it('fires the completed_with_errors check when the newest terminal run completed with errors', async () => {
+      setJobs([
+        { status: 'running', startedAt: hoursAgo(0), completedAt: null },
+        { status: 'completed_with_errors', startedAt: hoursAgo(2), completedAt: hoursAgo(2) },
+        { status: 'completed', startedAt: hoursAgo(26), completedAt: hoursAgo(26) },
+      ]);
+      const result = await backupContinuityHandler.evaluate(
+        { type: 'backup_continuity', check: 'completed_with_errors' },
+        DEVICE_ID
+      );
+      expect(result.passed).toBe(true);
+      expect(result.description).toMatch(/completed with file errors/i);
+    });
+
+    it('does NOT fire the completed_with_errors check once a newer run is clean', async () => {
+      setJobs([
+        { status: 'completed', startedAt: hoursAgo(1), completedAt: hoursAgo(1) },
+        { status: 'completed_with_errors', startedAt: hoursAgo(2), completedAt: hoursAgo(2) },
+      ]);
+      const result = await backupContinuityHandler.evaluate(
+        { type: 'backup_continuity', check: 'completed_with_errors' },
+        DEVICE_ID
+      );
+      expect(result.passed).toBe(false);
+    });
+
+    it('does NOT fire the completed_with_errors check for a failed or partial newest run (other checks own those)', async () => {
+      for (const status of ['failed', 'partial']) {
+        setJobs([{ status, startedAt: hoursAgo(1), completedAt: hoursAgo(1) }]);
+        const result = await backupContinuityHandler.evaluate(
+          { type: 'backup_continuity', check: 'completed_with_errors' },
+          DEVICE_ID
+        );
+        expect(result.passed).toBe(false);
+      }
+    });
+
+    it('accepts a completed_with_errors condition with no extra fields', () => {
+      expect(backupContinuityHandler.validate({ check: 'completed_with_errors' }, 'c')).toEqual([]);
+    });
+  });
+
   describe('validate', () => {
     it('rejects an invalid check', () => {
       const errors = backupContinuityHandler.validate({ check: 'bogus' }, 'c');

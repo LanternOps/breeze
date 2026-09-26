@@ -881,12 +881,24 @@ export async function applyBackupCommandResultToJob(params: {
   // Any inner status other than `partial` collapses to `completed` on purpose:
   // the agent's vocabulary includes `skipped`/`stopped`, which are not
   // backup_status enum values and would fail the UPDATE outright.
+  //
+  // #5396: `completed` means every file was read. A success run that still
+  // counted per-file failures (errorCount > 0) but stayed under the agent's
+  // partial threshold is `completed_with_errors`. Derived HERE from errorCount
+  // rather than trusted from the agent's inner status because every agent
+  // already in the field reports such a run as plain `completed` — the
+  // derivation makes the honest status reach the whole fleet without an agent
+  // release. An agent that reports `completed_with_errors` itself is accepted
+  // as-is. `partial` (over the threshold) takes precedence.
   const isSuccessResult = resultStatus === 'completed';
-  let terminalStatus: 'completed' | 'partial' | 'failed';
+  const hadFileFailures = typeof result.errorCount === 'number' && result.errorCount > 0;
+  let terminalStatus: 'completed' | 'completed_with_errors' | 'partial' | 'failed';
   if (!isSuccessResult) {
     terminalStatus = 'failed';
   } else if (agentStatus === 'partial') {
     terminalStatus = 'partial';
+  } else if (agentStatus === 'completed_with_errors') {
+    terminalStatus = 'completed_with_errors';
   } else {
     // Collapse LOUDLY. Silently greening an agent status we do not model is the
     // #3000 bug class itself — `skipped` (a run that protected zero files)
@@ -897,15 +909,23 @@ export async function applyBackupCommandResultToJob(params: {
     if (agentStatus && agentStatus !== 'completed') {
       const msg =
         `[BackupPersistence] Unrecognized agent terminal status "${agentStatus}" for job ${jobId} ` +
-        `(device ${deviceId}) recorded as 'completed' — the run may not be a good restore point.`;
+        `(device ${deviceId}) recorded as '${hadFileFailures ? 'completed_with_errors' : 'completed'}' — the run may not be a good restore point.`;
       console.warn(msg);
       captureException(new Error(msg));
     }
-    terminalStatus = 'completed';
+    terminalStatus = hadFileFailures ? 'completed_with_errors' : 'completed';
   }
 
   if (isSuccessResult) {
-    updateData.status = terminalStatus;
+    updateData.status =
+      source === 'reconcile' && terminalStatus === 'completed'
+        ? // #5396: a reconcile result is synthesized from the manifest and
+          // carries no errorCount, so it cannot tell a clean run from one with
+          // file failures. When it re-adopts a half-written completed_with_errors
+          // job (see the reconcile guard below), keep that status rather than
+          // laundering the run back to a clean `completed`.
+          sql`CASE WHEN ${backupJobs.status} = 'completed_with_errors' THEN 'completed_with_errors'::backup_status ELSE 'completed'::backup_status END`
+        : terminalStatus;
     updateData.fileCount = result.filesBackedUp ?? null;
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
@@ -1043,13 +1063,17 @@ export async function applyBackupCommandResultToJob(params: {
   // snapshot write is an upsert keyed on (jobId, snapshotId), so a repeat is a
   // no-op.
   //
+  // `completed_with_errors` (#5396) is a `completed` run that counted file
+  // failures, so it can be half-written in exactly the same way and is
+  // adoptable on the same terms.
+  //
   // `cancelled` and `partial` remain excluded under BOTH sources: a user cancel
   // is a deliberate decision, and a `partial` job already recorded its own
   // outcome. (backupStatusEnum is pending|running|completed|failed|cancelled|
-  // partial — all six are accounted for here.)
+  // partial|completed_with_errors — all seven are accounted for here.)
   const terminalJobGuard =
     source === 'reconcile'
-      ? inArray(backupJobs.status, ['failed', 'completed'])
+      ? inArray(backupJobs.status, ['failed', 'completed', 'completed_with_errors'])
       : and(
           eq(backupJobs.status, 'failed'),
           like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)

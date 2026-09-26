@@ -23,7 +23,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
   // Backup & DR tool modules
   query_backups: z.object({
     action: z.enum(['list_configs', 'list_jobs', 'list_policies']),
-    status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'partial']).optional(),
+    status: z.enum(['pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial']).optional(),
     deviceId: uuid.optional(),
     configId: uuid.optional(),
     limit: z.number().int().min(1).max(100).optional(),
