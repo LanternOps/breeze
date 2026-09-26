@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { relationshipKindSchema } from '@breeze/shared';
+import { relationshipKindSchema, type RelationshipKind } from '@breeze/shared';
 import { z } from 'zod';
 import { db } from '../../db';
-import { topologyManualNodes, topologyNodes, topologyNodeBindings, topologyRelationships, networkTopology, topologyLayout, topologyNodePositions, topologyLayouts } from '../../db/schema';
+import { topologyManualNodes, topologyNodes, topologyNodeBindings, topologyRelationships, topologyInterfaces, networkTopology, topologyLayout, topologyNodePositions, topologyLayouts } from '../../db/schema';
 import type { TopologyRequestContext } from './access';
 import { canonicalIdentityKey } from './identity';
 import { enqueueTopologyChange, type TopologyTransaction } from './legacyCapture';
@@ -119,34 +119,76 @@ async function legacyEndpoint(ctx: TopologyRequestContext, nodeId: string) {
   const asset = bindings.find(b => b.discoveredAssetId);
   return asset?.discoveredAssetId ? { type: 'discovered_asset', id: asset.discoveredAssetId } : null;
 }
+/** One asserted endpoint: a scoped node and, optionally, one of its current interface generations. */
+export type ManualEndpoint = { nodeId: string; interfaceId: string | null };
+const compareManualEndpoint = (a: ManualEndpoint, b: ManualEndpoint) => a.nodeId.localeCompare(b.nodeId) || (a.interfaceId ?? '').localeCompare(b.interfaceId ?? '');
+const manualTuple = (kind: RelationshipKind, source: ManualEndpoint, target: ManualEndpoint) =>
+  (kind === 'physical_link' ? [source, target].sort(compareManualEndpoint) : [source, target]) as [ManualEndpoint, ManualEndpoint];
+/**
+ * M2 D6 identity material of a v2-only manual assertion: the endpoint+port
+ * tuple (sorted for an undirected cable, oriented for every directed kind)
+ * plus a generation component. The generation is the site graph revision the
+ * assertion was created at, so a recreate after delete never collides with the
+ * retained tombstone's canonical key. The `manual-link-v1` namespace never
+ * equals a measured `physical-link-v1` key, and `-` (unknown port) never equals
+ * an interface UUID, so an unknown-port assertion stays distinct from a
+ * measured cable.
+ */
+export function manualRelationshipSourceKey(kind: RelationshipKind, source: ManualEndpoint, target: ManualEndpoint, generation: bigint): string {
+  const [a, b] = manualTuple(kind, source, target);
+  return `manual-link-v1:${a.nodeId}:${a.interfaceId ?? '-'}:${b.nodeId}:${b.interfaceId ?? '-'}:g${generation}`;
+}
+/** An interface is assertable only in this exact site, on the named endpoint,
+ * and as its current (unretired) generation. Anything else is not found. */
+async function activeInterface(ctx: TopologyRequestContext, interfaceId: string, ownerNodeId: string) {
+  const [row] = await db.select({ id: topologyInterfaces.id }).from(topologyInterfaces).where(and(scopedWrite(ctx.scope, topologyInterfaces),
+    eq(topologyInterfaces.id, interfaceId), eq(topologyInterfaces.ownerNodeId, ownerNodeId), isNull(topologyInterfaces.retiredAt))).for('share');
+  if (!row) throw missingTopologyEntity();
+}
+/** Active manual assertion of the same tuple (either orientation for a cable).
+ * Parallel cables on different ports are different tuples; `IS NOT DISTINCT
+ * FROM` makes two unknown-port assertions of one pair the same tuple. */
+async function activeSameTuple(ctx: TopologyRequestContext, kind: RelationshipKind, source: ManualEndpoint, target: ManualEndpoint) {
+  const r = topologyRelationships;
+  const tuple = (s: ManualEndpoint, t: ManualEndpoint) => and(eq(r.sourceNodeId, s.nodeId), eq(r.targetNodeId, t.nodeId),
+    sql`${r.sourceInterfaceId} IS NOT DISTINCT FROM ${s.interfaceId}::uuid`, sql`${r.targetInterfaceId} IS NOT DISTINCT FROM ${t.interfaceId}::uuid`);
+  const [duplicate] = await db.select({ id: r.id }).from(r).where(and(scopedWrite(ctx.scope, r), eq(r.kind, kind), eq(r.evidenceClass, 'manual'), isNull(r.deletedAt),
+    kind === 'physical_link' ? or(tuple(source, target), tuple(target, source)) : tuple(source, target))).limit(1);
+  return duplicate;
+}
 export async function createTopologyManualRelationship(ctx: TopologyRequestContext, input: ManualRelationshipInput): Promise<ManualWriteResult> {
   const value = parseWrite(createManualRelationshipSchema, input);
-  if (value.sourceInterfaceId || value.targetInterfaceId) throw new TopologyWriteError('capability_unavailable', 409, 'Interface binding is not available');
+  const source: ManualEndpoint = { nodeId: value.sourceNodeId, interfaceId: value.sourceInterfaceId ?? null };
+  const target: ManualEndpoint = { nodeId: value.targetNodeId, interfaceId: value.targetInterfaceId ?? null };
   return withTopologyWrite(ctx, true, async () => {
     await activeNode(ctx, value.sourceNodeId); await activeNode(ctx, value.targetNodeId);
-    const [duplicate] = await db.select({ id: topologyRelationships.id }).from(topologyRelationships).where(and(scopedWrite(ctx.scope, topologyRelationships),
-      eq(topologyRelationships.sourceNodeId, value.sourceNodeId), eq(topologyRelationships.targetNodeId, value.targetNodeId), eq(topologyRelationships.kind, value.kind),
-      eq(topologyRelationships.evidenceClass, 'manual'), isNull(topologyRelationships.deletedAt))).limit(1);
-    if (duplicate) throw new TopologyWriteError('topology_relationship_exists', 409, 'A manual relationship already connects these nodes');
-    const source = await legacyEndpoint(ctx, value.sourceNodeId); const target = await legacyEndpoint(ctx, value.targetNodeId);
+    if (source.interfaceId) await activeInterface(ctx, source.interfaceId, source.nodeId);
+    if (target.interfaceId) await activeInterface(ctx, target.interfaceId, target.nodeId);
+    if (await activeSameTuple(ctx, value.kind, source, target)) throw new TopologyWriteError('topology_relationship_exists', 409, 'A manual relationship already connects these endpoints');
+    const legacySource = await legacyEndpoint(ctx, value.sourceNodeId); const legacyTarget = await legacyEndpoint(ctx, value.targetNodeId);
+    // Only a port-less attachment between legacy endpoints is representable in
+    // network_topology; everything else is a v2-only assertion that survives rollback.
+    const legacyCompatible = value.kind === 'attachment' && !source.interfaceId && !target.interfaceId && legacySource && legacyTarget;
     let legacyId: string | null = null;
-    if (value.kind === 'attachment' && source && target) {
-      await lockLegacyTopologySourceRows(ctx.scope, 'network_topology', and(eq(networkTopology.sourceType, source.type), eq(networkTopology.sourceId, source.id),
-        eq(networkTopology.targetType, target.type), eq(networkTopology.targetId, target.id), eq(networkTopology.method, 'manual'))!);
-      const [legacy] = await db.insert(networkTopology).values({ ...ctx.scope, sourceType: source.type, sourceId: source.id, targetType: target.type, targetId: target.id, method: 'manual', confidence: 'asserted', connectionType: 'manual', createdBy: ctx.auth.user.id }).onConflictDoNothing().returning();
-      if (!legacy) throw new TopologyWriteError('topology_relationship_exists', 409, 'A manual relationship already connects these nodes');
+    if (legacyCompatible) {
+      await lockLegacyTopologySourceRows(ctx.scope, 'network_topology', and(eq(networkTopology.sourceType, legacySource.type), eq(networkTopology.sourceId, legacySource.id),
+        eq(networkTopology.targetType, legacyTarget.type), eq(networkTopology.targetId, legacyTarget.id), eq(networkTopology.method, 'manual'))!);
+      const [legacy] = await db.insert(networkTopology).values({ ...ctx.scope, sourceType: legacySource.type, sourceId: legacySource.id, targetType: legacyTarget.type, targetId: legacyTarget.id, method: 'manual', confidence: 'asserted', connectionType: 'manual', createdBy: ctx.auth.user.id }).onConflictDoNothing().returning();
+      if (!legacy) throw new TopologyWriteError('topology_relationship_exists', 409, 'A manual relationship already connects these endpoints');
       legacyId = legacy.id;
     }
-    const sourceKey = legacyId ? `legacy:network_topology:${legacyId}` : `manual:${randomUUID()}`;
+    const graphRevision = await bumpStructuralRevision(ctx.scope);
+    const sourceKey = legacyId ? `legacy:network_topology:${legacyId}` : manualRelationshipSourceKey(value.kind, source, target, graphRevision);
     const canonicalKey = canonicalIdentityKey(ctx.scope, value.kind, sourceKey);
     const id = stableLegacyId(canonicalKey);
     if (!legacyId) await enqueueTopologyChange(db as unknown as TopologyTransaction, ctx.scope, { version: 1, type: 'relationship.upsert', sourceTable: 'v2_intents', sourceId: id, oldIdentity: null, newIdentity: { ...ctx.scope, sourceId: id }, idempotencyKey: `manual:${id}:create`, data: { sourceType: 'canonical', sourceId: value.sourceNodeId, targetType: 'canonical', targetId: value.targetNodeId, connectionType: value.kind, interfaceName: null, vlan: null, bandwidth: null, method: 'manual', createdBy: ctx.auth.user.id } });
     const fence = (await readWriteState(ctx.scope)).dirtyRevision;
-    const graphRevision = await bumpStructuralRevision(ctx.scope);
+    // Evidence is always manual/asserted: the strict schema admits no client evidence, confidence or directness.
     await db.insert(topologyRelationships).values({ ...ctx.scope, id, canonicalKey, identityMaterial: { version: 1, kind: value.kind, sourceKey }, kind: value.kind, sourceNodeId: value.sourceNodeId, targetNodeId: value.targetNodeId,
+      sourceInterfaceId: source.interfaceId, targetInterfaceId: target.interfaceId,
       confidence: 'asserted', evidenceClass: 'manual', directness: 'unknown', attributes: { method: 'manual', createdBy: ctx.auth.user.id, ...(value.label ? { label: value.label } : {}), ...(value.notes !== undefined ? { notes: value.notes } : {}) },
       revision: 1n, graphRevision, legacySourceType: legacyId ? 'network_topology' : null, legacySourceId: legacyId, legacySourceRevision: legacyId ? fence : null });
-    await auditTopologyWrite(ctx, 'relationship.created', id, { legacyId, revision: '1', kind: value.kind });
+    await auditTopologyWrite(ctx, 'relationship.created', id, { legacyId, revision: '1', kind: value.kind, sourceInterfaceId: source.interfaceId, targetInterfaceId: target.interfaceId });
     return { id, legacyId, revision: '1', graphRevision: graphRevision.toString() };
   });
 }
