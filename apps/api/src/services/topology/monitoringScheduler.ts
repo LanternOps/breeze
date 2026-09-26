@@ -122,7 +122,8 @@ type ClaimOutcome =
   | { kind: 'stale' }
   | { kind: 'disarm'; reason: string };
 
-async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow, now: Date, deps: TopologySchedulerDeps): Promise<ClaimOutcome> {
+/** `requesterPermissionVersion`: witnessed by the live re-derivation BEFORE the claim transaction opened (T4 — no Redis under the policy lock). */
+async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow, now: Date, deps: TopologySchedulerDeps & { requesterPermissionVersion: string }): Promise<ClaimOutcome> {
   const [row] = await db.select().from(topologyMonitoringPolicies)
     .where(and(eq(topologyMonitoringPolicies.id, snapshot.id), eq(topologyMonitoringPolicies.orgId, ctx.scope.orgId), eq(topologyMonitoringPolicies.siteId, ctx.scope.siteId)))
     .for('update');
@@ -185,6 +186,7 @@ async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow,
       }, occurrenceKey, {
         repository,
         scheduledOccurrence: { policyId: row.id, policyRevision, contextKey: context.contextKey, family: context.family, scheduledFor: slot, occurrenceKey, continuityKey },
+        requesterPermissionVersion: deps.requesterPermissionVersion,
       });
       scheduled++;
     } catch (error) {
@@ -229,7 +231,7 @@ export async function dispatchDueTopologyPolicies(deps: TopologySchedulerDeps = 
   for (const policy of await duePolicies(now, deps.limit ?? 50, deps.perSite ?? 2)) {
     const scope = { orgId: policy.orgId, siteId: policy.siteId };
     const outcome = await withTopologyArmAuthority(policy.authorityActor, scope, ['diagnostics'],
-      (ctx) => withDbTransaction(() => claimPolicySlot(ctx, policy, now, deps)), deps.authority);
+      (ctx, live) => withDbTransaction(() => claimPolicySlot(ctx, policy, now, { ...deps, requesterPermissionVersion: live.permissionVersion })), deps.authority);
     const disarmReason = !outcome.ok
       ? (TRANSIENT_DENIALS.has(outcome.reason) ? null : `authority_${outcome.reason}`)
       : outcome.value.kind === 'disarm' ? outcome.value.reason : null;
