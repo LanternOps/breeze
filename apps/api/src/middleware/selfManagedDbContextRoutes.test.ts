@@ -191,11 +191,23 @@ describe('isSelfManagedDbContextRoute', () => {
     // contexts; it must own its context so that probe isn't inside a held tx.
     ['POST', '/api/v1/tickets/mailbox/connect/gmail'],
     ['POST', '/api/v1/tickets/mailbox/connect/gmail/'],
+    // #6597 — manual backup runs create backup_jobs rows and enqueue their
+    // dispatch. Under the ambient request transaction the backup worker read
+    // the row before this request committed, could not see it, and the row
+    // was stranded `pending` until the stale reaper failed it.
+    ['POST', '/api/v1/backup/jobs/run/device-1'],
+    ['POST', '/api/v1/backup/jobs/run/device-1/'],
+    ['POST', '/api/v1/backup/jobs/run-all'],
+    ['POST', '/api/v1/backup/jobs/run-all/'],
+    ['post', '/api/v1/backup/jobs/run-all'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
     ['GET', '/api/v1/configuration-policies/policy-1/patch-job', 'wrong method (only POST opts out)'],
     ['POST', '/api/v1/configuration-policies/policy-1/patch-settings', 'sibling route keeps the ambient tx'],
+    ['GET', '/api/v1/backup/jobs/run-all/preview', 'read-only preview keeps the ambient tx'],
+    ['POST', '/api/v1/backup/jobs/job-1/cancel', 'cancel enqueues nothing'],
+    ['POST', '/api/v1/backup/jobs/run/device-1/extra', 'deeper path is not the run route'],
     // #6593 — the Microsoft mailbox /connect builds a consent URL with no
     // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
     // (which probes Google at connect time) opts out.

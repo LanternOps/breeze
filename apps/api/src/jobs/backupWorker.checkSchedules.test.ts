@@ -3,9 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // backupWorker uses `import * as dbModule from '../db'` then `const { db } = dbModule`,
 // so the mock must expose every export the module touches at load time.
-const { selectDistinctMock, selectMock } = vi.hoisted(() => ({
+const { selectDistinctMock, selectMock, updateSetMock, systemContexts } = vi.hoisted(() => ({
   selectDistinctMock: vi.fn(),
   selectMock: vi.fn(),
+  updateSetMock: vi.fn(),
+  // #6597: models withSystemDbAccessContext as a transaction that COMMITS when
+  // its callback resolves (a nested call joins the outer one, like the real
+  // helper). `stack` is the open top-level contexts, `committed` the finished.
+  systemContexts: { seq: 0, stack: [] as number[], committed: new Set<number>() },
 }));
 
 function makeChain(result: unknown) {
@@ -22,9 +27,25 @@ vi.mock('../db', () => ({
   db: {
     selectDistinct: (...args: unknown[]) => selectDistinctMock(...(args as [])),
     select: (...args: unknown[]) => selectMock(...(args as [])),
+    update: () => ({
+      set: (values: unknown) => {
+        updateSetMock(values);
+        return { where: () => Promise.resolve([]) };
+      },
+    }),
   },
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    if (systemContexts.stack.length > 0) return fn();
+    const id = ++systemContexts.seq;
+    systemContexts.stack.push(id);
+    try {
+      return await fn();
+    } finally {
+      systemContexts.stack.pop();
+      systemContexts.committed.add(id);
+    }
+  }),
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, partnerId: null },
 }));
 
@@ -176,6 +197,81 @@ describe('processCheckSchedules — backup profile fan-out', () => {
       'system_image',
     ]);
     expect(result).toEqual({ enqueued: 2 });
+  });
+
+  // #6597 — the dispatch worker reads the job row on its own connection. A row
+  // created inside a still-open transaction is invisible to it: the worker then
+  // resolved the job as a pathless file backup, "failed" a row it could not
+  // see, and the committed row sat `pending` until the stale reaper failed it
+  // with "Backup dispatch never completed". The whole sweep used to run in ONE
+  // system transaction, so every scheduled job was enqueued before it existed.
+  it('commits each scheduled job row before enqueueing its dispatch (#6597)', async () => {
+    systemContexts.seq = 0;
+    systemContexts.stack.length = 0;
+    systemContexts.committed.clear();
+    const createdIn = new Map<string, number | undefined>();
+    const committedAtEnqueue = new Map<string, boolean>();
+    let n = 0;
+    createScheduledBackupJobIfAbsentMock.mockImplementation(async () => {
+      const id = `job-${++n}`;
+      createdIn.set(id, systemContexts.stack.at(-1));
+      return { created: true, job: { id, configId: CONFIG_ID } };
+    });
+    enqueueBackupDispatchMock.mockImplementation(async (jobId: string) => {
+      const ctx = createdIn.get(jobId);
+      committedAtEnqueue.set(jobId, ctx !== undefined && systemContexts.committed.has(ctx));
+    });
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      {
+        deviceId: DEVICE_ID,
+        featureLinkId: LINK_ID,
+        configId: CONFIG_ID,
+        settings: { schedule: SCHEDULE, backupProfileId: PROFILE_ID, backupMode: 'file' },
+        selectionSpecs: [
+          { backupMode: 'file', targets: { paths: ['C:\\data'], excludes: [] } },
+          { backupMode: 'system_image', targets: { includeSystemState: true } },
+        ],
+        resolvedTimezone: 'UTC',
+      },
+    ]);
+
+    // Called with NO ambient context, exactly as the worker now calls it: the
+    // sweep owns its contexts instead of running inside one blanket one.
+    const result = await __testOnly.processCheckSchedules();
+
+    expect(result).toEqual({ enqueued: 2 });
+    expect(createdIn.size).toBe(2);
+    for (const [jobId, ctx] of createdIn) {
+      expect(ctx, `${jobId} was created outside any DB context`).toBeDefined();
+      expect(committedAtEnqueue.get(jobId), `${jobId} was enqueued before its row committed`).toBe(true);
+    }
+  });
+
+  it('fails a committed scheduled job whose dispatch cannot be enqueued (#6597)', async () => {
+    enqueueBackupDispatchMock.mockRejectedValueOnce(new Error('Redis unavailable'));
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      {
+        deviceId: DEVICE_ID,
+        featureLinkId: LINK_ID,
+        configId: CONFIG_ID,
+        settings: { schedule: SCHEDULE, backupProfileId: null, backupMode: 'file' },
+        selectionSpecs: null,
+        resolvedTimezone: 'UTC',
+      },
+    ]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await __testOnly.processCheckSchedules();
+
+    expect(result).toEqual({ enqueued: 0 });
+    // The row committed before the enqueue was attempted, so it must be
+    // settled here — otherwise it waits an hour for the stale reaper.
+    expect(updateSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorLog: expect.stringContaining('Redis unavailable') }),
+    );
+    errorSpy.mockRestore();
   });
 });
 
