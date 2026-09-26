@@ -8,17 +8,19 @@ import {
   EPISODE_METRIC_FAMILIES,
   EPISODE_RECURRENCE_DAYS,
   EPISODE_SNOOZE_DAYS,
+  EPISODE_MIN_BUCKETS,
   episodeKeyFor,
   parseEpisodeEnvInt,
 } from './metricAnomalyEpisodeKeys';
 
-// Spec §4.2, verbatim.
+// Spec §4.2, amended 2026-09-26: ram_used_mb / disk_used_gb join the ram /
+// disk families — the growth detector emits both views of the same growth.
 const TABLE = [
   ['device_metrics', 'cpu_percent', 'cpu', 'cpu'],
   ['device_metrics', 'ram_percent', 'ram', 'ramMb'],
-  ['device_metrics', 'ram_used_mb', 'ram_used', 'ramMb'],
+  ['device_metrics', 'ram_used_mb', 'ram', 'ramMb'],
   ['device_metrics', 'disk_percent', 'disk', null],
-  ['device_metrics', 'disk_used_gb', 'disk_used', null],
+  ['device_metrics', 'disk_used_gb', 'disk', null],
   ['device_metrics', 'disk_read_bps', 'disk_read', 'diskBps'],
   ['device_metrics', 'disk_write_bps', 'disk_write', 'diskBps'],
   ['device_metrics', 'bandwidth_in_bps', 'net_in', 'netBps'],
@@ -56,14 +58,19 @@ describe('episodeKeyFor (spec §4.2)', () => {
     }
   });
 
-  it('collapses only the process cpu and ram pairs', () => {
+  it('collapses the process cpu/ram pairs and the device ram/disk percent+absolute pairs', () => {
     const namesByFamily = new Map<string, string[]>();
     for (const [sourceTable, metricName, family] of TABLE) {
       const key = `${sourceTable}:${family}`;
       namesByFamily.set(key, [...(namesByFamily.get(key) ?? []), metricName]);
     }
     const collapsed = [...namesByFamily.entries()].filter(([, names]) => names.length > 1).map(([key]) => key).sort();
-    expect(collapsed).toEqual(['device_process_samples:process_cpu', 'device_process_samples:process_ram']);
+    expect(collapsed).toEqual([
+      'device_metrics:disk',
+      'device_metrics:ram',
+      'device_process_samples:process_cpu',
+      'device_process_samples:process_ram',
+    ]);
   });
 
   it('keeps source_table in the key so device and process series never merge', () => {
@@ -102,6 +109,7 @@ describe('episode constants (spec §5)', () => {
     expect(EPISODE_RECURRENCE_DAYS).toBe(7);
     expect(EPISODE_SNOOZE_DAYS).toBe(7);
     expect(EPISODE_ASSEMBLY_LOOKBACK_HOURS).toBe(24);
+    expect(EPISODE_MIN_BUCKETS).toBe(2);
     expect(EPISODE_BUCKET_SECONDS).toBe(300);
   });
 

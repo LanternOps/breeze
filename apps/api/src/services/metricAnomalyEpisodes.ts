@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, isNull, max, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, max, or, sql, type SQL } from 'drizzle-orm';
 import type { AttributionDimension } from '@breeze/shared';
 
 import { db } from '../db';
@@ -10,6 +10,7 @@ import {
   EPISODE_CLEAN_BUCKETS,
   EPISODE_EXPIRE_HOURS,
   EPISODE_GAP_MINUTES,
+  EPISODE_MIN_BUCKETS,
   EPISODE_RECURRENCE_DAYS,
 } from './metricAnomalyEpisodeKeys';
 import {
@@ -593,6 +594,25 @@ export async function loadEpisodeAssemblyInputs(
 }
 
 /**
+ * Persistence gate: rows of a settled island shorter than EPISODE_MIN_BUCKETS
+ * close `cleared` with no episode. `cleared` is never a human label, so the
+ * evaluation excludes them like any auto-closed member. Guarded on still
+ * unassigned + open, so a row a concurrent path already took is left alone.
+ */
+async function closeTransientRows(orgId: string, ids: readonly string[], now: Date): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(metricAnomalies)
+    .set({ status: 'cleared', resolvedAt: now, updatedAt: now })
+    .where(and(
+      eq(metricAnomalies.orgId, orgId),
+      inArray(metricAnomalies.id, [...ids]),
+      isNull(metricAnomalies.episodeId),
+      eq(metricAnomalies.status, 'open'),
+    ));
+}
+
+/**
  * Write side of the `episodes` stage, in a fixed order: lock the live anchors
  * (A1) -> attach to them -> recompute them -> close superseded ones (their
  * last_seen_at is now current) -> insert new episodes -> attach their members
@@ -617,6 +637,7 @@ export async function applyEpisodeAssemblyPlan(
   const anchorPeakMoved = new Set(await recomputeEpisodeAggregates(orgId, anchorIds, nowIso, 'live'));
 
   const superseded = await closeSupersededEpisodes(orgId, plan.supersedes, nowIso);
+  await closeTransientRows(orgId, plan.transients, now);
 
   await insertPlannedEpisodes(orgId, plan.creates, nowIso);
   await attachMembers(
@@ -657,7 +678,14 @@ export async function assembleMetricAnomalyEpisodes(range: MetricAnomalyRange): 
   const now = new Date();
   const inputs = await loadEpisodeAssemblyInputs(range.orgId, now);
   if (inputs.rows.length === 0) return [];
-  const plan = planEpisodeAssembly({ ...inputs, gapMinutes: EPISODE_GAP_MINUTES });
+  const plan = planEpisodeAssembly({
+    ...inputs,
+    gapMinutes: EPISODE_GAP_MINUTES,
+    minBuckets: EPISODE_MIN_BUCKETS,
+    // An island is settled once the bucket that could still join it lies
+    // inside this run's completed range (same bound as episode-resolve, A4).
+    settledBefore: range.to,
+  });
   return applyEpisodeAssemblyPlan(range.orgId, plan, now);
 }
 
@@ -813,6 +841,19 @@ export async function closeEpisodesForDisabledDetection(orgId: string, now: Date
       FROM closed c
       WHERE ma.episode_id = c.id
         AND ma.org_id = ${orgId}
+        AND ma.status = 'open'
+      RETURNING ma.id
+    ),
+    -- Rows still pending on the persistence gate would otherwise stay open
+    -- with no episode: assembly stops with the flag, and its 24 h lookback
+    -- never reaches them again.
+    cleared_pending AS (
+      UPDATE metric_anomalies ma
+      SET status = 'cleared',
+          resolved_at = ${nowIso}::timestamp,
+          updated_at = ${nowIso}::timestamp
+      WHERE ma.org_id = ${orgId}
+        AND ma.episode_id IS NULL
         AND ma.status = 'open'
       RETURNING ma.id
     )

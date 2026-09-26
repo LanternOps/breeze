@@ -145,6 +145,7 @@ describe('silent-failure guards (PR #6708 review)', () => {
     await applyEpisodeAssemblyPlan(ORG, {
       anchorAttaches: [],
       supersedes: [],
+      transients: [],
       creates: [{
         id: 'new-1', deviceId: 'dev-1', episodeKey: 'device_metrics:spike:cpu', sourceTable: 'device_metrics',
         anomalyType: 'spike', metricFamily: 'cpu', attributionDimension: 'cpu', metricNames: ['cpu_percent'],
