@@ -1,7 +1,7 @@
 ---
 status: draft (quorum: Codex gpt-6-astra xhigh, 2026-09-26, AGREE WITH CHANGES — all 6 disagreements adopted)
 date: 2026-09-26
-tracking_issue: TBD (registered after the plan is written)
+tracking_issue: LanternOps/breeze#7140
 related: "#7118 (origin bug), PR #7124 (interim matcher hotfix), #6754 (AI full control), #4192 (graduation evidence), #3828 (fix-held watch)"
 ---
 
