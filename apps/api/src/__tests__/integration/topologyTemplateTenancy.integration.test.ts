@@ -57,7 +57,10 @@ describe('topology template tenancy',()=>{
   const f=await fixture();
   await scoped(f.a.orgId,async()=>{
    await db.execute(sql`INSERT INTO topology_site_template_bindings(org_id,site_id,partner_version_id,effective_digest,status) VALUES(${f.a.orgId}::uuid,${f.a.siteId}::uuid,${f.versionId}::uuid,${'1'.repeat(64)},'applied')`);
-   await db.execute(sql`INSERT INTO topology_monitoring_policies(org_id,site_id,key,definition,partner_version_id,configuration_digest,enabled,authority_digest) VALUES(${f.a.orgId}::uuid,${f.a.siteId}::uuid,'p','{}',${f.versionId}::uuid,${'1'.repeat(64)},true,${'2'.repeat(64)})`);
+   // An ARMED policy carries its complete M3 authority (topology_monitoring_policies_armed_chk).
+   await db.execute(sql`INSERT INTO topology_monitoring_policies(org_id,site_id,key,definition,partner_version_id,configuration_digest,enabled,authority_digest,
+     authority_actor,authority_permission_version,armed_at,requester_id,routing_contexts)
+     VALUES(${f.a.orgId}::uuid,${f.a.siteId}::uuid,'p','{}',${f.versionId}::uuid,${'1'.repeat(64)},true,${'2'.repeat(64)},'{}'::jsonb,'v',now(),gen_random_uuid(),'[{}]'::jsonb)`);
   });
   await withSystemDbAccessContext(()=>db.execute(sql`DELETE FROM topology_config_template_versions WHERE id=${f.versionId}::uuid`));
   await scoped(f.a.orgId,async()=>{
