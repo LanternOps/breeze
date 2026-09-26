@@ -8,7 +8,7 @@ import { projectTopology } from './projectors';
 import { isPhysicalTopologySection, outcomeHasPositives, type NormalizedTopologySnapshot } from './collectionTypes';
 import { topologyPositiveKeys } from './collectionFactKeys';
 import { emptyProjection, type CollectionPublication, type CollectionEvent, type SupportPublication } from './reconciliationTypes';
-import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, physicalChassisClaimsOf, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
+import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, physicalChassisClaimsOf, pruneRowRelationships, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
 import { unboundPhysicalNode } from './physicalProjector';
 import { physicalTargetSourceKey } from './physicalIdentity';
 
@@ -117,6 +117,11 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
       }
     } else for(const row of delta.observations){result.observations.push(row);const key=String(row.attributes.rowKey);rowRelationships[key]=[...new Set([...(rowRelationships[key]??[]),row.relationshipId!])];}
     for(const row of delta.support){const key=`${source.id}:${row.relationshipId}`,old=support.get(key);support.set(key,{...row,firstPositiveAt:old?.firstPositiveAt??row.firstPositiveAt});changedSupport.add(key);}
+    // Item 8: drop mappings no row can withdraw or revive any more (never live support, never a pending miss).
+    const knownKeys=source.currentBaseline._knownKeys;
+    if(physicalSection&&Array.isArray(knownKeys)){const absence=readTopologyAbsence(source.pendingMisses);
+      nextRows=pruneRowRelationships({rows:nextRows,source,knownKeys:knownKeys as string[],present:topologyPositiveKeys(snapshot.section),
+        pendingKeys:[...absence.active,...absence.transitions].flatMap(group=>group.rowKeys),support:id=>support.get(`${source.id}:${id}`)});}
     Object.assign(baseline,{...snapshot,_rowRelationships:nextRows});
     // A changed UniFi binding set can retarget attachments of OTHER sources (D15.2).
     if(unifiBindingSection){refreshUnifiBindings();identityTouched=true;}

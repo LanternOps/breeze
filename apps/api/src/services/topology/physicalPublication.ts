@@ -76,6 +76,32 @@ export function replacePresentRows(rowRelationships: Record<string, string[]>, p
   return { next, released: [...new Set(before)].filter(id => !mapped.has(id)) };
 }
 
+/**
+ * Bounded row mappings (M2 Task 6b item 8). A mapping is only needed while its
+ * row can still withdraw or revive support: the key is present, still known to
+ * ingest (`_knownKeys`, so a later miss can name it), inside a pending miss
+ * streak/transition (second-miss semantics), or mapped to this source's support
+ * that is active or archived-but-revivable (same epoch and digest as the source,
+ * i.e. a confirm of the retained snapshot can revive it). Anything else — a key
+ * ingest pruned whose support is withdrawn, archived under another snapshot, or
+ * gone — can never be touched again and is dropped, so partial-only physical
+ * sources do not grow `_rowRelationships` toward the capacity check forever.
+ */
+export function pruneRowRelationships(input: { rows: Record<string, string[]>; source: { id: string; producerEpoch: string; contentDigest: string | null };
+  knownKeys: string[]; present: string[]; pendingKeys: string[]; support: (relationshipId: string) => SupportPublication | undefined }): Record<string, string[]> {
+  const keep = new Set([...input.knownKeys, ...input.present, ...input.pendingKeys]);
+  const live = (id: string) => {
+    const row = input.support(id);
+    if (!row) return false;
+    return row.lifecycle === 'active' || (row.lifecycle === 'archived' && row.producerEpoch === input.source.producerEpoch && row.contentDigest === input.source.contentDigest);
+  };
+  const drop = Object.entries(input.rows).filter(([key, ids]) => !keep.has(key) && !ids.some(live)).map(([key]) => key);
+  if (!drop.length) return input.rows;
+  const next = { ...input.rows };
+  for (const key of drop) delete next[key];
+  return next;
+}
+
 const RANK = { active: 2, archived: 1, withdrawn: 0 } as const;
 /** Destination collision: one source supports both. Keep the more alive, newer row;
  * never renew freshness or revive — timestamps are the sources' own. */
