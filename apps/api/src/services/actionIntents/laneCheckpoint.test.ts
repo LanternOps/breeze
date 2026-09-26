@@ -36,13 +36,14 @@ describe('ensureLaneCheckpointBeforeRelease', () => {
     expect(mockCheckpoint).not.toHaveBeenCalled();
   });
 
-  it('takes one against the single target device when the evidence says it was required, inside its OWN system context', async () => {
+  it('takes one against the single target device when the evidence says it was required, holding NO context around it', async () => {
     contextCalls.system = 0;
     await expect(ensureLaneCheckpointBeforeRelease(lane(true))).resolves.toEqual({ ok: true, checkpointRef: '42' });
     expect(mockCheckpoint).toHaveBeenCalledWith('dev-1');
-    // Both release callers reach this between DB contexts; without a scope
-    // of its own the device read would answer "not found" under RLS.
-    expect(contextCalls.system).toBe(1);
+    // #7103 — ensureRestoreCheckpoint opens its own short system contexts. A
+    // context opened here would hold the command's rows uncommitted across the
+    // send and the whole poll.
+    expect(contextCalls.system).toBe(0);
   });
 
   it('refuses when the checkpoint cannot be taken, carrying the specific reason', async () => {
