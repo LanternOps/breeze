@@ -70,10 +70,16 @@ async function bindAssetToNode(orgId: string, siteId: string, assetId: string) {
 
 async function insertPolicy(orgId: string, siteId: string, key: string, opts: { enabled: boolean; subjectNodeId?: string }) {
   const id = crypto.randomUUID();
-  // topology_monitoring_policies_authority_chk: an enabled policy must carry a digest.
-  const digest = opts.enabled ? '0'.repeat(64) : null;
-  await scoped(orgId, () => db.execute(sql`INSERT INTO topology_monitoring_policies (id, org_id, site_id, key, enabled, authority_digest, subject_node_id, definition)
-    VALUES (${id}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${key}, ${opts.enabled}, ${digest}, ${opts.subjectNodeId ?? null}::uuid, '{}')`));
+  // An ENABLED (armed) policy carries its complete authority: a digest
+  // (topology_monitoring_policies_authority_chk) and the M3 arm — frozen actor,
+  // permission witness, armed_at, requester, routing contexts
+  // (topology_monitoring_policies_armed_chk).
+  const armed = opts.enabled;
+  await scoped(orgId, () => db.execute(sql`INSERT INTO topology_monitoring_policies (id, org_id, site_id, key, enabled, authority_digest, subject_node_id, definition,
+      authority_actor, authority_permission_version, armed_at, requester_id, routing_contexts)
+    VALUES (${id}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${key}, ${opts.enabled}, ${armed ? '0'.repeat(64) : null}, ${opts.subjectNodeId ?? null}::uuid, '{}',
+      ${armed ? '{}' : null}::jsonb, ${armed ? 'v' : null}, ${armed ? new Date().toISOString() : null}::timestamptz,
+      ${armed ? crypto.randomUUID() : null}::uuid, ${armed ? '[{}]' : '[]'}::jsonb)`));
   return id;
 }
 
@@ -128,6 +134,14 @@ describe('moveDiscoveredAssetsToSite (real Postgres)', () => {
     // already-disabled policy too. The service's count above (2, not 3) is what
     // proves it only reports policies the move actually turned off.
     expect(await policyRow(t.orgId, alreadyOff)).toEqual({ enabled: false, blocked_reason: 'inventory_moved' });
+    // The SQL detach disarms exactly like disarmPolicyRow: no frozen actor,
+    // permission witness, arm time, routing contexts or next slot survives on a
+    // disabled row, so it can never read as armed and re-enabling needs a fresh arm.
+    for (const policyId of [nodePolicy, monitorPolicy]) {
+      const [arm] = await scoped(t.orgId, () => db.execute<Record<string, unknown>>(sql`SELECT authority_actor, authority_permission_version, armed_at,
+          jsonb_array_length(routing_contexts) AS contexts, next_scheduled_at FROM topology_monitoring_policies WHERE id = ${policyId}::uuid`));
+      expect(arm).toEqual({ authority_actor: null, authority_permission_version: null, armed_at: null, contexts: 0, next_scheduled_at: null });
+    }
     // The node itself stays in its original site; only the binding went.
     expect(await scoped(t.orgId, () => db.execute(sql`SELECT id FROM topology_nodes WHERE id = ${nodeId}::uuid AND site_id = ${t.siteId}::uuid`))).toHaveLength(1);
     // The monitor survived the authority detach with its asset and new site.
