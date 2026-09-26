@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { projectPhysicalTopology, selectFdbParent, selectFdbParents, type FdbCandidate } from './physicalProjector';
+import { buildPhysicalRelationship, projectPhysicalTopology, selectFdbParent, selectFdbParents, type FdbCandidate } from './physicalProjector';
+import { applyFdbSelection } from './physicalPublication';
 import { projectTopology } from './projectors';
 import { validatePublicationInput } from './publish';
 import { physicalLinkKey } from './physicalIdentity';
@@ -175,6 +176,35 @@ describe('FDB parent selection (D15.3)', () => {
     expect(decisions.get('r2')).toMatchObject({ selection: 'selected', confidence: 'medium' });
     const unknown = selectFdbParents([c('r1', 'A:5', { vlanIds: null }), c('r2', 'B:7', { vlanIds: [20] })]);
     expect(unknown.get('r1')).toMatchObject({ selection: 'competing', confidence: 'low', alternatives: ['r2'] });
+  });
+  // #5998 review: a client learned on 66 ports produced 65 alternatives per
+  // row, over the publication schema's bound of 64, and rejected the WHOLE
+  // publication. Alternatives are bounded deterministically with a count.
+  it('bounds competing alternatives to 64 (lowest ids) and counts the rest', () => {
+    const ids = Array.from({ length: 66 }, (_, i) => `r${String(i).padStart(2, '0')}`);
+    const decisions = selectFdbParents(ids.map((id, i) => c(id, `U${i}:5`)));
+    for (const id of ids) {
+      const d = decisions.get(id)!;
+      expect(d.selection).toBe('competing');
+      expect(d.alternatives).toEqual(ids.filter(o => o !== id).slice(0, 64));
+      expect(d.alternativesOmitted).toBe(1);
+    }
+    expect(selectFdbParents([c('r1', 'A:5'), c('r2', 'B:7')]).get('r1')).toMatchObject({ alternatives: ['r2'], alternativesOmitted: 0 });
+  });
+  it('publishes 66 competing FDB candidates for one client without rejecting the publication', () => {
+    const uuid = (n: number) => `50000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const rows = Array.from({ length: 66 }, (_, i) => buildPhysicalRelationship(FIXTURE_SCOPE, {
+      method: 'fdb', subjectAuthority: `snmp:198.51.100.${i + 1}`, localPort: { namespace: 'if_index', value: '5', resolvedInterfaceKey: null },
+      remoteChassis: { subtype: 'mac_address', value: CLIENT_MAC }, bridgeContext: 'default', fdbId: 1, vlanIds: [10],
+    }, { kind: 'candidate', sourceNodeId: uuid(i + 1), sourceInterfaceId: null, targetNodeId: CLIENT, unboundSourceKey: 'unused', resolved: false }, CLIENT, undefined, new Date('2026-09-15T12:00:00Z')));
+    const relationships = new Map(rows.map(row => [row.id, row]));
+    const changed = applyFdbSelection({ clients: new Set([CLIENT]), relationships, current: id => relationships.get(id)! });
+    expect(changed).toHaveLength(66);
+    for (const row of changed) {
+      expect(row.attributes!.physical!.alternativeRelationshipIds).toHaveLength(64);
+      expect(row.attributes!.physical!.alternativeRelationshipsOmitted).toBe(1);
+    }
+    expect(() => validatePublicationInput(FIXTURE_SCOPE, { buildFence: '1', inputRevision: '1', nodes: [], relationships: changed, bindings: [] })).not.toThrow();
   });
   it('marks infrastructure and inactive candidates explicitly, clearing any old selection', () => {
     const decisions = selectFdbParents([c('r1', 'A:5', { infrastructure: true }), c('r2', 'B:7', { active: false })]);

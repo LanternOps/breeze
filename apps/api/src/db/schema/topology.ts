@@ -24,7 +24,7 @@ export interface TopologyPhysicalRelationshipAttributes {
   controllerSiteId?: string; controllerDeviceId?: string; uplinkPortIndex?: number;
   /** UniFi (D16): what the controller association means, and the scoped endpoint keys it joins. */
   association?: 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink'; endpointKey?: string; uplinkEndpointKey?: string;
-  fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[];
+  fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[]; alternativeRelationshipsOmitted?: number;
 }
 export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }

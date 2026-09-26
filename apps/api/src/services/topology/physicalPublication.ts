@@ -249,9 +249,12 @@ export function applyFdbSelection(input: {
       const d = decisions.get(row.id)!;
       const physical = row.attributes?.physical ?? {};
       const alternatives = d.alternatives.length ? d.alternatives : undefined;
-      if (physical.fdbSelection === d.selection && row.confidence === d.confidence && JSON.stringify(physical.alternativeRelationshipIds ?? null) === JSON.stringify(alternatives ?? null)) continue;
-      const { alternativeRelationshipIds: _old, ...rest } = physical;
-      changed.push({ ...row, confidence: d.confidence, attributes: { ...row.attributes, physical: { ...rest, fdbSelection: d.selection, ...(alternatives ? { alternativeRelationshipIds: alternatives } : {}) } } });
+      const omitted = d.alternativesOmitted || undefined;
+      if (physical.fdbSelection === d.selection && row.confidence === d.confidence && JSON.stringify(physical.alternativeRelationshipIds ?? null) === JSON.stringify(alternatives ?? null)
+        && (physical.alternativeRelationshipsOmitted ?? undefined) === omitted) continue;
+      const { alternativeRelationshipIds: _old, alternativeRelationshipsOmitted: _oldOmitted, ...rest } = physical;
+      changed.push({ ...row, confidence: d.confidence, attributes: { ...row.attributes, physical: { ...rest, fdbSelection: d.selection,
+        ...(alternatives ? { alternativeRelationshipIds: alternatives } : {}), ...(omitted ? { alternativeRelationshipsOmitted: omitted } : {}) } } });
     }
   }
   return changed;

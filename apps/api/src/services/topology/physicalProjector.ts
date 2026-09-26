@@ -99,7 +99,8 @@ export function buildPhysicalRelationship(scope: TopologyScope, material: Physic
       resolution: plan.resolved ? 'resolved' : 'unresolved', subjectAuthority: material.subjectAuthority, localPort: material.localPort, remoteChassis: material.remoteChassis,
       ...(material.remotePort ? { remotePort: material.remotePort } : {}), ...(material.bridgeContext !== undefined ? { bridgeContext: material.bridgeContext } : {}),
       ...(material.fdbId !== undefined ? { fdbId: material.fdbId } : {}), ...(material.vlanIds ? { vlanIds: material.vlanIds } : {}),
-      ...(fdb ? { fdbSelection: oldPhysical?.fdbSelection ?? 'none', ...(oldPhysical?.alternativeRelationshipIds ? { alternativeRelationshipIds: oldPhysical.alternativeRelationshipIds } : {}) } : {}),
+      ...(fdb ? { fdbSelection: oldPhysical?.fdbSelection ?? 'none', ...(oldPhysical?.alternativeRelationshipIds ? { alternativeRelationshipIds: oldPhysical.alternativeRelationshipIds } : {}),
+        ...(oldPhysical?.alternativeRelationshipsOmitted ? { alternativeRelationshipsOmitted: oldPhysical.alternativeRelationshipsOmitted } : {}) } : {}),
     } } };
 }
 
@@ -320,7 +321,10 @@ export type FdbCandidate = {
   active: boolean; infrastructure: boolean;
 };
 export type FdbSelection = { selected: FdbCandidate | null; alternatives: FdbCandidate[]; reason: string | null };
-export type FdbDecision = { selection: 'selected' | 'competing' | 'excluded' | 'none'; confidence: 'medium' | 'low'; alternatives: string[] };
+/** Alternatives retained on one FDB candidate; the publication schema bounds the list. */
+export const MAX_FDB_ALTERNATIVES = 64;
+/** `alternatives` holds at most MAX_FDB_ALTERNATIVES ids (lowest first); `alternativesOmitted` counts the rest. */
+export type FdbDecision = { selection: 'selected' | 'competing' | 'excluded' | 'none'; confidence: 'medium' | 'low'; alternatives: string[]; alternativesOmitted: number };
 const compatible = (a: FdbCandidate, b: FdbCandidate) => !a.vlanIds || !b.vlanIds || a.vlanIds.some(v => b.vlanIds!.includes(v));
 
 /** One compatible candidate class for one client. */
@@ -336,7 +340,7 @@ export function selectFdbParent(candidates: FdbCandidate[]): FdbSelection {
  * is compatible with everything. Selection is an attribute, never a withdrawal. */
 export function selectFdbParents(candidates: FdbCandidate[]): Map<string, FdbDecision> {
   const decisions = new Map<string, FdbDecision>();
-  for (const c of candidates) decisions.set(c.relationshipId, { selection: !c.active ? 'none' : 'excluded', confidence: 'low', alternatives: [] });
+  for (const c of candidates) decisions.set(c.relationshipId, { selection: !c.active ? 'none' : 'excluded', confidence: 'low', alternatives: [], alternativesOmitted: 0 });
   const eligible = candidates.filter(c => c.active && !c.infrastructure);
   const seen = new Set<string>();
   for (const start of eligible) {
@@ -352,8 +356,10 @@ export function selectFdbParents(candidates: FdbCandidate[]): Map<string, FdbDec
     const result = selectFdbParent(component);
     for (const c of component) {
       const samePort = result.selected && c.portKey === result.selected.portKey;
-      decisions.set(c.relationshipId, samePort ? { selection: 'selected', confidence: 'medium', alternatives: [] }
-        : { selection: 'competing', confidence: 'low', alternatives: component.filter(o => o.portKey !== c.portKey).map(o => o.relationshipId).sort() });
+      if (samePort) { decisions.set(c.relationshipId, { selection: 'selected', confidence: 'medium', alternatives: [], alternativesOmitted: 0 }); continue; }
+      const alternatives = component.filter(o => o.portKey !== c.portKey).map(o => o.relationshipId).sort();
+      decisions.set(c.relationshipId, { selection: 'competing', confidence: 'low', alternatives: alternatives.slice(0, MAX_FDB_ALTERNATIVES),
+        alternativesOmitted: Math.max(0, alternatives.length - MAX_FDB_ALTERNATIVES) });
     }
   }
   return decisions;

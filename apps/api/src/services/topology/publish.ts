@@ -47,6 +47,8 @@ const physicalAttributes = z.object({
   endpointKey: z.string().min(1).max(1024).optional(), uplinkEndpointKey: z.string().min(1).max(1024).optional(),
   fdbSelection: z.enum(['selected', 'competing', 'excluded', 'none']).optional(),
   alternativeRelationshipIds: z.array(uuid).max(64).optional(),
+  /** Competing alternatives beyond the 64 retained ids (MAX_FDB_ALTERNATIVES). */
+  alternativeRelationshipsOmitted: z.number().int().min(1).max(200000).optional(),
 }).strict();
 const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(256), identityMaterial, kind: relationshipKindSchema,
   sourceNodeId: uuid, targetNodeId: uuid, sourceInterfaceId: uuid.nullable().optional(), targetInterfaceId: uuid.nullable().optional(),
