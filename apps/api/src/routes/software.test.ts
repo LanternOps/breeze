@@ -1065,6 +1065,28 @@ describe('software routes', () => {
       expect(uploadBinary).not.toHaveBeenCalled();
     });
 
+    it('rejects malformed successExitCodes JSON with a 400 (#7038)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('successExitCodes', 'not json');
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('successExitCodes must be valid JSON');
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
     it('rejects schema-invalid successExitCodes with a 400 (no silent drop) (#7038)', async () => {
       vi.mocked(isS3Configured).mockReturnValueOnce(true);
       vi.mocked(db.select).mockReturnValueOnce(
@@ -1197,6 +1219,20 @@ describe('software routes', () => {
       });
       return { res, captured };
     };
+
+    // #7038
+    it('stores declared successExitCodes normalized, and [] when omitted', async () => {
+      const declared = await createVersion({
+        downloadUrl: 'https://cdn.example.com/veeam-agent.exe',
+        successExitCodes: [1101, 1000],
+      });
+      expect(declared.res.status).toBe(201);
+      expect(declared.captured.values?.successExitCodes).toEqual([1000, 1101]);
+
+      const omitted = await createVersion({ downloadUrl: 'https://cdn.example.com/app.exe' });
+      expect(omitted.res.status).toBe(201);
+      expect(omitted.captured.values?.successExitCodes).toEqual([]);
+    });
 
     it('records fileType msi from the URL extension and prefills msiexec args', async () => {
       const { res, captured } = await createVersion({
