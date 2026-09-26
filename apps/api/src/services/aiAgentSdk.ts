@@ -730,6 +730,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
+    // Topology M4 Task 3 (#6000): the host execution gate for an investigation
+    // turn. The SDK already exposes only topology tools; this re-checks the
+    // allowlist, consumes the six-read budget (refused attempts included) and
+    // re-asserts the live investigation scope BEFORE guardrails run.
+    if (session.topologyInvestigation) {
+      const verdict = await session.topologyInvestigation.beforeToolCall(stripMcpPrefix(mcpToolName ?? toolName));
+      if (!verdict.allowed) return { allowed: false, error: verdict.error };
+    }
+
     // Allowlist check runs on the EXPOSED name, not the handler name. The two
     // coincide for every tool the `breeze` MCP server registers; script
     // builder's `execute_script_on_device` dispatches to the `run_script`
@@ -2250,8 +2259,41 @@ export async function attachChatProposalToSession(
   }
 }
 
+/**
+ * Topology M4 Task 3: a tool result inside an investigation turn is model
+ * input only. It never reaches SSE or ai_messages (only a fixed progress
+ * phase does), and the execution audit row records the call without its
+ * site-scoped output — org-level AI analytics are not site-authorized.
+ */
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, isError: boolean, durationMs: number): Promise<void> {
+  session.pendingTurnToolExecutionCount += 1;
+  const toolUseId = session.toolUseIdQueue.shift();
+  if (toolUseId) session.toolUseNames?.delete(toolUseId);
+  session.eventBus.publish({ type: 'topology_progress', phase: 'analyzing' });
+  try {
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => db.insert(aiToolExecutions).values({
+        sessionId: session.breezeSessionId,
+        toolName,
+        toolInput: redactSensitiveToolInput(input),
+        toolOutput: { topologyInvestigation: true, outputWithheld: true },
+        status: isError ? 'failed' : 'completed',
+        durationMs,
+        completedAt: new Date(),
+      }),
+    );
+  } catch (err) {
+    console.error(`[AI-SDK] Failed to save topology tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
+  }
+}
+
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
+    if (session.topologyInvestigation) {
+      await topologyPostToolUse(session, toolName, input, isError, durationMs);
+      return;
+    }
     // Count this tool call toward the turn's tool_execution_count rollup
     // (consumed by streamingSessionManager's `result` handler) regardless of
     // whether the DB writes below succeed — postToolUse only fires for a tool

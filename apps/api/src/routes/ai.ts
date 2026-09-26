@@ -61,7 +61,7 @@ import {
   approvePlanSchema,
   pauseAiSchema,
   aiSessionQuerySchema
-} from '@breeze/shared/validators/ai';
+} from '@breeze/shared/validators';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { getConfig } from '../config/validate';
@@ -74,6 +74,12 @@ import {
 } from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
+import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
+// Loaded lazily, only for a topology session: its tool/transport graph must not
+// load for every chat route (and every route unit test's partial mocks).
+const loadTopologyTurn = () => import('./aiTopologyTurn');
+/** Topology sessions get a fixed title: no model or evidence text ever names a session. */
+const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import { resolveTopologySessionVisibility } from '../services/topology/aiSessionAccess';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
@@ -96,6 +102,11 @@ export function isOpenAICompatibleProvider(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Provider configuration revision for the topology answer cache key (M4 Task 3). */
+function topologyProviderRevision(resolved: { source: string; model?: string; configId?: string; configVersion?: number }): string {
+  return [resolved.source, resolved.configId ?? '', resolved.configVersion ?? '', resolved.model ?? '', isOpenAICompatibleProvider() ? 'chat-only' : 'sdk'].join(':');
 }
 
 // Lazy singleton for the openai-compatible path.
@@ -696,9 +707,42 @@ aiRoutes.post(
 
     const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
 
+    // Topology M4 Task 3 (#6000): a topology session runs a bounded
+    // investigation on this same transport. The pinned site is re-authorized,
+    // quotas reserved and sanitized evidence built BEFORE any provider call;
+    // a re-authorized cached answer returns without one. Provider text for
+    // the turn goes to the runtime's output gate, never to SSE.
+    let topology: Extract<PreparedTopologyInvestigation, { kind: 'live' }> | null = null;
+    let topologyTurn: Awaited<ReturnType<typeof loadTopologyTurn>> | null = null;
+    if (dbSession.type === 'topology') {
+      topologyTurn = await loadTopologyTurn();
+      const { prepareTopologyTurn, cachedTopologyEvents } = topologyTurn;
+      const prepared = await prepareTopologyTurn(auth, dbSession, sanitizedContent, topologyProviderRevision(resolved));
+      if (!prepared.ok) return c.json(prepared.body, prepared.status);
+      if (prepared.prepared.kind === 'cached') {
+        const explanation = prepared.prepared.explanation;
+        try {
+          await db.insert(aiMessages).values([
+            { sessionId, role: 'user', content: sanitizedContent },
+            { sessionId, role: 'assistant', content: JSON.stringify(explanation), contentBlocks: [{ type: 'topology_explanation', explanation }] as unknown as Record<string, unknown>[] },
+          ]);
+        } catch (err) {
+          console.error('[AI] Failed to save cached topology explanation:', err);
+        }
+        return streamSSE(c, async (stream) => {
+          for (const event of cachedTopologyEvents(explanation)) {
+            await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+          }
+        });
+      }
+      topology = prepared.prepared;
+    }
+    const abortTopology = async () => { await topology?.runtime.abort(); };
+
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
     const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
     if (useOpenAICompatibleProvider && resolved.source === 'partner') {
+      await abortTopology();
       return c.json({ error: 'ai_unavailable' }, 503);
     }
     if (useOpenAICompatibleProvider) {
@@ -719,10 +763,12 @@ aiRoutes.post(
           idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
         });
       } catch (err) {
+        await abortTopology();
         if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
         throw err;
       }
       if (reservation.kind === 'denied') {
+        await abortTopology();
         return c.json({ error: reservation.message }, 402);
       }
       const budgetDispatch = budgetDispatchFrom(reservation)!;
@@ -730,9 +776,12 @@ aiRoutes.post(
       const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
       if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+        await abortTopology();
         await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'A message is already being processed for this session' }, 409);
       }
+      // Bound for THIS turn only; the chat-only transport clears it when the turn starts.
+      openaiSession.topologyInvestigation = topology?.runtime;
 
       writeRouteAudit(c, {
         orgId: dbSession.orgId,
@@ -751,12 +800,15 @@ aiRoutes.post(
       } catch (err) {
         console.error('[AI/OpenAI] Failed to save user message to DB:', err);
         openaiSession.state = 'idle';
+        openaiSession.topologyInvestigation = undefined;
+        await abortTopology();
         await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'Failed to save message' }, 500);
       }
 
       if (!dbSession.title) {
-        const title = generateSessionTitle(sanitizedContent);
+        // Topology sessions get a fixed title: no model or evidence text ever names a session.
+        const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
         try {
           await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
           openaiSession.eventBus.publish({ type: 'title_updated', title });
@@ -768,8 +820,8 @@ aiRoutes.post(
       openaiManager.startTurn(
         openaiSession,
         dbSession.model,
-        systemPrompt,
-        sanitizedContent,
+        topology ? topology.systemPrompt : systemPrompt,
+        topology ? topology.prompt : sanitizedContent,
         budgetDispatch,
       );
 
@@ -815,6 +867,7 @@ aiRoutes.post(
       // turn doesn't conclude in time, fall back to a 409 as before.
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
+        await abortTopology();
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
@@ -843,10 +896,12 @@ aiRoutes.post(
         idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
       });
     } catch (err) {
+      await abortTopology();
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
       throw err;
     }
     if (reservation.kind === 'denied') {
+      await abortTopology();
       return c.json({ error: reservation.message }, 402);
     }
     const budgetDispatch = budgetDispatchFrom(reservation)!;
@@ -868,19 +923,25 @@ aiRoutes.post(
         },
         auth,
         c,
-        systemPrompt,
+        topology ? topology.systemPrompt : systemPrompt,
         budgetDispatch.maxBudgetUsd,
         resolved,
-        undefined,
-        undefined,
-        { budgetReservationId: budgetDispatch.reservationId },
+        // Topology: the SDK is handed ONLY the topology tools; the pre-tool
+        // gate re-checks the allowlist, read budget and live scope.
+        topology ? topology.allowedMcpTools : undefined,
+        topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
+        topology
+          ? { budgetReservationId: budgetDispatch.reservationId, topologyInvestigation: topology.runtime, injectApprovalModeInstructions: false }
+          : { budgetReservationId: budgetDispatch.reservationId },
       );
     } catch (err) {
+      await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       throw err;
     }
 
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId)) {
+      await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
@@ -902,13 +963,15 @@ aiRoutes.post(
     } catch (err) {
       console.error('[AI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
+      activeSession.topologyInvestigation = undefined;
+      await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       return c.json({ error: 'Failed to save message' }, 500);
     }
 
     // Auto-generate title from first user message
     if (!dbSession.title) {
-      const title = generateSessionTitle(sanitizedContent);
+      const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
       try {
         await db.update(aiSessions)
           .set({ title })
@@ -927,8 +990,9 @@ aiRoutes.post(
     // with no SSE subscriber, so the assistant's reply would never reach the
     // browser.
     const pendingRunResults = drainPendingRunResults(activeSession);
+    const turnContent = topology ? topology.prompt : sanitizedContent;
     activeSession.inputController.pushMessage(
-      pendingRunResults ? `${pendingRunResults}\n\n${sanitizedContent}` : sanitizedContent,
+      pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
     );
     streamingSessionManager.startTurnTimeout(activeSession);
 

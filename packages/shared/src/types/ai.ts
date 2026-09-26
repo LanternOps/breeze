@@ -1,3 +1,4 @@
+import type { TopologyAiExplanation } from './topologyAi';
 import type { AiToolHandoffStatus } from '../utils/aiToolHandoff';
 
 // ============================================
@@ -205,8 +206,18 @@ export interface AiRunResultArtifactRef {
   contentType: string;
 }
 
+/** Fixed, server-built phases of a topology investigation turn (M4 #6000); never model text. */
+export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'validating' | 'awaiting_approval';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
+  /**
+   * Topology M4 (#6000): a topology investigation turn never publishes
+   * `content_delta`, tool events or raw assistant text. Clients see only these
+   * fixed phases and ONE server-validated, cited `topology_explanation`.
+   */
+  | { type: 'topology_progress'; phase: AiTopologyProgressPhase }
+  | { type: 'topology_explanation'; explanation: TopologyAiExplanation }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   /**

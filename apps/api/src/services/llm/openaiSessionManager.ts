@@ -20,6 +20,7 @@
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
+import type { TopologyTurnRuntime } from '../topology/aiInvestigation';
 import type { AuthContext } from '../../middleware/auth';
 import type { AuditSnapshot } from '../streamingSessionManager';
 import { SessionEventBus } from '../streamingSessionManager';
@@ -60,6 +61,9 @@ const MAX_ACTIVE_SESSIONS = 200;
  * approaches this window — anything past it is a dead turn, and reclaiming it
  * costs nothing.
  */
+/** Topology M4: an investigation answer never exceeds 2,000 output tokens. */
+const TOPOLOGY_OUTPUT_TOKENS = 2_000;
+
 export const PROCESSING_STALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Throttle for the all-in-flight capacity alarm, so it cannot flood Sentry. */
@@ -272,27 +276,37 @@ export class OpenAISessionManager {
 
     let providerInvoked = false;
     let reservationSettled = false;
+    // Topology M4: bound for the gate, then cleared so a later turn needs a fresh preparation.
+    const topology = session.topologyInvestigation;
+    session.topologyInvestigation = undefined;
+    let topologyWithinBudget = true;
 
     try {
       try {
         providerInvoked = true;
         for await (const event of this.provider.chatStream(messages, {
           model: providerModel,
-          maxTokens: maxTokens ?? undefined,
+          maxTokens: topology ? Math.min(maxTokens ?? TOPOLOGY_OUTPUT_TOKENS, TOPOLOGY_OUTPUT_TOKENS) : maxTokens ?? undefined,
           signal: session.abortController.signal,
         })) {
           if (session.state === 'closing' || session.state === 'closed') break;
 
           switch (event.type) {
             case 'content_delta':
-              assistantText += event.delta;
               // Stream progress keeps the turn alive for eviction purposes.
               session.lastActivityAt = Date.now();
+              if (topology) {
+                // Topology M4: raw text stays in the server-only gate.
+                topology.append(event.delta);
+                break;
+              }
+              assistantText += event.delta;
               session.eventBus.publish({ type: 'content_delta', delta: event.delta });
               break;
             case 'message_end':
               inputTokens = event.inputTokens;
               outputTokens = event.outputTokens;
+              if (topology) topologyWithinBudget = topology.noteUsage({ inputTokens: event.inputTokens, outputTokens: event.outputTokens });
               session.eventBus.publish({
                 type: 'message_end',
                 inputTokens: event.inputTokens,
@@ -309,7 +323,7 @@ export class OpenAISessionManager {
               // the client via the publish() below), so no separate
               // sanitization step is needed before sending it to Sentry.
               captureException(new Error(`LLM stream error: ${event.message}`));
-              session.eventBus.publish({ type: 'error', message: event.message });
+              if (!topology) session.eventBus.publish({ type: 'error', message: event.message });
               break;
             case 'message_start':
               // Already published above; ignore duplicate from provider
@@ -319,10 +333,12 @@ export class OpenAISessionManager {
       } catch (err) {
         hadError = true;
         captureException(err);
-        session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
+        if (!topology) session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       }
 
-      if (!hadError && assistantText) {
+      if (topology) await this.finishTopologyTurn(session, topology, !hadError && topologyWithinBudget);
+
+      if (!topology && !hadError && assistantText) {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
@@ -406,11 +422,50 @@ export class OpenAISessionManager {
     session.state = 'idle';
   }
 
+  /**
+   * Topology M4 Task 3: publish/persist ONLY the validated answer (or the
+   * fixed fallback); any failure discards the raw buffer behind a fixed error.
+   */
+  private async finishTopologyTurn(session: OpenAISession, topology: TopologyTurnRuntime, succeeded: boolean): Promise<void> {
+    if (!succeeded) {
+      await topology.abort().catch((err) => captureException(err));
+      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      return;
+    }
+    session.eventBus.publish({ type: 'topology_progress', phase: 'validating' });
+    let result;
+    try {
+      result = await topology.complete();
+    } catch (err) {
+      captureException(err);
+      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      return;
+    }
+    session.eventBus.publish({ type: 'topology_explanation', explanation: result.explanation });
+    if (result.outcome === 'scope_changed') return;
+    try {
+      await withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () => db.insert(aiMessages).values({
+          sessionId: session.breezeSessionId,
+          role: 'assistant',
+          content: JSON.stringify(result.explanation),
+          contentBlocks: [{ type: 'topology_explanation', explanation: result.explanation }] as unknown as Record<string, unknown>[],
+        }),
+      );
+    } catch (err) {
+      captureException(err);
+      console.error('[OpenAISessionManager] Failed to save topology explanation:', err);
+    }
+  }
+
   /** Remove a session and close its eventBus */
   remove(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     session.state = 'closing';
+    void session.topologyInvestigation?.abort().catch(() => undefined);
+    session.topologyInvestigation = undefined;
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.eventBus.closeAll();
     session.state = 'closed';

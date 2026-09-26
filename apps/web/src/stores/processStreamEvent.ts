@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, TopologyAiExplanation } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -16,8 +16,25 @@ export interface AiMessage {
    * AiToolCallCard falls back to the payload shape gated on `!isError`.
    */
   handoff?: string;
+  /**
+   * Topology M4 (#6000): the server-validated, cited structured answer of a
+   * topology investigation turn. Present only when the server published one;
+   * `content` then holds its plain-text rendering (never raw model output).
+   */
+  topologyExplanation?: TopologyAiExplanation;
   isStreaming?: boolean;
   createdAt: Date;
+}
+
+/** Plain-text rendering of a validated topology explanation for the chat transcript. */
+export function renderTopologyExplanation(explanation: TopologyAiExplanation): string {
+  const lines: string[] = [];
+  for (const finding of explanation.findings) {
+    lines.push(finding.kind === 'hypothesis' ? `Hypothesis: ${finding.text}` : finding.text);
+  }
+  for (const item of explanation.missingData) lines.push(`Missing data: ${item}`);
+  for (const check of explanation.nextChecks) lines.push(`Suggested check (${check.recipeId}): ${check.rationale}`);
+  return lines.join('\n');
 }
 
 export interface DeviceContext {
@@ -402,6 +419,23 @@ export function processStreamEvent(
     case 'done':
       set(() => ({ isStreaming: false }));
       return null;
+
+    // Topology M4 (#6000): progress phases are status only; the explanation
+    // is the ONLY answer a topology turn ever sends, already validated.
+    case 'topology_progress':
+      return currentAssistantId;
+
+    case 'topology_explanation': {
+      const content = renderTopologyExplanation(event.explanation);
+      if (currentAssistantId) {
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === currentAssistantId ? { ...m, content, topologyExplanation: event.explanation } : m
+          ),
+        }));
+      }
+      return currentAssistantId;
+    }
 
     // Deliberate no-ops, named so the exhaustiveness guard below can be exact.
     // Each of these is handled by a DIFFERENT surface, not by this technician
