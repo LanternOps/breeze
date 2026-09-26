@@ -3,6 +3,7 @@ package agentapp
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,9 +34,21 @@ func TestResolveBootstrapInputs_UnusableMaterialIsDistinctFromNone(t *testing.T)
 			wantErr: errBootstrapInputUnusable,
 		},
 		{
-			name:    "truncated filename token",
-			data:    `C:\dl\Breeze Agent (6KE9MD@us.2breeze.app).msi||`,
+			name:    "lowercased token with the port colon kept",
+			data:    `C:\dl\Breeze Agent (6ke9mdug56@rmm.acme.example:8443).msi||`,
 			wantErr: errBootstrapInputUnusable,
+		},
+		{
+			// An ordinary rename that happens to carry an e-mail address or a
+			// note must NOT roll the install back.
+			name:    "e-mail address in parentheses",
+			data:    `C:\dl\Breeze Agent (support@acme.com).msi||`,
+			wantErr: errNoBootstrapInput,
+		},
+		{
+			name:    "deployer note in parentheses",
+			data:    `C:\dl\BreezeAgent (deployed by admin@corp).msi||`,
+			wantErr: errNoBootstrapInput,
 		},
 		{
 			name:    "bracketed filename token with bad host",
@@ -140,5 +153,29 @@ func TestRunBootstrap_NoMaterialSoftSucceedsButLeavesTrace(t *testing.T) {
 		if !strings.Contains(got, "not enrolled") {
 			t.Errorf("%s = %q, want a durable 'not enrolled' trace", sink, got)
 		}
+	}
+}
+
+// A maintenance rerun on an ALREADY-ENROLLED device must never trip the new
+// hard-fail: the enrolled short-circuit has to run before input resolution, or
+// every later repair of a device installed from a renamed/mangled file would
+// roll back.
+func TestRunBootstrap_EnrolledAgentWithMangledFilenameDoesNotFail(t *testing.T) {
+	code, lastErr, evErr, evWarn := setupRunBootstrapSinks(t,
+		`C:\ProgramData\Deploy\breeze agent (6ke9mdug56@us.2breeze.app).msi||`)
+	if err := os.WriteFile(cfgFile, []byte(
+		"agent_id: 0f0e0d0c-0b0a-4908-8706-050403020100\nlog_file: "+
+			filepath.ToSlash(filepath.Join(filepath.Dir(cfgFile), "agent.log"))+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runBootstrapRecovering()
+
+	if *code != -1 {
+		t.Fatalf("exit code = %d, want no exit for an already-enrolled agent", *code)
+	}
+	if *lastErr != "" || *evErr != "" || *evWarn != "" {
+		t.Fatalf("enrolled agent wrote sinks: lastErr=%q evErr=%q evWarn=%q", *lastErr, *evErr, *evWarn)
 	}
 }

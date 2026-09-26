@@ -30,14 +30,17 @@ var errNoBootstrapInput = errors.New("no bootstrap token from filename or proper
 // deploy tool reported "installed" for machines that never enrolled (#4127).
 var errBootstrapInputUnusable = errors.New("enrollment token present but unusable")
 
-// mangledFilenameTokenRe matches a parenthesised or bracketed group containing
-// an '@' — the shape of an installer-filename bootstrap token — without the
-// strict charset of installerTokenParenRe/installerTokenBracketRe. It is only
-// consulted after the strict parse fails, and only against the package's own
-// file name (never its directory), so it flags a token that was intended but
-// mangled, while a genuinely tokenless name ("Breeze Agent (1).msi", a cached
-// C:\Windows\Installer\*.msi) still resolves to errNoBootstrapInput.
-var mangledFilenameTokenRe = regexp.MustCompile(`\([^()]*@[^()]*\)|\[[^\[\]]*@[^\[\]]*\]`)
+// mangledFilenameTokenRe matches a parenthesised or bracketed group whose
+// pre-'@' part is exactly the 10-character alphanumeric bootstrap-token length
+// in EITHER case, with anything (or nothing) as the host. It is only consulted
+// after the strict installerTokenParenRe/installerTokenBracketRe parse fails,
+// and only against the package's own file name (never its directory), so it
+// flags a token that was intended but mangled (lowercased by a deploy tool,
+// host stripped or garbled) and nothing else. Keeping the token part this
+// specific matters because a match rolls the install back: an ordinary rename
+// such as "Breeze Agent (support@acme.com).msi", "Breeze Agent (1).msi" or a
+// cached C:\Windows\Installer\*.msi must still resolve to errNoBootstrapInput.
+var mangledFilenameTokenRe = regexp.MustCompile(`\(\s*[A-Za-z0-9]{10}\s*@[^()]*\)|\[\s*[A-Za-z0-9]{10}\s*@[^\[\]]*\]`)
 
 // installerBaseName returns the final path element of an MSI path, splitting
 // on both separators: OriginalDatabase is a Windows path, but this code (and
@@ -227,8 +230,10 @@ const unenrolledInstallNotice = "Breeze Agent installed but not enrolled: no enr
 
 // reportBootstrapUnenrolled records a soft (exit 0) unenrolled install in the
 // durable sinks an admin checks when a device never shows up, at warning
-// rather than error level.
+// rather than error level. stderr lands in the MSI verbose log; exit stays 0,
+// so it cannot trip Return="check".
 func reportBootstrapUnenrolled(line string) {
+	fmt.Fprintln(os.Stderr, line)
 	writeLastErrorFile(line)
 	eventLogWarning("BreezeAgent", line)
 }
