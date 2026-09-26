@@ -912,6 +912,13 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // contract lives in PARENT_FK_REQUIRED_FK_COLUMNS instead (#5607).
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
+  // #6379: a channel's destination/secret config, split off the dual-axis
+  // notification_channels so an org session that can SEE a partner-wide
+  // channel (SELECT-only partner-wide branch) cannot read its config. The
+  // policy is parent OWNERSHIP (org access to nc.org_id OR partner access to
+  // nc.partner_id), deliberately without the partner-wide read branch —
+  // functional proof: notificationChannelConfigsRls.integration.test.ts.
+  ['notification_channel_configs', ['notification_channels']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
   // reach their tenant only through a parent FK. role_permissions' parent
   // `roles` is dual-axis (org_id/partner_id) — its policy ORs in

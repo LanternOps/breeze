@@ -424,6 +424,42 @@ Like event-loop lag, these figures are kept off the unauthenticated
 `/health/ready` for the same reason — they describe how close the instance is to
 falling over.
 
+### Redis memory watchdog
+
+**v0.117.0+.** The bundled Redis runs with `maxmemory-policy noeviction` (size set
+by `REDIS_MAXMEMORY`, default `256mb`): when it fills, writes fail loudly rather
+than silently evicting queue or session data. Before this watchdog, the first
+sign of a full Redis was a failed login or a stuck queue. The API now reads
+Redis memory usage on an interval and logs a warning (and reports to Sentry,
+throttled) once usage crosses a threshold, so you can raise `REDIS_MAXMEMORY`
+ahead of an incident. It only observes; it never changes the Redis eviction
+policy. If Redis has no `maxmemory` limit at all, it logs that on every check
+instead, because no usage ratio can be computed.
+
+It publishes these series on `/metrics`:
+
+| Metric | Meaning |
+|---|---|
+| `breeze_redis_used_memory_bytes` | Redis `used_memory` from the last check. |
+| `breeze_redis_maxmemory_bytes` | Redis `maxmemory`; `0` means unbounded. |
+| `breeze_redis_memory_used_ratio` | `used_memory / maxmemory`. `-1` when Redis is unbounded, or when the last check failed or has not run yet. |
+| `breeze_redis_memory_last_check_timestamp_seconds` | When the last successful check completed. `0` = never. |
+| `breeze_redis_memory_check_failures` | Checks that failed before producing a reading, since process start. |
+| `breeze_redis_memory_check_skipped_total` | Ticks skipped because the previous check was still running. |
+
+Pair any alert on the ratio with a freshness check on
+`breeze_redis_memory_last_check_timestamp_seconds`. A broken watchdog reports
+`-1`, not a stale healthy value.
+
+The watchdog runs by default; you do not need to set any of these.
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_MEMORY_MONITOR_INTERVAL_MS` | `60000` | How often Redis memory is checked. |
+| `REDIS_MEMORY_WARN_RATIO` | `0.8` | Usage ratio (greater than `0`, at most `1`) at which the warning fires. Any other value falls back to `0.8`. |
+| `REDIS_MEMORY_CAPTURE_THROTTLE_MS` | `900000` | Minimum gap between Sentry reports of the same condition. `0` disables the throttle. Console logging is not throttled. |
+| `REDIS_MEMORY_MONITOR_DISABLED` | — | Set to `true` to turn the watchdog off. |
+
 ### Readiness probe tuning
 
 `/ready` and `/health/ready` answer a real readiness question — are Postgres,
@@ -796,6 +832,7 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
 | `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` | `true` | **v0.113.0+.** Lets the AI assistant and background agents write a script as a reviewed proposal ([AI Script Authoring](/features/ai-script-authoring/)). Set `false` to hide the `propose_script` / `get_script_proposal` tools and the `/api/v1/ai/script-proposals` routes entirely. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`; any other value stops the API from starting. The shipped Compose file defaults it to `true` as well. This flag does **not** control the unattended lane, which stays off until a partner raises its ceiling and an organization opts in. |
+| `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` | `false` | **v0.117.0+.** Store oversized AI tool results (redacted) in your object storage so the assistant can page back through them with `read_artifact`, instead of receiving a truncated result. Off by default because it writes blobs your organizations can download. Setting it `true` requires an artifact bucket and keys: `ARTIFACT_S3_BUCKET_US` / `ARTIFACT_S3_BUCKET_EU` (matching your region) or `S3_BUCKET`, plus `ARTIFACT_S3_ACCESS_KEY` / `ARTIFACT_S3_SECRET_KEY` or `S3_ACCESS_KEY` / `S3_SECRET_KEY`. Without them, or with a value that is not a boolean, the API refuses to start. |
 | `BREEZE_AI_SCRIPT_REVIEWER_MODEL` | — | **v0.113.0+.** Platform-default model for the independent reviewer that examines every AI-authored script proposal. Unset = the platform default (`ANTHROPIC_MODEL` when set, otherwise the Sonnet-class fallback). A partner or organization can name its own reviewer model on its script-authoring policy, which takes precedence. |
 
 ### AI Operator (preview, off by default)

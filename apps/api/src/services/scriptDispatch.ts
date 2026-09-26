@@ -998,8 +998,9 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
 
   if (immediate) return immediate;
   // Deferred (#3445): the rows exist but nothing has been attempted. The AI
-  // audit row above is written now rather than after delivery; no AI surface
-  // defers delivery today, so no audited dispatch can reach this branch.
+  // audit row above is written now rather than after delivery (#7103: the AI
+  // run_script paths defer too). Its `result: 'dispatched'` means "the command
+  // exists", which is true from here on whether or not the send succeeds.
   return {
     ok: true,
     commandId,

@@ -264,6 +264,38 @@ export interface DeviceHardware {
   motherboardProduct: string | null;
   motherboardVersion: string | null;
   biosVersion: string | null;
+  /** Memory summary (#5351); all null until the agent reports slot inventory. */
+  memorySlotsTotal: number | null;
+  memoryMaxCapacityMb: number | null;
+  /** true = on-package memory with no slot inventory (e.g. Apple Silicon). */
+  memorySoldered: boolean | null;
+  /** When a valid memory block was last applied; null = never reported. */
+  memoryObservedAt: Date | null;
+  updatedAt: Date;
+}
+
+/**
+ * One physical memory slot (#5351), populated or empty. Returned by
+ * `GET /devices/:id/hardware` as `memoryModules`, ordered by `slotIndex`.
+ */
+export interface DeviceMemoryModule {
+  id: string;
+  deviceId: string;
+  slotKey: string;
+  slotIndex: number;
+  locator: string;
+  bankLabel: string | null;
+  populated: boolean;
+  capacityMb: number | null;
+  memoryType: string | null;
+  formFactor: string | null;
+  /** Rated speed, MT/s. */
+  speedMts: number | null;
+  /** Configured (running) speed, MT/s. */
+  configuredSpeedMts: number | null;
+  manufacturer: string | null;
+  partNumber: string | null;
+  serialNumber: string | null;
   updatedAt: Date;
 }
 

@@ -1,0 +1,15 @@
+{
+  // Test half of the api type check (#6270). Imports of runtime code resolve to
+  // the .d.ts emitted by tsconfig.src.json, so src is checked once, not twice.
+  // Always run through build mode so those declarations are never stale:
+  //   tsc -b apps/api/tsconfig.tests.json
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**/*",
+    "src/**/*.fixtures.ts"
+  ],
+  "exclude": ["node_modules", "dist"],
+  "references": [{ "path": "./tsconfig.src.json" }]
+}

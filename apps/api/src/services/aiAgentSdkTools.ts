@@ -670,19 +670,27 @@ function makeToolHandler(
         ...(capture ? { capture } : {}),
         ...(topologyBinding ? { topologyBinding } : {}),
       };
+      const runTool = () =>
+        Object.keys(execOptions).length > 0
+          ? executeTool(toolName, args, auth, execOptions)
+          : executeTool(toolName, args, auth);
+      // A self-managed tool (#7128) gets NO per-call transaction: it hands work
+      // to another process and waits on it, which under this wrapper meant an
+      // uncommitted row the other process could not see and a pooled
+      // connection idle-in-transaction for the whole wait. `executeTool` and
+      // the handler open their own short contexts built from the same `auth`.
+      // This whole handler already runs under `runOutsideDbContext`, so there
+      // is no ambient context for the tool to join by accident.
       const runInToolContext = () =>
-        withDbAccessContext(dbContext, () =>
-          Object.keys(execOptions).length > 0
-            ? executeTool(toolName, args, auth, execOptions)
-            : executeTool(toolName, args, auth),
-        );
+        aiTools.get(toolName)?.selfManagedDbContext
+          ? runTool()
+          : withDbAccessContext(dbContext, runTool);
       // Review R1 (#6671 shape): a topology tool's gate needs the org's
       // topology flags and AI readiness — partner-axis reads the tool's
       // org-scoped transaction cannot see. Resolve them HERE, outside any held
-      // context (this handler runs under `runOutsideDbContext`), for the
-      // SESSION's org, and carry them in, so nothing inside the tool
-      // transaction reaches for a second pooled connection. The gate still
-      // re-checks the session pin and the caller's live permissions.
+      // context, for the SESSION's org, and carry them in, so nothing inside
+      // the tool transaction reaches for a second pooled connection. The gate
+      // still re-checks the session pin and the caller's live permissions.
       const topologyOrgId = captureSession && (isTopologyAiToolName(toolName) || toolName === TOPOLOGY_PROPOSAL_TOOL)
         ? captureSession.orgId
         : null;

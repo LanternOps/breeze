@@ -4,7 +4,8 @@ import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 
 // #3127: depth of the (mocked) short per-phase DB contexts the message-send
 // handler opens now that clientAiAuth no longer wraps it in a request transaction.
-const dbCtx = vi.hoisted(() => ({ depth: 0 }));
+const dbCtx = vi.hoisted(() => ({ depth: 0, savepointDepth: 0 }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
 
 const {
   CLIENT_USER_ID, ORG_ID, SESSION_ID,
@@ -91,6 +92,20 @@ vi.mock('../../db', () => ({
       dbCtx.depth -= 1;
     }
   }),
+  // #7074: the auto-title UPDATE runs in a savepoint so its failure cannot
+  // roll back the user-message insert in the same phase transaction.
+  withDbTransaction: vi.fn(async (fn: () => unknown) => {
+    dbCtx.savepointDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.savepointDepth -= 1;
+    }
+  }),
+}));
+vi.mock('../../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/sentry')>()),
+  captureException: captureExceptionMock,
 }));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
@@ -437,6 +452,35 @@ describe('POST /client-ai/sessions/:id/messages', () => {
 
     await postMessage({ content: 'sum column B please' });
     expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'sum column B please' }));
+  });
+
+  it('#7074: runs the auto-title UPDATE inside a savepoint within the dispatch context', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...SESSION_ROW, title: null }]));
+    const seen: Array<{ depth: number; savepointDepth: number }> = [];
+    dbUpdateMock.mockImplementation(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => {
+          seen.push({ depth: dbCtx.depth, savepointDepth: dbCtx.savepointDepth });
+          return Promise.resolve();
+        }),
+      })),
+    }));
+
+    await postMessage({ content: 'sum column B please' });
+    expect(seen).toEqual([{ depth: 1, savepointDepth: 1 }]);
+  });
+
+  it('#7074: a failed auto-title still dispatches the turn and reports the error', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...SESSION_ROW, title: null }]));
+    const titleError = new Error('deadlock detected');
+    dbUpdateMock.mockImplementation(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.reject(titleError)) })),
+    }));
+    captureExceptionMock.mockClear();
+
+    const res = await postMessage({ content: 'sum column B please' });
+    expect(res.status).toBe(202);
+    expect(captureExceptionMock).toHaveBeenCalledWith(titleError, expect.anything());
   });
 });
 

@@ -17,8 +17,11 @@ import {
   bulkMitigateVulns,
   createVulnTicket,
   fetchSoftwareGroupDetail,
+  fetchSoftwareGroupDeviceFindings,
   remediateVuln,
   reopenVuln,
+  type GroupDevice,
+  type GroupFinding,
   type SoftwareGroupDetail,
 } from '../../lib/api/vulnerabilities';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -26,10 +29,22 @@ import { useStableT } from '@/lib/i18n/useStableT';
 const ACTION_BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50';
 
+const SECTION_HEADING = 'text-xs font-semibold uppercase tracking-wide text-muted-foreground';
+
 function fmtEpss(value: number | null): string {
   return value === null ? '—' : formatPercent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
+/** Per-device drill-down state: findings load lazily the first time a device is expanded. */
+type Expansion = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; findings: GroupFinding[] };
+
+/**
+ * Software-group drawer (#2262). The remediation unit is the DEVICE: one
+ * outdated app on 14 devices is 14 rows, not 14 × N-CVE rows. Each device row
+ * carries its open finding ids; bulk actions send exactly those ids for the
+ * selected devices (never a server-side re-derivation), so what the operator
+ * confirmed is what runs. Per-CVE findings for a device load on expand.
+ */
 export function SoftwareGroupDrawer({
   groupKey,
   onClose,
@@ -45,7 +60,9 @@ export function SoftwareGroupDrawer({
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<SoftwareGroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Selection is by DEVICE id; only devices with open findings are selectable.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Record<string, Expansion>>({});
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | 'reopen' | null>(null);
   const [modal, setModal] = useState<'remediate' | 'accept' | 'mitigate' | null>(null);
   // Inline failure message for the bulk-action modal (in addition to the
@@ -55,6 +72,9 @@ export function SoftwareGroupDrawer({
   // Synchronous double-submission guard: `busy` state lags one render behind,
   // so a rapid double-activation could fire the mutation twice without this.
   const busyRef = useRef(false);
+  // Latest expansion map, read by `load` without re-creating it on every toggle.
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
 
   const { can } = usePermissions();
   const canRemediate = can('devices', 'execute');
@@ -62,42 +82,74 @@ export function SoftwareGroupDrawer({
   const canMitigate = can('devices', 'write');
   const canCreateTicket = can('tickets', 'write');
 
+  const loadDeviceFindings = useCallback(
+    async (deviceId: string) => {
+      setExpanded((prev) => ({ ...prev, [deviceId]: { status: 'loading' } }));
+      try {
+        const findings = await fetchSoftwareGroupDeviceFindings(groupKey, deviceId);
+        setExpanded((prev) => (deviceId in prev ? { ...prev, [deviceId]: { status: 'ready', findings } } : prev));
+      } catch (err) {
+        const message = err instanceof Error && err.message ? err.message : stableT('softwareGroupDrawer.device.loadError');
+        setExpanded((prev) => (deviceId in prev ? { ...prev, [deviceId]: { status: 'error', message } } : prev));
+      }
+    },
+    [groupKey, stableT],
+  );
+
   const load = useCallback(async () => {
     setError(null);
     try {
       const d = await fetchSoftwareGroupDetail(groupKey);
       setDetail(d);
-      // Pre-select only OPEN findings — they're the actionable ones; accepted/mitigated/patched rows start unchecked.
-      setSelected(new Set(d.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
+      // Pre-select devices with OPEN findings — they're the actionable ones.
+      setSelected(new Set(d.devices.filter((dev) => dev.openFindingIds.length > 0).map((dev) => dev.deviceId)));
+      // Refresh any open drill-downs so statuses match the reloaded rollup.
+      const stillPresent = new Set(d.devices.map((dev) => dev.deviceId));
+      const open = Object.keys(expandedRef.current);
+      setExpanded((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => stillPresent.has(id))));
+      for (const deviceId of open) {
+        if (stillPresent.has(deviceId)) void loadDeviceFindings(deviceId);
+      }
     } catch (err) {
       setDetail(null);
       setError(err instanceof Error ? err.message : stableT('softwareGroupDrawer.errors.load'));
     }
-  }, [groupKey, stableT]);
+  }, [groupKey, stableT, loadDeviceFindings]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const toggle = (id: string) => {
+  const toggleExpanded = (deviceId: string) => {
+    if (deviceId in expanded) {
+      setExpanded((prev) => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
+    } else {
+      void loadDeviceFindings(deviceId);
+    }
+  };
+
+  const toggle = (deviceId: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(deviceId)) next.delete(deviceId);
+      else next.add(deviceId);
       return next;
     });
   };
 
-  const selectedIds = [...selected];
-  const selectedFindings = detail ? detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
-  const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
+  const actionableDevices = detail ? detail.devices.filter((d) => d.openFindingIds.length > 0) : [];
+  const selectedDevices = actionableDevices.filter((d) => selected.has(d.deviceId));
+  // The exact ids an action will send: the selected devices' open findings as
+  // loaded. Never widened server-side.
+  const selectedIds = selectedDevices.flatMap((d) => d.openFindingIds);
 
-  // All/none toggle for the pre-checked findings list — deselecting a large
-  // pre-selection one checkbox at a time is unreasonable.
-  const allSelected = detail !== null && detail.findings.length > 0 && detail.findings.every((f) => selected.has(f.deviceVulnerabilityId));
+  const allSelected = actionableDevices.length > 0 && selectedDevices.length === actionableDevices.length;
   const toggleAll = () => {
-    if (!detail) return;
-    setSelected(allSelected ? new Set() : new Set(detail.findings.map((f) => f.deviceVulnerabilityId)));
+    setSelected(allSelected ? new Set() : new Set(actionableDevices.map((d) => d.deviceId)));
   };
 
   const runBulk = useCallback(
@@ -118,13 +170,12 @@ export function SoftwareGroupDrawer({
         setBusy(null);
       }
     },
-    // selectedIds is derived from `selected`; depend on the source set.
-    [busy, selected, load, onActionComplete],
+    // selectedIds is derived from `selected` + `detail`; depend on the sources.
+    [busy, selected, detail, load, onActionComplete],
   );
 
-  // Per-finding Reopen for accepted/mitigated rows — same behavior as the CVE
-  // drawer, so a tech reviewing a waiver in the software view doesn't have to
-  // re-find the finding under By CVE.
+  // Per-finding Reopen for accepted/mitigated rows in a device drill-down —
+  // same behavior as the CVE drawer.
   const onReopen = useCallback(
     async (id: string) => {
       if (busy || busyRef.current) return;
@@ -154,6 +205,18 @@ export function SoftwareGroupDrawer({
     t('softwareGroupDrawer.titleFallback')
   );
 
+  const deviceMeta = (d: GroupDevice): string =>
+    [
+      d.orgName,
+      d.installedVersions.join(', ') || null,
+      t('softwareGroupDrawer.device.openOf', { open: d.openFindingCount, count: d.cveCount }),
+      d.acceptedFindingCount > 0 ? t('softwareGroupDrawer.device.accepted', { count: d.acceptedFindingCount }) : null,
+      d.mitigatedFindingCount > 0 ? t('softwareGroupDrawer.device.mitigated', { count: d.mitigatedFindingCount }) : null,
+      d.patchedFindingCount > 0 ? t('softwareGroupDrawer.device.patched', { count: d.patchedFindingCount }) : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
   return (
     <Drawer open onClose={onClose} title={title} width="max-w-xl" dataTestId="vuln-software-drawer" closeDisabled={busy !== null}>
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
@@ -171,12 +234,27 @@ export function SoftwareGroupDrawer({
 
         {detail && (
           <>
-            <div className="text-sm text-muted-foreground">
-              {/* Round the risk score the same way the tables do, so the same
-                  number never shows two different values. */}
-              {[detail.group.vendor, t('softwareGroupDrawer.summary.devices', { count: detail.group.deviceCount }), t('softwareGroupDrawer.summary.maxRisk', { risk: detail.group.maxRiskScore === null ? '—' : Math.round(detail.group.maxRiskScore) })]
-                .filter(Boolean)
-                .join(' · ')}
+            {/* Lead with the remediation-shaped story (#2262): how many devices
+                need the update. The CVE fan-out is context, not the headline. */}
+            <div data-testid="vuln-drawer-headline">
+              <p className="text-base font-semibold">
+                {actionableDevices.length > 0
+                  ? t('softwareGroupDrawer.headline.needUpdating', { count: actionableDevices.length })
+                  : t('softwareGroupDrawer.headline.nothingOpen')}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {[
+                  detail.group.vendor,
+                  detail.group.deviceCount === 1
+                    ? t('softwareGroupDrawer.headline.scopeSingleDevice', { count: detail.group.cveCount })
+                    : t('softwareGroupDrawer.headline.scope', { count: detail.group.cveCount, devices: detail.group.deviceCount }),
+                  // Round the risk score the same way the tables do, so the same
+                  // number never shows two different values.
+                  t('softwareGroupDrawer.summary.maxRisk', { risk: detail.group.maxRiskScore === null ? '—' : Math.round(detail.group.maxRiskScore) }),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
             </div>
 
             {detail.group.tickets.length > 0 && (
@@ -196,9 +274,159 @@ export function SoftwareGroupDrawer({
             )}
 
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {t('softwareGroupDrawer.sections.cves', { count: detail.cves.length })}
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className={SECTION_HEADING}>{t('softwareGroupDrawer.sections.devicesHeading', { count: detail.devices.length })}</h3>
+                {actionableDevices.length > 0 && (
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+                    <input
+                      type="checkbox"
+                      data-testid="vuln-select-all"
+                      aria-label={allSelected ? t('softwareGroupDrawer.selection.deselectAllAria') : t('softwareGroupDrawer.selection.selectAllAria')}
+                      checked={allSelected}
+                      // Native indeterminate has no attribute form — set it via ref.
+                      ref={(el) => {
+                        if (el) el.indeterminate = !allSelected && selectedDevices.length > 0;
+                      }}
+                      onChange={toggleAll}
+                      className="h-4 w-4 rounded border"
+                    />
+                    {t('softwareGroupDrawer.selection.selectAll')}
+                  </label>
+                )}
+              </div>
+              {detail.devices.length === 0 ? (
+                // Reachable when every finding was resolved (or moved out of the
+                // caller's scope) between the list loading and the drawer opening.
+                <p
+                  data-testid="vuln-drawer-no-findings"
+                  className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
+                >
+                  {t('softwareGroupDrawer.empty.noFindings')}
+                </p>
+              ) : (
+                <ul className="mt-2 divide-y rounded-md border">
+                  {detail.devices.map((d) => {
+                    const expansion = expanded[d.deviceId];
+                    const actionable = d.openFindingIds.length > 0;
+                    return (
+                      <li key={d.deviceId} data-testid={`vuln-device-row-${d.deviceId}`} className="px-3 py-2 text-sm">
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            data-testid={`vuln-device-check-${d.deviceId}`}
+                            aria-label={t('softwareGroupDrawer.selection.selectDeviceAria', { deviceName: d.deviceName })}
+                            checked={actionable && selected.has(d.deviceId)}
+                            disabled={!actionable}
+                            onChange={() => toggle(d.deviceId)}
+                            className="h-4 w-4 rounded border disabled:opacity-40"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{d.deviceName}</span>
+                            <span className="block truncate text-xs text-muted-foreground">{deviceMeta(d)}</span>
+                          </span>
+                          {d.worstOpenSeverity && <SeverityBadge severity={d.worstOpenSeverity} />}
+                          {d.patchReadyFindingCount > 0 && (
+                            <span className="text-xs">{t('softwareGroupDrawer.device.patchReady', { count: d.patchReadyFindingCount })}</span>
+                          )}
+                          {d.tickets.map((ticket) => (
+                            <a
+                              key={ticket.id}
+                              href={`/tickets#${ticket.number ?? ticket.id}`}
+                              data-testid={`vuln-device-ticket-${d.deviceId}-${ticket.id}`}
+                              className="text-xs underline"
+                            >
+                              {ticket.number ?? t('softwareGroupDrawer.findings.ticket')}
+                            </a>
+                          ))}
+                          <button
+                            type="button"
+                            data-testid={`vuln-device-expand-${d.deviceId}`}
+                            aria-expanded={expansion !== undefined}
+                            aria-label={
+                              expansion !== undefined
+                                ? t('softwareGroupDrawer.device.collapseAria', { deviceName: d.deviceName })
+                                : t('softwareGroupDrawer.device.expandAria', { deviceName: d.deviceName })
+                            }
+                            className="rounded px-1.5 text-xs font-medium text-primary hover:underline"
+                            onClick={() => toggleExpanded(d.deviceId)}
+                          >
+                            {expansion !== undefined ? t('softwareGroupDrawer.device.hide') : t('softwareGroupDrawer.device.show')}
+                          </button>
+                        </div>
+                        {expansion?.status === 'loading' && (
+                          <p className="mt-2 pl-7 text-xs text-muted-foreground">{t('softwareGroupDrawer.device.loading')}</p>
+                        )}
+                        {expansion?.status === 'error' && (
+                          <p data-testid={`vuln-device-findings-error-${d.deviceId}`} className="mt-2 pl-7 text-xs text-red-600 dark:text-red-400">
+                            {expansion.message}{' '}
+                            <button
+                              type="button"
+                              data-testid={`vuln-device-findings-retry-${d.deviceId}`}
+                              className="font-medium underline"
+                              onClick={() => void loadDeviceFindings(d.deviceId)}
+                            >
+                              {t('common:actions.retry')}
+                            </button>
+                          </p>
+                        )}
+                        {expansion?.status === 'ready' && (
+                          <ul data-testid={`vuln-device-findings-${d.deviceId}`} className="mt-2 space-y-1 border-l pl-4 ml-2">
+                            {expansion.findings.map((f) => (
+                              <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 text-xs">
+                                <span className="min-w-0 flex-1 truncate font-medium">{f.cveId}</span>
+                                <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
+                                <span>{f.patchAvailable ? t('softwareGroupDrawer.findings.patch') : '—'}</span>
+                                {f.ticketId && (
+                                  <a
+                                    href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
+                                    data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
+                                    className="underline"
+                                  >
+                                    {f.ticketNumber ?? t('softwareGroupDrawer.findings.ticket')}
+                                  </a>
+                                )}
+                                {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
+                                  <button
+                                    type="button"
+                                    data-testid={`vuln-reopen-${f.deviceVulnerabilityId}`}
+                                    className="font-medium text-primary hover:underline disabled:opacity-50"
+                                    disabled={busy !== null}
+                                    onClick={() => void onReopen(f.deviceVulnerabilityId)}
+                                  >
+                                    {t('softwareGroupDrawer.actions.reopen')}
+                                  </button>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {detail.versions.length > 0 && (
+              <section data-testid="vuln-drawer-versions">
+                <h3 className={SECTION_HEADING}>{t('softwareGroupDrawer.sections.versions')}</h3>
+                <ul className="mt-2 flex flex-wrap gap-2">
+                  {detail.versions.map((v) => (
+                    <li
+                      key={v.version}
+                      data-testid={`vuln-version-${v.version}`}
+                      className="rounded-md border px-2 py-1 text-xs"
+                    >
+                      <span className="font-medium tabular-nums">{v.version}</span>
+                      <span className="ml-1.5 text-muted-foreground">{t('softwareGroupDrawer.versions.deviceCount', { count: v.deviceCount })}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            <section>
+              <h3 className={SECTION_HEADING}>{t('softwareGroupDrawer.sections.cves', { count: detail.cves.length })}</h3>
               <ul className="mt-2 divide-y rounded-md border">
                 {detail.cves.map((cve) => (
                   <li key={cve.cveId}>
@@ -217,7 +445,12 @@ export function SoftwareGroupDrawer({
                         onSelectCve(cve.cveId);
                       }}
                     >
-                      <span className="font-medium">{cve.cveId}</span>
+                      <span className="min-w-0">
+                        <span className="block font-medium">{cve.cveId}</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {t('softwareGroupDrawer.cveMeta.devicesOpen', { open: cve.openDeviceCount, count: cve.deviceCount })}
+                        </span>
+                      </span>
                       <span className="flex items-center gap-2 text-xs text-muted-foreground">
                         <SeverityBadge severity={cve.severity} />
                         <span className="tabular-nums" title={CVSS_EXPLANATION}>
@@ -233,91 +466,15 @@ export function SoftwareGroupDrawer({
                 ))}
               </ul>
             </section>
-
-            <section>
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t('softwareGroupDrawer.sections.devices', { count: detail.findings.length })}
-                </h3>
-                {detail.findings.length > 0 && (
-                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-                    <input
-                      type="checkbox"
-                      data-testid="vuln-select-all"
-                      aria-label={allSelected ? t('softwareGroupDrawer.selection.deselectAllAria') : t('softwareGroupDrawer.selection.selectAllAria')}
-                      checked={allSelected}
-                      // Native indeterminate has no attribute form — set it via ref.
-                      ref={(el) => {
-                        if (el) el.indeterminate = !allSelected && selected.size > 0;
-                      }}
-                      onChange={toggleAll}
-                      className="h-4 w-4 rounded border"
-                    />
-                    {t('softwareGroupDrawer.selection.selectAll')}
-                  </label>
-                )}
-              </div>
-              {detail.findings.length === 0 ? (
-                // Reachable when every finding was resolved (or moved out of the
-                // caller's scope) between the list loading and the drawer opening.
-                <p
-                  data-testid="vuln-drawer-no-findings"
-                  className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
-                >
-                  {t('softwareGroupDrawer.empty.noFindings')}
-                </p>
-              ) : (
-              <ul className="mt-2 divide-y rounded-md border">
-                {detail.findings.map((f) => (
-                  <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 px-3 py-2 text-sm">
-                    <input
-                      type="checkbox"
-                      data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
-                      aria-label={t('softwareGroupDrawer.selection.selectFindingAria', { cveId: f.cveId, deviceName: f.deviceName })}
-                      checked={selected.has(f.deviceVulnerabilityId)}
-                      onChange={() => toggle(f.deviceVulnerabilityId)}
-                      className="h-4 w-4 rounded border"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{f.deviceName}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {[f.orgName, f.cveId].filter(Boolean).join(' · ')}
-                      </span>
-                    </span>
-                    <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
-                    <span className="text-xs">{f.patchAvailable ? t('softwareGroupDrawer.findings.patch') : '—'}</span>
-                    {f.ticketId && (
-                      <a
-                        href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
-                        data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
-                        className="text-xs underline"
-                      >
-                        {f.ticketNumber ?? t('softwareGroupDrawer.findings.ticket')}
-                      </a>
-                    )}
-                    {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
-                      <button
-                        type="button"
-                        data-testid={`vuln-reopen-${f.deviceVulnerabilityId}`}
-                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
-                        disabled={busy !== null}
-                        onClick={() => void onReopen(f.deviceVulnerabilityId)}
-                      >
-                        {t('softwareGroupDrawer.actions.reopen')}
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              )}
-            </section>
           </>
         )}
       </div>
 
       {detail && (
         <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
-          <span className="mr-auto text-xs text-muted-foreground">{t('softwareGroupDrawer.selection.selected', { count: selectedIds.length })}</span>
+          <span className="mr-auto text-xs text-muted-foreground">
+            {t('softwareGroupDrawer.selection.selectedDevices', { count: selectedDevices.length, findings: selectedIds.length })}
+          </span>
           {canRemediate && (
             <button
               type="button"
@@ -378,10 +535,8 @@ export function SoftwareGroupDrawer({
         <VulnBulkActionModal
           kind={modal}
           count={selectedIds.length}
-          deviceCount={selectedDeviceCount}
-          // Software groups span CVEs — include the CVE id per device so the
-          // summary says which finding, not just which machine.
-          selection={selectedFindings.map((f) => ({ deviceName: f.deviceName, cveId: f.cveId }))}
+          deviceCount={selectedDevices.length}
+          selection={selectedDevices.map((d) => ({ deviceName: d.deviceName }))}
           busy={busy !== null}
           errorMessage={modalError}
           onCancel={() => {
@@ -407,7 +562,7 @@ export function SoftwareGroupDrawer({
 
       {ticketModal && detail && (
         <CreateVulnTicketModal
-          findings={detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId))}
+          findings={selectedDevices.flatMap((d) => d.openFindingIds.map(() => ({ orgId: d.orgId })))}
           defaultTitle={t('softwareGroupDrawer.ticket.defaultTitle', { name: detail.group.name })}
           busy={busy !== null}
           onCancel={() => setTicketModal(false)}

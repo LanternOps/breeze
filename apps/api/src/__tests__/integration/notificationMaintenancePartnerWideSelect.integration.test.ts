@@ -155,11 +155,13 @@ interface TableProbe {
 
 const TABLES: TableProbe[] = [
   {
+    // `config` lives in notification_channel_configs now (#6379); this probe
+    // only exercises the parent row's id/name/ownership, never config.
     label: 'notification_channels',
     insert: async (ownership, name) => {
       const [row] = await db
         .insert(notificationChannels)
-        .values({ ...ownership, name, type: 'slack', config: {} })
+        .values({ ...ownership, name, type: 'slack' })
         .returning({ id: notificationChannels.id, name: notificationChannels.name });
       return row!;
     },
@@ -177,7 +179,7 @@ const TABLES: TableProbe[] = [
         .returning({ id: notificationChannels.id, name: notificationChannels.name }),
     insertPartnerWide: (partnerId) =>
       db.insert(notificationChannels)
-        .values({ orgId: null, partnerId, name: 'forged', type: 'slack', config: {} })
+        .values({ orgId: null, partnerId, name: 'forged', type: 'slack' })
         .returning({ id: notificationChannels.id, name: notificationChannels.name })
         .then((rows) => rows[0]!),
   },

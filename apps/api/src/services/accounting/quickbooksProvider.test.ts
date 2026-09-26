@@ -247,6 +247,71 @@ describe('upsertCustomer', () => {
       sparse: true, Id: '12', SyncToken: '7', DisplayName: 'Acme LLC',
     });
   });
+  // #7134: a mapping backfilled from a QuickBooks import carried a remote id but
+  // no SyncToken; the update threw locally and never reached QuickBooks.
+  it('reads the live SyncToken when the mapping has none, then sparse-updates with it', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ Customer: { Id: '12', SyncToken: '3' } }))
+      .mockResolvedValueOnce(jsonResponse({ Customer: { Id: '12', SyncToken: '4' } }));
+
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: null });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/customer/12?');
+    expect((fetchMock.mock.calls[0]![1] as RequestInit | undefined)?.method ?? 'GET').toBe('GET');
+    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)))
+      .toMatchObject({ sparse: true, Id: '12', SyncToken: '3' });
+    expect(ref.syncToken).toBe('4');
+  });
+
+  it('re-reads the live SyncToken and retries the sparse update once on a 5010 Stale Object fault', async () => {
+    const stale = () => new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(stale())
+      .mockResolvedValueOnce(jsonResponse({ Customer: { Id: '12', SyncToken: '9' } }))
+      .mockResolvedValueOnce(jsonResponse({ Customer: { Id: '12', SyncToken: '10' } }));
+
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: '7' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
+      .toMatchObject({ sparse: true, Id: '12', SyncToken: '9' });
+    expect(ref.syncToken).toBe('10');
+  });
+
+  it('does not loop: a second 5010 after the re-read propagates', async () => {
+    const stale = () => new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(stale())
+      .mockResolvedValueOnce(jsonResponse({ Customer: { Id: '12', SyncToken: '9' } }))
+      .mockResolvedValueOnce(stale());
+
+    await expect(quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: '7' })).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a 5010 on a CREATE (no revision of ours to refresh)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    ));
+    await expect(quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, null)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('upsertItem', () => {
@@ -289,11 +354,30 @@ describe('upsertItem', () => {
     expect(String(fetchMock.mock.calls[0]![0])).not.toContain('requestid');
   });
 
-  it('refuses an update that is missing the current SyncToken', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    await expect(quickbooksProvider.upsertItem(conn(), input, { remoteEntityId: '9', remoteSyncToken: null }))
-      .rejects.toThrow(/SyncToken/);
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('reads the live SyncToken when the mapping has none, then sparse-updates with it (#7134)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ Item: { Id: '9', SyncToken: '2' } }))
+      .mockResolvedValueOnce(jsonResponse({ Item: { Id: '9', SyncToken: '3' } }));
+    const ref = await quickbooksProvider.upsertItem(conn(), input, { remoteEntityId: '9', remoteSyncToken: null });
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/item/9?');
+    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)))
+      .toMatchObject({ sparse: true, Id: '9', SyncToken: '2' });
+    expect(ref.syncToken).toBe('3');
+  });
+
+  it('re-reads the live SyncToken and retries an Item sparse update once on a 5010 Stale Object fault', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Item: { Id: '9', SyncToken: '5' } }))
+      .mockResolvedValueOnce(jsonResponse({ Item: { Id: '9', SyncToken: '6' } }));
+    const ref = await quickbooksProvider.upsertItem(conn(), input, { remoteEntityId: '9', remoteSyncToken: '0' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
+      .toMatchObject({ sparse: true, Id: '9', SyncToken: '5' });
+    expect(ref.syncToken).toBe('6');
   });
 
   it('refuses creation without an income account before any HTTP call', async () => {

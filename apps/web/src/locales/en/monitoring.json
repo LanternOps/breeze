@@ -180,7 +180,7 @@
     "service": "Service stopped",
     "process": "Process stopped",
     "process_resource": "Process resource",
-    "cert_expiry": "Certificate expiry",
+    "cert_expiry": "Agent mTLS certificate expiry",
     "bandwidth": "Bandwidth",
     "disk_io": "Disk I/O",
     "network_errors": "Network errors",

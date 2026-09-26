@@ -93,7 +93,7 @@ make build-all # Cross-platform builds
    ```bash
    pnpm install --frozen-lockfile
    pnpm lint                                                 # CI: Lint
-   pnpm exec tsc --noEmit --project apps/api/tsconfig.json   # CI: Type Check
+   pnpm exec tsc --build apps/api/tsconfig.tests.json        # CI: Type Check
    pnpm --filter=@breeze/web exec astro check                # CI: Type Check
    pnpm test --filter=@breeze/api                            # CI: Test API
    pnpm test --filter=@breeze/web                            # CI: Test Web

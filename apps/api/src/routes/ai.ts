@@ -70,6 +70,7 @@ import {
 } from '@breeze/shared/validators';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { persistAutoSessionTitle } from '../services/aiSessionTitle';
 import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
@@ -114,6 +115,7 @@ function topologyAuditSessionCondition(visibility: TopologySessionVisibility): S
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
+import { pageContextWriteDefaultOrgId } from '../services/aiSessionOrgAnchor';
 import {
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
@@ -873,9 +875,10 @@ aiRoutes.post(
           // Topology sessions get a fixed title: no model or evidence text ever names a session.
           const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
           try {
-            await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+            await persistAutoSessionTitle(sessionId, title);
             openaiSession.eventBus.publish({ type: 'title_updated', title });
           } catch (err) {
+            captureException(err, c);
             console.error('[AI/OpenAI] Failed to auto-set session title:', err);
           }
         }
@@ -1001,6 +1004,9 @@ aiRoutes.post(
             // Device-bound sessions narrow tool execution to the device's org
             // (ai_sessions.org_id), not the login org (#3087).
             deviceId: dbSession.deviceId,
+            // A chat opened from a device page defaults its org-scoped WRITES to
+            // the page's org (#6675); reads keep the caller's full scope.
+            writeDefaultOrgId: pageContextWriteDefaultOrgId(dbSession),
           },
           auth,
           c,
@@ -1050,11 +1056,10 @@ aiRoutes.post(
       if (!dbSession.title) {
         const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
         try {
-          await db.update(aiSessions)
-            .set({ title })
-            .where(eq(aiSessions.id, sessionId));
+          await persistAutoSessionTitle(sessionId, title);
           activeSession.eventBus.publish({ type: 'title_updated', title });
         } catch (err) {
+          captureException(err, c);
           console.error('[AI] Failed to auto-set session title:', err);
         }
       }

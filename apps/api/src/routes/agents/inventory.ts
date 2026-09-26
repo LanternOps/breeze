@@ -9,13 +9,15 @@ import {
   devices,
   deviceHardware,
 } from '../../db/schema';
-import { syncDeviceDisks, syncDeviceNetwork } from '../../services/inventoryChildSync';
+import { syncDeviceDisks, syncDeviceNetwork, writeHardwareReport } from '../../services/inventoryChildSync';
 import {
+  agentMemoryInventorySchema,
   agentWarrantyInfoSchema,
   updateHardwareSchema,
   updateSoftwareSchema,
   updateDisksSchema,
   updateNetworkSchema,
+  type AgentMemoryInventory,
 } from './schemas';
 import { sanitizeDate } from './helpers';
 import { upsertAgentWarranty } from '../../services/warrantySync';
@@ -60,21 +62,27 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     .where(eq(deviceHardware.deviceId, device.id))
     .limit(1);
 
-  await db
-    .insert(deviceHardware)
-    .values({
-      deviceId: device.id,
-      orgId: device.orgId,
-      ...data,
-      updatedAt: new Date()
-    })
-    .onConflictDoUpdate({
-      target: deviceHardware.deviceId,
-      set: {
-        ...data,
-        updatedAt: new Date()
-      }
-    });
+  // #5351: the optional `memory` block is pulled out BEFORE the upsert (the
+  // hardware columns are spread from the body) and validated on its own. An
+  // invalid block is logged and ignored — the base hardware still saves and
+  // stored memory stays untouched; it is never truncated into a partial
+  // snapshot. Absent = untouched too (older agents, failed collection).
+  const { memory: rawMemory, ...hardware } = data;
+  let memory: AgentMemoryInventory | null = null;
+  if (rawMemory !== undefined && rawMemory !== null) {
+    const parsed = agentMemoryInventorySchema.safeParse(rawMemory);
+    if (parsed.success) {
+      memory = parsed.data;
+    } else {
+      const issues = parsed.error.issues.slice(0, 3)
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+      console.warn(`[agents.hardware] ignored invalid memory block for device ${device.id}: ${issues}`);
+    }
+  }
+
+  // One short transaction: the hardware upsert, the memory_* summary columns
+  // and the per-slot rows commit together (services/inventoryChildSync.ts).
+  await db.transaction((tx) => writeHardwareReport(tx, device, hardware, memory, new Date()));
 
   // Enqueue a warranty sync only when this report makes both the manufacturer
   // and serial number known for the first time (empty/absent -> populated).

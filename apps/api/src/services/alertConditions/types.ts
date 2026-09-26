@@ -64,7 +64,7 @@ export interface BandwidthHighCondition {
   type: 'bandwidth_high';
   direction: 'in' | 'out' | 'total';
   operator: ComparisonOperator;
-  value: number; // Mbps (converted to bps internally)
+  value: number; // megaBITS/sec; agent samples are bytes/sec, handler converts (x8)
   durationMinutes?: number;
 }
 
@@ -73,7 +73,7 @@ export interface DiskIoHighCondition {
   type: 'disk_io_high';
   direction: 'read' | 'write' | 'total';
   operator: ComparisonOperator;
-  value: number; // MB/s (converted to Bps internally)
+  value: number; // MB/s (10^6 bytes/sec); agent samples are bytes/sec
   durationMinutes?: number;
 }
 

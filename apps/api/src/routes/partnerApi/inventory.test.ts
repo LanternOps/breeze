@@ -61,6 +61,8 @@ function inventoryRow(id = DEVICE_A) {
     orgId: ORG_ID, siteId: SITE_ID, createdAt: CREATED_AT, updatedAt: UPDATED_AT,
     hardware: {
       cpuModel: 'Xeon Gold', cpuCores: 16, cpuThreads: 32, ramTotalMb: 65536,
+      memorySlotsTotal: 2, memoryMaxCapacityMb: 1048576, memorySoldered: false,
+      memoryObservedAt: '2026-07-12T12:00:00.000Z',
       gpuModel: null, motherboardManufacturer: 'Dell', motherboardProduct: 'PowerEdge',
       motherboardVersion: '2', biosVersion: '1.4.2', providerToken: 'never-export',
     },
@@ -79,6 +81,11 @@ function inventoryRow(id = DEVICE_A) {
     warranty: { status: 'active', startsOn: '2025-01-01', endsOn: '2028-01-01', subscription: false, lastSyncError: 'secret-provider-error' },
     virtualMachines: [{ id: '75555555-5555-4555-8555-555555555555', externalId: 'vm-guid', name: 'APP01', generation: 2, memoryMb: 8192, processorCount: 4, rctEnabled: true, passthroughDisks: false, state: 'running', checkpoints: ['secret'] }],
     virtualMachineCount: 1,
+    memoryModules: [
+      { id: '7aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slotKey: 'smbios:0x1100', slotIndex: 0, locator: 'DIMM_A1', bankLabel: 'BANK 0', populated: true, capacityMb: 32768, memoryType: 'DDR4', formFactor: 'DIMM', speedMts: 3200, configuredSpeedMts: 2933, manufacturer: 'Samsung', partNumber: 'M393A4K40DB3', serialNumber: 'S1234', updatedAt: '2026-07-12T12:00:00.000Z' },
+      { id: '7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', slotKey: 'smbios:0x1101', slotIndex: 1, locator: 'DIMM_A2', bankLabel: null, populated: false, capacityMb: null, memoryType: null, formFactor: null, speedMts: null, configuredSpeedMts: null, manufacturer: null, partNumber: null, serialNumber: null },
+    ],
+    memoryModuleCount: 2,
   };
 }
 
@@ -177,6 +184,59 @@ describe('partner reconstruction inventory exports', () => {
     for (const forbidden of ['providertoken', 'usedgb', 'lastsyncerror', 'state', 'checkpoints', 'openports', 'secret']) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  // #5351: per-slot memory inventory rides the device record. slotKey (the
+  // agent's sync identity) and the volatile memoryObservedAt/updatedAt stay
+  // internal; empty slots are exported as populated: false.
+  it('exports memory modules in slot order with the memory summary and a bounded collection', async () => {
+    results.push([inventoryRow()]);
+    results.push([]);
+    const body = await (await request('/partner-api/device-inventory')).json();
+    const record = body.data[0];
+    expect(record.hardware.memory).toEqual({ totalMb: 65536, slotsTotal: 2, maxCapacityMb: 1048576, soldered: false });
+    expect(record.memoryModules).toEqual([
+      {
+        id: '7aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', locator: 'DIMM_A1', bankLabel: 'BANK 0', populated: true,
+        capacityMb: 32768, memoryType: 'DDR4', formFactor: 'DIMM', speedMts: 3200, configuredSpeedMts: 2933,
+        manufacturer: 'Samsung', partNumber: 'M393A4K40DB3', serialNumber: 'S1234',
+      },
+      {
+        id: '7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', locator: 'DIMM_A2', bankLabel: null, populated: false,
+        capacityMb: null, memoryType: null, formFactor: null, speedMts: null, configuredSpeedMts: null,
+        manufacturer: null, partNumber: null, serialNumber: null,
+      },
+    ]);
+    expect(record.collections.memoryModules).toEqual({ total: 2, included: 2, complete: true, reason: null });
+    const serialized = JSON.stringify(record);
+    for (const internal of ['slotKey', 'slotIndex', 'memoryObservedAt']) expect(serialized).not.toContain(internal);
+  });
+
+  it('exports a device that has never reported memory with null summary fields and no modules', async () => {
+    const row = inventoryRow();
+    results.push([{
+      ...row, memoryModules: [], memoryModuleCount: 0,
+      hardware: { ...row.hardware, memorySlotsTotal: null, memoryMaxCapacityMb: null, memorySoldered: null, memoryObservedAt: null },
+    }]);
+    results.push([]);
+    const record = (await (await request('/partner-api/device-inventory')).json()).data[0];
+    expect(record.hardware.memory).toEqual({ totalMb: 65536, slotsTotal: null, maxCapacityMb: null, soldered: null });
+    expect(record.memoryModules).toEqual([]);
+    expect(record.collections.memoryModules).toEqual({ total: 0, included: 0, complete: true, reason: null });
+  });
+
+  it('orders the bounded memory projection by slot and scopes it to the device owner', async () => {
+    results.push([], []);
+    expect((await request('/partner-api/device-inventory')).status).toBe(200);
+    const projection = mocks.projections[0]!;
+    const dialect = new PgDialect();
+    const modules = dialect.sqlToQuery(projection.memoryModules as SQL).sql;
+    expect(modules).toContain('"device_memory_modules"');
+    expect(modules).toContain('m.device_id = "devices"."id" AND m.org_id = "devices"."org_id"');
+    expect(modules).toContain('ORDER BY m.slot_index, m.id LIMIT');
+    expect(modules).toContain('jsonb_agg(bounded.item ORDER BY bounded.slot_index, bounded.id)');
+    const count = dialect.sqlToQuery(projection.memoryModuleCount as SQL).sql;
+    expect(count).toContain('m.device_id = "devices"."id" AND m.org_id = "devices"."org_id"');
   });
 
   it('exports site-scoped approved durable equipment and network segments even when the site has no managed devices', async () => {

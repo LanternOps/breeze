@@ -30,9 +30,12 @@ function encryptValue(value: unknown, existing: unknown): unknown {
   return encryptSecret(value);
 }
 
-// Channel configs live in notification_channels.config (JSON); webhook headers
-// live in webhooks.headers (JSON). Pass the column-level AAD so AAD-bound
-// ciphertext written by the registry walker decrypts under the matching tag.
+// Channel configs live in notification_channel_configs.config (JSON; moved off
+// notification_channels by #6379 — the AAD tag keeps the column's original
+// `notification_channels.config` identity, see encryptedColumnRegistry's
+// `aadTag`); webhook headers live in webhooks.headers (JSON). Pass the
+// column-level AAD so AAD-bound ciphertext written by the registry walker
+// decrypts under the matching tag.
 function decryptValueFor(aadColumn: 'notification_channels.config' | 'webhooks.headers') {
   const [table, column] = aadColumn.split('.') as [string, string];
   return (value: unknown): unknown => {

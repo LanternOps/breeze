@@ -534,7 +534,7 @@
       "saveFailed": "Bu ayar değiştirilemedi",
       "remediation": {
         "title": "Önerilen düzeltmeler",
-        "description": "Uyarı ayrıntı sayfasında yapay zekâ tarafından oluşturulan düzeltme önerileri. Bu, her kuruluş için varsayılandır; bir kuruluş bunu kendi Yapay Zekâ sekmesinde geçersiz kılabilir.",
+        "description": "Uyarı ayrıntı sayfasında betiklerinizden, şablonlarınızdan ve playbook'larınızdan eşleştirilen düzeltme önerileri. Bu, her kuruluş için varsayılandır; bir kuruluş bunu kendi Yapay Zekâ sekmesinde geçersiz kılabilir.",
         "enabled": "Önerilen düzeltmeleri oluştur",
         "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin."
       }
@@ -4749,7 +4749,7 @@
         "killSwitch": "Anomali tespiti, operatör tarafından tüm platform için kapatıldı. Bu ayarlar yeniden açıldığında geçerli olacaktır.",
         "remediation": {
           "title": "Önerilen düzeltmeler",
-          "description": "Bu kuruluşun uyarıları için yapay zekâ tarafından oluşturulan düzeltme önerileri. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
+          "description": "Bu kuruluşun uyarıları için betiklerinizden, şablonlarınızdan ve playbook'larınızdan eşleştirilen düzeltme önerileri. Boş bırakılırsa iş ortağı varsayılanı uygulanır.",
           "enabled": "Önerilen düzeltmeleri oluştur",
           "enabledDescription": "Teknisyenlerin bir uyarı için ayrıntı sayfasından önerilen düzeltmeler oluşturmasına izin verin.",
           "killSwitch": "Önerilen düzeltmeler operatör tarafından tüm platformda kapatıldı. Bu ayar yeniden açıldıklarında geçerli olur."

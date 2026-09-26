@@ -457,6 +457,12 @@
       ]
     },
     {
+      "pattern": "{apps/api/src/routes/backup/provider*.ts,apps/api/src/routes/backup/health.ts,apps/api/src/services/backupProviders/**,apps/api/src/services/backupHealth*.ts,apps/api/src/jobs/backupProviderSync.ts,apps/web/src/components/integrations/BackupProvider*.tsx,apps/web/src/components/backup/BackupHealth*.tsx,apps/web/src/components/backup/ExternalBackupCard.tsx}",
+      "docs": [
+        "backup/backup-providers.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/dr*.ts",
       "docs": [
         "backup/disaster-recovery.mdx",

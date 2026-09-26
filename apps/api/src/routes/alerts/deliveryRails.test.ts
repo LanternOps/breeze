@@ -13,7 +13,11 @@ vi.mock('../../middleware/auth', async importOriginal => ({
   },
 }));
 vi.mock('../../db', () => ({ db: { select: () => {
+  // selectNotificationChannelsWithConfig (#6379) chains .leftJoin() and
+  // .$dynamic() before the terminal (awaited directly, since no .limit() is
+  // passed for this rail's unbounded read).
   const q: any = { from: () => q, where: () => q, orderBy: () => q, limit: () => q,
+    leftJoin: () => q, $dynamic: () => q,
     then: (ok: any, bad: any) => Promise.resolve(state.rows.shift() ?? []).then(ok, bad) }; return q;
 } } }));
 vi.mock('../../services/delivery/escalationExecution', () => ({ listEscalationUsers: vi.fn(async () => []) }));

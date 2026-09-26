@@ -93,6 +93,8 @@ export const WORKER_FAILURE_REASONS = [
   'ai_budget_alert_event_not_visible',
   /** m365SyncWorker: Graph throttled or the executor was at its sync in-flight cap. */
   'm365_sync_throttled',
+  /** scriptReviewWorker: the proposal row was not found/visible (#7128). */
+  'script_review_proposal_not_visible',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

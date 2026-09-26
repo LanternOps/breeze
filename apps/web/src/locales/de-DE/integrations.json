@@ -6,6 +6,7 @@
     "loading": "Customer-Graph-Read-Verbindung wird geladen.",
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Der Kunden-Graph-Lesezugriff ist für diese Organisation nicht aktiviert.",
+    "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -109,6 +110,7 @@
     "loading": "Customer-Graph-Actions-Verbindung wird geladen.",
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Die Kunden-Graph-Aktionen sind für diese Organisation nicht aktiviert.",
+    "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -410,7 +412,7 @@
     "notifications": "Benachrichtigungen",
     "security": "Sicherheit",
     "monitoring": "Überwachung",
-    "identity": "Identität",
+    "cloudTenants": "Cloud-Mandanten",
     "distributors": "Vertriebspartner",
     "accounting": "Buchhaltung",
     "unifi": "UniFi",

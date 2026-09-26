@@ -108,9 +108,6 @@
       "createTicket": "Falha ao criar chamado"
     },
     "summary": {
-      "devices": "{{count}} dispositivos",
-      "devices_one": "{{count}} dispositivo",
-      "devices_other": "{{count}} dispositivos",
       "maxRisk": "risco máximo {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Dispositivos ({{count}} achados)",
-      "devices_one": "Dispositivos ({{count}} achado)",
-      "devices_other": "Dispositivos ({{count}} achados)"
+      "devicesHeading": "Dispositivos ({{count}})",
+      "versions": "Versões instaladas"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} de {{count}} dispositivo aberto",
+      "devicesOpen_other": "{{open}} de {{count}} dispositivos abertos"
     },
     "selection": {
       "selectAll": "Selecionar todos",
-      "selectAllAria": "Selecionar todos os achados",
-      "deselectAllAria": "Desmarcar todos os achados",
-      "selectFindingAria": "Selecionar achado {{cveId}} em {{deviceName}}",
-      "selected": "{{count}} selecionados",
-      "selected_one": "{{count}} selecionado",
-      "selected_other": "{{count}} selecionados"
+      "selectAllAria": "Selecionar todos os dispositivos",
+      "deselectAllAria": "Desmarcar todos os dispositivos",
+      "selectDeviceAria": "Selecionar {{deviceName}}",
+      "selectedDevices_one": "{{count}} dispositivo selecionado · {{findings}} achados abertos",
+      "selectedDevices_other": "{{count}} dispositivos selecionados · {{findings}} achados abertos"
     },
     "empty": {
       "noFindings": "Nenhum achado de dispositivo permanece neste grupo — nada a fazer."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Remediar {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} dispositivo precisa de atualização",
+      "needUpdating_other": "{{count}} dispositivos precisam de atualização",
+      "nothingOpen": "Nenhum dispositivo tem achados abertos",
+      "scope_one": "{{count}} CVE em {{devices}} dispositivos",
+      "scope_other": "{{count}} CVEs em {{devices}} dispositivos",
+      "scopeSingleDevice_one": "{{count}} CVE em 1 dispositivo",
+      "scopeSingleDevice_other": "{{count}} CVEs em 1 dispositivo"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivos"
+    },
+    "device": {
+      "openOf_one": "{{open}} aberto de {{count}} CVE",
+      "openOf_other": "{{open}} abertos de {{count}} CVEs",
+      "accepted": "{{count}} aceitos",
+      "mitigated": "{{count}} mitigados",
+      "patched": "{{count}} corrigidos",
+      "patchReady": "{{count}} prontos para correção",
+      "show": "Achados",
+      "hide": "Ocultar",
+      "expandAria": "Mostrar achados em {{deviceName}}",
+      "collapseAria": "Ocultar achados em {{deviceName}}",
+      "loading": "Carregando achados…",
+      "loadError": "Falha ao carregar achados do dispositivo"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Software",
       "severity": "Gravidade",
       "risk": "Risco",
-      "cves": "CVEs",
-      "devices": "Dispositivos",
+      "devices": "Dispositivos afetados",
       "patch": "Correção"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Pronta · {{ready}}/{{total}} dispositivo",
       "ready_other": "Prontas · {{ready}}/{{total}} dispositivos"
     },
-    "hasMore": "Mostrando os 500 principais grupos por risco — restrinja os filtros para ver o restante."
+    "hasMore": "Mostrando os 500 principais grupos por risco — restrinja os filtros para ver o restante.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivos",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVEs"
   },
   "vulnBulkActionModal": {
     "headings": {

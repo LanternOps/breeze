@@ -819,6 +819,10 @@ const REPOINT_TABLES: readonly string[] = [
   "device_hardware_health",
   "device_ip_history",
   "device_link_groups",
+  // device_memory_modules (#5351): plain repoint — its only unique index is
+  // (device_id, slot_key), which cannot collide across orgs because a device
+  // belongs to one org.
+  "device_memory_modules",
   "device_metrics",
   "device_network",
   "device_patches",

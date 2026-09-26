@@ -302,7 +302,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_function_assessments',
   'device_group_memberships', 'device_hardware',
   'device_hardware_components', 'device_hardware_events', 'device_hardware_health',
-  'device_ip_history',
+  'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'agent_rollback_events', 'agent_rollback_directives',
@@ -542,7 +542,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_hardware_components',
   'device_hardware_events',
   'device_hardware_health',
-  'device_network', 'device_ip_history', 'device_disks',
+  'device_network', 'device_ip_history', 'device_disks', 'device_memory_modules',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
@@ -981,9 +981,6 @@ coreRoutes.get(
     if (query.search) {
       conditions.push(like(devices.hostname, `%${query.search}%`));
     }
-    if (query.hardwareHealth) {
-      conditions.push(eq(deviceHardwareHealth.health, query.hardwareHealth));
-    }
 
     // Exclude decommissioned by default unless explicitly requested.
     if (!query.status && query.includeDecommissioned !== 'true') {
@@ -1009,7 +1006,6 @@ coreRoutes.get(
       const countResult = await db
         .select({ count: sql<number>`count(*)` })
         .from(devices)
-        .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
     }

@@ -108,9 +108,6 @@
       "createTicket": "Bilet oluşturulamadı"
     },
     "summary": {
-      "devices": "{{count}} cihazlar",
-      "devices_one": "{{count}} cihaz",
-      "devices_other": "{{count}} cihazlar",
       "maxRisk": "maksimum risk {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVE'ler ({{count}})",
-      "devices": "Cihazlar ({{count}} bulgular)",
-      "devices_one": "Cihazlar ({{count}} bulma)",
-      "devices_other": "Cihazlar ({{count}} bulgular)"
+      "devicesHeading": "Cihazlar ({{count}})",
+      "versions": "Yüklü sürümler"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{count}} cihazdan {{open}} tanesi açık",
+      "devicesOpen_other": "{{count}} cihazdan {{open}} tanesi açık"
     },
     "selection": {
       "selectAll": "Tümünü seç",
-      "selectAllAria": "Tüm bulguları seç",
-      "deselectAllAria": "Tüm bulguların seçimini kaldır",
-      "selectFindingAria": "{{deviceName}} üzerinde {{cveId}} bulmayı seçin",
-      "selected": "{{count}} seçildi",
-      "selected_one": "{{count}} seçildi",
-      "selected_other": "{{count}} seçildi"
+      "selectAllAria": "Tüm cihazları seç",
+      "deselectAllAria": "Tüm cihazların seçimini kaldır",
+      "selectDeviceAria": "{{deviceName}} öğesini seç",
+      "selectedDevices_one": "{{count}} cihaz seçildi · {{findings}} açık bulgu",
+      "selectedDevices_other": "{{count}} cihaz seçildi · {{findings}} açık bulgu"
     },
     "empty": {
       "noFindings": "Bu grupta hiçbir cihaz bulgusu kalmadı; üzerinde işlem yapılacak bir şey yok."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Düzeltin {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} cihazın güncellenmesi gerekiyor",
+      "needUpdating_other": "{{count}} cihazın güncellenmesi gerekiyor",
+      "nothingOpen": "Hiçbir cihazda açık bulgu yok",
+      "scope_one": "{{devices}} cihazda {{count}} CVE",
+      "scope_other": "{{devices}} cihazda {{count}} CVE",
+      "scopeSingleDevice_one": "1 cihazda {{count}} CVE",
+      "scopeSingleDevice_other": "1 cihazda {{count}} CVE"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} cihaz",
+      "deviceCount_other": "{{count}} cihaz"
+    },
+    "device": {
+      "openOf_one": "{{count}} CVE'den {{open}} tanesi açık",
+      "openOf_other": "{{count}} CVE'den {{open}} tanesi açık",
+      "accepted": "{{count}} kabul edildi",
+      "mitigated": "{{count}} etkisi azaltıldı",
+      "patched": "{{count}} yamalandı",
+      "patchReady": "{{count}} yamaya hazır",
+      "show": "Bulgular",
+      "hide": "Gizle",
+      "expandAria": "{{deviceName}} üzerindeki bulguları göster",
+      "collapseAria": "{{deviceName}} üzerindeki bulguları gizle",
+      "loading": "Bulgular yükleniyor…",
+      "loadError": "Cihaz bulguları yüklenemedi"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Yazılım",
       "severity": "Önem",
       "risk": "Risk",
-      "cves": "CVE'ler",
-      "devices": "Cihazlar",
+      "devices": "Etkilenen cihazlar",
       "patch": "Yama"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Hazır · {{ready}}/{{total}} cihaz",
       "ready_other": "Hazır · {{ready}}/{{total}} cihazlar"
     },
-    "hasMore": "Riske göre ilk 500 grup gösteriliyor — geri kalanını görmek için filtreleri daraltın."
+    "hasMore": "Riske göre ilk 500 grup gösteriliyor — geri kalanını görmek için filtreleri daraltın.",
+    "devices_one": "{{count}} cihaz",
+    "devices_other": "{{count}} cihazlar",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVE'ler"
   },
   "vulnBulkActionModal": {
     "headings": {

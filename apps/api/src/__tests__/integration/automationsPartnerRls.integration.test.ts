@@ -64,7 +64,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { alertRules, alerts, alertTemplates, automationRunDeviceResults, automationRuns, automations, devices, notificationChannels, sites } from '../../db/schema';
+import { alertRules, alerts, alertTemplates, automationRunDeviceResults, automationRuns, automations, devices, notificationChannelConfigs, notificationChannels, sites } from '../../db/schema';
 import { queueEventTriggers } from '../../jobs/automationWorker';
 import {
   createAutomationRunRecord,
@@ -557,12 +557,20 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
           partnerId: partner.id,
           name: 'Runtime failure fixture',
           type: 'pagerduty',
-          config: { routingKey: 'not-used-by-automation-runtime' },
           enabled: true,
         })
         .returning({ id: notificationChannels.id }),
     );
     if (!unsupportedChannel) throw new Error('Notification channel fixture failed');
+    // `config` lives in notification_channel_configs (#6379). Delivery refuses a
+    // channel with no stored config before reaching the type switch, so seed one
+    // for the pagerduty branch to return its "not implemented" failure.
+    await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db.insert(notificationChannelConfigs).values({
+        channelId: unsupportedChannel.id,
+        config: { routingKey: 'fixture' },
+      }),
+    );
     createdNotificationChannels.push(unsupportedChannel.id);
     const failingActions: AutomationAction[] = [
       { type: 'send_notification', notificationChannelId: unsupportedChannel.id },

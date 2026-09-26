@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { db as appDb, withDbAccessContext } from '../../db';
 import {
   deviceDisks,
+  deviceHardware,
+  deviceMemoryModules,
   deviceNetwork,
   devices,
   discoveredAssets,
@@ -112,6 +114,7 @@ describe('partner reconstruction resource watermarks', () => {
       'software_inventory_device_org_fk',
       'device_warranty_device_org_fk',
       'hyperv_vms_device_org_fk',
+      'device_memory_modules_device_org_fk',
       'discovered_assets_site_org_fk',
       'network_baselines_site_org_fk',
       'network_topology_site_org_fk',
@@ -415,6 +418,112 @@ describe('partner reconstruction resource watermarks', () => {
     const afterDelete = await siteState(targetSite.id);
     expect(afterDelete.inventory.getTime()).toBeGreaterThan(afterNewMove.inventory.getTime());
     expect(afterDelete.relationships.getTime()).toBeGreaterThan(afterNewMove.relationships.getTime());
+  });
+
+  // #5351 — device_memory_modules joins the device-child material family
+  // (2026-11-01-110000). None of this is auto-discovered, so each property is
+  // asserted here: composite ownership, watermark on material change only,
+  // old+new owner on a move, and the live export projection.
+  runDb('memory modules: composite ownership rejects a forged device/org pair under RLS', async () => {
+    const own = await seedDevice();
+    const foreign = await seedDevice();
+    await expect(withDbAccessContext(partnerContext(own.partnerId, own.orgId), () => appDb.insert(deviceMemoryModules).values({
+      deviceId: foreign.deviceId, orgId: own.orgId, slotKey: 'forged', slotIndex: 0, locator: 'DIMM_X', populated: true,
+    }))).rejects.toMatchObject({ cause: expect.objectContaining({ code: '23503' }) });
+    const [constraint] = await getTestDb().execute<{ deferrable: boolean; deferred: boolean; onUpdate: string }>(sql`
+      SELECT condeferrable AS deferrable, condeferred AS deferred, confupdtype AS "onUpdate"
+        FROM pg_catalog.pg_constraint WHERE conname = 'device_memory_modules_device_org_fk'
+    `);
+    expect(constraint).toEqual({ deferrable: true, deferred: false, onUpdate: 'c' });
+  });
+
+  runDb('memory modules: insert/delete and material updates advance inventory; updated_at alone does not', async () => {
+    const fixture = await seedDevice();
+    const db = getTestDb();
+    await db.execute(sql`SELECT public.breeze_partner_export_touch_devices(ARRAY[${fixture.deviceId}::uuid], true, true, true)`);
+    const initial = await deviceState(fixture.deviceId);
+    const [slot] = await db.insert(deviceMemoryModules).values({
+      deviceId: fixture.deviceId, orgId: fixture.orgId, slotKey: 'smbios:0x1100', slotIndex: 0,
+      locator: 'DIMM_A1', populated: true, capacityMb: 16384,
+    }).returning();
+    if (!slot) throw new Error('memory module insert failed');
+    const afterInsert = await deviceState(fixture.deviceId);
+    expect(afterInsert.inventory.getTime()).toBeGreaterThan(initial.inventory.getTime());
+    expect(afterInsert.software.getTime()).toBe(initial.software.getTime());
+    expect(afterInsert.relationships.getTime()).toBe(initial.relationships.getTime());
+
+    await db.update(deviceMemoryModules).set({ updatedAt: new Date() }).where(eq(deviceMemoryModules.id, slot.id));
+    expect(await deviceState(fixture.deviceId)).toEqual(afterInsert);
+
+    await db.update(deviceMemoryModules).set({ populated: false, capacityMb: null }).where(eq(deviceMemoryModules.id, slot.id));
+    const afterEmpty = await deviceState(fixture.deviceId);
+    expect(afterEmpty.inventory.getTime()).toBeGreaterThan(afterInsert.inventory.getTime());
+
+    await db.delete(deviceMemoryModules).where(eq(deviceMemoryModules.id, slot.id));
+    expect((await deviceState(fixture.deviceId)).inventory.getTime()).toBeGreaterThan(afterEmpty.inventory.getTime());
+  });
+
+  runDb('memory modules: moving a slot row between devices advances both owners', async () => {
+    const fixture = await seedDevice();
+    const db = getTestDb();
+    const [target] = await db.insert(devices).values({
+      orgId: fixture.orgId, siteId: fixture.siteId,
+      agentId: `mem-move-${crypto.randomUUID()}`.slice(0, 64), hostname: 'mem-target',
+      osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
+    }).returning();
+    if (!target) throw new Error('target insert failed');
+    const [moving] = await db.insert(deviceMemoryModules).values({
+      deviceId: fixture.deviceId, orgId: fixture.orgId, slotKey: 'smbios:0x1100', slotIndex: 0,
+      locator: 'DIMM_A1', populated: true,
+    }).returning();
+    await db.insert(deviceMemoryModules).values({
+      deviceId: target.id, orgId: fixture.orgId, slotKey: 'smbios:0x2200', slotIndex: 0, locator: 'DIMM_B1', populated: false,
+    });
+    if (!moving) throw new Error('moving insert failed');
+    const beforeOld = await deviceState(fixture.deviceId);
+    const beforeNew = await deviceState(target.id);
+    await db.update(deviceMemoryModules).set({ deviceId: target.id }).where(eq(deviceMemoryModules.id, moving.id));
+    expect((await deviceState(fixture.deviceId)).inventory.getTime()).toBeGreaterThan(beforeOld.inventory.getTime());
+    expect((await deviceState(target.id)).inventory.getTime()).toBeGreaterThan(beforeNew.inventory.getTime());
+  });
+
+  runDb('memory modules: a device org move carries its slot rows (ON UPDATE CASCADE)', async () => {
+    const fixture = await seedDevice();
+    const db = getTestDb();
+    await db.insert(deviceMemoryModules).values({
+      deviceId: fixture.deviceId, orgId: fixture.orgId, slotKey: 'smbios:0x1100', slotIndex: 0, locator: 'DIMM_A1', populated: true,
+    });
+    const targetOrg = await createOrganization({ partnerId: fixture.partnerId });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    await db.update(devices).set({ orgId: targetOrg.id, siteId: targetSite.id }).where(eq(devices.id, fixture.deviceId));
+    const rows = await db.select({ orgId: deviceMemoryModules.orgId }).from(deviceMemoryModules)
+      .where(eq(deviceMemoryModules.deviceId, fixture.deviceId));
+    expect(rows).toEqual([{ orgId: targetOrg.id }]);
+  });
+
+  runDb('memory modules: the live device-inventory export projects slots and the summary', async () => {
+    const fixture = await seedDevice();
+    const db = getTestDb();
+    await db.insert(deviceHardware).values({
+      deviceId: fixture.deviceId, orgId: fixture.orgId, ramTotalMb: 16384,
+      memorySlotsTotal: 2, memoryMaxCapacityMb: 65536, memorySoldered: false, memoryObservedAt: new Date(),
+    });
+    await db.insert(deviceMemoryModules).values([
+      { deviceId: fixture.deviceId, orgId: fixture.orgId, slotKey: 'smbios:0x1101', slotIndex: 1, locator: 'DIMM_A2', populated: false },
+      {
+        deviceId: fixture.deviceId, orgId: fixture.orgId, slotKey: 'smbios:0x1100', slotIndex: 0, locator: 'DIMM_A1',
+        populated: true, capacityMb: 16384, memoryType: 'DDR4', speedMts: 3200, serialNumber: 'S1',
+      },
+    ]);
+    const response = await exportApp(fixture.partnerId, fixture.orgId).request('/device-inventory');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json() as { data: Array<Record<string, any>> };
+    const record = body.data.find((row) => row.deviceId === fixture.deviceId)!;
+    expect(record.hardware.memory).toEqual({ totalMb: 16384, slotsTotal: 2, maxCapacityMb: 65536, soldered: false });
+    expect(record.memoryModules.map((m: any) => [m.locator, m.populated, m.capacityMb])).toEqual([
+      ['DIMM_A1', true, 16384], ['DIMM_A2', false, null],
+    ]);
+    expect(record.collections.memoryModules).toEqual({ total: 2, included: 2, complete: true, reason: null });
   });
 
   runDb('executes all three bounded union queries against PostgreSQL', async () => {

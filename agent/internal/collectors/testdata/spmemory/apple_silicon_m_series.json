@@ -1,0 +1,9 @@
+{
+  "SPMemoryDataType" : [
+    {
+      "dimm_manufacturer" : "Samsung",
+      "dimm_type" : "LPDDR5",
+      "SPMemoryDataType" : "128 GB"
+    }
+  ]
+}

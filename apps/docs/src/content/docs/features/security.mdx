@@ -108,6 +108,8 @@ The agent normalizes detected AV products to one of the following provider ident
   Before v0.116.0, quarantine and restore were reachable only through the API (see [Threat Actions](#threat-actions) below) — a quarantined threat had no UI path to restore it. The Threats tab closes that gap.
 </Aside>
 
+Quarantine, Remove and Restore send a command to the device; they do not change the threat on their own. Since v0.117.0 the threat keeps its current status until the agent reports the result, and only then shows **quarantined**, **removed** or **allowed**. If the device is offline, the threat keeps its previous status until the device comes back and runs the command. Earlier versions changed the status as soon as the action was queued, so a threat on an offline device could show as quarantined when nothing had happened on the device.
+
 ## Threat Detection
 
 ### Threat Types and Severity

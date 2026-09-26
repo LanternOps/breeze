@@ -5,7 +5,7 @@ import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
@@ -837,49 +837,68 @@ remediationSuggestionRoutes.post(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id') ?? '';
 
-    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
-    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
-    if (orgCond) conditions.push(orgCond);
+    // #7109 — this route is registered in middleware/selfManagedDbContextRoutes.ts,
+    // so no request transaction is held here. Three phases, none nested:
+    //   1. load + gate the suggestion in a short context;
+    //   2. executeScriptOnDevices creates the execution rows through the runner
+    //      (a context that COMMITS when it returns) and sends the command only
+    //      after that commit — under the old request tx the command went out
+    //      while its rows were uncommitted and a fast agent's result was
+    //      dropped as an orphan;
+    //   3. link the suggestion to the execution in a second short context.
+    // No context is held across phase 2: the service opens its own, and
+    // holding one here would take a second pooled connection (#6671).
+    const gate = await withAuthDbAccessContext(auth, async () => {
+      const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+      const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+      if (orgCond) conditions.push(orgCond);
 
-    const [existing] = await db
-      .select()
-      .from(remediationSuggestions)
-      .where(and(...conditions))
-      .limit(1);
+      const [existing] = await db
+        .select()
+        .from(remediationSuggestions)
+        .where(and(...conditions))
+        .limit(1);
 
-    if (!existing) {
-      return c.json({ error: 'Suggestion not found' }, 404);
-    }
-    if (!(await siteAllowedForSuggestion(existing, perms))) {
-      return c.json({ error: 'Suggestion not found or access denied' }, 403);
-    }
-    if (existing.status !== 'accepted' && existing.status !== 'edited') {
-      return c.json({ error: 'Suggestion must be accepted or edited before it can be executed' }, 400);
-    }
-    if (existing.scriptExecutionId) {
-      return c.json({ error: 'Suggestion already has a linked script execution' }, 409);
-    }
-    if (existing.targetType !== 'script' || !existing.scriptId) {
-      return c.json({ error: 'Only script remediation suggestions can be executed' }, 400);
-    }
+      if (!existing) {
+        return { ok: false as const, error: 'Suggestion not found', status: 404 as const };
+      }
+      if (!(await siteAllowedForSuggestion(existing, perms))) {
+        return { ok: false as const, error: 'Suggestion not found or access denied', status: 403 as const };
+      }
+      if (existing.status !== 'accepted' && existing.status !== 'edited') {
+        return { ok: false as const, error: 'Suggestion must be accepted or edited before it can be executed', status: 400 as const };
+      }
+      if (existing.scriptExecutionId) {
+        return { ok: false as const, error: 'Suggestion already has a linked script execution', status: 409 as const };
+      }
+      if (existing.targetType !== 'script' || !existing.scriptId) {
+        return { ok: false as const, error: 'Only script remediation suggestions can be executed', status: 400 as const };
+      }
 
-    const deviceId = singleTargetDeviceId(existing);
-    if (!deviceId) {
-      return c.json({ error: 'Remediation script execution requires exactly one target device' }, 400);
-    }
+      const deviceId = singleTargetDeviceId(existing);
+      if (!deviceId) {
+        return { ok: false as const, error: 'Remediation script execution requires exactly one target device', status: 400 as const };
+      }
 
-    const approvalError = await validateRemediationExecutionApproval(existing, deviceId);
-    if (approvalError) {
-      return c.json({ error: approvalError }, 403);
+      const approvalError = await validateRemediationExecutionApproval(existing, deviceId);
+      if (approvalError) {
+        return { ok: false as const, error: approvalError, status: 403 as const };
+      }
+      return { ok: true as const, existing, scriptId: existing.scriptId, deviceId };
+    });
+    if (!gate.ok) {
+      return c.json({ error: gate.error }, gate.status);
     }
+    const { existing, scriptId, deviceId } = gate;
 
     const execution = await executeScriptOnDevices({
-      scriptId: existing.scriptId,
+      scriptId,
       deviceIds: [deviceId],
       parameters: normalizeSuggestionParameters(existing.parameters),
       triggerType: 'manual',
       auth,
       permissions: perms,
+      runInDbContext: (fn) => withAuthDbAccessContext(auth, fn),
     });
 
     if (!execution.ok) {
@@ -897,46 +916,55 @@ remediationSuggestionRoutes.post(
     }
     const scriptExecutionId = admission.executionId;
 
-    const now = new Date();
-    const [updated] = await db
-      .update(remediationSuggestions)
-      .set({
-        status: 'executed',
-        scriptExecutionId,
-        executedBy: auth.user.id,
-        executedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(remediationSuggestions.id, existing.id))
-      .returning();
+    // The execution is committed (and may already be running) by now, so a
+    // failure below leaves it unlinked from the suggestion. That was already
+    // true under the request tx: a rollback there could undo the link but
+    // never the command the agent had been sent.
+    const updated = await withAuthDbAccessContext(auth, async () => {
+      const now = new Date();
+      const [row] = await db
+        .update(remediationSuggestions)
+        .set({
+          status: 'executed',
+          scriptExecutionId,
+          executedBy: auth.user.id,
+          executedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(remediationSuggestions.id, existing.id))
+        .returning();
+
+      if (!row) return undefined;
+
+      await emitRemediationSuggestionFeedback({
+        orgId: row.orgId,
+        suggestionId: row.id,
+        eventType: 'suggestion.executed',
+        dedupeKey: remediationFeedbackDedupeKey({
+          status: 'executed',
+          scriptExecutionId: row.scriptExecutionId,
+          playbookExecutionId: row.playbookExecutionId,
+          toolExecutionId: row.toolExecutionId,
+        }),
+        outcome: 'executed',
+        actorUserId: auth.user.id,
+        metadata: {
+          route: 'remediation_suggestions.execute',
+          sourceType: row.sourceType,
+          sourceId: row.sourceId,
+          targetType: row.targetType,
+          scriptId: row.scriptId,
+          scriptExecutionId: row.scriptExecutionId,
+          elevationRequestId: row.elevationRequestId,
+          riskTier: row.riskTier,
+        },
+      });
+      return row;
+    });
 
     if (!updated) {
       return c.json({ error: 'Failed to update suggestion' }, 500);
     }
-
-    await emitRemediationSuggestionFeedback({
-      orgId: updated.orgId,
-      suggestionId: updated.id,
-      eventType: 'suggestion.executed',
-      dedupeKey: remediationFeedbackDedupeKey({
-        status: 'executed',
-        scriptExecutionId: updated.scriptExecutionId,
-        playbookExecutionId: updated.playbookExecutionId,
-        toolExecutionId: updated.toolExecutionId,
-      }),
-      outcome: 'executed',
-      actorUserId: auth.user.id,
-      metadata: {
-        route: 'remediation_suggestions.execute',
-        sourceType: updated.sourceType,
-        sourceId: updated.sourceId,
-        targetType: updated.targetType,
-        scriptId: updated.scriptId,
-        scriptExecutionId: updated.scriptExecutionId,
-        elevationRequestId: updated.elevationRequestId,
-        riskTier: updated.riskTier,
-      },
-    });
 
     writeRouteAudit(c, {
       orgId: updated.orgId,

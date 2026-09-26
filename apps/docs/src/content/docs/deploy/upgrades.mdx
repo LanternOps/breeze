@@ -84,6 +84,10 @@ This only reads. It does not run migrations or record a version. It exits 0. Add
 
 The report never blocks the API from starting. If the deployment has no recorded version history (the first upgrade to a version with this check, or a database the check could not read), the report lists every retirement in effect for the new image and marks it as possibly crossed. It does not report "no issues" in that case.
 
+### In the web UI
+
+Platform administrators can see the same information at **Administration → System** (`/admin/system`, v0.117.0+). The **Deprecations** tab lists every retirement the running image knows about with its status for this deployment (crossed, possibly crossed, in effect, or upcoming), along with the running version, the last version recorded, the applied and pending migration counts, and the deployment's version history. The **Connections** tab shows each integration the API container is configured for, grouped by area, as enabled, disabled, misconfigured, or required but missing. It reads the API container's environment only, never shows secret values, and does not contact the services themselves, so "enabled" means configured, not reachable. Both tabs are read-only.
+
 ## Compose file changes
 
 `docker compose pull` updates images; it does **not** download a new `docker-compose.yml`, override file, or `.env.example`. Current images can therefore run with old network settings or missing environment mappings. Review the configuration shipped with **every target release**, including when skipping versions; the entries below highlight changes that need operator action, not a complete Compose changelog.
