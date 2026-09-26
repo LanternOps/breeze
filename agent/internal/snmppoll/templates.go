@@ -62,6 +62,9 @@ const (
 	LldpRemChassisIDSubtypeOID = "1.0.8802.1.1.2.1.4.1.1.4" // lldpRemChassisIdSubtype
 	LldpRemPortIDSubtypeOID    = "1.0.8802.1.1.2.1.4.1.1.6" // lldpRemPortIdSubtype
 	LldpLocPortIDSubtypeOID    = "1.0.8802.1.1.2.1.3.7.1.2" // lldpLocPortIdSubtype
+	// The target's own chassis identity (scalars under lldpLocalSystemData).
+	LldpLocChassisIDSubtypeOID = "1.0.8802.1.1.2.1.3.1"     // lldpLocChassisIdSubtype
+	LldpLocChassisIDOID        = "1.0.8802.1.1.2.1.3.2"     // lldpLocChassisId
 	LldpLocPortDescOID         = "1.0.8802.1.1.2.1.3.7.1.4" // lldpLocPortDesc
 	// lldpRemManAddrIfSubtype; the management address itself lives in the row
 	// index: timeMark.localPortNum.remIndex.addrSubtype.addrLen.addr...

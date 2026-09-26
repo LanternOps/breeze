@@ -8,7 +8,9 @@ import { projectTopology } from './projectors';
 import { isPhysicalTopologySection, outcomeHasPositives, type NormalizedTopologySnapshot } from './collectionTypes';
 import { topologyPositiveKeys } from './collectionFactKeys';
 import { emptyProjection, type CollectionPublication, type CollectionEvent, type SupportPublication } from './reconciliationTypes';
-import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
+import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, physicalChassisClaimsOf, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
+import { unboundPhysicalNode } from './physicalProjector';
+import { physicalTargetSourceKey } from './physicalIdentity';
 
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 const where=(scope:TopologyScope,table:{orgId:typeof topologyCollectionSources.orgId;siteId:typeof topologyCollectionSources.siteId})=>and(eq(table.orgId,scope.orgId),eq(table.siteId,scope.siteId));
@@ -54,6 +56,10 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   // UniFi endpoint bindings (D16) come from the site's live retained list rows.
   const refreshUnifiBindings=()=>{if(resolver)resolver.unifiEndpointDevices=unifiEndpointDevicesOf(sources.filter(s=>!s.revokedAt&&s.protocol.startsWith('unifi_')).map(s=>baselines.get(s.id)!));};
   refreshUnifiBindings();
+  // Targets' own LLDP chassis (item 7): an unresolved target claims for its scoped unbound node.
+  const refreshChassis=()=>{if(resolver)resolver.chassisIds=physicalChassisClaimsOf(sources.map(source=>({source,baseline:baselines.get(source.id)})),
+    authority=>resolver.subjectFor(authority)??unboundPhysicalNode(scope,physicalTargetSourceKey(authority),authority,nodes,new Date(0)).id);};
+  refreshChassis();
   for(const event of events){
     const source=event.source;
     if(event.kind==='snapshot')result.consumedRuns.push(event.run.id);
@@ -114,6 +120,7 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
     Object.assign(baseline,{...snapshot,_rowRelationships:nextRows});
     // A changed UniFi binding set can retarget attachments of OTHER sources (D15.2).
     if(unifiBindingSection){refreshUnifiBindings();identityTouched=true;}
+    if(snapshot.section.kind==='snmp_interfaces')refreshChassis();
     checkpoint.set(source.id,{sourceId:source.id,epoch:source.producerEpoch,sequence:event.run.sequence,digest:event.run.contentDigest,baseline});
   }
   // Revocation is a source transition, never a deletion of other observers' facts.

@@ -191,7 +191,7 @@
         "capturedAt": "2026-09-15T12:00:00Z",
         "captureAgeAtSendMs": 0,
         "expectedIntervalSeconds": 3600,
-        "contentDigest": "c585db82f3f77d0271176c04f4b2f39ad9eb38930ce397e583990d59a6bb94ad",
+        "contentDigest": "80b6c56bef1129402564a2c9f6b8ac224e4c8126d97695aec72adba2c973a1bd",
         "source": {
           "sourceKey": "snmp:192.0.2.10",
           "address": "192.0.2.10",
@@ -301,7 +301,11 @@
           {
             "kind": "interfaces",
             "contextKey": "default",
-            "contentDigest": "1d5b53bcd1359846700a8f9526b9829a78153e320d7804dd35e3137d12ea2132",
+            "localChassis": {
+              "subtype": "mac_address",
+              "value": "02:00:00:00:01:00"
+            },
+            "contentDigest": "4bdd763376a5443b7da90645ef344603fa4f9a810d389862bdf750eb8affba73",
             "outcome": "complete",
             "rowCount": 2,
             "rows": [
@@ -356,13 +360,13 @@
               "contextKey": "default",
               "outcome": "complete",
               "rowCount": 2,
-              "contentDigest": "1d5b53bcd1359846700a8f9526b9829a78153e320d7804dd35e3137d12ea2132"
+              "contentDigest": "4bdd763376a5443b7da90645ef344603fa4f9a810d389862bdf750eb8affba73"
             }
           ]
         }
       },
       "expected": {
-        "reportCanonical": "{\"canonicalizationVersion\":1,\"contract\":\"adjacency_v2\",\"producerEpoch\":\"fixture-epoch-1\",\"sections\":[{\"contextKey\":\"default\",\"kind\":\"cdp\",\"outcome\":\"complete\",\"rowCount\":1,\"rows\":[{\"deviceIndex\":1,\"localPort\":{\"namespace\":\"if_index\",\"resolvedInterfaceKey\":\"name:ge-0/0/8\",\"value\":\"102\"},\"remoteAddress\":\"192.0.2.2\",\"remoteDevice\":{\"subtype\":\"cdp_device_id\",\"value\":\"edge-sw.example.test\"},\"remotePort\":{\"subtype\":\"interface_name\",\"value\":\"FastEthernet0/3\"},\"rowKey\":\"102.1\"}]},{\"contextKey\":\"default\",\"kind\":\"fdb\",\"outcome\":\"partial\",\"reasonCode\":\"mapping_failed\",\"rowCount\":1,\"rows\":[{\"bridgeContext\":\"default\",\"bridgePort\":8,\"fdbId\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"mac\":\"02:00:00:00:00:20\",\"rowKey\":\"default|-|02:00:00:00:00:20|8\",\"status\":\"learned\",\"vlanMapping\":\"unknown\",\"vlans\":[]}]},{\"contextKey\":\"default\",\"kind\":\"interfaces\",\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"bridgePort\":7,\"ifAlias\":\"uplink to core\",\"ifIndex\":101,\"ifName\":\"ge-0/0/7\",\"interfaceKey\":\"name:ge-0/0/7\",\"lldpLocalPort\":7,\"physAddress\":\"02:00:00:00:01:07\",\"rowKey\":\"101\"},{\"bridgePort\":8,\"ifAlias\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"interfaceKey\":\"name:ge-0/0/8\",\"lldpLocalPort\":null,\"physAddress\":\"02:00:00:00:01:08\",\"rowKey\":\"102\"}]},{\"contextKey\":\"default\",\"kind\":\"lldp\",\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"localPort\":{\"namespace\":\"lldp_local\",\"resolvedInterfaceKey\":\"name:ge-0/0/7\",\"value\":\"7\"},\"remoteAddresses\":[\"192.0.2.1\",\"2001:db8::1\"],\"remoteChassis\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:00:01\"},\"remoteIndex\":1,\"remotePort\":{\"subtype\":\"interface_name\",\"value\":\"Gi0/1\"},\"remoteSysName\":\"core-sw\",\"rowKey\":\"7.1\"},{\"localPort\":{\"namespace\":\"lldp_local\",\"resolvedInterfaceKey\":\"name:ge-0/0/7\",\"value\":\"7\"},\"remoteChassis\":{\"subtype\":\"local\",\"value\":\"020000000002\"},\"remoteIndex\":2,\"remotePort\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:00:02\"},\"rowKey\":\"7.2\"}]}],\"source\":{\"address\":\"192.0.2.10\",\"sourceKey\":\"snmp:192.0.2.10\",\"zone\":null},\"sourceIdentity\":\"fixture-org:fixture-site:discovery:fixture-device\",\"version\":2}",
+        "reportCanonical": "{\"canonicalizationVersion\":1,\"contract\":\"adjacency_v2\",\"producerEpoch\":\"fixture-epoch-1\",\"sections\":[{\"contextKey\":\"default\",\"kind\":\"cdp\",\"outcome\":\"complete\",\"rowCount\":1,\"rows\":[{\"deviceIndex\":1,\"localPort\":{\"namespace\":\"if_index\",\"resolvedInterfaceKey\":\"name:ge-0/0/8\",\"value\":\"102\"},\"remoteAddress\":\"192.0.2.2\",\"remoteDevice\":{\"subtype\":\"cdp_device_id\",\"value\":\"edge-sw.example.test\"},\"remotePort\":{\"subtype\":\"interface_name\",\"value\":\"FastEthernet0/3\"},\"rowKey\":\"102.1\"}]},{\"contextKey\":\"default\",\"kind\":\"fdb\",\"outcome\":\"partial\",\"reasonCode\":\"mapping_failed\",\"rowCount\":1,\"rows\":[{\"bridgeContext\":\"default\",\"bridgePort\":8,\"fdbId\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"mac\":\"02:00:00:00:00:20\",\"rowKey\":\"default|-|02:00:00:00:00:20|8\",\"status\":\"learned\",\"vlanMapping\":\"unknown\",\"vlans\":[]}]},{\"contextKey\":\"default\",\"kind\":\"interfaces\",\"localChassis\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:01:00\"},\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"bridgePort\":7,\"ifAlias\":\"uplink to core\",\"ifIndex\":101,\"ifName\":\"ge-0/0/7\",\"interfaceKey\":\"name:ge-0/0/7\",\"lldpLocalPort\":7,\"physAddress\":\"02:00:00:00:01:07\",\"rowKey\":\"101\"},{\"bridgePort\":8,\"ifAlias\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"interfaceKey\":\"name:ge-0/0/8\",\"lldpLocalPort\":null,\"physAddress\":\"02:00:00:00:01:08\",\"rowKey\":\"102\"}]},{\"contextKey\":\"default\",\"kind\":\"lldp\",\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"localPort\":{\"namespace\":\"lldp_local\",\"resolvedInterfaceKey\":\"name:ge-0/0/7\",\"value\":\"7\"},\"remoteAddresses\":[\"192.0.2.1\",\"2001:db8::1\"],\"remoteChassis\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:00:01\"},\"remoteIndex\":1,\"remotePort\":{\"subtype\":\"interface_name\",\"value\":\"Gi0/1\"},\"remoteSysName\":\"core-sw\",\"rowKey\":\"7.1\"},{\"localPort\":{\"namespace\":\"lldp_local\",\"resolvedInterfaceKey\":\"name:ge-0/0/7\",\"value\":\"7\"},\"remoteChassis\":{\"subtype\":\"local\",\"value\":\"020000000002\"},\"remoteIndex\":2,\"remotePort\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:00:02\"},\"rowKey\":\"7.2\"}]}],\"source\":{\"address\":\"192.0.2.10\",\"sourceKey\":\"snmp:192.0.2.10\",\"zone\":null},\"sourceIdentity\":\"fixture-org:fixture-site:discovery:fixture-device\",\"version\":2}",
         "sections": [
           {
             "kind": "lldp",
@@ -382,7 +386,7 @@
           {
             "kind": "interfaces",
             "contextKey": "default",
-            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"adjacency_v2\",\"producerEpoch\":\"fixture-epoch-1\",\"section\":{\"contextKey\":\"default\",\"kind\":\"interfaces\",\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"bridgePort\":7,\"ifAlias\":\"uplink to core\",\"ifIndex\":101,\"ifName\":\"ge-0/0/7\",\"interfaceKey\":\"name:ge-0/0/7\",\"lldpLocalPort\":7,\"physAddress\":\"02:00:00:00:01:07\",\"rowKey\":\"101\"},{\"bridgePort\":8,\"ifAlias\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"interfaceKey\":\"name:ge-0/0/8\",\"lldpLocalPort\":null,\"physAddress\":\"02:00:00:00:01:08\",\"rowKey\":\"102\"}]},\"source\":{\"address\":\"192.0.2.10\",\"sourceKey\":\"snmp:192.0.2.10\",\"zone\":null},\"sourceIdentity\":\"fixture-org:fixture-site:discovery:fixture-device\",\"version\":2}"
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"adjacency_v2\",\"producerEpoch\":\"fixture-epoch-1\",\"section\":{\"contextKey\":\"default\",\"kind\":\"interfaces\",\"localChassis\":{\"subtype\":\"mac_address\",\"value\":\"02:00:00:00:01:00\"},\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"bridgePort\":7,\"ifAlias\":\"uplink to core\",\"ifIndex\":101,\"ifName\":\"ge-0/0/7\",\"interfaceKey\":\"name:ge-0/0/7\",\"lldpLocalPort\":7,\"physAddress\":\"02:00:00:00:01:07\",\"rowKey\":\"101\"},{\"bridgePort\":8,\"ifAlias\":null,\"ifIndex\":102,\"ifName\":\"ge-0/0/8\",\"interfaceKey\":\"name:ge-0/0/8\",\"lldpLocalPort\":null,\"physAddress\":\"02:00:00:00:01:08\",\"rowKey\":\"102\"}]},\"source\":{\"address\":\"192.0.2.10\",\"sourceKey\":\"snmp:192.0.2.10\",\"zone\":null},\"sourceIdentity\":\"fixture-org:fixture-site:discovery:fixture-device\",\"version\":2}"
           }
         ]
       }

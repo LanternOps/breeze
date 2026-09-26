@@ -32,10 +32,12 @@ const portMac = (sw: Sw, port: number) => `02:00:00:0${sw === 'A' ? 1 : 2}:00:0$
 const iface = (sw: Sw, port: number): PhysicalInterfaceRow => ({
   rowKey: String(port), interfaceKey: `name:Gi0/${port}`, ifIndex: port, ifName: `Gi0/${port}`, ifAlias: null, physAddress: portMac(sw, port), lldpLocalPort: port, bridgePort: port,
 });
-const lldp = (port: number, peer: Sw, peerPort: number): LldpRow => ({
+const lldp = (port: number, peer: Sw, peerPort: number, chassisMac = portMac(peer, peerPort)): LldpRow => ({
   rowKey: `${port}.1`, timeMark: 100, remoteIndex: 1, localPort: { namespace: 'lldp_local', value: String(port), resolvedInterfaceKey: `name:Gi0/${port}` },
-  remoteChassis: { subtype: 'mac_address', value: portMac(peer, peerPort) }, remotePort: { subtype: 'interface_name', value: `Gi0/${peerPort}` },
+  remoteChassis: { subtype: 'mac_address', value: chassisMac }, remotePort: { subtype: 'interface_name', value: `Gi0/${peerPort}` },
 });
+/** Chassis base MACs that match NO interface MAC (the common real-switch case). */
+const BASE_MAC = { A: '02:00:00:00:ba:5a', B: '02:00:00:00:ba:5b' } as const;
 const section = (kind: AdjacencySection['kind'], rows: unknown[]) => ({ kind, contextKey: 'default', contentDigest: '0'.repeat(64), outcome: 'complete', rowCount: rows.length, rows }) as unknown as AdjacencySection;
 
 async function fixture() {
@@ -117,5 +119,29 @@ describe('discovery transport -> physical publication (M2 Task 6b)', () => {
     expect(links[0]!.target_interface_id).not.toBeNull();
     // No unresolved candidate is left active beside the measured link.
     expect(rows.filter(r => r.kind === 'attachment')).toEqual([]);
+  });
+
+  it('resolves LLDP through each target\'s own reported chassis when the chassis is a base MAC matching no interface', async () => {
+    const f = await fixture();
+    const reportFor = (sw: Sw, peer: Sw, withChassis: boolean) => {
+      const interfaces = section('interfaces', [iface(sw, 1), iface(sw, 5)]) as AdjacencySection & { localChassis?: unknown };
+      if (withChassis) interfaces.localChassis = { subtype: 'mac_address', value: BASE_MAC[sw] };
+      return [section('lldp', [lldp(1, peer, 1, BASE_MAC[peer])]), section('cdp', []), section('fdb', []), interfaces];
+    };
+    // Without the targets' own chassis the base MACs name nobody: candidates only.
+    await f.post('A', reportFor('A', 'B', false));
+    await f.post('B', reportFor('B', 'A', false));
+    await f.reconcile();
+    const active = () => f.q<{ kind: string; source_node_id: string; target_node_id: string; support_count: string }>(sql`SELECT kind, source_node_id, target_node_id, support_count::text
+      FROM topology_relationships WHERE org_id=${f.scope.orgId}::uuid AND attributes->>'method'='lldp' AND lifecycle='active'`);
+    expect((await active()).map(r => r.kind)).toEqual(['attachment', 'attachment']);
+
+    await f.post('A', reportFor('A', 'B', true));
+    await f.post('B', reportFor('B', 'A', true));
+    await f.reconcile();
+    const rows = await active();
+    expect(rows.map(r => r.kind), JSON.stringify(rows)).toEqual(['physical_link']);
+    expect(rows[0]!.support_count).toBe('2');
+    expect(new Set([rows[0]!.source_node_id, rows[0]!.target_node_id])).toEqual(new Set([await f.nodeFor(f.assets.A), await f.nodeFor(f.assets.B)]));
   });
 });

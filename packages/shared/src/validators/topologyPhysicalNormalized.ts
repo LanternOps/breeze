@@ -3,7 +3,7 @@ import { collectionOutcomeSchema } from './topology';
 import { refineTopologySectionRows, topologySection } from './topologyCollection';
 import { sorted } from './topologyCollectionCanonical';
 import { topologyDigestSchema, topologyFamilySchema, topologyReasonSchema, topologyUint32Schema, topologyUtf8KeySchema } from './topologyPrimitives';
-import { ADJACENCY_V2_SECTION_LIMITS, cdpRowSchema, fdbRowSchema, lldpRowSchema, physicalInterfaceRowSchema } from './topologyPhysical';
+import { ADJACENCY_V2_SECTION_LIMITS, cdpRowSchema, fdbRowSchema, lldpRowSchema, physicalInterfaceRowSchema, typedIdSchema } from './topologyPhysical';
 import {
   normalizedUnifiClientRowSchema, normalizedUnifiDeviceDetailRowSchema, normalizedUnifiDeviceRowSchema, normalizedUnifiStatisticsRowSchema,
 } from './topologyUnifiNormalized';
@@ -111,7 +111,8 @@ export function normalizeFdbSection(section: WireFdbSection): NormalizedFdbSecti
 }
 
 const section = topologySection;
-export const snmpInterfacesSectionSchema = section('snmp_interfaces', physicalInterfaceRowSchema, ADJACENCY_V2_SECTION_LIMITS.interfaces);
+/** Retains the target's own LLDP chassis (see adjacencyInterfaceSectionSchema). */
+export const snmpInterfacesSectionSchema = section('snmp_interfaces', physicalInterfaceRowSchema, ADJACENCY_V2_SECTION_LIMITS.interfaces).safeExtend({ localChassis: typedIdSchema.optional() });
 export const physicalSourceSectionSchema = z.discriminatedUnion('kind', [
   section('lldp', lldpRowSchema, ADJACENCY_V2_SECTION_LIMITS.lldp),
   section('cdp', cdpRowSchema, ADJACENCY_V2_SECTION_LIMITS.cdp),

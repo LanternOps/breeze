@@ -88,14 +88,27 @@ export type PhysicalInterfaceView = {
 export type PhysicalIdentityIndex = {
   /** Current (non-retired) interfaces by owner node. */
   interfaces: Map<string, PhysicalInterfaceView[]>;
-  /** Normalized MAC -> nodes claiming it (agent NICs, current SNMP interface MACs). */
+  /** Normalized MAC -> nodes claiming it (agent NICs, current SNMP interface MACs, targets' own MAC chassis ids). */
   nodesByMac: Map<string, Set<string>>;
+  /** Non-MAC typed chassis id (`<subtype>:<value>`) -> targets claiming it as their own. */
+  nodesByChassis: Map<string, Set<string>>;
 };
-export function buildPhysicalIdentityIndex(input: { interfaces: Iterable<PhysicalInterfaceView>; deviceMacs: { nodeId: string; mac: string }[]; resolveNode?: (id: string) => string }): PhysicalIdentityIndex {
+/** A target's own LLDP chassis (lldpLocChassisId*), attributed to its subject node. */
+export type PhysicalChassisClaim = { nodeId: string; id: TypedId };
+export const typedChassisKey = (id: TypedId) => `${id.subtype}:${id.value}`;
+export function buildPhysicalIdentityIndex(input: { interfaces: Iterable<PhysicalInterfaceView>; deviceMacs: { nodeId: string; mac: string }[]; chassisIds?: PhysicalChassisClaim[]; resolveNode?: (id: string) => string }): PhysicalIdentityIndex {
   const resolve = input.resolveNode ?? ((id: string) => id);
   const interfaces = new Map<string, PhysicalInterfaceView[]>();
   const nodesByMac = new Map<string, Set<string>>();
+  const nodesByChassis = new Map<string, Set<string>>();
   const claim = (mac: string | null, nodeId: string) => { if (mac) nodesByMac.set(mac, (nodesByMac.get(mac) ?? new Set()).add(resolve(nodeId))); };
+  // Trusted: the authorized target's own report about itself. A MAC chassis joins
+  // the MAC claims (a base MAC often matches no interface); any other subtype
+  // resolves only by exact typed equality.
+  for (const { nodeId, id } of input.chassisIds ?? []) {
+    if (id.subtype === 'mac_address') claim(normalizeMac(id.value), nodeId);
+    else { const k = typedChassisKey(id); nodesByChassis.set(k, (nodesByChassis.get(k) ?? new Set()).add(resolve(nodeId))); }
+  }
   for (const row of input.interfaces) {
     if (row.retiredAt) continue;
     const owner = resolve(row.ownerNodeId);
@@ -103,7 +116,7 @@ export function buildPhysicalIdentityIndex(input: { interfaces: Iterable<Physica
     if (isPhysicalGeneration(row.epoch)) claim(normalizeMac(row.physAddress), owner);
   }
   for (const { nodeId, mac } of input.deviceMacs) claim(normalizeMac(mac), nodeId);
-  return { interfaces, nodesByMac };
+  return { interfaces, nodesByMac, nodesByChassis };
 }
 const unique = <T>(rows: T[]): T | null => rows.length === 1 ? rows[0]! : null;
 
@@ -116,11 +129,13 @@ export function resolveLocalInterface(index: PhysicalIdentityIndex, ownerNodeId:
   if (port.namespace === 'if_name') return unique(rows.filter(i => isPhysicalGeneration(i.epoch) && i.name === port.value));
   return null;
 }
-/** A typed remote identity resolves only by MAC and only to exactly one node. */
+/** A typed remote identity resolves by MAC, or by a target's exact typed chassis
+ * claim, and only to exactly one node. */
 export function resolveTypedNode(index: PhysicalIdentityIndex, id: TypedId | undefined): string | null {
-  if (!id || id.subtype !== 'mac_address') return null;
-  const mac = normalizeMac(id.value);
-  const nodes = mac ? index.nodesByMac.get(mac) : undefined;
+  if (!id) return null;
+  let nodes: Set<string> | undefined;
+  if (id.subtype === 'mac_address') { const mac = normalizeMac(id.value); nodes = mac ? index.nodesByMac.get(mac) : undefined; }
+  else nodes = index.nodesByChassis?.get(typedChassisKey(id));
   return nodes && nodes.size === 1 ? [...nodes][0]! : null;
 }
 /** Remote port on a resolved node: name/alias/MAC, uniquely, current generation only. */

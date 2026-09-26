@@ -82,7 +82,17 @@ export const physicalInterfaceRowSchema = z.object({
 export const adjacencyLldpSectionSchema = topologySection('lldp', lldpRowSchema, ADJACENCY_V2_SECTION_LIMITS.lldp);
 export const adjacencyCdpSectionSchema = topologySection('cdp', cdpRowSchema, ADJACENCY_V2_SECTION_LIMITS.cdp);
 export const adjacencyFdbSectionSchema = topologySection('fdb', fdbRowSchema, ADJACENCY_V2_SECTION_LIMITS.fdb);
-export const adjacencyInterfaceSectionSchema = topologySection('interfaces', physicalInterfaceRowSchema, ADJACENCY_V2_SECTION_LIMITS.interfaces).superRefine((v, ctx) => {
+/**
+ * The interfaces section may carry the TARGET's own LLDP chassis identity
+ * (lldpLocChassisIdSubtype / lldpLocChassisId, 1.0.8802.1.1.2.1.3.1/.3.2).
+ * It is the authorized target's report about itself, so the server may let it
+ * name the subject node when a neighbour's LLDP remote chassis equals it (a
+ * base MAC often matches no interface MAC). Optional and additive: absent it,
+ * digests are byte-identical to the pre-field contract.
+ */
+export const adjacencyInterfaceSectionSchema = topologySection('interfaces', physicalInterfaceRowSchema, ADJACENCY_V2_SECTION_LIMITS.interfaces).safeExtend({
+  localChassis: typedIdSchema.optional(),
+}).superRefine((v, ctx) => {
   if (new Set(v.rows.map(r => r.interfaceKey)).size !== v.rows.length) ctx.addIssue({ code: 'custom', message: 'Duplicate interface key' });
 });
 /** Physical adjacency sections. Kept separate from M1's topologyContextSectionSchema (its `interfaces` is the OS row). */

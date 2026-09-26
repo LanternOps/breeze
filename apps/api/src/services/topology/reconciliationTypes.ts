@@ -28,6 +28,8 @@ export type PhysicalProjectionContext = {
    * list rows (unambiguous only). Lets a client's UPLINK endpoint reach the
    * inventory node its own device-list row was bound to. */
   unifiEndpointDevices?:Record<string,string>;
+  /** Targets' own LLDP chassis ids, attributed to their subject nodes (trusted self-report). */
+  chassisIds?:{nodeId:string;id:{subtype:string;value:string}}[];
 };
 export type BaselineProjectionInput = TopologyProjectionInput & { snapshot:OsTopologySnapshot; originNodeId:string };
 export type TopologyProjectionDelta = {

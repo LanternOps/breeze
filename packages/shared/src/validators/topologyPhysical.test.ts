@@ -6,6 +6,7 @@ import {
   ADJACENCY_V2_MAX_BYTES,
   ADJACENCY_V2_FDB_MAX_ROWS,
   adjacencyFdbSectionSchema,
+  adjacencySectionSchema,
   adjacencyV2Schema,
   cdpRowSchema,
   fdbRowSchema,
@@ -185,6 +186,26 @@ describe('adjacency v2 canonicalization', () => {
         expect(sha(bytes)).toBe(s.contentDigest);
       }
     }
+  });
+
+  it('carries the target\'s own LLDP chassis on the interfaces section, typed and digested (M2 Task 6b)', () => {
+    const vector = positive;
+    const interfaces = (vector.report.sections as Json[]).find(s => s.kind === 'interfaces')!;
+    expect(interfaces.localChassis).toEqual({ subtype: 'mac_address', value: '02:00:00:00:01:00' });
+    const full = adjacencyV2Schema.parse(vector.report);
+    if (full.reportKind !== 'full') throw new Error('full');
+    const parsed = full.sections.find(s => s.kind === 'interfaces')!;
+    expect((parsed as { localChassis?: unknown }).localChassis).toEqual({ subtype: 'mac_address', value: '02:00:00:00:01:00' });
+    const id = identity(vector, full);
+    const { localChassis: _drop, ...without } = parsed as typeof parsed & { localChassis?: unknown };
+    expect(canonicalizeAdjacencyScope(id, without as typeof parsed)).not.toBe(canonicalizeAdjacencyScope(id, parsed));
+    // Normalized as a MAC like every other mac_address typed id; LLDP/CDP/FDB sections do not accept it.
+    const upper = report(positive);
+    upper.sections.find((s: Json) => s.kind === 'interfaces').localChassis = { subtype: 'mac_address', value: '02-00-00-00-01-00' };
+    expect(adjacencySectionSchema.safeParse(upper.sections.find((s: Json) => s.kind === 'interfaces')).success).toBe(true);
+    const onLldp = report(positive);
+    onLldp.sections.find((s: Json) => s.kind === 'lldp').localChassis = { subtype: 'mac_address', value: '02:00:00:00:01:00' };
+    expect((adjacencySectionSchema.parse(onLldp.sections.find((s: Json) => s.kind === 'lldp')) as Json).localChassis).toBeUndefined();
   });
 
   it('excludes timeMark, sequence, timestamps and parent ids; keeps outcomes, omissions, typed ids and scope', () => {

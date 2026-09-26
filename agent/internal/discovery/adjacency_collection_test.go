@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -366,5 +368,35 @@ func TestCollectPhysicalFDBTruncationIsPartialLimit(t *testing.T) {
 	s := sectionsByKind(t, CollectPhysicalSections(context.Background(), w, PhysicalRequest{Target: "192.0.2.10", ContextKey: "default", Protocols: []string{SectionFDB}}))[SectionFDB]
 	if s.Outcome != OutcomePartial || s.ReasonCode != "limit_exceeded" || len(s.Fdb) > AdjacencyV2FDBMaxRows {
 		t.Fatalf("truncation must be partial/limit_exceeded within the bound: %s/%s rows=%d", s.Outcome, s.ReasonCode, len(s.Fdb))
+	}
+}
+
+// M2 Task 6b: the target's own LLDP chassis (lldpLocChassisIdSubtype/-Id) is
+// carried on the interfaces section so the server can recognise the target
+// when a neighbour reports that chassis (a base MAC often matches no ifPhysAddress).
+func TestCollectPhysicalCarriesTargetLLDPChassis(t *testing.T) {
+	w := switchWalker()
+	w.resp[snmppoll.LldpLocChassisIDSubtypeOID] = fakeResp{pdus: []gosnmp.SnmpPDU{integer(snmppoll.LldpLocChassisIDSubtypeOID+".0", 4)}}
+	w.resp[snmppoll.LldpLocChassisIDOID] = fakeResp{pdus: []gosnmp.SnmpPDU{octets(snmppoll.LldpLocChassisIDOID+".0", []byte{2, 0, 0, 0, 1, 0})}}
+	got := sectionsByKind(t, CollectPhysicalSections(context.Background(), w, PhysicalRequest{Target: "192.0.2.10", ContextKey: "default", Protocols: allProtocols}))
+	ifs := got[SectionInterfaces]
+	if ifs.LocalChassis == nil || *ifs.LocalChassis != (TypedID{Subtype: "mac_address", Value: "02:00:00:00:01:00"}) {
+		t.Fatalf("interfaces section lost the target's own chassis: %#v", ifs.LocalChassis)
+	}
+	if got[SectionLLDP].LocalChassis != nil {
+		t.Fatal("only the interfaces section carries the target chassis")
+	}
+	b, err := json.Marshal(ifs)
+	if err != nil || !strings.Contains(string(b), `"localChassis":{"subtype":"mac_address","value":"02:00:00:00:01:00"}`) {
+		t.Fatalf("wire form: %s %v", b, err)
+	}
+
+	// Absent/failed scalars: no field at all (digest-identical to the old contract).
+	plain := sectionsByKind(t, CollectPhysicalSections(context.Background(), switchWalker(), PhysicalRequest{Target: "192.0.2.10", ContextKey: "default", Protocols: allProtocols}))
+	if plain[SectionInterfaces].LocalChassis != nil {
+		t.Fatalf("unexpected chassis: %#v", plain[SectionInterfaces].LocalChassis)
+	}
+	if b, _ := json.Marshal(plain[SectionInterfaces]); strings.Contains(string(b), "localChassis") {
+		t.Fatalf("absent chassis must not be marshalled: %s", b)
 	}
 }

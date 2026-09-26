@@ -120,10 +120,13 @@ type PhysicalSection struct {
 	ReasonCode      string
 	OmittedRowCount int
 	RowCount        int
-	Lldp            []LldpRow
-	Cdp             []CdpRow
-	Fdb             []FdbRow
-	Interfaces      []PhysicalInterfaceRow
+	// LocalChassis is the target's OWN LLDP chassis identity; interfaces
+	// section only, omitted when unknown (additive: digests unchanged without it).
+	LocalChassis *TypedID
+	Lldp         []LldpRow
+	Cdp          []CdpRow
+	Fdb          []FdbRow
+	Interfaces   []PhysicalInterfaceRow
 }
 
 type physicalSectionWire struct {
@@ -134,6 +137,7 @@ type physicalSectionWire struct {
 	ReasonCode      string          `json:"reasonCode,omitempty"`
 	RowCount        int             `json:"rowCount"`
 	OmittedRowCount int             `json:"omittedRowCount,omitempty"`
+	LocalChassis    *TypedID        `json:"localChassis,omitempty"`
 	Rows            json.RawMessage `json:"rows"`
 }
 
@@ -179,7 +183,7 @@ func (s PhysicalSection) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(physicalSectionWire{Kind: s.Kind, ContextKey: s.ContextKey, ContentDigest: s.ContentDigest, Outcome: s.Outcome,
-		ReasonCode: s.ReasonCode, RowCount: s.RowCount, OmittedRowCount: s.OmittedRowCount, Rows: rows})
+		ReasonCode: s.ReasonCode, RowCount: s.RowCount, OmittedRowCount: s.OmittedRowCount, LocalChassis: s.LocalChassis, Rows: rows})
 }
 
 func (s *PhysicalSection) UnmarshalJSON(b []byte) error {
@@ -189,6 +193,9 @@ func (s *PhysicalSection) UnmarshalJSON(b []byte) error {
 	}
 	*s = PhysicalSection{Kind: w.Kind, ContextKey: w.ContextKey, ContentDigest: w.ContentDigest, Outcome: w.Outcome,
 		ReasonCode: w.ReasonCode, RowCount: w.RowCount, OmittedRowCount: w.OmittedRowCount}
+	if w.Kind == SectionInterfaces {
+		s.LocalChassis = w.LocalChassis
+	}
 	switch w.Kind {
 	case SectionLLDP:
 		s.Lldp = []LldpRow{}

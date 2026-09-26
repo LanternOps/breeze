@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
 import { topologySiteState } from '../../db/schema';
-import { physicalAuthorityOf, buildPhysicalIdentityIndex, physicalLinkKey, sortedLinkEndpoints, interfaceContinuity, isPhysicalGeneration, physicalGenerationNumber, physicalTargetSourceKey, resolvePhysicalSubjectAsset, type PhysicalIdentityIndex } from './physicalIdentity';
+import { physicalAuthorityOf, buildPhysicalIdentityIndex, physicalLinkKey, sortedLinkEndpoints, interfaceContinuity, isPhysicalGeneration, physicalGenerationNumber, physicalTargetSourceKey, resolvePhysicalSubjectAsset, type PhysicalChassisClaim, type PhysicalIdentityIndex } from './physicalIdentity';
 import { buildPhysicalRelationship, physicalMaterialOf, planPhysicalResolution, selectFdbParents, unboundPhysicalNode, unifiEndpointNode, unifiMaterialOf, type FdbCandidate } from './physicalProjector';
 import { canonicalIdentityKey } from './identity';
 import type { CollectionSource, InterfacePublication, PhysicalProjectionContext, SupportPublication } from './reconciliationTypes';
@@ -44,6 +44,8 @@ export type PhysicalResolver = {
   deviceNodes: Record<string, string>;
   /** Current UniFi endpoint bindings; refreshed by the publisher as UniFi baselines change. */
   unifiEndpointDevices: Record<string, string>;
+  /** Targets' own LLDP chassis claims; refreshed by the publisher as interface baselines change. */
+  chassisIds: PhysicalChassisClaim[];
 };
 export function physicalResolver(context: PhysicalPublicationContext, nodes: Map<string, NodePublication>, bindings: BindingPublication[]): PhysicalResolver {
   const resolveNode = (id: string) => { const seen = new Set<string>(); while (nodes.get(id)?.aliasTargetId && !seen.has(id)) { seen.add(id); id = nodes.get(id)!.aliasTargetId!; } return id; };
@@ -52,10 +54,10 @@ export function physicalResolver(context: PhysicalPublicationContext, nodes: Map
   const subjectFor = (authorityKey: string) => { const asset = resolvePhysicalSubjectAsset(authorityKey, context.assets); const node = asset ? assetNode.get(asset) : undefined; return node ? resolveNode(node) : null; };
   const deviceMacs = context.deviceMacs.flatMap(m => deviceNode.has(m.deviceId) ? [{ nodeId: resolveNode(deviceNode.get(m.deviceId)!), mac: m.mac }] : []);
   const deviceNodes = Object.fromEntries([...deviceNode].map(([deviceId, nodeId]) => [deviceId, resolveNode(nodeId)]));
-  const resolver: PhysicalResolver = { resolveNode, subjectFor, deviceNodes, unifiEndpointDevices: {},
-    index: interfaces => buildPhysicalIdentityIndex({ interfaces, deviceMacs, resolveNode }),
+  const resolver: PhysicalResolver = { resolveNode, subjectFor, deviceNodes, unifiEndpointDevices: {}, chassisIds: [],
+    index: interfaces => buildPhysicalIdentityIndex({ interfaces, deviceMacs, chassisIds: resolver.chassisIds, resolveNode }),
     projectionContext: source => { const authorityKey = physicalAuthorityOf(source.contextKey);
-      return { authorityKey, subjectNodeId: subjectFor(authorityKey), deviceMacs, deviceNodes, unifiEndpointDevices: resolver.unifiEndpointDevices }; } };
+      return { authorityKey, subjectNodeId: subjectFor(authorityKey), deviceMacs, deviceNodes, unifiEndpointDevices: resolver.unifiEndpointDevices, chassisIds: resolver.chassisIds }; } };
   return resolver;
 }
 
@@ -244,6 +246,26 @@ export function unifiEndpointDevicesOf(baselines: Iterable<Record<string, unknow
     }
   }
   return Object.fromEntries([...claims].filter(([, ids]) => ids.size === 1).map(([key, ids]) => [key, [...ids][0]!]));
+}
+
+/**
+ * Targets' own LLDP chassis ids (M2 Task 6b): from each live snmp_interfaces
+ * baseline with a positive outcome, attributed to the node its authority
+ * resolves to (`subjectFor`: the bound asset node, else the scoped unbound
+ * target node). Trusted because it is the authorized target's report about itself.
+ */
+export function physicalChassisClaimsOf(entries: Iterable<{ source: Pick<CollectionSource, 'protocol' | 'contextKey' | 'revokedAt'>; baseline: Record<string, unknown> | undefined }>,
+  subjectFor: (authorityKey: string) => string | null): PhysicalChassisClaim[] {
+  const claims: PhysicalChassisClaim[] = [];
+  for (const { source, baseline } of entries) {
+    if (source.revokedAt || source.protocol !== 'snmp_interfaces') continue;
+    const section = baseline?.section as { outcome?: string; localChassis?: { subtype?: unknown; value?: unknown } } | undefined;
+    const id = section?.localChassis;
+    if (!section || (section.outcome !== 'complete' && section.outcome !== 'partial') || typeof id?.subtype !== 'string' || typeof id.value !== 'string') continue;
+    const nodeId = subjectFor(physicalAuthorityOf(source.contextKey));
+    if (nodeId) claims.push({ nodeId, id: { subtype: id.subtype, value: id.value } });
+  }
+  return claims;
 }
 
 /** Explicit identity dirty mark (D15.2) for writers outside the publisher. */

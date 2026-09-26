@@ -225,6 +225,7 @@ type physicalRun struct {
 	inv      []InterfaceIdentity
 	locCols  LLDPColumns
 	locErr   error
+	chassis  *TypedID
 	lldpPort map[uint32]string
 }
 
@@ -292,6 +293,27 @@ func (r *physicalRun) walkLLDPLocal() {
 		r.locErr = sub.err
 	}
 	r.lldpPort = ResolveLLDPLocalPorts(r.locCols, r.inv)
+	r.chassis = r.localChassis()
+}
+
+// localChassis reads the target's own lldpLocChassisIdSubtype/lldpLocChassisId
+// (scalars; walked because the walker has no GET). Any error, a missing value or
+// an undecodable subtype yields nil: the field is evidence, never required.
+func (r *physicalRun) localChassis() *TypedID {
+	sub := walkColumn(r.ctx, r.w, snmppoll.LldpLocChassisIDSubtypeOID)
+	id := walkColumn(r.ctx, r.w, snmppoll.LldpLocChassisIDOID)
+	if sub.err != nil || id.err != nil || len(sub.pdus) != 1 || len(id.pdus) != 1 {
+		return nil
+	}
+	subtype, ok := pduInt(sub.pdus[0])
+	if !ok {
+		return nil
+	}
+	typed, ok := typedID(lldpChassisSubtypes, subtype, true, id.pdus[0])
+	if !ok || typed.Subtype == "unknown" || typed.Subtype == "invalid_mac_address" {
+		return nil
+	}
+	return &typed
 }
 
 func (r *physicalRun) collectLLDPSection() PhysicalSection {
@@ -440,6 +462,7 @@ func (r *physicalRun) collectInterfaceSection() PhysicalSection {
 		return s.withOutcome(OutcomeUnsupported, "not_supported")
 	}
 	s.Interfaces = interfaceRows(r.inv, r.lldpPort)
+	s.LocalChassis = r.chassis
 	return s.finish(failed > 0, 0)
 }
 

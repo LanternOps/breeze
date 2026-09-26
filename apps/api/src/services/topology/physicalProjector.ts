@@ -269,7 +269,7 @@ export function projectPhysicalTopology(input: TopologyProjectionInput): Topolog
     return delta;
   }
 
-  const index = buildPhysicalIdentityIndex({ interfaces: interfaces.values(), deviceMacs: context.deviceMacs });
+  const index = buildPhysicalIdentityIndex({ interfaces: interfaces.values(), deviceMacs: context.deviceMacs, chassisIds: context.chassisIds });
   const relationships = new Map(input.relationships.map(r => [r.canonicalKey, r]));
   const freshUntil = new Date(at.getTime() + Math.max(run.expectedIntervalSeconds * 3, 900) * 1000);
   const rows = adjacency.kind === 'fdb' ? adjacency.rows.filter((row): row is FdbRow => !('rowType' in row)) : adjacency.rows as (LldpRow | CdpRow)[];
