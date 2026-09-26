@@ -273,6 +273,67 @@ describe('processCheckSchedules — backup profile fan-out', () => {
     );
     errorSpy.mockRestore();
   });
+
+  it('keeps sweeping later orgs when one org\'s job creation throws (#6597)', async () => {
+    const ORG_2 = '66666666-6666-4666-8666-666666666666';
+    selectDistinctMock.mockReturnValueOnce(makeChain([{ orgId: ORG_ID }, { orgId: ORG_2 }]));
+    selectDistinctMock.mockReturnValueOnce(makeChain([]));
+    const legacyEntry = {
+      deviceId: DEVICE_ID,
+      featureLinkId: LINK_ID,
+      configId: CONFIG_ID,
+      settings: { schedule: SCHEDULE, backupProfileId: null, backupMode: 'file' },
+      selectionSpecs: null,
+      resolvedTimezone: 'UTC',
+    };
+    resolveAllBackupAssignedDevicesMock
+      .mockRejectedValueOnce(new Error('current transaction is aborted'))
+      .mockResolvedValueOnce([legacyEntry]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await __testOnly.processCheckSchedules();
+
+    // Each org has its own context, so the first org's failure neither blocks
+    // nor rolls back the second.
+    expect(result).toEqual({ enqueued: 1 });
+    expect(createScheduledBackupJobIfAbsentMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_2 }));
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(ORG_ID);
+    errorSpy.mockRestore();
+  });
+
+  it('enqueues the remaining jobs when one enqueue fails, counting only the successes (#6597)', async () => {
+    let n = 0;
+    createScheduledBackupJobIfAbsentMock.mockImplementation(async () => ({
+      created: true,
+      job: { id: `job-${++n}`, configId: CONFIG_ID },
+    }));
+    enqueueBackupDispatchMock
+      .mockRejectedValueOnce(new Error('Redis unavailable'))
+      .mockResolvedValueOnce(undefined);
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      {
+        deviceId: DEVICE_ID,
+        featureLinkId: LINK_ID,
+        configId: CONFIG_ID,
+        settings: { schedule: SCHEDULE, backupProfileId: PROFILE_ID, backupMode: 'file' },
+        selectionSpecs: [
+          { backupMode: 'file', targets: { paths: ['C:\\data'], excludes: [] } },
+          { backupMode: 'system_image', targets: { includeSystemState: true } },
+        ],
+        resolvedTimezone: 'UTC',
+      },
+    ]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await __testOnly.processCheckSchedules();
+
+    expect(result).toEqual({ enqueued: 1 });
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledTimes(2);
+    expect(enqueueBackupDispatchMock).toHaveBeenLastCalledWith('job-2', CONFIG_ID, ORG_ID, DEVICE_ID);
+    expect(updateSetMock).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
 });
 
 // #5080 W02: the schedule scan enumerates through the EFFECTIVE view, so an org
