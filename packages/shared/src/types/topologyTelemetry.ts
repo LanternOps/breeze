@@ -1,0 +1,13 @@
+import type { z } from 'zod';
+import type {
+  topologyInterfaceHistoryQuerySchema, topologyInterfaceHistoryResponseSchema, topologyInterfaceHistorySeriesSchema,
+  topologyInterfaceMetricEnvelopeV1Schema, topologyInterfaceSampleV1Schema,
+} from '../validators/topologyTelemetry';
+
+/** One interface's readings at one instant; counters are uint64 decimal strings, null = not measured (see `unavailable`). */
+export type TopologyInterfaceSampleV1 = z.infer<typeof topologyInterfaceSampleV1Schema>;
+/** One bounded `if_metrics` batch from one authorized telemetry source. Scope is never on the wire. */
+export type TopologyInterfaceMetricEnvelopeV1 = z.infer<typeof topologyInterfaceMetricEnvelopeV1Schema>;
+export type TopologyInterfaceHistoryQuery = z.infer<typeof topologyInterfaceHistoryQuerySchema>;
+export type TopologyInterfaceHistorySeries = z.infer<typeof topologyInterfaceHistorySeriesSchema>;
+export type TopologyInterfaceHistoryResponse = z.infer<typeof topologyInterfaceHistoryResponseSchema>;

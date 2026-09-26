@@ -1133,6 +1133,9 @@ export * from './topologyUnifiNormalized';
 export { canonicalizeAdjacencyReport, canonicalizeAdjacencyScope, canonicalizeUnifiResource } from './topologyPhysicalCanonical';
 export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhysicalCanonical';
 
+// Interface measurement telemetry contracts (M3 #5999)
+export * from './topologyTelemetry';
+
 export * from './billingProfiles';
 
 /**
