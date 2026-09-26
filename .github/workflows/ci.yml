@@ -323,10 +323,10 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     env:
-      # tsc on the full apps/api project (dense Drizzle types) + astro check
-      # exceed Node's default heap on the type-heaviest branches. Give the
-      # type checker a larger old-space so it does not OOM. 8 GB started OOMing
-      # on 2026-09-18 (three runs in one day); 12 GB fits the 16 GB runner.
+      # tsc on apps/api (dense Drizzle types) + astro check exceed Node's
+      # default heap. The old single api program needed ~9.9 GB and OOMed at
+      # 8 GB (2026-09-18); since #6270 it is split into two project-reference
+      # programs of ~7.2 GB each, which also pass at 8 GB. 12 GB is headroom.
       NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - name: Checkout
@@ -348,8 +348,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Build mode checks apps/api src once (tsconfig.src.json, emits .d.ts
+      # into apps/api/.tsbuild) and then the test files against those
+      # declarations (tsconfig.tests.json), instead of one program holding
+      # both (#6270). Together the two cover every file the old
+      # `tsc --noEmit -p apps/api/tsconfig.json` did.
       - name: Run TypeScript type check
-        run: pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+        run: pnpm exec tsc --build apps/api/tsconfig.tests.json
 
       # packages/shared is consumed through source imports, so apps/api's tsc
       # only reaches the files it happens to import; its own test files were
