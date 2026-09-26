@@ -15,7 +15,7 @@
 ## Preconditions (hard gates, check before Task 1)
 
 1. **PR #7136 merged** (`fix/quickbooks-synctoken-and-quote-push`, #7134/#7135). It rewrites parts of `quickbooksProvider.ts` (SyncToken healing), `accountingMappingService.ts` and `quoteAcceptService.ts`. W01 edits the same code.
-2. **Issue #7161 fix merged** (branch `fix/7161-qbo-hidden-line-totals`, stacked on #7136; another agent is doing this in parallel). It zeroes hidden (`customerVisible = false`) lines in `buildLinePayload`, asserts that the pushed lines sum to Breeze's `subtotal` (`invoice_totals_mismatch`), and compares `remoteTotal` after a push. **W01 does not re-implement that fix.** Task 11 only moves its logic into the provider-neutral path and keeps its tests green. If #7161 is not on `origin/main` when W01b starts, stop and wait. Do not copy its diff into W01.
+2. **Issue #7161 fix merged** (PR #7165, branch `fix/7161-qbo-hidden-line-totals`, cut from main; error code `invoice_totals_mismatch`, post-push total drift reuses `synced_with_tax_variance` with `totalVarianceCents`). It zeroes hidden (`customerVisible = false`) lines in `buildLinePayload`, asserts that the pushed lines sum to Breeze's `subtotal` (`invoice_totals_mismatch`), and compares `remoteTotal` after a push. **W01 does not re-implement that fix.** Task 11 only moves its logic into the provider-neutral path and keeps its tests green. If #7161 is not on `origin/main` when W01b starts, stop and wait. Do not copy its diff into W01.
 
 Check:
 
