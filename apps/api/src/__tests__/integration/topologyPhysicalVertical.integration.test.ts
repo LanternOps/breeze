@@ -390,7 +390,9 @@ describe('physical enrichment vertical (M2 Task 10)', () => {
     const test = getTestDb();
     await test.update(organizations).set({ settings: { topologyFeatureFlags: { materialization: true, ui: true, physical: true } } }).where(eq(organizations.id, scope.orgId));
     await test.execute(sql`INSERT INTO topology_site_state (org_id, site_id, graph_revision) VALUES (${scope.orgId}::uuid, ${scope.siteId}::uuid, 1)`);
-    const array = (values: string[]) => `{${values.map(v => `"${v.replace(/"/g, '\\"')}"`).join(',')}}`;
+    // Postgres array literal: escape backslashes before quotes (a lone quote
+    // escape would let a trailing backslash swallow the closing quote).
+    const array = (values: string[]) => `{${values.map(v => `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')}}`;
     await test.execute(sql`INSERT INTO topology_nodes (id, org_id, site_id, identity_key, identity_material, kind, attributes)
       SELECT n.id, ${scope.orgId}::uuid, ${scope.siteId}::uuid, n.id::text, jsonb_build_object('version', 1, 'kind', n.kind, 'sourceKey', n.id::text), n.kind, jsonb_build_object('label', n.label)
       FROM unnest(${array(g.nodes.map(n => n.id))}::uuid[], ${array(g.nodes.map(n => n.kind))}::text[], ${array(g.nodes.map(n => n.label))}::text[]) AS n(id, kind, label)`);

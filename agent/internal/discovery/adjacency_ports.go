@@ -350,7 +350,7 @@ func lldpManagementAddresses(pdus []gosnmp.SnmpPDU) map[string][]string {
 	sets := map[string]map[string]bool{}
 	for _, p := range pdus {
 		idx, ok := suffixParts(p.Name, snmppoll.LldpRemManAddrIfSubtypeOID)
-		if !ok || len(idx) < 5 || int(idx[4]) != len(idx)-5 {
+		if !ok || len(idx) < 5 || uint64(idx[4]) != uint64(len(idx)-5) {
 			continue
 		}
 		raw := make([]byte, 0, len(idx)-5)

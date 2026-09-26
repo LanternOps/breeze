@@ -2,6 +2,7 @@ package snmppoll
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -74,8 +75,10 @@ func parseFdbPortColumn(pdus []gosnmp.SnmpPDU) []FdbRow {
 }
 
 // intFromOIDSuffix extracts a single integer encoded as the dotted-decimal OID
-// suffix after columnPrefix. Returns (0, false) if the suffix is empty or not a
-// single integer component.
+// suffix after columnPrefix. Returns (0, false) if the suffix is empty, not a
+// single integer component, or outside 0..2147483647: every column indexed this
+// way (ifIndex, dot1dBasePort) is an Integer32 index, and a wider value would
+// later be narrowed to uint32 and alias a real index.
 func intFromOIDSuffix(oid, columnPrefix string) (int, bool) {
 	norm := oid
 	if !strings.HasPrefix(norm, ".") {
@@ -88,11 +91,11 @@ func intFromOIDSuffix(oid, columnPrefix string) (int, bool) {
 	if suffix == "" || strings.Contains(suffix, ".") {
 		return 0, false
 	}
-	n, err := strconv.Atoi(suffix)
+	n, err := strconv.ParseUint(suffix, 10, 31)
 	if err != nil {
 		return 0, false
 	}
-	return n, true
+	return int(n), true
 }
 
 // parseBridgePortIfIndex turns dot1dBasePortIfIndex PDUs into bridgePort→ifIndex.
@@ -167,7 +170,7 @@ type FdbEntry struct {
 func AssembleFdbEntries(fdbPortPDUs, basePortPDUs, ifNamePDUs, qBridgePDUs []gosnmp.SnmpPDU) []FdbEntry {
 	names := map[uint32]string{}
 	for ifIndex, name := range parseIfName(ifNamePDUs) {
-		if ifIndex >= 0 {
+		if ifIndex >= 0 && ifIndex <= math.MaxInt32 {
 			names[uint32(ifIndex)] = name
 		}
 	}

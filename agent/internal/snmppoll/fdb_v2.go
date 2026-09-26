@@ -3,6 +3,7 @@ package snmppoll
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -190,7 +191,12 @@ func fdbStatus(code int64, known bool) string {
 	return FdbStatusOther
 }
 
-func uint32Value(v int64) (uint32, bool) { return uint32(v), v >= 0 && v <= 4294967295 }
+func uint32Value(v int64) (uint32, bool) {
+	if v < 0 || v > math.MaxUint32 {
+		return 0, false
+	}
+	return uint32(v), true
+}
 
 type fdbTuple struct {
 	fdbID    uint32
@@ -230,13 +236,17 @@ func AssembleFdbV2(in FdbTables) FdbAssembly {
 	for _, c := range in.Dot1qVlanFdbID.Cells {
 		idx, ok := cellIndex(c.OID, oidVlanFdbID)
 		fdbID, okV := uint32Value(c.Value)
-		if !ok || !okV || len(idx) != 2 || idx[1] < 1 || idx[1] > 4094 {
+		if !ok || !okV || len(idx) != 2 {
+			continue
+		}
+		vlan := idx[1]
+		if vlan < 1 || vlan > 4094 {
 			continue
 		}
 		if vlans[fdbID] == nil {
 			vlans[fdbID] = map[uint16]bool{}
 		}
-		vlans[fdbID][uint16(idx[1])] = true
+		vlans[fdbID][uint16(vlan)] = true
 	}
 	ifIndexOf := map[uint32]uint32{}
 	for _, c := range in.Dot1dBasePortIfIndex.Cells {

@@ -236,3 +236,20 @@ func deref(s *string) string {
 	return *s
 }
 func itoa(n int) string { return InterfaceRowKey(uint32(n)) }
+
+// The address-length index component is compared without narrowing, so a
+// length at the top of the uint32 range can never match a short suffix.
+func TestLldpManagementAddresses_RejectsOutOfRangeLength(t *testing.T) {
+	got := lldpManagementAddresses([]gosnmp.SnmpPDU{
+		integer(snmppoll.LldpRemManAddrIfSubtypeOID+".0.3.1.1.4294967295.192.0.2.9", 2),
+		integer(snmppoll.LldpRemManAddrIfSubtypeOID+".0.3.1.1.4.192.0.2.10", 2),
+	})
+	if len(got) != 1 {
+		t.Fatalf("lldpManagementAddresses = %v, want only the well-formed row", got)
+	}
+	for _, ips := range got {
+		if !reflect.DeepEqual(ips, []string{"192.0.2.10"}) {
+			t.Fatalf("addresses = %v, want [192.0.2.10]", ips)
+		}
+	}
+}
