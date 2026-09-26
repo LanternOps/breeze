@@ -245,14 +245,21 @@ describe('filterEngine hardware.health', () => {
     const { sql, params } = renderWithParams({ field: 'hardware.health', operator: 'equals', value: 'critical' });
     expect(sql).toMatch(/from "device_hardware_health"/i);
     expect(sql).not.toMatch(/"device_hardware"\./i);
+    // Correlated per device (a bare subquery returns every device's row), and
+    // compared as text: `health` is a Postgres enum and validateFilter does not
+    // check enumValues, so an uncast bogus value would 500 with 22P02.
+    expect(sql).toMatch(/"device_hardware_health"\."device_id" = "devices"\."id"/i);
+    expect(sql).toMatch(/"device_hardware_health"\."health"::text/i);
     expect(params).toContain('critical');
   });
 
   it('supports in / notIn', () => {
-    for (const operator of ['in', 'notIn'] as const) {
-      const { sql } = renderWithParams({ field: 'hardware.health', operator, value: ['warning', 'critical'] });
-      expect.soft(sql, operator).toMatch(/device_hardware_health/i);
-    }
+    const inSql = renderWithParams({ field: 'hardware.health', operator: 'in', value: ['warning', 'critical'] }).sql;
+    expect(inSql).toMatch(/device_hardware_health/i);
+    expect(inSql).toMatch(/\) in \(/i);
+    const notInSql = renderWithParams({ field: 'hardware.health', operator: 'notIn', value: ['warning', 'critical'] }).sql;
+    expect(notInSql).toMatch(/device_hardware_health/i);
+    expect(notInSql).toMatch(/not in \(/i);
   });
 });
 

@@ -398,9 +398,10 @@ export default function DevicesPage() {
   // its server half.
   const [listFilters, setListFilters] = useState<ListFilters>(DEFAULT_LIST_FILTERS);
   // Bumped on every fetchDevices invocation and on unmount, so a late-landing
-  // fetch (e.g. the background refresh timer racing a manual refresh) can
-  // detect it is stale and skip its setState calls rather than clobbering a
-  // newer result.
+  // fetch — typically a header Refresh (which carries no abort signal) still in
+  // flight when an org switch or a post-mutation refreshDevices() starts a
+  // newer one — can detect it is stale and skip its setState calls rather than
+  // clobbering the newer result.
   const deviceFetchGeneration = useRef(0);
   useEffect(() => () => { deviceFetchGeneration.current += 1; }, []);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;

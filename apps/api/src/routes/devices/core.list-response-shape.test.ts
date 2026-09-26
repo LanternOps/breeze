@@ -106,8 +106,9 @@ function rigDeviceListRows(
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
-  // Two chained leftJoins (deviceHardware, then deviceReliability #1720), so
-  // each leftJoin returns a thenable that also exposes the next leftJoin.
+  // Three chained leftJoins (deviceHardware, deviceReliability #1720,
+  // deviceHardwareHealth #6854), so each leftJoin returns an object exposing
+  // the next leftJoin and the terminal where().
   const chain: Record<string, unknown> = {};
   const leftJoin = vi.fn().mockReturnValue(chain);
   chain.leftJoin = leftJoin;

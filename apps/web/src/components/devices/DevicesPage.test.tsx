@@ -3206,3 +3206,34 @@ describe('DevicesPage — hardware health (#6854 W04)', () => {
     expect(fetchAllDevices).not.toHaveBeenCalledWith(expect.objectContaining({ hardwareHealth: expect.anything() }));
   });
 });
+
+// deviceFetchGeneration guard: the header Refresh carries no abort signal, so
+// it can still be in flight when an org switch starts a newer fetch. The late
+// refresh must not overwrite the newer org's list.
+describe('DevicesPage — stale fetch guard', () => {
+  it('ignores a manual refresh that lands after an org switch', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    window.history.replaceState(null, '', window.location.pathname);
+    const all = { data: [rawDevice(DEV_1, 'old-host'), rawDevice(DEV_2, 'other-host')], total: 2, pagesWalked: 1 };
+    let finishOld!: (value: typeof all) => void;
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce(all as never)
+      .mockReturnValueOnce(new Promise(resolve => { finishOld = resolve; }) as never)
+      .mockResolvedValue({ data: [rawDevice(DEV_1, 'org-host')], total: 1, pagesWalked: 1 } as never);
+    const saved = { ...orgStoreState };
+    try {
+      const { rerender } = render(<DevicesPage />);
+      await waitFor(() => expect(screen.getByTestId('device-list')).toHaveAttribute('data-device-count', '2'));
+      fireEvent.click(screen.getByTestId('devices-page-refresh'));
+      await waitFor(() => expect(fetchAllDevices).toHaveBeenCalledTimes(2));
+      Object.assign(orgStoreState, { allOrgs: false, currentOrgId: 'org-1', lastOrgId: 'org-1', organizations: [{ id: 'org-1', name: 'Org One' }] });
+      rerender(<DevicesPage />);
+      await waitFor(() => expect(screen.getByTestId('device-list')).toHaveAttribute('data-hostnames', 'org-host'));
+      await act(async () => { finishOld(all); });
+      expect(screen.getByTestId('device-list')).toHaveAttribute('data-hostnames', 'org-host');
+      expect(screen.getByTestId('device-list')).toHaveAttribute('data-device-count', '1');
+    } finally {
+      Object.assign(orgStoreState, saved);
+    }
+  });
+});
