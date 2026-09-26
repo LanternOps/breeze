@@ -253,6 +253,13 @@ export type CreateTopologyDiagnosticRunOptions = {
   repository?: DiagnosticPlanningRepository;
   /** Present only for a scheduled policy occurrence; on-demand runs omit it. */
   scheduledOccurrence?: TopologyScheduledOccurrence;
+  /**
+   * The requester's permission authority version, already witnessed by the
+   * caller OUTSIDE any lock-holding transaction (the scheduler takes it from
+   * the live re-derivation). When present the freeze does not read Redis —
+   * the scheduler calls this under the policy row lock (T4).
+   */
+  requesterPermissionVersion?: string;
 };
 
 /**
@@ -292,7 +299,9 @@ export async function createTopologyDiagnosticRun(
   // A scheduled occurrence carries it too: its requester is the policy's
   // arming actor, re-derived at every later boundary (generalized M3-D13).
   const requesterAuthority = plan.recipeId === 'trace_route' || occurrence
-    ? await freezeTopologyTraceRequester(ctx)
+    ? await freezeTopologyTraceRequester(ctx, options.requesterPermissionVersion !== undefined
+      ? { permissionVersion: async () => options.requesterPermissionVersion! }
+      : {})
     : null;
 
   const runId = randomUUID();

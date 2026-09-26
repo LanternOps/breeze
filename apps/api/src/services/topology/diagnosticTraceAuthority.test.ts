@@ -3,6 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../db', () => ({ db: {} }));
 const env = vi.hoisted(() => ({ disabled: false }));
 vi.mock('../../config/env', () => ({ topologyGloballyDisabled: () => env.disabled }));
+const trust = vi.hoisted(() => ({ mode: 'enforce' as 'off' | 'shadow' | 'enforce', nested: [] as string[] }));
+vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => trust.mode }));
+// T4 (#6671 shape): the trust fence runs inside a system-context transaction
+// that the enqueue and publication boundaries already hold. Any helper that
+// opens its OWN system context (a second pooled connection) is a defect here.
+vi.mock('../partnerTrust.repo', () => {
+  const nested = (name: string) => async () => { trust.nested.push(name); throw new Error(`nested pooled connection: ${name}`); };
+  return { readTrust: nested('readTrust'), partnerForOrg: nested('partnerForOrg'), partnerForDevice: nested('partnerForDevice'), writeTrust: nested('writeTrust') };
+});
 
 import { organizations, partners, topologyCollectionSources, users } from '../../db/schema';
 import {
@@ -126,6 +135,27 @@ describe('revalidateTopologyTraceAuthority (M3-D13, trace path)', () => {
     expect(await revalidate()).toBe('trace_capability_withdrawn');
     rows.set(topologyCollectionSources, []);
     expect(await revalidate()).toBe('trace_capability_withdrawn');
+  });
+
+  it('reads partner trust through the SUPPLIED reader, never a second pooled connection (T4)', async () => {
+    trust.nested.length = 0;
+    trust.mode = 'enforce';
+    rows.set(partners, [{ settings: {}, trustState: 'trusted', probationEnrollments: 0 }]);
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true })).toBeNull();
+    rows.set(partners, [{ settings: {}, trustState: 'restricted', probationEnrollments: 0 }]);
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true })).toBe('trust_denied');
+    rows.set(partners, [{ settings: {}, trustState: 'probation', probationEnrollments: 0 }]);
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true })).toBe('trust_denied');
+    trust.mode = 'shadow';
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true })).toBeNull();
+    trust.mode = 'enforce';
+    // An unresolvable partner fails closed rather than escaping to the pool.
+    rows.set(organizations, [{ partnerId: ids.partner, settings: { topologyFeatureFlags: { materialization: true, diagnostics: true } } }]);
+    rows.set(partners, []);
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true, requirePartnerFlags: false })).toBe('trust_denied');
+    trust.mode = 'off';
+    expect(await revalidate({ trustAllowed: undefined, checkTrust: true, requirePartnerFlags: false })).toBeNull();
+    expect(trust.nested).toEqual([]);
   });
 
   it('consults partner trust only where asked', async () => {

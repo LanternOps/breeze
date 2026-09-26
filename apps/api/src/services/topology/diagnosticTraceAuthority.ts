@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { topologyGloballyDisabled } from '../../config/env';
 import { db } from '../../db';
 import { organizations, partners, topologyCollectionSources, topologyMonitoringPolicies, users } from '../../db/schema';
-import { deviceExecuteAllowedForOrg } from '../partnerTrust.commands';
+import { evaluateCapabilityContinuationForState } from '../partnerTrust';
 import { getPermissionAuthorityVersion } from '../permissions';
 import type { TopologyRequestContext } from './access';
 import { resolveTopologyFlags } from './flags';
@@ -123,6 +123,34 @@ async function diagnosticsEnabled(reader: Reader, orgId: string, requirePartnerF
   return explicitOverride(org.settings, 'materialization') !== false && explicitOverride(org.settings, 'diagnostics') !== false;
 }
 
+/**
+ * Partner-trust `device_execute` verdict read through the SUPPLIED reader.
+ *
+ * The enqueue and publication fences run inside a system-context transaction
+ * they already hold. `deviceExecuteAllowedForOrg` resolves the partner and its
+ * trust row in their OWN system contexts — a second pooled connection taken
+ * while the first is held, the #6671 wedge shape (postgres-js has no acquire
+ * timeout). Both rows are visible to the system-context reader, so read them
+ * there and decide purely. No denial audit is written from inside the fence:
+ * the run's own `authority_trust_denied` failure reason records it.
+ */
+async function trustAllowsDiagnostics(reader: Reader, orgId: string): Promise<boolean> {
+  const [org] = await reader.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  const [row] = org
+    ? await reader
+      .select({ trustState: partners.trustState, probationEnrollments: partners.probationEnrollments })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId))
+      .limit(1)
+    : [];
+  const decision = evaluateCapabilityContinuationForState(
+    'device_execute',
+    { partnerId: org?.partnerId ?? '', orgId, commandType: 'network_diagnostic' },
+    row ?? null,
+  );
+  return decision.allow;
+}
+
 const capabilityEnvelopeSchema = z.object({
   capabilities: z.array(z.object({ name: z.string(), version: z.number(), supported: z.boolean() }).passthrough()),
 }).passthrough();
@@ -219,7 +247,9 @@ export async function revalidateTopologyTraceAuthority(
   }
 
   if (input.checkTrust) {
-    const allowed = await (input.trustAllowed ?? deviceExecuteAllowedForOrg)(input.run.orgId, 'network_diagnostic', authority.userId);
+    const allowed = input.trustAllowed
+      ? await input.trustAllowed(input.run.orgId, 'network_diagnostic', authority.userId)
+      : await trustAllowsDiagnostics(input.reader, input.run.orgId);
     if (!allowed) return 'trust_denied';
   }
   return null;

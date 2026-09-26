@@ -1,7 +1,8 @@
 import type { TopologyScope } from '@breeze/shared';
 import { hasSatisfiedMfa, isInteractiveUserSession, withAuthDbAccessContext } from '../../middleware/auth';
 import { TopologyError, requireTopologySiteAccess, type TopologyRequestContext } from './access';
-import { loadTopologyFlags } from './flags';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { loadTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
 import { TopologyOperationError } from './operationErrors';
 import { currentApplicationAuthority, freezeApplicationAuthority } from './templateApplicationAuthority';
 
@@ -80,6 +81,14 @@ export type TopologyArmAuthorityDeps = {
 };
 
 /**
+ * The live authority `fn` runs under. `permissionVersion` is the version the
+ * live permission set was verified at (stable across the read); a boundary
+ * that freezes or witnesses permissions uses THIS value instead of reading
+ * Redis again under the locks `fn` takes (T4).
+ */
+export type TopologyLiveArmAuthority = { permissionVersion: string };
+
+/**
  * Re-derive a stored arm's actor LIVE and run `fn` inside that actor's own RLS
  * context: current user status and auth/MFA epochs, permissions re-read
  * bypassing the cache, the exact site under `configure` and `execute`, and the
@@ -90,7 +99,7 @@ export async function withTopologyArmAuthority<T>(
   record: unknown,
   scope: TopologyScope,
   requiredFlags: ReadonlyArray<'diagnostics' | 'interfaceHealth'>,
-  fn: (ctx: TopologyRequestContext) => Promise<T>,
+  fn: (ctx: TopologyRequestContext, authority: TopologyLiveArmAuthority) => Promise<T>,
   deps: TopologyArmAuthorityDeps = {},
 ): Promise<TopologyArmAuthorityResult<T>> {
   const parsed = topologyArmAuthorityRecordSchema.safeParse(record);
@@ -108,8 +117,17 @@ export async function withTopologyArmAuthority<T>(
     }
     throw error;
   }
+  // Flags are resolved BEFORE the actor context opens, in a short system
+  // context, and served from there for the whole of `fn` (T4, #6671 shape).
+  // `fn` takes row and advisory locks; an org-scoped actor's partner-axis flag
+  // read inside it would escape to a SECOND pooled connection while the first
+  // is held — the wedge that took US down on 2026-09-22.
+  const flags: TopologyFlags = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => loadTopologyFlags({ scope }),
+    'topology arm authority flags',
+  ));
   const inContext = deps.withContext ?? withAuthDbAccessContext;
-  return inContext(live.auth, async () => {
+  return inContext(live.auth, () => withResolvedTopologyFlags({ orgId: scope.orgId, flags }, async () => {
     let ctx: TopologyRequestContext;
     try {
       ctx = await requireTopologySiteAccess(live.auth, live.permissions, scope.siteId, 'configure');
@@ -119,12 +137,11 @@ export async function withTopologyArmAuthority<T>(
       throw error;
     }
     if (ctx.scope.orgId !== scope.orgId) return { ok: false as const, reason: 'scope_changed' as const };
-    const flags = await loadTopologyFlags(ctx);
     if (!flags.materialization) return { ok: false as const, reason: 'diagnostics_disabled' as const };
     if (requiredFlags.includes('diagnostics') && !flags.diagnostics) return { ok: false as const, reason: 'diagnostics_disabled' as const };
     if (requiredFlags.includes('interfaceHealth') && !flags.interfaceHealth) return { ok: false as const, reason: 'interface_health_disabled' as const };
-    return { ok: true as const, value: await fn(ctx) };
-  });
+    return { ok: true as const, value: await fn(ctx, { permissionVersion: live.version }) };
+  }));
 }
 
 export { topologyPolicyEffectDigest, topologyPolicyMaterialDigest } from './monitoringDigests';

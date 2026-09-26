@@ -1,14 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TopologyPolicyDefinition } from '@breeze/shared';
 
-vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() }));
+const order = vi.hoisted(() => [] as string[]);
+vi.mock('../../db', () => ({
+  db: {},
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => { order.push('system:enter'); try { return await fn(); } finally { order.push('system:exit'); } },
+}));
 const siteAccess = vi.fn();
 vi.mock('./access', async () => {
   const actual = await vi.importActual<typeof import('./access')>('./access');
   return { ...actual, requireTopologySiteAccess: (...args: unknown[]) => siteAccess(...args) };
 });
 const flags = vi.fn();
-vi.mock('./flags', () => ({ loadTopologyFlags: (...args: unknown[]) => flags(...args) }));
+const resolvedFlags = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock('./flags', () => ({
+  loadTopologyFlags: (...args: unknown[]) => flags(...args),
+  withResolvedTopologyFlags: async (resolved: unknown, fn: () => Promise<unknown>) => {
+    const previous = resolvedFlags.current;
+    resolvedFlags.current = resolved;
+    try { return await fn(); } finally { resolvedFlags.current = previous; }
+  },
+}));
 
 import { TopologyError } from './access';
 import {
@@ -108,6 +121,37 @@ describe('withTopologyArmAuthority', () => {
       .toEqual({ ok: true, value: 7 });
     expect(siteAccess).toHaveBeenCalledWith(expect.anything(), expect.anything(), siteId, 'configure');
     expect(siteAccess).toHaveBeenCalledWith(expect.anything(), expect.anything(), siteId, 'execute');
+  });
+});
+
+describe('withTopologyArmAuthority — no nested pooled connection (T4, #6671 shape)', () => {
+  it('resolves flags in a short system context BEFORE the actor context opens, serves them inside, and hands fn the live permission witness', async () => {
+    const record = await freezeTopologyArmAuthority(ctx(), { permissionVersion: async () => 'v' });
+    const live = { auth: { user: { id: userId } }, permissions: {}, version: '[7,9]' } as never;
+    siteAccess.mockReset();
+    siteAccess.mockResolvedValue({ scope: { orgId, siteId } });
+    flags.mockReset();
+    flags.mockImplementation(async () => { order.push('flags:loaded'); return { materialization: true, diagnostics: true, interfaceHealth: true }; });
+    order.length = 0;
+    let seen: unknown = null;
+    let witness: unknown = null;
+    const result = await withTopologyArmAuthority(record, { orgId, siteId }, ['diagnostics'], async (_ctx, authority) => {
+      order.push('fn');
+      seen = resolvedFlags.current;
+      witness = authority;
+      return 1;
+    }, {
+      currentAuthority: (async () => live) as never,
+      withContext: (async (_a: unknown, fn: () => Promise<unknown>) => { order.push('actor:open'); try { return await fn(); } finally { order.push('actor:close'); } }) as never,
+    });
+    expect(result).toEqual({ ok: true, value: 1 });
+    const loaded = order.indexOf('flags:loaded');
+    expect(loaded).toBeGreaterThan(-1);
+    expect(order.lastIndexOf('system:enter', loaded)).toBeGreaterThan(-1);
+    expect(order.indexOf('system:exit', loaded)).toBeLessThan(order.indexOf('actor:open'));
+    expect(order.filter((e) => e === 'flags:loaded')).toHaveLength(1);
+    expect(seen).toEqual({ orgId, flags: { materialization: true, diagnostics: true, interfaceHealth: true } });
+    expect(witness).toEqual({ permissionVersion: '[7,9]' });
   });
 });
 
