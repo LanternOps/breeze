@@ -3,10 +3,11 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { topologyInterfacePollCommandV1Schema } from '@breeze/shared';
 import { closeDb, db, withDbAccessContext } from '../../db';
-import { deviceCommands, topologyTelemetryArms, users } from '../../db/schema';
+import { deviceCommands, rolePermissions, topologyTelemetryArms, users } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptCommandForDelivery } from '../../services/sensitiveCommandPayload';
+import { clearPermissionCache } from '../../services/permissions';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import { armTopologyMonitoringPolicy, disarmTopologyMonitoringPolicy } from '../../services/topology/monitoringArming';
 import { withTopologyArmAuthority } from '../../services/topology/monitoringAuthority';
@@ -136,6 +137,54 @@ describe('telemetry arms (M3-D2/D3)', () => {
     const other = await fixture();
     await expect(f.inOrg(() => armTopologyTelemetry(f.ctx, { ...armRequest(f), interfaceIds: [other.ifaceA] })))
       .rejects.toMatchObject({ code: 'interface_not_armable' });
+  });
+});
+
+describe('telemetry arm live permission boundary (PR #7117 C4, M3-D13)', () => {
+  const armRequest = (f: Awaited<ReturnType<typeof fixture>>) => ({
+    targetNodeId: f.switchNodeId, collectorDeviceId: f.deviceId, credentialProfileId: f.profileId,
+    interfaceIds: [f.ifaceA, f.ifaceB], intervalSeconds: 60, ttlDays: 30,
+  });
+  const pollCommand = async (f: Awaited<ReturnType<typeof fixture>>) => (await system(() => db.select().from(deviceCommands)
+    .where(and(eq(deviceCommands.deviceId, f.deviceId), eq(deviceCommands.type, 'topology_interface_poll')))))
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+  it('fences delivery and result acceptance the moment the actor\'s permissions change, with auth/MFA epochs untouched', async () => {
+    const f = await fixture();
+    const arm = await f.inOrg(() => armTopologyTelemetry(f.ctx, armRequest(f)));
+    expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) })).toMatchObject({ dispatched: 1 });
+    const [command] = await pollCommand(f);
+    const request = { family: 'if_metrics' as const, producerKind: 'snmp' as const, scope: f.ctx.scope, device: { id: f.deviceId, orgId: f.orgId, siteId: f.siteId }, authorityKey: 'snmp:192.0.2.10', commandId: command!.id };
+    expect(await system(() => topologyTelemetryArmAuthority(request))).toMatchObject({ authorized: true });
+
+    // Revoke: the role loses its grants; the permission store bumps the actor's version. Epochs do not move.
+    await system(() => db.delete(rolePermissions).where(eq(rolePermissions.roleId, f.env.role.id)));
+    await clearPermissionCache(f.env.user.id);
+    const [actor] = await system(() => db.select({ authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch, status: users.status }).from(users).where(eq(users.id, f.env.user.id)));
+    expect(actor).toMatchObject({ status: 'active' });
+
+    expect(await system(() => topologyTelemetryArmAuthority(request))).toEqual({ authorized: false, reason: 'permission_changed' });
+    const delivered = await system(() => claimPendingCommandsForDevice(f.deviceId, 10, 'agent'));
+    expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
+    expect((await pollCommand(f))[0]!.status).toBe('cancelled');
+
+    // The next enqueue re-derives the live set, which no longer grants: the arm blocks.
+    await system(() => db.update(topologyTelemetryArms).set({ nextPollAt: new Date(0) }).where(eq(topologyTelemetryArms.id, arm.id)));
+    expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 2000) })).toMatchObject({ dispatched: 0, blocked: 1 });
+  });
+
+  it('an unrelated permission-store bump costs at most the in-flight poll; the next enqueue re-witnesses and resumes', async () => {
+    const f = await fixture();
+    const arm = await f.inOrg(() => armTopologyTelemetry(f.ctx, armRequest(f)));
+    expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) })).toMatchObject({ dispatched: 1 });
+    await clearPermissionCache(f.env.user.id); // grants unchanged
+    const delivered = await system(() => claimPendingCommandsForDevice(f.deviceId, 10, 'agent'));
+    expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
+
+    await system(() => db.update(topologyTelemetryArms).set({ nextPollAt: new Date(0) }).where(eq(topologyTelemetryArms.id, arm.id)));
+    expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 2000) })).toMatchObject({ dispatched: 1, blocked: 0 });
+    const redelivered = await system(() => claimPendingCommandsForDevice(f.deviceId, 10, 'agent'));
+    expect(redelivered.filter((row) => row.type === 'topology_interface_poll')).toHaveLength(1);
   });
 });
 

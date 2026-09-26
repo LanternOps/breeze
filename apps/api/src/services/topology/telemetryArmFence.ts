@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { canonicalizeArguments } from '@breeze/shared/canonicalize';
@@ -11,6 +12,7 @@ import {
   type TopologyTelemetryAuthorityDecision,
   type TopologyTelemetryAuthorityRequest,
 } from './collectionAuthority';
+import { getPermissionAuthorityVersion } from '../permissions';
 import { topologyArmAuthorityRecordSchema } from './monitoringAuthorityRecord';
 
 /**
@@ -70,8 +72,9 @@ export async function currentArmInterfaces(reader: Reader, scope: TopologyScope,
 // sink transaction that already holds locks, so they read ONLY through the
 // supplied reader (never a second pooled connection): the frozen actor's user
 // row must still be active at the same epochs, and the arm/credential/interface
-// state must be exactly what was armed. The permission re-derivation happens at
-// enqueue, where no lock is held.
+// state must be exactly what was armed. The permission SET is re-derived at
+// enqueue, where no lock is held; delivery and acceptance additionally require
+// the version it was verified at to be current (`armPermissionsStillWitnessed`).
 // ---------------------------------------------------------------------------
 async function actorStillCurrent(reader: Reader, record: unknown): Promise<boolean> {
   const parsed = topologyArmAuthorityRecordSchema.safeParse(record);
@@ -81,6 +84,54 @@ async function actorStillCurrent(reader: Reader, record: unknown): Promise<boole
     .from(users).where(eq(users.id, actor.user.id)).limit(1);
   return !!user && user.status === 'active' && user.authEpoch === actor.authEpoch && user.mfaEpoch === actor.mfaEpoch
     && (user.partnerId ?? null) === actor.partnerId && (actor.scope !== 'organization' || user.orgId === actor.orgId);
+}
+
+// ---------------------------------------------------------------------------
+// Live permission boundary (M3-D13, PR #7117 C4). The epochs above catch a
+// sign-out, MFA reset or deactivation, but NOT a role that lost its grants or
+// a narrowed site allowlist. Those invalidate through the permission store's
+// authority version (`clearPermissionCache` bumps it on every permission
+// write). The enqueue boundary re-derives the actor's live permission set and
+// stamps the version it verified at onto the arm (`authority_permission_version`);
+// delivery and result acceptance then require the CURRENT version to still be
+// that one — an unchanged version means the permissions verified live at
+// enqueue are still the live permissions. Any change fails closed; the next
+// enqueue re-derives live (blocking the arm on a real revocation, re-stamping
+// on an unrelated bump — at most the in-flight poll is lost). The set itself is
+// never re-read here: these fences run inside a claim or sink transaction, and
+// the permission tables are only readable through a second (system) pooled
+// connection — the #6671 shape.
+// ---------------------------------------------------------------------------
+const preResolvedVersions = new AsyncLocalStorage<ReadonlyMap<string, string | null>>();
+
+/**
+ * Serve the permission versions an ingest path resolved BEFORE opening its
+ * lock-holding transaction (no Redis wait under the site-state lock). A user
+ * missing from the map fails closed.
+ */
+export function withPreResolvedArmPermissionVersions<T>(versions: ReadonlyMap<string, string | null>, fn: () => Promise<T>): Promise<T> {
+  return preResolvedVersions.run(new Map(versions), fn);
+}
+
+async function currentPermissionVersion(userId: string): Promise<string | null> {
+  const store = preResolvedVersions.getStore();
+  if (store) return store.get(userId) ?? null;
+  return getPermissionAuthorityVersion(userId);
+}
+
+/** The arm's frozen actor id, or null for an unreadable record. */
+export function topologyArmActorId(arm: Pick<ArmRow, 'authorityActor'>): string | null {
+  const parsed = topologyArmAuthorityRecordSchema.safeParse(arm.authorityActor);
+  return parsed.success ? parsed.data.actor.user.id : null;
+}
+
+/** Null while the permissions verified at the last enqueue still hold; otherwise the fence reason. */
+export async function armPermissionsStillWitnessed(arm: Pick<ArmRow, 'authorityActor' | 'authorityPermissionVersion'>): Promise<'permission_changed' | 'authority_unavailable' | null> {
+  const userId = topologyArmActorId(arm);
+  if (!userId) return 'authority_unavailable';
+  const current = await currentPermissionVersion(userId);
+  if (current === null) return 'authority_unavailable';
+  return current === arm.authorityPermissionVersion ? null : 'permission_changed';
 }
 
 export type TelemetryArmFence = { ok: true; arm: ArmRow; interfaces: TopologyTelemetryArmInterface[] } | { ok: false; reason: string };
@@ -143,6 +194,8 @@ export async function topologyTelemetryArmAuthority(request: TopologyTelemetryAu
     .limit(1);
   const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: request.device.id, now: new Date() });
   if (!fence.ok) return { authorized: false, reason: fence.reason };
+  const permissions = await armPermissionsStillWitnessed(fence.arm);
+  if (permissions) return { authorized: false, reason: permissions };
   return { authorized: true, configurationGeneration: topologyTelemetryConfigurationGeneration(fence.arm), interfaceIds: fence.interfaces.map((i) => i.interfaceId) };
 }
 
@@ -170,6 +223,7 @@ export async function validateTopologyInterfacePollDelivery(reader: Reader, row:
     .limit(1);
   const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: row.deviceId, now });
   if (!fence.ok) return 'scope_changed';
+  if (await armPermissionsStillWitnessed(fence.arm)) return 'scope_changed';
   const root = await readCollectorRoot(reader, scope, row.deviceId);
   if (!root) return 'scope_changed';
   const expected = topologyArmProducerCredentials(root, fence.arm);

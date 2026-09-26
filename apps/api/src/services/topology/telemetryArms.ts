@@ -358,7 +358,7 @@ export async function dispatchDueTopologyTelemetryArms(deps: TelemetryDispatchDe
   for (const arm of due) {
     if (arm.expiresAt.getTime() <= now.getTime()) { await blockArm(arm, 'arm_expired'); result.blocked++; continue; }
     const scope = { orgId: arm.orgId, siteId: arm.siteId };
-    const outcome = await withTopologyArmAuthority(arm.authorityActor, scope, ['interfaceHealth'], (ctx) => withDbTransaction(async () => {
+    const outcome = await withTopologyArmAuthority(arm.authorityActor, scope, ['interfaceHealth'], (ctx, live) => withDbTransaction(async () => {
       const [locked] = await db.select().from(topologyTelemetryArms)
         .where(and(scopedWrite(ctx.scope, topologyTelemetryArms), eq(topologyTelemetryArms.id, arm.id))).for('update');
       if (!locked || locked.state !== 'armed' || locked.generation !== arm.generation) return { kind: 'skipped' as const };
@@ -421,7 +421,11 @@ export async function dispatchDueTopologyTelemetryArms(deps: TelemetryDispatchDe
         payload: encryptSensitivePayloadFields(TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE, payload as unknown as Record<string, unknown>) as unknown as CommandPayload,
         createdBy: locked.armedBy,
       });
-      await db.update(topologyTelemetryArms).set({ nextPollAt: next, lastPolledAt: now, updatedAt: now }).where(eq(topologyTelemetryArms.id, locked.id));
+      // C4: stamp the permission version the live re-derivation above was
+      // verified at; delivery and acceptance require it to still be current.
+      await db.update(topologyTelemetryArms)
+        .set({ nextPollAt: next, lastPolledAt: now, updatedAt: now, authorityPermissionVersion: live.permissionVersion })
+        .where(eq(topologyTelemetryArms.id, locked.id));
       return { kind: 'dispatched' as const };
     }), deps);
     if (!outcome.ok) { await blockArm(arm, outcome.reason); result.blocked++; continue; }

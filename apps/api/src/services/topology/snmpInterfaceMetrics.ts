@@ -1,14 +1,16 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { pgErrorCode } from '@breeze/shared/pgErrors';
 import {
   parseTopologyInterfaceMetricEnvelopeV1, TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE, topologyInterfacePollCommandV1Schema,
   type TopologyInterfaceMetricEnvelopeV1, type TopologyScope,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceCommands } from '../../db/schema';
+import { deviceCommands, topologyTelemetryArms } from '../../db/schema';
+import { getPermissionAuthorityVersion } from '../permissions';
 import { captureException } from '../sentry';
 import { resolveTopologyTelemetryProducer, TOPOLOGY_TELEMETRY_PRODUCER_REJECTIONS } from './collectionAuthority';
 import { persistTopologyInterfaceSamples, type TopologyInterfaceSampleReceipt } from './interfaceSamples';
+import { topologyArmActorId, withPreResolvedArmPermissionVersions } from './telemetryArmFence';
 
 /**
  * SNMP interface poll result adapter (M3 Task 3, amendment M3-D2).
@@ -76,6 +78,19 @@ export type TopologyInterfacePollReceipt =
  * command types and for an agent-side failure (no envelope to ingest); every
  * refusal is a receipt, never an exception into the result route.
  */
+async function preResolveArmPermissionVersions(commandId: string): Promise<Map<string, string | null>> {
+  const actorId = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [command] = await db.select({ payload: deviceCommands.payload }).from(deviceCommands).where(eq(deviceCommands.id, commandId)).limit(1);
+    const binding = (command?.payload as { binding?: { armId?: unknown; orgId?: unknown } } | null)?.binding;
+    const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (typeof binding?.armId !== 'string' || typeof binding.orgId !== 'string' || !uuidLike.test(binding.armId) || !uuidLike.test(binding.orgId)) return null;
+    const [arm] = await db.select({ authorityActor: topologyTelemetryArms.authorityActor }).from(topologyTelemetryArms)
+      .where(and(eq(topologyTelemetryArms.id, binding.armId), eq(topologyTelemetryArms.orgId, binding.orgId))).limit(1);
+    return arm ? topologyArmActorId(arm) : null;
+  }, 'topology interface poll permission pre-read'));
+  return actorId ? new Map([[actorId, await getPermissionAuthorityVersion(actorId)]]) : new Map();
+}
+
 export async function ingestTopologyInterfacePollResult(input: {
   commandType: string; commandId: string; deviceId: string; status: string; result?: unknown; stdout?: string | null;
 }): Promise<TopologyInterfacePollReceipt | null> {
@@ -83,7 +98,12 @@ export async function ingestTopologyInterfacePollResult(input: {
   const refused = (reason: string): TopologyInterfacePollReceipt =>
     ({ commandId: input.commandId, accepted: false, reason, inserted: 0, duplicates: 0, historicalOnly: 0, healthChanged: false });
   try {
-    return await runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async () => {
+    // C4: the arm's live-permission fence needs the actor's CURRENT permission
+    // version. Resolve it here, before the sink transaction takes the site-state
+    // lock, so acceptance never waits on Redis while holding it (T4). The fence
+    // fails closed for any actor not resolved here.
+    const versions = await preResolveArmPermissionVersions(input.commandId);
+    return await withPreResolvedArmPermissionVersions(versions, () => runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async () => {
       const [command] = await db.select({ id: deviceCommands.id, deviceId: deviceCommands.deviceId, type: deviceCommands.type, payload: deviceCommands.payload })
         .from(deviceCommands).where(eq(deviceCommands.id, input.commandId)).limit(1);
       if (!command) return refused('command_not_found');
@@ -94,7 +114,7 @@ export async function ingestTopologyInterfacePollResult(input: {
         return refused('producer_epoch_changed');
       }
       return { commandId: command.id, ...(await persistTopologyInterfaceSamples(producer, poll.envelope)) };
-    }), 'topology interface poll result'));
+    }), 'topology interface poll result')));
   } catch (error) {
     if (error instanceof TopologyInterfacePollRejection) return refused(error.reason);
     const message = error instanceof Error ? error.message : '';

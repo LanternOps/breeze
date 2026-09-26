@@ -33,6 +33,8 @@ export const topologyTelemetryArms = pgTable('topology_telemetry_arms', {
   generation: bigint('generation', { mode: 'bigint' }).notNull().default(1n),
   armedBy: uuid('armed_by').notNull(),
   authorityActor: jsonb('authority_actor').$type<Record<string, unknown>>().notNull(),
+  /** Permission authority version the actor's LIVE permission set was last verified at (arm time, then every enqueue).
+   * Delivery and result acceptance require it to still be current (PR #7117 C4). The arm-time witness stays in `authority_actor`. */
   authorityPermissionVersion: varchar('authority_permission_version', { length: 256 }).notNull(),
   effectDigest: varchar('effect_digest', { length: 64 }).notNull(),
   armedAt: timestamp('armed_at', { withTimezone: true }).notNull().defaultNow(),
