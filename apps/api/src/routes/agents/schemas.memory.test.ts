@@ -88,6 +88,11 @@ describe('agentMemoryInventorySchema (#5351)', () => {
     ['duplicate slotKey', memory({ modules: [module(), module({ locator: 'DIMM_B1' })] })],
     ['soldered not boolean', memory({ soldered: 'yes' })],
     ['capacity beyond int4', memory({ modules: [module({ capacityMb: 2 ** 31 })] })],
+    // Postgres rejects NUL in text; letting one through would abort the whole
+    // hardware transaction instead of just dropping the memory block.
+    ['NUL in slotKey', memory({ modules: [module({ slotKey: 'smbios:\u00000x1100' })] })],
+    ['NUL in locator', memory({ modules: [module({ locator: 'DIMM\u0000A1' })] })],
+    ['NUL in partNumber', memory({ modules: [module({ partNumber: 'M378\u0000' })] })],
   ])('rejects %s', (_label, value) => {
     expect(agentMemoryInventorySchema.safeParse(value).success).toBe(false);
   });

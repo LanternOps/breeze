@@ -712,11 +712,15 @@ export const updateHardwareSchema = z.object({
 // empty); absent optional fields are stored as NULL.
 export const MEMORY_MODULES_MAX = 256;
 const memoryInt = z.number().int().nonnegative().max(2_147_483_647).nullable().optional();
-const memoryText = (max: number) => z.string().max(max).nullable().optional();
+// Postgres text rejects NUL; one reaching the insert would abort the whole
+// hardware transaction, so it must fail validation and drop only the block.
+const noNul = (s: string) => !s.includes('\u0000');
+const memoryString = (min: number, max: number) => z.string().min(min).max(max).refine(noNul, 'contains NUL');
+const memoryText = (max: number) => memoryString(0, max).nullable().optional();
 
 export const agentMemoryModuleSchema = z.object({
-  slotKey: z.string().min(1).max(160),
-  locator: z.string().min(1).max(128),
+  slotKey: memoryString(1, 160),
+  locator: memoryString(1, 128),
   bankLabel: memoryText(128),
   populated: z.boolean(),
   capacityMb: memoryInt,
