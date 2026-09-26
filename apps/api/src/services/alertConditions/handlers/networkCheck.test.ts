@@ -21,6 +21,7 @@ vi.mock('../../../db/schema', () => ({
     monitorId: 'networkMonitorResults.monitorId',
     orgId: 'networkMonitorResults.orgId',
     status: 'networkMonitorResults.status',
+    responseMs: 'networkMonitorResults.responseMs',
     timestamp: 'networkMonitorResults.timestamp',
   },
 }));
@@ -65,7 +66,7 @@ function setReads(
 }
 
 function offline(n: number) {
-  return Array.from({ length: n }, () => ({ status: 'offline', timestamp: new Date() }));
+  return Array.from({ length: n }, () => ({ status: 'offline', responseMs: null, timestamp: new Date() }));
 }
 
 describe('networkCheckHandler (#5291 W04)', () => {
@@ -118,6 +119,78 @@ describe('networkCheckHandler (#5291 W04)', () => {
 
       expect(result.passed).toBe(false);
       expect(result.description).toMatch(/not the alert device/i);
+    });
+  });
+
+  describe('legacy verdicts (W05e)', () => {
+    it.each([undefined, false, true])('counts degraded only with degradedIsFailure=%s', async (degradedIsFailure) => {
+      setReads([{ id: 'nm-1', assetId: null }], [
+        { status: 'degraded', responseMs: 10 },
+        { status: 'degraded', responseMs: 10 },
+      ]);
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2, degradedIsFailure },
+        DEVICE_ID,
+      );
+      expect(result.passed).toBe(degradedIsFailure === true);
+    });
+
+    it.each([
+      [900, 500, true],
+      [500, 500, false],
+      [499, 500, false],
+      [null, 500, false],
+      [900, undefined, false],
+    ])('evaluates online response %s against threshold %s', async (responseMs, maxResponseMs, passed) => {
+      setReads([{ id: 'nm-1', assetId: null }], [{ status: 'online', responseMs }]);
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 1, maxResponseMs },
+        DEVICE_ID,
+      );
+      expect(result.passed).toBe(passed);
+      expect(mockDb.select).toHaveBeenLastCalledWith(expect.objectContaining({
+        responseMs: 'networkMonitorResults.responseMs',
+      }));
+    });
+
+    it('counts mixed failures and stops at the first healthy result', async () => {
+      setReads([{ id: 'nm-1', assetId: null }], [
+        { status: 'offline', responseMs: null },
+        { status: 'degraded', responseMs: 10 },
+        { status: 'online', responseMs: 900 },
+        { status: 'online', responseMs: 500 },
+        { status: 'offline', responseMs: null },
+      ]);
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 5, degradedIsFailure: true, maxResponseMs: 500 },
+        DEVICE_ID,
+      );
+      expect(result.passed).toBe(false);
+      expect(result.actualValue).toBe(3);
+    });
+
+    it('does not breach on a short history of slow results', async () => {
+      setReads([{ id: 'nm-1', assetId: null }], [{ status: 'online', responseMs: 900 }]);
+      const result = await networkCheckHandler.evaluate(
+        { type: 'network_check', monitorId: MONITOR_ID, consecutiveFailures: 2, maxResponseMs: 500 },
+        DEVICE_ID,
+      );
+      expect(result.passed).toBe(false);
+      expect(result.actualValue).toBe(1);
+    });
+
+    it.each([0, -1, '500', null])('rejects invalid maxResponseMs %s', (maxResponseMs) => {
+      expect(networkCheckHandler.validate!({ monitorId: MONITOR_ID, maxResponseMs }, 'c'))
+        .toContain('c.maxResponseMs: Must be a positive number');
+    });
+
+    it.each(['true', 1, null])('rejects invalid degradedIsFailure %s', (degradedIsFailure) => {
+      expect(networkCheckHandler.validate!({ monitorId: MONITOR_ID, degradedIsFailure }, 'c'))
+        .toContain('c.degradedIsFailure: Must be a boolean');
+    });
+
+    it.each([false, true])('accepts valid verdict options (%s)', (degradedIsFailure) => {
+      expect(networkCheckHandler.validate!({ monitorId: MONITOR_ID, maxResponseMs: 1, degradedIsFailure }, 'c')).toEqual([]);
     });
   });
 

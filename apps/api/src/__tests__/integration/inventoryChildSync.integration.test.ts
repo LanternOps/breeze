@@ -1,8 +1,11 @@
 import './setup';
 import { asc, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { deviceDisks, deviceNetwork, devices, partnerExportDeviceMaterialState } from '../../db/schema';
-import { syncDeviceDisks, syncDeviceNetwork, type DiskReport, type NetworkAdapterReport } from '../../services/inventoryChildSync';
+import { deviceDisks, deviceHardware, deviceMemoryModules, deviceNetwork, devices, partnerExportDeviceMaterialState } from '../../db/schema';
+import {
+  syncDeviceDisks, syncDeviceNetwork, writeHardwareReport,
+  type DiskReport, type MemoryInventoryReport, type MemoryModuleReport, type NetworkAdapterReport,
+} from '../../services/inventoryChildSync';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -119,5 +122,150 @@ describe('inventory disk/network sync (#6698)', () => {
       .resolves.toEqual([device.orgId]);
     expect(await inventoryWatermark(device.id)).toBeGreaterThan(initial);
     expect((await networkRows(device.id)).map((r) => r.interfaceName)).toEqual(['eth0', 'eth0']);
+  });
+});
+
+// #5351 — per-slot memory rides the hardware report. The whole ingest write
+// (device_hardware upsert incl. memory_* columns + device_memory_modules sync)
+// is exercised through writeHardwareReport, the function the route calls.
+const dimm = (slot: number, overrides: Partial<MemoryModuleReport> = {}): MemoryModuleReport => ({
+  slotKey: `smbios:0x${1100 + slot}`, locator: `DIMM_${slot}`, bankLabel: `BANK ${slot}`, populated: true,
+  capacityMb: 16384, memoryType: 'DDR4', formFactor: 'DIMM', speedMts: 3200, configuredSpeedMts: 2933,
+  manufacturer: 'Samsung', partNumber: 'M378A2K43DB1-CTD', serialNumber: `SN${slot}`, ...overrides,
+});
+const emptySlot = (slot: number): MemoryModuleReport => ({ slotKey: `smbios:0x${1100 + slot}`, locator: `DIMM_${slot}`, populated: false });
+const memoryReport = (modules: MemoryModuleReport[], overrides: Partial<MemoryInventoryReport> = {}): MemoryInventoryReport => ({
+  slotsTotal: modules.length, maxCapacityMb: 131072, soldered: false, modules, ...overrides,
+});
+const HARDWARE = { cpuModel: 'Xeon', cpuCores: 8, ramTotalMb: 32768 };
+
+const memoryRows = async (deviceId: string) => getTestDb().select().from(deviceMemoryModules)
+  .where(eq(deviceMemoryModules.deviceId, deviceId)).orderBy(asc(deviceMemoryModules.slotIndex));
+const hardwareRow = async (deviceId: string) => (await getTestDb().select().from(deviceHardware)
+  .where(eq(deviceHardware.deviceId, deviceId)))[0];
+const report = (device: { id: string; orgId: string }, memory: MemoryInventoryReport | null, hardware = HARDWARE) =>
+  (tx: Tx) => writeHardwareReport(tx, device, hardware, memory, new Date());
+
+describe('inventory memory module sync (#5351)', () => {
+  runDb('stores every slot in report order with the hardware memory summary', async () => {
+    const device = await seedDevice();
+    await expect(orgLocksTakenBy(report(device, memoryReport([dimm(0), emptySlot(1), dimm(2), emptySlot(3)]))))
+      .resolves.toEqual([device.orgId]);
+
+    const rows = await memoryRows(device.id);
+    expect(rows.map((r) => [r.slotIndex, r.locator, r.populated])).toEqual([
+      [0, 'DIMM_0', true], [1, 'DIMM_1', false], [2, 'DIMM_2', true], [3, 'DIMM_3', false],
+    ]);
+    expect(rows[0]).toMatchObject({ orgId: device.orgId, capacityMb: 16384, memoryType: 'DDR4', configuredSpeedMts: 2933 });
+    // Absent optional fields are NULL, never defaulted.
+    expect(rows[1]).toMatchObject({ bankLabel: null, capacityMb: null, memoryType: null, serialNumber: null });
+    expect(await hardwareRow(device.id)).toMatchObject({
+      cpuModel: 'Xeon', memorySlotsTotal: 4, memoryMaxCapacityMb: 131072, memorySoldered: false,
+    });
+    expect((await hardwareRow(device.id))?.memoryObservedAt).toBeInstanceOf(Date);
+  });
+
+  runDb('an unchanged report (hardware + memory) keeps row ids and takes zero org locks', async () => {
+    const device = await seedDevice();
+    const snapshot = memoryReport([dimm(0), emptySlot(1)]);
+    await getTestDb().transaction(report(device, snapshot));
+    const before = await memoryRows(device.id);
+    const beforeHardware = await hardwareRow(device.id);
+    const initial = await inventoryWatermark(device.id);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await expect(orgLocksTakenBy(report(device, snapshot))).resolves.toEqual([]);
+
+    const after = await memoryRows(device.id);
+    expect(after.map((r) => r.id)).toEqual(before.map((r) => r.id));
+    expect(await inventoryWatermark(device.id)).toBe(initial);
+    // memory_observed_at still advances (it is excluded from the material comparison).
+    expect((await hardwareRow(device.id))!.memoryObservedAt!.getTime())
+      .toBeGreaterThan(beforeHardware!.memoryObservedAt!.getTime());
+  });
+
+  runDb('a DIMM swapped in the same slot keeps the row id and advances the watermark', async () => {
+    const device = await seedDevice();
+    await getTestDb().transaction(report(device, memoryReport([dimm(0), emptySlot(1)])));
+    const [slot0] = await memoryRows(device.id);
+    const initial = await inventoryWatermark(device.id);
+
+    await expect(orgLocksTakenBy(report(device, memoryReport([dimm(0, { capacityMb: 32768, serialNumber: 'NEW' }), emptySlot(1)]))))
+      .resolves.toEqual([device.orgId]);
+    const [swapped] = await memoryRows(device.id);
+    expect(swapped).toMatchObject({ id: slot0!.id, capacityMb: 32768, serialNumber: 'NEW' });
+    expect(await inventoryWatermark(device.id)).toBeGreaterThan(initial);
+  });
+
+  runDb('added and removed slots advance the watermark; survivors keep their ids', async () => {
+    const device = await seedDevice();
+    await getTestDb().transaction(report(device, memoryReport([dimm(0), emptySlot(1)])));
+    const [slot0] = await memoryRows(device.id);
+    const initial = await inventoryWatermark(device.id);
+
+    await expect(orgLocksTakenBy(report(device, memoryReport([dimm(0), emptySlot(1), dimm(2)]))))
+      .resolves.toEqual([device.orgId]);
+    const afterAdd = await inventoryWatermark(device.id);
+    expect(afterAdd).toBeGreaterThan(initial);
+    expect((await memoryRows(device.id)).map((r) => r.locator)).toEqual(['DIMM_0', 'DIMM_1', 'DIMM_2']);
+
+    await getTestDb().transaction(report(device, memoryReport([dimm(0)])));
+    expect(await inventoryWatermark(device.id)).toBeGreaterThan(afterAdd);
+    expect((await memoryRows(device.id)).map((r) => r.id)).toEqual([slot0!.id]);
+  });
+
+  runDb('a report without a memory block leaves stored modules and memory columns untouched', async () => {
+    const device = await seedDevice();
+    await getTestDb().transaction(report(device, memoryReport([dimm(0), emptySlot(1)])));
+    const before = await memoryRows(device.id);
+    const beforeHardware = await hardwareRow(device.id);
+
+    await getTestDb().transaction(report(device, null, { ...HARDWARE, cpuModel: 'Xeon v2' }));
+
+    expect(await memoryRows(device.id)).toEqual(before);
+    const afterHardware = await hardwareRow(device.id);
+    expect(afterHardware).toMatchObject({
+      cpuModel: 'Xeon v2', memorySlotsTotal: 2, memoryMaxCapacityMb: 131072, memorySoldered: false,
+    });
+    expect(afterHardware!.memoryObservedAt).toEqual(beforeHardware!.memoryObservedAt);
+  });
+
+  runDb('a present memory block is authoritative: omitted optional fields become NULL', async () => {
+    const device = await seedDevice();
+    await getTestDb().transaction(report(device, memoryReport([dimm(0)], { slotsTotal: 4, soldered: false })));
+    await getTestDb().transaction(report(device, { modules: [{ slotKey: dimm(0).slotKey, locator: 'DIMM_0', populated: true }] }));
+    const [row] = await memoryRows(device.id);
+    expect(row).toMatchObject({ capacityMb: null, manufacturer: null, serialNumber: null, bankLabel: null });
+    expect(await hardwareRow(device.id)).toMatchObject({ memorySlotsTotal: null, memoryMaxCapacityMb: null, memorySoldered: null });
+  });
+
+  runDb('a failed transaction rolls back the hardware row and the modules together', async () => {
+    const device = await seedDevice();
+    await expect(getTestDb().transaction(async (tx) => {
+      await report(device, memoryReport([dimm(0), emptySlot(1)]))(tx);
+      throw new Error('boom after write');
+    })).rejects.toThrow('boom after write');
+    expect(await memoryRows(device.id)).toEqual([]);
+    expect(await hardwareRow(device.id)).toBeUndefined();
+  });
+
+  runDb('overlapping reports for one device serialise and leave exactly one snapshot', async () => {
+    const device = await seedDevice();
+    const first = memoryReport([dimm(0), emptySlot(1), dimm(2)]);
+    const second = memoryReport([dimm(0, { serialNumber: 'B' }), dimm(3)]);
+    await Promise.all([
+      getTestDb().transaction(report(device, first)),
+      getTestDb().transaction(report(device, second)),
+    ]);
+    const locators = (await memoryRows(device.id)).map((r) => r.locator);
+    expect([['DIMM_0', 'DIMM_1', 'DIMM_2'], ['DIMM_0', 'DIMM_3']]).toContainEqual(locators);
+  });
+
+  runDb('an empty modules list clears the stored slots (authoritative empty snapshot)', async () => {
+    const device = await seedDevice();
+    await getTestDb().transaction(report(device, memoryReport([dimm(0)])));
+    await getTestDb().transaction(report(device, memoryReport([], { slotsTotal: 0 })));
+    expect(await memoryRows(device.id)).toEqual([]);
+    expect(await hardwareRow(device.id)).toMatchObject({ memorySlotsTotal: 0 });
   });
 });

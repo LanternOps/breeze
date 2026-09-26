@@ -11,6 +11,7 @@ import { partnerIdForOrg } from '../../services/delivery/railOwnership';
 import { readInheritedRails } from '../../services/delivery/inheritedRails';
 import { listEscalationUsers } from '../../services/delivery/escalationExecution';
 import { redactNotificationChannelConfig } from '../../services/notificationChannelSecrets';
+import { selectNotificationChannelsWithConfig } from '../../services/notificationChannelConfig';
 import { resolveWriteOrgId } from './helpers';
 import { canAccessRoutingSites, routingSiteIds } from './routing';
 const querySchema = z.object({ rail: z.enum(['channels','routing','escalation','users']),
@@ -49,10 +50,12 @@ deliveryRailsRoutes.get('/delivery/rails', requireScope('organization','partner'
         const editable = await db.select().from(escalationPolicies).where(axis(escalationPolicies)).orderBy(asc(escalationPolicies.name));
         return c.json({ data: [...editable, ...await inherited()] });
       }
-      const rows = await db.select().from(notificationChannels).where(axis(notificationChannels)).orderBy(asc(notificationChannels.name));
+      const rows = await selectNotificationChannelsWithConfig(axis(notificationChannels), {
+        orderBy: [asc(notificationChannels.name)],
+      });
       return c.json({
         data: rows.map(row => ({ ...row,
-          config: redactNotificationChannelConfig(row.type, row.config) })),
+          config: redactNotificationChannelConfig(row.type, row.config ?? {}) })),
         inherited: await inherited(),
       });
     } catch (error) {

@@ -77,7 +77,9 @@ import {
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
+import { consentDeniedMessage } from './remote/consentTiming';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
+import { nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   reconcileSoftwareInstallResult,
@@ -2887,6 +2889,46 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (agentDb) {
             await runWithAgentDbAccess('agentWs.updateStatus', async () => {
               try {
+                const now = new Date();
+                // #4073 — every update_status precedes an update ATTEMPT (a
+                // wedged update re-sends it on every heartbeat), so record the
+                // episode on the device row: first attempt, last attempt,
+                // count. The heartbeat clears it on convergence; an old open
+                // record that is still retrying is a stuck update, visible
+                // without depending on log shipping. A failed read must never
+                // cost the status flip — it just starts a fresh episode.
+                // Oversized targets (column is varchar(50)) are not recorded.
+                const targetVersion: string = message.targetVersion;
+                let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
+                if (targetVersion.length > 0 && targetVersion.length <= 50) {
+                  let prev: {
+                    targetVersion: string | null;
+                    startedAt: Date | null;
+                    lastAttemptAt: Date | null;
+                    attemptCount: number | null;
+                  } | undefined;
+                  try {
+                    [prev] = await db
+                      .select({
+                        targetVersion: devices.updateAttemptTargetVersion,
+                        startedAt: devices.updateAttemptStartedAt,
+                        lastAttemptAt: devices.updateAttemptLastAt,
+                        attemptCount: devices.updateAttemptCount,
+                      })
+                      .from(devices)
+                      .where(eq(devices.agentId, agentId))
+                      .limit(1);
+                  } catch (readError) {
+                    console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
+                  }
+                  attempt = nextAgentUpdateAttempt(
+                    prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
+                    targetVersion,
+                    now,
+                  );
+                } else {
+                  console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
+                }
                 // Same terminal-status guard as updateDeviceStatus (#2230):
                 // this write must not resurrect a decommissioned/quarantined
                 // row to 'updating'.
@@ -2894,8 +2936,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   .update(devices)
                   .set({
                     status: 'updating',
-                    lastSeenAt: new Date(),
-                    updatedAt: new Date()
+                    lastSeenAt: now,
+                    updatedAt: now,
+                    ...(attempt
+                      ? {
+                          updateAttemptTargetVersion: attempt.targetVersion,
+                          updateAttemptStartedAt: attempt.startedAt,
+                          updateAttemptLastAt: attempt.lastAttemptAt,
+                          updateAttemptCount: attempt.attemptCount,
+                        }
+                      : {}),
                   })
                   .where(and(
                     eq(devices.agentId, agentId),
@@ -3080,7 +3130,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   // endpoint refused the start, so the phase is 'confirmed'.
                   const denied = await commitDesktopTerminalIntent({
                     sessionId,
-                    write: { status: 'denied', endedAt: new Date() },
+                    // #6818: record why, so the viewer's answer poll can tell the
+                    // technician "declined" / "did not respond" instead of a
+                    // generic "session ended".
+                    write: { status: 'denied', endedAt: new Date(), errorMessage: consentDeniedMessage(reason) },
                     phase: 'confirmed',
                     where: [
                       eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
@@ -3372,7 +3425,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 agentId,
                 commandId: progressMessage.commandId,
                 // Default to {} so a bare keepalive ping (no counters) still
-                // parses and bumps last_progress_at instead of being dropped as
+                // parses and bumps last_keepalive_at (liveness; #2798 — it no
+                // longer touches last_progress_at) instead of being dropped as
                 // invalid-payload. All fields on the progress schema are
                 // optional, so an empty body is a valid "still alive" signal.
                 progress: progressMessage.progress ?? {},
@@ -3384,7 +3438,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 // agent-mismatch is a real anomaly (an agent pinging another
                 // device's job) and stays at warn. invalid-payload joins it:
                 // since #3006 it means an agent is sending progress this server
-                // cannot understand, which starves last_progress_at and gets
+                // cannot understand, which starves last_keepalive_at and gets
                 // healthy uploads reaped. Everything else is routine traffic —
                 // restore progress reuses this WS type with a commandId that
                 // matches no backup job (not-found), a garbage or non-UUID

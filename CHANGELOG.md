@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Network checks are authored under **Alerts → Monitors**, with asset binding; **Network** keeps Assets, SNMP Templates and Results. Interactive conversion adopts supported legacy probes, preserves results and open alerts, and supports ledger retirement/Undo while the network runtime remains. Startup sweeps exclude network sources.
+- Legacy network check create/update and alert-rule writes return `410 Gone`; unmanaged deletion uses ledger retirement. Device **Disable SNMP monitoring** is SNMP-only; the old monitoring asset DELETE refuses active checks with 409. Retained bound checks block asset deletion.
+- Network checks retain the previously shipped `expectStatus` → `expectedStatus` mapping (#6352), offline alert-device evaluation (#6353) and new-check redirect defaults (#6510); conversion preserves the legacy redirect behavior.
+
 - Policy **Check interval** is stored on the `monitors` feature link. Startup converts remaining legacy alerting per partner, retires unconvertible sources with reasons, and checks for unretired rules and watches on every boot. Alerts → Monitors lists retirements for review; open alerts from unconvertible sources require manual resolution. Undo for removed legacy runtimes ends at this upgrade.
 - Queued legacy alerts and unconverted standalone rules use monitor settings and Delivery routing without legacy channel or escalation overrides. Review routing and the explicit **Everything else** row before upgrading.
 

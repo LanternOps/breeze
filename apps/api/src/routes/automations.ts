@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automations,
+  automationActionResults,
   automationRuns,
   automationRunDeviceResults,
   configurationPolicies,
@@ -461,10 +462,10 @@ function takePreview(
 /**
  * Fetch the `script_executions` rows minted by a run's `run_script` actions,
  * grouped by device (#3162). These carry the script's REAL stdout/stderr/exit
- * code, which `automation_run_device_results.output` never has — that column
- * only holds the automation's own log lines. RLS on script_executions (org_id =
- * device's org) scopes rows to the caller's tenancy, same as
- * fetchRunDeviceResults.
+ * code. `automation_run_device_results.output` is only a truncated
+ * concatenation of every action's output/message, not a per-script record.
+ * RLS on script_executions (org_id = device's org) scopes rows to the
+ * caller's tenancy, same as fetchRunDeviceResults.
  *
  * `scriptName` is a LEFT JOIN and can legitimately be null: an org-scoped RLS
  * context cannot see a partner-wide script (`scripts.org_id IS NULL`), so the
@@ -520,18 +521,88 @@ async function fetchRunScriptExecutions(runId: string, auth: AuthContext, allowe
   return byDevice;
 }
 
+const RUN_COMMAND_OUTPUT_PREVIEW_CHARS = 16_384;
+const RUN_COMMAND_ERROR_PREVIEW_CHARS = 8_192;
+
+type RunCommandResult = {
+  actionIndex: number;
+  status: string;
+  output?: string;
+  outputTruncated?: boolean;
+  error?: string;
+  errorTruncated?: boolean;
+  message?: string;
+};
+
+/**
+ * Fetch the per-device results of a run's `execute_command` actions (#3188).
+ * An ad-hoc command has no `scripts` row, so it can never mint a
+ * `script_executions` row; its stdout instead lands on its own
+ * `automation_action_results` row, correlated by command id when the agent
+ * reports (redacted at ingest). This surfaces it the same way
+ * `fetchRunScriptExecutions` surfaces a `run_script` action's stdout. RLS on
+ * automation_action_results (org_id = device's org) scopes rows to the
+ * caller's tenancy; the explicit org condition and site filter mirror the
+ * script-execution query.
+ */
+async function fetchRunCommandResults(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
+  const conditions: SQL[] = [
+    eq(automationActionResults.runId, runId),
+    eq(automationActionResults.actionType, 'execute_command'),
+  ];
+  const orgCondition = auth.orgCondition?.(automationActionResults.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
+
+  const rows = await db
+    .select({
+      deviceId: automationActionResults.deviceId,
+      actionIndex: automationActionResults.actionIndex,
+      status: automationActionResults.status,
+      // +1 so the TS side can tell "exactly at the limit" from "overflowed".
+      output: sql<string | null>`left(${automationActionResults.output}, ${RUN_COMMAND_OUTPUT_PREVIEW_CHARS + 1})`,
+      error: sql<string | null>`left(${automationActionResults.error}, ${RUN_COMMAND_ERROR_PREVIEW_CHARS + 1})`,
+      message: automationActionResults.message,
+    })
+    .from(automationActionResults)
+    .innerJoin(devices, eq(devices.id, automationActionResults.deviceId))
+    .where(and(...conditions))
+    .orderBy(automationActionResults.actionIndex);
+
+  const byDevice = new Map<string, RunCommandResult[]>();
+
+  for (const row of rows) {
+    const output = takePreview(row.output, RUN_COMMAND_OUTPUT_PREVIEW_CHARS);
+    const error = takePreview(row.error, RUN_COMMAND_ERROR_PREVIEW_CHARS);
+    const list = byDevice.get(row.deviceId) ?? [];
+    list.push({
+      actionIndex: row.actionIndex,
+      status: row.status,
+      ...(output.text !== undefined ? { output: output.text } : {}),
+      ...(output.truncated ? { outputTruncated: true } : {}),
+      ...(error.text !== undefined ? { error: error.text } : {}),
+      ...(error.truncated ? { errorTruncated: true } : {}),
+      ...(row.message ? { message: row.message } : {}),
+    });
+    byDevice.set(row.deviceId, list);
+  }
+
+  return byDevice;
+}
+
 /**
  * Fetch the consolidated per-device breakdown for one run (#2023), joined to
  * `devices` for a display name. Shaped to the web `DeviceRunResult` contract:
  * status + start/complete timestamps + duration (ms) + output/error, plus the
- * per-device script executions the run queued (#3162). RLS on
+ * per-device script executions the run queued (#3162) and its execute_command
+ * action results (#3188). RLS on
  * automation_run_device_results (org_id = device's org) already scopes rows to
  * the caller's tenancy, so no extra org filter is needed here.
  */
 async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
   const conditions: SQL[] = [eq(automationRunDeviceResults.runId, runId)];
   if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
-  const [rows, scriptExecutionsByDevice] = await Promise.all([
+  const [rows, scriptExecutionsByDevice, commandResultsByDevice] = await Promise.all([
     db
       .select({
         deviceId: automationRunDeviceResults.deviceId,
@@ -548,6 +619,7 @@ async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSi
       .where(and(...conditions))
       .orderBy(desc(automationRunDeviceResults.startedAt)),
     fetchRunScriptExecutions(runId, auth, allowedSiteIds),
+    fetchRunCommandResults(runId, auth, allowedSiteIds),
   ]);
 
   return rows.map((row) => {
@@ -555,6 +627,7 @@ async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSi
       ? new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime()
       : undefined;
     const scriptResults = scriptExecutionsByDevice.get(row.deviceId);
+    const commandResults = commandResultsByDevice.get(row.deviceId);
     return {
       deviceId: row.deviceId,
       deviceName: row.displayName ?? row.hostname ?? row.deviceId,
@@ -565,6 +638,7 @@ async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSi
       output: row.output ?? undefined,
       error: row.error ?? undefined,
       scriptResults: scriptResults && scriptResults.length > 0 ? scriptResults : undefined,
+      commandResults: commandResults && commandResults.length > 0 ? commandResults : undefined,
     };
   });
 }

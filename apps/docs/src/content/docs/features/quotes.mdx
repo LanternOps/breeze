@@ -32,6 +32,10 @@ Each line's internal cost details (SKU, cost, markup, profit) collapse into a on
 
 Give a quote a **title** (for example, "Server refresh -- Q1" or "New-hire onboarding bundle"). The title appears at the top of the quote and on the PDF the customer sees, so a proposal reads as a named piece of work rather than just a number.
 
+### Footer Line
+
+**Footer line (every page)** is one short line (up to 160 characters) printed at the bottom of every page of the quote, such as a validity date. Leave it blank to use your default footer; the editor shows which default applies (your partner invoice footer or your brand kit footer) or notes that none is set. The footer line is separate from **Terms & Conditions**, which is where fine print belongs. Available since v0.117.0.
+
 ### Line Titles and Descriptions
 
 Each line has a short **title** and an optional longer **description** shown beneath it. When you add a catalog item, both are prefilled from the catalog entry; edit either to tailor the wording for this customer.
@@ -246,6 +250,11 @@ A **Contract** block attaches a document from your [agreement template library](
 </Steps>
 
 The block pins to **whichever published version was latest at attach time** -- it doesn't automatically follow later edits to the template. If a newer version of the same template is published afterward, the block shows an **Update to vN** button so you can re-pin it to that newer version deliberately; nothing changes until you click it.
+
+**Where the customer sees it.** Wherever the block sits in the editor, the agreement appears **after the totals** so a long agreement never pushes the price down:
+
+- **Proposal link, customer portal, and Preview:** each agreement, followed by the quote's Terms & Conditions, shows as a collapsed row after the totals (below the sign panel on the customer's page), with its name and an estimated reading time. The customer opens it to read it, and the signature checkbox names and links every agreement. Rows expand automatically when the page is printed.
+- **PDF:** the proposal and its price come first. Each authored agreement then starts on its own page, followed by the Terms & Conditions. Uploaded-PDF agreements are appended as their own pages at the end.
 
 **Variables** are resolved when the block renders: auto variables (customer name/address, your organization's name, quote number/title, totals, dates) come from the quote automatically; manual variables use whatever you entered when you attached (or last edited) the block. An uploaded-PDF template has no variables -- it's attached as-is.
 

@@ -67,8 +67,8 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const dbMock: any = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -78,7 +78,10 @@ vi.mock('../db', () => ({
     })),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve([]))
+        // The channel insert chains .returning(); writeNotificationChannelConfig's
+        // insert (#6379) chains .onConflictDoUpdate() instead — support both.
+        returning: vi.fn(() => Promise.resolve([])),
+        onConflictDoUpdate: vi.fn(() => Promise.resolve(undefined))
       }))
     })),
     update: vi.fn(() => ({
@@ -90,12 +93,19 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
-    }))
-  },
-  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
-}));
+    })),
+    // Channel row + config row (#6379) commit together inside db.transaction.
+    // The tests run everything against the same mocked db, so the callback
+    // just runs against `dbMock` itself — there is no real tx to isolate.
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(dbMock))
+  };
+  return {
+    db: dbMock,
+    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
+  };
+});
 
 // Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` and
 // `correlations.ts` (both mounted under `alertRoutes`, ./alerts/index.ts)
@@ -127,6 +137,7 @@ vi.mock('../db/schema', () => ({
   alertTemplates: {},
   alerts: {},
   notificationChannels: {},
+  notificationChannelConfigs: {},
   escalationPolicies: {},
   alertNotifications: {},
   devices: {
@@ -200,6 +211,29 @@ vi.mock('../middleware/auth', async () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 
+// getNotificationChannelWithOrgCheck (routes/alerts/helpers.ts) now resolves
+// through getNotificationChannelWithConfig / selectNotificationChannelsWithConfig
+// (services/notificationChannelConfig.ts, #6379), which chains
+// .from().leftJoin().where().orderBy().$dynamic().limit(1) instead of the old
+// bare .from().where().limit(1). This builds a db.select() mockReturnValueOnce
+// payload with that shape so single-channel lookups keep working; `rows` is
+// what the terminal .limit() resolves to.
+function channelLookupChain(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            $dynamic: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows)
+            })
+          })
+        })
+      })
+    })
+  } as any;
+}
+
 describe('alert routes', () => {
   let app: Hono;
 
@@ -212,10 +246,23 @@ describe('alert routes', () => {
     // queue leaks into the next test. mockReset() flushes the once-queue, then
     // we re-install the chainable defaults from the vi.mock factory.
     vi.mocked(db.select).mockReset().mockImplementation((() => ({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) })
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve([]) }),
+        // getNotificationChannelWithConfig / the channel list route (#6379)
+        // chain .leftJoin() right after .from() when not otherwise queued.
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () => ({ $dynamic: () => ({ limit: () => Promise.resolve([]) }) }),
+          }),
+        }),
+      })
     })) as any);
     vi.mocked(db.insert).mockReset().mockImplementation((() => ({
-      values: () => ({ returning: () => Promise.resolve([]) })
+      values: () => ({
+        returning: () => Promise.resolve([]),
+        // writeNotificationChannelConfig's insert (#6379) chains this instead.
+        onConflictDoUpdate: () => Promise.resolve(undefined)
+      })
     })) as any);
     vi.mocked(db.update).mockReset().mockImplementation((() => ({
       set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) })
@@ -894,20 +941,28 @@ describe('alert routes', () => {
 
   describe('notification channel webhook validation', () => {
     it('encrypts and redacts credential-bearing channel config on create', async () => {
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn((values: any) => ({
-          returning: vi.fn(() => Promise.resolve([{
-            id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-            orgId: '11111111-1111-1111-1111-111111111111',
-            name: 'PagerDuty',
-            type: 'pagerduty',
-            config: values.config,
-            enabled: true,
-            createdAt: new Date(),
-            updatedAt: new Date()
-          }]))
-        }))
-      } as any);
+      // Channel row and its config row (#6379) commit inside db.transaction:
+      // .insert(notificationChannels).values(...).returning() first, then
+      // writeNotificationChannelConfig's .insert(notificationChannelConfigs)
+      // .values({channelId, config}).onConflictDoUpdate(...).
+      const configValuesFn = vi.fn((_vals: any) => ({
+        onConflictDoUpdate: vi.fn(() => Promise.resolve(undefined))
+      }));
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({
+          values: vi.fn((_values: any) => ({
+            returning: vi.fn(() => Promise.resolve([{
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'PagerDuty',
+              type: 'pagerduty',
+              enabled: true,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }]))
+          }))
+        } as any)
+        .mockReturnValueOnce({ values: configValuesFn } as any);
 
       const res = await app.request('/alerts/channels', {
         method: 'POST',
@@ -921,9 +976,10 @@ describe('alert routes', () => {
       });
 
       expect(res.status).toBe(201);
-      const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
-      expect(insertValues.config.routingKey).not.toBe('pd-routing-key');
-      expect(String(insertValues.config.routingKey)).toMatch(/^enc:v1:/);
+      const configValues = configValuesFn.mock.calls[0]?.[0];
+      expect(configValues.channelId).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+      expect(configValues.config.routingKey).not.toBe('pd-routing-key');
+      expect(String(configValues.config.routingKey)).toMatch(/^enc:v1:/);
       const body = await res.json();
       expect(JSON.stringify(body)).not.toContain('pd-routing-key');
       expect(body.config.routingKey).toEqual({
@@ -981,17 +1037,12 @@ describe('alert routes', () => {
 
     it('rejects updating a webhook channel with an unsafe URL', async () => {
       const channelId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: channelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              type: 'webhook'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: channelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        type: 'webhook',
+        config: { url: 'https://hooks.example.com/existing' }
+      }]));
 
       const res = await app.request(`/alerts/channels/${channelId}`, {
         method: 'PUT',
@@ -1008,19 +1059,13 @@ describe('alert routes', () => {
 
     it('does not return decrypted webhook URLs from channel test details', async () => {
       const channelId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: channelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Webhook',
-              type: 'webhook',
-              config: { url: 'https://hooks.example.com/token/secret-token' }
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: channelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Webhook',
+        type: 'webhook',
+        config: { url: 'https://hooks.example.com/token/secret-token' }
+      }]));
 
       const res = await app.request(`/alerts/channels/${channelId}/test`, {
         method: 'POST',
@@ -1052,19 +1097,13 @@ describe('alert routes', () => {
       // 2) Org lookup (under system scope, returns partnerId)
       // 3) Partner lookup (under system scope, returns notifications settings)
       vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: channelId,
-                orgId,
-                name: 'Pushover',
-                type: 'pushover',
-                config: { token: '', user: '' }
-              }])
-            })
-          })
-        } as any)
+        .mockReturnValueOnce(channelLookupChain([{
+          id: channelId,
+          orgId,
+          name: 'Pushover',
+          type: 'pushover',
+          config: { token: '', user: '' }
+        }]))
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1168,19 +1207,13 @@ describe('alert routes', () => {
 
     it('uses sms sender when testing an sms channel', async () => {
       const smsChannelId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: smsChannelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Primary SMS',
-              type: 'sms',
-              config: { phoneNumbers: ['+15551234567'] }
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: smsChannelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Primary SMS',
+        type: 'sms',
+        config: { phoneNumbers: ['+15551234567'] }
+      }]));
 
       sendSmsNotificationMock.mockResolvedValueOnce({
         success: true,
@@ -1205,20 +1238,14 @@ describe('alert routes', () => {
     it('returns 501 with a renderable error when channel.type has no handler', async () => {
       const unsupportedChannelId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
       // Simulate deploy drift: DB row has a `type` value the switch does not handle.
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: unsupportedChannelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Future channel type',
-              // Cast through unknown: this value isn't in the TS enum on purpose.
-              type: 'discord' as unknown as 'email',
-              config: {}
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: unsupportedChannelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Future channel type',
+        // Cast through unknown: this value isn't in the TS enum on purpose.
+        type: 'discord' as unknown as 'email',
+        config: {}
+      }]));
 
       const res = await app.request(`/alerts/channels/${unsupportedChannelId}/test`, {
         method: 'POST',
@@ -1238,19 +1265,13 @@ describe('alert routes', () => {
       const channelId = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
 
       // Channel lookup via getNotificationChannelWithOrgCheck
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: channelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Email Test',
-              type: 'email',
-              config: { recipients: ['test@example.com'] }
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: channelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Email Test',
+        type: 'email',
+        config: { recipients: ['test@example.com'] }
+      }]));
 
       // Capture what .set() receives so we can assert on it
       let capturedSetPayload: Record<string, unknown> | undefined;
@@ -1283,19 +1304,13 @@ describe('alert routes', () => {
       const channelId = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
 
       // Channel lookup — email channel with no recipients configured
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: channelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Empty Email',
-              type: 'email',
-              config: {}
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: channelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Empty Email',
+        type: 'email',
+        config: {}
+      }]));
 
       let capturedSetPayload: Record<string, unknown> | undefined;
       vi.mocked(db.update).mockReturnValueOnce({
@@ -1326,19 +1341,13 @@ describe('alert routes', () => {
       const channelId = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
 
       // Channel lookup via getNotificationChannelWithOrgCheck
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: channelId,
-              orgId: '11111111-1111-1111-1111-111111111111',
-              name: 'Email Test',
-              type: 'email',
-              config: { recipients: ['test@example.com'] }
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(channelLookupChain([{
+        id: channelId,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Email Test',
+        type: 'email',
+        config: { recipients: ['test@example.com'] }
+      }]));
 
       // Make the persist update throw a transient DB error
       vi.mocked(db.update).mockReturnValueOnce({
@@ -1371,21 +1380,23 @@ describe('alert routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([{
-                    id: 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3',
-                    orgId: '11111111-1111-1111-1111-111111111111',
-                    name: 'Email',
-                    type: 'email',
-                    config: { recipients: ['ops@example.com'] },
-                    enabled: true,
-                    lastTestedAt: testedAt,
-                    lastTestStatus: 'success',
-                    createdAt: testedAt,
-                    updatedAt: testedAt
-                  }])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([{
+                      id: 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3',
+                      orgId: '11111111-1111-1111-1111-111111111111',
+                      name: 'Email',
+                      type: 'email',
+                      config: { recipients: ['ops@example.com'] },
+                      enabled: true,
+                      lastTestedAt: testedAt,
+                      lastTestStatus: 'success',
+                      createdAt: testedAt,
+                      updatedAt: testedAt
+                    }])
+                  })
                 })
               })
             })

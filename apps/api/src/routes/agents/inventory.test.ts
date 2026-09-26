@@ -133,6 +133,12 @@ vi.mock('../../services/warrantyWorker', () => ({
   queueWarrantySyncForDevice: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../services/inventoryChildSync', () => ({
+  writeHardwareReport: vi.fn().mockResolvedValue(undefined),
+  syncDeviceDisks: vi.fn(),
+  syncDeviceNetwork: vi.fn(),
+}));
+
 vi.mock('../../services/softwareInventoryObservations', () => ({
   ingestSoftwareInventoryReport: vi.fn(),
   SoftwareInventoryObservationConflictError: class SoftwareInventoryObservationConflictError extends Error {},
@@ -141,6 +147,7 @@ vi.mock('../../services/softwareInventoryObservations', () => ({
 
 import { db } from '../../db';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { writeHardwareReport } from '../../services/inventoryChildSync';
 import {
   ingestSoftwareInventoryReport,
   SoftwareInventoryLockTimeoutError,
@@ -182,12 +189,13 @@ function mockPriorHardware(row: { manufacturer?: string | null; serialNumber?: s
   } as any);
 }
 
+// The hardware write (device_hardware upsert + memory module sync) lives in
+// services/inventoryChildSync.ts (mocked above) and runs in one transaction;
+// the transaction mock hands the callback a sentinel tx so assertions can
+// prove the write went through it.
+const TX = { tx: true };
 function mockHardwareUpsert() {
-  vi.mocked(db.insert).mockReturnValue({
-    values: vi.fn().mockReturnValue({
-      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-    }),
-  } as any);
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(TX));
 }
 
 function makeApp() {
@@ -299,7 +307,7 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
     const res = await postHardware(makeApp(), DELL);
 
     expect(res.status).toBe(404);
-    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeHardwareReport).not.toHaveBeenCalled();
     expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
   });
 
@@ -313,5 +321,85 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
 
     expect(res.status).toBe(200);
     expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #5351 — per-slot memory inventory rides the hardware report as an optional
+// `memory` block. It is validated SEPARATELY: an invalid block is logged and
+// ignored while the base hardware still saves; an absent block leaves stored
+// memory untouched (older agents, failed collection).
+describe('agent hardware inventory — memory modules (#5351)', () => {
+  const MODULE = {
+    slotKey: 'smbios:0x1100', locator: 'DIMM_A1', populated: true, capacityMb: 16384,
+    memoryType: 'DDR4', speedMts: 3200,
+  };
+  const EMPTY_SLOT = { slotKey: 'smbios:0x1101', locator: 'DIMM_A2', populated: false };
+  const MEMORY = { slotsTotal: 2, maxCapacityMb: 65536, soldered: false, modules: [MODULE, EMPTY_SLOT] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware({ manufacturer: 'Dell Inc.', serialNumber: '3S0HXB4' });
+    mockHardwareUpsert();
+  });
+
+  it('writes base hardware and the validated memory snapshot in one transaction', async () => {
+    const res = await postHardware(makeApp(), { ...DELL, cpuModel: 'Xeon', memory: MEMORY });
+
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(writeHardwareReport).toHaveBeenCalledTimes(1);
+    const [tx, device, hardware, memory, now] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+    expect(tx).toBe(TX);
+    expect(device).toMatchObject({ id: 'device-1', orgId: 'org-1' });
+    expect(hardware).toEqual({ ...DELL, cpuModel: 'Xeon' });
+    expect(hardware).not.toHaveProperty('memory');
+    expect(memory).toEqual(MEMORY);
+    expect(now).toBeInstanceOf(Date);
+  });
+
+  it('passes null memory (leave stored memory untouched) when the block is absent', async () => {
+    const res = await postHardware(makeApp(), DELL);
+
+    expect(res.status).toBe(200);
+    const [, , hardware, memory] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+    expect(hardware).toEqual(DELL);
+    expect(memory).toBeNull();
+  });
+
+  it.each([
+    ['modules missing', { slotsTotal: 4 }],
+    ['over the 256-slot limit', { modules: Array.from({ length: 257 }, (_, i) => ({ ...MODULE, slotKey: `k${i}` })) }],
+    ['duplicate slotKey', { modules: [MODULE, { ...MODULE, locator: 'DIMM_B1' }] }],
+    ['bad types', { modules: [{ ...MODULE, capacityMb: 'lots' }] }],
+    ['not an object', 'DDR4'],
+  ])('ignores an invalid memory block (%s) but still saves base hardware', async (_label, badMemory) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await postHardware(makeApp(), { ...DELL, memory: badMemory });
+
+      expect(res.status).toBe(200);
+      expect(writeHardwareReport).toHaveBeenCalledTimes(1);
+      const [, , hardware, memory] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+      expect(hardware).toEqual(DELL);
+      expect(memory).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid memory block'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never truncates an over-limit block into a partial snapshot', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const modules = Array.from({ length: 300 }, (_, i) => ({ ...MODULE, slotKey: `k${i}` }));
+    await postHardware(makeApp(), { ...DELL, memory: { modules } });
+    const [, , , memory] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+    expect(memory).toBeNull();
+  });
+
+  it('still rejects an invalid BASE hardware body with 400 and writes nothing', async () => {
+    const res = await postHardware(makeApp(), { cpuCores: 'eight', memory: MEMORY });
+    expect(res.status).toBe(400);
+    expect(writeHardwareReport).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,7 @@ vi.mock('./userRiskScoring', () => ({
 }));
 
 import { registerUserRiskTools } from './aiToolsUserRisk';
+import { getUserRiskDetail } from './userRiskScoring';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
@@ -147,5 +148,35 @@ describe('get_fleet_health — exact-device axis (finding 8)', () => {
     expect(parsed.devices.map((d: any) => d.deviceId)).toEqual(['dev-2', 'dev-1']);
     expect(parsed.total).toBe(2);
     expect(parsed.summary.criticalDevices).toBe(1);
+  });
+});
+
+describe('#6675 — device-page write default must not answer get_user_risk_detail', () => {
+  const ORG_A = 'org-a';
+  const ORG_B = 'org-b';
+
+  function partnerAuthWithWriteDefault(): AuthContext {
+    return {
+      user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
+      token: {} as any,
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds: [ORG_A, ORG_B],
+      orgCondition: () => undefined,
+      canAccessOrg: (id: string | null | undefined) => id === ORG_A || id === ORG_B,
+      aiWriteDefaultOrgId: ORG_B,
+    } as unknown as AuthContext;
+  }
+
+  it('does not silently resolve the ambiguous org to the write default when orgId is omitted', async () => {
+    vi.clearAllMocks();
+    const raw = await handlerFor('get_user_risk_detail')(
+      { userId: 'user-1' },
+      partnerAuthWithWriteDefault(),
+    );
+    const parsed = JSON.parse(raw);
+    expect(parsed.error).toMatch(/orgId is required/i);
+    expect(getUserRiskDetail).not.toHaveBeenCalled();
   });
 });

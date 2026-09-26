@@ -82,6 +82,9 @@ vi.mock('../middleware/auth', () => ({
   requireScope:      vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireMfa:        vi.fn(() => (c: any, next: any) => next()),
+  // #7103 — POST /scripts/:id/execute is self-managed and hands the service
+  // a runner built on withAuthDbAccessContext; a passthrough is enough here.
+  withAuthDbAccessContext: vi.fn((_auth: any, fn: () => Promise<unknown>) => fn()),
 }));
 
 // ─── Mock side-effect services ────────────────────────────────────────────────

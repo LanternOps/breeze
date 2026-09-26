@@ -14,15 +14,28 @@ import {
   Loader2,
   CheckSquare,
   Square,
-  Minus
+  Minus,
+  AlertTriangle
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { usePatchSelection } from './usePatchSelection';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low' | 'unrated';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
+
+/**
+ * Deployment axis (#4223): the latest install attempt failed on `deviceCount`
+ * devices that still need the patch — e.g. the agent's battery preflight.
+ * Independent of approval, which only says whether the patch MAY install.
+ */
+export type PatchInstallFailure = {
+  deviceCount: number;
+  error: string | null;
+  failedAt: string;
+};
 
 export type Patch = {
   id: string;
@@ -35,6 +48,7 @@ export type Patch = {
   description?: string;
   vendor?: string | null;
   cveIds?: string[];
+  installFailure?: PatchInstallFailure;
 };
 
 type PatchListProps = {
@@ -347,10 +361,32 @@ export default function PatchList({
   const renderApprovalBadge = (patch: Patch) => {
     const approval = approvalConfig[patch.approvalStatus];
     const ApprovalIcon = approval.icon;
-    return (
-      <span className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium', approval.color)}>
+    const failure = patch.installFailure;
+    const approvalBadge = (
+      <span className={cn('inline-flex w-fit items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium', approval.color)}>
         <ApprovalIcon className="h-3.5 w-3.5" />
         {t(/* i18n-dynamic */ approval.labelKey)}
+      </span>
+    );
+    if (!failure) return approvalBadge;
+
+    // #4223: an install attempt ran, so "Pending" approval is provably stale
+    // (ring auto-approval is evaluated at dispatch and never persisted). Show
+    // the failure and its reason instead; a real persisted approval state
+    // (approved / declined / deferred) stays visible alongside it.
+    const reason = failure.error?.trim() || t('patchList.installFailure.noReason');
+    return (
+      <span className="inline-flex max-w-xs flex-col gap-1">
+        <span
+          data-testid={`patch-row-${patch.id}-install-failed`}
+          title={t('patchList.installFailure.failedAt', { when: formatDateTime(failure.failedAt) })}
+          className="inline-flex w-fit items-center gap-1 rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-1 text-xs font-medium text-destructive"
+        >
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {t('patchList.installFailure.badgeDevices', { count: failure.deviceCount })}
+        </span>
+        <span className="break-words text-xs text-muted-foreground">{reason}</span>
+        {patch.approvalStatus !== 'pending' && approvalBadge}
       </span>
     );
   };

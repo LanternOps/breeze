@@ -41,9 +41,11 @@ afterEach(async () => {
 });
 
 async function seedChannel(owner: { orgId: string | null; partnerId: string | null }, name: string, enabled: boolean) {
+  // `config` lives in notification_channel_configs now (#6379); this fixture
+  // only exercises channel id/enabled/ownership, never reads config back.
   const [row] = await getTestDb()
     .insert(notificationChannels)
-    .values({ ...owner, name, type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/x' }, enabled })
+    .values({ ...owner, name, type: 'slack', enabled })
     .returning({ id: notificationChannels.id });
   created.channels.push(row!.id);
   return row!.id;

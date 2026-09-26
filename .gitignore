@@ -6,6 +6,8 @@ node_modules/
 dist/
 .astro/
 .turbo/
+# tsc --build declaration output (apps/api/tsconfig.src.json, #6270)
+.tsbuild/
 
 # Environment
 .env

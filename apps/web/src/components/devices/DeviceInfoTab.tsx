@@ -29,6 +29,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatUptime } from "../../lib/utils";
 import { runAction, ActionError } from "../../lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import { isAgentUpdateStuck } from "@breeze/shared";
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -74,8 +75,14 @@ type DeviceInfo = {
   agentVersion?: string | null;
   updateOfferWithheldReason?: string | null;
   updateOfferWithheldSince?: string | null;
+  updateAttemptTargetVersion?: string | null;
+  updateAttemptStartedAt?: string | null;
+  updateAttemptLastAt?: string | null;
+  updateAttemptCount?: number | null;
   watchdogVersion?: string | null;
   helperVersion?: string | null;
+  helperInstallIssue?: string | null;
+  helperInstallIssueSince?: string | null;
   status?: string | null;
   lastSeenAt?: string | null;
   enrolledAt?: string | null;
@@ -1068,6 +1075,26 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.agentVersion")}
           value={info?.agentVersion ?? "—"}
         />
+        {info &&
+        isAgentUpdateStuck({
+          targetVersion: info.updateAttemptTargetVersion,
+          startedAt: info.updateAttemptStartedAt,
+          lastAttemptAt: info.updateAttemptLastAt,
+        }) ? (
+          <div
+            data-testid="update-stuck"
+            role="status"
+            className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+          >
+            {t("deviceInfoTab.updateStuck", {
+              target: info.updateAttemptTargetVersion,
+              since: info.updateAttemptStartedAt
+                ? formatDateTime(info.updateAttemptStartedAt)
+                : "—",
+              attempts: info.updateAttemptCount ?? 1,
+            })}
+          </div>
+        ) : null}
         {info?.updateOfferWithheldReason ? (
           <div
             data-testid="update-offer-withheld"
@@ -1089,6 +1116,28 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.helperVersion")}
           value={info?.helperVersion?.trim() || "—"}
         />
+        {/* #6925: Assist enabled but not installed — the agent reports why. */}
+        {info?.helperInstallIssue ? (
+          <div
+            data-testid="helper-install-issue"
+            role="status"
+            className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+          >
+            {(() => {
+              const since = info.helperInstallIssueSince
+                ? new Date(info.helperInstallIssueSince).toLocaleDateString()
+                : "—";
+              switch (info.helperInstallIssue) {
+                case "awaiting_server_offer":
+                  return t("deviceInfoTab.helperInstallIssue.awaitingServerOffer", { since });
+                case "install_abandoned":
+                  return t("deviceInfoTab.helperInstallIssue.installAbandoned", { since });
+                default:
+                  return t("deviceInfoTab.helperInstallIssue.unknown", { since });
+              }
+            })()}
+          </div>
+        ) : null}
         <div className="flex justify-between py-2">
           <dt className="text-sm text-muted-foreground">
             {t("deviceInfoTab.status")}

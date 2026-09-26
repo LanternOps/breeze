@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { Worker } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { withSystemDbAccessContext } from '../../db';
-import { alerts, alertNotifications, devices, notificationChannels, notificationRoutingRules } from '../../db/schema';
+import { alerts, alertNotifications, devices, notificationChannelConfigs, notificationChannels, notificationRoutingRules } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -68,9 +68,13 @@ describe('webhook durable retry scheduling', () => {
     const channels = await db.insert(notificationChannels).values(
       ['retry', 'terminal', 'healthy'].map((name) => ({
         orgId: org.id, name, type: 'webhook' as const,
-        config: { url: `https://example.com/${name}`, retryCount: 2 },
       })),
     ).returning();
+    // Config lives in notification_channel_configs (#6379).
+    await db.insert(notificationChannelConfigs).values(channels.map((channel) => ({
+      channelId: channel.id,
+      config: { url: `https://example.com/${channel.name}`, retryCount: 2 },
+    })));
     const [routingRule] = await db.insert(notificationRoutingRules).values({
       orgId: org.id, partnerId: null, name: 'Everything else',
       isDefault: true, conditions: {}, priority: 1000000,

@@ -100,6 +100,7 @@ import {
   metricsMiddleware,
   metricsRoutes,
   recordAgentHeartbeat,
+  recordAgentIngestSubmission,
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
   recordBackupVerificationResult,
@@ -1293,6 +1294,26 @@ describe('metrics routes', () => {
     expect(getMetricLine(body, 'agent_heartbeat_total', { status: 'failed' })).toBe(
       'agent_heartbeat_total{status="failed"} 1'
     );
+  });
+
+  // #4340 — routine agent-ingest successes are no longer chained into
+  // audit_logs; this counter is where their volume is observable instead.
+  it('renders agent ingest submissions by kind and outcome', async () => {
+    recordAgentIngestSubmission('logs', 'success');
+    recordAgentIngestSubmission('logs', 'success');
+    recordAgentIngestSubmission('security_status', 'failed');
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(body).toContain('# HELP breeze_agent_ingest_submissions_total');
+    expect(
+      getMetricLine(body, 'breeze_agent_ingest_submissions_total', { kind: 'logs', outcome: 'success' })
+    ).toBe('breeze_agent_ingest_submissions_total{kind="logs",outcome="success"} 2');
+    expect(
+      getMetricLine(body, 'breeze_agent_ingest_submissions_total', { kind: 'security_status', outcome: 'failed' })
+    ).toBe('breeze_agent_ingest_submissions_total{kind="security_status",outcome="failed"} 1');
   });
 
   it('keeps the agent-heartbeat counter usable after a metrics reset', async () => {

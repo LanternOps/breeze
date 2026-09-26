@@ -53,3 +53,12 @@ describe('custom filter fields (#6594)', () => {
     expect(getFieldDef('custom.bdr_windows_activation')?.label).toBe('Windows Activation');
   });
 });
+
+describe('hardware health field (#6854)', () => {
+  it('is a builder field, mirroring the backend enum', () => {
+    const field = getFieldDef('hardware.health');
+    expect(field?.type).toBe('enum');
+    expect(field?.category).toBe('hardware');
+    expect(field?.enumValues).toEqual(['ok', 'warning', 'critical', 'unknown']);
+  });
+});

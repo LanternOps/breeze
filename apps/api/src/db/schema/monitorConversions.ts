@@ -36,6 +36,7 @@ export const monitorConversions = pgTable(
     convertedBy: uuid('converted_by').references(() => users.id, { onDelete: 'set null' }),
     convertedAt: timestamp('converted_at', { withTimezone: true }).defaultNow().notNull(),
     previewHash: text('preview_hash').notNull(),
+    networkSourceSnapshot: jsonb('network_source_snapshot'),
     sourceState: jsonb('source_state').notNull().default({}).$type<Record<string, unknown>>(),
     revertedAt: timestamp('reverted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -68,6 +69,7 @@ export const monitorConversionOutputs = pgTable(
     movedAlertIds: jsonb('moved_alert_ids').notNull().default([]).$type<string[]>(),
     movedAlertRefs: jsonb('moved_alert_refs').notNull().default([]).$type<Array<{
       id: string; ruleId: string | null; configPolicyId: string | null;
+      subjectKey?: string | null;
       monitorId: string | null; context: Record<string, unknown> | null;
     }>>(),
     reusedMonitor: boolean('reused_monitor').notNull().default(false),

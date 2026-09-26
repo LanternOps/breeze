@@ -99,6 +99,9 @@
     "generatingToken": "Gerando token...",
     "multiFactorAuthenticationIsRequiredTo3": "A autenticação multifator é obrigatória para gerar tokens de instalação.",
     "generateNewToken": "Gerar novo token",
+    "generateToken": "Gerar token",
+    "cliTokenNotGenerated": "Ainda não há token. Escolha o site, o número de dispositivos e a expiração e, em seguida, gere um token. Cada token é uma chave de registro ativa.",
+    "cliTokenSite": "Os dispositivos registrados com este token entram em {{site}}.",
     "singleUseValidForOneDevice": "Uso único — válido para um dispositivo. Gere um novo token para cada máquina adicional.",
     "linux": "linux",
     "windows2": "Windows",
@@ -1002,6 +1005,12 @@
     "quotedByQuotes": "Este grupo é precificado por {{count}} orçamento(s) aberto(s): {{names}}. Remova primeiro essas linhas de orçamento.",
     "quotedByQuotesCount": "Este grupo é precificado por {{count}} orçamento(s) aberto(s). Remova primeiro essas linhas de orçamento.",
     "failedToRunScriptOnGroups": "Falha ao executar o script nos grupos",
+    "bulkScriptMembershipFailed": "Não foi possível carregar os dispositivos do grupo {{group}}",
+    "bulkScriptNoDevices": "Os grupos selecionados não têm dispositivos nos quais você possa executar um script.",
+    "bulkScriptTooManyDevices": "Os grupos selecionados contêm {{count}} dispositivos; um script pode ser executado em no máximo {{max}} de uma vez. Selecione menos grupos.",
+    "bulkScriptNoneQueued": "O script não foi enfileirado em nenhum dispositivo ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{admitted}} de {{total}} dispositivos enfileirados; {{refused}} não admitidos ({{reasons}}).",
+    "bulkScriptQueued": "{{script}} enfileirado em {{count}} dispositivo(s).",
     "failedToApplyPolicyToGroups": "Falha ao aplicar a política aos grupos",
     "failedToMoveDevice": "Falha ao mover o dispositivo",
     "loadingGroupMembership": "Carregando os membros do grupo...",
@@ -1093,10 +1102,32 @@
     "primary": "Principal",
     "ipAddress": "Endereço IP",
     "macAddress": "Endereço MAC",
-    "linkSpeed": "Velocidade do link"
+    "linkSpeed": "Velocidade do link",
+    "memorySlotsUsed": "{{used}} de {{total}} slots em uso",
+    "memorySpeedConfigured": "{{speed}} (configurada)",
+    "memorySpeedRated": "{{speed}} (nominal)",
+    "onPackageMemory": "Memória integrada ao encapsulamento do processador",
+    "memoryModules": "Módulos de memória",
+    "memoryNotReported": "Ainda não informado — requer atualização do agente",
+    "noMemoryModulesReported": "Nenhum módulo de memória informado.",
+    "slot": "Soquete",
+    "capacity": "Capacidade",
+    "memoryType": "Tipo",
+    "speed": "Velocidade",
+    "manufacturer": "Fabricante",
+    "partNumber": "Número da peça",
+    "serialNumber": "Nº de série",
+    "emptySlot": "Vazio",
+    "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
+    "updateStuck": "A atualização do agente para {{target}} parece travada: {{attempts}} tentativas desde {{since}} e o dispositivo continua na versão antiga. O atualizador tenta novamente a cada heartbeat; verifique os logs do agente, ou o próprio dispositivo se ele não enviar nenhum.",
     "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): o servidor não ofereceu uma versão do Breeze Assist para instalar neste dispositivo, então ele continua sem instalação. Verifique se há uma build do Breeze Assist publicada para a plataforma deste dispositivo.",
+      "installAbandoned": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): a instalação da versão oferecida falhou repetidamente, então o agente pausou as novas tentativas. Ele tentará de novo em algumas horas ou quando uma versão mais recente for oferecida; o log do agente contém o erro de instalação.",
+      "unknown": "O Breeze Assist está ativado, mas não instalado (desde {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Falha ao buscar os detalhes do dispositivo",
@@ -1438,7 +1469,15 @@
       "manual": "Manual"
     },
     "updateWithheld": "Atualizações retidas",
+    "updateStuck": "Atualização travada",
+    "updateStuckTooltip": "Este dispositivo está há mais de uma hora tentando atualizar o agente para {{target}} sem concluir.",
     "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
+    "helperNotInstalled": "Não instalado",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "O Breeze Assist está ativado, mas não instalado: o servidor não ofereceu nenhuma versão do Breeze Assist para instalar neste dispositivo.",
+      "installAbandoned": "O Breeze Assist está ativado, mas não instalado: a instalação da versão oferecida falhou repetidamente e as novas tentativas estão pausadas.",
+      "unknown": "O Breeze Assist está ativado, mas não instalado."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",
       "aheadTooltip": "À frente do pin {{version}}",
@@ -1642,7 +1681,12 @@
       "source": "Origem"
     },
     "thirdParty": "Terceiros",
-    "uncategorized": "Sem categoria"
+    "uncategorized": "Sem categoria",
+    "installFailure": {
+      "badge": "Falha na instalação",
+      "noReason": "Nenhum motivo informado pelo agente",
+      "failedAt": "Última tentativa de instalação falhou: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "Uso de CPU, RAM e disco e largura de banda da rede ao longo do tempo",
@@ -2251,7 +2295,8 @@
         "cpuCores": "Núcleos da CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Tamanho do disco (GB)",
-        "gpuModel": "Modelo da GPU"
+        "gpuModel": "Modelo da GPU",
+        "health": "Saúde do hardware"
       },
       "network": {
         "ipAddress": "Endereço IP",
@@ -2319,7 +2364,8 @@
         "cpuCores": "Núcleos da CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Tamanho do disco (GB)",
-        "gpuModel": "Modelo da GPU"
+        "gpuModel": "Modelo da GPU",
+        "health": "Saúde do hardware"
       },
       "network": {
         "ipAddress": "Endereço IP",
@@ -2404,7 +2450,8 @@
         "cpuCores": "Núcleos da CPU",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Tamanho do disco (GB)",
-        "gpuModel": "Modelo da GPU"
+        "gpuModel": "Modelo da GPU",
+        "health": "Saúde do hardware"
       },
       "network": {
         "ipAddress": "Endereço IP",
@@ -2727,15 +2774,12 @@
         "invalidPort": "A porta deve ser um número inteiro entre 1 e 65535.",
         "pause": "Pausar consultas",
         "resume": "Retomar consultas",
-        "disable": "Desabilitar todo o monitoramento",
-        "disableTitle": "Desabilitar todo o monitoramento?",
-        "disableMessage": "As consultas SNMP e as verificações de rede deste ativo serão desabilitadas.",
+        "disable": "Desativar monitoramento SNMP",
+        "disableTitle": "Desativar o monitoramento SNMP?",
+        "disableMessage": "Interromper as consultas SNMP deste ativo? As verificações de rede continuam sendo gerenciadas em Monitores.",
         "checksTitle": "Verificações de rede",
         "noChecks": "Nenhuma verificação de rede configurada.",
         "addCheck": "Adicionar verificação",
-        "removeCheck": "Remover verificação",
-        "removeCheckTitle": "Remover verificação de rede?",
-        "removeCheckMessage": "Remover a verificação de rede “{{name}}”? Esta ação não pode ser desfeita.",
         "never": "nunca",
         "leaveBlankToKeep": "Armazenado — deixe em branco para manter o valor atual",
         "snmpVersion": "Versão SNMP",
@@ -2778,7 +2822,8 @@
           "tcp_port": "porta TCP",
           "http_check": "verificação HTTP",
           "dns_check": "verificação DNS"
-        }
+        },
+        "addCheckHint": "Adicionar verificação abre o monitor com este ativo selecionado."
       },
       "link": {
         "description": "Vincule este ativo descoberto ao dispositivo gerenciado que corresponde à mesma máquina.",
@@ -2821,12 +2866,8 @@
         "snmpSaveFailed": "Não foi possível salvar as configurações SNMP",
         "pollingPaused": "Consultas SNMP pausadas",
         "pollingResumed": "Consultas SNMP retomadas",
-        "monitoringDisabled": "Monitoramento desabilitado para este ativo",
-        "monitoringDisableFailed": "Não foi possível desabilitar o monitoramento",
-        "checkCreated": "Verificação de rede adicionada",
-        "checkCreateFailed": "Não foi possível adicionar a verificação de rede",
-        "checkRemoved": "Verificação de rede removida",
-        "checkRemoveFailed": "Não foi possível remover a verificação de rede",
+        "monitoringDisabled": "Monitoramento SNMP desativado",
+        "monitoringDisableFailed": "Não foi possível desativar o monitoramento SNMP",
         "siteChanged": "Movido para {{site}}.",
         "siteChangeFailed": "Não foi possível mover o ativo para o novo site",
         "siteChangedUnlinked": "O vínculo com o dispositivo com agente foi removido porque esse dispositivo está em outro site.",
@@ -3459,7 +3500,6 @@
     "events": "Eventos de hardware",
     "noEvents": "Nenhum evento de hardware registrado.",
     "noComponents": "Nenhum componente informado. Verifique as fontes.",
-    "all": "Todos os estados de hardware",
     "managementController": "Controlador de gerenciamento",
     "bmcVendor": "Fabricante",
     "bmcFirmware": "Versão do firmware",

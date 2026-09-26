@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn: any) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
-}));
+vi.mock('../db', () => {
+  const dbMock: any = { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() };
+  // Channel row + config row (#6379) commit together inside db.transaction.
+  dbMock.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(dbMock));
+  return {
+    runOutsideDbContext: vi.fn((fn: any) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db: dbMock,
+  };
+});
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => {}) }));
 
 import { db } from '../db';
@@ -123,7 +128,11 @@ describe('manage_notification_channels — site-ceiling gate (contract-site-ceil
 
   it('unrestricted caller (allowedSiteIds undefined) is unaffected', async () => {
     (db.insert as any).mockReturnValue({
-      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'chan-1', orgId: 'org-1', name: 'Slack', type: 'slack' }])) })),
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{ id: 'chan-1', orgId: 'org-1', name: 'Slack', type: 'slack' }])),
+        // writeNotificationChannelConfig's insert (#6379) chains this instead.
+        onConflictDoUpdate: vi.fn(() => Promise.resolve(undefined)),
+      })),
     });
     const result = JSON.parse(await handlerFor('manage_notification_channels')({
       action: 'create', name: 'Slack', type: 'slack', config: { webhookUrl: 'https://hooks.slack.com/x' },

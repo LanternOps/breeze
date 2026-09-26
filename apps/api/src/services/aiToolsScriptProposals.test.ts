@@ -15,6 +15,48 @@ const { flagMock, createMock, enqueueMock, waitMock, getMock, verifyDeviceAccess
   getMock: vi.fn(async () => null),
 }));
 
+/**
+ * A small model of `db/index.ts`'s AsyncLocalStorage contexts (#7128), enough
+ * to tell a transaction the handler OPENED (and therefore committed before it
+ * moved on) from one it merely JOINED. `current` is the context `db` would
+ * route to; `runOutsideDbContext` hides it for the callback's lifetime, and
+ * `withDbAccessContext` joins a held context exactly like the real helper.
+ */
+const dbState = vi.hoisted(() => ({
+  current: undefined as undefined | { label: string },
+  events: [] as string[],
+}));
+const AUTH_CTX = vi.hoisted(() => ({ label: 'from-auth' }));
+const { captureExceptionMock, dbAccessContextFromAuthMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+  dbAccessContextFromAuthMock: vi.fn(() => AUTH_CTX),
+}));
+
+vi.mock('../db', () => ({
+  hasDbAccessContext: () => dbState.current !== undefined,
+  getCurrentDbAccessContext: () => dbState.current,
+  runOutsideDbContext: (fn: () => unknown) => {
+    const saved = dbState.current;
+    dbState.current = undefined;
+    return Promise.resolve()
+      .then(fn)
+      .finally(() => { dbState.current = saved; });
+  },
+  withDbAccessContext: async (ctx: { label: string }, fn: () => Promise<unknown>) => {
+    if (dbState.current) return fn(); // joins, exactly like the real helper
+    dbState.current = ctx;
+    dbState.events.push(`open:${ctx.label}`);
+    try {
+      const out = await fn();
+      dbState.events.push(`commit:${ctx.label}`);
+      return out;
+    } finally {
+      dbState.current = undefined;
+    }
+  },
+}));
+vi.mock('../middleware/auth', () => ({ dbAccessContextFromAuth: dbAccessContextFromAuthMock }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../config/env', () => ({ aiScriptAuthoringEnabled: flagMock }));
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: verifyDeviceAccessMock }));
 vi.mock('./scriptProposals', () => ({
@@ -44,8 +86,23 @@ const input = {
   deviceIds: ['11111111-1111-4111-8111-111111111111'],
 };
 
+const held = (): string => (dbState.current ? `held:${dbState.current.label}` : 'none');
+
 beforeEach(() => {
   enqueueMock.mockClear(); waitMock.mockClear(); createMock.mockClear(); getMock.mockClear();
+  dbState.current = undefined;
+  dbState.events.length = 0;
+  captureExceptionMock.mockClear();
+  dbAccessContextFromAuthMock.mockClear();
+  enqueueMock.mockImplementation(async () => { dbState.events.push(`enqueue:${held()}`); });
+  waitMock.mockImplementation(async () => { dbState.events.push(`wait:${held()}`); return null; });
+  createMock.mockImplementation(async () => {
+    dbState.events.push(`insert:${held()}`);
+    return {
+      proposal: { id: 'p1', status: 'proposed', orgId: 'org-dev' },
+      scan: { scannerVersion: '2026-09-11.1', basicHits: [], strictHits: [], touchClasses: ['services'], touchedNames: { services: ['Spooler'], paths: [], registryKeys: [] } },
+    };
+  });
   flagMock.mockReturnValue(true);
   verifyDeviceAccessMock.mockReset();
   verifyDeviceAccessMock.mockImplementation(async (id: string) => ({ device: { id, orgId: 'org-dev' } }));
@@ -87,6 +144,59 @@ describe('propose_script', () => {
     expect(waitMock).toHaveBeenCalledWith('p1', 45_000);
     expect(out.review).toEqual({ status: 'pending' });
     expect(out.proposalId).toBe('p1');
+  });
+
+  // #7128: the chat wrapper used to hold ONE transaction around the whole
+  // handler, so the review job was enqueued before the proposal committed and
+  // the worker (system context, ~2 ms later) found it 'missing'.
+  it('declares a self-managed DB context so the SDK wrapper opens no transaction around it (#7128)', () => {
+    expect(tools.get('propose_script')?.selfManagedDbContext).toBe(true);
+    expect(tools.get('get_script_proposal')?.selfManagedDbContext).toBeUndefined();
+  });
+
+  it('commits the proposal in its own caller-scoped transaction BEFORE enqueueing, and waits holding no context (#7128)', async () => {
+    const out = JSON.parse(await tools.get('propose_script')!.handler(input, auth));
+
+    expect(dbState.events).toEqual([
+      'open:from-auth', 'insert:held:from-auth', 'commit:from-auth',
+      'enqueue:none', 'wait:none',
+    ]);
+    // The write runs under the CALLER's RLS context (built from auth), never
+    // system scope and never the bare pool.
+    expect(dbAccessContextFromAuthMock).toHaveBeenCalledWith(auth);
+    expect(out.proposalId).toBe('p1');
+  });
+
+  it('under a caller-held transaction (MCP request path) commits in a FRESH transaction with the caller\'s own context, and skips the inline wait (#7128)', async () => {
+    const ambient = { label: 'mcp-request' };
+    dbState.current = ambient;
+
+    const out = JSON.parse(await tools.get('propose_script')!.handler(input, auth));
+
+    // 'open' proves it did not silently join the request transaction (whose
+    // commit would come only after the response); the label proves it kept the
+    // caller's exact access context rather than rebuilding or widening it.
+    expect(dbState.events).toEqual([
+      'open:mcp-request', 'insert:held:mcp-request', 'commit:mcp-request', 'enqueue:held:mcp-request',
+    ]);
+    expect(dbAccessContextFromAuthMock).not.toHaveBeenCalled();
+    // Polling for 45 s here would pin the request's pooled connection
+    // idle-in-transaction: answer `pending` instead.
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(out.review).toEqual({ status: 'pending' });
+    expect(out.status).toBe('proposed');
+    expect(dbState.current).toBe(ambient);
+  });
+
+  it('reports a review that could not be queued instead of throwing, and says the proposal was saved (#7128)', async () => {
+    enqueueMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const out = JSON.parse(await tools.get('propose_script')!.handler(input, auth));
+
+    expect(out.error).toMatch(/^review_unavailable:/);
+    expect(out.proposalId).toBe('p1');
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('records the agent run as the author for an ai_agent principal', async () => {

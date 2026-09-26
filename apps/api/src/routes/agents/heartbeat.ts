@@ -18,7 +18,7 @@ import {
   bareMetalRecoveries,
 } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
-import type { BatteryStatus, DesktopAccessState } from '@breeze/shared';
+import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -292,6 +292,23 @@ export function desktopAccessMeaningfullyChanged(
     before.virtualDisplayReady !== after.virtualDisplayReady ||
     (before.reason ?? null) !== (after.reason ?? null) ||
     (before.remoteDesktopPermission ?? null) !== (after.remoteDesktopPermission ?? null)
+  );
+}
+
+// #4340 — same `checkedAt` trap as desktopAccess above: the agent stamps a
+// fresh `checkedAt` on its TCC snapshot, so a raw JSON diff reads as a change
+// on every macOS heartbeat. Compare only the permission bits.
+export function tccPermissionsMeaningfullyChanged(
+  before: TCCPermissions | null | undefined,
+  after: TCCPermissions | null | undefined,
+): boolean {
+  if (!before && !after) return false;
+  if (!before || !after) return true;
+  return (
+    before.screenRecording !== after.screenRecording ||
+    before.accessibility !== after.accessibility ||
+    before.fullDiskAccess !== after.fullDiskAccess ||
+    (before.remoteDesktop ?? null) !== (after.remoteDesktop ?? null)
   );
 }
 
@@ -937,6 +954,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
   }
 
+  // #4073 — close the update-attempt record (stamped by the WS update_status
+  // message before every self-update attempt) once this beat reports the
+  // target version or newer. Written only when a record is open, so healthy
+  // devices add no column write. A record left open is the stuck-update
+  // signal (isAgentUpdateStuck); an unparseable version compares equal and
+  // closes it, so the signal never fires on a version we cannot judge.
+  if (
+    device.updateAttemptTargetVersion &&
+    compareAgentVersions(data.agentVersion, device.updateAttemptTargetVersion) >= 0
+  ) {
+    deviceUpdates.updateAttemptTargetVersion = null;
+    deviceUpdates.updateAttemptStartedAt = null;
+    deviceUpdates.updateAttemptLastAt = null;
+    deviceUpdates.updateAttemptCount = null;
+  }
+
+  // #6925 — persist the agent's Breeze Assist install problem ("enabled but
+  // not installed, no server offer", or an abandoned install) so it shows on
+  // the device page and device list instead of one agent-side log line.
+  // Absent = no problem (the agent omits the field when healthy, and older
+  // agents never send it), so a stale value self-clears. Same state-change-only
+  // write as #6449 above: steady-state beats add no column write.
+  const helperInstallIssue = data.helperInstallIssue ?? null;
+  if ((device.helperInstallIssue ?? null) !== helperInstallIssue) {
+    deviceUpdates.helperInstallIssue = helperInstallIssue;
+    deviceUpdates.helperInstallIssueSince = helperInstallIssue ? new Date() : null;
+  }
+
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
   // dark), clear it now that the main agent is heartbeating again. No
@@ -1225,19 +1270,21 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
     // agentServerUrl / tccPermissions / desktopAccess are written unconditionally
     // when reported, so compare against the pre-update snapshot to avoid auditing
-    // an unchanged re-report.
+    // an unchanged re-report. tcc/desktop MUST use the semantic comparators, not
+    // a JSON diff: their `checkedAt` moves on every beat, and a raw diff chained
+    // one audit row per macOS/Linux device per heartbeat (#4340).
     if (deviceUpdates.agentServerUrl !== undefined && deviceUpdates.agentServerUrl !== device.agentServerUrl) {
       changes.push({ field: 'agentServerUrl', before: device.agentServerUrl ?? null, after: deviceUpdates.agentServerUrl });
     }
     if (
       deviceUpdates.tccPermissions !== undefined &&
-      JSON.stringify(deviceUpdates.tccPermissions) !== JSON.stringify(device.tccPermissions ?? null)
+      tccPermissionsMeaningfullyChanged(device.tccPermissions, deviceUpdates.tccPermissions as TCCPermissions)
     ) {
       changes.push({ field: 'tccPermissions', before: device.tccPermissions ?? null, after: deviceUpdates.tccPermissions });
     }
     if (
       deviceUpdates.desktopAccess !== undefined &&
-      JSON.stringify(deviceUpdates.desktopAccess) !== JSON.stringify(device.desktopAccess ?? null)
+      desktopAccessMeaningfullyChanged(device.desktopAccess, deviceUpdates.desktopAccess as DesktopAccessState)
     ) {
       changes.push({ field: 'desktopAccess', before: device.desktopAccess ?? null, after: deviceUpdates.desktopAccess });
     }
@@ -1312,8 +1359,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // recovery / drop without requiring a remount. Mirrors the agentVersion
   // publish above; guarded on deviceUpdates.desktopAccess (only set when the
   // agent actually reported the field) diffed against the pre-update
-  // snapshot with desktopAccessMeaningfullyChanged — a raw JSON.stringify
-  // diff (as the state-change audit above uses) would fire on every
+  // snapshot with desktopAccessMeaningfullyChanged (as the state-change audit
+  // above also does, #4340) — a raw JSON.stringify diff would fire on every
   // heartbeat because `checkedAt` is refreshed unconditionally by the agent.
   //
   // `deviceUpdates` is a loosely-typed `Record<string, unknown>`, so TS
@@ -1555,33 +1602,33 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     if (
       shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
     ) {
-      // runOutsideDbContext + system context is load-bearing, not defensive:
-      // this promise is detached, and the surrounding org-scoped
-      // withDbAccessContext TRANSACTION commits when the handler returns — a
-      // detached query on the ambient context would run against the dead tx
-      // handle (same reason as the manifest-trust keyset at the top of this
-      // handler, #1105). System context is safe: everything dispatched was
-      // validated in the org-scoped block, the claim re-binds to the device's
-      // org and liveness, and dispatchScriptToDevice's org-equality invariant
-      // still applies.
+      // runOutsideDbContext is load-bearing, not defensive: this promise is
+      // detached, and the surrounding org-scoped withDbAccessContext
+      // TRANSACTION commits when the handler returns — a detached query on the
+      // ambient context would run against the dead tx handle (same reason as
+      // the manifest-trust keyset at the top of this handler, #1105). The
+      // service opens its OWN system context for the claim and the command
+      // rows and sends only after it commits (#7103) — wrapping it in one here
+      // would make the send precede that commit again. System context is safe:
+      // everything dispatched was validated in the org-scoped block, the claim
+      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
+      // org-equality invariant still applies.
       runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          maybeDispatchEditionMigration({
-            device,
-            reportedAgentVersion: data.agentVersion,
-            normalizedArch,
-            updateGateAllows,
-            pin: versionPins.agent,
-            resolveTarget: () =>
-              resolvePinnedUpgradeTarget({
-                component: 'agent',
-                platform: device.osType,
-                architecture: normalizedArch,
-                pin: versionPins.agent,
-                agentId,
-              }),
-          }),
-        ),
+        maybeDispatchEditionMigration({
+          device,
+          reportedAgentVersion: data.agentVersion,
+          normalizedArch,
+          updateGateAllows,
+          pin: versionPins.agent,
+          resolveTarget: () =>
+            resolvePinnedUpgradeTarget({
+              component: 'agent',
+              platform: device.osType,
+              architecture: normalizedArch,
+              pin: versionPins.agent,
+              agentId,
+            }),
+        }),
         // The service catches everything itself; this catch only exists so a
         // future regression there can never surface as an unhandled rejection
         // on the heartbeat hot path.

@@ -83,7 +83,9 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
         dataset = input.dataset;
         // The artifact's OWNER org: never `accessibleOrgIds[0]`, an arbitrary
         // org for a multi-org caller (#6667). A run's auth always carries its org.
-        const resolvedOrg = resolveWritableToolOrgId(auth);
+        // A read of org data: never answered from the device-page write
+        // default (#6675), which would silently scope the export to one org.
+        const resolvedOrg = resolveWritableToolOrgId(auth, undefined, { useWriteDefault: false });
         if (!resolvedOrg.orgId) {
           return JSON.stringify({ error: resolvedOrg.error ?? 'No organization context available' });
         }

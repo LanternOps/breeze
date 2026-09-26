@@ -93,7 +93,7 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // (`jobs/s1Sync.ts` re-exporting `S1_THREAT_ACTIONS`), not an inline
   // literal. Its input_schema enum, `action.enum`, is the same three values
   // (proven against the s1_threat_action tool definition, not just asserted).
-  ['services/aiToolsSentinelOne.ts:461', ['kill', 'quarantine', 'rollback']],
+  ['services/aiToolsSentinelOne.ts:463', ['kill', 'quarantine', 'rollback']],
   // aiToolsCisBenchmark.ts: apply_cis_remediation is single-purpose (no
   // dispatch multiplexing — no `if (action === …)` anywhere in the handler),
   // but its OWN input_schema still accepts an `action` field ('apply' /
@@ -152,20 +152,20 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:625', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBrowser.ts:597', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
   ['services/aiToolsIntegrations.ts:331', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:682', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1658', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:691', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1667', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:775', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:784', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
@@ -174,7 +174,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.
-  ['services/aiToolsUserRisk.ts:355', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
+  ['services/aiToolsUserRisk.ts:328', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
 ]);
 
 function usersFkPropertyNames(): ReadonlySet<string> {

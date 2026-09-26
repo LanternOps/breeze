@@ -9,10 +9,27 @@ const mockDispatch = vi.fn();
 const commandRows: Array<Record<string, unknown>> = [];
 let selectCalls = 0;
 
+// `open`: system contexts not yet committed. `pollOpen`: what each command
+// poll observed (#7103 — must be a fresh context, not the creating one).
+const txState = { open: 0, pollOpen: [] as number[], creatingTxId: 0, txSeq: 0, currentTx: 0 };
+
 vi.mock('../../db', () => ({
+  runOutsideDbContext: async (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => {
+    const saved = txState.currentTx;
+    txState.open += 1;
+    txState.currentTx = ++txState.txSeq;
+    try {
+      return await fn();
+    } finally {
+      txState.open -= 1;
+      txState.currentTx = saved;
+    }
+  },
   db: {
     select: () => {
       const call = selectCalls++;
+      if (call > 0) txState.pollOpen.push(txState.currentTx);
       return {
         from: () => ({ where: () => ({ limit: async () => (call === 0 ? [device] : commandRows) }) }),
       };
@@ -25,6 +42,11 @@ vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 import { ensureRestoreCheckpoint, RESTORE_CHECKPOINT_SCRIPT, RESTORE_CHECKPOINT_CLASSES } from './restoreCheckpoint';
 
 beforeEach(() => {
+  txState.open = 0;
+  txState.pollOpen = [];
+  txState.txSeq = 0;
+  txState.currentTx = 0;
+  txState.creatingTxId = 0;
   mockDispatch.mockReset();
   commandRows.length = 0;
   selectCalls = 0;
@@ -110,5 +132,54 @@ describe('ensureRestoreCheckpoint', () => {
   it('fails closed (dispatch_failed) when the dispatch throws', async () => {
     mockDispatch.mockRejectedValue(new Error('boom'));
     await expect(ensureRestoreCheckpoint('dev-1')).resolves.toEqual({ ok: false, reason: 'dispatch_failed' });
+  });
+
+  // #7103 — the lane checkpoint ran dispatch AND its 180 s poll inside one
+  // system transaction. The command was sent before its rows committed, and
+  // the rows stayed invisible to the agent result path for the whole poll.
+  it('sends only after the rows commit, and polls in fresh contexts (#7103)', async () => {
+    const events: Array<{ kind: string; open: number }> = [];
+    mockDispatch.mockImplementation(async (input: { deferDelivery?: boolean }) => {
+      events.push({ kind: 'create', open: txState.open });
+      txState.creatingTxId = txState.currentTx;
+      const base = { ok: true, commandId: 'cmd-1', executionId: null };
+      const deliver = async () => {
+        events.push({ kind: 'send', open: txState.open });
+        return { ...base, delivered: true, deliveryOutcome: 'sent' };
+      };
+      return input.deferDelivery
+        ? { ...base, delivered: false, deliveryOutcome: 'deferred', deliver }
+        : deliver();
+    });
+    commandRows.push({ status: 'completed', result: { exitCode: 0, stdout: 'BREEZE_CHECKPOINT_OK seq=7' } });
+
+    await expect(ensureRestoreCheckpoint('dev-1')).resolves.toEqual({ ok: true, checkpointRef: '7' });
+
+    expect(mockDispatch.mock.calls[0]![0]).toMatchObject({ deferDelivery: true });
+    expect(events).toEqual([
+      { kind: 'create', open: 1 },
+      { kind: 'send', open: 0 },
+    ]);
+    // Every poll runs in a context of its own, never the one that created the rows.
+    expect(txState.pollOpen.length).toBeGreaterThan(0);
+    for (const tx of txState.pollOpen) {
+      expect(tx).not.toBe(0);
+      expect(tx).not.toBe(txState.creatingTxId);
+    }
+  });
+
+  it('a send that throws still polls the committed command (#7103)', async () => {
+    mockDispatch.mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: null,
+      delivered: false,
+      deliveryOutcome: 'deferred',
+      deliver: async () => { throw new Error('socket exploded'); },
+    });
+    commandRows.push({ status: 'completed', result: { exitCode: 0, stdout: 'BREEZE_CHECKPOINT_OK seq=9' } });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(ensureRestoreCheckpoint('dev-1')).resolves.toEqual({ ok: true, checkpointRef: '9' });
+    error.mockRestore();
   });
 });

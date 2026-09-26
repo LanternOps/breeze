@@ -195,6 +195,14 @@ Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60
 | `pg_database_size_bytes` | Gauge | Database size in bytes |
 | `pg_settings_max_connections` | Gauge | PostgreSQL max allowed connections |
 
+Since v0.117.0 the API also publishes its own view of Redis memory —
+`breeze_redis_used_memory_bytes`, `breeze_redis_maxmemory_bytes` and
+`breeze_redis_memory_used_ratio` — and warns once usage crosses 80% of
+`maxmemory`. Redis runs `noeviction`, so a full instance fails writes; alert on
+the ratio well before `1`. See
+[Redis memory watchdog](/deploy/environment/#redis-memory-watchdog) for the full
+series list and tuning variables.
+
 ### Event-Loop Metrics
 
 The API exports its own event-loop delay so a stalled main thread is visible as

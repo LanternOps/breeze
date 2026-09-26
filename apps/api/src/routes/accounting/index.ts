@@ -1211,10 +1211,16 @@ accountingRoutes.post(
         docNumber: outcome.docNumber,
         syncStatus: outcome.syncStatus,
         taxVarianceCents: outcome.taxVarianceCents,
+        totalVarianceCents: outcome.totalVarianceCents,
       },
     });
 
-    return c.json({ syncStatus: outcome.syncStatus, docNumber: outcome.docNumber, taxVarianceCents: outcome.taxVarianceCents });
+    return c.json({
+      syncStatus: outcome.syncStatus,
+      docNumber: outcome.docNumber,
+      taxVarianceCents: outcome.taxVarianceCents,
+      totalVarianceCents: outcome.totalVarianceCents,
+    });
   },
 );
 

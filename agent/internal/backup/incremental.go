@@ -177,8 +177,19 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 	if prev == nil {
 		return nil
 	}
+	// #5582: a previous manifest written before case-twin keys existed can
+	// record two entries whose objects fold onto each other. On a
+	// case-insensitive store that is ONE object holding the last writer's
+	// bytes, so referencing either would carry the corruption forward
+	// forever (an unchanged file never re-uploads). Leave them out of the
+	// index: both re-upload this run, under distinct keys, and the chain
+	// heals. On a case-sensitive store this costs one extra upload per twin.
+	tainted := foldCollidingBackupPaths(prev.Files)
 	idx := make(map[string]SnapshotFile, len(prev.Files))
 	for _, f := range prev.Files {
+		if tainted[f.BackupPath] {
+			continue
+		}
 		idx[journalEntryKey(f)] = f
 	}
 	return idx

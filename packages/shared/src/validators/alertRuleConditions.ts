@@ -1,10 +1,14 @@
 import { z } from 'zod';
 
 // Canonical write-path schema for server-evaluated alert rule conditions.
-// Extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance,
-// cert_expiry) have evaluator handlers but known payload/unit bugs — they are
-// write-blocked until fixed (see plans/monitoring/2026-07-30 follow-ups). `custom`
-// has no handler at all. Reads of existing rows remain tolerant (no parse on read).
+// The extended types (bandwidth_high, disk_io_high, network_errors,
+// patch_compliance, cert_expiry) are deliberately absent: they are authored as
+// MONITOR kinds (bandwidth, disk_io, network_errors, patch_compliance,
+// cert_expiry — `monitorConditionSchemas` in ./monitors.ts), which compile onto
+// the same evaluator handlers. Their handler bugs were fixed in #2947; the
+// legacy AlertRuleTab editor that this schema gated was retired by the alerting
+// consolidation (#6367), so there is no editor to re-open them in. `custom` has
+// no handler at all. Reads of existing rows remain tolerant (no parse on read).
 // Every metric name the threshold evaluator resolves to a device_metrics column
 // (METRIC_NAME_MAP in apps/api/src/services/alertConditions/utils.ts). The
 // `*Percent` / `memory` / `processes` aliases are accepted, not advertised: the

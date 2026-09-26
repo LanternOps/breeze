@@ -1,3 +1,10 @@
+/**
+ * Evaluates the expiry of the device's AGENT mTLS client certificate
+ * (devices.mtls_cert_expires_at) — the credential the agent uses to talk to
+ * Breeze. It does NOT inspect certificates installed on or served by the
+ * endpoint; every user-facing string says "agent mTLS certificate" so a
+ * monitor on this kind is never mistaken for general certificate monitoring.
+ */
 import type { ConditionHandler } from '../registry';
 import type { CertExpiryCondition, ConditionResult } from '../types';
 import { getDevice } from '../utils';
@@ -15,7 +22,7 @@ export const certExpiryHandler: ConditionHandler = {
 
     const expiresAt = (device as Record<string, unknown>).mtlsCertExpiresAt as Date | null;
     if (!expiresAt) {
-      return { passed: false, description: 'No mTLS certificate configured', dataAvailable: false };
+      return { passed: false, description: 'Agent has no mTLS certificate', dataAvailable: false };
     }
 
     const thresholdDate = new Date(Date.now() + cond.withinDays * 24 * 60 * 60 * 1000);
@@ -24,7 +31,7 @@ export const certExpiryHandler: ConditionHandler = {
 
     return {
       passed,
-      description: `Certificate expires within ${cond.withinDays} days (${daysUntilExpiry} days remaining)`,
+      description: `Agent mTLS certificate expires within ${cond.withinDays} days (${daysUntilExpiry} days remaining)`,
       actualValue: daysUntilExpiry,
     };
   },

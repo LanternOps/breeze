@@ -17,9 +17,15 @@ export const WRITE_ORG_AMBIGUOUS_ERROR = 'orgId is required: you have access to 
  *    refused. A device-bound chat session's `toolAuth` is narrowed to this shape
  *    (`buildDeviceBoundSessionAuth`), so its anchored org resolves here.
  * 2. An explicit `inputOrgId` the caller can access.
- * 3. `auth.orgId`, when a non-org token carries one.
- * 4. The caller's only accessible org.
- * 5. Otherwise an error asking for `orgId`. Nothing is guessed.
+ * 3. `auth.aiWriteDefaultOrgId`: the device-page anchor of an AI chat session
+ *    (#6675), re-checked with `canAccessOrg` here, on every call. It outranks
+ *    `auth.orgId` for the same reason the session anchor does (#5684): the
+ *    page's device, not the org selector, says which tenant the chat is about.
+ *    Reads that borrow this resolver pass `{ useWriteDefault: false }` so the
+ *    default never answers a read the caller did not scope.
+ * 4. `auth.orgId`, when a non-org token carries one.
+ * 5. The caller's only accessible org.
+ * 6. Otherwise an error asking for `orgId`. Nothing is guessed.
  *
  * Lives in this leaf module, not `aiTools.ts`, so domain tool files that
  * `aiTools.ts` itself imports can use it without a circular import.
@@ -27,7 +33,8 @@ export const WRITE_ORG_AMBIGUOUS_ERROR = 'orgId is required: you have access to 
  */
 export function resolveWritableToolOrgId(
   auth: AuthContext,
-  inputOrgId?: string
+  inputOrgId?: string,
+  options: { useWriteDefault?: boolean } = {},
 ): { orgId?: string; error?: string } {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return { error: 'Organization context required' };
@@ -42,6 +49,11 @@ export function resolveWritableToolOrgId(
       return { error: 'Access denied to this organization' };
     }
     return { orgId: inputOrgId };
+  }
+
+  const writeDefault = auth.aiWriteDefaultOrgId;
+  if (options.useWriteDefault !== false && writeDefault && auth.canAccessOrg(writeDefault)) {
+    return { orgId: writeDefault };
   }
 
   if (auth.orgId) {

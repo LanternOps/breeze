@@ -332,6 +332,14 @@
       "awaiting": "In attesa della risposta dell'agente…",
       "truncated": "Output troncato: consulta la cronologia degli script del dispositivo per il testo completo."
     },
+    "commandOutput": {
+      "show_one": "Mostra output del comando",
+      "show_other": "Mostra output del comando ({{count}})",
+      "hide_one": "Nascondi output del comando",
+      "hide_other": "Nascondi output del comando ({{count}})",
+      "label": "Comando (azione {{index}})",
+      "truncated": "Output troncato: il testo completo non è mostrato in questa vista."
+    },
     "errors": {
       "cancelRun": "Impossibile annullare l'esecuzione."
     }

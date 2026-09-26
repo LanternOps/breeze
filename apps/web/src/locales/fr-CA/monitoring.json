@@ -160,6 +160,13 @@
       "label": "Redémarrer le service sur l'appareil",
       "maxAttempts": "Nombre maximal de redémarrages",
       "cooldownSeconds": "Délai entre redémarrages (secondes)"
+    },
+    "networkCheckAsset": {
+      "label": "Actif",
+      "unbound": "Aucun actif lié",
+      "failed": "Impossible de charger les actifs",
+      "orgRequired": "Sélectionnez une organisation propriétaire pour lier un actif.",
+      "pingName": "Ping vers {{label}}"
     }
   },
   "kinds": {
@@ -223,7 +230,18 @@
     "port": "Numéro de port",
     "expectStatus": "Code de statut attendu",
     "pollingIntervalSeconds": "Interroger toutes les (secondes)",
-    "match": "Correspondance"
+    "match": "Correspondance",
+    "pingCount": "Requêtes d’écho",
+    "expectBanner": "Bannière attendue",
+    "httpMethod": "Méthode HTTP",
+    "expectedBody": "La réponse doit contenir",
+    "followRedirects": "Suivre les redirections",
+    "verifySsl": "Vérifier le certificat TLS",
+    "recordType": "Type d’enregistrement",
+    "expectedValue": "Valeur attendue",
+    "nameserver": "Serveur de noms",
+    "degradedIsFailure": "Considérer « dégradé » comme un échec",
+    "maxResponseMs": "Échec au-delà de (ms)"
   },
   "operators": {
     "gt": "supérieur à",
@@ -567,5 +585,20 @@
         }
       }
     }
+  },
+  "httpMethods": {
+    "GET": "GET (récupérer)",
+    "HEAD": "HEAD (en-têtes seulement)",
+    "POST": "POST (envoyer)",
+    "PUT": "PUT (remplacer)",
+    "OPTIONS": "OPTIONS (capacités)"
+  },
+  "dnsRecordTypes": {
+    "A": "A (adresse IPv4)",
+    "AAAA": "AAAA (adresse IPv6)",
+    "MX": "MX (serveur de messagerie)",
+    "CNAME": "CNAME (nom alternatif)",
+    "TXT": "TXT (texte)",
+    "NS": "NS (serveur de noms)"
   }
 }
