@@ -781,7 +781,7 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 	defer os.Remove(verifiedPath)
 
-	if err := installPackageFunc(verifiedPath, m.binaryPath); err != nil {
+	if err := installPackageFunc(verifiedPath, m.binaryPath, version); err != nil {
 		return fmt.Errorf("install helper package: %w", err)
 	}
 
@@ -943,6 +943,12 @@ func (m *Manager) applyPendingUpdate() {
 		stopped = append(stopped, state)
 	}
 
+	// The rollback below restores only the file. On Windows, an msiexec that
+	// succeeded has already registered the product at the target, so a
+	// restored exe sits under a newer registration. That is deliberate (a
+	// working old helper beats a new one that will not start), and the next
+	// retry recovers from it: installMSI forces a file reinstall when the
+	// product is registered at the target (#6868).
 	backupPath := m.binaryPath + ".backup"
 	if err := copyFile(m.binaryPath, backupPath); err != nil {
 		log.Warn("failed to backup helper binary", "error", err.Error())
