@@ -51,7 +51,7 @@ import {
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
-import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -80,7 +80,31 @@ import type { PreparedTopologyInvestigation } from '../services/topology/aiInves
 const loadTopologyTurn = () => import('./aiTopologyTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
-import { resolveTopologySessionVisibility } from '../services/topology/aiSessionAccess';
+import {
+  resolveTopologySessionVisibility,
+  topologySessionCondition,
+  type TopologySessionVisibility,
+} from '../services/topology/aiSessionAccess';
+
+/**
+ * M4-D2 for audit rows: an `ai_session` audit row (tool calls, authority
+ * changes, injection flags) names its session and carries the tool input, so a
+ * row about a topology session pinned to a site the caller cannot read is
+ * withheld exactly like the session itself. Applied in SQL before LIMIT.
+ */
+function topologyAuditSessionCondition(visibility: TopologySessionVisibility): SQL | undefined {
+  if (visibility.kind === 'all') return undefined;
+  const hidden = visibility.kind === 'none'
+    ? isNotNull(aiSessions.topologySiteId)
+    : and(isNotNull(aiSessions.topologySiteId), notInArray(aiSessions.topologySiteId, visibility.siteIds));
+  return or(
+    ne(auditLogs.resourceType, 'ai_session'),
+    isNull(auditLogs.resourceId),
+    notExists(
+      db.select({ one: drizzleSql`1` }).from(aiSessions).where(and(eq(aiSessions.id, auditLogs.resourceId), hidden)),
+    ),
+  );
+}
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -1502,11 +1526,13 @@ aiRoutes.get(
       ? new Date(sinceParam)
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Default: last 7 days
 
-    const conditions = [
+    const conditions: SQL[] = [
       eq(auditLogs.orgId, orgId),
       gte(auditLogs.timestamp, since),
       drizzleSql`(${auditLogs.action} LIKE 'ai.security.%' OR ${auditLogs.action} LIKE 'ai.tool.%')`,
     ];
+    const siteCondition = topologyAuditSessionCondition(await resolveTopologySessionVisibility(auth));
+    if (siteCondition) conditions.push(siteCondition);
 
     if (actionFilter) {
       conditions.push(eq(auditLogs.action, actionFilter));
@@ -1582,12 +1608,16 @@ aiRoutes.get(
       return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
     }
 
-    // Base conditions: org-scoped via session join + date range
-    const baseConditions = [
+    // Base conditions: org-scoped via session join + date range, plus the
+    // M4-D2 pinned-site filter — in SQL, so counts, per-tool stats, the time
+    // series and the LIMITed list all exclude an unreadable site's session.
+    const baseConditions: SQL[] = [
       eq(aiSessions.orgId, orgId),
       gte(aiToolExecutions.createdAt, since),
       lte(aiToolExecutions.createdAt, until),
     ];
+    const siteCondition = topologySessionCondition(await resolveTopologySessionVisibility(auth));
+    if (siteCondition) baseConditions.push(siteCondition);
     if (statusFilter) {
       baseConditions.push(drizzleSql`${aiToolExecutions.status} = ${statusFilter}`);
     }
