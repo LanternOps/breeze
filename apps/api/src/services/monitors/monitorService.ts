@@ -22,6 +22,7 @@ import type {
 } from '@breeze/shared';
 
 export { MonitorValidationError };
+export { NetworkMonitorAdoptionError, type CompileOptions } from './monitorCompiler';
 
 export class MonitorNotFoundError extends Error {
   constructor(id: string) {

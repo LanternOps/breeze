@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { NetworkCheckMonitorCondition } from '@breeze/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertTemplates, alertRules } from '../../db/schema/alerts';
 import { automations } from '../../db/schema/automations';
@@ -33,7 +33,17 @@ import type { RootCondition } from '../alertConditions/types';
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type DbExecutor = typeof db | DbTx;
-export type CompileOptions = Record<string, never>;
+export interface CompileOptions {
+  /** Adopt an unmanaged, same-org network row before updating it in place. */
+  adoptNetworkMonitorId?: string;
+}
+
+export class NetworkMonitorAdoptionError extends Error {
+  constructor(public readonly networkMonitorId: string) {
+    super(`network_monitors row ${networkMonitorId} cannot be adopted: already managed, retired, or not owned by the definition's org`);
+    this.name = 'NetworkMonitorAdoptionError';
+  }
+}
 
 export interface CompiledRefs {
   alertTemplateId: string;
@@ -313,7 +323,7 @@ async function upsertManaged<T extends { id: string }>(
 export async function compileMonitorInTx(
   tx: DbTx,
   def: MonitorDefinitionRow,
-  _options: CompileOptions = {},
+  options: CompileOptions = {},
 ): Promise<CompiledRefs> {
   const now = new Date();
 
@@ -331,6 +341,21 @@ export async function compileMonitorInTx(
   // `managed_by_monitor_id`, so a recompile keeps the row id and therefore its
   // whole result history.
   if (def.kind === 'network_check') {
+    // Stamp ownership first so the upsert preserves the legacy row and history.
+    // Failure to acquire it must never fall through to a fresh insert.
+    if (options.adoptNetworkMonitorId) {
+      const [adopted] = await tx
+        .update(networkMonitors)
+        .set({ managedByMonitorId: def.id })
+        .where(and(
+          eq(networkMonitors.id, options.adoptNetworkMonitorId),
+          isNull(networkMonitors.managedByMonitorId),
+          isNull(networkMonitors.retiredAt),
+          def.orgId ? eq(networkMonitors.orgId, def.orgId) : sql`false`,
+        ))
+        .returning({ id: networkMonitors.id });
+      if (!adopted) throw new NetworkMonitorAdoptionError(options.adoptNetworkMonitorId);
+    }
     await upsertManaged(tx, networkMonitors, def.id, {
       ...await buildCompiledNetworkMonitorWithSite(def, tx),
       updatedAt: now,
