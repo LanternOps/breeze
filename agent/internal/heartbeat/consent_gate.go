@@ -14,7 +14,9 @@ import (
 // consent IPC response beyond the user-facing ConsentTimeoutMs. The helper runs
 // its own countdown and replies with the timeout verdict at ConsentTimeoutMs;
 // the grace covers the round-trip so the service doesn't declare an IPC timeout
-// before the helper's own decision lands.
+// before the helper's own decision lands. Mirrored as
+// AGENT_CONSENT_IPC_GRACE_MS in apps/api/src/routes/remote/consentTiming.ts,
+// which sizes the viewer's answer wait from it (#6818); change both together.
 const consentTimeoutGraceMs = 2000
 
 // desktopPrompts remembers the prompt config for each live desktop session so

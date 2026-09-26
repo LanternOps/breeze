@@ -99,6 +99,9 @@
     "generatingToken": "Generando token...",
     "multiFactorAuthenticationIsRequiredTo3": "Se requiere autenticación multifactor para generar tokens de instalación.",
     "generateNewToken": "Generar nuevo token",
+    "generateToken": "Generar token",
+    "cliTokenNotGenerated": "Aún no hay token. Elige el sitio, la cantidad de dispositivos y el vencimiento, y luego genera un token. Cada token es una clave de inscripción activa.",
+    "cliTokenSite": "Los dispositivos inscritos con este token se unen a {{site}}.",
     "singleUseValidForOneDevice": "De un solo uso: válido para un dispositivo. Genere un nuevo token para cada equipo adicional.",
     "linux": "Linux",
     "windows2": "Windows",
@@ -1002,6 +1005,12 @@
     "quotedByQuotes": "Este grupo tiene precio en {{count}} cotización(es) abierta(s): {{names}}. Elimina primero esas líneas de cotización.",
     "quotedByQuotesCount": "Este grupo tiene precio en {{count}} cotización(es) abierta(s). Elimina primero esas líneas de cotización.",
     "failedToRunScriptOnGroups": "No se pudo ejecutar el script en grupos",
+    "bulkScriptMembershipFailed": "No se pudieron cargar los dispositivos del grupo {{group}}",
+    "bulkScriptNoDevices": "Los grupos seleccionados no tienen dispositivos en los que pueda ejecutar un script.",
+    "bulkScriptTooManyDevices": "Los grupos seleccionados contienen {{count}} dispositivos; un script puede ejecutarse en un máximo de {{max}} a la vez. Seleccione menos grupos.",
+    "bulkScriptNoneQueued": "El script no se puso en cola en ningún dispositivo ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{admitted}} de {{total}} dispositivos en cola; {{refused}} no admitidos ({{reasons}}).",
+    "bulkScriptQueued": "{{script}} en cola en {{count}} dispositivo(s).",
     "failedToApplyPolicyToGroups": "No se pudo aplicar la política a los grupos",
     "failedToMoveDevice": "No se pudo mover el dispositivo",
     "loadingGroupMembership": "Cargando los miembros del grupo...",
@@ -1097,6 +1106,11 @@
   },
   "deviceInfoTab": {
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
+      "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "No se pudieron recuperar los detalles del dispositivo",
@@ -1439,6 +1453,12 @@
     },
     "updateWithheld": "Actualizaciones retenidas",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
+    "helperNotInstalled": "No instalado",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado: el servidor no ha ofrecido ninguna versión de Breeze Assist para instalar en este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado: la instalación de la versión ofrecida falló repetidamente y los reintentos están en pausa.",
+      "unknown": "Breeze Assist está habilitado pero no instalado."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
@@ -1642,7 +1662,12 @@
       "source": "Fuente"
     },
     "thirdParty": "Tercero",
-    "uncategorized": "Sin categoría"
+    "uncategorized": "Sin categoría",
+    "installFailure": {
+      "badge": "La instalación falló",
+      "noReason": "El agente no informó ningún motivo",
+      "failedAt": "El último intento de instalación falló: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, uso del disco y ancho de banda de la red a lo largo del tiempo",

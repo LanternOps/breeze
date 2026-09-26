@@ -77,6 +77,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // when the route shipped, so the portal request tx was pinned across Stripe
   // (#3777 review F2).
   { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
+  // Customer-portal verify-on-return (#7065) — settleCheckoutSession retrieves
+  // the Checkout session from Stripe and then records the capture in its own
+  // transaction. Under the portal request transaction the handler escaped to a
+  // SECOND pooled connection for that (the #6671 double-hold) while the first
+  // sat idle-in-transaction across the Stripe round-trip.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/settle\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
@@ -218,6 +224,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // #6597 — manual backup runs (single device and run-all). Each creates
+  // backup_jobs rows and enqueues a dispatch the backup worker picks up on its
+  // own connection within milliseconds. Under the ambient request transaction
+  // the worker could not see the uncommitted row: it resolved the job as a
+  // pathless file backup, failed a row it could not see (0 rows), and the row
+  // that committed afterwards sat `pending` until the stale reaper failed it
+  // with "Backup dispatch never completed". The handlers now create the rows
+  // in a short withAuthDbAccessContext block and enqueue strictly after it
+  // commits — the same shape as the #6849 patch-job route.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run-all\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection
@@ -393,12 +410,27 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // at connect time; the Microsoft /connect builds a consent URL with no server-side
   // Graph call, so it is not listed.)
   { method: 'POST', pattern: /^\/api\/v1\/tickets\/mailbox\/connect\/gmail\/?$/ },
+  // #3127 — the four chat message-send routes. When a session's turn is
+  // blocked only on approval waits, the handler settles those waits and then
+  // waits (bounded, TURN_SETTLE_WAIT_MS) for the turn to conclude — no DB work,
+  // but under the ambient request transaction it pinned one pooled connection
+  // idle-in-transaction per resent message for the whole wait. Each handler now
+  // runs its read phase and its dispatch phase in two short contexts and does
+  // the settle wait — and the AI budget reservation, which opens its own system
+  // transaction — between them, with no context held. clientAiAuth and
+  // helperAuth consult this registry too; only the send POST opts out.
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },
 ];
 
 /**
  * True when the given request opts out of the auth middleware's auto
  * request-transaction (it manages its own short DB access contexts so a slow
- * outbound HTTP call isn't made inside a held transaction — #1448).
+ * outbound HTTP call isn't made inside a held transaction — #1448). Consulted by
+ * every middleware that opens one: auth.ts, portal/auth.ts, clientAiAuth.ts and
+ * helperAuth.ts.
  */
 export function isSelfManagedDbContextRoute(method: string, path: string): boolean {
   const upper = method.toUpperCase();

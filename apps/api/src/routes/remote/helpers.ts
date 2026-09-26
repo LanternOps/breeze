@@ -17,6 +17,7 @@ import {
 import { canAccessSite, type UserPermissions } from '../../services/permissions';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import type { AuthContext } from '../../middleware/auth';
+import { DESKTOP_CONSENT_TIMEOUT_MS } from './consentTiming';
 
 // ============================================
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
@@ -612,7 +613,7 @@ export async function buildRemoteSessionPromptPayload(
     technicianEmail: technicianDisplay.email,
     orgName: technicianDisplay.orgName,
     consentUnavailableBehavior: promptCfg.consentUnavailableBehavior,
-    consentTimeoutMs: 30000,
+    consentTimeoutMs: DESKTOP_CONSENT_TIMEOUT_MS,
     notifyOnEnd: promptCfg.notifyOnEnd,
     showIndicator: promptCfg.showIndicator,
   };

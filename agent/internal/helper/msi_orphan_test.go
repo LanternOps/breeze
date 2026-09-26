@@ -12,29 +12,32 @@ import (
 // must remove the orphaned registration before a fresh install.
 
 type fakeMSI struct {
-	binaryPresent bool
-	productCode   string
-	findErr       error
-	uninstallErr  error
-	installErr    error
-	calls         []string
+	binaryPresent  bool
+	productCode    string
+	productVersion string
+	findErr        error
+	uninstallErr   error
+	installErr     error
+	reinstallErr   error
+	calls          []string
 }
 
 func (f *fakeMSI) ops() msiOps {
 	return msiOps{
 		binaryExists: func(string) bool { f.calls = append(f.calls, "stat"); return f.binaryPresent },
-		findProductCode: func() (string, error) {
+		findProduct: func() (msiProduct, error) {
 			f.calls = append(f.calls, "find")
-			return f.productCode, f.findErr
+			return msiProduct{code: f.productCode, version: f.productVersion}, f.findErr
 		},
 		uninstall: func(code string) error { f.calls = append(f.calls, "uninstall:"+code); return f.uninstallErr },
 		install:   func(p string) error { f.calls = append(f.calls, "install:"+p); return f.installErr },
+		reinstall: func(p string) error { f.calls = append(f.calls, "reinstall:"+p); return f.reinstallErr },
 	}
 }
 
 func TestInstallMSIRemovesOrphanedProductBeforeInstall(t *testing.T) {
 	f := &fakeMSI{productCode: "{ABC}"}
-	if err := installMSI("pkg.msi", `C:\bin\breeze-helper.exe`, f.ops()); err != nil {
+	if err := installMSI("pkg.msi", `C:\bin\breeze-helper.exe`, "0.116.0", f.ops()); err != nil {
 		t.Fatalf("installMSI: %v", err)
 	}
 	want := []string{"stat", "find", "uninstall:{ABC}", "install:pkg.msi"}
@@ -44,11 +47,11 @@ func TestInstallMSIRemovesOrphanedProductBeforeInstall(t *testing.T) {
 }
 
 func TestInstallMSIPlainInstallWhenBinaryPresent(t *testing.T) {
-	f := &fakeMSI{binaryPresent: true, productCode: "{ABC}"}
-	if err := installMSI("pkg.msi", "bin", f.ops()); err != nil {
+	f := &fakeMSI{binaryPresent: true, productCode: "{ABC}", productVersion: "0.115.0"}
+	if err := installMSI("pkg.msi", "bin", "0.116.0", f.ops()); err != nil {
 		t.Fatalf("installMSI: %v", err)
 	}
-	want := []string{"stat", "install:pkg.msi"}
+	want := []string{"stat", "find", "install:pkg.msi"}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Fatalf("calls=%v, want %v (an in-place upgrade must never uninstall first)", f.calls, want)
 	}
@@ -56,7 +59,7 @@ func TestInstallMSIPlainInstallWhenBinaryPresent(t *testing.T) {
 
 func TestInstallMSIPlainInstallWhenNothingRegistered(t *testing.T) {
 	f := &fakeMSI{}
-	if err := installMSI("pkg.msi", "bin", f.ops()); err != nil {
+	if err := installMSI("pkg.msi", "bin", "0.116.0", f.ops()); err != nil {
 		t.Fatalf("installMSI: %v", err)
 	}
 	want := []string{"stat", "find", "install:pkg.msi"}
@@ -67,7 +70,7 @@ func TestInstallMSIPlainInstallWhenNothingRegistered(t *testing.T) {
 
 func TestInstallMSIStopsWhenOrphanRemovalFails(t *testing.T) {
 	f := &fakeMSI{productCode: "{ABC}", uninstallErr: errors.New("exit status 1603")}
-	err := installMSI("pkg.msi", "bin", f.ops())
+	err := installMSI("pkg.msi", "bin", "0.116.0", f.ops())
 	if err == nil || !strings.Contains(err.Error(), "{ABC}") {
 		t.Fatalf("err=%v, want an error naming the orphaned product", err)
 	}
@@ -80,7 +83,7 @@ func TestInstallMSIStopsWhenOrphanRemovalFails(t *testing.T) {
 
 func TestInstallMSIInstallsAnywayWhenRegistryLookupFails(t *testing.T) {
 	f := &fakeMSI{findErr: errors.New("access denied")}
-	if err := installMSI("pkg.msi", "bin", f.ops()); err != nil {
+	if err := installMSI("pkg.msi", "bin", "0.116.0", f.ops()); err != nil {
 		t.Fatalf("installMSI: %v", err)
 	}
 	want := []string{"stat", "find", "install:pkg.msi"}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -181,6 +182,9 @@ func newRebuildCommand() *cobra.Command {
 	return cmd
 }
 
+// progressPostTimeout bounds one recovery progress post, retries included.
+const progressPostTimeout = 2 * time.Minute
+
 // buildTokenModeOptions is the server-issued-token half of a rebuild,
 // shared by `breeze-backup rebuild --token` and the bare_metal_rebuild
 // device command (exec_bare_metal_rebuild.go): it authenticates the token,
@@ -213,8 +217,15 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 	// yet — callers (execBareMetalRebuild, the CLI's RunE) already turn a
 	// buildTokenModeOptions error into a fail/non-zero result without
 	// calling runTokenModeRebuild.
+	// Progress posts outlive a cancelled run: when the rebuild is stopped
+	// (operator cancel, or the bare_metal_rebuild watchdog), the terminal
+	// "failed" post is what tells the console why, so it must not be
+	// cancelled with the run. Each post is bounded on its own instead.
+	reportCtx := context.WithoutCancel(ctx)
 	report := func(u bmr.ProgressUpdate) {
-		if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
+		postCtx, cancel := context.WithTimeout(reportCtx, progressPostTimeout)
+		defer cancel()
+		if err := bmr.PostRecoveryProgress(postCtx, server, token, u); err != nil {
 			slog.Warn("recovery progress not recorded", "status", u.Status, "error", err.Error())
 			_, _ = fmt.Fprintf(os.Stderr, "progress %s not recorded: %v\n", u.Status, err)
 		}
@@ -314,6 +325,7 @@ func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(
 	dry := opts
 	dry.DryRun = true
 	pre, preErr := runFn(ctx, dry)
+	pre, preErr = annotateBudgetFailure(ctx, pre, preErr)
 	if preErr != nil {
 		if pre != nil && pre.Status == "refused" {
 			report(bmr.ProgressUpdate{Status: "refused", Reason: pre.Refusal, Result: pre})
@@ -337,6 +349,7 @@ func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(
 
 	report(bmr.ProgressUpdate{Status: "restoring"})
 	res, runErr := runFn(ctx, opts)
+	res, runErr = annotateBudgetFailure(ctx, res, runErr)
 	switch {
 	case runErr == nil:
 		report(bmr.ProgressUpdate{Status: "validated", Result: res, Warnings: res.Warnings})

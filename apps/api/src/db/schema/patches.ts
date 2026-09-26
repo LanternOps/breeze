@@ -285,7 +285,11 @@ export const patchJobResults = pgTable('patch_job_results', {
   // is not — the predicate is proven statically instead. See the migration.
   statusCreatedIdx: index('idx_patch_job_results_status_created')
     .on(table.createdAt)
-    .where(sql`status IN ('failed', 'queued')`)
+    .where(sql`status IN ('failed', 'queued')`),
+  // #4223: latest attempt per (device, patch) for the patch list / device
+  // patches install-failure overlay (services/patchInstallFailures.ts).
+  devicePatchCreatedIdx: index('idx_patch_job_results_device_patch_created')
+    .on(table.deviceId, table.patchId, table.createdAt)
 }));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {

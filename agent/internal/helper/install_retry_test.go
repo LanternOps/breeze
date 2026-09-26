@@ -190,3 +190,63 @@ func TestWithdrawAndReofferKeepsFailureCount(t *testing.T) {
 		t.Fatalf("flapping offer produced %d install attempts, want %d", *downloads, maxHelperInstallFailures)
 	}
 }
+
+// #6925: the "enabled but not installed" state is reported in the heartbeat
+// (InstallIssue) so it is visible on the device page, not just one log line.
+func TestInstallIssueReportsAwaitingServerOffer(t *testing.T) {
+	mgr, _, _ := newFailingInstallManager(t)
+	if got := mgr.InstallIssue(); got != "" {
+		t.Fatalf("InstallIssue before any Apply = %q, want empty", got)
+	}
+	heartbeatTick(mgr, "")
+	if got := mgr.InstallIssue(); got != InstallIssueAwaitingServerOffer {
+		t.Fatalf("InstallIssue with no offer = %q, want %q", got, InstallIssueAwaitingServerOffer)
+	}
+	// Steady state keeps reporting it (the server writes only on change).
+	heartbeatTick(mgr, "")
+	if got := mgr.InstallIssue(); got != InstallIssueAwaitingServerOffer {
+		t.Fatalf("InstallIssue on a second no-offer tick = %q, want %q", got, InstallIssueAwaitingServerOffer)
+	}
+}
+
+func TestInstallIssueClearedWhileAnOfferedInstallIsInFlight(t *testing.T) {
+	mgr, _, _ := newFailingInstallManager(t)
+	heartbeatTick(mgr, "")
+	heartbeatTick(mgr, "0.116.0") // offer arrives; install attempted (and fails, within budget)
+	if got := mgr.InstallIssue(); got != "" {
+		t.Fatalf("InstallIssue while installing an offered version = %q, want empty", got)
+	}
+}
+
+func TestInstallIssueReportsAbandonedInstall(t *testing.T) {
+	mgr, _, _ := newFailingInstallManager(t)
+	for i := 0; i < 5; i++ {
+		heartbeatTick(mgr, "0.116.0")
+	}
+	if got := mgr.InstallIssue(); got != InstallIssueInstallAbandoned {
+		t.Fatalf("InstallIssue after abandonment = %q, want %q", got, InstallIssueInstallAbandoned)
+	}
+}
+
+func TestInstallIssueClearedWhenDisabledOrInstalled(t *testing.T) {
+	mgr, downloads, _ := newFailingInstallManager(t)
+	heartbeatTick(mgr, "")
+	mgr.Apply(&Settings{Enabled: false})
+	if got := mgr.InstallIssue(); got != "" {
+		t.Fatalf("InstallIssue with Assist disabled = %q, want empty", got)
+	}
+
+	heartbeatTick(mgr, "")
+	mgr.downloadFunc = func(string) (string, error) {
+		*downloads++
+		if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0755); err != nil {
+			return "", err
+		}
+		pkg := filepath.Join(t.TempDir(), "verified"+packageExtension())
+		return pkg, os.WriteFile(pkg, []byte("VERIFIED"), 0600)
+	}
+	heartbeatTick(mgr, "0.116.0")
+	if got := mgr.InstallIssue(); got != "" {
+		t.Fatalf("InstallIssue after a successful install = %q, want empty", got)
+	}
+}

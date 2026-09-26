@@ -848,12 +848,31 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// can be pre-seeded with the resumed totals and reported in one jump
 	// before any real upload work happens.
 	resumedFiles := make(map[string]SnapshotFile)
+	// keyClaims holds the folded form of every object key this snapshot has
+	// assigned so far (#5582 — see objectkey_casefold.go). Resumed entries'
+	// keys are claimed up front, before any new upload picks a key: their
+	// objects already exist in the store, and a not-yet-uploaded twin that
+	// walks earlier must not land on them.
+	keyClaims := objectKeyClaims{}
 	if journal != nil {
 		var resumedBytes int64
+		tainted := journal.foldCollidingKeys()
 		for _, file := range files {
 			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
+				if tainted[entry.BackupPath] {
+					// A pre-#5582 journal stored this file and a case twin at
+					// keys one object answers to; re-upload rather than
+					// resume a possibly-overwritten object.
+					log.Warn("not resuming journaled file whose object key collides with a case twin; re-uploading",
+						"path", file.sourcePath,
+						"backupPath", entry.BackupPath,
+						"snapshotId", snapshot.ID,
+					)
+					continue
+				}
 				resumedFiles[journalLookupKey(file)] = entry
 				resumedBytes += entry.Size
+				keyClaims.claim(entry.BackupPath)
 			}
 		}
 		if len(resumedFiles) > 0 {
@@ -1019,8 +1038,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			emitProgress(false)
 			continue
 		}
-		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
-		backupPath = ensureGzipExtension(backupPath)
+		naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
+		backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
+		if backupPath != naturalKey {
+			log.Info("object key folds onto a case twin's; storing under a disambiguated key",
+				"path", file.sourcePath,
+				"naturalKey", naturalKey,
+				"backupPath", backupPath,
+				"snapshotId", snapshot.ID,
+			)
+		}
 
 		// Measure (stat + hash) the source immediately before handing it to
 		// the upload, so the manifest entry can describe the SAME read that

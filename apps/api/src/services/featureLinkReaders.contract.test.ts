@@ -225,7 +225,9 @@ describe('feature-link readers contract', () => {
     // authored table and the file-level check would stay green.
     const MUST_USE_VIEW: Array<{ file: string; fn: string }> = [
       { file: 'jobs/patchSchedulerWorker.ts', fn: 'scanAndCreateJobs' },
-      { file: 'jobs/backupWorker.ts', fn: 'processCheckSchedules' },
+      // #6597: the scheduled sweep's org enumeration moved out of
+      // processCheckSchedules into its own short-context helper.
+      { file: 'jobs/backupWorker.ts', fn: 'loadScheduledBackupOrgIds' },
       { file: 'jobs/automationWorker.ts', fn: 'processTriggerConfigPolicySchedule' },
       { file: 'services/configPolicyPatching.ts', fn: 'loadPolicyLocalPatchConfig' },
       { file: 'services/automationRuntime.ts', fn: 'resolveConfigPolicyAutomationContext' },
