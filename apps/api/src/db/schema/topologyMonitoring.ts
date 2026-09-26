@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, timestamp, bigint, integer, jsonb, uniqueIndex, index, foreignKey, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, bigint, integer, numeric, jsonb, uniqueIndex, index, foreignKey, check } from 'drizzle-orm/pg-core';
 import { sites } from './orgs';
 import { devices } from './devices';
 import { discoveryProfiles } from './discovery';
@@ -41,6 +41,8 @@ export const topologyTelemetryArms = pgTable('topology_telemetry_arms', {
   revokedBy: uuid('revoked_by'),
   nextPollAt: timestamp('next_poll_at', { withTimezone: true }),
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
+  /** Server-owned poll batch sequence (uint64 decimal), strictly increasing per arm (migration 2026-11-02-110100). */
+  pollSequence: numeric('poll_sequence', { precision: 20, scale: 0 }).notNull().default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -61,4 +63,5 @@ export const topologyTelemetryArms = pgTable('topology_telemetry_arms', {
   check('topology_telemetry_arms_actor_chk', sql`jsonb_typeof(authority_actor) = 'object' AND octet_length(authority_actor::text) <= 16384`),
   check('topology_telemetry_arms_expiry_chk', sql`expires_at > armed_at`),
   check('topology_telemetry_arms_revoked_chk', sql`(state = 'revoked') = (revoked_at IS NOT NULL)`),
+  check('topology_telemetry_arms_poll_sequence_chk', sql`poll_sequence BETWEEN 0 AND 18446744073709551615`),
 ]);

@@ -1,4 +1,4 @@
-import { TOPOLOGY_INTERFACE_POLL_COMMAND } from '@breeze/shared';
+import { TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE } from '@breeze/shared';
 import { registerCommandRevalidation } from '../commandClaimEligibility';
 import { validateTopologyInterfacePollDelivery } from './telemetryArmFence';
 
@@ -9,7 +9,4 @@ import { validateTopologyInterfacePollDelivery } from './telemetryArmFence';
  * fence (topology reconcile) do not pull the command-claim closure.
  * `REVALIDATION_REQUIRED_TYPES` still fails the row closed if it is not loaded.
  */
-registerCommandRevalidation(TOPOLOGY_INTERFACE_POLL_COMMAND, async (reader, row) => {
-  const reason = await validateTopologyInterfacePollDelivery(reader, row);
-  return reason === null ? null : reason === 'expired' ? 'expired' : 'scope_changed';
-});
+registerCommandRevalidation(TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE, (reader, row) => validateTopologyInterfacePollDelivery(reader, row));

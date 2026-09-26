@@ -3,8 +3,11 @@ import { isIP } from 'node:net';
 import { and, asc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { canonicalizeArguments } from '@breeze/shared/canonicalize';
 import {
-  TOPOLOGY_INTERFACE_POLL_COMMAND,
-  topologyInterfacePollCommandSchema,
+  TOPOLOGY_INTERFACE_POLL_AUTH_PROTOCOLS,
+  TOPOLOGY_INTERFACE_POLL_CAPABILITY,
+  TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE,
+  TOPOLOGY_INTERFACE_POLL_PRIV_PROTOCOLS,
+  topologyInterfacePollCommandV1Schema,
   topologyTelemetryArmSchema,
   type TopologyScope,
   type TopologyTelemetryArm,
@@ -30,11 +33,13 @@ import { insertQueuedCommandInTransaction } from '../commandQueueInsert';
 import { encryptSensitivePayloadFields } from '../sensitiveCommandPayload';
 import { decryptSnmpCommunities, decryptSnmpCredentials } from '../snmpSecrets';
 import { requireTopologySiteAccess, type TopologyRequestContext } from './access';
-import { revokeTopologyTelemetrySources, topologyTelemetryProducerCredentials } from './collectionAuthority';
+import { revokeTopologyTelemetrySources } from './collectionAuthority';
 import {
   currentArmInterfaces,
   fenceTopologyTelemetryArm,
+  readCollectorRoot,
   readTelemetryCredentialProfile,
+  topologyArmProducerCredentials,
   topologyCredentialDigest,
   topologyTelemetryConfigurationGeneration,
 } from './telemetryArmFence';
@@ -174,7 +179,7 @@ export async function armTopologyTelemetry(
       .from(topologyInterfaces)
       .where(and(scopedWrite(ctx.scope, topologyInterfaces), eq(topologyInterfaces.ownerNodeId, request.targetNodeId),
         inArray(topologyInterfaces.id, request.interfaceIds), isNull(topologyInterfaces.retiredAt)));
-    if (rows.length !== request.interfaceIds.length || rows.some((r) => r.osIndex === null)) {
+    if (rows.length !== request.interfaceIds.length || rows.some((r) => r.osIndex === null || Number(r.osIndex) < 1)) {
       throw new TopologyOperationError('interface_not_armable', 409, 'Every interface must be a current, indexed port of the target');
     }
     const interfaces: TopologyTelemetryArmInterface[] = rows
@@ -284,6 +289,62 @@ async function blockArm(arm: ArmRow, reason: string): Promise<void> {
   }, 'topology telemetry arm block'));
 }
 
+const MAC = /^([\da-f]{2}[:-]){5}[\da-f]{2}$/i;
+function normalizeMac(value: string | null): string | null {
+  return value && MAC.test(value) ? value.toLowerCase().replaceAll('-', ':') : null;
+}
+
+function collectorAdvertisesPoll(baseline: unknown): boolean {
+  const capabilities = (baseline as { capabilities?: Array<{ name?: unknown; version?: unknown; supported?: unknown }> } | null)?.capabilities;
+  return Array.isArray(capabilities) && capabilities.some((cap) => cap.name === TOPOLOGY_INTERFACE_POLL_CAPABILITY.name
+    && cap.version === TOPOLOGY_INTERFACE_POLL_CAPABILITY.version && cap.supported === true);
+}
+
+type PollCredential = {
+  snmp: { version: 'v1' | 'v2c' | 'v3'; timeoutMs: number; retries: number; username: string | null;
+    authProtocol: (typeof TOPOLOGY_INTERFACE_POLL_AUTH_PROTOCOLS)[number] | null; privProtocol: (typeof TOPOLOGY_INTERFACE_POLL_PRIV_PROTOCOLS)[number] | null };
+  secrets: { snmpCommunity?: string; snmpAuthPassphrase?: string; snmpPrivPassphrase?: string };
+};
+const str = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+function protocol<T extends readonly string[]>(allowed: T, value: unknown): T[number] | null | undefined {
+  const raw = str(value)?.toLowerCase().replace(/-/g, '');
+  if (!raw) return null;
+  const normalized = raw === 'aes128' ? 'aes' : raw;
+  return (allowed as readonly string[]).includes(normalized) ? normalized as T[number] : undefined;
+}
+/**
+ * The first usable credential of the profile, in the same shapes discovery
+ * uses (profile `snmpCredentials` object/array: v3 user + protocols, or a
+ * v1/v2c community; else the first `snmpCommunities` entry). An unsupported
+ * protocol is `null` (the arm blocks), never a silent downgrade.
+ */
+export function resolvePollCredential(communities: readonly string[], credentials: unknown): PollCredential | null {
+  const base = { timeoutMs: 2000, retries: 1 };
+  const entries = Array.isArray(credentials) ? credentials : credentials && typeof credentials === 'object' ? [credentials] : [];
+  for (const entry of entries as Array<Record<string, unknown>>) {
+    const version = (str(entry.version) ?? 'v2c').toLowerCase();
+    if (version === 'v3') {
+      const username = str(entry.username);
+      if (!username) continue;
+      const authProtocol = protocol(TOPOLOGY_INTERFACE_POLL_AUTH_PROTOCOLS, entry.authProtocol);
+      const privProtocol = protocol(TOPOLOGY_INTERFACE_POLL_PRIV_PROTOCOLS, entry.privacyProtocol ?? entry.privProtocol);
+      if (authProtocol === undefined || privProtocol === undefined || (privProtocol && !authProtocol)) return null;
+      const authPassphrase = str(entry.authPassphrase) ?? str(entry.authPassword);
+      const privPassphrase = str(entry.privacyPassphrase) ?? str(entry.privPassword);
+      return {
+        snmp: { ...base, version: 'v3', username, authProtocol, privProtocol },
+        secrets: { ...(authPassphrase ? { snmpAuthPassphrase: authPassphrase } : {}), ...(privPassphrase ? { snmpPrivPassphrase: privPassphrase } : {}) },
+      };
+    }
+    const community = str(entry.community);
+    if (community && (version === 'v1' || version === 'v2c')) {
+      return { snmp: { ...base, version, username: null, authProtocol: null, privProtocol: null }, secrets: { snmpCommunity: community } };
+    }
+  }
+  const community = communities.find((value) => !!str(value));
+  return community ? { snmp: { ...base, version: 'v2c', username: null, authProtocol: null, privProtocol: null }, secrets: { snmpCommunity: community } } : null;
+}
+
 export type TelemetryDispatchDeps = TopologyArmAuthorityDeps & { now?: Date; limit?: number };
 
 /** Mint one poll command for every due arm; one in-flight poll per arm (a pending or sent poll is a skipped slot, never a second batch). */
@@ -305,43 +366,59 @@ export async function dispatchDueTopologyTelemetryArms(deps: TelemetryDispatchDe
       if (!fence.ok) return { kind: 'blocked' as const, reason: fence.reason };
       const next = new Date(now.getTime() + locked.intervalSeconds * 1000);
       const [inflight] = await db.select({ id: deviceCommands.id }).from(deviceCommands)
-        .where(and(eq(deviceCommands.deviceId, locked.collectorDeviceId), eq(deviceCommands.type, TOPOLOGY_INTERFACE_POLL_COMMAND),
-          inArray(deviceCommands.status, ['pending', 'sent']), sql`${deviceCommands.payload}->>'armId' = ${locked.id}`))
+        .where(and(eq(deviceCommands.deviceId, locked.collectorDeviceId), eq(deviceCommands.type, TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE),
+          inArray(deviceCommands.status, ['pending', 'sent']), sql`${deviceCommands.payload}->'binding'->>'armId' = ${locked.id}`))
         .limit(1);
       if (inflight) {
         await db.update(topologyTelemetryArms).set({ nextPollAt: next, updatedAt: now }).where(eq(topologyTelemetryArms.id, locked.id));
         return { kind: 'skipped' as const };
       }
-      const [root] = await db.select().from(topologyCollectionSources)
-        .where(and(scopedWrite(ctx.scope, topologyCollectionSources), eq(topologyCollectionSources.producerKind, 'agent'), eq(topologyCollectionSources.producerId, locked.collectorDeviceId),
-          eq(topologyCollectionSources.protocol, ROOT.protocol), eq(topologyCollectionSources.contextKey, ROOT.contextKey), eq(topologyCollectionSources.addressFamily, ROOT.addressFamily)))
-        .limit(1);
-      if (!root || root.revokedAt) return { kind: 'blocked' as const, reason: 'collector_not_enrolled' };
+      const root = await readCollectorRoot(db, ctx.scope, locked.collectorDeviceId);
+      if (!root) return { kind: 'blocked' as const, reason: 'collector_not_enrolled' };
+      // An agent that cannot run the poll gets nothing; the arm stays armed for when it can.
+      if (!collectorAdvertisesPoll(root.currentBaseline)) {
+        await db.update(topologyTelemetryArms).set({ nextPollAt: next, updatedAt: now }).where(eq(topologyTelemetryArms.id, locked.id));
+        return { kind: 'skipped' as const };
+      }
       const profile = await readTelemetryCredentialProfile(db, ctx.scope, locked.credentialProfileId);
       if (!profile) return { kind: 'blocked' as const, reason: 'credential_changed' };
-      const credentials = topologyTelemetryProducerCredentials({
-        root, producerKind: 'snmp', authorityKey: locked.authorityKey, configurationGeneration: topologyTelemetryConfigurationGeneration(locked),
-      });
+      const credential = resolvePollCredential(decryptSnmpCommunities(profile.snmpCommunities), decryptSnmpCredentials(profile.snmpCredentials));
+      if (!credential) return { kind: 'blocked' as const, reason: 'credential_unsupported' };
+      const identity = await db.select({ id: topologyInterfaces.id, name: topologyInterfaces.name, physAddress: topologyInterfaces.physAddress })
+        .from(topologyInterfaces).where(and(scopedWrite(ctx.scope, topologyInterfaces), inArray(topologyInterfaces.id, fence.interfaces.map((i) => i.interfaceId))));
+      const byId = new Map(identity.map((row) => [row.id, row]));
+      const [sequenced] = await db.update(topologyTelemetryArms)
+        .set({ pollSequence: sql`${topologyTelemetryArms.pollSequence} + 1` })
+        .where(eq(topologyTelemetryArms.id, locked.id))
+        .returning({ pollSequence: topologyTelemetryArms.pollSequence });
+      const producer = topologyArmProducerCredentials(root, locked);
       const commandId = randomUUID();
-      const payload = topologyInterfacePollCommandSchema.parse({
+      const intervalMs = locked.intervalSeconds * 1000;
+      const payload = topologyInterfacePollCommandV1Schema.parse({
         version: 1,
-        armId: locked.id,
-        generation: locked.generation.toString(),
-        commandId,
+        family: 'if_metrics',
+        binding: { orgId: locked.orgId, siteId: locked.siteId, authorityKey: locked.authorityKey, armId: locked.id },
+        producerEpoch: producer.producerEpoch,
+        configurationRevision: producer.configurationRevision,
+        sequence: String(sequenced!.pollSequence),
+        expectedIntervalSeconds: locked.intervalSeconds,
+        deadlineMs: Math.max(1000, Math.min(intervalMs - 1000, 60_000)),
         target: { address: locked.targetAddress, port: 161 },
-        credentials: JSON.stringify({ communities: decryptSnmpCommunities(profile.snmpCommunities), credentials: decryptSnmpCredentials(profile.snmpCredentials) ?? null }),
-        interfaces: fence.interfaces,
-        intervalSeconds: locked.intervalSeconds,
-        authorityKey: locked.authorityKey,
-        producerEpoch: credentials.producerEpoch,
-        configurationRevision: credentials.configurationRevision,
-        expiresAt: new Date(now.getTime() + Math.min(locked.intervalSeconds * 1000, POLL_COMMAND_MAX_LIFETIME_MS)).toISOString(),
+        snmp: credential.snmp,
+        ...credential.secrets,
+        interfaces: fence.interfaces.map((i) => ({
+          interfaceId: i.interfaceId,
+          interfaceEpoch: i.interfaceEpoch,
+          ifIndex: i.ifIndex,
+          expectedName: byId.get(i.interfaceId)?.name ?? null,
+          expectedPhysAddress: normalizeMac(byId.get(i.interfaceId)?.physAddress ?? null),
+        })),
       });
       await insertQueuedCommandInTransaction(db as never, {
         id: commandId,
         deviceId: locked.collectorDeviceId,
-        type: TOPOLOGY_INTERFACE_POLL_COMMAND as never,
-        payload: encryptSensitivePayloadFields(TOPOLOGY_INTERFACE_POLL_COMMAND, payload as unknown as Record<string, unknown>) as unknown as CommandPayload,
+        type: TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE as never,
+        payload: encryptSensitivePayloadFields(TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE, payload as unknown as Record<string, unknown>) as unknown as CommandPayload,
         createdBy: locked.armedBy,
       });
       await db.update(topologyTelemetryArms).set({ nextPollAt: next, lastPolledAt: now, updatedAt: now }).where(eq(topologyTelemetryArms.id, locked.id));

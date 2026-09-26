@@ -159,28 +159,3 @@ export const topologyMonitoringStatusSchema = z.object({
 }).strict();
 export type TopologyMonitoringStatus = z.infer<typeof topologyMonitoringStatusSchema>;
 
-// ---- Standing telemetry poll command (M3-D2); the agent handler and result ingest are M3 Task 3 ----
-export const TOPOLOGY_INTERFACE_POLL_COMMAND = 'topology_interface_poll';
-/**
- * Server-minted, per-arm-generation poll. `credentials` is a JSON string
- * ({communities, credentials}) encrypted at rest by `sensitiveCommandPayload`
- * and decrypted only for delivery; it is erased from the row at every terminal
- * state. The agent echoes `producerEpoch`/`configurationRevision` in its
- * `if_metrics` envelope and reports only the listed interfaces by canonical id.
- */
-export const topologyInterfacePollCommandSchema = z.object({
-  version: z.literal(1),
-  armId: uuid,
-  generation: revision,
-  commandId: uuid,
-  target: z.object({ address: z.union([z.ipv4(), z.ipv6()]), port: z.literal(161) }).strict(),
-  credentials: z.string().min(1).max(65536),
-  interfaces: z.array(z.object({ interfaceId: uuid, interfaceEpoch: topologyUtf8KeySchema, ifIndex: z.number().int().min(0).max(4294967295) }).strict())
-    .min(1).max(TOPOLOGY_TELEMETRY_ARM_MAX_INTERFACES),
-  intervalSeconds: z.number().int().min(30).max(300),
-  authorityKey: topologyUtf8KeySchema,
-  producerEpoch: topologyUtf8KeySchema,
-  configurationRevision: topologyUtf8KeySchema,
-  expiresAt: time,
-}).strict();
-export type TopologyInterfacePollCommand = z.infer<typeof topologyInterfacePollCommandSchema>;

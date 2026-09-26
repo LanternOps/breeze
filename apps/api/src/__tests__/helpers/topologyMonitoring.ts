@@ -59,8 +59,9 @@ export async function seedTopologyMonitoringFixture() {
              (${ifaceB}::uuid,${orgId}::uuid,${siteId}::uuid,${switchNodeId}::uuid,'ifIndex:2','gen:1',2)`);
     await db.execute(sql`INSERT INTO topology_collection_sources (id,org_id,site_id,producer_id,producer_kind,producer_epoch,protocol,context_key,address_family,fresh_until)
       VALUES (${sourceId}::uuid,${orgId}::uuid,${siteId}::uuid,${deviceId}::uuid,'agent','epoch-1','routes','default','ipv4',now()+interval '15 minutes')`);
-    await db.execute(sql`INSERT INTO topology_collection_sources (id,org_id,site_id,producer_id,producer_kind,producer_epoch,protocol,context_key,address_family,configuration_revision)
-      VALUES (${rootId}::uuid,${orgId}::uuid,${siteId}::uuid,${deviceId}::uuid,'agent','root-epoch','envelope','root','any','cfg-1')`);
+    await db.execute(sql`INSERT INTO topology_collection_sources (id,org_id,site_id,producer_id,producer_kind,producer_epoch,protocol,context_key,address_family,configuration_revision,current_baseline)
+      VALUES (${rootId}::uuid,${orgId}::uuid,${siteId}::uuid,${deviceId}::uuid,'agent','root-epoch','envelope','root','any','cfg-1',
+        ${JSON.stringify({ capabilities: [{ name: 'topology_interface_poll', version: 1, supported: true }] })}::jsonb)`);
     await db.execute(sql`INSERT INTO discovery_profiles (id,org_id,site_id,name,methods,snmp_communities)
       VALUES (${profileId}::uuid,${orgId}::uuid,${siteId}::uuid,'snmp','{snmp}',ARRAY[${encryptSnmpCommunities(['s3cret-community'])![0]!}]::text[])`);
     await db.execute(sql`INSERT INTO topology_probe_targets (id,org_id,site_id,key,label,kind,definition,enabled)

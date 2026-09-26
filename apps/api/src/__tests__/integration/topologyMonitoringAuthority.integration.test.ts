@@ -1,6 +1,7 @@
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
+import { topologyInterfacePollCommandV1Schema } from '@breeze/shared';
 import { closeDb, db, withDbAccessContext } from '../../db';
 import { deviceCommands, topologyTelemetryArms, users } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -95,7 +96,9 @@ describe('telemetry arms (M3-D2/D3)', () => {
     const [command] = await system(() => db.select().from(deviceCommands).where(and(eq(deviceCommands.deviceId, f.deviceId), eq(deviceCommands.type, 'topology_interface_poll'))));
     const stored = command!.payload as Record<string, unknown>;
     expect(JSON.stringify(stored)).not.toContain('s3cret-community');
-    expect(stored).toMatchObject({ armId: arm.id, generation: '1', target: { address: '192.0.2.10', port: 161 } });
+    expect(stored).toMatchObject({ binding: { armId: arm.id, authorityKey: 'snmp:192.0.2.10', orgId: f.orgId, siteId: f.siteId }, sequence: '1', target: { address: '192.0.2.10', port: 161 },
+      snmp: { version: 'v2c' } });
+    expect(topologyInterfacePollCommandV1Schema.safeParse(stored).success).toBe(true);
 
     const request = { family: 'if_metrics' as const, producerKind: 'snmp' as const, scope: f.ctx.scope, device: { id: f.deviceId, orgId: f.orgId, siteId: f.siteId }, authorityKey: 'snmp:192.0.2.10', commandId: command!.id };
     const decision = await system(() => topologyTelemetryArmAuthority(request));
@@ -128,7 +131,7 @@ describe('telemetry arms (M3-D2/D3)', () => {
     expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
     const [command] = await system(() => db.select().from(deviceCommands).where(and(eq(deviceCommands.deviceId, f.deviceId), eq(deviceCommands.type, 'topology_interface_poll'))));
     expect(command!.status).toBe('cancelled');
-    expect((command!.payload as Record<string, unknown>).credentials).toBeUndefined();
+    expect((command!.payload as Record<string, unknown>).snmpCommunity).toBeUndefined();
 
     const other = await fixture();
     await expect(f.inOrg(() => armTopologyTelemetry(f.ctx, { ...armRequest(f), interfaceIds: [other.ifaceA] })))

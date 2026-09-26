@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { canonicalizeArguments } from '@breeze/shared/canonicalize';
-import { TOPOLOGY_INTERFACE_POLL_COMMAND, topologyInterfacePollCommandSchema, type TopologyScope } from '@breeze/shared';
+import { TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE, topologyInterfacePollCommandV1Schema, type TopologyScope } from '@breeze/shared';
 import { db } from '../../db';
-import { deviceCommands, devices, discoveryProfiles, topologyInterfaces, topologyTelemetryArms, users, type TopologyTelemetryArmInterface } from '../../db/schema';
+import { deviceCommands, devices, discoveryProfiles, topologyCollectionSources, topologyInterfaces, topologyTelemetryArms, users, type TopologyTelemetryArmInterface } from '../../db/schema';
 import {
   isTopologyTelemetryAuthorityRegistered,
   registerTopologyTelemetryAuthority,
+  topologyTelemetryProducerCredentials,
   type TopologyTelemetryAuthorityDecision,
   type TopologyTelemetryAuthorityRequest,
 } from './collectionAuthority';
@@ -98,25 +99,48 @@ export async function fenceTopologyTelemetryArm(reader: Reader, arm: ArmRow | un
   return { ok: true, arm, interfaces };
 }
 
+/** The collector's agent root; the poll's producer epoch/revision derive from it. */
+export async function readCollectorRoot(reader: Reader, scope: TopologyScope, deviceId: string) {
+  const [root] = await reader.select().from(topologyCollectionSources)
+    .where(and(eq(topologyCollectionSources.orgId, scope.orgId), eq(topologyCollectionSources.siteId, scope.siteId), eq(topologyCollectionSources.producerKind, 'agent'),
+      eq(topologyCollectionSources.producerId, deviceId), eq(topologyCollectionSources.protocol, 'envelope'), eq(topologyCollectionSources.contextKey, 'root'),
+      eq(topologyCollectionSources.addressFamily, 'any')))
+    .limit(1);
+  return root && !root.revokedAt ? root : null;
+}
+
+/** Producer credentials a poll minted from this arm generation must carry (M3-D1 telemetry domain). */
+export function topologyArmProducerCredentials(root: { producerEpoch: string; configurationRevision: string }, arm: Pick<ArmRow, 'id' | 'generation' | 'effectDigest' | 'authorityKey'>) {
+  return topologyTelemetryProducerCredentials({ root, producerKind: 'snmp', authorityKey: arm.authorityKey, configurationGeneration: topologyTelemetryConfigurationGeneration(arm) });
+}
+
+type PollBinding = { orgId: string; siteId: string; authorityKey: string; armId: string };
+function pollBinding(payload: unknown): PollBinding | null {
+  const binding = (payload as { binding?: Partial<PollBinding> } | null)?.binding;
+  return binding && typeof binding.armId === 'string' && typeof binding.authorityKey === 'string' && typeof binding.orgId === 'string' && typeof binding.siteId === 'string'
+    ? binding as PollBinding : null;
+}
+
 /**
  * The registered `snmp` telemetry authority (collectionAuthority seam). The
- * sink calls it after the site-state lock with the batch's command id; the
- * command must be a poll this arm minted at its CURRENT generation.
+ * result adapter calls it with the poll's command id; the stored (server-
+ * written) command must be a poll THIS arm minted for this device, scope and
+ * authority key. Generation drift surfaces as a configuration-revision change
+ * (the generation feeds the producer credentials), which the adapter refuses.
  */
 export async function topologyTelemetryArmAuthority(request: TopologyTelemetryAuthorityRequest, reader: Reader = db): Promise<TopologyTelemetryAuthorityDecision> {
   if (request.producerKind !== 'snmp' || request.commandId === null) return { authorized: false, reason: 'producer_authority_denied' };
   if (request.device.orgId !== request.scope.orgId || request.device.siteId !== request.scope.siteId) return { authorized: false, reason: 'collector_moved' };
   const [command] = await reader.select({ type: deviceCommands.type, deviceId: deviceCommands.deviceId, payload: deviceCommands.payload })
     .from(deviceCommands).where(eq(deviceCommands.id, request.commandId)).limit(1);
-  const armId = (command?.payload as { armId?: unknown } | null)?.armId;
-  const generation = (command?.payload as { generation?: unknown } | null)?.generation;
-  if (!command || command.type !== TOPOLOGY_INTERFACE_POLL_COMMAND || command.deviceId !== request.device.id || typeof armId !== 'string' || typeof generation !== 'string') {
+  const binding = pollBinding(command?.payload);
+  if (!command || !binding || command.type !== TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE || command.deviceId !== request.device.id
+    || binding.orgId !== request.scope.orgId || binding.siteId !== request.scope.siteId || binding.authorityKey !== request.authorityKey) {
     return { authorized: false, reason: 'producer_authority_denied' };
   }
   const [arm] = await reader.select().from(topologyTelemetryArms)
-    .where(and(eq(topologyTelemetryArms.id, armId), scopedWrite(request.scope, topologyTelemetryArms), eq(topologyTelemetryArms.authorityKey, request.authorityKey)))
+    .where(and(eq(topologyTelemetryArms.id, binding.armId), scopedWrite(request.scope, topologyTelemetryArms), eq(topologyTelemetryArms.authorityKey, request.authorityKey)))
     .limit(1);
-  if (arm && arm.generation.toString() !== generation) return { authorized: false, reason: 'arm_generation_changed' };
   const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: request.device.id, now: new Date() });
   if (!fence.ok) return { authorized: false, reason: fence.reason };
   return { authorized: true, configurationGeneration: topologyTelemetryConfigurationGeneration(fence.arm), interfaceIds: fence.interfaces.map((i) => i.interfaceId) };
@@ -127,15 +151,27 @@ export function ensureTopologyTelemetryArmAuthority(): void {
   if (!isTopologyTelemetryAuthorityRegistered('snmp')) registerTopologyTelemetryAuthority('snmp', (request) => topologyTelemetryArmAuthority(request));
 }
 
-/** Delivery revalidation for `topology_interface_poll` (registered in the mandatory set). */
-export async function validateTopologyInterfacePollDelivery(reader: Reader, row: { id: string; deviceId: string; payload: unknown }, now = new Date()): Promise<string | null> {
-  const parsed = topologyInterfacePollCommandSchema.safeParse(row.payload);
-  if (!parsed.success || parsed.data.commandId !== row.id) return 'scope_changed';
-  if (Date.parse(parsed.data.expiresAt) <= now.getTime()) return 'expired';
-  const [arm] = await reader.select().from(topologyTelemetryArms).where(eq(topologyTelemetryArms.id, parsed.data.armId)).limit(1);
-  if (!arm || arm.generation.toString() !== parsed.data.generation || arm.authorityKey !== parsed.data.authorityKey) return 'scope_changed';
+/**
+ * Delivery revalidation for `topology_interface_poll` (mandatory set, both
+ * transports): the arm must still be armed and intact for this collector, the
+ * poll's producer credentials must equal what the CURRENT arm generation and
+ * collector root derive (a re-arm or root rotation strands older polls), and
+ * the poll must still be inside its own interval.
+ */
+export async function validateTopologyInterfacePollDelivery(reader: Reader, row: { id: string; deviceId: string; payload: unknown }, now = new Date()): Promise<'scope_changed' | 'expired' | null> {
+  const parsed = topologyInterfacePollCommandV1Schema.safeParse(row.payload);
+  if (!parsed.success) return 'scope_changed';
+  const poll = parsed.data;
+  const [command] = await reader.select({ createdAt: deviceCommands.createdAt }).from(deviceCommands).where(eq(deviceCommands.id, row.id)).limit(1);
+  if (!command || now.getTime() - command.createdAt.getTime() >= poll.expectedIntervalSeconds * 1000) return 'expired';
+  const scope = { orgId: poll.binding.orgId, siteId: poll.binding.siteId };
+  const [arm] = await reader.select().from(topologyTelemetryArms)
+    .where(and(eq(topologyTelemetryArms.id, poll.binding.armId), scopedWrite(scope, topologyTelemetryArms), eq(topologyTelemetryArms.authorityKey, poll.binding.authorityKey)))
+    .limit(1);
   const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: row.deviceId, now });
-  return fence.ok ? null : 'scope_changed';
+  if (!fence.ok) return 'scope_changed';
+  const root = await readCollectorRoot(reader, scope, row.deviceId);
+  if (!root) return 'scope_changed';
+  const expected = topologyArmProducerCredentials(root, fence.arm);
+  return expected.producerEpoch === poll.producerEpoch && expected.configurationRevision === poll.configurationRevision ? null : 'scope_changed';
 }
-
-
