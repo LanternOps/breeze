@@ -23,7 +23,7 @@ vi.mock('../../db/partnerAxisRead', async (importOriginal) => {
 vi.mock('../../jobs/unifiTelemetryWorker', () => ({ enqueueUnifiTelemetry: vi.fn(async () => undefined) }));
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { createSite } from './db-utils';
+import { createOrganization, createSite } from './db-utils';
 import { topologyIngestFixture } from '../helpers/topologyIngest';
 import { unifiTelemetryRoutes } from '../../routes/agents/unifiTelemetry';
 import { currentUnifiCollectorTopology, loadUnifiCollector } from '../../services/topology/unifiAuthority';
@@ -86,5 +86,30 @@ describe('UniFi telemetry route topology companion (self-managed DB context)', (
     expect(collectors.every(c => typeof c.topologyProducerEpoch === 'string')).toBe(true);
     // One flag resolution for every collector's advertisement.
     expect(partnerAxisReads.count).toBe(1);
+  });
+
+  it('never returns another org\'s collector config (decrypted key) to this device', async () => {
+    const f = await topologyIngestFixture();
+    const foreignOrg = (await createOrganization({ partnerId: f.partnerId })).id;
+    const foreignSite = (await createSite({ orgId: foreignOrg })).id;
+    const integrationId = crypto.randomUUID(), own = crypto.randomUUID(), foreign = crypto.randomUUID();
+    await sys(async () => {
+      await db.execute(sql`INSERT INTO unifi_integrations (id, partner_id, api_key_encrypted) VALUES (${integrationId}::uuid, ${f.partnerId}::uuid, 'k')`);
+      // A collector row left in another org after its device was moved (the
+      // org-move path does not rewrite unifi_collectors).
+      await db.execute(sql`INSERT INTO unifi_collectors (id, integration_id, org_id, site_id, unifi_host_id, collector_device_id, controller_url, local_api_key_encrypted)
+        VALUES (${own}::uuid, ${integrationId}::uuid, ${f.orgId}::uuid, ${f.siteId}::uuid, 'host:own', ${f.deviceId}::uuid, 'https://own', 'k'),
+               (${foreign}::uuid, ${integrationId}::uuid, ${foreignOrg}::uuid, ${foreignSite}::uuid, 'host:foreign', ${f.deviceId}::uuid, 'https://foreign', 'k')`);
+    });
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: f.deviceId, agentId: 'agent-1', orgId: f.orgId, siteId: f.siteId, partnerId: f.partnerId, role: 'agent' } as never);
+      return next();
+    });
+    app.route('/agents', unifiTelemetryRoutes);
+    const list = await app.request('/agents/agent-1/unifi-collectors', { method: 'GET' });
+    expect(list.status).toBe(200);
+    const collectors = (await list.json() as { collectors: Array<{ collectorId: string }> }).collectors;
+    expect(collectors.map(c => c.collectorId)).toEqual([own]);
   });
 });

@@ -59,7 +59,7 @@ describe('agent unifi telemetry routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ collectors: [{ collectorId: 'c1', apiKey: 'K' }] });
     // Looks up by the token-resolved deviceId, not the :id path param.
-    expect(collectorSvc.listCollectorsForDevice).toHaveBeenCalledWith(expect.anything(), 'dev-1', expect.any(Object));
+    expect(collectorSvc.listCollectorsForDevice).toHaveBeenCalledWith(expect.anything(), 'dev-1', expect.any(String), expect.any(Object));
   });
 
   it('POST /agents/:id/unifi-telemetry enqueues the payload, stamping the token deviceId', async () => {
@@ -153,7 +153,7 @@ describe('agent unifi telemetry routes', () => {
     const collector = { id: 'c1', collectorDeviceId: 'dev-1', orgId: 'org-1' };
 
     it('GET advertises through the topology provider for this device only', async () => {
-      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, opts: any) => [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }]);
+      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, _org: string, opts: any) => [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }]);
       (authority.unifiTopologyAdvertisement as any).mockResolvedValue({ acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: 'e', topologySourceIdentity: 's' });
       const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
       expect(await res.json()).toMatchObject({ collectors: [{ collectorId: 'c1', topology: { topologyProducerEpoch: 'e' } }] });
@@ -241,7 +241,7 @@ describe('agent unifi telemetry routes', () => {
     });
 
     it('GET resolves topology flags once before the collector read and advertises under them', async () => {
-      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, opts: any) => {
+      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, _org: string, opts: any) => {
         order.push('collectors');
         return [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }, { collectorId: 'c2', topology: await opts.topologyAdvertisement('c2') }];
       });
@@ -255,7 +255,7 @@ describe('agent unifi telemetry routes', () => {
 
     it('GET still delivers legacy collector configs, unadvertised, when flag resolution fails', async () => {
       (flagsModule.loadTopologyFlags as any).mockRejectedValueOnce(new Error('pool busy'));
-      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, opts: any) => [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }]);
+      (collectorSvc.listCollectorsForDevice as any).mockImplementation(async (_db: unknown, _dev: string, _org: string, opts: any) => [{ collectorId: 'c1', topology: await opts.topologyAdvertisement('c1') }]);
       const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ collectors: [{ collectorId: 'c1', topology: null }] });

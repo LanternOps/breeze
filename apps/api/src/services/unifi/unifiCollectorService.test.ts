@@ -32,7 +32,7 @@ describe('unifiCollectorService', () => {
       localApiKeyEncrypted: 'ENC',
       pollIntervalSeconds: 60,
     }] });
-    const out = await svc.listCollectorsForDevice(db, 'dev-1');
+    const out = await svc.listCollectorsForDevice(db, 'dev-1', 'org-1');
     expect(out).toEqual([{
       collectorId: 'c1',
       unifiHostId: 'h1',
@@ -47,7 +47,7 @@ describe('unifiCollectorService', () => {
     const db = makeDb({ selectRows: [row, { ...row, id: 'c2' }] });
     const advertise = vi.fn(async (collectorId: string) => collectorId === 'c1'
       ? { acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: 'epoch-1', topologySourceIdentity: 'o:s:unifi:dev-1:c1' } : null);
-    const out = await svc.listCollectorsForDevice(db, 'dev-1', { topologyAdvertisement: advertise });
+    const out = await svc.listCollectorsForDevice(db, 'dev-1', 'org-1', { topologyAdvertisement: advertise });
     expect(out[0]).toMatchObject({ collectorId: 'c1', acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: 'epoch-1', topologySourceIdentity: 'o:s:unifi:dev-1:c1' });
     expect(out[1]).toEqual({ collectorId: 'c2', unifiHostId: 'h1', controllerUrl: 'https://10.0.0.1', apiKey: 'PLAINTEXT-KEY', pollIntervalSeconds: 60 });
     expect(advertise).toHaveBeenCalledWith('c1');

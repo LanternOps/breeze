@@ -179,12 +179,16 @@ export async function deleteCollector(db: DbExecutor, integrationId: string, uni
 }
 
 // Agent-pull: configs for the agent whose device is the collector. Decrypts the key.
+// `orgId` is the token-resolved agent org and is load-bearing: the caller reads
+// in system scope, and a collector row can outlive a move of its device to
+// another org (the org-move path does not rewrite unifi_collectors).
 // `topologyAdvertisement` (services/topology/unifiAuthority.ts
 // unifiTopologyAdvertisement) decides per collector whether topology v1 is
 // offered; without it every collector is legacy-only.
 export async function listCollectorsForDevice(
   db: DbExecutor,
   deviceId: string,
+  orgId: string,
   opts: { topologyAdvertisement?: (collectorId: string) => Promise<CollectorTopologyAdvertisement | null> } = {},
 ): Promise<AgentCollectorConfig[]> {
   const rows = await db
@@ -196,7 +200,7 @@ export async function listCollectorsForDevice(
       pollIntervalSeconds: unifiCollectors.pollIntervalSeconds,
     })
     .from(unifiCollectors)
-    .where(and(eq(unifiCollectors.collectorDeviceId, deviceId), eq(unifiCollectors.isEnabled, true)));
+    .where(and(eq(unifiCollectors.collectorDeviceId, deviceId), eq(unifiCollectors.orgId, orgId), eq(unifiCollectors.isEnabled, true)));
   const out: AgentCollectorConfig[] = [];
   for (const r of rows as any[]) {
     const topology = opts.topologyAdvertisement ? await opts.topologyAdvertisement(r.id) : null;

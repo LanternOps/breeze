@@ -130,10 +130,11 @@ async function ingestTopologyCompanion(agent: AgentContext & { deviceId: string 
 // collector config delivery never depends on it.
 unifiTelemetryRoutes.get('/:id/unifi-collectors', async (c) => {
   const agent = c.get('agent') as AgentContext | undefined;
-  if (!agent?.deviceId) return c.json({ error: 'agent device context missing' }, 403);
+  if (!agent?.deviceId || !agent.orgId) return c.json({ error: 'agent device context missing' }, 403);
   const deviceId = agent.deviceId;
+  const orgId = agent.orgId;
   const resolved = await resolveAgentTopologyFlags(agent);
-  const list = () => withSystemDbAccessContext(() => listCollectorsForDevice(db, deviceId, {
+  const list = () => withSystemDbAccessContext(() => listCollectorsForDevice(db, deviceId, orgId, {
     topologyAdvertisement: async (collectorId) => (resolved ? unifiTopologyAdvertisement(deviceId, collectorId) : null),
   }));
   const collectors = resolved ? await withResolvedTopologyFlags(resolved, list) : await list();
