@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { securityMiddleware, _resetForceHttpsRedirectWarnStateForTests } from './security';
+import { apiSecureHeaders, securityMiddleware, _resetForceHttpsRedirectWarnStateForTests } from './security';
 
 function createApp(options?: Parameters<typeof securityMiddleware>[0]) {
   const app = new Hono();
@@ -395,5 +395,33 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
     expect(res.status).toBe(308);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain('xForwardedProto=http');
+  });
+});
+
+describe('apiSecureHeaders', () => {
+  function createSecureApp() {
+    const app = new Hono();
+    app.use('*', apiSecureHeaders());
+    app.get('*', (c) => c.text('ok'));
+    return app;
+  }
+
+  it('denies framing on ordinary API routes', async () => {
+    const res = await createSecureApp().request('/api/v1/devices');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains; preload');
+    expect(res.headers.get('referrer-policy')).toBe('strict-origin-when-cross-origin');
+  });
+
+  it('omits X-Frame-Options on the HTTP tunnel proxy so the web app can frame it', async () => {
+    const res = await createSecureApp().request('/api/v1/tunnel-http/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/');
+    expect(res.headers.get('x-frame-options')).toBeNull();
+    expect(res.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains; preload');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('does not treat a lookalike path prefix as the proxy', async () => {
+    const res = await createSecureApp().request('/api/v1/tunnel-httpx/foo');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
   });
 });
