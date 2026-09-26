@@ -1,14 +1,21 @@
 import './setup';
 import { randomUUID } from 'crypto';
+import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
-import { alerts, alertRules, alertTemplates, devices, monitorDefinitions, monitorConversions, monitorConversionOutputs, networkMonitors, networkMonitorAlertRules, networkMonitorResults } from '../../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { alerts, alertRules, alertTemplates, configPolicyFeatureLinks, configPolicyMonitors, devices, monitorDefinitions, monitorConversions, monitorConversionOutputs, networkMonitors, networkMonitorAlertRules, networkMonitorResults } from '../../db/schema';
 import { createSystemAuthContext } from '../../services/featureConfigResolver';
 import { listConversionLedger, retireSource, revertConversion } from '../../services/monitors/conversion';
 import { carryNetworkAlerts } from '../../services/monitors/conversion/networkHistory';
 import { OPEN_ALERT_STATUSES } from '../../services/monitors/conversion/loadSources';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, createRole, grantRolePermissions, assignUserToOrganization } from './db-utils';
+import type { AuthContext } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
+import { monitorConversionRoutes } from '../../routes/monitorDefinitions.conversion';
+import { previewNetworkCheckConversion, convertNetworkChecks } from '../../services/monitors/conversion/networkChecks';
+import { isRevertAvailable } from '../../services/monitors/conversion/lifecycle';
+import { updateMonitorDefinition } from '../../services/monitors/monitorService';
 
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext({
   scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null,
@@ -44,7 +51,7 @@ describe('network check compiled-row asset ownership', () => {
   it('rejects a foreign-org asset through the existing ownership trigger', async () => {
     const owner = await fixture();
     const foreign = await fixture();
-    await expect(scoped(owner.orgId, () => db.execute(sql`
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
       INSERT INTO network_monitors (org_id, asset_id, name, monitor_type, target)
       VALUES (${owner.orgId}::uuid, ${foreign.assetId}::uuid, 'Foreign check', 'icmp_ping', '192.0.2.1')
     `))).rejects.toMatchObject({ cause: { code: '23514' } });
@@ -86,7 +93,7 @@ describe('network check retirement history', () => {
       const [source] = await db.insert(networkMonitors).values({
         orgId: owner.orgId, assetId: owner.assetId, siteId: owner.siteId,
         name: 'Branch router ping', monitorType: 'icmp_ping', target: '192.0.2.1',
-        config: { packetSize: 128 }, pollingInterval: 90, timeout: 10,
+        config: { packetSize: 128 }, pollingInterval: 90, timeout: 10, isActive: false,
       }).returning();
       const rules = await db.insert(networkMonitorAlertRules).values([
         { monitorId: source!.id, condition: 'status_down', severity: 'high', isActive: true },
@@ -207,5 +214,127 @@ it('carries coexisting open legacy alerts without violating compiled-rule subjec
         context: { convertedFrom: { sourceTable: 'network_monitors', sourceId: source!.id } },
       });
     }
+  });
+});
+
+async function conversionFixture() {
+  const owner = await fixture();
+  const user = await createUser({ partnerId: owner.partnerId, orgId: owner.orgId, email: `network-${randomUUID()}@example.com` });
+  const role = await createRole({ scope: 'organization', partnerId: owner.partnerId, orgId: owner.orgId });
+  await grantRolePermissions(role.id, [PERMISSIONS.ALERTS_READ]);
+  await assignUserToOrganization(user.id, owner.orgId, role.id);
+  const auth = { ...createSystemAuthContext(), principal: { kind: 'user_session' }, scope: 'organization', user,
+    orgCondition: (column) => eq(column, owner.orgId),
+    orgId: owner.orgId, partnerId: owner.partnerId, accessibleOrgIds: [owner.orgId],
+    canAccessOrg: (id: string) => id === owner.orgId,
+  } as AuthContext;
+  const run = <T>(action: () => Promise<T>) => scoped(owner.orgId, action);
+  const original = await run(async () => {
+    const [source] = await db.insert(networkMonitors).values({
+      orgId: owner.orgId, assetId: owner.assetId, name: 'Gateway', monitorType: 'icmp_ping',
+      target: '192.0.2.1', config: { count: 4 },
+    }).returning();
+    await db.insert(networkMonitorAlertRules).values({ monitorId: source!.id, condition: 'offline', severity: 'high' });
+    const [device] = await db.insert(devices).values({
+      orgId: owner.orgId, siteId: owner.siteId, agentId: randomUUID(), hostname: 'gateway-alert',
+      osType: 'linux', osVersion: 'test', architecture: 'amd64', agentVersion: 'test', status: 'offline',
+    }).returning();
+    return { source: source!, device: device! };
+  });
+  return { ...owner, ...original, auth, run };
+}
+
+async function readLedger(f: Awaited<ReturnType<typeof conversionFixture>>) {
+  const app = new Hono<{ Variables: { auth: AuthContext } }>();
+  app.use('*', async (c, next) => { c.set('auth', f.auth); await next(); });
+  app.route('/monitor-definitions/conversion', monitorConversionRoutes);
+  const response = await f.run(async () => app.request(`/monitor-definitions/conversion/ledger?orgId=${f.orgId}`));
+  expect(response.status).toBe(200);
+  return await response.json() as { items: Array<{ id: string; sourceName: string; outputs: unknown[]; revertable: boolean }>; nextCursor: string | null };
+}
+
+describe('network check public conversion and reversal', () => {
+  it('retains network Undo while retired policy runtimes remain irreversible', () => {
+    expect(isRevertAvailable('network_monitors')).toBe(true);
+    expect(isRevertAvailable('config_policy_alert_rules')).toBe(false);
+  });
+
+  it.each([{ allowedSiteIds: [] as string[] }, { allowedSiteIds: [randomUUID()] }])('refuses site-restricted preview and conversion ($allowedSiteIds)', async ({ allowedSiteIds }) => {
+    const f = await conversionFixture();
+    const auth = { ...f.auth, allowedSiteIds };
+    await expect(previewNetworkCheckConversion(f.orgId, auth)).rejects.toMatchObject({ status: 403 });
+    await expect(convertNetworkChecks(f.orgId, 'a'.repeat(64), auth)).rejects.toMatchObject({ status: 403 });
+    expect(await f.run(() => db.select().from(monitorConversions).where(eq(monitorConversions.orgId, f.orgId)))).toEqual([]);
+  });
+
+  it('exposes named zero-output retirement through the real ledger route', async () => {
+    const f = await conversionFixture();
+    const { conversionId } = await retireSource('network_monitors', f.source.id, 'operator', f.auth);
+    const ledger = await readLedger(f);
+    expect(ledger.items).toEqual([expect.objectContaining({ id: conversionId, sourceName: 'Gateway', outputs: [], revertable: true })]);
+    expect(ledger.nextCursor).toBeNull();
+    await revertConversion(conversionId, f.auth);
+    expect((await readLedger(f)).items[0]).toMatchObject({ id: conversionId, revertable: false });
+  });
+
+  it('carries every open status, preserves terminal history, restores exact refs and rehomes later alerts', async () => {
+    const f = await conversionFixture();
+    const original = await f.run(() => db.insert(alerts).values(
+      [...OPEN_ALERT_STATUSES, 'resolved' as const, 'dismissed' as const].map(status => ({
+        orgId: f.orgId, deviceId: f.device.id, severity: 'high' as const, status, title: status,
+        context: { source: 'network_monitor', monitorId: f.source.id, note: 'retain me' },
+        resolvedAt: status === 'resolved' ? new Date('2026-01-01T00:00:00Z') : null,
+      })),
+    ).returning());
+    const preview = await previewNetworkCheckConversion(f.orgId, f.auth);
+    expect(preview.items).toEqual([expect.objectContaining({ sourceId: f.source.id, outcome: 'convertible' })]);
+    const converted = await convertNetworkChecks(f.orgId, preview.previewHash, f.auth);
+    expect(converted.monitorsCreated).toBe(1);
+    const [output] = await f.run(() => db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.conversionId, converted.conversionIds[0]!)));
+    expect(output!.movedAlertRefs).toHaveLength(OPEN_ALERT_STATUSES.length);
+    expect(output!.attachmentId, 'reversal must recognize the attachment created by adoption').not.toBeNull();
+    expect(output!.policyId).toBe(converted.policyId);
+    const [attachment] = await f.run(() => db.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.id, output!.attachmentId!)));
+    expect(attachment).toMatchObject({ monitorId: output!.monitorId });
+    const definitionId = output!.monitorId!;
+    const carried = await f.run(() => db.select().from(alerts).where(eq(alerts.orgId, f.orgId)));
+    expect(carried.filter(a => a.monitorId === definitionId).map(a => a.status).sort()).toEqual([...OPEN_ALERT_STATUSES].sort());
+    for (const terminal of original.filter(a => a.status === 'resolved' || a.status === 'dismissed')) {
+      expect(carried.find(a => a.id === terminal.id)).toEqual(terminal);
+    }
+    const [definition] = await f.run(() => db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, definitionId)));
+    const [later] = await f.run(() => db.insert(alerts).values({
+      orgId: f.orgId, deviceId: f.device.id, ruleId: definition!.compiledAlertRuleId, monitorId: definitionId,
+      severity: 'high', status: 'resolved', title: 'Later', context: { detail: 'keep' },
+    }).returning());
+    await f.run(() => updateMonitorDefinition(definitionId, { condition: { checkType: 'dns_check', target: 'example.com' } }, f.auth));
+    await revertConversion(converted.conversionIds[0]!, f.auth);
+    await f.run(async () => {
+      const restored = await db.select().from(alerts).where(eq(alerts.orgId, f.orgId));
+      for (const alert of original) expect(restored.find(a => a.id === alert.id)).toMatchObject({
+        status: alert.status, resolvedAt: alert.resolvedAt, ruleId: alert.ruleId, monitorId: alert.monitorId,
+        configPolicyId: alert.configPolicyId, subjectKey: alert.subjectKey, context: alert.context,
+      });
+      expect(restored.find(a => a.id === later!.id)).toMatchObject({ status: 'resolved', ruleId: null, monitorId: null,
+        context: { detail: 'keep', source: 'network_monitor', monitorId: f.source.id } });
+      expect(await db.select().from(monitorDefinitions).where(eq(monitorDefinitions.id, definitionId))).toEqual([]);
+      expect(await db.select().from(configPolicyMonitors).where(eq(configPolicyMonitors.id, output!.attachmentId!))).toEqual([]);
+      const [link] = await db.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, attachment!.featureLinkId));
+      expect(link!.inlineSettings).toMatchObject({ inheritance: 'cumulative', items: [] });
+      const [revertedOutput] = await db.select().from(monitorConversionOutputs).where(eq(monitorConversionOutputs.id, output!.id));
+      expect(revertedOutput).toMatchObject({ monitorId: null, attachmentId: null });
+      const [source] = await db.select().from(networkMonitors).where(eq(networkMonitors.id, f.source.id));
+      expect(source).toMatchObject({ managedByMonitorId: null, name: 'Gateway', assetId: f.assetId,
+        siteId: f.siteId, monitorType: 'icmp_ping', target: f.source.target, config: { count: 4 } });
+    });
+  });
+
+  it('refuses missing-source reversal without marking the ledger reverted', async () => {
+    const f = await conversionFixture();
+    const { conversionId } = await retireSource('network_monitors', f.source.id, 'operator', f.auth);
+    await f.run(() => db.delete(networkMonitors).where(eq(networkMonitors.id, f.source.id)));
+    await expect(revertConversion(conversionId, f.auth)).rejects.toMatchObject({ code: 'source_not_found' });
+    const [entry] = await f.run(() => db.select().from(monitorConversions).where(eq(monitorConversions.id, conversionId)));
+    expect(entry!.revertedAt).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../../middleware/auth';
-import { configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyMonitors, monitorConversions, networkMonitors, networkMonitorAlertRules, organizations } from '../../../db/schema';
+import { configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyMonitors, monitorConversions, monitorConversionOutputs, networkMonitors, networkMonitorAlertRules, organizations } from '../../../db/schema';
 import { previewNetworkCheckConversion, convertNetworkChecks, networkPreviewHash, findOrCreateNetworkChecksPolicy } from './networkChecks';
 const mocks = vi.hoisted(() => ({ runtime: { NETWORK_CHECK_DEVICE_INDEPENDENT_EVALUATION: true as boolean | undefined }, tx: undefined as any,
   create: vi.fn(), policy: vi.fn(), assign: vi.fn(), link: vi.fn(), snapshot: vi.fn(), carry: vi.fn() }));
@@ -26,7 +26,7 @@ beforeEach(() => {
       for (const method of ['where', 'orderBy', 'for', 'limit']) query[method] = () => query;
       return query;
     }),
-    insert: vi.fn((table: unknown) => ({ values: (values: unknown) => { writes.push({ table, values }); return { returning: async () => [{ id: 'conversion' }] }; } })),
+    insert: vi.fn((table: unknown) => ({ values: (values: unknown) => { writes.push({ table, values }); return { returning: async () => [{ id: table === configPolicyMonitors ? 'attachment' : 'conversion' }] }; } })),
     update: vi.fn((table: unknown) => ({ set: (values: unknown) => ({ where: async () => { writes.push({ table, values }); } }) })),
   };
   mocks.policy.mockResolvedValue({ id: 'policy' }); mocks.link.mockResolvedValue({ id: 'link' });
@@ -61,6 +61,10 @@ it('adopts with the executor, disabled state, named snapshot and alert provenanc
   expect(mocks.link).toHaveBeenCalledWith('policy', 'monitors', null, { items: [], inheritance: 'cumulative' }, undefined, mocks.tx);
   expect(writes).toContainEqual({ table: monitorConversions, values: expect.objectContaining({ orgId: 'org', partnerId: null, sourceState: { name: 'Gateway' }, networkSourceSnapshot: { name: 'Gateway' } }) });
   expect(writes).toContainEqual({ table: configPolicyMonitors, values: expect.objectContaining({ enabled: false }) });
+  expect(writes.find(write => write.table === monitorConversionOutputs)?.values).toMatchObject({
+    conversionId: 'conversion', monitorId: 'definition', policyId: 'policy', attachmentId: 'attachment',
+    movedAlertIds: ['alert'], movedAlertRefs: [{ id: 'alert', context: { source: 'network_monitor' } }],
+  });
 });
 it('persists null system actor', async () => {
   const system = { ...auth, scope: 'system' } as AuthContext;

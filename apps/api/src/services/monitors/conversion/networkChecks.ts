@@ -164,12 +164,15 @@ export async function adoptNetworkChecksInTx(orgId: string, previewHash: string,
       kind: 'network_check', enabled: row.isActive, condition: mapped.mapping.condition, severity: mapped.mapping.severity,
       cooldownMinutes: 5, autoResolve: true, responses: [], deliveryMode: mapped.mapping.deliveryMode, deliveryChannelIds: [], escalationPolicyId: null,
       recurrenceActions: [], pauseResponsesOnEscalation: true }, auth, { adoptNetworkMonitorId: row.id }, tx);
-    await tx.insert(configPolicyMonitors).values({ featureLinkId: monitorsLinkId, monitorId: def.id, enabled: row.isActive, sortOrder: sort++ });
+    const [attachment] = await tx.insert(configPolicyMonitors).values({ featureLinkId: monitorsLinkId, monitorId: def.id, enabled: row.isActive, sortOrder: sort++ })
+      .returning({ id: configPolicyMonitors.id });
+    if (!attachment) throw new Error('Converted attachment unavailable');
     await tx.update(networkMonitorAlertRules).set({ retiredAt: new Date(), retiredReason: 'converted' }).where(and(eq(networkMonitorAlertRules.monitorId, row.id), isNull(networkMonitorAlertRules.retiredAt)));
     const movedAlertRefs = await carryNetworkAlerts(tx, row, def);
     const [entry] = await tx.insert(monitorConversions).values({ orgId, partnerId: null, sourceTable: 'network_monitors', sourceId: row.id, policyId,
       sourceState: { name: row.name }, convertedBy: auth.scope === 'system' ? null : auth.user.id, previewHash, networkSourceSnapshot }).returning({ id: monitorConversions.id });
     await tx.insert(monitorConversionOutputs).values({ orgId, partnerId: null, conversionId: entry!.id, monitorId: def.id, role: 'primary',
+      policyId, attachmentId: attachment.id,
       movedAlertIds: movedAlertRefs.map(a => a.id), movedAlertRefs, reusedMonitor: false });
     conversionIds.push(entry!.id);
   }
