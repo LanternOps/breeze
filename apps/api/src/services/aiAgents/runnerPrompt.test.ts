@@ -1275,14 +1275,14 @@ describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
   // W05 (#5655): a scheduled design run that follows an APPLIED one carries
   // `approvedDesign` — the prompt should read as drift against it.
   describe('approved design / drift (W05)', () => {
-    it('without an approved design, there is no heading and the retired guidance is the original text', () => {
+    it('without an approved design, there is no heading and retired proposals are disabled', () => {
       const text = buildFleetDesignTaskPrompt(designCtx());
       expect(text).not.toContain('## Approved design');
-      expect(text).toContain('retired: watches and rules in the current configuration that the design does not carry forward');
+      expect(text).toContain('retired: always return an empty array');
       expect(text).not.toContain('drift: rules and watches live today');
     });
 
-    it('with an approved design, renders the heading, functions, watches, rules, retired items and drift guidance — never raw device ids', () => {
+    it('with an approved design, renders approved history but disables new retirement proposals — never raw device ids', () => {
       const approvedDesign: ApprovedDesignSummary = {
         reportRunId: 'run-1',
         appliedAt: '2026-09-01T10:00:00.000Z',
@@ -1306,7 +1306,7 @@ describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
       expect(text).toContain('watch: service LanmanServer');
       expect(text).toContain('rule: Disk over 90% [high], cooldown 30m');
       expect(text).toContain('retired: rule "Ping" from policy p9');
-      expect(text).toContain('retired: drift: rules and watches live today');
+      expect(text).toContain('retired: always return an empty array');
       expect(text).not.toContain('d1');
     });
   });

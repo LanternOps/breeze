@@ -50,7 +50,7 @@ export async function listConversionLedger(query: { orgId?: string; policyId?: s
     policyId: r.policyId, convertedBy: r.convertedBy,
     convertedByName: r.convertedBy ? (converterNameById.get(r.convertedBy) ?? null) : null,
     convertedAt: r.convertedAt.toISOString(), revertedAt: r.revertedAt?.toISOString() ?? null,
-    revertable: !r.revertedAt && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth)
+    revertable: !r.revertedAt && r.sourceState?.sourceReleased !== true && isRevertAvailable(r.sourceTable) && canMutateOrgWideGovernance(auth)
       && (r.orgId ? auth.canAccessOrg(r.orgId) : canManagePartnerWidePolicies(auth))
       && !blockedByLiveTarget.has(r.id),
     outputs: outputs.filter((o) => o.conversionId === r.id && o.monitorId).map((o) => ({

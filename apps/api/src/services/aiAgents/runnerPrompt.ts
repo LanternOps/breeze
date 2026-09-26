@@ -1171,8 +1171,8 @@ const FLEET_DESIGN_SECTION_GUIDANCE: Readonly<Record<(typeof FLEET_DESIGN_SECTIO
     + 'Every device id must come from the device table above. A device belongs to one function.',
   monitoring: 'per function, the watches (service/process) and alert rules with thresholds, cooldown, '
     + 'action and paging. Rationale is required on every watch and rule — say why THIS fleet needs it.',
-  retired: 'watches and rules in the current configuration that the design does not carry forward, each '
-    + 'with a reason. Empty is valid.',
+  retired: 'always return an empty array. Legacy watch and rule retirement is no longer an apply action. '
+    + 'Report any monitoring concerns under unsure instead.',
   automation: 'per function, built-in playbooks by name or a custom playbook described in prose, and '
     + 'scripts you propose (full content).',
   legacy: 'one entry per script listed above as legacy (empty when there are none). bucket obsolete | covered | needed. '
@@ -1183,11 +1183,6 @@ const FLEET_DESIGN_SECTION_GUIDANCE: Readonly<Record<(typeof FLEET_DESIGN_SECTIO
   unsure: 'functions below the threshold, unreachable devices, findings that need a human, and any '
     + 'coarse-role correction (billing-relevant).',
 };
-
-/** W05 (#5655): replaces the `retired` guidance when an approved design exists. */
-const FLEET_DESIGN_RETIRED_DRIFT_GUIDANCE =
-  'drift: rules and watches live today that the approved design does not carry, and approved ones that '
-  + 'are missing or changed by hand. Each with a reason. Empty is valid.';
 
 /**
  * Fleet Designer W01 (#5651) — the task turn for a `design`-profile run.
@@ -1368,7 +1363,7 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
 
   lines.push('## Write these eight sections, in this order');
   for (const key of FLEET_DESIGN_SECTION_KEYS) {
-    const guidance = key === 'retired' && e.approvedDesign ? FLEET_DESIGN_RETIRED_DRIFT_GUIDANCE : FLEET_DESIGN_SECTION_GUIDANCE[key];
+    const guidance = FLEET_DESIGN_SECTION_GUIDANCE[key];
     lines.push(`${key}: ${guidance}`);
   }
   lines.push('');

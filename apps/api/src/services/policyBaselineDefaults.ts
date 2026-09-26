@@ -62,10 +62,8 @@ export function getPamBaseline(): { uacInterceptionEnabled: boolean } {
 // effect of having no policy.
 const NOT_ENFORCED: Record<Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring'>, { label: string; behavior: string }> = {
   patch:             { label: 'Patches',            behavior: 'Not enforced — no patch deployments are created from policy.' },
-  alert_rule:        { label: 'Alerts',             behavior: 'Not enforced — no policy alert rules fire.' },
   backup:            { label: 'Backup',             behavior: 'Not enforced — no backups are scheduled.' },
   security:          { label: 'Security',           behavior: 'Not enforced — no security posture is applied.' },
-  monitoring:        { label: 'Monitoring',         behavior: 'Not enforced — no service/process monitoring runs.' },
   maintenance:       { label: 'Maintenance',        behavior: 'Not enforced — no maintenance windows apply.' },
   compliance:        { label: 'Compliance',         behavior: 'Not enforced — no compliance checks run.' },
   automation:        { label: 'Automations',        behavior: 'Not enforced — no automations execute.' },

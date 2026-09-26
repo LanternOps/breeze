@@ -272,8 +272,9 @@ export const navSections: NavSection[] = [
       // One page with Inventory + Policies tabs; /software-inventory and
       // /software-policies are aliases (see pathAliases).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      // #5288 — the Monitoring hub: Network today, Monitors (W02) and Delivery tabs.
-      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      // The Network page: assets, SNMP templates and check results;
+      // checks are authored under Alerts → Monitors (W05e).
+      { name: 'Network', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
     ],

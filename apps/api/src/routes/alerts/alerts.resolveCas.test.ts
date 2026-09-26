@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -62,7 +63,6 @@ const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
 const emitAlertStateFeedback = vi.fn((..._args: unknown[]) => Promise.resolve());
 const writeRouteAudit = vi.fn();
 const setCooldown = vi.fn((..._args: unknown[]) => Promise.resolve());
-const markConfigPolicyRuleCooldown = vi.fn((..._args: unknown[]) => Promise.resolve());
 const getAlertWithOrgCheck = vi.fn();
 
 vi.mock('../../db', () => ({
@@ -92,7 +92,6 @@ vi.mock('../../middleware/auth', () => ({
 }));
 vi.mock('../../services/alertCooldown', () => ({
   setCooldown: (...args: unknown[]) => setCooldown(...args),
-  markConfigPolicyRuleCooldown: (...args: unknown[]) => markConfigPolicyRuleCooldown(...args),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: (...a: unknown[]) => writeRouteAudit(...a) }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: (...a: unknown[]) => publishEvent(...a) }));
@@ -142,7 +141,6 @@ beforeEach(() => {
   publishEvent.mockResolvedValue('evt');
   emitAlertStateFeedback.mockResolvedValue(undefined);
   setCooldown.mockResolvedValue(undefined);
-  markConfigPolicyRuleCooldown.mockResolvedValue(undefined);
   // The pre-read always sees a resolvable alert; the race happens after it.
   getAlertWithOrgCheck.mockResolvedValue({ ...alertRow, status: 'active' });
 });
@@ -175,7 +173,6 @@ describe('POST /alerts/:id/resolve — the losing caller', () => {
     await resolveRequest();
 
     expect(setCooldown).not.toHaveBeenCalled();
-    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
     expect(emitAlertStateFeedback).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -220,7 +217,7 @@ describe('POST /alerts/:id/resolve — the winning caller', () => {
 
 /**
  * The winning-caller fixture above carries `ruleId: null, configPolicyId: null`, so
- * it never reaches the post-CAS cooldown code. Those two branches are the whole
+ * it never reaches the post-CAS cooldown code. The standalone rule branch is the
  * reason the CAS has to gate the fan-out — a loser writing a cooldown suppresses the
  * next legitimate alert for that rule — so they get their own fixtures rather than
  * riding on a uniform one (the blind spot that shipped #3975).
@@ -239,10 +236,9 @@ describe('POST /alerts/:id/resolve — the winner still writes its cooldown', ()
     // 42 (the rule override), not 15 (the template default) — asserting the value
     // proves the override chain ran, not merely that something was called.
     expect(setCooldown).toHaveBeenCalledWith('rule-1', 'device-1', 42, undefined);
-    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
   });
 
-  it('sets the config-policy cooldown from the alert context snapshot', async () => {
+  it('resolves history-only policy alerts without writing cooldown', async () => {
     const cp = { ...alertRow, configPolicyId: 'cp-1', context: { cooldownMinutes: 7 }, status: 'active' };
     getAlertWithOrgCheck.mockResolvedValue(cp);
     updateReturns.push([{ ...cp, status: 'resolved' }]);
@@ -250,17 +246,15 @@ describe('POST /alerts/:id/resolve — the winner still writes its cooldown', ()
     const res = await resolveRequest();
 
     expect(res.status).toBe(200);
-    expect(markConfigPolicyRuleCooldown).toHaveBeenCalledWith('cp-1', 'device-1', 7);
     expect(setCooldown).not.toHaveBeenCalled();
   });
 
-  it('writes NEITHER cooldown when the config-policy alert loses the race', async () => {
+  it('writes no cooldown when the history-only policy alert loses the race', async () => {
     const cp = { ...alertRow, configPolicyId: 'cp-1', context: { cooldownMinutes: 7 }, status: 'active' };
     getAlertWithOrgCheck.mockResolvedValue(cp);
     updateReturns.push([]); // CAS matched nothing
 
     expect((await resolveRequest()).status).toBe(409);
-    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
     expect(setCooldown).not.toHaveBeenCalled();
   });
 });
@@ -291,4 +285,9 @@ it.each([null, 'disk:3'])('manual web resolution isolates subject %s', async sub
   updateReturns.push([{ ...row, status: 'resolved' }]);
   expect((await resolveRequest()).status).toBe(200);
   expect(setCooldown).toHaveBeenCalledExactlyOnceWith('rule-1', 'device-1', 42, subjectKey ?? undefined);
+});
+
+it('has no legacy policy cooldown import or branch', () => {
+  expect(readFileSync(new URL('./alerts.ts', import.meta.url), 'utf8'))
+    .not.toMatch(/markConfigPolicyRuleCooldown|else if \(alert\.configPolicyId\)/);
 });

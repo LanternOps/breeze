@@ -6,6 +6,9 @@ const m = vi.hoisted(() => ({
   authenticated: true, permission: true, mfa: true,
   preview: vi.fn(), convert: vi.fn(), revert: vi.fn(), retire: vi.fn(),
   partner: vi.fn(), partnerPreview: vi.fn(), ledger: vi.fn(), counts: vi.fn(), audit: vi.fn(),
+  NetworkHistoryError: class extends Error {
+    constructor(public code: string, public status: 400 | 403 | 404 | 409) { super(code); }
+  },
 }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => m.authenticated ? next() : c.json({ error: 'Unauthorized' }, 401),
@@ -23,6 +26,18 @@ vi.mock('../services/monitors/conversion', () => ({
   },
   ConversionPrerequisiteMissingError: class extends Error {
     constructor(public missing: string[]) { super('conversion prerequisites missing'); }
+  },
+}));
+vi.mock('../services/monitors/conversion/loadSources', () => ({
+  readRetirementReport: vi.fn(async () => ({ unconvertible: [], sweep: null })),
+}));
+vi.mock('../services/monitors/conversion/networkHistory', () => ({
+  NetworkHistoryError: m.NetworkHistoryError,
+}));
+vi.mock('../services/monitors/conversion/networkChecks', () => ({
+  previewNetworkCheckConversion: vi.fn(), convertNetworkChecks: vi.fn(),
+  NetworkCheckConversionError: class extends Error {
+    constructor(public code: string, public status: 403 | 404 | 409) { super(code); }
   },
 }));
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
@@ -64,7 +79,7 @@ beforeEach(() => {
   m.authenticated = m.permission = m.mfa = true;
   m.preview.mockResolvedValue({ policyId: POLICY, previewHash: HASH, items: [], inheritanceMode: 'replace', equivalence: { devicesChecked: 0, deltas: [] } });
   m.convert.mockResolvedValue({ conversionIds: [SOURCE], retired: 1, monitorsCreated: 1 });
-  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9, pendingPolicies: [] });
+  m.counts.mockResolvedValue({ policies: 0, rows: 0, standaloneRules: 9, networkChecks: 3, pendingPolicies: [] });
   m.retire.mockResolvedValue({ conversionId: SOURCE });
   m.ledger.mockResolvedValue({ items: [], nextCursor: null });
   m.partnerPreview.mockResolvedValue({ partnerId: PARTNER, previewHash: HASH, policies: 2, rows: 3, convertible: 3, unconvertible: [] });
@@ -107,12 +122,12 @@ describe('conversion resource', () => {
   });
   it('pending projects the banner contract and denies a cross-org query before reading', async () => {
     const r = await request('/pending');
-    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, pendingPolicies: [] } });
+    expect(await r.json()).toEqual({ data: { policies: 0, rows: 0, networkChecks: 3, pendingPolicies: [], unconvertible: [], sweep: null } });
     expect(m.counts).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, includePartnerWide: false });
     // The list and the count come from one query, so the banner and the
     // pending-policies list can never disagree (#6644 review finding 5).
     m.counts.mockResolvedValueOnce({ policies: 1, rows: 3, standaloneRules: 0, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] });
-    expect(await (await request('/pending')).json()).toEqual({ data: { policies: 1, rows: 3, pendingPolicies: [{ id: POLICY, name: 'Legacy' }] } });
+    expect(await (await request('/pending')).json()).toEqual({ data: { policies: 1, rows: 3, pendingPolicies: [{ id: POLICY, name: 'Legacy' }], unconvertible: [], sweep: null } });
     m.counts.mockClear();
     expect((await request(`/pending?orgId=${OTHER}`)).status).toBe(403);
     expect(m.counts).not.toHaveBeenCalled();
@@ -161,6 +176,21 @@ describe('conversion resource', () => {
     expect(await r.json()).toEqual({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: ['#6342'] });
     m.convert.mockRejectedValueOnce(new Error('storage unavailable'));
     expect((await request(mutations[0]![0], 'POST', mutations[0]![1])).status).toBe(500);
+  });
+  it.each([
+    ['invalid_retirement_reason', 400], ['site_restricted_conversion', 403],
+    ['source_not_found', 404], ['network_revert_in_use', 409],
+  ] as const)('maps network history %s on retirement and revert', async (code, status) => {
+    for (const [path, body, service] of [
+      ['/retire', { sourceTable: 'network_monitors', sourceId: SOURCE, reason: 'operator' }, m.retire],
+      [`/${SOURCE}/revert`, undefined, m.revert],
+    ] as const) {
+      service.mockRejectedValueOnce(new m.NetworkHistoryError(code, status));
+      const response = await request(path, 'POST', body);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error: code });
+    }
+    expect(m.audit).not.toHaveBeenCalled();
   });
 });
 

@@ -77,6 +77,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_BUILTIN_MONITORS_AUTOSEED: 'seed toggle',
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
+  BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',
@@ -295,11 +296,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // OFFLINE_*
   OFFLINE_DETECTOR_CHUNK_SIZE: 'worker throughput knob',
   OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN: 'worker throughput knob',
-  OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE: 'worker throughput knob',
-  OFFLINE_DETECTOR_REEVAL_ENABLED: 'job toggle',
   OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES: 'timing knob',
-  OFFLINE_DETECTOR_REEVAL_INTERVAL_MS: 'timing knob',
-  OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN: 'worker throughput knob',
   OFFLINE_DETECTOR_WORKER_CONCURRENCY: 'worker throughput knob',
   // ORG_*
   ORG_ARCHIVE_DEFAULT_RETENTION_DAYS: 'data retention window',
