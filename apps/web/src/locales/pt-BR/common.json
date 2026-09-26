@@ -874,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Criar monitor",
-          "creating": "Criando..."
-        },
-        "errors": {
-          "createMonitor": "Falha ao criar monitor",
-          "generic": "Ocorreu um erro",
-          "nameRequired": "Nome é obrigatório",
-          "targetRequired": "Destino é obrigatório"
-        },
-        "fields": {
-          "expectedBanner": "Banner esperado (opcional)",
-          "expectedBody": "Conteúdo esperado do corpo (opcional)",
-          "expectedStatus": "Status esperado",
-          "expectedValue": "Valor esperado (opcional)",
-          "followRedirects": "Seguir redirecionamentos",
-          "hostname": "Nome do host a resolver",
-          "method": "Método",
-          "monitorType": "Tipo de monitor",
-          "nameserver": "Servidor de nomes personalizado (opcional)",
-          "pingCount": "Contagem de ping",
-          "pollingInterval": "Intervalo de consulta (segundos)",
-          "port": "Porta",
-          "recordType": "Tipo de registro",
-          "target": "Destino (IP/Nome do host)",
-          "timeout": "Tempo limite (segundos)",
-          "url": "URL",
-          "verifySsl": "Verificar SSL"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Verificar se os registros DNS resolvem corretamente",
-            "label": "Verificação de DNS"
-          },
-          "httpCheck": {
-            "description": "Monitorar endpoints HTTP/HTTPS",
-            "label": "Verificação HTTP"
-          },
-          "icmpPing": {
-            "description": "Verificar se um host está acessível via ping",
-            "label": "Ping ICMP"
-          },
-          "tcpPort": {
-            "description": "Verificar se uma porta TCP está aberta e respondendo",
-            "label": "Porta TCP"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "ex.: SSH-",
-          "expectedBody": "ex.: \"status\":\"ok\"",
-          "expectedValue": "ex.: 93.184.216.34",
-          "hostname": "example.com",
-          "name": "ex.: Servidor Web de Produção",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 ou server.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Configure uma nova verificação de monitoramento para um destino de rede.",
-        "title": "Criar monitor de rede"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Cancelar edição",
-          "checkNow": "Verificar agora",
-          "deleteMonitor": "Excluir monitor",
-          "deleting": "Excluindo...",
-          "yesDelete": "Sim, excluir"
-        },
-        "alertRules": {
-          "disabled": "(desativado)",
-          "title": "Regras de alerta"
+          "checkNow": "Verificar agora"
         },
         "consecutiveFailures": "{{count}} falha consecutiva",
         "consecutiveFailures_plural": "{{count}} falhas consecutivas",
-        "delete": {
-          "confirmShort": "Tem certeza?"
-        },
         "errors": {
-          "deleteMonitor": "Falha ao excluir monitor",
           "generic": "Ocorreu um erro",
           "loadDetails": "Falha ao carregar detalhes do monitor",
-          "triggerCheck": "Falha ao acionar verificação",
-          "updateMonitor": "Falha ao atualizar monitor"
+          "triggerCheck": "Falha ao acionar verificação"
         },
         "fallbackTitle": "Monitor",
-        "fields": {
-          "interval": "Intervalo (s)",
-          "timeout": "Tempo limite (s)",
-          "target": "URL de destino"
-        },
         "labels": {
           "lastChecked": "Última verificação: {{time}}",
           "response": "Resposta: {{response}}",
@@ -992,8 +913,6 @@
           "icmpPing": "Ping ICMP",
           "tcpPort": "Porta TCP"
         },
-        "targetResetNote": "Alterar a URL redefine a observação TLS.",
-        "saved": "Monitor atualizado",
         "certificate": {
           "title": "Certificado",
           "issuer": "Emissor",
@@ -1005,27 +924,22 @@
             "handshakeFailed": "Falha na negociação TLS",
             "notTls": "Sem TLS"
           }
-        }
+        },
+        "openMonitor": "Abrir o monitor desta verificação",
+        "notConverted": "Revise a conversão em Resultados."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Adicionar monitor",
-          "deleteMonitor": "Excluir monitor",
           "runCheckNow": "Executar verificação agora",
-          "viewDetails": "Ver detalhes"
+          "viewDetails": "Ver detalhes",
+          "newCheck": "Nova verificação"
         },
         "assetFilter": "Filtrando monitores para o ativo selecionado.",
-        "delete": {
-          "confirmLabel": "Excluir monitor",
-          "message": "Tem certeza de que deseja excluir este monitor? Isso também removerá todos os resultados e regras de alerta. Esta ação não pode ser desfeita.",
-          "title": "Excluir monitor de rede"
-        },
         "empty": {
-          "action": "Crie um agora.",
-          "prefix": "Nenhum monitor de rede configurado."
+          "action": "Criar um monitor.",
+          "prefix": "Nenhuma verificação de rede."
         },
         "errors": {
-          "deleteMonitor": "Falha ao excluir monitor",
           "fetchMonitors": "Falha ao buscar monitores",
           "generic": "Ocorreu um erro",
           "triggerCheck": "Falha ao acionar verificação"
@@ -1038,11 +952,13 @@
           "interval": "Intervalo",
           "lastChecked": "Última verificação",
           "response": "Resposta",
-          "target": "Destino"
+          "target": "Destino",
+          "monitor": "Monitor",
+          "openMonitor": "Abrir monitor"
         },
         "loading": "Carregando monitores...",
         "messages": {
-          "monitorDeleted": "Monitor excluído"
+          "checkQueued": "Verificação de rede na fila"
         },
         "status": {
           "degraded": "Degradado"
@@ -1059,6 +975,19 @@
           "httpCheck": "Verificação HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Porta TCP"
+        },
+        "notConverted": "Não convertido"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} verificações de rede precisam de revisão.",
+        "review": "Revisar conversão",
+        "title": "Conversão de verificações de rede",
+        "convert": "Converter {{count}}",
+        "converted": "{{count}} verificações de rede convertidas",
+        "failed": "Não foi possível converter as verificações de rede",
+        "outcome": {
+          "convertible": "Conversível",
+          "unconvertible": "Não é possível converter"
         }
       }
     },
@@ -1847,7 +1776,7 @@
         "configureMonitoring": "Configurar Monitoramento",
         "pauseSnmpPolling": "Pausar polling SNMP",
         "resumeSnmpPolling": "Retomar polling SNMP",
-        "disableAllActiveMonitoring": "Desativar todo monitoramento ativo deste ativo",
+        "disableSnmpMonitoring": "Desativar monitoramento SNMP",
         "needsOrgSelection": "Os ativos de monitoramento de rede pertencem a uma única organização.",
         "loadingAssets": "Carregando ativos de monitoramento...",
         "showingAllDiscoveredAssets": "Mostrando todos os ativos descobertos",
