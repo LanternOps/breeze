@@ -304,3 +304,76 @@ describe('execute_command restart parameters (W05c1, spec C9)', () => {
     expect(automationActionSchema.safeParse({ type: 'execute_command', command: 'x', cooldownSeconds: 29 }).success).toBe(false);
   });
 });
+
+describe('monitors inline settings — checkIntervalSeconds (W05d)', () => {
+  it('leaves the interval absent and accepts explicit 10..3600', () => {
+    expect(monitorsInlineSettingsSchema.parse({ items: [] })).not.toHaveProperty('checkIntervalSeconds');
+    expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 10 }).checkIntervalSeconds).toBe(10);
+    expect(monitorsInlineSettingsSchema.parse({ items: [], checkIntervalSeconds: 3600 }).checkIntervalSeconds).toBe(3600);
+  });
+  it('rejects out-of-range and non-integer values', () => {
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 9 }).success).toBe(false);
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 3601 }).success).toBe(false);
+    expect(monitorsInlineSettingsSchema.safeParse({ items: [], checkIntervalSeconds: 60.5 }).success).toBe(false);
+  });
+});
+
+describe('network_check condition (W05e widening)', () => {
+  const schema = monitorConditionSchemas.network_check;
+  const base = { checkType: 'icmp_ping', target: '10.0.0.1' };
+
+  it('accepts an asset binding, HTTP options and legacy verdicts', () => {
+    const condition = {
+      checkType: 'http_check', target: 'https://example.com',
+      assetId: '11111111-1111-4111-8111-111111111111',
+      expectStatus: 204, method: 'HEAD', expectedBody: 'ok', headers: { Accept: 'text/plain' },
+      verifySsl: false, followRedirects: true, degradedIsFailure: true, maxResponseMs: 800,
+      pollingIntervalSeconds: 10, timeoutSeconds: 300, consecutiveFailures: 1,
+    };
+    expect(schema.parse(condition)).toEqual(condition);
+  });
+
+  it.each([
+    { checkType: 'icmp_ping', count: 20, packetSize: 65535 },
+    { checkType: 'tcp_port', port: 22, expectBanner: 'SSH' },
+    { checkType: 'dns_check', recordType: 'MX', expectedValue: 'mail.example.com', nameserver: '1.1.1.1' },
+  ])('preserves options for $checkType', (options) => {
+    expect(schema.parse({ target: 'example.com', ...options })).toMatchObject(options);
+  });
+
+  it.each([
+    { checkType: 'icmp_ping', expectBanner: 'SSH' },
+    { checkType: 'tcp_port', port: 22, count: 1 },
+    { checkType: 'http_check', recordType: 'A' },
+    { checkType: 'dns_check', followRedirects: false },
+  ])('rejects options belonging to another check type ($checkType)', (options) => {
+    const result = schema.safeParse({ target: 'example.com', ...options });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const invalidKey = Object.keys(options).at(-1);
+      expect(result.error.issues[0]?.path).toEqual([invalidKey]);
+    }
+  });
+
+  it('keeps legacy interval, timeout and failure ranges', () => {
+    expect(schema.safeParse({ ...base, pollingIntervalSeconds: 10, timeoutSeconds: 1, consecutiveFailures: 1 }).success).toBe(true);
+    expect(schema.safeParse({ ...base, pollingIntervalSeconds: 86400, timeoutSeconds: 300, consecutiveFailures: 100 }).success).toBe(true);
+  });
+
+  it.each([
+    { pollingIntervalSeconds: 9 }, { pollingIntervalSeconds: 86401 },
+    { timeoutSeconds: 0 }, { timeoutSeconds: 301 },
+    { consecutiveFailures: 0 }, { consecutiveFailures: 101 },
+    { assetId: 'invalid' }, { maxResponseMs: 0 }, { maxResponseMs: 600001 },
+    { count: 0 }, { count: 21 }, { packetSize: 15 }, { packetSize: 65536 },
+  ])('rejects invalid boundary values %j', (values) => {
+    expect(schema.safeParse({ ...base, ...values }).success).toBe(false);
+  });
+
+  it('defaults verdict and scheduling fields', () => {
+    expect(schema.parse(base)).toEqual({
+      ...base, degradedIsFailure: false, pollingIntervalSeconds: 60,
+      timeoutSeconds: 5, consecutiveFailures: 2,
+    });
+  });
+});

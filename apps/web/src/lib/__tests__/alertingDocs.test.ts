@@ -19,7 +19,11 @@ describe('alerting consolidation documentation', () => {
     expect(read('features/notifications.mdx')).toContain('Everything else');
     expect(read('features/notifications.mdx')).not.toContain('falls back to all enabled org channels');
     const monitors = read('features/monitors.mdx');
-    expect(monitors).toContain('Needs conversion');
+    // The conversion prompt belonged to the previous release; retirement now
+    // lists unconvertible sources and preserves their history for review.
+    expect(monitors).toContain('legacy rules could not be converted');
+    expect(monitors).toContain('Source rows and alert history are retained');
+    expect(monitors).toContain('**Conversion history → Undo** is no longer available');
     expect(monitors).toContain('Replace inherited monitors');
     expect(monitors).toContain('Reset escalation');
     expect(monitors).not.toContain("Responses target every device");

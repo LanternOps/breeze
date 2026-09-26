@@ -24,7 +24,11 @@ const base: FeatureTabProps = { policyId: POLICY, existingLink: link, linkedPoli
   onLinkChanged: vi.fn(), allLinks: [link] };
 
 function renderTab(existingLink = link) {
-  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: catalog }) });
+  fetchMock.mockImplementation(async (url: string) => ({ ok: true, json: async () => ({
+    data: url.includes('/conversion/')
+      ? { policyId: POLICY, previewHash: 'hash', items: [], inheritanceMode: 'cumulative', equivalence: { devicesChecked: 0, deltas: [] } }
+      : catalog,
+  }) }));
   saveMock.mockResolvedValue(link);
   return render(<MonitorsTab {...base} existingLink={existingLink} />);
 }

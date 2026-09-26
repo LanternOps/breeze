@@ -3,7 +3,9 @@ import { db } from '../../../db';
 import { monitorConversions } from '../../../db/schema';
 import type { DbExecutor } from '../monitorCompiler';
 import type { ConversionSourceTable } from './types';
-export function isRevertAvailable(_sourceTable: ConversionSourceTable): boolean { return true; }
+export function isRevertAvailable(sourceTable: ConversionSourceTable): boolean {
+  return sourceTable === 'network_monitors';
+}
 /** Response entries cannot revert while their target conversion is still live. */
 export async function findLiveTargetDependencies(
   rows: Array<{ id: string; sourceState: Record<string, unknown> }>, executor: DbExecutor = db,

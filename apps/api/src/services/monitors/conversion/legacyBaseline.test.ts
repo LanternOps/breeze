@@ -39,3 +39,26 @@ it('scope follows effective-link consumers and role/OS filters', async () => {
   const text = f.predicates.map((p) => new PgDialect().sqlToQuery(p).sql).join(' ');
   for (const column of ['source_policy_id', 'role_filter', 'os_filter', 'partner_id']) expect(text).toContain(column);
 });
+
+it('accepts old and re-keyed effective settings links while retaining normalized watch filters', async () => {
+  const f = fixture([[device], [{ partnerId: 'p' }], [], [], [
+    { settingsId: 'inherited-settings', level: 'site', priority: 0, checkIntervalSeconds: 25 },
+  ], [{ id: 'inherited-watch' }]]);
+  expect((await resolveLegacyBaseline('d', f.executor)).monitoring).toEqual({
+    settingsId: 'inherited-settings', checkIntervalSeconds: 25, watches: [{ id: 'inherited-watch' }],
+  });
+  const compiled = f.predicates.map((p) => new PgDialect().sqlToQuery(p));
+  expect(compiled.find((p) => p.params.includes('monitoring'))?.params).toEqual(['monitoring', 'monitors']);
+  expect(compiled.at(-1)?.params).toEqual(['inherited-settings', true]);
+  expect(compiled.at(-1)?.sql).toContain('"retired_at" is null');
+});
+it('preserves assignment priority and stable ties when both settings link types exist', async () => {
+  const f = fixture([[device], [{ partnerId: 'p' }], [], [], [
+    { settingsId: 'parent', level: 'organization', priority: 0, checkIntervalSeconds: 60 },
+    { settingsId: 'old-settings', level: 'site', priority: 1, checkIntervalSeconds: 25 },
+    { settingsId: 'new-settings', level: 'site', priority: 1, checkIntervalSeconds: 30 },
+  ], [{ id: 'old-watch' }]]);
+  expect((await resolveLegacyBaseline('d', f.executor)).monitoring).toEqual({
+    settingsId: 'old-settings', checkIntervalSeconds: 25, watches: [{ id: 'old-watch' }],
+  });
+});

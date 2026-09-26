@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, like, desc, sql, gte, lte, or, isNull } from 'drizzle-orm';
@@ -85,11 +85,6 @@ async function hasMonitorSiteAccess(
  * the monitor editor; exposing it here would let a partner-wide check be
  * mutated outside the partner-wide capability gate and outside the managed-row
  * guard. Every caller below therefore gets a monitor narrowed to `orgId: string`.
- *
- * (Deliberately not naming the capability helper as a bare identifier here:
- * partner-wide-write-coverage.test.ts greps for that symbol, and a mention in
- * prose would silently satisfy the scanner without gating anything. This file
- * is on that suite's allowlist instead, with the reason spelled out there.)
  */
 type OrgOwnedMonitor = typeof networkMonitors.$inferSelect & { orgId: string };
 
@@ -185,60 +180,6 @@ async function requireMonitorReadAccess(auth: AuthContext, monitorId: string, pe
   return { monitor: row } as const;
 }
 
-async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permissions?: UserPermissions) {
-  const [row] = await db
-    .select({
-      rule: networkMonitorAlertRules,
-      monitorOrgId: networkMonitors.orgId,
-      monitorAssetId: networkMonitors.assetId,
-      monitorSiteId: networkMonitors.siteId
-    })
-    .from(networkMonitorAlertRules)
-    .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
-    .where(eq(networkMonitorAlertRules.id, ruleId))
-    .limit(1);
-
-  if (!row) return { error: 'Alert rule not found.', status: 404 } as const;
-  // #5291 W04 — a rule hanging off a partner-wide monitor has no org axis to
-  // authorize on. This org-axis surface refuses it rather than guessing.
-  const monitorOrgId = row.monitorOrgId;
-  if (monitorOrgId === null) return { error: 'Alert rule not found.', status: 404 } as const;
-
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
-    if (monitorOrgId !== auth.orgId) return { error: 'Alert rule not found.', status: 404 } as const;
-  } else {
-    if (!auth.canAccessOrg(monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
-  }
-
-  // Site-axis re-check: RLS only defends the org axis. A site-restricted user
-  // could otherwise edit/delete alert rules on a monitor in a site outside
-  // their allowlist (same org). Mirror requireMonitorAccess's site gate — the
-  // create path (POST /alerts) already goes through it. Empty/unset allowlist
-  // (partner/system scope) = full access.
-  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId, siteId: row.monitorSiteId }, permissions))) {
-    return { error: 'Access to this site denied', status: 403 } as const;
-  }
-
-  return row;
-}
-
-function validateMonitorConfigForType(
-  monitorType: typeof monitorTypes[number],
-  config: Record<string, unknown>
-) {
-  switch (monitorType) {
-    case 'icmp_ping':
-      return icmpConfigSchema.safeParse(config);
-    case 'tcp_port':
-      return tcpConfigSchema.safeParse(config);
-    case 'http_check':
-      return httpConfigSchema.safeParse(config);
-    case 'dns_check':
-      return dnsConfigSchema.safeParse(config);
-  }
-}
-
 /**
  * Route-side wrapper maps the shared policy's site-access denial to the
  * existing 403 response. RLS only defends the org axis. The org-wide
@@ -264,67 +205,13 @@ async function selectExecutionAgentForMonitor(
 
 const monitorTypes = ['icmp_ping', 'tcp_port', 'http_check', 'dns_check'] as const;
 
-const icmpConfigSchema = z.object({
-  count: z.number().int().min(1).max(20).optional(),
-  packetSize: z.number().int().min(16).max(65535).optional()
-});
-
-const tcpConfigSchema = z.object({
-  port: z.number().int().min(1).max(65535),
-  expectBanner: z.string().optional()
-});
-
-const httpConfigSchema = z.object({
-  url: z.string().url(),
-  method: z.enum(['GET', 'HEAD', 'POST', 'PUT', 'OPTIONS']).optional(),
-  expectedStatus: z.number().int().min(100).max(599).optional(),
-  expectedBody: z.string().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  followRedirects: z.boolean().optional(),
-  verifySsl: z.boolean().optional()
-});
-
-const dnsConfigSchema = z.object({
-  hostname: z.string().min(1),
-  recordType: z.enum(['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS']).optional(),
-  expectedValue: z.string().optional(),
-  nameserver: z.string().optional()
-});
-
-const createMonitorSchema = z.object({
-  orgId: z.string().guid().optional(),
-  assetId: z.string().guid().optional(),
-  name: z.string().min(1).max(200),
-  monitorType: z.enum(monitorTypes),
-  target: z.string().min(1).max(500),
-  config: z.record(z.string(), z.unknown()).optional(),
-  pollingInterval: z.number().int().min(10).max(86400).optional(),
-  timeout: z.number().int().min(1).max(300).optional()
-}).superRefine((data, ctx) => {
-  if (!data.config) return;
-  const result = validateMonitorConfigForType(data.monitorType, data.config);
-  if (result && !result.success) {
-    for (const issue of result.error.issues) {
-      ctx.addIssue({ ...issue, path: ['config', ...issue.path] });
-    }
-  }
-});
-
-const updateMonitorSchema = z.object({
-  name: z.string().min(1).max(200).optional(),
-  target: z.string().min(1).max(500).optional(),
-  config: z.record(z.string(), z.unknown()).optional(),
-  pollingInterval: z.number().int().min(10).max(86400).optional(),
-  timeout: z.number().int().min(1).max(300).optional(),
-  isActive: z.boolean().optional()
-});
-
 const listMonitorsSchema = z.object({
   orgId: z.string().guid().optional(),
   assetId: z.string().guid().optional(),
   monitorType: z.enum(monitorTypes).optional(),
   status: z.enum(['online', 'offline', 'degraded', 'unknown']).optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  includeRetired: z.enum(['true', 'false']).optional()
 });
 
 const resultsQuerySchema = z.object({
@@ -333,19 +220,17 @@ const resultsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).optional()
 });
 
-const createAlertRuleSchema = z.object({
-  monitorId: z.string().guid(),
-  condition: z.enum(['offline', 'degraded', 'response_time_gt', 'consecutive_failures_gt']),
-  threshold: z.string().optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-  message: z.string().optional(),
-  isActive: z.boolean().optional()
-});
-
-const updateAlertRuleSchema = createAlertRuleSchema.partial().omit({ monitorId: true });
-
 const monitorIdParamSchema = z.object({ id: z.string().guid() });
 const monitorIdAltParamSchema = z.object({ monitorId: z.string().guid() });
+
+// Network check authoring moved to monitor definitions. Reads and operational
+// check/test endpoints remain; unmanaged cleanup goes through conversion retirement.
+const NETWORK_CHECK_AUTHORING_RETIRED = {
+  error: 'network_check_authoring_retired',
+  message: 'Network checks are authored as monitors. Create or edit a monitor of kind network_check under Alerts → Monitors.',
+  hint: { route: 'POST /monitor-definitions', kind: 'network_check' },
+} as const;
+const authoringRetired = (c: Context) => c.json(NETWORK_CHECK_AUTHORING_RETIRED, 410);
 
 // --- Router ---
 
@@ -396,6 +281,7 @@ monitorRoutes.get(
     const conditions: ReturnType<typeof eq>[] = [];
     const ownerCondition = monitorReadOwnerCondition(auth as AuthContext, orgResult.orgId);
     if (ownerCondition) conditions.push(ownerCondition);
+    if (query.includeRetired !== 'true') conditions.push(isNull(networkMonitors.retiredAt));
     if (query.assetId) conditions.push(eq(networkMonitors.assetId, query.assetId));
     if (query.monitorType) conditions.push(eq(networkMonitors.monitorType, query.monitorType));
     if (query.status) conditions.push(eq(networkMonitors.lastStatus, query.status));
@@ -436,6 +322,8 @@ monitorRoutes.get(
         // #5866 — `orgId: null` + a partnerId is the "All orgs" badge signal.
         partnerId: m.partnerId,
         assetId: m.assetId,
+        managedByMonitorId: m.managedByMonitorId,
+        retiredAt: m.retiredAt?.toISOString() ?? null,
         name: m.name,
         monitorType: m.monitorType,
         target: m.target,
@@ -466,62 +354,7 @@ monitorRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireMonitorWrite,
   requireMfa(),
-  zValidator('json', createMonitorSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const payload = c.req.valid('json');
-
-    let assetOrgId: string | null = null;
-    let assetSiteId: string | null = null;
-    if (payload.assetId) {
-      const [asset] = await db
-        .select({ orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId })
-        .from(discoveredAssets)
-        .where(eq(discoveredAssets.id, payload.assetId))
-        .limit(1);
-      if (!asset) return c.json({ error: 'Asset not found' }, 404);
-      assetOrgId = asset.orgId;
-      assetSiteId = asset.siteId ?? null;
-    }
-
-    const orgResult = resolveOrgId(auth, payload.orgId ?? assetOrgId ?? undefined, true);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    if (assetOrgId && orgResult.orgId !== assetOrgId) {
-      return c.json({ error: 'Asset does not belong to the selected organization' }, 403);
-    }
-    const permissions = c.get('permissions') as UserPermissions | undefined;
-    if (permissions?.allowedSiteIds && (typeof assetSiteId !== 'string' || !canAccessSite(permissions, assetSiteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
-    const [monitor] = await db.insert(networkMonitors).values({
-      orgId: orgResult.orgId!,
-      assetId: payload.assetId ?? null,
-      name: payload.name,
-      monitorType: payload.monitorType,
-      target: payload.target,
-      config: payload.config ?? {},
-      pollingInterval: payload.pollingInterval ?? 60,
-      timeout: payload.timeout ?? 5,
-      isActive: true,
-      lastStatus: 'unknown',
-      consecutiveFailures: 0
-    }).returning();
-    if (!monitor) {
-      return c.json({ error: 'Failed to create monitor.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: monitor.orgId,
-      action: 'monitor.create',
-      resourceType: 'network_monitor',
-      resourceId: monitor.id,
-      resourceName: monitor.name,
-      details: { monitorType: monitor.monitorType, target: monitor.target }
-    });
-
-    return c.json({ data: monitor }, 201);
-  }
+  authoringRetired
 );
 
 monitorRoutes.get(
@@ -644,69 +477,7 @@ monitorRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requireMonitorWrite,
   requireMfa(),
-  zValidator('param', monitorIdParamSchema),
-  zValidator('json', updateMonitorSchema),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const { id: monitorId } = c.req.valid('param');
-    const payload = c.req.valid('json');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
-    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
-    if (monitorResult.monitor.managedByMonitorId) {
-      return managedByMonitorResponse(c, 'network_monitors', monitorResult.monitor.managedByMonitorId);
-    }
-
-    if (payload.config) {
-      const validation = validateMonitorConfigForType(
-        monitorResult.monitor.monitorType as typeof monitorTypes[number],
-        payload.config
-      );
-      if (validation && !validation.success) {
-        return c.json({
-          error: 'Invalid monitor config',
-          issues: validation.error.issues.map((issue) => ({
-            path: ['config', ...issue.path],
-            message: issue.message
-          }))
-        }, 400);
-      }
-    }
-
-    // #5754: a check result already in flight was produced under the OLD
-    // target/config, and recordMonitorCheckResult overwrites monitor state
-    // unconditionally — so without this the arriving certificate would be
-    // attributed to an endpoint it never came from. Only the identity of the
-    // thing being observed invalidates it; a rename or a polling-interval
-    // change does not. Deactivation deliberately does NOT clear either: the
-    // loader's `is_active = true` predicate already excludes those rows, and
-    // clearing would lose the last known expiry from the UI.
-    const existing = monitorResult.monitor;
-    const targetChanged = payload.target !== undefined && payload.target !== existing.target;
-    const configChanged = payload.config !== undefined
-      && JSON.stringify(payload.config) !== JSON.stringify(existing.config);
-    const tlsReset = (targetChanged || configChanged)
-      ? { tlsState: null, tlsNotAfter: null, tlsIssuer: null, tlsObservedHost: null, tlsObservedAt: null }
-      : {};
-
-    const [updated] = await db.update(networkMonitors)
-      .set({ ...payload, ...tlsReset, updatedAt: new Date() })
-      .where(eq(networkMonitors.id, monitorId))
-      .returning();
-    if (!updated) {
-      return c.json({ error: 'Failed to update monitor.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: updated.orgId,
-      action: 'monitor.update',
-      resourceType: 'network_monitor',
-      resourceId: updated.id,
-      resourceName: updated.name,
-      details: { updatedFields: Object.keys(payload) }
-    });
-
-    return c.json({ data: updated });
-  }
+  authoringRetired
 );
 
 monitorRoutes.delete(
@@ -724,24 +495,7 @@ monitorRoutes.delete(
       return managedByMonitorResponse(c, 'network_monitors', monitorResult.monitor.managedByMonitorId);
     }
 
-    const [removed] = await db.delete(networkMonitors)
-      .where(eq(networkMonitors.id, monitorId)).returning();
-
-    // 0-row delete despite the prior requireMonitorAccess check => RLS rejection
-    // or a race. Surface it rather than returning 200 + { data: null }.
-    if (!removed) {
-      return c.json({ error: 'Failed to delete monitor' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: removed.orgId,
-      action: 'monitor.delete',
-      resourceType: 'network_monitor',
-      resourceId: removed.id,
-      resourceName: removed.name
-    });
-
-    return c.json({ data: removed });
+    return authoringRetired(c);
   }
 );
 
@@ -875,36 +629,7 @@ monitorRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireMonitorWrite,
   requireMfa(),
-  zValidator('json', createAlertRuleSchema),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const payload = c.req.valid('json');
-    const monitorResult = await requireMonitorAccess(auth, payload.monitorId, c.get('permissions') as UserPermissions | undefined);
-    if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
-    const monitor = monitorResult.monitor;
-
-    const [rule] = await db.insert(networkMonitorAlertRules).values({
-      monitorId: payload.monitorId,
-      condition: payload.condition,
-      threshold: payload.threshold ?? null,
-      severity: payload.severity,
-      message: payload.message ?? null,
-      isActive: payload.isActive ?? true
-    }).returning();
-    if (!rule) {
-      return c.json({ error: 'Failed to create alert rule.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: monitor.orgId,
-      action: 'monitor.alert_rule.create',
-      resourceType: 'network_monitor_alert_rule',
-      resourceId: rule.id,
-      details: { monitorId: rule.monitorId, condition: rule.condition, severity: rule.severity }
-    });
-
-    return c.json({ data: rule }, 201);
-  }
+  authoringRetired
 );
 
 monitorRoutes.get(
@@ -930,33 +655,7 @@ monitorRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requireMonitorWrite,
   requireMfa(),
-  zValidator('param', monitorIdParamSchema),
-  zValidator('json', updateAlertRuleSchema),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const { id: ruleId } = c.req.valid('param');
-    const payload = c.req.valid('json');
-    const accessResult = await requireAlertRuleAccess(auth, ruleId, c.get('permissions') as UserPermissions | undefined);
-    if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
-
-    const [updated] = await db.update(networkMonitorAlertRules)
-      .set(payload)
-      .where(eq(networkMonitorAlertRules.id, ruleId))
-      .returning();
-    if (!updated) {
-      return c.json({ error: 'Failed to update alert rule.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: accessResult.monitorOrgId,
-      action: 'monitor.alert_rule.update',
-      resourceType: 'network_monitor_alert_rule',
-      resourceId: updated.id,
-      details: { updatedFields: Object.keys(payload) }
-    });
-
-    return c.json({ data: updated });
-  }
+  authoringRetired
 );
 
 monitorRoutes.delete(
@@ -964,28 +663,7 @@ monitorRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requireMonitorWrite,
   requireMfa(),
-  zValidator('param', monitorIdParamSchema),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const { id: ruleId } = c.req.valid('param');
-    const accessResult = await requireAlertRuleAccess(auth, ruleId, c.get('permissions') as UserPermissions | undefined);
-    if ('error' in accessResult) return c.json({ error: accessResult.error }, accessResult.status);
-
-    const [removed] = await db.delete(networkMonitorAlertRules)
-      .where(eq(networkMonitorAlertRules.id, ruleId)).returning();
-    if (!removed) {
-      return c.json({ error: 'Failed to delete alert rule.' }, 500);
-    }
-
-    writeRouteAudit(c, {
-      orgId: accessResult.monitorOrgId,
-      action: 'monitor.alert_rule.delete',
-      resourceType: 'network_monitor_alert_rule',
-      resourceId: removed.id
-    });
-
-    return c.json({ data: removed });
-  }
+  authoringRetired
 );
 
 // --- Helpers ---

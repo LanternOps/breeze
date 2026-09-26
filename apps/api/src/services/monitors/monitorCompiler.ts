@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import type { NetworkCheckMonitorCondition } from '@breeze/shared';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertTemplates, alertRules } from '../../db/schema/alerts';
 import { automations } from '../../db/schema/automations';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
+import { discoveredAssets } from '../../db/schema/discovery';
 import { networkMonitors } from '../../db/schema/monitors';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 import { getMonitorKindSpec } from './kinds';
+import { networkIdentityTlsReset } from './networkIdentity';
 import {
   replaceAutomationResourceBindings,
   resolveAutomationReferencesForOwner,
@@ -31,7 +34,17 @@ import type { RootCondition } from '../alertConditions/types';
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type DbExecutor = typeof db | DbTx;
-export type CompileOptions = Record<string, never>;
+export interface CompileOptions {
+  /** Adopt an unmanaged, same-org network row before updating it in place. */
+  adoptNetworkMonitorId?: string;
+}
+
+export class NetworkMonitorAdoptionError extends Error {
+  constructor(public readonly networkMonitorId: string) {
+    super(`network_monitors row ${networkMonitorId} cannot be adopted: already managed, retired, or not owned by the definition's org`);
+    this.name = 'NetworkMonitorAdoptionError';
+  }
+}
 
 export interface CompiledRefs {
   alertTemplateId: string;
@@ -210,58 +223,64 @@ export function buildCompiledAutomation(
   };
 }
 
-/**
- * The managed `network_monitors` row a `network_check` monitor compiles to
- * (#5291 W04). Pure, like the other three builders, so `verifyCompiled` can
- * re-derive it. Ownership axes come from the DEFINITION: a partner-wide
- * definition produces a partner-wide check, which `monitorWorker` then fans out
- * one job per org under the partner.
- */
+function omitUndefined(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
+}
+
+/** Agent payload names; headers and packetSize are preserved but currently ignored by the agent. */
+export function buildCompiledNetworkMonitorConfig(c: NetworkCheckMonitorCondition): Record<string, unknown> {
+  switch (c.checkType) {
+    case 'icmp_ping':
+      return omitUndefined({ count: c.count, packetSize: c.packetSize });
+    case 'tcp_port':
+      return omitUndefined({ port: c.port, expectBanner: c.expectBanner });
+    case 'http_check':
+      return omitUndefined({
+        url: c.target,
+        method: c.method,
+        expectedStatus: c.expectStatus,
+        expectedBody: c.expectedBody,
+        headers: c.headers,
+        // #6510: observe the redirect hop when expecting 3xx, unless explicitly overridden.
+        followRedirects: c.followRedirects ?? (c.expectStatus != null && c.expectStatus >= 300 && c.expectStatus < 400 ? false : undefined),
+        verifySsl: c.verifySsl,
+      });
+    case 'dns_check':
+      return omitUndefined({ hostname: c.target, recordType: c.recordType, expectedValue: c.expectedValue, nameserver: c.nameserver });
+  }
+}
+
+/** Pure authoring projection. The executor-backed site binding is resolved separately. */
 export function buildCompiledNetworkMonitor(
   def: MonitorDefinitionRow,
 ): typeof networkMonitors.$inferInsert {
   const spec = getMonitorKindSpec(def.kind);
-  const c = spec.conditionSchema.parse(def.condition) as {
-    checkType: 'icmp_ping' | 'tcp_port' | 'http_check' | 'dns_check';
-    target: string;
-    port?: number;
-    expectStatus?: number;
-    followRedirects?: boolean;
-    pollingIntervalSeconds: number;
-    timeoutSeconds: number;
-  };
+  const c = spec.conditionSchema.parse(def.condition) as NetworkCheckMonitorCondition;
   return {
     orgId: def.orgId,
     partnerId: def.partnerId,
     name: `[monitor] ${def.name}`,
-    // `checkType` IS the monitor_type pgEnum vocabulary — nothing is mapped.
     monitorType: c.checkType,
     target: c.target,
-    // `buildMonitorCommand` (`services/monitorCommands.ts`) spreads this
-    // `config` verbatim into the agent command payload — there is no
-    // translation layer downstream. So every key written here must already be
-    // the exact key `agent/internal/heartbeat/handlers_monitor.go` reads for
-    // that checkType, even where it differs from the kind's own condition
-    // schema field name (`expectStatus` here vs. the agent's `expectedStatus`,
-    // #6352). `port` already matches the agent key and needs no translation.
-    config: {
-      ...(c.port != null ? { port: c.port } : {}),
-      ...(c.expectStatus != null ? { expectedStatus: c.expectStatus } : {}),
-      // #6510: the agent follows redirects by default (`handlers_monitor.go`),
-      // so an http_check that EXPECTS a 3xx status can never go healthy unless
-      // the check stops at that hop — the final hop's status is what gets
-      // compared otherwise. Only write the key when it disagrees with the
-      // agent's own default (true), i.e. an explicit `false`, or an implicit
-      // `false` from a 3xx expectation the caller didn't override.
-      ...((c.followRedirects ?? !(c.expectStatus != null && c.expectStatus >= 300 && c.expectStatus < 400))
-        ? {}
-        : { followRedirects: false }),
-    },
+    assetId: c.assetId ?? null,
+    config: buildCompiledNetworkMonitorConfig(c),
     pollingInterval: c.pollingIntervalSeconds,
     timeout: c.timeoutSeconds,
     isActive: def.enabled,
     managedByMonitorId: def.id,
   };
+}
+
+async function buildCompiledNetworkMonitorWithSite(def: MonitorDefinitionRow, executor: DbExecutor) {
+  const row = buildCompiledNetworkMonitor(def);
+  if (!row.assetId) return { ...row, siteId: null };
+  if (!def.orgId) throw new Error('Asset-bound network checks require an organization owner');
+  const [asset] = await executor.select({ siteId: discoveredAssets.siteId })
+    .from(discoveredAssets)
+    .where(and(eq(discoveredAssets.id, row.assetId), eq(discoveredAssets.orgId, def.orgId)))
+    .limit(1);
+  if (!asset) throw new Error('Network check asset not found in the monitor organization');
+  return { ...row, siteId: asset.siteId };
 }
 
 async function upsertManaged<T extends { id: string }>(
@@ -275,11 +294,20 @@ async function upsertManaged<T extends { id: string }>(
   // that as a conflict target is version-dependent in Drizzle. Both statements
   // run inside the caller's transaction, so the pair is still atomic.
   const anyTable = table as unknown as typeof alertRules;
-  const [existing] = await tx
-    .select({ id: anyTable.id })
-    .from(anyTable)
-    .where(eq(anyTable.managedByMonitorId, monitorId))
-    .limit(1);
+  let existing: { id: string } | undefined;
+  if (table === networkMonitors) {
+    const [network] = await tx.select({ id: networkMonitors.id, monitorType: networkMonitors.monitorType,
+      target: networkMonitors.target, config: networkMonitors.config })
+      .from(networkMonitors).where(eq(networkMonitors.managedByMonitorId, monitorId)).limit(1).for('update');
+    existing = network;
+    if (network) {
+      type Identity = Parameters<typeof networkIdentityTlsReset>[0];
+      values = { ...values, ...networkIdentityTlsReset(network, values as Identity) };
+    }
+  } else {
+    [existing] = await tx.select({ id: anyTable.id }).from(anyTable)
+      .where(eq(anyTable.managedByMonitorId, monitorId)).limit(1);
+  }
 
   if (existing) {
     const [updated] = await tx
@@ -305,7 +333,7 @@ async function upsertManaged<T extends { id: string }>(
 export async function compileMonitorInTx(
   tx: DbTx,
   def: MonitorDefinitionRow,
-  _options: CompileOptions = {},
+  options: CompileOptions = {},
 ): Promise<CompiledRefs> {
   const now = new Date();
 
@@ -323,8 +351,23 @@ export async function compileMonitorInTx(
   // `managed_by_monitor_id`, so a recompile keeps the row id and therefore its
   // whole result history.
   if (def.kind === 'network_check') {
+    // Stamp ownership first so the upsert preserves the legacy row and history.
+    // Failure to acquire it must never fall through to a fresh insert.
+    if (options.adoptNetworkMonitorId) {
+      const [adopted] = await tx
+        .update(networkMonitors)
+        .set({ managedByMonitorId: def.id })
+        .where(and(
+          eq(networkMonitors.id, options.adoptNetworkMonitorId),
+          isNull(networkMonitors.managedByMonitorId),
+          isNull(networkMonitors.retiredAt),
+          def.orgId ? eq(networkMonitors.orgId, def.orgId) : sql`false`,
+        ))
+        .returning({ id: networkMonitors.id });
+      if (!adopted) throw new NetworkMonitorAdoptionError(options.adoptNetworkMonitorId);
+    }
     await upsertManaged(tx, networkMonitors, def.id, {
-      ...buildCompiledNetworkMonitor(def),
+      ...await buildCompiledNetworkMonitorWithSite(def, tx),
       updatedAt: now,
     });
   }
@@ -429,7 +472,7 @@ export async function verifyCompiled(
     if (!check) {
       diff.push('network_monitors: missing');
     } else {
-      const expectedCheck = buildCompiledNetworkMonitor(def);
+      const expectedCheck = await buildCompiledNetworkMonitorWithSite(def, executor);
       for (const key of Object.keys(expectedCheck) as Array<keyof typeof expectedCheck>) {
         const expected = canonical(expectedCheck[key]);
         const actual = canonical((check as Record<string, unknown>)[key as string]);

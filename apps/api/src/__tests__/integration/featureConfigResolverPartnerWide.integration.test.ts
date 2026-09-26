@@ -12,12 +12,11 @@
  * reads the `breeze.current_partner_id` GUC set from
  * `DbAccessContext.currentPartnerId`.
  *
- * Eight of those resolvers had NO real-database test under a non-system
+ * These active resolvers had NO real-database test under a non-system
  * context, so nothing proved they still return partner-wide rows after the
  * escape was removed. Their only tests mock Drizzle and evaluate no RLS at
  * all. This file closes that gap for:
  *
- *   resolveAlertRulesForDevice, resolveGoverningAlertRulePolicyForDevice,
  *   resolveAutomationsForDevice, resolveComplianceRulesForDevice,
  *   resolveMaintenanceConfigForDevice, resolveSoftwarePolicyForDevice,
  *   resolveVulnerabilityEnabledForDevice, resolveBackupConfigForDevice,
@@ -45,7 +44,6 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyAssignments,
-  configPolicyAlertRules,
   configPolicyAutomations,
   configPolicyComplianceRules,
   configPolicyMaintenanceSettings,
@@ -54,8 +52,6 @@ import {
   devices,
 } from '../../db/schema';
 import {
-  resolveAlertRulesForDevice,
-  resolveGoverningAlertRulePolicyForDevice,
   resolveAutomationsForDevice,
   resolveComplianceRulesForDevice,
   resolveMaintenanceConfigForDevice,
@@ -169,25 +165,6 @@ async function createPolicy(owner: Owner, namePrefix: string): Promise<string> {
     .returning();
   createdPolicies.push(policy!.id);
   return policy!.id;
-}
-
-// alert rule condition/severity are arbitrary but valid; `name` is the field
-// each test asserts on to prove THIS row resolved.
-async function seedAlertRulePolicy(owner: Owner, ruleName: string): Promise<string> {
-  return withDbAccessContext(SYSTEM_CTX, async () => {
-    const policyId = await createPolicy(owner, 'alert rule policy');
-    const [link] = await db
-      .insert(configPolicyFeatureLinks)
-      .values({ configPolicyId: policyId, featureType: 'alert_rule' })
-      .returning();
-    await db.insert(configPolicyAlertRules).values({
-      featureLinkId: link!.id,
-      name: ruleName,
-      severity: 'critical',
-      conditions: { metric: 'cpu_percent', operator: 'gt', value: 90 },
-    });
-    return policyId;
-  });
 }
 
 async function seedAutomationPolicy(owner: Owner, automationName: string): Promise<string> {
@@ -314,98 +291,6 @@ async function seedBackupSettingsPolicy(
 }
 
 describe('per-device config-policy resolvers honour partner-wide policies (#2930, #4673 W03)', () => {
-  describe('resolveAlertRulesForDevice', () => {
-    // Default (no visible policy) is []. Any resolved row is non-empty and
-    // named — the seeded name proves it is THIS row, not a coincidence.
-    it('resolves a partner-wide alert rule under an org-scoped context', async () => {
-      const partner = await createPartner();
-      const org = await createOrganization({ partnerId: partner.id });
-      const site = await createSite({ orgId: org!.id });
-      const device = await seedDevice(org!.id, site!.id);
-
-      const ruleName = `Partner-Wide High CPU ${randomUUID()}`;
-      const policyId = await seedAlertRulePolicy({ orgId: null, partnerId: partner.id }, ruleName);
-      await assign(policyId, 'partner', partner.id);
-
-      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
-        resolveAlertRulesForDevice(device.id),
-      );
-
-      expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe(ruleName);
-    });
-
-    it('a partner-wide alert rule is INVISIBLE without breeze.current_partner_id', async () => {
-      const partner = await createPartner();
-      const org = await createOrganization({ partnerId: partner.id });
-      const site = await createSite({ orgId: org!.id });
-      const device = await seedDevice(org!.id, site!.id);
-
-      const ruleName = `Partner-Wide High CPU ${randomUUID()}`;
-      const policyId = await seedAlertRulePolicy({ orgId: null, partnerId: partner.id }, ruleName);
-      await assign(policyId, 'partner', partner.id);
-
-      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
-        resolveAlertRulesForDevice(device.id),
-      );
-      expect(blind).toEqual([]); // default: no visible assignment -> []
-
-      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
-        resolveAlertRulesForDevice(device.id),
-      );
-      expect(sighted).toHaveLength(1);
-    });
-  });
-
-  describe('resolveGoverningAlertRulePolicyForDevice', () => {
-    // Default (device has hierarchy but the candidate policy is not among the
-    // visible assigned policies) is {outcome:'unassigned'}. 'governs' requires
-    // the row to be BOTH assigned AND resolvable -> proves visibility.
-    it("a partner-wide policy 'governs' when it is the candidate under an org-scoped context", async () => {
-      const partner = await createPartner();
-      const org = await createOrganization({ partnerId: partner.id });
-      const site = await createSite({ orgId: org!.id });
-      const device = await seedDevice(org!.id, site!.id);
-
-      const policyId = await seedAlertRulePolicy(
-        { orgId: null, partnerId: partner.id },
-        `governs-candidate-${randomUUID()}`,
-      );
-      await assign(policyId, 'partner', partner.id);
-
-      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
-        resolveGoverningAlertRulePolicyForDevice(device.id, policyId),
-      );
-
-      expect(result).toEqual({ outcome: 'governs' });
-    });
-
-    it("a partner-wide policy is 'unassigned' without breeze.current_partner_id", async () => {
-      const partner = await createPartner();
-      const org = await createOrganization({ partnerId: partner.id });
-      const site = await createSite({ orgId: org!.id });
-      const device = await seedDevice(org!.id, site!.id);
-
-      const policyId = await seedAlertRulePolicy(
-        { orgId: null, partnerId: partner.id },
-        `governs-candidate-${randomUUID()}`,
-      );
-      await assign(policyId, 'partner', partner.id);
-
-      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
-        resolveGoverningAlertRulePolicyForDevice(device.id, policyId),
-      );
-      // Default: the candidate is invisible under RLS, so it never lands in
-      // the `assigned` set -> unassigned, NOT governs.
-      expect(blind).toEqual({ outcome: 'unassigned' });
-
-      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
-        resolveGoverningAlertRulePolicyForDevice(device.id, policyId),
-      );
-      expect(sighted).toEqual({ outcome: 'governs' });
-    });
-  });
-
   describe('resolveAutomationsForDevice', () => {
     // Default (no visible policy) is [].
     it('resolves a partner-wide automation under an org-scoped context', async () => {

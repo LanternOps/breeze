@@ -94,14 +94,11 @@ vi.mock('./alertConditions', () => ({
 vi.mock('./alertCooldown', () => ({
   isCooldownActive: vi.fn(() => Promise.resolve(false)),
   setCooldown: vi.fn(() => Promise.resolve()),
-  isConfigPolicyRuleCooling: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
   recordStateTransition: vi.fn(() => Promise.resolve()),
   isFlapping: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock('./featureConfigResolver', () => ({
-  resolveAlertRulesForDevice: vi.fn(),
   resolveMaintenanceConfigForDevice: vi.fn(),
   isInMaintenanceWindow: vi.fn(),
 }));
@@ -112,10 +109,8 @@ vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promis
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: enqueueAlertCorrelationMock }));
 
 import { publishEvent } from './eventBus';
-import { setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, isFlapping } from './alertCooldown';
-import { evaluateConditions } from './alertConditions';
-import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice } from './featureConfigResolver';
-import { createAlert, createSourcedAlert, evaluateDeviceAlertsFromPolicy } from './alertService';
+import { setCooldown } from './alertCooldown';
+import { createAlert, createSourcedAlert } from './alertService';
 
 describe('createAlert correlation enqueue boundary', () => {
   beforeEach(() => {
@@ -292,71 +287,6 @@ describe('createAlert publish rollback (#5325)', () => {
     expect(deleteCalls).not.toHaveBeenCalled();
     expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5, undefined);
     expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
-  });
-});
-
-describe('evaluateDeviceAlertsFromPolicy publish rollback (#5325)', () => {
-  const rule = {
-    id: 'cpar-1',
-    name: 'Disk almost full',
-    severity: 'high' as const,
-    conditions: {},
-    cooldownMinutes: 15,
-    autoResolve: false,
-    autoResolveConditions: null,
-    titleTemplate: 'Disk almost full',
-    messageTemplate: 'Disk almost full on device',
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    dbMock._selectResults.length = 0;
-    dbMock._insertReturnResults.length = 0;
-    // device row, then the open-alert dedupe query
-    dbMock._selectResults.push([{ id: 'device-1', orgId: 'org-1', siteId: 'site-7', hostname: 'host' }], []);
-    dbMock._insertReturnResults.push([{ id: 'alert-5' }]);
-    vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue(null);
-    vi.mocked(resolveAlertRulesForDevice).mockResolvedValue([rule] as never);
-    vi.mocked(isConfigPolicyRuleCooling).mockResolvedValue(false as never);
-    vi.mocked(isFlapping).mockResolvedValue(false);
-    vi.mocked(evaluateConditions).mockResolvedValue({
-      triggered: true,
-      context: {},
-      conditionsMet: [],
-      conditionsNotMet: [],
-    } as never);
-  });
-
-  it('publishes with the device site and marks the cooldown on success', async () => {
-    const created = await evaluateDeviceAlertsFromPolicy('device-1');
-
-    expect(created).toEqual(['alert-5']);
-    expect(vi.mocked(publishEvent)).toHaveBeenCalledWith(
-      'alert.triggered',
-      'org-1',
-      expect.objectContaining({
-        alertId: 'alert-5',
-        configPolicyAlertRuleId: 'cpar-1',
-        configItemName: 'Disk almost full',
-        source: 'config_policy',
-      }),
-      'alert-service',
-      { siteId: 'site-7' },
-    );
-    expect(vi.mocked(markConfigPolicyRuleCooldown)).toHaveBeenCalledWith('cpar-1', 'device-1', 15);
-  });
-
-  it('rolls the row back and leaves the cooldown unset when publishing throws', async () => {
-    vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
-
-    const created = await evaluateDeviceAlertsFromPolicy('device-1');
-
-    expect(created).toEqual([]);
-    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
-    expect(captureExceptionMock).toHaveBeenCalled();
-    // Marking the cooldown would suppress the retry for cooldownMinutes.
-    expect(vi.mocked(markConfigPolicyRuleCooldown)).not.toHaveBeenCalled();
-    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
   });
 });
 

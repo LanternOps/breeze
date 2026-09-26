@@ -170,6 +170,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
+import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
@@ -1891,6 +1892,24 @@ async function bootstrap(): Promise<void> {
     })
     .catch((err) => {
       console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // W05d — convert whatever legacy alerting the W05c release left unconverted,
+  // retire what cannot convert (listed in the Monitors banner), then count what
+  // is still unretired. Detached after serve() for the same reason as the
+  // built-ins above; chained so the count runs AFTER the sweep and cannot fire
+  // spuriously on the first boot after upgrade. Never refuses boot.
+  void runLegacyAlertingRetirement({ retryDelaysMs: LEGACY_ALERTING_RETRY_DELAYS_MS })
+    .then((r) => {
+      console.log(
+        `[startup] Legacy alerting retirement: ${r.partners} partner(s) swept, ${r.converted} converted, ` +
+        `${r.retired} retired, ${r.failed} failed; unretired rules=${r.remaining.configPolicyAlertRules} ` +
+        `watches=${r.remaining.configPolicyMonitoringWatches}`,
+      );
+    })
+    .catch((err) => {
+      console.error('[startup] Legacy alerting retirement failed:', err);
+      captureException(err, undefined, { area: 'legacy_alerting_sweep' });
     });
 
   // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
