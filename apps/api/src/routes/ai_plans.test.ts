@@ -171,6 +171,27 @@ describe('AI routes', () => {
       expect(body.effectiveMode).toBe('per_step');
     });
 
+    it('aborts the active plan when pausing (#7085: settles a pending plan approval)', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      vi.mocked(abortActivePlan).mockResolvedValueOnce(true);
+      const mockSession = {
+        isPaused: false,
+        activePlanId: 'plan-1',
+        approvalMode: 'action_plan',
+        eventBus: { publish: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.get).mockReturnValueOnce(mockSession as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ paused: true }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortActivePlan).toHaveBeenCalledWith(mockSession);
+    });
+
     it('unpauses a session', async () => {
       vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
       const mockSession = {
