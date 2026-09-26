@@ -10,7 +10,7 @@ import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
-import { eq, and, desc, sql, inArray, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -32,7 +32,7 @@ import {
   isMaskedIntegrationSecret,
 } from './notificationChannelSecrets';
 import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
-import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
+import { alertSiteScopeByDeviceIds, validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
@@ -163,8 +163,11 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         // `allowedDeviceIds` and no site axis at all (#6096).
         const listOrgId = getOrgId(auth);
         if ((auth.allowedSiteIds || auth.allowedDeviceIds) && listOrgId) {
-          const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
-          if (!allowed || allowed.length === 0) {
+          const allowed = (await resolveSiteAllowedDeviceIds(listOrgId, auth)) ?? [];
+          const allowedSites = siteAllowlistOf(auth);
+          // Empty only when NOTHING is in scope: a site with no devices can
+          // still own topology policy alerts (M3-D6).
+          if (allowed.length === 0 && (auth.allowedDeviceIds || !allowedSites || allowedSites.length === 0)) {
             return emptyKeysetPage();
           }
           if (input.deviceId && !allowed.includes(input.deviceId as string)) {
@@ -173,15 +176,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           // A topology policy alert follows its owning topology site (M3-D6),
           // not the origin device's current site; the device axis still binds a
           // device-bound run.
-          const allowedSites = siteAllowlistOf(auth);
-          conditions.push(or(
-            and(isNull(alerts.topologySiteId), inArray(alerts.deviceId, allowed)),
-            and(
-              isNotNull(alerts.topologySiteId),
-              allowedSites ? inArray(alerts.topologySiteId, [...allowedSites]) : undefined,
-              auth.allowedDeviceIds ? inArray(alerts.deviceId, allowed) : undefined,
-            ),
-          )!);
+          conditions.push(alertSiteScopeByDeviceIds({
+            allowedSiteIds: allowedSites, allowedDeviceIds: allowed, deviceAxis: auth.allowedDeviceIds !== undefined,
+          })!);
         }
 
         // `total` reflects the whole filtered set, so it must be computed

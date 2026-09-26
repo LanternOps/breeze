@@ -37,6 +37,7 @@ import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEviden
 import { reportTypeDef } from './reportRegistry';
 import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
+import { alertSiteScopeByDeviceIds } from '../routes/alerts/helpers';
 // #3198 W02: shared with the business generators, which refuse a restricted
 // authority with a non-empty site list themselves (the zero-safe branch below
 // only sees the empty-list case).
@@ -573,11 +574,13 @@ export async function generateAlertSummaryReport(
   }
 
   const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, authority);
-  if (allowedDeviceIds) {
-    if (allowedDeviceIds.length === 0) {
+  if (allowedDeviceIds && authority.scope.kind === 'restricted') {
+    if (authority.scope.siteIds.length === 0) {
       return { rows: [], rowCount: 0, summary: {} };
     }
-    conditions.push(inArray(alerts.deviceId, allowedDeviceIds));
+    // Device alerts by in-scope device; site-owned topology alerts by their
+    // owning topology site (M3-D6), never the origin device's site.
+    conditions.push(alertSiteScopeByDeviceIds({ allowedSiteIds: authority.scope.siteIds, allowedDeviceIds })!);
   }
 
   const whereCondition = and(...conditions);
@@ -794,11 +797,13 @@ export async function generateExecutiveSummaryReport(
   }
 
   const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, authority);
-  if (allowedDeviceIds) {
-    alertConditions.push(inArray(alerts.deviceId, allowedDeviceIds));
+  const restrictedSiteIds = allowedDeviceIds && authority.scope.kind === 'restricted' ? authority.scope.siteIds : null;
+  if (allowedDeviceIds && restrictedSiteIds) {
+    // Site-owned topology alerts follow their owning topology site (M3-D6).
+    alertConditions.push(alertSiteScopeByDeviceIds({ allowedSiteIds: restrictedSiteIds, allowedDeviceIds })!);
   }
 
-  const alertStats = allowedDeviceIds?.length === 0
+  const alertStats = restrictedSiteIds?.length === 0
     ? [{ total: 0, critical: 0, high: 0, resolved: 0 }]
     : await db
       .select({

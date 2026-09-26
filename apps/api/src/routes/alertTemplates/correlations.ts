@@ -9,7 +9,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { listCorrelationsSchema, analyzeCorrelationsSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 import { getPagination } from '../../utils/pagination';
-import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
+import { alertInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const correlationRoutes = new Hono();
 
@@ -20,7 +20,7 @@ const requireAlertRead = requirePermission(
 
 async function visibleOrgAlertIds(auth: AuthContext, orgId: string): Promise<string[]> {
   const orgAlerts = await db
-    .select({ id: alerts.id, deviceId: alerts.deviceId })
+    .select({ id: alerts.id, deviceId: alerts.deviceId, topologySiteId: alerts.topologySiteId })
     .from(alerts)
     .where(eq(alerts.orgId, orgId));
   const visibleAlerts = await filterAlertsBySiteScope({ ...auth, orgId }, orgAlerts);
@@ -299,7 +299,7 @@ correlationRoutes.get(
         .where(and(eq(alerts.id, alertId), eq(alerts.orgId, orgId)))
         .limit(1);
 
-      if (!alert || !(await deviceInSiteScope(auth, alert.deviceId))) {
+      if (!alert || !(await alertInSiteScope(auth, alert))) {
         return c.json({ error: 'Alert not found' }, 404);
       }
 

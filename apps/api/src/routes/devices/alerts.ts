@@ -8,6 +8,7 @@ import { db } from '../../db';
 import { alerts, alertRules, alertTemplates } from '../../db/schema';
 import { PERMISSIONS } from '../../services/permissions';
 import { fillDevicePlaceholders } from '@breeze/shared';
+import { alertTopologySiteGate } from '../alerts/helpers';
 
 export const alertsRoutes = new Hono();
 
@@ -41,6 +42,10 @@ alertsRoutes.get(
 
     // Build query conditions
     const conditions = [eq(alerts.deviceId, deviceId)];
+    // A site-owned topology alert whose origin is this device is shown only
+    // when its OWNING topology site is in the caller's scope (M3-D6).
+    const topologySiteGate = alertTopologySiteGate(auth.allowedSiteIds);
+    if (topologySiteGate) conditions.push(topologySiteGate);
 
     if (query.status && query.status !== 'all') {
       conditions.push(eq(alerts.status, query.status));

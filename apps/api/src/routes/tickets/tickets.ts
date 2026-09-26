@@ -5,7 +5,7 @@ import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQ
 import { db } from '../../db';
 import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts, ticketStatuses } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
-import { deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
+import { alertInSiteScope, deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { escapeLike } from '../../utils/sql';
 import {
@@ -931,13 +931,14 @@ ticketsRoutes.post(
     // outside their allowed sites. The service's same-org check stays in
     // linkAlertToTicket — the route layer owns the site axis.
     const alertRows = await db
-      .select({ deviceId: alerts.deviceId })
+      .select({ deviceId: alerts.deviceId, topologySiteId: alerts.topologySiteId })
       .from(alerts)
       .where(eq(alerts.id, alertId))
       .limit(1);
     const alertRow = alertRows[0];
     if (!alertRow) return c.json({ error: 'Alert not found' }, 404);
-    if (alertRow.deviceId && !(await deviceInSiteScope(auth, alertRow.deviceId))) {
+    // A site-owned topology alert follows its topology site (M3-D6).
+    if (!(await alertInSiteScope(auth, alertRow))) {
       // Out-of-site alerts are invisible, not forbidden — same shape as the ticket gate.
       return c.json({ error: 'Alert not found' }, 404);
     }
@@ -970,13 +971,14 @@ ticketsRoutes.delete(
     // Same site-axis gate as the link route: an out-of-site alert must be
     // invisible to a restricted caller even for unlink.
     const alertRows = await db
-      .select({ deviceId: alerts.deviceId })
+      .select({ deviceId: alerts.deviceId, topologySiteId: alerts.topologySiteId })
       .from(alerts)
       .where(eq(alerts.id, alertId))
       .limit(1);
     const alertRow = alertRows[0];
     if (!alertRow) return c.json({ error: 'Alert not found' }, 404);
-    if (alertRow.deviceId && !(await deviceInSiteScope(auth, alertRow.deviceId))) {
+    // A site-owned topology alert follows its topology site (M3-D6).
+    if (!(await alertInSiteScope(auth, alertRow))) {
       return c.json({ error: 'Alert not found' }, 404);
     }
 

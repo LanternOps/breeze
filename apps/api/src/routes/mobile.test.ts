@@ -2674,25 +2674,24 @@ describe('mobile routes', () => {
         expect(inArray).toHaveBeenCalledWith(alerts.deviceId, ['dev-1']);
       });
 
-      it('returns zero alerts (but real device counts) when resolveSiteAllowedDeviceIds returns empty', async () => {
+      it('still counts alerts OWNED by an allowed site when that site has no devices (M3-D6)', async () => {
         authState.permissions = { allowedSiteIds: ['site-1'] };
 
         const selectMock = vi.mocked(db.select);
-        // Device stats: some devices returned
         selectMock
           .mockReturnValueOnce(mockAggregateChain({ total: 2, online: 1, offline: 1, maintenance: 0 }) as any)
           // resolveSiteAllowedDeviceIds: no devices in the allowed site
-          .mockReturnValueOnce(mockDeviceSiteChain([]) as any);
+          .mockReturnValueOnce(mockDeviceSiteChain([]) as any)
+          .mockReturnValueOnce(mockAggregateChain({ total: 1, active: 1, acknowledged: 0, resolved: 0, critical: 1 }) as any);
 
         const res = await app.request('/mobile/summary', { method: 'GET' });
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Device stats already computed before the site-device resolution
         expect(body.devices.total).toBe(2);
-        // Alert stats zeroed because no in-scope device IDs
-        expect(body.alerts.total).toBe(0);
-        // Only two db.select calls: no alert-agg issued (short-circuited)
-        expect(selectMock).toHaveBeenCalledTimes(2);
+        // A topology policy alert owned by site-1 counts, though site-1 has no devices.
+        expect(body.alerts.total).toBe(1);
+        expect(selectMock).toHaveBeenCalledTimes(3);
+        expect(inArray).toHaveBeenCalledWith(alerts.topologySiteId, ['site-1']);
       });
     });
 

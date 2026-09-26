@@ -15,7 +15,7 @@ import { captureException } from '../../services/sentry';
 import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from '../../services/mlFeedbackEmitters';
 import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
-import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
+import { alertInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const alertCorrelationRoutes = new Hono();
 
@@ -150,10 +150,11 @@ async function getAccessibleAlert(alertId: string, auth: AuthContext): Promise<A
     return null;
   }
 
-  // Site axis: a site-restricted caller must not see/act on an alert whose
-  // device is outside their allowed sites. Out-of-site → not found (no oracle),
-  // matching the alerts.ts by-id paths. Deviceless alerts stay visible.
-  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
+  // Site axis: a site-restricted caller must not see/act on an alert outside
+  // their allowed sites. Out-of-site → not found (no oracle), matching the
+  // alerts.ts by-id paths. A site-owned topology alert follows its topology
+  // site (M3-D6); deviceless alerts stay visible.
+  if (!(await alertInSiteScope(auth, alert))) {
     return null;
   }
 

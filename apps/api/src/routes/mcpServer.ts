@@ -41,6 +41,7 @@ import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../se
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
+import { alertSiteScopeByDeviceIds } from './alerts/helpers';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
@@ -2585,16 +2586,14 @@ async function handleResourcesRead(
         eq(alerts.status, 'active' as typeof alerts.status.enumValues[number]),
       ];
       if (siteAllowedDeviceIds !== null) {
-        // Narrow alerts to those raised on devices the caller may see. Empty
-        // allowlist → impossible deviceId so no alert rows leak.
-        alertSiteConditions.push(
-          inArray(
-            alerts.deviceId,
-            siteAllowedDeviceIds.length === 0
-              ? ['00000000-0000-0000-0000-000000000000']
-              : siteAllowedDeviceIds,
-          ),
-        );
+        // Narrow alerts to those raised on devices the caller may see; a
+        // site-owned topology alert follows its OWNING topology site (M3-D6),
+        // never its origin device's. Empty allowlists match no rows.
+        alertSiteConditions.push(alertSiteScopeByDeviceIds({
+          allowedSiteIds: auth.allowedSiteIds,
+          allowedDeviceIds: siteAllowedDeviceIds,
+          deviceAxis: auth.allowedDeviceIds !== undefined,
+        })!);
       }
       return await readOrgScopedResource(id, uri, alerts, {
         id: alerts.id,

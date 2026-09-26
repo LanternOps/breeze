@@ -51,6 +51,7 @@ import { trustDenyBody } from '../services/partnerTrust';
 // uuid guard — added to the shared helper — silently did not apply to
 // POST /mobile/devices/:id/actions. One definition, one guard.
 import { getDeviceWithOrgCheck } from './devices/helpers';
+import { alertSiteScopeByDeviceIds, alertTopologySiteGate } from './alerts/helpers';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -122,7 +123,7 @@ function compareLanCandidates(a: LanIpCandidate, b: LanIpCandidate): number {
  * those into the same `0` would render a false "Open alerts · 0" for a
  * device that may have several unresolved critical alerts.
  */
-async function loadDeviceDetailsV1Fields(deviceIds: string[]): Promise<{
+async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: string[]): Promise<{
   lanIpByDevice: Map<string, string>;
   openAlertCountByDevice: Map<string, number> | null;
   openTicketCountByDevice: Map<string, number> | null;
@@ -168,7 +169,9 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[]): Promise<{
     const alertCountRows = await db
       .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
       .from(alerts)
-      .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES)))
+      // A site-owned topology alert counts on its origin device only when its
+      // OWNING topology site is in the caller's scope (M3-D6).
+      .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES), alertTopologySiteGate(allowedSiteIds)))
       .groupBy(alerts.deviceId);
     for (const row of alertCountRows) {
       openAlertCountByDevice.set(row.deviceId, Number(row.count));
@@ -403,6 +406,11 @@ async function getAlertWithOrgCheck(
   }
 
   // Site-axis gate. Only restricted callers (allowedSiteIds set) are narrowed.
+  // A topology policy alert is owned by its TOPOLOGY site (M3-D6): its origin
+  // device is provenance only, so its current site is never the gate.
+  if (perms?.allowedSiteIds && alert.topologySiteId) {
+    return canAccessSite(perms, alert.topologySiteId) ? alert : null;
+  }
   // Deviceless alerts are org-wide and not site-bound, so they pass.
   if (perms?.allowedSiteIds && alert.deviceId) {
     const [device] = await db
@@ -995,11 +1003,13 @@ mobileRoutes.get(
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && auth.orgId) {
-      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
-      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+      if (perms.allowedSiteIds.length === 0) {
         return c.json({ data: [], pagination: { page, limit, total: 0, nextCursor: null } });
       }
-      conditions.push(inArray(alerts.deviceId, allowedDeviceIds));
+      // Device alerts by in-scope device; site-owned topology alerts by their
+      // owning topology site (M3-D6), whatever the origin device's site.
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      conditions.push(alertSiteScopeByDeviceIds({ allowedSiteIds: perms.allowedSiteIds, allowedDeviceIds: allowedDeviceIds ?? [] }) as ReturnType<typeof eq>);
     }
 
     if (query.status) {
@@ -1436,7 +1446,7 @@ mobileRoutes.get(
     // Device Details v1 fields (#5140): batched once for this page, not
     // per-row — see loadDeviceDetailsV1Fields for why this can't fan out.
     const { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice } =
-      await loadDeviceDetailsV1Fields(items.map((d) => d.id));
+      await loadDeviceDetailsV1Fields(items.map((d) => d.id), perms?.allowedSiteIds);
 
     const data = items.map((d) => {
       const { lastSeenIp, ...rest } = d;
@@ -1685,20 +1695,11 @@ mobileRoutes.get(
     // Alert site-axis: use resolveSiteAllowedDeviceIds (mirrors /alerts/inbox).
     // Only restrict when we have an org context (partner/system spans multiple orgs).
     if (perms?.allowedSiteIds && auth.orgId) {
+      // (An empty site allowlist already returned above.) Device alerts by
+      // in-scope device; site-owned topology alerts by their OWNING topology
+      // site (M3-D6) — which can hold alerts even with no devices in it.
       const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
-      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
-        return c.json({
-          devices: {
-            total: Number(deviceStats[0]?.total ?? 0),
-            online: Number(deviceStats[0]?.online ?? 0),
-            offline: Number(deviceStats[0]?.offline ?? 0),
-            maintenance: Number(deviceStats[0]?.maintenance ?? 0),
-            decommissioned: Number(deviceStats[0]?.decommissioned ?? 0)
-          },
-          alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
-        });
-      }
-      alertConditions.push(inArray(alerts.deviceId, allowedDeviceIds));
+      alertConditions.push(alertSiteScopeByDeviceIds({ allowedSiteIds: perms.allowedSiteIds, allowedDeviceIds: allowedDeviceIds ?? [] }) as ReturnType<typeof eq>);
     }
     const alertWhere = alertConditions.length > 0 ? and(...alertConditions) : undefined;
 
@@ -1831,7 +1832,9 @@ mobileRoutes.get(
 
     const alertWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(alerts.orgId, orgCheck.orgIds),
-      allowedDeviceIds === null ? sql`true` : inArray(alerts.deviceId, allowedDeviceIds),
+      allowedDeviceIds === null
+        ? sql`true`
+        : alertSiteScopeByDeviceIds({ allowedSiteIds: perms?.allowedSiteIds, allowedDeviceIds }),
       gte(alerts.triggeredAt, thirtyDaysAgo),
       or(ilike(alerts.title, term), ilike(alerts.message, term))
     );
