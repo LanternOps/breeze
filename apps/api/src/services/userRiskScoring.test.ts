@@ -201,6 +201,64 @@ describe('getUserRiskDetail visibility short-circuit', () => {
     // history-length check: a 404 detail must not mutate org state.
     expect(dbMocks.insertMock).not.toHaveBeenCalled();
   });
+
+  it('reads a user risk detail with history but no policy row without inserting a default policy (#6755)', async () => {
+    // membership (visible)
+    dbMocks.selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              userId: '00000000-0000-4000-8000-000000000010',
+              name: 'Target',
+              email: 'target@example.test',
+              mfaEnabled: false,
+              lastLoginAt: null,
+            }]),
+          }),
+        }),
+      }),
+    });
+    // history (non-empty, so getOrCreateUserRiskPolicy IS reached)
+    dbMocks.selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { score: 42, trendDirection: 'stable', calculatedAt: new Date('2026-09-01T00:00:00Z'), factors: {} },
+            ]),
+          }),
+        }),
+      }),
+    });
+    // events (empty)
+    dbMocks.selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+    });
+    // policy lookup: no existing row.
+    dbMocks.selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    });
+
+    const result = await getUserRiskDetail(
+      '00000000-0000-4000-8000-000000000001',
+      '00000000-0000-4000-8000-000000000010',
+    );
+
+    expect(result).not.toBeNull();
+    // A GET must never insert a default org policy row.
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('user-risk site visibility predicates', () => {
