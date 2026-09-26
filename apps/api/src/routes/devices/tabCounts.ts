@@ -7,7 +7,7 @@ import {
   aiOperatorTasks,
   alerts,
   automationPolicyCompliance,
-  metricAnomalies,
+  metricAnomalyEpisodes,
   serviceProcessCheckResults,
   tickets,
 } from '../../db/schema';
@@ -23,7 +23,11 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
  * look", not "how many rows exist":
  *
  *   alerts        active + acknowledged (not resolved/suppressed/dismissed)
- *   anomalies     status = open
+ *   anomalies     open metric_anomaly_episodes, not raw metric_anomalies
+ *                 rows: one episode spans many rows, and rows never
+ *                 assembled into an episode would badge a tab whose panel
+ *                 (which reads episodes) is empty. Snoozed episodes are
+ *                 `dismissed`, so status = open excludes them.
  *   tickets       not resolved/closed (and not soft-deleted)
  *   operatorTasks live states (queued/running/waiting/paused)
  *   monitoring    latest result per (watchType, name) that is not `running`
@@ -76,8 +80,8 @@ tabCountsRoutes.get(
           ),
         ),
         countRows(
-          db.select({ count: countExpr }).from(metricAnomalies).where(
-            and(eq(metricAnomalies.deviceId, deviceId), eq(metricAnomalies.status, 'open')),
+          db.select({ count: countExpr }).from(metricAnomalyEpisodes).where(
+            and(eq(metricAnomalyEpisodes.deviceId, deviceId), eq(metricAnomalyEpisodes.status, 'open')),
           ),
         ),
         countRows(

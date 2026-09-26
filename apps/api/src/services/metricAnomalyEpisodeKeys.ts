@@ -87,3 +87,32 @@ export function episodeKeyFor(
     attributionDimension: entry?.dimension ?? null,
   };
 }
+
+/**
+ * Human label for a metric family, for server-rendered text (fleet finding
+ * titles). Mirrors FAMILY_LABELS in the web's anomalyEpisodeSentence.ts; an
+ * unknown family (see episodeKeyFor) falls back to its title-cased name.
+ */
+const METRIC_FAMILY_LABELS: Readonly<Record<string, string>> = {
+  cpu: 'CPU',
+  ram: 'RAM',
+  ram_used: 'RAM used',
+  disk: 'Disk',
+  disk_used: 'Disk used',
+  disk_read: 'Disk read',
+  disk_write: 'Disk write',
+  net_in: 'Network in',
+  net_out: 'Network out',
+  process_count: 'Process count',
+  process_cpu: 'Process CPU',
+  process_ram: 'Process RAM',
+  process_disk: 'Process disk I/O',
+  process_net: 'Process network I/O',
+  process_count_top: 'Top process count',
+};
+
+export function metricFamilyLabel(metricFamily: string): string {
+  if (Object.hasOwn(METRIC_FAMILY_LABELS, metricFamily)) return METRIC_FAMILY_LABELS[metricFamily]!;
+  const spaced = metricFamily.replace(/_/g, ' ');
+  return spaced.length === 0 ? spaced : spaced[0]!.toUpperCase() + spaced.slice(1);
+}

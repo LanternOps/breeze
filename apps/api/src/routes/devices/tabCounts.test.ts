@@ -23,6 +23,7 @@ vi.mock('../../db', () => ({ db: { select: selectMock, selectDistinctOn: selectD
 vi.mock('../../db/schema', () => ({
   alerts: { deviceId: 'alerts.deviceId', status: 'alerts.status' },
   metricAnomalies: { deviceId: 'metricAnomalies.deviceId', status: 'metricAnomalies.status' },
+  metricAnomalyEpisodes: { deviceId: 'metricAnomalyEpisodes.deviceId', status: 'metricAnomalyEpisodes.status' },
   tickets: { deviceId: 'tickets.deviceId', status: 'tickets.status', deletedAt: 'tickets.deletedAt' },
   aiOperatorTasks: { deviceId: 'aiOperatorTasks.deviceId', state: 'aiOperatorTasks.state' },
   AI_OPERATOR_TASK_LIVE_STATES: ['queued', 'running', 'waiting', 'paused'],
@@ -106,6 +107,29 @@ describe('GET /devices/:id/tab-counts', () => {
     });
     expect(selectMock).toHaveBeenCalledTimes(5);
     expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts OPEN anomaly episodes, not raw metric_anomalies rows (#6650)', async () => {
+    queueSelects([[{ count: '0' }], [{ count: '2' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }]], []);
+
+    const res = await app.request(`/devices/${device.id}/tab-counts`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.anomalies).toBe(2);
+
+    // Second db.select() is the anomalies count.
+    const anomalyChain = selectMock.mock.results[1]!.value;
+    const [from] = anomalyChain.from.mock.calls[0]!;
+    expect(from).toEqual({ deviceId: 'metricAnomalyEpisodes.deviceId', status: 'metricAnomalyEpisodes.status' });
+    const [where] = anomalyChain.where.mock.calls[0]!;
+    expect(where).toEqual({
+      type: 'and',
+      conditions: [
+        { type: 'eq', left: 'metricAnomalyEpisodes.deviceId', right: device.id },
+        // Snoozed episodes are status 'dismissed' (close_reason 'snoozed'), so
+        // status = 'open' alone excludes both snoozed and resolved episodes.
+        { type: 'eq', left: 'metricAnomalyEpisodes.status', right: 'open' },
+      ],
+    });
   });
 
   it('404s when the device is not visible to the caller', async () => {
