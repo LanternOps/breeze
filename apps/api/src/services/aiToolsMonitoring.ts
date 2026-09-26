@@ -203,7 +203,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'network checks: get check history and monitor definition ownership',
     definition: {
       name: 'manage_monitors',
-      description: 'Get a network check with recent results. Unconverted checks are retired through the conversion ledger; deletion is unavailable while history is retained. Creating and editing checks moved to manage_monitor_definitions (kind network_check).',
+      description: 'Actions: get, create, update, delete. Only get is supported, returning a network check and recent results; writes are retired. Author checks with manage_monitor_definitions (kind network_check). Retire unconverted checks through the conversion ledger to preserve history.',
       input_schema: {
         type: 'object' as const,
         properties: {
