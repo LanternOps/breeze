@@ -191,6 +191,10 @@ const createBreezeMcpServer = vi.hoisted(() =>
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // runLoop.ts's full-profile exposure (WQ3, #6755) derives from
+  // Object.keys(TOOL_TIERS); this suite never exercises a full-profile run,
+  // but the module-level computation still runs, so this must exist.
+  TOOL_TIERS: { query_devices: 1 },
   POST_TOOL_USE_TIMEOUT_MS: 10_000,
 }));
 

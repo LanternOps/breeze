@@ -25,6 +25,13 @@ import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
+import { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+
+// Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
+// working unchanged after the move to aiToolExposure.ts (W01 quorum
+// amendment WQ4, #6755): the two agent-denial registries now live in one
+// data-only file, enforced here.
+export { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS };
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -214,6 +221,60 @@ export const TIER1_ACTIONS: Record<string, string[]> = {
   manage_tags: ['list'],
 };
 
+/**
+ * Spec 2026-09-23 W01-D3: the explicit read allowlist for registry-tier-1
+ * multiplexers. A tier-1 tool with an `action`/discriminator enum resolves
+ * to tier 1 (read-only to headless agents, via `isReadOnlyResolution`) for
+ * ANY action not otherwise escalated — so an unclassified new enum member
+ * would silently default to "read" rather than failing closed. Every action
+ * of such a tool must appear here, in TIER2_ACTIONS, or in TIER3_ACTIONS
+ * (enforced by aiGuardrails.tier1WriteActions.contract.test.ts). Exported for
+ * contract tests only — see the note on TIER2_ACTIONS.
+ */
+export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
+  configuration_policy_compliance: ['summary', 'status'],
+  // disk_cleanup:preview reads the latest filesystem-cleanup snapshot and
+  // writes a device_filesystem_cleanup_runs bookkeeping row
+  // (aiToolsFilesystem.ts:391-410) — it does NOT dispatch a scan, and it
+  // changes no device state. Reclassifying it is W04's call (spec W01-D3).
+  disk_cleanup: ['preview'],
+  generate_report: ['list', 'data', 'history', 'download'],
+  get_dns_security: ['allowed', 'blocked', 'redirected'],
+  get_service_monitoring_status: ['status', 'summary', 'results', 'known_services'],
+  manage_alert_rules: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'],
+  manage_alerts: ['list', 'get'],
+  manage_automations: ['list', 'get', 'history'],
+  manage_backup_configs: ['list', 'get'],
+  manage_backup_profiles: ['list', 'get'],
+  manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
+  manage_deployments: ['list', 'get', 'device_status'],
+  manage_groups: ['list', 'get', 'preview', 'membership_log'],
+  manage_maintenance_windows: ['list', 'get', 'active_now'],
+  // create/update/delete are retired: they return guidance before any DB
+  // access and map to devices:read in TOOL_PERMISSIONS, so they classify as
+  // reads here.
+  manage_monitors: ['get', 'create', 'update', 'delete'],
+  manage_notification_channels: ['list'],
+  manage_patches: ['list', 'compliance', 'device_history'],
+  manage_peripheral_policies: ['list', 'get'],
+  // manage_processes:list dispatches a read-only device command (no state
+  // change) — same class as file_operations:list / manage_services:list.
+  manage_processes: ['list'],
+  manage_saved_filters: ['list', 'get'],
+  // manage_scheduled_tasks:list dispatches a read-only device command.
+  manage_scheduled_tasks: ['list'],
+  manage_service_monitors: ['list'],
+  manage_software_policies: ['list', 'get'],
+  manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
+  manage_tickets: ['list', 'get', 'list_work_types'],
+  manage_update_rings: ['list', 'get'],
+  query_agent_versions: ['list_versions', 'check_upgrades'],
+  query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
+  query_backups: ['list_configs', 'list_jobs', 'list_policies'],
+  query_custom_fields: ['list_definitions', 'get_device_values'],
+  system_cleanup: ['list', 'status'],
+};
+
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
@@ -248,10 +309,19 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // it is here so re-enabling the handler cannot silently reopen the hole.
   manage_patches: ['install', 'rollback', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
-  manage_automations: ['run'],
+  // create/update/delete added W01-D3 (#6755): handler-disabled today
+  // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
+  // as manage_patches.setup_auto_approval above — escalated so re-enabling
+  // the handler cannot silently reopen an unallowlisted agent write.
+  manage_automations: ['run', 'create', 'update', 'delete'],
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // create/update/delete added W01-D3 (#6755): handler-disabled today
+  // (aiToolsFleet.ts:2742, managed via configuration policies) — escalated so
+  // re-enabling the handler cannot silently reopen an unallowlisted agent
+  // write.
+  manage_maintenance_windows: ['create', 'update', 'delete'],
   // Policy prerequisite tools (#3552) — the standalone feature policies that
   // manage_configuration_policy links via featurePolicyId. These were Tier 2
   // (auto-execute + audit, no approval) while the configuration policy that
@@ -451,41 +521,9 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'request_elevation',
 ]);
 
-/**
- * Tools the `ai_agent` principal may NEVER call, whatever its allowlist says.
- *
- * A third unconditional denial class alongside BLOCKED_TOOLS (tier 4) and
- * `isSecretBearingTool` — and, like those, enforced in `checkAgentGuardrails`
- * ABOVE the allowlist and the multiplexed-action resolution, so the deny
- * cannot depend on a parseable `action` or on the snapshot omitting the name.
- *
- * `manage_ai_agents` (P2-5, #4192) grants an agent a pre-authorized action
- * key: an agent able to call it could grant ITSELF new unattended authority,
- * which is the one escalation no approval scope can contain (the grant
- * outlives the run). Membership here is a registry, not a hard-coded string,
- * so aiGuardrails.agentPrincipal.contract.test.ts can treat the class as
- * unconditionally denied instead of duplicating the literal.
- */
-export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
-  'manage_ai_agents',
-  // Execution plane (spec §5.5). FULLY DEREGISTERED as of #6086 — chat-to-agent
-  // delegation is withdrawn until caller authorization can be preserved for the
-  // length of a run, so no tier, schema, handler or MCP declaration remains.
-  // Kept here anyway, and pinned by workspaceLaunchTool.registration.test.ts:
-  // an agent that could launch analysis runs could launch runs that launch
-  // runs, so if the name is ever re-wired this deny (unconditional, above the
-  // allowlist in `checkAgentGuardrails`) must already be in place rather than
-  // being something the re-wiring has to remember. A HUMAN asks for analysis.
-  //
-  // This entry is ALSO load-bearing for the workspace_stage/run/collect/cancel
-  // permission mapping (2026-09-17 ROLE audit §2.7): those four are flat
-  // `ai_agents:read`, which is only defensible while no chat caller can obtain
-  // a run-bearing principal. Re-wiring launch without first raising them to an
-  // execute-class permission hands arbitrary code execution to every
-  // `ai_agents:read` holder. See the LANDMINE note at their TOOL_PERMISSIONS
-  // entries, and aiGuardrails.workspaceToolSurface.contract.test.ts.
-  'workspace_launch_analysis',
-]);
+// AGENT_HUMAN_ONLY_TOOLS and AGENT_DENIED_READ_TOOLS moved to
+// aiToolExposure.ts (W01 quorum amendment WQ4, #6755) and are re-exported
+// near the top of this file so every existing importer keeps working.
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
@@ -516,10 +554,17 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
-  manage_automations: ['run'],
+  // create/update/delete added W01-D3 (#6755): handler-disabled today, same
+  // supervised (not four_eyes) class as the sibling fleet tools above —
+  // nothing here is externally binding or financial.
+  manage_automations: ['run', 'create', 'update', 'delete'],
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // create/update/delete added W01-D3 (#6755): handler-disabled today,
+  // supervised (not four_eyes) — nothing here is externally binding or
+  // financial.
+  manage_maintenance_windows: ['create', 'update', 'delete'],
   // #3552 policy-prerequisite escalations. `supervised`, matching the
   // configuration policy they link into (manage_configuration_policy
   // create/update/delete above), the Tier-3 singular siblings in
@@ -2165,6 +2210,40 @@ function siteScopeDenial(
 }
 
 /**
+ * A single predicate for "is this NAME (not this call, not this policy) ever
+ * reachable by a headless `ai_agent` principal" (W01 quorum amendment WQ4,
+ * #6755). Both `checkAgentGuardrails` (below) and
+ * `agentToolCatalog.ts`'s `listAgentReachableTools` used to hand-duplicate
+ * this same four-way check; this is the one place it is written now.
+ * Deliberately excludes session-only (M365/Google) exposure: that is a
+ * reachability gate on missing ActiveSession state, not an identity-based
+ * deny, and stays local to `listAgentReachableTools`.
+ */
+export function isNeverAgentTool(toolName: string): boolean {
+  return BLOCKED_TOOLS.has(toolName)
+    || isSecretBearingTool(toolName)
+    || AGENT_HUMAN_ONLY_TOOLS.has(toolName)
+    || AGENT_DENIED_READ_TOOLS.has(toolName);
+}
+
+/** Reason text for `isNeverAgentTool`'s deny — kept out of the predicate so the predicate stays a pure boolean the two call sites can share. */
+function neverAgentToolDenyReason(toolName: string): string {
+  if (isSecretBearingTool(toolName)) {
+    return `Tool "${toolName}" is secret-bearing and never available to agents`;
+  }
+  if (AGENT_HUMAN_ONLY_TOOLS.has(toolName)) {
+    return `Tool "${toolName}" is human-only and is never available to agents`;
+  }
+  if (AGENT_DENIED_READ_TOOLS.has(toolName)) {
+    return `Tool "${toolName}" reads data never available to agents`;
+  }
+  // BLOCKED_TOOLS — already denied above via base.tier === 4 (checkGuardrails
+  // sets tier 4 exactly and only for BLOCKED_TOOLS); kept so isNeverAgentTool
+  // stays total.
+  return `Tool "${toolName}" is not available to agents`;
+}
+
+/**
  * Structural guardrails for the ai_agent principal. This path intentionally
  * never consults user RBAC: an agent has no user role to authorize against.
  */
@@ -2198,14 +2277,16 @@ export function checkAgentGuardrails(
   if (!isAgentGuardrailPolicy(policy)) {
     return deny('AI agent run policy snapshot is missing or invalid');
   }
-  if (!base.allowed || base.tier === 4 || BLOCKED_TOOLS.has(toolName)) {
+  if (!base.allowed || base.tier === 4) {
     return deny(base.reason ?? `Tool "${toolName}" is not available to agents`);
   }
-  if (isSecretBearingTool(toolName)) {
-    return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
-  }
-  if (AGENT_HUMAN_ONLY_TOOLS.has(toolName)) {
-    return deny(`Tool "${toolName}" is human-only and is never available to agents`);
+  // Unconditional deny, above the allowlist and the multiplexed-action
+  // resolution below: BLOCKED_TOOLS, secret-bearing, AGENT_HUMAN_ONLY_TOOLS
+  // and AGENT_DENIED_READ_TOOLS (W01-D5 / WQ1 / WQ2) all sit here so none of
+  // them can depend on a parseable `action` or on the snapshot omitting the
+  // name.
+  if (isNeverAgentTool(toolName)) {
+    return deny(neverAgentToolDenyReason(toolName));
   }
 
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
