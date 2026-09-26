@@ -223,7 +223,7 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
     });
 
     const migration = readFileSync(
-      resolve(__dirname, '../../migrations/2026-10-31-120000-backup-jobs-last-keepalive-at.sql'),
+      resolve(__dirname, '../../migrations/2026-11-02-100400-backup-jobs-last-keepalive-at.sql'),
       'utf8',
     );
     // Replayed as the owner role, the way autoMigrate runs it.
