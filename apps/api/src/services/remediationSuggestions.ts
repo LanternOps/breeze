@@ -1,18 +1,17 @@
-import { and, desc, eq, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
   alertCorrelationGroups,
   alerts,
-  devices,
   metricAnomalies,
-  playbookDefinitions,
   remediationSuggestions,
-  scripts,
-  scriptTemplates,
 } from '../db/schema';
+import {
+  listCatalogPlaybooks, listCatalogScripts, listCatalogTemplates, NON_REMEDIATION_SYSTEM_SCRIPT_NAMES,
+  resolveDeviceOs, resolveOrgPartnerId, TEMPLATE_LANGUAGES_BY_OS,
+} from './fixMemory/catalog';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
-import { SYSTEM_LIBRARY_SCRIPTS } from './systemScriptLibrary';
 
 export const REMEDIATION_SUGGESTION_VERSION = 'remediation-suggestions-v1';
 
@@ -107,21 +106,6 @@ function termsForSource(ctx: SourceContext): string[] {
 
   return [...terms];
 }
-
-type DeviceOs = typeof devices.$inferSelect['osType'];
-
-// Script languages a device OS can run. Templates carry a language but no OS
-// list; python runs everywhere, and a null language is left unfiltered.
-const TEMPLATE_LANGUAGES_BY_OS: Record<DeviceOs, ReadonlySet<string>> = {
-  windows: new Set(['powershell', 'cmd', 'python']),
-  linux: new Set(['bash', 'python']),
-  macos: new Set(['bash', 'python']),
-};
-
-// The system script library holds agent-lifecycle tooling (e.g. the edition
-// migration), not remediations — it needs operator-supplied inputs and must
-// never be offered as a fix (#7118).
-const NON_REMEDIATION_SYSTEM_SCRIPT_NAMES = SYSTEM_LIBRARY_SCRIPTS.map((def) => def.name);
 
 function matchesTerm(searchable: string, term: string): boolean {
   // Word-start match: "ram" must not hit "programdata", "update" still hits "updates".
@@ -240,50 +224,16 @@ async function resolveSourceContext(input: GenerateRemediationSuggestionsInput):
   };
 }
 
-async function resolveDeviceOs(deviceId: string | null): Promise<DeviceOs | null> {
-  if (!deviceId) return null;
-  const [row] = await db.select({ osType: devices.osType }).from(devices).where(eq(devices.id, deviceId)).limit(1);
-  return row?.osType ?? null;
-}
-
 async function listCandidates(ctx: SourceContext, limit: number): Promise<Candidate[]> {
   const terms = termsForSource(ctx);
   // Without a single target device (e.g. a correlation group) there is no OS to
   // filter on; every per-device execution path re-checks OS at dispatch.
   const deviceOs = await resolveDeviceOs(ctx.deviceId);
-  const scriptConditions: SQL[] = [isNull(scripts.deletedAt)];
-  scriptConditions.push(or(eq(scripts.isSystem, true), eq(scripts.orgId, ctx.orgId))!);
-  scriptConditions.push(or(eq(scripts.isSystem, false), notInArray(scripts.name, NON_REMEDIATION_SYSTEM_SCRIPT_NAMES))!);
-  if (deviceOs) scriptConditions.push(sql`${scripts.osTypes} @> ARRAY[${deviceOs}]::text[]`);
-
+  const catalogCtx = { orgId: ctx.orgId, partnerId: await resolveOrgPartnerId(ctx.orgId), deviceOs };
   const [scriptRows, templateRows, playbookRows] = await Promise.all([
-    db.select({
-      id: scripts.id,
-      name: scripts.name,
-      description: scripts.description,
-      category: scripts.category,
-      runAs: scripts.runAs,
-      osTypes: scripts.osTypes,
-      isSystem: scripts.isSystem,
-    }).from(scripts).where(and(...scriptConditions)).orderBy(desc(scripts.updatedAt)).limit(100),
-    db.select({
-      id: scriptTemplates.id,
-      name: scriptTemplates.name,
-      description: scriptTemplates.description,
-      category: scriptTemplates.category,
-      rating: scriptTemplates.rating,
-      language: scriptTemplates.language,
-    }).from(scriptTemplates).orderBy(desc(scriptTemplates.downloads)).limit(100),
-    db.select({
-      id: playbookDefinitions.id,
-      name: playbookDefinitions.name,
-      description: playbookDefinitions.description,
-      category: playbookDefinitions.category,
-      isBuiltIn: playbookDefinitions.isBuiltIn,
-    }).from(playbookDefinitions)
-      .where(and(eq(playbookDefinitions.isActive, true), or(eq(playbookDefinitions.isBuiltIn, true), eq(playbookDefinitions.orgId, ctx.orgId))!))
-      .orderBy(playbookDefinitions.category, playbookDefinitions.name)
-      .limit(100),
+    listCatalogScripts(catalogCtx),
+    listCatalogTemplates(catalogCtx),
+    listCatalogPlaybooks(catalogCtx),
   ]);
 
   const candidates: Candidate[] = [];

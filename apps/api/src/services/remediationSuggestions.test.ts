@@ -14,6 +14,7 @@ const h = vi.hoisted(() => {
       alerts: tbl('alerts'),
       devices: tbl('devices', { id: 'd', osType: 'd' }),
       metricAnomalies: tbl('metricAnomalies'),
+      organizations: tbl('organizations', { id: 'o', partnerId: 'o' }),
       playbookDefinitions: tbl('playbookDefinitions', { id: 'p', name: 'p', description: 'p', category: 'p', isBuiltIn: 'p', isActive: 'p', orgId: 'p' }),
       remediationSuggestions: tbl('remediationSuggestions', { orgId: 'r', sourceType: 'r', sourceId: 'r', targetType: 'r', scriptId: 'r', scriptTemplateId: 'r', playbookId: 'r' }),
       scripts: tbl('scripts', { id: 's', name: 's', description: 's', category: 's', runAs: 's', deletedAt: 's', isSystem: 's', orgId: 's', updatedAt: 's', osTypes: 's' }),
