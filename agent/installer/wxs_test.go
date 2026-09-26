@@ -97,3 +97,79 @@ func TestAppSearchRunsBeforeLaunchConditionsInBothSequences(t *testing.T) {
 		}
 	}
 }
+
+// customConditions maps each <Custom Action="..."> in InstallExecuteSequence
+// to its Condition attribute ("" when unconditioned).
+func customConditions(t *testing.T, wxs string) map[string]string {
+	t.Helper()
+	tagRe := regexp.MustCompile(`<Custom\s+Action="([^"]+)"[^>]*/>`)
+	condRe := regexp.MustCompile(`\sCondition="([^"]*)"`)
+	out := map[string]string{}
+	for _, m := range tagRe.FindAllStringSubmatch(wxs, -1) {
+		cond := ""
+		if cm := condRe.FindStringSubmatch(m[0]); cm != nil {
+			cond = cm[1]
+		}
+		out[m[1]] = cond
+	}
+	return out
+}
+
+// #4127: re-running the SAME MSI file (same ProductCode) enters Windows
+// Installer maintenance mode, where Installed is true. A `NOT Installed` gate on
+// the enrollment CAs made that retry a silent no-op on a box whose agent never
+// enrolled. The agent itself is idempotent (both `enroll` and `bootstrap` exit 0
+// without contacting the server when agent_id is already set), so the CAs must
+// run on every non-uninstall path.
+func TestEnrollmentActionsRunInMaintenanceMode(t *testing.T) {
+	conds := customConditions(t, readWxs(t))
+	for _, ca := range []string{"EnrollAgent", "BootstrapEnroll"} {
+		c, ok := conds[ca]
+		if !ok {
+			t.Fatalf("no <Custom Action=%q> scheduled", ca)
+		}
+		if strings.Contains(c, "NOT Installed") {
+			t.Errorf("%s condition %q skips maintenance-mode reruns (same-file retry can never enroll)", ca, c)
+		}
+		if !strings.Contains(c, "NOT REMOVE") {
+			t.Errorf("%s condition %q must exclude uninstall (NOT REMOVE)", ca, c)
+		}
+	}
+}
+
+// KillBreezeProcesses stops both services on every non-uninstall run, but in
+// maintenance mode no component changes state, so ServiceControl never starts
+// them again. Without a restart a maintenance rerun (including one that just
+// enrolled the agent) leaves the device offline until reboot.
+func TestMaintenanceRunRestartsServices(t *testing.T) {
+	conds := customConditions(t, readWxs(t))
+	c, ok := conds["RecoverBreezeAfterUpgrade"]
+	if !ok {
+		t.Fatal("no <Custom Action=\"RecoverBreezeAfterUpgrade\"> scheduled")
+	}
+	if !strings.Contains(c, "WIX_UPGRADE_DETECTED") || !strings.Contains(c, "Installed AND NOT REMOVE") {
+		t.Errorf("RecoverBreezeAfterUpgrade condition %q must cover both upgrades and maintenance runs", c)
+	}
+}
+
+// The "already installed" blocks are the dead end an operator hits on retry;
+// the messages must say what to do next, not just what is wrong.
+func TestAlreadyInstalledMessagesGiveNextStep(t *testing.T) {
+	wxs := readWxs(t)
+	dm := regexp.MustCompile(`DowngradeErrorMessage="([^"]*)"`).FindStringSubmatch(wxs)
+	if dm == nil {
+		t.Fatal("no DowngradeErrorMessage")
+	}
+	em := regexp.MustCompile(`<Launch\s+Condition="NOT OTHEREDITIONFOUND"\s+Message="([^"]*)"`).FindStringSubmatch(wxs)
+	if em == nil {
+		t.Fatal("no cross-edition launch condition")
+	}
+	for name, msg := range map[string]string{"downgrade": dm[1], "cross-edition": em[1]} {
+		if !strings.Contains(msg, "Uninstall") || !strings.Contains(msg, "installer") {
+			t.Errorf("%s message %q must tell the operator to uninstall first or get the right installer", name, msg)
+		}
+	}
+	if !strings.Contains(dm[1], "current installer") {
+		t.Errorf("downgrade message %q must point at the current installer", dm[1])
+	}
+}
