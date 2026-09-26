@@ -144,14 +144,16 @@ describe('#4223 — last install failure surfaces on patch list + device patches
   it('reports a battery-preflight failure with its reason on the org patch list', async () => {
     const deviceId = await seedDevice(orgId, siteId, 'laptop-on-battery');
     const patchId = await seedPatch();
+    const failedAt = new Date('2026-08-29T18:14:10.000Z');
     await seedDevicePatch(orgId, deviceId, patchId, 'pending');
-    await seedResult({ orgId, deviceId, patchId, status: 'failed', errorMessage: BATTERY_ERROR, createdAt: new Date() });
+    await seedResult({ orgId, deviceId, patchId, status: 'failed', errorMessage: BATTERY_ERROR, createdAt: failedAt });
 
     const row = await listRow(patchId);
     expect(row.installFailure).not.toBeNull();
     expect(row.installFailure?.deviceCount).toBe(1);
     expect(row.installFailure?.error).toBe(BATTERY_ERROR);
-    expect(typeof row.installFailure?.failedAt).toBe('string');
+    // Round-trips exactly (UTC), whatever the session TimeZone is.
+    expect(row.installFailure?.failedAt).toBe(failedAt.toISOString());
   });
 
   it('counts failing devices and reports the most recent reason', async () => {

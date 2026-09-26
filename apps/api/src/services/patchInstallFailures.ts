@@ -82,7 +82,10 @@ export async function loadPatchInstallFailures(
       patchId: latest.patchId,
       deviceCount: sql<number>`count(*)::int`,
       error: sql<string | null>`(array_agg(${latest.errorMessage} ORDER BY ${latest.attemptedAt} DESC))[1]`,
-      failedAt: sql<string>`max(${latest.attemptedAt})::timestamptz::text`,
+      // Map through the column so the naive `timestamp` is read as UTC by
+      // Drizzle, independent of the session TimeZone (a ::timestamptz cast
+      // would apply whatever TimeZone the pooled connection carries).
+      failedAt: sql<Date>`max(${latest.attemptedAt})`.mapWith(patchJobResults.createdAt),
     })
     .from(latest)
     .where(eq(latest.status, 'failed'))
@@ -90,11 +93,10 @@ export async function loadPatchInstallFailures(
 
   for (const row of rows) {
     if (!row.patchId) continue;
-    const failedAt = new Date(row.failedAt);
     result.set(row.patchId, {
       deviceCount: Number(row.deviceCount),
       error: row.error,
-      failedAt: Number.isNaN(failedAt.getTime()) ? row.failedAt : failedAt.toISOString(),
+      failedAt: row.failedAt.toISOString(),
     });
   }
   return result;
