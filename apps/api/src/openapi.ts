@@ -1968,6 +1968,56 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/users/{id}/org-access': {
+      post: {
+        operationId: 'updateUserOrgAccess',
+        tags: ['Users'],
+        summary: 'Change organization access',
+        description: 'Replace a partner user\'s organization access (all, selected organizations, or none). Partner scope only; requires users:invite, the same permission as the invite that first sets it.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  orgAccess: { type: 'string', enum: ['all', 'selected', 'none'] },
+                  orgIds: {
+                    type: 'array',
+                    items: { type: 'string', format: 'uuid' },
+                    description: 'Required (non-empty) when orgAccess is selected; rejected otherwise'
+                  }
+                },
+                required: ['orgAccess'],
+                additionalProperties: false
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Organization access updated (changed=false when the request matched the current access)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    changed: { type: 'boolean' },
+                    orgAccess: { type: 'string', enum: ['all', 'selected', 'none'] },
+                    orgIds: { type: 'array', items: { type: 'string', format: 'uuid' }, nullable: true }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      }
+    },
 
     // ============================================
     // ORGANIZATION ENDPOINTS

@@ -748,6 +748,7 @@ export default function DevicesPage() {
           updateAttemptLastAt: (d.updateAttemptLastAt ?? null) as string | null,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           helperVersion: (d.helperVersion ?? null) as string | null,
+          helperInstallIssue: (d.helperInstallIssue ?? null) as string | null,
           agentServerUrl: (d.agentServerUrl ?? null) as string | null,
           // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
           // wire; anything else degrades to null so a malformed value renders

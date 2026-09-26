@@ -9,7 +9,7 @@ import {
 } from '../../../db/schema/configurationPolicies';
 import { organizations } from '../../../db/schema/orgs';
 import { normalizeAutomationTrigger } from '../../automationRuntime';
-import { monitorConversions, partners } from '../../../db/schema';
+import { monitorConversions, networkMonitors, partners } from '../../../db/schema';
 import type { AuthContext } from '../../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import type { ConversionSourceTable, PendingConversionCounts } from './types';
@@ -108,7 +108,7 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
 export async function countPendingConversions(
   scope: { orgId: string | null; partnerId: string | null; includePartnerWide: boolean },
   executor: DbExecutor = db,
-): Promise<PendingConversionCounts & { standaloneRules: number; pendingPolicies: Array<{ id: string; name: string }> }> {
+): Promise<PendingConversionCounts & { networkChecks: number; standaloneRules: number; pendingPolicies: Array<{ id: string; name: string }> }> {
   const ownership = (table: typeof configurationPolicies | typeof alertRules) => {
     const orgCondition = scope.orgId
       ? eq(table.orgId, scope.orgId)
@@ -140,6 +140,13 @@ export async function countPendingConversions(
     .groupBy(configurationPolicies.id, configurationPolicies.name);
   const [standalone] = await executor.select({ count: sql<number>`count(*)::int` }).from(alertRules)
     .where(and(ownership(alertRules), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt)));
+  const networkOwner = scope.orgId
+    ? eq(networkMonitors.orgId, scope.orgId)
+    : scope.partnerId
+      ? inArray(networkMonitors.orgId, sql`(select ${organizations.id} from ${organizations} where ${organizations.partnerId} = ${scope.partnerId})`)
+      : sql`false`;
+  const [network] = await executor.select({ count: sql<number>`count(*)::int` }).from(networkMonitors)
+    .where(and(networkOwner, isNull(networkMonitors.managedByMonitorId), isNull(networkMonitors.retiredAt)));
   const counts = [...ruleCounts, ...watchCounts, ...automationCounts];
   // The list comes from the same rows as the count, so a surface that shows
   // both (banner + pending-policies list) can never disagree.
@@ -151,6 +158,7 @@ export async function countPendingConversions(
     pendingPolicies,
     rows: counts.reduce((sum, row) => sum + row.count, 0),
     standaloneRules: standalone?.count ?? 0,
+    networkChecks: Number(network?.count ?? 0),
   };
 }
 

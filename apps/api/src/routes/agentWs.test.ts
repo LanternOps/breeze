@@ -2761,7 +2761,7 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     vi.resetAllMocks();
   });
 
-  it('started-ack result bumps lastProgressAt, refreshes the dispatch TTL, and does NOT consume the expectation (job stays in-flight)', async () => {
+  it('started-ack result bumps lastKeepaliveAt, refreshes the dispatch TTL, and does NOT consume the expectation (job stays in-flight)', async () => {
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // device_commands: no row → orphaned path
@@ -2785,7 +2785,8 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     // post-send write has not landed yet.
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
-    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(setArg).toHaveProperty('lastKeepaliveAt');
+    expect(setArg).not.toHaveProperty('lastProgressAt');
     expect(setArg.status).toBe('running');
 
     expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
@@ -2814,12 +2815,13 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       })
     } as any, ws as any);
 
-    // A queued admission is liveness only: it bumps lastProgressAt and, when
+    // A queued admission is liveness only: it bumps lastKeepaliveAt and, when
     // no lifecycle signal has landed yet, demotes the worker's dispatch-time
     // running marker back to pending (guarded in SQL, see applyBackupStartedAck).
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
-    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(setArg).toHaveProperty('lastKeepaliveAt');
+    expect(setArg).not.toHaveProperty('lastProgressAt');
     expect(JSON.stringify(setArg.status)).toContain("'pending'::backup_status");
 
     expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);

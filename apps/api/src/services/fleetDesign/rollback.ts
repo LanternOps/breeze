@@ -14,6 +14,7 @@ import type { FleetDesignRollbackRefusal, FleetDesignRollbackResult } from '@bre
 import { db } from '../../db';
 import {
   configPolicyAssignments,
+  configPolicyFeatureLinks,
   configurationPolicies,
   deviceFunctionAssessments,
   deviceGroupMemberships,
@@ -25,12 +26,12 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requestLikeFromSnapshot, writeAuditEvent, type RequestLike } from '../auditEvents';
-import { listFeatureLinks, policyAccessCondition, updateConfigPolicy, updateFeatureLink } from '../configurationPolicy';
+import { listFeatureLinks, policyAccessCondition, updateConfigPolicy } from '../configurationPolicy';
 import { deleteDeviceGroup } from '../deviceGroupDelete';
 import { restoreDeviceFunction } from '../deviceFunction';
 import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
-import { canonical, retireRewrite, snapshotLinks } from './apply';
+import { canonical, snapshotLinks } from './apply';
 import { snapshotFleetMonitors } from './monitorAttachments';
 import { loadLedger, lockReportRun, markRolledBack, type FleetDesignLedgerRow } from './ledger';
 import { FleetDesignApplyError } from './preview';
@@ -187,20 +188,16 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
     .where(and(...conditions))
     .limit(1);
   if (!policy) throw new RollbackRefused('policy_missing');
-  if (policy.status === 'archived') throw new RollbackRefused('modified_since_apply');
 
-  // Both sides through canonical(): `snapshotLinks` only sorts keys WITHIN
-  // `monitoring` / `alertRule`, not the outer `{monitoring, alertRule}`
-  // object — and a jsonb round trip does not preserve JS insertion order, so
-  // `expected` (read back from `created_refs`) can carry its two top-level
-  // keys in a different order than a freshly computed `current` even when
-  // every value is byte-identical. Comparing the RAW `current` against
-  // `canonical(expected)` made every legitimate rollback fail closed as
-  // "modified_since_apply" (caught by fleetDesignApply.integration.test.ts
-  // case 6 against real Postgres — a mocked-db unit test can't reproduce a
-  // jsonb round trip).
-  const current = canonical(snapshotLinks(await listFeatureLinks(policyId)));
+  // Preserve the historical snapshot shape, including null legacy keys, and
+  // canonicalize both sides because jsonb does not preserve key order.
   const expected = row.createdRefs?.linksSnapshot;
+  if (row.createdRefs?.monitoringLinkId || row.createdRefs?.alertRuleLinkId
+    || (expected && (expected.monitoring != null || expected.alertRule != null))) {
+    throw new RollbackRefused('legacy_source_retired');
+  }
+  if (policy.status === 'archived') throw new RollbackRefused('modified_since_apply');
+  const current = canonical(snapshotLinks(await listFeatureLinks(policyId)));
   if (!expected || JSON.stringify(current) !== JSON.stringify(canonical(expected))) throw new RollbackRefused('modified_since_apply');
   // Rollback archives and unassigns the policy but never deletes the monitor
   // definitions it created (like scripts, they stay for history and reuse);
@@ -227,14 +224,12 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 ← retired: restore the before-image when the link still equals the
-// post-apply value (recomputed from the before-image + the same rewrite)
+// Step 2 ← retired: legacy link targets cannot restore their before-images
 // ---------------------------------------------------------------------------
 async function rollbackRetired(ctx: RollbackCtx, row: FleetDesignLedgerRow): Promise<void> {
   const policyId = row.createdRefs?.policyId;
   const linkId = row.createdRefs?.linkId;
-  const before = row.beforeImage?.inlineSettings;
-  if (!policyId || !linkId || before === undefined) throw new RollbackRefused('modified_since_apply');
+  if (!policyId || !linkId) throw new RollbackRefused('modified_since_apply');
 
   const conditions = [eq(configurationPolicies.id, policyId)];
   const access = policyAccessCondition(ctx.auth);
@@ -247,33 +242,19 @@ async function rollbackRetired(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pro
   if (!policy) throw new RollbackRefused('policy_missing');
   if (policy.orgId === null && !canManagePartnerWidePolicies(ctx.auth)) throw new RollbackRefused('partner_wide_write_denied');
 
-  const links = await listFeatureLinks(policyId);
-  const link = links.find((l) => l.id === linkId);
+  // Retired links are intentionally absent from listFeatureLinks. Inspect only
+  // their identity under the already-authorized policy, never their child data.
+  const [link] = await db.select({ featureType: configPolicyFeatureLinks.featureType })
+    .from(configPolicyFeatureLinks)
+    .where(and(eq(configPolicyFeatureLinks.id, linkId), eq(configPolicyFeatureLinks.configPolicyId, policyId)))
+    .limit(1);
   if (!link) throw new RollbackRefused('policy_missing');
-
-  // The design item is not stored on the ledger row; recompute the expected
-  // post-apply state by finding which single item differs between the
-  // before-image and the current settings.
-  const kind = link.featureType === 'monitoring' ? 'watch' : 'rule';
-  const expected = expectedAfterRetire(kind, before, link.inlineSettings);
-  if (!expected || JSON.stringify(canonical(link.inlineSettings)) !== JSON.stringify(canonical(expected))) {
-    throw new RollbackRefused('modified_since_apply');
+  if (link.featureType === 'monitoring' || link.featureType === 'alert_rule') {
+    throw new RollbackRefused('legacy_source_retired');
   }
-  const restored = await updateFeatureLink(linkId, { inlineSettings: before }, policyId);
-  if (!restored) throw new RollbackRefused('policy_missing');
-}
-
-/**
- * Find the ONE item whose retirement turns `before` into `current`; return the
- * rewritten settings if exactly one such item exists (so the comparison in the
- * caller is exact), else null.
- */
-function expectedAfterRetire(kind: 'watch' | 'rule', before: unknown, current: unknown): unknown | null {
-  const b = (before ?? {}) as { watches?: Array<{ name: string }>; items?: Array<{ name: string }> };
-  const names = (kind === 'watch' ? b.watches : b.items)?.map((i) => i.name) ?? [];
-  const currentJson = JSON.stringify(canonical(current));
-  const matches = names.filter((name) => JSON.stringify(canonical(retireRewrite(kind, name, before))) === currentJson);
-  return matches.length === 1 ? retireRewrite(kind, matches[0]!, before) : null;
+  // Historical retired-item ledgers only support the retired link formats.
+  // A link now pointing elsewhere cannot safely restore that before-image.
+  throw new RollbackRefused('modified_since_apply');
 }
 
 // ---------------------------------------------------------------------------

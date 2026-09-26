@@ -10,6 +10,7 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
+import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
 
 export const patchesRoutes = new Hono();
 
@@ -383,6 +384,14 @@ patchesRoutes.get(
       ? await getApprovedPatchIdsForPartner(partnerId, patchIds)
       : new Set<string>();
 
+    // #4223: surface the latest failed install attempt (and its reason, e.g.
+    // the agent's battery preflight) on each outstanding patch, so the tab no
+    // longer reads "Pending approval" for a patch whose install actually failed.
+    const installFailures = await loadPatchInstallFailures(
+      devicePatchList.filter((p) => p.status === 'pending').map((p) => p.patchId),
+      { deviceId }
+    );
+
     // Separate actionable pending updates from stale missing records.
     const pending = devicePatchList
       .filter(p => p.status === 'pending')
@@ -400,7 +409,8 @@ patchesRoutes.get(
         source: p.source,
         requiresReboot: p.requiresReboot,
         scope: p.scope,
-        approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
+        approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending',
+        installFailure: installFailures.get(p.patchId) ?? null
       }));
 
     const missing = devicePatchList

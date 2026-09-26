@@ -25,6 +25,7 @@ import {
   getProviderAttentionItems,
   getProviderCoverageForDevices,
 } from '../../services/backupHealthReadModel';
+import { getStorageByProvider } from '../../services/backupStorageByProvider';
 
 export const dashboardRoutes = new Hono();
 
@@ -333,7 +334,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     : undefined;
 
   // Run aggregation queries in parallel
-  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attention] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attention, storageProviders] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -399,6 +400,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .orderBy(...backupJobHistoryOrderBy)
         .limit(5),
       resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices),
+      getStorageByProvider(orgId, allowedDeviceIds),
     ]);
 
   const assignedDevices = allowedDeviceIds
@@ -485,6 +487,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         protectedDevices: protectedDevices.size,
       },
       latestJobs,
+      // #2562: the Overview "Storage by Provider" panel read this key from the
+      // start, but it was never sent, so the panel always showed its
+      // "no storage providers configured" empty state.
+      storageProviders,
       // NEW (D-13): the web has rendered this panel from an absent key since it
       // was written. Provider-covered devices are excluded — dispatching a
       // first-party job to a machine Cove already backed up is the false

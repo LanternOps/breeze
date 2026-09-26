@@ -61,7 +61,6 @@ vi.mock('../services/mlFeedbackEmitters', () => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: vi.fn().mockResolvedValue(undefined),
-  markConfigPolicyRuleCooldown: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -868,29 +867,13 @@ describe('alert routes', () => {
     });
   });
 
-  describe('alert rule notification ownership validation', () => {
-    it('rejects creating a rule with notification channels outside the org', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: '44444444-4444-4444-4444-444444444444',
-                orgId: '11111111-1111-1111-1111-111111111111',
-                name: 'CPU Template'
-              }])
-            })
-          })
-        } as any)
-        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([])
-          })
-        } as any);
-
-      const res = await app.request('/alerts/rules', {
-        method: 'POST',
+  describe('retired alert rule writes', () => {
+    it.each([
+      ['POST', '/alerts/rules'],
+      ['PUT', '/alerts/rules/55555555-5555-5555-5555-555555555555'],
+    ])('returns 410 for %s even with cross-org notification bindings', async (method, path) => {
+      const res = await app.request(path, {
+        method,
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
           templateId: '44444444-4444-4444-4444-444444444444',
@@ -898,46 +881,14 @@ describe('alert routes', () => {
         })
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(410);
       const body = await res.json();
-      expect(body.error).toContain('Notification channels must belong to the same organization');
-    });
-
-    it('rejects updating a rule with notification channels outside the org', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: '55555555-5555-5555-5555-555555555555',
-                orgId: '11111111-1111-1111-1111-111111111111',
-                templateId: '44444444-4444-4444-4444-444444444444',
-                name: 'CPU Rule',
-                targetType: 'all',
-                targetId: '11111111-1111-1111-1111-111111111111',
-                overrideSettings: {}
-              }])
-            })
-          })
-        } as any)
-        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([])
-          })
-        } as any);
-
-      const res = await app.request('/alerts/rules/55555555-5555-5555-5555-555555555555', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({
-          notificationChannelIds: ['33333333-3333-3333-3333-333333333333']
-        })
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toContain('Notification channels must belong to the same organization');
+      expect(body.error).toContain('retired');
+      expect(body.message).toContain('/api/v1/monitor-definitions');
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
     });
   });
 

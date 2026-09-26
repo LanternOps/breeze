@@ -32,7 +32,7 @@ func uninstallPackage() error {
 
 // installPackage copies the AppImage to the target path and makes it executable.
 // AppImages are self-contained and directly runnable.
-func installPackage(appImagePath, binaryPath string) error {
+func installPackage(appImagePath, binaryPath, _ string) error {
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0755); err != nil {
 		return fmt.Errorf("create binary dir: %w", err)
 	}

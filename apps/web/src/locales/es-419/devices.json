@@ -99,6 +99,9 @@
     "generatingToken": "Generando token...",
     "multiFactorAuthenticationIsRequiredTo3": "Se requiere autenticación multifactor para generar tokens de instalación.",
     "generateNewToken": "Generar nuevo token",
+    "generateToken": "Generar token",
+    "cliTokenNotGenerated": "Aún no hay token. Elige el sitio, la cantidad de dispositivos y el vencimiento, y luego genera un token. Cada token es una clave de inscripción activa.",
+    "cliTokenSite": "Los dispositivos inscritos con este token se unen a {{site}}.",
     "singleUseValidForOneDevice": "De un solo uso: válido para un dispositivo. Genere un nuevo token para cada equipo adicional.",
     "linux": "Linux",
     "windows2": "Windows",
@@ -1002,6 +1005,12 @@
     "quotedByQuotes": "Este grupo tiene precio en {{count}} cotización(es) abierta(s): {{names}}. Elimina primero esas líneas de cotización.",
     "quotedByQuotesCount": "Este grupo tiene precio en {{count}} cotización(es) abierta(s). Elimina primero esas líneas de cotización.",
     "failedToRunScriptOnGroups": "No se pudo ejecutar el script en grupos",
+    "bulkScriptMembershipFailed": "No se pudieron cargar los dispositivos del grupo {{group}}",
+    "bulkScriptNoDevices": "Los grupos seleccionados no tienen dispositivos en los que pueda ejecutar un script.",
+    "bulkScriptTooManyDevices": "Los grupos seleccionados contienen {{count}} dispositivos; un script puede ejecutarse en un máximo de {{max}} a la vez. Seleccione menos grupos.",
+    "bulkScriptNoneQueued": "El script no se puso en cola en ningún dispositivo ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{admitted}} de {{total}} dispositivos en cola; {{refused}} no admitidos ({{reasons}}).",
+    "bulkScriptQueued": "{{script}} en cola en {{count}} dispositivo(s).",
     "failedToApplyPolicyToGroups": "No se pudo aplicar la política a los grupos",
     "failedToMoveDevice": "No se pudo mover el dispositivo",
     "loadingGroupMembership": "Cargando los miembros del grupo...",
@@ -1098,6 +1107,11 @@
   "deviceInfoTab": {
     "updateStuck": "La actualización del agente a {{target}} parece atascada: {{attempts}} intentos desde {{since}} y el dispositivo sigue en su versión anterior. El actualizador reintenta en cada heartbeat; revise los registros del agente, o el propio dispositivo si no envía ninguno.",
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
+      "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "No se pudieron recuperar los detalles del dispositivo",
@@ -1442,6 +1456,12 @@
     "updateStuck": "Actualización atascada",
     "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
+    "helperNotInstalled": "No instalado",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado: el servidor no ha ofrecido ninguna versión de Breeze Assist para instalar en este dispositivo.",
+      "installAbandoned": "Breeze Assist está habilitado pero no instalado: la instalación de la versión ofrecida falló repetidamente y los reintentos están en pausa.",
+      "unknown": "Breeze Assist está habilitado pero no instalado."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
@@ -1645,7 +1665,12 @@
       "source": "Fuente"
     },
     "thirdParty": "Tercero",
-    "uncategorized": "Sin categoría"
+    "uncategorized": "Sin categoría",
+    "installFailure": {
+      "badge": "La instalación falló",
+      "noReason": "El agente no informó ningún motivo",
+      "failedAt": "El último intento de instalación falló: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, uso del disco y ancho de banda de la red a lo largo del tiempo",
@@ -2730,15 +2755,12 @@
         "invalidPort": "El puerto debe ser un número entero entre 1 y 65535.",
         "pause": "Pausar sondeo",
         "resume": "Reanudar sondeo",
-        "disable": "Deshabilitar todo el monitoreo",
-        "disableTitle": "¿Deshabilitar todo el monitoreo?",
-        "disableMessage": "Se deshabilitarán el sondeo SNMP y las comprobaciones de red de este activo.",
+        "disable": "Deshabilitar monitoreo SNMP",
+        "disableTitle": "¿Deshabilitar el monitoreo SNMP?",
+        "disableMessage": "¿Detener las consultas SNMP de este activo? Las verificaciones de red se siguen administrando en Monitores.",
         "checksTitle": "Comprobaciones de red",
         "noChecks": "No hay comprobaciones de red configuradas.",
         "addCheck": "Agregar comprobación",
-        "removeCheck": "Eliminar comprobación",
-        "removeCheckTitle": "¿Eliminar comprobación de red?",
-        "removeCheckMessage": "¿Eliminar la comprobación de red “{{name}}”? Esta acción no se puede deshacer.",
         "never": "nunca",
         "leaveBlankToKeep": "Guardado — deja el campo vacío para conservar el valor actual",
         "snmpVersion": "Versión de SNMP",
@@ -2781,7 +2803,8 @@
           "tcp_port": "puerto TCP",
           "http_check": "comprobación HTTP",
           "dns_check": "comprobación DNS"
-        }
+        },
+        "addCheckHint": "Agregar verificación abre el editor de monitores con este activo seleccionado."
       },
       "link": {
         "description": "Vincula este activo detectado con el dispositivo administrado que corresponde al mismo equipo.",
@@ -2824,12 +2847,8 @@
         "snmpSaveFailed": "No se pudo guardar la configuración SNMP",
         "pollingPaused": "Sondeo SNMP pausado",
         "pollingResumed": "Sondeo SNMP reanudado",
-        "monitoringDisabled": "Monitoreo deshabilitado para este activo",
-        "monitoringDisableFailed": "No se pudo deshabilitar el monitoreo",
-        "checkCreated": "Comprobación de red agregada",
-        "checkCreateFailed": "No se pudo agregar la comprobación de red",
-        "checkRemoved": "Comprobación de red eliminada",
-        "checkRemoveFailed": "No se pudo eliminar la comprobación de red",
+        "monitoringDisabled": "Monitoreo SNMP deshabilitado",
+        "monitoringDisableFailed": "No se pudo deshabilitar el monitoreo SNMP",
         "siteChanged": "Movido a {{site}}.",
         "siteChangeFailed": "No se pudo mover el activo al nuevo sitio",
         "siteChangedUnlinked": "Se eliminó el vínculo con su dispositivo con agente porque ese dispositivo está en otro sitio.",

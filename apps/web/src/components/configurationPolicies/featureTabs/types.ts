@@ -48,10 +48,8 @@ export type FeatureTabProps = {
   /** Parent policy's feature link for this tab (for inheritance display) */
   parentLink?: FeatureLink | undefined;
   /**
-   * Every feature link on the policy, including this tab's own. Read-only:
-   * a tab that needs to WRITE a sibling link (MonitorsTab's Check interval
-   * writes the `monitoring` link) still goes through useFeatureLink and
-   * reports it with onLinkChanged(link, thatFeatureType). (W05c2)
+   * Every feature link on the policy, including this tab's own. Read-only;
+   * changes go through useFeatureLink and onLinkChanged.
    */
   siblingLinks?: FeatureLink[];
   /**
@@ -69,11 +67,9 @@ export const FEATURE_META: Record<FeatureType, {
   description: string;
 }> = {
   patch:        { label: 'Patches',      fetchUrl: '/update-rings',        description: 'Patch management settings' },
-  alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Server-evaluated alert rules: CPU/RAM/disk thresholds, offline detection, event log alerts' },
   monitors:     { label: 'Monitors',     fetchUrl: '/monitor-definitions', description: 'Monitors attached to this policy: condition, response, delivery and escalation in one object' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
-  monitoring:   { label: 'Service & Process Monitoring', fetchUrl: '/monitoring', description: 'Agent-side watches: service/process stop detection, auto-restart, resource limits per process' },
   maintenance:  { label: 'Maintenance',  fetchUrl: '/maintenance/windows', description: 'Maintenance window settings' },
   compliance:   { label: 'Compliance',   fetchUrl: '/policies',            description: 'Compliance rules and enforcement' },
   automation:   { label: 'Automations',  fetchUrl: '/automations',         description: 'Automated tasks and responses' },

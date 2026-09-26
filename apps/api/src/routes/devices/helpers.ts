@@ -40,6 +40,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'agentEdition', 'migrationRequired', 'editionMigrationDispatchedAt',
   'updateOfferWithheldReason', 'updateOfferWithheldSince',
   'updateAttemptTargetVersion', 'updateAttemptStartedAt', 'updateAttemptLastAt', 'updateAttemptCount',
+  'helperInstallIssue', 'helperInstallIssueSince',
   'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
   'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',

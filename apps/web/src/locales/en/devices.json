@@ -99,6 +99,9 @@
     "generatingToken": "Generating token...",
     "multiFactorAuthenticationIsRequiredTo3": "Multi-factor authentication is required to generate installation tokens.",
     "generateNewToken": "Generate new token",
+    "generateToken": "Generate token",
+    "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
+    "cliTokenSite": "Devices enrolled with this token join {{site}}.",
     "singleUseValidForOneDevice": "Single-use — valid for one device. Generate a new token for each additional machine.",
     "linux": "linux",
     "windows2": "Windows",
@@ -1002,6 +1005,12 @@
     "quotedByQuotes": "This group is priced by {{count}} open quote(s): {{names}}. Remove those quote lines first.",
     "quotedByQuotesCount": "This group is priced by {{count}} open quote(s). Remove those quote lines first.",
     "failedToRunScriptOnGroups": "Failed to run script on groups",
+    "bulkScriptMembershipFailed": "Could not load the devices in group {{group}}",
+    "bulkScriptNoDevices": "The selected groups have no devices you can run a script on.",
+    "bulkScriptTooManyDevices": "The selected groups contain {{count}} devices; a script can run on at most {{max}} at once. Select fewer groups.",
+    "bulkScriptNoneQueued": "The script was not queued on any device ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{admitted}} of {{total}} devices queued; {{refused}} not admitted ({{reasons}}).",
+    "bulkScriptQueued": "{{script}} queued on {{count}} device(s).",
     "failedToApplyPolicyToGroups": "Failed to apply policy to groups",
     "failedToMoveDevice": "Failed to move device",
     "loadingGroupMembership": "Loading group membership...",
@@ -1098,6 +1107,11 @@
   "deviceInfoTab": {
     "updateStuck": "Agent update to {{target}} appears stuck: {{attempts}} attempts since {{since}} and the device is still on its old version. The updater retries on every heartbeat; check the agent logs, or the device itself if it is shipping none.",
     "updateOfferWithheld": "Update offers are withheld from this device (since {{since}}): its agent build cannot be confirmed to accept the edition this server serves, so it stays on its current version. Recover it with an installer of the served edition or an agent release that reports its edition.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
+      "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
+      "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Failed to fetch device details",
@@ -1442,6 +1456,12 @@
     "updateStuck": "Update stuck",
     "updateStuckTooltip": "This device has been retrying its agent update to {{target}} for over an hour without converging.",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
+    "helperNotInstalled": "Not installed",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist is enabled but not installed: the server has offered no Breeze Assist version for this device to install.",
+      "installAbandoned": "Breeze Assist is enabled but not installed: installing the offered version failed repeatedly and retries are paused.",
+      "unknown": "Breeze Assist is enabled but not installed."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",
@@ -1645,7 +1665,12 @@
       "source": "Source"
     },
     "thirdParty": "Third-party",
-    "uncategorized": "Uncategorized"
+    "uncategorized": "Uncategorized",
+    "installFailure": {
+      "badge": "Install failed",
+      "noReason": "No reason reported by the agent",
+      "failedAt": "Last install attempt failed: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, disk usage and network bandwidth over time",
@@ -2617,12 +2642,8 @@
         "snmpSaveFailed": "Couldn't save the SNMP settings",
         "pollingPaused": "SNMP polling paused",
         "pollingResumed": "SNMP polling resumed",
-        "monitoringDisabled": "Monitoring disabled for this asset",
-        "monitoringDisableFailed": "Couldn't disable monitoring",
-        "checkCreated": "Network check added",
-        "checkCreateFailed": "Couldn't add the network check",
-        "checkRemoved": "Network check removed",
-        "checkRemoveFailed": "Couldn't remove the network check",
+        "monitoringDisabled": "SNMP monitoring disabled",
+        "monitoringDisableFailed": "Could not disable SNMP monitoring",
         "siteChanged": "Moved to {{site}}.",
         "siteChangeFailed": "Couldn't move the asset to the new site",
         "siteChangedUnlinked": "The link to its agent device was removed because that device is in a different site.",
@@ -2672,15 +2693,12 @@
         "invalidPort": "Port must be a whole number between 1 and 65535.",
         "pause": "Pause polling",
         "resume": "Resume polling",
-        "disable": "Disable all monitoring",
-        "disableTitle": "Disable all monitoring?",
-        "disableMessage": "SNMP polling and network checks for this asset will be disabled.",
+        "disable": "Disable SNMP monitoring",
+        "disableTitle": "Disable SNMP monitoring?",
+        "disableMessage": "Stop SNMP polling for this asset? Network checks remain managed under Monitors.",
         "checksTitle": "Network checks",
         "noChecks": "No network checks configured.",
         "addCheck": "Add check",
-        "removeCheck": "Remove check",
-        "removeCheckTitle": "Remove network check?",
-        "removeCheckMessage": "Remove the network check “{{name}}”? This cannot be undone.",
         "never": "never",
         "leaveBlankToKeep": "Stored — leave blank to keep the current value",
         "snmpVersion": "SNMP version",
@@ -2723,7 +2741,8 @@
           "tcp_port": "TCP port",
           "http_check": "HTTP check",
           "dns_check": "DNS check"
-        }
+        },
+        "addCheckHint": "Add check opens the monitor editor with this asset selected."
       },
       "link": {
         "description": "Tie this discovered asset to the managed device that is the same machine.",

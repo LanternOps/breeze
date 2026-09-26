@@ -527,7 +527,6 @@
       "alerts": "Warnungen",
       "correlations": "Korrelationen",
       "monitors": "Monitore",
-      "rules": "Regeln",
       "delivery": "Zustellung"
     }
   },

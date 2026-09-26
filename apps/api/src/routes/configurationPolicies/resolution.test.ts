@@ -10,10 +10,8 @@ const {
   previewEffectiveConfigMock: vi.fn(),
   configFeatureTypes: [
     'patch',
-    'alert_rule',
     'backup',
     'security',
-    'monitoring',
     'maintenance',
     'compliance',
     'automation',

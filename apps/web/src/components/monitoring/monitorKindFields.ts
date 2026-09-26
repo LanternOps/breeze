@@ -219,14 +219,25 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       optional: true,
       showWhen: { key: 'checkType', equals: 'http_check' },
     },
+    { key: 'count', labelKey: 'monitoring:fields.pingCount', kind: 'number', min: 1, max: 20, optional: true, showWhen: { key: 'checkType', equals: 'icmp_ping' } },
+    { key: 'expectBanner', labelKey: 'monitoring:fields.expectBanner', kind: 'text', optional: true, showWhen: { key: 'checkType', equals: 'tcp_port' } },
+    { key: 'method', labelKey: 'monitoring:fields.httpMethod', kind: 'select', options: ['GET', 'HEAD', 'POST', 'PUT', 'OPTIONS'], optional: true, showWhen: { key: 'checkType', equals: 'http_check' } },
+    { key: 'expectedBody', labelKey: 'monitoring:fields.expectedBody', kind: 'text', optional: true, showWhen: { key: 'checkType', equals: 'http_check' } },
+    { key: 'followRedirects', labelKey: 'monitoring:fields.followRedirects', kind: 'boolean', optional: true, showWhen: { key: 'checkType', equals: 'http_check' } },
+    { key: 'verifySsl', labelKey: 'monitoring:fields.verifySsl', kind: 'boolean', optional: true, showWhen: { key: 'checkType', equals: 'http_check' } },
+    { key: 'recordType', labelKey: 'monitoring:fields.recordType', kind: 'select', options: ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS'], optional: true, showWhen: { key: 'checkType', equals: 'dns_check' } },
+    { key: 'expectedValue', labelKey: 'monitoring:fields.expectedValue', kind: 'text', optional: true, showWhen: { key: 'checkType', equals: 'dns_check' } },
+    { key: 'nameserver', labelKey: 'monitoring:fields.nameserver', kind: 'text', optional: true, showWhen: { key: 'checkType', equals: 'dns_check' } },
+    { key: 'degradedIsFailure', labelKey: 'monitoring:fields.degradedIsFailure', kind: 'boolean' },
+    { key: 'maxResponseMs', labelKey: 'monitoring:fields.maxResponseMs', kind: 'number', min: 1, max: 600000, optional: true },
     {
       key: 'pollingIntervalSeconds',
       labelKey: 'monitoring:fields.pollingIntervalSeconds',
       kind: 'number',
-      min: 30,
-      max: 3600,
+      min: 10,
+      max: 86400,
     },
-    { key: 'timeoutSeconds', labelKey: 'monitoring:fields.timeoutSeconds', kind: 'number', min: 1, max: 120 },
+    { key: 'timeoutSeconds', labelKey: 'monitoring:fields.timeoutSeconds', kind: 'number', min: 1, max: 300 },
     {
       key: 'consecutiveFailures',
       labelKey: 'monitoring:fields.consecutiveFailures',
@@ -333,7 +344,7 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
       // script is chosen.
       return { scriptId: '00000000-0000-0000-0000-000000000000', intervalMinutes: 60, timeoutSeconds: 300, breachOnNonZeroExit: true };
     case 'network_check':
-      return { checkType: 'icmp_ping', target: '8.8.8.8', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 };
+      return { checkType: 'icmp_ping', target: '8.8.8.8', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2, degradedIsFailure: false };
     case 'composite':
       return {
         match: 'all',

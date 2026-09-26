@@ -5524,6 +5524,7 @@
       "sendInvite": "Impossibile inviare l'invito",
       "updateUser": "Impossibile aggiornare l'utente",
       "updateRole": "Impossibile aggiornare il ruolo",
+      "updateOrgAccess": "Impossibile aggiornare l'accesso alle organizzazioni",
       "removeUser": "Impossibile rimuovere l'utente",
       "resetMfa": "Reimpostazione MFA non riuscita"
     },

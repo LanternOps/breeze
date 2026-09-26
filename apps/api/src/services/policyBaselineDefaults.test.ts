@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { CONFIG_FEATURE_TYPES } from './configurationPolicy';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
@@ -84,8 +84,16 @@ describe('getRemoteAccessBaseline IS_HOSTED clipboard branching', () => {
   });
 });
 
-describe('CONFIG_FEATURE_TYPES parity with DB enum', () => {
-  it('matches configFeatureTypeEnum.enumValues exactly', () => {
-    expect([...CONFIG_FEATURE_TYPES].sort()).toEqual([...configFeatureTypeEnum.enumValues].sort());
+describe('CONFIG_FEATURE_TYPES parity with DB enum (W05d: canonical ∪ retired)', () => {
+  it('canonical plus retired matches configFeatureTypeEnum.enumValues exactly', () => {
+    expect([...CONFIG_FEATURE_TYPES, ...RETIRED_CONFIG_FEATURE_TYPES].sort())
+      .toEqual([...configFeatureTypeEnum.enumValues].sort());
+  });
+  it('the two lists are disjoint and retired types have no baseline entry', () => {
+    const baseline = getPolicyBaselineDefaults().map((e) => e.featureType);
+    for (const t of RETIRED_CONFIG_FEATURE_TYPES) {
+      expect(CONFIG_FEATURE_TYPES as readonly string[]).not.toContain(t);
+      expect(baseline).not.toContain(t);
+    }
   });
 });

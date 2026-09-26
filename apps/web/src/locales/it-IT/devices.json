@@ -99,6 +99,9 @@
     "generatingToken": "Generazione del token…",
     "multiFactorAuthenticationIsRequiredTo3": "Per generare token di installazione è necessaria l'autenticazione a più fattori.",
     "generateNewToken": "Genera nuovo token",
+    "generateToken": "Genera token",
+    "cliTokenNotGenerated": "Nessun token. Scegli la sede, il numero di dispositivi e la scadenza, quindi genera un token. Ogni token è una chiave di registrazione attiva.",
+    "cliTokenSite": "I dispositivi registrati con questo token entrano in {{site}}.",
     "singleUseValidForOneDevice": "Monouso — valido per un dispositivo. Genera un nuovo token per ogni computer aggiuntivo.",
     "linux": "Linux",
     "windows2": "Windows",
@@ -1002,6 +1005,12 @@
     "quotedByQuotes": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i: {{names}}. Rimuovi prima quelle righe di preventivo.",
     "quotedByQuotesCount": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i. Rimuovi prima quelle righe di preventivo.",
     "failedToRunScriptOnGroups": "Impossibile eseguire lo script sui gruppi",
+    "bulkScriptMembershipFailed": "Impossibile caricare i dispositivi del gruppo {{group}}",
+    "bulkScriptNoDevices": "I gruppi selezionati non contengono dispositivi su cui puoi eseguire uno script.",
+    "bulkScriptTooManyDevices": "I gruppi selezionati contengono {{count}} dispositivi; uno script può essere eseguito su al massimo {{max}} alla volta. Seleziona meno gruppi.",
+    "bulkScriptNoneQueued": "Lo script non è stato accodato su alcun dispositivo ({{reasons}}).",
+    "bulkScriptPartiallyQueued": "{{admitted}} di {{total}} dispositivi in coda; {{refused}} non ammessi ({{reasons}}).",
+    "bulkScriptQueued": "{{script}} in coda su {{count}} dispositivo/i.",
     "failedToApplyPolicyToGroups": "Impossibile applicare il criterio ai gruppi",
     "failedToMoveDevice": "Impossibile spostare il dispositivo",
     "loadingGroupMembership": "Caricamento dei membri del gruppo...",
@@ -1098,6 +1107,11 @@
   "deviceInfoTab": {
     "updateStuck": "L'aggiornamento dell'agent a {{target}} sembra bloccato: {{attempts}} tentativi dal {{since}} e il dispositivo è ancora alla versione precedente. L'updater riprova a ogni heartbeat; controlla i log dell'agent, o il dispositivo stesso se non ne invia.",
     "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
+    "helperInstallIssue": {
+      "awaitingServerOffer": "Breeze Assist è abilitato ma non installato (dal {{since}}): il server non ha offerto una versione di Breeze Assist da installare su questo dispositivo, che quindi resta senza installazione. Verifica che sia pubblicata una build di Breeze Assist per la piattaforma di questo dispositivo.",
+      "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
+      "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
+    },
     "gpu": "GPU",
     "text": "—",
     "failedToFetchDeviceDetails": "Impossibile recuperare i dettagli del dispositivo",
@@ -1442,6 +1456,12 @@
     "updateStuck": "Aggiornamento bloccato",
     "updateStuckTooltip": "Questo dispositivo riprova da oltre un'ora l'aggiornamento dell'agent a {{target}} senza completarlo.",
     "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
+    "helperNotInstalled": "Non installato",
+    "helperInstallIssueTooltip": {
+      "awaitingServerOffer": "Breeze Assist è abilitato ma non installato: il server non ha offerto alcuna versione di Breeze Assist da installare su questo dispositivo.",
+      "installAbandoned": "Breeze Assist è abilitato ma non installato: l’installazione della versione offerta non è riuscita più volte e i tentativi sono sospesi.",
+      "unknown": "Breeze Assist è abilitato ma non installato."
+    },
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",
@@ -1645,7 +1665,12 @@
       "source": "Origine"
     },
     "thirdParty": "Di terze parti",
-    "uncategorized": "Senza categoria"
+    "uncategorized": "Senza categoria",
+    "installFailure": {
+      "badge": "Installazione non riuscita",
+      "noReason": "Nessun motivo segnalato dall'agente",
+      "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
+    }
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, utilizzo del disco e larghezza di banda di rete nel tempo",
@@ -2730,15 +2755,12 @@
         "invalidPort": "La porta deve essere un numero intero tra 1 e 65535.",
         "pause": "Sospendi polling",
         "resume": "Riprendi polling",
-        "disable": "Disabilita tutto il monitoraggio",
-        "disableTitle": "Disabilitare tutto il monitoraggio?",
-        "disableMessage": "Il polling SNMP e i controlli di rete per questa risorsa verranno disabilitati.",
+        "disable": "Disattiva monitoraggio SNMP",
+        "disableTitle": "Disattivare il monitoraggio SNMP?",
+        "disableMessage": "Interrompere le interrogazioni SNMP per questo asset? I controlli di rete restano gestiti in Monitor.",
         "checksTitle": "Controlli di rete",
         "noChecks": "Nessun controllo di rete configurato.",
         "addCheck": "Aggiungi controllo",
-        "removeCheck": "Rimuovi controllo",
-        "removeCheckTitle": "Rimuovere il controllo di rete?",
-        "removeCheckMessage": "Rimuovere il controllo di rete “{{name}}”? Questa azione non può essere annullata.",
         "never": "mai",
         "leaveBlankToKeep": "Memorizzato — lascia vuoto per mantenere il valore attuale",
         "snmpVersion": "Versione SNMP",
@@ -2781,7 +2803,8 @@
           "tcp_port": "porta TCP",
           "http_check": "controllo HTTP",
           "dns_check": "controllo DNS"
-        }
+        },
+        "addCheckHint": "Aggiungi controllo apre il monitor con questo asset selezionato."
       },
       "link": {
         "description": "Collega questa risorsa rilevata al dispositivo gestito che corrisponde alla stessa macchina.",
@@ -2824,12 +2847,8 @@
         "snmpSaveFailed": "Impossibile salvare le impostazioni SNMP",
         "pollingPaused": "Polling SNMP sospeso",
         "pollingResumed": "Polling SNMP ripreso",
-        "monitoringDisabled": "Monitoraggio disabilitato per questa risorsa",
-        "monitoringDisableFailed": "Impossibile disabilitare il monitoraggio",
-        "checkCreated": "Controllo di rete aggiunto",
-        "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
-        "checkRemoved": "Controllo di rete rimosso",
-        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete",
+        "monitoringDisabled": "Monitoraggio SNMP disattivato",
+        "monitoringDisableFailed": "Impossibile disattivare il monitoraggio SNMP",
         "siteChanged": "Spostato in {{site}}.",
         "siteChangeFailed": "Impossibile spostare l'asset nel nuovo sito",
         "siteChangedUnlinked": "Il collegamento al dispositivo con agente è stato rimosso perché quel dispositivo si trova in un altro sito.",

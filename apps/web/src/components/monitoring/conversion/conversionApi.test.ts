@@ -118,6 +118,11 @@ describe('conversionApi (W05c1 contract)', () => {
       .toMatch(/can no longer be undone/i);
   });
 
+  it('maps the network stale-preview token to the translated retry guidance', () => {
+    expect(conversionFriendly('', '', { error: 'stale_preview' }))
+      .toBe(conversionErrorMessage({ error: 'preview_stale' }));
+  });
+
   it('fetchPolicyPreview surfaces the mapped text, not the token, when the preview fails', async () => {
     fetchMock.mockResolvedValue(json({ error: 'preview_failed' }, 500));
     const error = await fetchPolicyPreview('p1').catch((e: Error) => e);
