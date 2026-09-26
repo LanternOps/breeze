@@ -9,6 +9,7 @@ import { requireCurrentTopologyProducer } from './collectionAuthority';
 import { normalizeNetworkContext } from './collectionDigest';
 import { effectiveTopologyCapture, advanceTopologyAbsence, assessTopologyRetainedCapacity, prunableTopologyKnownKeys, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
 import { compareTopologySequences } from './sequence';
+import { TOPOLOGY_TELEMETRY_PROTOCOL } from './interfaceMetricTypes';
 import { assertTopologyProducerFamily, isWithinTopologyAuthority, outcomeHasPositives, sourceKey, sourceKeyString, type AuthenticatedTopologyProducer, type NormalizedTopologyReport, type NormalizedTopologySnapshot, type OsTopologySnapshot, type TopologyIngestReceipt, type TopologySourceConfirmation, type TopologySourceKey, type TopologySourceReceipt } from './collectionTypes';
 
 type Source = typeof topologyCollectionSources.$inferSelect;
@@ -83,7 +84,7 @@ async function budget(p: AuthenticatedTopologyProducer,source: Source,bytes:numb
     COALESCE(sum(normalized_bytes) FILTER (WHERE producer_id=${p.producerId}::uuid AND source_id IN (${devicePhysical})),0)::text AS device_bytes,
     count(*)::int AS org_daily,COALESCE(sum(normalized_bytes),0)::text AS org_bytes
     FROM topology_collection_runs WHERE org_id=${p.scope.orgId}::uuid AND received_at>now()-interval '1 day'`);
-  const [initial]=await db.execute(sql`SELECT count(*)::int AS scopes FROM topology_collection_sources WHERE id IN (${owner}) AND protocol<>'envelope'`);
+  const [initial]=await db.execute(sql`SELECT count(*)::int AS scopes FROM topology_collection_sources WHERE id IN (${owner}) AND protocol NOT IN ('envelope', ${TOPOLOGY_TELEMETRY_PROTOCOL})`);
   const initialAllowance=source.firstBaselineAt===null && Number(initial?.scopes)<=128;
   // Token bucket: the device root (looked up by producer, never by the report's
   // scope) for the agent; the source's own row for a physical scope.

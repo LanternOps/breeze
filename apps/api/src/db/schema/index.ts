@@ -174,6 +174,7 @@ export * from './toolSources';
 export * from './topology';
 
 export * from "./topologyCollections";
+export * from './topologyTelemetry';
 export * from './topologyOperations';
 
 export * from './topologyTemplates';

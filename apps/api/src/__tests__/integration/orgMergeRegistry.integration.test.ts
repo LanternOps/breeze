@@ -268,6 +268,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
   'topology_collection_runs.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
   'topology_observations.topology_evidence_immutable': 'permits org_id ownership and physical reference migration (relationship/subject node/interface) while preserving historical content',
+  // M3 interface samples: raw readings are immutable, org_id (and updated_at)
+  // are excluded from the compared set so a merge repoint passes.
+  'topology_interface_samples.topology_interface_sample_immutable': 'permits org_id ownership updates while preserving raw readings',
   'topology_config_template_versions.breeze_topology_template_content_guard': 'published payload immutable but owner org may move',
   'topology_site_template_bindings.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_probe_targets.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
@@ -580,6 +583,12 @@ describe('Org merge policy registry contract', () => {
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
        WHERE NOT t.tgisinternal
+         -- A row trigger declared on a partitioned table is cloned onto every
+         -- partition (tgparentid <> 0). The clone runs the parent's function,
+         -- so it is classified once, under the parent; runtime-created leaves
+         -- (daily interface-sample partitions) would otherwise make this list
+         -- change every day, like conparentid in orgCascadeFkOnDelete.
+         AND t.tgparentid = 0
          AND (t.tgtype & 2)  <> 0   -- BEFORE
          AND (t.tgtype & 16) <> 0   -- UPDATE
          AND (t.tgtype & 1)  <> 0   -- FOR EACH ROW

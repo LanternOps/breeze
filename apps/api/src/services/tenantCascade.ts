@@ -860,6 +860,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_config_templates',
   'topology_diagnostic_runs',
   'topology_diagnostic_steps',
+  // M3 interface samples: partitioned (raw/5m/1h -> daily leaves); the parent
+  // is registered once, leaves are runtime partitions (metric_rollups model).
+  'topology_interface_samples',
   'topology_interfaces',
   'topology_layout',
   'topology_layouts',

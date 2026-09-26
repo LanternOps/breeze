@@ -1053,6 +1053,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_config_templates",
   "topology_diagnostic_runs",
   "topology_diagnostic_steps",
+  "topology_interface_samples",
   "topology_interfaces",
   "topology_layout",
   "topology_layouts",

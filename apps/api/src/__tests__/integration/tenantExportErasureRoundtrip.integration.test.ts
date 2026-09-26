@@ -768,6 +768,41 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.tablesDeleted['devices']).toBe(1);
   });
 
+  it('exports interface samples without their open readings and erases them child-first (M3 Task 2)', async () => {
+    const db = getTestDb();
+    const { orgA, orgB } = await seedTwoOrgs();
+    const readingsSentinel = `IF-READINGS-${crypto.randomUUID()}`;
+    for (const orgId of [orgA, orgB]) {
+      const [site] = await db.execute(sql`SELECT id FROM sites WHERE org_id = ${orgId} LIMIT 1`);
+      const siteId = site!.id as string;
+      const nodeId = crypto.randomUUID(), interfaceId = crypto.randomUUID(), sourceId = crypto.randomUUID();
+      await db.execute(sql`INSERT INTO topology_nodes (id, org_id, site_id, identity_key, identity_material, kind)
+        VALUES (${nodeId}, ${orgId}, ${siteId}, ${nodeId}, ${JSON.stringify({ version: 1, kind: 'endpoint', sourceKey: nodeId })}::jsonb, 'endpoint')`);
+      await db.execute(sql`INSERT INTO topology_interfaces (id, org_id, site_id, owner_node_id, interface_key, epoch)
+        VALUES (${interfaceId}, ${orgId}, ${siteId}, ${nodeId}, 'port-1', 'gen:1')`);
+      await db.execute(sql`INSERT INTO topology_collection_sources (id, org_id, site_id, producer_id, producer_kind, producer_epoch, protocol, context_key)
+        VALUES (${sourceId}, ${orgId}, ${siteId}, ${crypto.randomUUID()}, 'snmp', 'epoch-1', 'if_metrics', 'snmp:192.0.2.10')`);
+      await db.execute(sql`INSERT INTO topology_interface_samples
+        (org_id, site_id, interface_id, interface_epoch, source_id, producer_epoch, source_sequence, sampled_at, resolution, readings, sample_count)
+        VALUES (${orgId}, ${siteId}, ${interfaceId}, 'gen:1', ${sourceId}, 'epoch-1', 18446744073709551615, now() - interval '1 minute', 'raw',
+          ${JSON.stringify({ v: 1, note: readingsSentinel })}::jsonb, 1)`);
+    }
+
+    const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(manifest.files.find((f) => f.name === 'topology_interface_samples.json')?.rowCount).toBe(1);
+    const rows = await archiveTable(await JSZip.loadAsync(zipBuffer), 'topology_interface_samples');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ org_id: orgA, source_sequence: '18446744073709551615', resolution: 'raw' });
+    expect(rows[0]).not.toHaveProperty('readings');
+    expect(JSON.stringify(rows)).not.toContain(readingsSentinel);
+
+    const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(stats.tablesDeleted['topology_interface_samples']).toBe(1);
+    expect(await rowCount(db, 'topology_interface_samples', orgA)).toBe(0);
+    expect(await rowCount(db, 'topology_interfaces', orgA)).toBe(0);
+    expect(await rowCount(db, 'topology_interface_samples', orgB)).toBe(1);
+  });
+
   it('aborts erasure before any row when an S3-backed org document cannot be cleared, then completes once the object is gone (W03)', async () => {
     const db = getTestDb();
     const { orgA } = await seedTwoOrgs();

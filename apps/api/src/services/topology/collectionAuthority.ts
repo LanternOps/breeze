@@ -6,6 +6,7 @@ import { topologyCollectionSources, topologySiteState } from '../../db/schema';
 import { loadTopologyFlags } from './flags';
 import type { TopologyScope } from '@breeze/shared';
 import type { AuthenticatedTopologyProducer, TopologyPhysicalProducerKind, TopologyProducerKind } from './collectionTypes';
+import { TOPOLOGY_TELEMETRY_PRODUCER_KINDS, TOPOLOGY_TELEMETRY_PROTOCOL, type TopologyTelemetryFamily, type TopologyTelemetryProducerKind } from './interfaceMetricTypes';
 
 const uuid = z.uuid();
 const ROOT = {protocol:'envelope',contextKey:'root',addressFamily:'any'} as const;
@@ -200,6 +201,8 @@ async function requireCurrentPhysicalProducer(producer:AuthenticatedTopologyProd
  * inventory ownership, enrollment credentials, configuration and epoch in DB. */
 export async function requireCurrentTopologyProducer(producer: AuthenticatedTopologyProducer) {
   assertInTransaction('requireCurrentTopologyProducer');
+  // Telemetry producers are verified only by requireCurrentTopologyTelemetryProducer.
+  if ((producer as {family?:unknown}).family!==undefined) throw new Error('unsupported_producer');
   if (producer.producerKind==='discovery' || producer.producerKind==='unifi') return requireCurrentPhysicalProducer(producer as AuthenticatedTopologyProducer&{producerKind:TopologyPhysicalProducerKind});
   if (producer.producerKind!=='agent' || producer.authorityKey!==undefined || producer.collectorId!==undefined) throw new Error('unsupported_producer');
   const device = await activeDevice(producer.producerId);
@@ -243,4 +246,134 @@ export async function revokeTopologySources(scope: TopologyScope, predicate: Top
       .where(and(eq(topologySiteState.orgId,scope.orgId),eq(topologySiteState.siteId,scope.siteId)));
     return revoked.length;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry producers (M3-D1). An `if_metrics` source shares the physical
+// producers' device/root/epoch fencing but has its own authority registry and
+// its own credential domain, so a structural credential can never submit
+// telemetry and a telemetry credential can never publish structure. The
+// authority behind `snmp` is the standing telemetry arm (Track B implements it;
+// until it registers, every request is denied); `unifi` is controller-site
+// authority. Scope, source and interface allowlist come only from the
+// registered authority and stored rows, never from an upload.
+// ---------------------------------------------------------------------------
+export type TopologyTelemetryAuthorityRequest = {
+  family: TopologyTelemetryFamily; producerKind: TopologyTelemetryProducerKind; scope: TopologyScope;
+  device: {id:string;orgId:string;siteId:string};
+  /** Target (`snmp:<address>`) or controller-site (`<collectorId>:<siteId>`) authority. */
+  authorityKey: string; collectorId?: string;
+  /** The poll command the batch answers, when the transport has one. */
+  commandId: string|null;
+};
+export type TopologyTelemetryAuthorityDecision =
+  | {authorized:true; configurationGeneration:string; /** Interfaces this source may report, by canonical UUID. */ interfaceIds:readonly string[]}
+  | {authorized:false; reason:string};
+/** Server-owned telemetry authority for one producer kind. Runs inside the sink
+ * transaction after the site-state lock; must confirm that `device` may report
+ * `authorityKey` into `scope` right now and return the arm's generation (any
+ * change rotates the telemetry epoch) and the exact interface allowlist. */
+export type TopologyTelemetryAuthority = (request:TopologyTelemetryAuthorityRequest)=>Promise<TopologyTelemetryAuthorityDecision>;
+export const TOPOLOGY_TELEMETRY_MAX_AUTHORIZED_INTERFACES=4096;
+const telemetryAuthorities=new Map<TopologyTelemetryProducerKind,TopologyTelemetryAuthority>();
+export const isTopologyTelemetryAuthorityRegistered=(kind:TopologyTelemetryProducerKind)=>telemetryAuthorities.has(kind);
+/** Test isolation only. */
+export function resetTopologyTelemetryAuthoritiesForTest():void { telemetryAuthorities.clear(); }
+/** Registers the single telemetry authority for a kind; returns an unregister handle. */
+export function registerTopologyTelemetryAuthority(kind:TopologyTelemetryProducerKind,authority:TopologyTelemetryAuthority):()=>void {
+  if (!TOPOLOGY_TELEMETRY_PRODUCER_KINDS.includes(kind)) throw new Error('unsupported_producer');
+  if (telemetryAuthorities.has(kind)) throw new Error(`Topology telemetry authority already registered for ${kind}`);
+  telemetryAuthorities.set(kind,authority);
+  return ()=>{ if (telemetryAuthorities.get(kind)===authority) telemetryAuthorities.delete(kind); };
+}
+/** Default-deny: no registered check, malformed input or a malformed decision. */
+export async function authorizeTopologyTelemetryProducer(request:TopologyTelemetryAuthorityRequest):Promise<TopologyTelemetryAuthorityDecision> {
+  if (request.family!==TOPOLOGY_TELEMETRY_PROTOCOL || !TOPOLOGY_TELEMETRY_PRODUCER_KINDS.includes(request.producerKind) || !AUTHORITY_KEY.test(request.authorityKey)) return {authorized:false,reason:'producer_authority_denied'};
+  if (request.producerKind==='unifi' && (!request.collectorId || !COLLECTOR_ID.test(request.collectorId) || !request.authorityKey.startsWith(`${request.collectorId}:`))) return {authorized:false,reason:'producer_authority_denied'};
+  if (request.producerKind==='snmp' && request.collectorId!==undefined) return {authorized:false,reason:'producer_authority_denied'};
+  const authority=telemetryAuthorities.get(request.producerKind);
+  if (!authority) return {authorized:false,reason:'producer_authority_unavailable'};
+  const decision=await authority(request);
+  if (!decision || typeof decision!=='object') return {authorized:false,reason:'producer_authority_invalid'};
+  if (decision.authorized!==true) return {authorized:false,reason:typeof decision.reason==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(decision.reason)?decision.reason:'producer_authority_denied'};
+  if (typeof decision.configurationGeneration!=='string' || !decision.configurationGeneration || decision.configurationGeneration.length>255
+    || !Array.isArray(decision.interfaceIds) || decision.interfaceIds.length>TOPOLOGY_TELEMETRY_MAX_AUTHORIZED_INTERFACES
+    || !decision.interfaceIds.every(id=>typeof id==='string' && uuid.safeParse(id).success)) return {authorized:false,reason:'producer_authority_invalid'};
+  return {authorized:true,configurationGeneration:decision.configurationGeneration,interfaceIds:[...decision.interfaceIds]};
+}
+/** Telemetry credentials: bound to the device's root epoch and the telemetry
+ * authority generation, in a domain distinct from structural credentials. */
+export function topologyTelemetryProducerCredentials(input:{root:{producerEpoch:string;configurationRevision:string};producerKind:TopologyTelemetryProducerKind;
+  authorityKey:string;collectorId?:string;configurationGeneration:string}):{producerEpoch:string;configurationRevision:string} {
+  const configurationRevision=createHash('sha256').update(JSON.stringify(['topology-telemetry-config-v1',TOPOLOGY_TELEMETRY_PROTOCOL,input.root.configurationRevision,input.producerKind,
+    input.authorityKey,input.collectorId??null,input.configurationGeneration])).digest('hex');
+  const producerEpoch=createHash('sha256').update(JSON.stringify(['topology-telemetry-epoch-v1',input.root.producerEpoch,configurationRevision])).digest('hex');
+  return {producerEpoch,configurationRevision};
+}
+export type AuthenticatedTopologyTelemetryProducer = AuthenticatedTopologyProducer & {
+  producerKind: TopologyTelemetryProducerKind; family: TopologyTelemetryFamily; authorityKey: string;
+};
+function telemetryRequest(input:{producerKind:TopologyTelemetryProducerKind;scope:TopologyScope;authorityKey:string;collectorId?:string},device:{id:string;orgId:string;siteId:string},commandId:string|null):TopologyTelemetryAuthorityRequest {
+  return {family:TOPOLOGY_TELEMETRY_PROTOCOL,producerKind:input.producerKind,scope:input.scope,device,authorityKey:input.authorityKey,
+    ...(input.collectorId!==undefined?{collectorId:input.collectorId}:{}),commandId};
+}
+/** Server-side telemetry producer construction for adapters (Task 3 SNMP poll
+ * results, Task 4 UniFi). Derived from DB state; grants nothing alone — the
+ * sink re-verifies it with `requireCurrentTopologyTelemetryProducer`. */
+export async function resolveTopologyTelemetryProducer(input:{producerKind:TopologyTelemetryProducerKind;deviceId:string;scope:TopologyScope;authorityKey:string;
+  collectorId?:string;commandId?:string|null}):Promise<AuthenticatedTopologyTelemetryProducer> {
+  assertInTransaction('resolveTopologyTelemetryProducer');
+  const device=await activeDevice(input.deviceId);
+  if (device.orgId!==input.scope.orgId) throw new Error('producer_scope_changed');
+  const [root]=await db.select().from(topologyCollectionSources).where(and(whereAgentRoot(device.orgId,device.id),eq(topologyCollectionSources.siteId,device.siteId)));
+  if (!root || root.revokedAt) throw new Error('producer_epoch_changed');
+  const decision=await authorizeTopologyTelemetryProducer(telemetryRequest(input,{id:device.id,orgId:device.orgId,siteId:device.siteId},input.commandId??null));
+  if (!decision.authorized) throw new Error(decision.reason.startsWith('producer_')?decision.reason:'producer_authority_denied');
+  const credentials=topologyTelemetryProducerCredentials({root,producerKind:input.producerKind,authorityKey:input.authorityKey,collectorId:input.collectorId,configurationGeneration:decision.configurationGeneration});
+  return {scope:input.scope,producerId:device.id,producerKind:input.producerKind,family:TOPOLOGY_TELEMETRY_PROTOCOL,...credentials,
+    sourceIdentity:topologySourceIdentity({scope:input.scope,producerKind:input.producerKind,deviceId:device.id,collectorId:input.collectorId}),
+    authorityKey:input.authorityKey,...(input.collectorId!==undefined?{collectorId:input.collectorId}:{})};
+}
+/** Revalidate a telemetry producer inside the sink transaction: current device
+ * ownership and enrollment, flags, site-state then root lock order (same as the
+ * physical path), the registered authority and the derived epoch/revision. */
+export async function requireCurrentTopologyTelemetryProducer(producer:AuthenticatedTopologyProducer,commandId:string|null) {
+  assertInTransaction('requireCurrentTopologyTelemetryProducer');
+  const p=producer as Partial<AuthenticatedTopologyTelemetryProducer>&AuthenticatedTopologyProducer;
+  if (p.family!==TOPOLOGY_TELEMETRY_PROTOCOL || !(TOPOLOGY_TELEMETRY_PRODUCER_KINDS as readonly string[]).includes(p.producerKind)) throw new Error('unsupported_producer');
+  const kind=p.producerKind as TopologyTelemetryProducerKind;
+  const device=await activeDevice(p.producerId);
+  if (device.orgId!==p.scope.orgId) throw new Error('producer_scope_changed');
+  let expectedIdentity:string;
+  try { expectedIdentity=topologySourceIdentity({scope:p.scope,producerKind:kind,deviceId:device.id,collectorId:p.collectorId}); }
+  catch { throw new Error('producer_identity_mismatch'); }
+  if (p.sourceIdentity!==expectedIdentity) throw new Error('producer_identity_mismatch');
+  if (!p.authorityKey) throw new Error('producer_authority_denied');
+  const flags=await loadTopologyFlags({scope:p.scope});
+  if (!flags.materialization) throw new Error('materialization_disabled');
+  if (!flags.interfaceHealth) throw new Error('interface_health_disabled');
+  await db.insert(topologySiteState).values(p.scope).onConflictDoNothing();
+  const [state]=await db.select().from(topologySiteState).where(and(eq(topologySiteState.orgId,p.scope.orgId),eq(topologySiteState.siteId,p.scope.siteId))).for('update');
+  const [root]=await db.select().from(topologyCollectionSources).where(and(whereAgentRoot(device.orgId,device.id),eq(topologyCollectionSources.siteId,device.siteId))).for('share');
+  if (!state || !root || root.revokedAt) throw new Error('producer_epoch_changed');
+  const decision=await authorizeTopologyTelemetryProducer(telemetryRequest({producerKind:kind,scope:p.scope,authorityKey:p.authorityKey,collectorId:p.collectorId},
+    {id:device.id,orgId:device.orgId,siteId:device.siteId},commandId));
+  if (!decision.authorized) throw new Error(decision.reason.startsWith('producer_')?decision.reason:'producer_authority_denied');
+  const expected=topologyTelemetryProducerCredentials({root,producerKind:kind,authorityKey:p.authorityKey,collectorId:p.collectorId,configurationGeneration:decision.configurationGeneration});
+  if (p.producerEpoch!==expected.producerEpoch || p.configurationRevision!==expected.configurationRevision) throw new Error('producer_epoch_changed');
+  return {state,root,configurationGeneration:decision.configurationGeneration,interfaceIds:new Set(decision.interfaceIds)};
+}
+/** Rejections the telemetry sink raises for a stale or unauthorized producer. */
+export const TOPOLOGY_TELEMETRY_PRODUCER_REJECTIONS=new Set([...TOPOLOGY_PRODUCER_REJECTIONS,'interface_health_disabled']);
+/** Fence telemetry sources (e.g. an arm is revoked or a controller remapped).
+ * Telemetry has no structural effect, so the build fence is not bumped; a
+ * fenced source accepts nothing further until a new authority generation. */
+export async function revokeTopologyTelemetrySources(scope:TopologyScope,predicate:{producerKind:TopologyTelemetryProducerKind;producerId?:string;authorityKey?:string}):Promise<number> {
+  assertInTransaction('revokeTopologyTelemetrySources');
+  const conditions=[eq(topologyCollectionSources.orgId,scope.orgId),eq(topologyCollectionSources.siteId,scope.siteId),eq(topologyCollectionSources.producerKind,predicate.producerKind),
+    eq(topologyCollectionSources.protocol,TOPOLOGY_TELEMETRY_PROTOCOL),isNull(topologyCollectionSources.revokedAt)];
+  if (predicate.producerId!==undefined) conditions.push(eq(topologyCollectionSources.producerId,uuid.parse(predicate.producerId)));
+  if (predicate.authorityKey!==undefined) conditions.push(eq(topologyCollectionSources.contextKey,predicate.authorityKey));
+  const revoked=await db.update(topologyCollectionSources).set({revokedAt:new Date(),updatedAt:new Date()}).where(and(...conditions)).returning({id:topologyCollectionSources.id});
+  return revoked.length;
 }
