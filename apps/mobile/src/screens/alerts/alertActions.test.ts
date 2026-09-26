@@ -36,8 +36,11 @@ describe('canRebootFromAlert', () => {
     expect(canRebootFromAlert(alert({ acknowledged: true, metadata: { status: 'acknowledged' } }))).toBe(true);
   });
 
-  it('hides it on a resolved alert', () => {
-    expect(canRebootFromAlert(alert({ acknowledged: true, metadata: { status: 'resolved' } }))).toBe(false);
+  it('hides it on a resolved, dismissed, suppressed or unknown-status alert', () => {
+    for (const status of ['resolved', 'dismissed', 'suppressed', 'something-new']) {
+      expect(canRebootFromAlert(alert({ metadata: { status } }))).toBe(false);
+    }
+    expect(canRebootFromAlert(alert({ metadata: {} }))).toBe(false);
   });
 
   it('hides it on any other alert, even one that names a device', () => {

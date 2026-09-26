@@ -3,7 +3,7 @@ import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
-import { getAlert, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
+import { getAlert, hasQueuedReboot, sendDeviceAction, type Alert as AlertModel } from '../../services/api';
 import { needsAlertLookup, rebootPlan } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
@@ -141,6 +141,14 @@ export function AlertDetailScreen({ route }: Props) {
         Alert.alert('Not sent', 'This alert no longer needs a restart, so nothing was sent.');
         return;
       }
+      // The alert stays open after a restart is sent, so reopening it would
+      // otherwise offer the same restart again.
+      if (await hasQueuedReboot(deviceId)) {
+        if (currentAlertId.current === alertId) setRebootSentFor(alertId);
+        Alert.alert('Already queued', 'A restart is already waiting for this device, so nothing new was sent.');
+        return;
+      }
+      if (currentAlertId.current !== alertId) return;
       await sendDeviceAction(deviceId, 'reboot');
       setRebootSentFor(alertId);
       Alert.alert(

@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlert, getAlerts, getAlertStats } from './api';
+import { getAlert, getAlerts, getAlertStats, hasQueuedReboot } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -130,5 +130,32 @@ describe('alert source', () => {
     jsonOnce({ id: 'a1', title: 't', message: 'm', severity: 'low', status: 'active',
       triggeredAt: '2026-09-20T12:00:00.000Z', context: { source: 7 } });
     expect((await getAlert('a1')).source).toBeUndefined();
+  });
+});
+
+describe('hasQueuedReboot', () => {
+  it('finds a pending reboot', async () => {
+    jsonOnce({ data: [{ type: 'script' }, { type: 'reboot' }] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(true);
+    const url = String(fetchWithTimeout.mock.calls[0][0]);
+    expect(url).toContain('/api/v1/devices/dev-1/commands?status=pending');
+  });
+
+  it('finds a reboot already sent to the agent', async () => {
+    jsonOnce({ data: [] });
+    jsonOnce({ data: [{ type: 'reboot' }] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(true);
+    expect(String(fetchWithTimeout.mock.calls[1][0])).toContain('status=sent');
+  });
+
+  it('reports none when only other commands are waiting', async () => {
+    jsonOnce({ data: [{ type: 'script' }] });
+    jsonOnce({ data: [] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(false);
+  });
+
+  it('rejects when the check itself fails, rather than reporting none', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 500 }));
+    await expect(hasQueuedReboot('dev-1')).rejects.toThrow();
   });
 });

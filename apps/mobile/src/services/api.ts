@@ -290,7 +290,7 @@ type MobileAlertRecord = {
   title: string;
   message: string;
   severity: Alert['severity'];
-  status: 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+  status: 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
   triggeredAt?: string;
   createdAt?: string;
   acknowledgedAt?: string | null;
@@ -1230,6 +1230,22 @@ export async function sendDeviceAction(
     id: response.id || response.commandId || '',
     type: action
   };
+}
+
+/**
+ * Whether a restart is already queued for the device: a `reboot` command the
+ * agent has not finished (`pending` or `sent`). The alert-screen Reboot now
+ * checks this so reopening a still-open alert does not queue a second one.
+ */
+export async function hasQueuedReboot(deviceId: string): Promise<boolean> {
+  for (const status of ['pending', 'sent'] as const) {
+    const response = await requestWithPrefix<{ data?: Array<{ type?: string }> }>(
+      `/devices/${deviceId}/commands?status=${status}&limit=100`,
+      API_CORE_PREFIX,
+    );
+    if ((response.data ?? []).some((command) => command.type === 'reboot')) return true;
+  }
+  return false;
 }
 
 export type WakeFailureCode =

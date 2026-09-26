@@ -7,17 +7,21 @@ import type { Alert } from '../../services/api';
  */
 export const REBOOT_PENDING_SOURCE = 'maintenance-reboot-sweep';
 
+/** Alert statuses in which the device may still need its restart. */
+const OPEN_STATUSES = new Set(['active', 'acknowledged']);
+
 /**
  * Whether the alert detail screen offers "Reboot now". Only a reboot-pending
  * alert that names a device qualifies; any other alert keeps Acknowledge
  * alone. Acknowledging does not hide it, because acknowledging only marks the
- * alert as seen and the device still needs the restart. A resolved alert
- * does hide it.
+ * alert as seen and the device still needs the restart. Any closed status
+ * (resolved, dismissed, suppressed, or one this app does not know) hides it.
  */
 export function canRebootFromAlert(alert: Alert): boolean {
   if (alert.source !== REBOOT_PENDING_SOURCE) return false;
   if (!alert.deviceId) return false;
-  return alert.metadata?.status !== 'resolved';
+  const status = alert.metadata?.status;
+  return typeof status === 'string' && OPEN_STATUSES.has(status);
 }
 
 /**
