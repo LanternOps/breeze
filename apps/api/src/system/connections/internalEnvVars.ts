@@ -255,6 +255,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   METRIC_ANOMALY_EPISODE_CLEAN_BUCKETS: 'anomaly episode tuning',
   METRIC_ANOMALY_EPISODE_EXPIRE_HOURS: 'timing knob',
   METRIC_ANOMALY_EPISODE_GAP_MINUTES: 'timing knob',
+  METRIC_ANOMALY_EPISODE_MIN_BUCKETS: 'anomaly episode tuning',
   METRIC_ANOMALY_EPISODE_RECURRENCE_DAYS: 'timing knob',
   METRIC_ANOMALY_EPISODE_SNOOZE_DAYS: 'timing knob',
   METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',

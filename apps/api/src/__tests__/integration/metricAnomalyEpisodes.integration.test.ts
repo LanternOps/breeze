@@ -19,6 +19,7 @@ import {
   assembleMetricAnomalyEpisodes,
   closeEpisodesForDisabledDetection,
   EPISODE_GAP_MINUTES,
+  EPISODE_MIN_BUCKETS,
   loadEpisodeAssemblyInputs,
   resolveMetricAnomalyEpisodes,
   setEpisodeCloseHandler,
@@ -331,6 +332,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     // Six clean cpu buckets between the bursts, then a bucket 31 minutes after the first burst ended (at +15).
     await insertRollups({ orgId, deviceId: device, metricName: 'cpu_percent', starts: bucketsFrom(at(start, 15), 6), value: () => 20 });
     const late = await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 46) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 51) }); // persistence gate: 2 buckets
     const closed = await assemble(orgId);
 
     const episodes = await episodesFor(orgId, device);
@@ -339,7 +341,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     // Deviation 12: a superseded episode is closed at the successor's start, so
     // the episode-relative recurrence window (A2) still counts it.
     expect(episodes[0]!.resolvedAt!.toISOString()).toBe(at(start, 46).toISOString());
-    expect(episodes[1]).toMatchObject({ status: 'open', recurrenceCount: 1, bucketCount: 1 });
+    expect(episodes[1]).toMatchObject({ status: 'open', recurrenceCount: 1, bucketCount: 2 });
     expect((await anomalyById(late)).episodeId).toBe(episodes[1]!.id);
     expect((await membersOf(first!.id)).every((member) => member.status === 'cleared')).toBe(true);
     expect(closed).toEqual([{ episodeId: first!.id, deviceId: device, linkedAlertId: null, closeReason: 'cleared' }]);
@@ -359,6 +361,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     await getTestDb().update(metricAnomalyEpisodes).set({ linkedAlertId: promotion.alertId }).where(eq(metricAnomalyEpisodes.id, first!.id));
 
     await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 46) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 51) });
     const closed = await assemble(orgId);
 
     expect(closed).toEqual([{ episodeId: first!.id, deviceId: device, linkedAlertId: promotion.alertId, closeReason: 'expired_no_data' }]);
@@ -381,7 +384,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
   it('in one batch, closes the older burst as history (expired_no_data without clean data) and opens the newer', async () => {
     const device = await insertDevice(orgId, siteId);
     const start = at(now, -180);
-    for (const minute of [0, 5, 10, 46]) await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, minute) });
+    for (const minute of [0, 5, 10, 46, 51]) await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, minute) });
 
     await assemble(orgId);
 
@@ -399,6 +402,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     const episodeId = await insertEpisode({ orgId, deviceId: device, firstSeenAt: start, lastSeenAt: at(start, 15) });
     for (const minute of [0, 5, 10]) await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, minute), episodeId });
     const orphan = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -300) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -295) }); // a lone bucket would be transient
     const near = await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, -30) }); // ends 25 min before first_seen_at
 
     await assemble(orgId);
@@ -410,7 +414,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     expect(current.firstSeenAt.toISOString()).toBe(at(start, -30).toISOString());
     expect((await anomalyById(near)).episodeId).toBe(episodeId);
     const history = episodes.find((episode) => episode.id !== episodeId)!;
-    expect(history).toMatchObject({ status: 'resolved', closeReason: 'expired_no_data', bucketCount: 1 });
+    expect(history).toMatchObject({ status: 'resolved', closeReason: 'expired_no_data', bucketCount: 2 });
     expect(history.resolvedAt!.toISOString()).toBe(at(start, -30).toISOString());
     expect((await anomalyById(orphan)).episodeId).toBe(history.id);
   });
@@ -423,6 +427,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
       status: 'dismissed', closeReason: 'user', snoozedUntil, resolvedAt: at(now, -25),
     });
     const member = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -20) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -15) }); // persistence gate
 
     await assemble(orgId);
 
@@ -436,12 +441,12 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     const feedback = await getTestDb().select().from(mlFeedbackEvents).where(eq(mlFeedbackEvents.sourceId, member));
     expect(feedback).toHaveLength(0);
 
-    const next = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -15) });
+    const next = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10) });
     await assemble(orgId);
 
     episodes = await episodesFor(orgId, device);
     expect(episodes).toHaveLength(2);
-    expect(episodes[1]).toMatchObject({ id: successor.id, bucketCount: 2 });
+    expect(episodes[1]).toMatchObject({ id: successor.id, bucketCount: 3 });
     expect(await anomalyById(next)).toMatchObject({ status: 'dismissed', episodeId: successor.id });
   });
 
@@ -451,13 +456,18 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     const episodeId = await insertEpisode({ orgId, deviceId: device, firstSeenAt: start, lastSeenAt: at(start, 10) });
     await insertAnomaly({ orgId, deviceId: device, windowStart: start, episodeId });
     const late = await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 15) });
+    // Second bucket: once the anchor is dismissed these become a new island,
+    // which the persistence gate only turns into an episode at 2 buckets.
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(start, 20) });
 
     const tick = new Date();
     const plan = await withSystemDbAccessContext(async () => {
       const inputs = await loadEpisodeAssemblyInputs(orgId, tick);
-      return planEpisodeAssembly({ ...inputs, gapMinutes: EPISODE_GAP_MINUTES });
+      return planEpisodeAssembly({
+        ...inputs, gapMinutes: EPISODE_GAP_MINUTES, minBuckets: EPISODE_MIN_BUCKETS, settledBefore: floorToBucket(tick),
+      });
     });
-    expect(plan.anchorAttaches.map((attach) => attach.episodeId)).toEqual([episodeId]);
+    expect(new Set(plan.anchorAttaches.map((attach) => attach.episodeId))).toEqual(new Set([episodeId]));
 
     // W02's PATCH commits here: dismiss + 7-day snooze.
     await getTestDb()
@@ -493,6 +503,7 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
       status: 'resolved', closeReason: 'cleared', resolvedAt: at(now, -10),
     });
     const replayed = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -300) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -295) });
 
     await assemble(orgId);
 
@@ -562,15 +573,50 @@ describe('metric anomaly episode assembly (spec §6, §9)', () => {
     });
   });
 
+  it('persistence gate: a lone bucket waits while it can still grow, then closes cleared with no episode or incident', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const lone = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10) });
+
+    // Still inside the gap: pending, untouched.
+    await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
+    expect(await anomalyById(lone)).toMatchObject({ status: 'open', episodeId: null });
+
+    // Once a bucket at last_seen + gap has had its detection pass, it is settled.
+    const settledAt = at(now, -5 + EPISODE_GAP_MINUTES + 5);
+    await withSystemDbAccessContext(() => assembleMetricAnomalyEpisodes({ orgId, from: at(settledAt, -15), to: settledAt }));
+
+    expect(await anomalyById(lone)).toMatchObject({ status: 'cleared', episodeId: null });
+    expect(await episodesFor(orgId, device)).toEqual([]);
+    const incidents = await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.deviceId, device));
+    expect(incidents).toEqual([]);
+  });
+
+  it('persistence gate control: a second bucket opens the episode before the island settles', async () => {
+    const device = await insertDevice(orgId, siteId);
+    const first = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10) });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -5) });
+
+    await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
+
+    const [episode] = await episodesFor(orgId, device);
+    expect(episode).toMatchObject({ status: 'open', bucketCount: 2 });
+    expect((await anomalyById(first)).episodeId).toBe(episode!.id);
+  });
+
   it('stores an empty process list when the dimension is absent, and NULL when no sample is near', async () => {
     const diskDevice = await insertDevice(orgId, siteId);
     const start = at(now, -60);
-    await insertAnomaly({ orgId, deviceId: diskDevice, windowStart: start, metricType: 'disk', metricName: 'disk_write_bps' });
+    // Two buckets per device: a lone bucket opens no episode (persistence gate).
+    for (const minute of [0, 5]) {
+      await insertAnomaly({ orgId, deviceId: diskDevice, windowStart: at(start, minute), metricType: 'disk', metricName: 'disk_write_bps' });
+    }
     await insertProcessSample(orgId, diskDevice, at(start, 1), [{ name: 'svchost.exe', pid: 8, cpu: 1, ramMb: 20 }]);
     const quietDevice = await insertDevice(orgId, siteId);
-    await insertAnomaly({ orgId, deviceId: quietDevice, windowStart: start });
+    for (const minute of [0, 5]) await insertAnomaly({ orgId, deviceId: quietDevice, windowStart: at(start, minute) });
     const countDevice = await insertDevice(orgId, siteId);
-    await insertAnomaly({ orgId, deviceId: countDevice, windowStart: start, metricType: 'process', metricName: 'process_count', anomalyType: 'process_runaway' });
+    for (const minute of [0, 5]) {
+      await insertAnomaly({ orgId, deviceId: countDevice, windowStart: at(start, minute), metricType: 'process', metricName: 'process_count', anomalyType: 'process_runaway' });
+    }
     await insertProcessSample(orgId, countDevice, at(start, 1), [{ name: 'a.exe', pid: 1, cpu: 1, ramMb: 1 }]);
 
     await assemble(orgId);
@@ -828,14 +874,18 @@ describe('episode stages inside detectMetricAnomaliesRange (spec §6, §7, D4)',
     const device = await insertDevice(orgId, siteId);
     const ram = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'ram_percent', metricType: 'memory', score: 9 });
     await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'cpu_percent', score: 3 });
+    // Second bucket for each series (persistence gate), lower-scored.
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -5), metricName: 'ram_percent', metricType: 'memory', score: 2 });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -5), metricName: 'cpu_percent', score: 1 });
 
     await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now });
 
     const ramEpisodeId = (await anomalyById(ram)).episodeId;
     expect(ramEpisodeId).not.toBeNull();
     const incidents = await getTestDb().select().from(metricAnomalyIncidents).where(eq(metricAnomalyIncidents.deviceId, device));
-    expect(incidents).toHaveLength(1); // one per (device, anomaly_type, bucket)
-    expect(incidents[0]!.episodeId).toBe(ramEpisodeId); // highest-score member's episode
+    expect(incidents).toHaveLength(2); // one per (device, anomaly_type, bucket)
+    const first = incidents.find((incident) => incident.windowStart.getTime() === at(now, -10).getTime());
+    expect(first!.episodeId).toBe(ramEpisodeId); // highest-score member's episode
   });
 
   it('a backfill assembles but never auto-resolves', async () => {
@@ -843,6 +893,7 @@ describe('episode stages inside detectMetricAnomaliesRange (spec §6, §7, D4)',
     const device = await insertDevice(orgId, siteId);
     const episodeId = await seedClearableEpisode(device);
     const fresh = await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -10), metricName: 'ram_percent', metricType: 'memory' });
+    await insertAnomaly({ orgId, deviceId: device, windowStart: at(now, -5), metricName: 'ram_percent', metricType: 'memory' });
 
     const result = await detectMetricAnomaliesRange({ orgId, from: at(now, -15), to: now, trigger: 'backfill' });
 

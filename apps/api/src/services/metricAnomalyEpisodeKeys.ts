@@ -31,6 +31,11 @@ export const EPISODE_RECURRENCE_DAYS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISOD
 export const EPISODE_SNOOZE_DAYS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_SNOOZE_DAYS', 7);
 /** How far back the assembly scan looks for unassigned rows. */
 export const EPISODE_ASSEMBLY_LOOKBACK_HOURS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_ASSEMBLY_LOOKBACK_HOURS', 24);
+/**
+ * Distinct buckets a new episode needs. Lone buckets of a settled island close
+ * `cleared` with no episode (planner persistence gate).
+ */
+export const EPISODE_MIN_BUCKETS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_MIN_BUCKETS', 2);
 /** Raw rollup grain the detectors and the clean-data check read. Not tunable. */
 export const EPISODE_BUCKET_SECONDS = 300;
 
@@ -42,8 +47,12 @@ interface FamilyEntry {
 }
 
 /**
- * source_table -> metric_name -> family. Only the process cpu and ram
- * `_sum`/`_max` pairs collapse. `source_table` stays part of the key because
+ * source_table -> metric_name -> family. The process cpu and ram `_sum`/`_max`
+ * pairs collapse, and so do the device ram/disk percent + absolute pairs: the
+ * growth detector emits `ram_percent` and `ram_used_mb` (resp. `disk_percent`
+ * and `disk_used_gb`) for the same growth, which opened two episodes per event
+ * (2026-09-26 prod review). Episodes opened before that keep their old
+ * `ram_used`/`disk_used` family and close normally. `source_table` stays part of the key because
  * `network_egress` and `process_runaway` are each emitted for a device series
  * AND a process-sample series, which must not merge.
  */
@@ -51,9 +60,9 @@ export const EPISODE_METRIC_FAMILIES: Readonly<Record<string, Readonly<Record<st
   device_metrics: {
     cpu_percent: { family: 'cpu', dimension: 'cpu' },
     ram_percent: { family: 'ram', dimension: 'ramMb' },
-    ram_used_mb: { family: 'ram_used', dimension: 'ramMb' },
+    ram_used_mb: { family: 'ram', dimension: 'ramMb' },
     disk_percent: { family: 'disk', dimension: null },
-    disk_used_gb: { family: 'disk_used', dimension: null },
+    disk_used_gb: { family: 'disk', dimension: null },
     disk_read_bps: { family: 'disk_read', dimension: 'diskBps' },
     disk_write_bps: { family: 'disk_write', dimension: 'diskBps' },
     bandwidth_in_bps: { family: 'net_in', dimension: 'netBps' },
