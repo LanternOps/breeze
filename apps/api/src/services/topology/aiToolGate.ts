@@ -106,8 +106,8 @@ export function topologyAiAvailable(flags: Pick<TopologyFlags, 'materialization'
   return flags.materialization && flags.ai && readiness.provider && readiness.orgPolicy;
 }
 
-/** The single alias-scope derivation lives with the alias key (aiEvidence.ts). */
-export { topologyAiAliasScope } from './aiEvidence';
+/** The single alias-scope derivation lives with the alias key (aiAlias.ts). */
+export { topologyAiAliasScope } from './aiAlias';
 
 /** The pinned session row, read under the caller's own RLS context and owner-bound. */
 async function loadSessionPin(auth: AuthContext, sessionId: string): Promise<{ orgId: string; siteId: string } | null> {

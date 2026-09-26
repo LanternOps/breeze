@@ -15,7 +15,7 @@
  */
 import type { GraphNode, GraphRelationship, GraphResponse, TopologyDiagnosticRun } from '@breeze/shared';
 import type { TopologyRequestContext } from './access';
-import { createTopologyAiAliasContext, topologyAiAliasScope, type TopologyAiAliasContext } from './aiEvidence';
+import { createTopologyAiAliasContext, topologyAiAliasScope, type TopologyAiAliasContext } from './aiAlias';
 import { sanitizeTopologyAiText } from './aiRedaction';
 import { getTopologyDiagnosticRun } from './diagnosticRuns';
 import { getTopologyGraph, getTopologyRelationshipEvidence } from './graph';
