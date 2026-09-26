@@ -9,7 +9,7 @@ import {
   type TopologyScope,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { devices, topologyChangeOutbox, topologyMonitoringPolicies } from '../../db/schema';
+import { devices, topologyChangeOutbox, topologyDiagnosticRuns, topologyMonitoringPolicies } from '../../db/schema';
 import type { TopologyRequestContext } from './access';
 import { createTopologyDiagnosticRun } from './diagnosticRuns';
 import type { DiagnosticPlanningRepository } from './diagnosticTypes';
@@ -175,7 +175,7 @@ async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow,
     let refused: string | null = null;
     try {
       if (!origin) throw new TopologyOperationError('origin_unavailable', 409);
-      await createTopologyDiagnosticRun(ctx, {
+      const run = await createTopologyDiagnosticRun(ctx, {
         recipeId: definition.recipeId,
         recipeVersion: 1,
         subject: { kind: 'node', id: context.originNodeId },
@@ -188,6 +188,16 @@ async function claimPolicySlot(ctx: TopologyRequestContext, snapshot: PolicyRow,
         scheduledOccurrence: { policyId: row.id, policyRevision, contextKey: context.contextKey, family: context.family, scheduledFor: slot, occurrenceKey, continuityKey },
         requesterPermissionVersion: deps.requesterPermissionVersion,
       });
+      // PR #7117 C6: an eligible_collector occurrence may be planned from a
+      // different collector than the armed context's; the stored continuity
+      // key names the origin that ACTUALLY runs it (assessment derives the
+      // same key from the immutable origin snapshot).
+      const actualContinuityKey = topologyContinuityKey({ policyId: row.id, policyRevision, contextKey: context.contextKey, family: context.family,
+        originDeviceId: run.plan.origin.deviceId, originAgentId: run.plan.origin.agentId });
+      if (actualContinuityKey !== continuityKey) {
+        await db.update(topologyDiagnosticRuns).set({ continuityKey: actualContinuityKey })
+          .where(and(eq(topologyDiagnosticRuns.id, run.id), eq(topologyDiagnosticRuns.orgId, ctx.scope.orgId), eq(topologyDiagnosticRuns.siteId, ctx.scope.siteId)));
+      }
       scheduled++;
     } catch (error) {
       if (pgErrorCode(error) === '23505') { entries.set(pairKey, entry); continue; }

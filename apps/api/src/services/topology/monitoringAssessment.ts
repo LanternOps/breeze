@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import {
   topologyPolicyAlertStateSchema,
   type TopologyAlertStreak,
@@ -9,6 +9,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { topologyChangeOutbox, topologyDiagnosticRuns, topologyMonitoringPolicies } from '../../db/schema';
 import { openTopologyPolicyAlert, recoverTopologyPolicyAlert, TOPOLOGY_ALERT_NOTIFY_COOLDOWN_MS } from './monitoringAlerts';
 import { TOPOLOGY_MONITORING_GAP_EVENT, type TopologyMonitoringGapEvent } from './monitoringEvents';
+import { topologyContinuityKey } from './monitoringSlots';
 
 /**
  * Recurring health streaks (M3 Task 8, amendments M3-D8/D11/D15).
@@ -69,9 +70,19 @@ export function advanceTopologyAlertStreak(previous: TopologyAlertStreak, event:
 const TERMINAL = ['completed', 'failed', 'cancelled', 'expired'];
 type RunRow = typeof topologyDiagnosticRuns.$inferSelect;
 
-/** A settled scheduled run as a streak event. Only a completed run inside its lifetime is a fresh measurement. */
+/**
+ * A settled scheduled run as a streak event. Only a completed run inside its
+ * lifetime is a fresh measurement. Continuity is keyed by the run's ACTUAL,
+ * immutable origin (PR #7117 C6): an eligible_collector policy may run from a
+ * different collector on a later occurrence, and a series must never mix
+ * measurements from two origins.
+ */
 export function runToMonitoringEvent(run: RunRow): TopologyMonitoringEvent {
   const completed = run.state === 'completed';
+  const continuityKey = topologyContinuityKey({
+    policyId: run.policyId!, policyRevision: run.policyRevision!.toString(), contextKey: run.scheduledContextKey!, family: run.scheduledFamily!,
+    originDeviceId: run.originSnapshot.deviceId, originAgentId: run.originSnapshot.agentId,
+  });
   return {
     kind: 'scheduled_result',
     policyRevision: run.policyRevision!.toString(),
@@ -79,7 +90,7 @@ export function runToMonitoringEvent(run: RunRow): TopologyMonitoringEvent {
     family: run.scheduledFamily!,
     scheduledFor: run.scheduledFor!.toISOString(),
     occurrenceKey: run.occurrenceKey!,
-    continuityKey: run.continuityKey,
+    continuityKey,
     coverage: completed ? run.coverage as TopologyMonitoringEvent['coverage'] : 'none',
     freshness: completed && run.finishedAt !== null && run.finishedAt.getTime() <= run.deadline.getTime() ? 'fresh' : 'stale',
     assessment: completed ? run.assessment as TopologyMonitoringEvent['assessment'] : 'unknown',
@@ -121,9 +132,19 @@ export async function applyTopologyPolicyAssessments(scope: TopologyScope, polic
     .where(and(eq(topologyChangeOutbox.orgId, scope.orgId), eq(topologyChangeOutbox.siteId, scope.siteId), eq(topologyChangeOutbox.eventKind, TOPOLOGY_MONITORING_GAP_EVENT),
       eq(topologyChangeOutbox.aggregateId, policyId), sql`${topologyChangeOutbox.payload}->>'state' = 'pending'`))
     .orderBy(asc(topologyChangeOutbox.createdAt)).limit(256);
-  const runs = await db.select().from(topologyDiagnosticRuns)
+  // Per-pair cursor (PR #7117 C1): only runs of an armed pair AFTER its last
+  // applied slot. Without it the oldest 512 runs of the revision — all already
+  // applied — were reloaded forever once history passed 512 and new
+  // occurrences were never assessed. Every loaded settled run before the
+  // barrier advances its pair's cursor, so each pass makes progress.
+  const pairCursors = [...entries.values()].map((entry) => and(
+    eq(topologyDiagnosticRuns.scheduledContextKey, entry.contextKey),
+    eq(topologyDiagnosticRuns.scheduledFamily, entry.family),
+    entry.lastAppliedScheduledFor === null ? undefined : gt(topologyDiagnosticRuns.scheduledFor, new Date(entry.lastAppliedScheduledFor)),
+  ));
+  const runs = pairCursors.length === 0 ? [] : await db.select().from(topologyDiagnosticRuns)
     .where(and(eq(topologyDiagnosticRuns.orgId, scope.orgId), eq(topologyDiagnosticRuns.siteId, scope.siteId), eq(topologyDiagnosticRuns.policyId, policyId),
-      eq(topologyDiagnosticRuns.policyRevision, policy.revision), isNotNull(topologyDiagnosticRuns.scheduledFor)))
+      eq(topologyDiagnosticRuns.policyRevision, policy.revision), isNotNull(topologyDiagnosticRuns.scheduledFor), or(...pairCursors)))
     .orderBy(asc(topologyDiagnosticRuns.scheduledFor)).limit(512);
 
   // Per pair, nothing at or after the first unsettled slot is applied yet.
@@ -196,9 +217,9 @@ export async function drainTopologyMonitoringAssessments(options: { limit?: numb
       SELECT r.policy_id, r.org_id, r.site_id FROM topology_diagnostic_runs r
         JOIN topology_monitoring_policies p ON p.id = r.policy_id AND p.org_id = r.org_id AND p.site_id = r.site_id
        WHERE r.policy_id IS NOT NULL AND r.state IN ('completed','failed','cancelled','expired') AND r.policy_revision = p.revision
-         AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p.alert_state->'entries') e
-                          WHERE e->>'contextKey' = r.scheduled_context_key AND e->>'family' = r.scheduled_family
-                            AND e->>'lastAppliedScheduledFor' IS NOT NULL AND (e->>'lastAppliedScheduledFor')::timestamptz >= r.scheduled_for)
+         AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.alert_state->'entries') e
+                      WHERE e->>'contextKey' = r.scheduled_context_key AND e->>'family' = r.scheduled_family
+                        AND (e->>'lastAppliedScheduledFor' IS NULL OR (e->>'lastAppliedScheduledFor')::timestamptz < r.scheduled_for))
     ) pending LIMIT ${limit}`), 'topology monitoring assessment discovery'));
   const total: AssessmentSummary = { applied: 0, opened: 0, recovered: 0 };
   for (const row of due) {
