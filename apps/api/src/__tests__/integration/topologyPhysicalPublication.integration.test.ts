@@ -16,6 +16,18 @@ import type { AdjacencyTopologySnapshot, AuthenticatedTopologyProducer } from '.
 
 afterAll(() => closeDb());
 
+// Test seam: lets a test add projector output to one publication (a source
+// that first creates an interface in the same build that accepts a merge).
+const injected = vi.hoisted(() => ({ interfaces: [] as Array<Record<string, unknown>> }));
+vi.mock('../../services/topology/collectionPublication', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../services/topology/collectionPublication')>();
+  return { ...actual, prepareCollectionPublication: async (...args: Parameters<typeof actual.prepareCollectionPublication>) => {
+    const result = await actual.prepareCollectionPublication(...args);
+    if (injected.interfaces.length) { result.interfaces.push(...(injected.interfaces.splice(0) as never[])); }
+    return result;
+  } };
+});
+
 /**
  * M2 Task 6 invariants through the real M1 path: physical ingest ->
  * reconcileTopologySite (legacy import completed in the fixture) -> canonical
@@ -294,6 +306,39 @@ describe('canonical physical publication (M2 Task 6)', () => {
     await f.report.lldp('B', [lldp(1, mac('A', 1), 1)], '1', -1_800_000);
     await f.reconcile();
     expect(links(await f.relationships())).toEqual([expect.objectContaining({ id: link.id, support_count: '2' })]);
+  });
+
+  // #5998 review: the merge coalescence owner map was persisted-only. When the
+  // survivor's continuous interface is first created in the SAME publication
+  // that accepts the merge, the destination owner was undefined and every
+  // retry rolled back.
+  it('coalesces a loser interface into a survivor interface created in the same publication', async () => {
+    const f = await fixture();
+    await f.baseInterfaces();
+    await f.report.lldp('A', [lldp(1, mac('B', 1), 1)], '1', -3_000_000);
+    await f.reconcile();
+    const link = links(await f.relationships())[0]!;
+    const assetNode = await f.nodeFor('discovered_asset_id', f.assets.B);
+    const deviceNode = await f.nodeFor('device_id', f.deviceB);
+    await f.test.execute(sql`UPDATE topology_nodes SET created_at='2020-01-01' WHERE id=${deviceNode}::uuid`);
+    await f.test.execute(sql`UPDATE topology_nodes SET created_at='2022-01-01' WHERE id=${assetNode}::uuid`);
+    const loser = (await f.interfaces()).find(i => i.owner_node_id === assetNode && i.interface_key === 'name:Gi0/1')!;
+    expect(loser).toBeDefined();
+    const survivorId = randomUUID();
+    injected.interfaces.push({ ...f.scope, id: survivorId, ownerNodeId: deviceNode, interfaceKey: 'name:Gi0/1', epoch: 'gen:1', kind: 'unknown', addresses: [],
+      retiredAt: null, name: 'Gi0/1', alias: null, osIndex: '1', physAddress: mac('B', 1), lastObservedAt: new Date(), lastOutcome: 'complete' });
+    await f.test.execute(sql`UPDATE discovered_assets SET linked_device_id=${f.deviceB}::uuid, link_source='manual' WHERE id=${f.assets.B}::uuid`);
+    expect((await f.reconcile()).published).toBe(true);
+    expect(injected.interfaces).toEqual([]);
+    const [merged] = await f.q<{ alias_target_id: string }>(sql`SELECT alias_target_id FROM topology_nodes WHERE id=${assetNode}::uuid`);
+    expect(merged!.alias_target_id).toBe(deviceNode);
+    const all = await f.interfaces();
+    expect(all.find(i => i.id === loser.id)).toBeUndefined();
+    expect(all.find(i => i.id === survivorId)).toMatchObject({ owner_node_id: deviceNode, interface_key: 'name:Gi0/1' });
+    const after = links(await f.relationships()).find(r => r.id === link.id)!;
+    const [end] = [after.source_interface_id, after.target_interface_id].filter(id => id === survivorId);
+    expect(end).toBe(survivorId);
+    expect([after.source_node_id, after.target_node_id]).toContain(deviceNode);
   });
 
   it('keeps publishing canonical support with physical off and materialization on', async () => {

@@ -349,7 +349,8 @@ export async function applyMergedInterfaces(tx: Tx, scope: TopologyScope, plan: 
     await tx.execute(sql`UPDATE topology_observations SET subject_node_id=${row.ownerNodeId}::uuid, updated_at=now() WHERE ${scoped} AND subject_interface_id=${row.id}::uuid`);
   }
   for (const [from, to] of plan.coalesced) {
-    const owner = ownerOf.get(to)!;
+    const owner = ownerOf.get(to);
+    if (!owner) throw new Error('Merged interface destination has no owner');
     await tx.execute(sql`UPDATE topology_observations SET subject_interface_id=${to}::uuid, subject_node_id=${owner}::uuid, updated_at=now() WHERE ${scoped} AND subject_interface_id=${from}::uuid`);
     await tx.execute(sql`UPDATE topology_interfaces SET parent_interface_id=${to}::uuid, updated_at=now() WHERE ${scoped} AND parent_interface_id=${from}::uuid`);
     await tx.execute(sql`UPDATE topology_relationships SET source_interface_id=${to}::uuid, source_node_id=${owner}::uuid WHERE ${scoped} AND source_interface_id=${from}::uuid`);

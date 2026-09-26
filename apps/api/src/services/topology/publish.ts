@@ -310,7 +310,10 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     }
     for (const row of nodeWrites.filter(n => n.aliasTargetId)) await tx.update(topologyNodes).set({ aliasTargetId: row.aliasTargetId }).where(and(scopedWhere(topologyNodes, normalized), eq(topologyNodes.id, row.id!)));
     if (mergedInterfaces) {
+      // A coalescence destination may be created by this very publication
+      // (collection.interfaces, upserted below): its owner comes from the batch.
       const owners = new Map((await tx.select({ id: topologyInterfaces.id, owner: topologyInterfaces.ownerNodeId }).from(topologyInterfaces).where(scopedWhere(topologyInterfaces, normalized))).map(r => [r.id, resolve(r.owner)]));
+      for (const i of collection.interfaces) owners.set(i.id, resolve(i.ownerNodeId));
       await applyMergedInterfaces(tx, normalized, mergedInterfaces, owners);
       // Physical keys still name the loser; the next publication rekeys them.
       // Merges that touch no physical evidence leave the M0 revision contract alone.
