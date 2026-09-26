@@ -743,6 +743,9 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           updateOfferWithheldReason: (d.updateOfferWithheldReason ?? null) as string | null,
+          updateAttemptTargetVersion: (d.updateAttemptTargetVersion ?? null) as string | null,
+          updateAttemptStartedAt: (d.updateAttemptStartedAt ?? null) as string | null,
+          updateAttemptLastAt: (d.updateAttemptLastAt ?? null) as string | null,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           helperVersion: (d.helperVersion ?? null) as string | null,
           agentServerUrl: (d.agentServerUrl ?? null) as string | null,

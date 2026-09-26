@@ -937,6 +937,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
   }
 
+  // #4073 — close the update-attempt record (stamped by the WS update_status
+  // message before every self-update attempt) once this beat reports the
+  // target version or newer. Written only when a record is open, so healthy
+  // devices add no column write. A record left open is the stuck-update
+  // signal (isAgentUpdateStuck); an unparseable version compares equal and
+  // closes it, so the signal never fires on a version we cannot judge.
+  if (
+    device.updateAttemptTargetVersion &&
+    compareAgentVersions(data.agentVersion, device.updateAttemptTargetVersion) >= 0
+  ) {
+    deviceUpdates.updateAttemptTargetVersion = null;
+    deviceUpdates.updateAttemptStartedAt = null;
+    deviceUpdates.updateAttemptLastAt = null;
+    deviceUpdates.updateAttemptCount = null;
+  }
+
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
   // dark), clear it now that the main agent is heartbeating again. No

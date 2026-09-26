@@ -1096,6 +1096,7 @@
     "linkSpeed": "Velocidade do link"
   },
   "deviceInfoTab": {
+    "updateStuck": "A atualização do agente para {{target}} parece travada: {{attempts}} tentativas desde {{since}} e o dispositivo continua na versão antiga. O atualizador tenta novamente a cada heartbeat; verifique os logs do agente, ou o próprio dispositivo se ele não enviar nenhum.",
     "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
     "gpu": "GPU",
     "text": "—",
@@ -1438,6 +1439,8 @@
       "manual": "Manual"
     },
     "updateWithheld": "Atualizações retidas",
+    "updateStuck": "Atualização travada",
+    "updateStuckTooltip": "Este dispositivo está há mais de uma hora tentando atualizar o agente para {{target}} sem concluir.",
     "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",

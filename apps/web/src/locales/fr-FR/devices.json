@@ -1096,6 +1096,7 @@
     "linkSpeed": "Vitesse de liaison"
   },
   "deviceInfoTab": {
+    "updateStuck": "La mise à jour de l'agent vers {{target}} semble bloquée : {{attempts}} tentatives depuis {{since}} et l'appareil est toujours sur son ancienne version. Le programme de mise à jour réessaie à chaque heartbeat ; vérifiez les journaux de l'agent, ou l'appareil lui-même s'il n'en envoie aucun.",
     "updateOfferWithheld": "Les offres de mise à jour sont retenues pour cet appareil (depuis {{since}}) : il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée par ce serveur, il reste donc à sa version actuelle. Récupérez-le avec un programme d'installation de l'édition proposée ou une version de l'agent qui signale son édition.",
     "gpu": "GPU",
     "text": "—",
@@ -1438,6 +1439,8 @@
       "manual": "Manuel"
     },
     "updateWithheld": "Mises à jour retenues",
+    "updateStuck": "Mise à jour bloquée",
+    "updateStuckTooltip": "Cet appareil réessaie depuis plus d'une heure sa mise à jour de l'agent vers {{target}} sans aboutir.",
     "updateWithheldTooltip": "Le serveur ne propose pas de mises à jour à cet appareil, car il n'est pas possible de confirmer que la version de son agent accepte l'édition proposée. Il reste à sa version actuelle jusqu'à sa récupération.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",

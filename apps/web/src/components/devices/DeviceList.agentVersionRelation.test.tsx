@@ -137,3 +137,33 @@ describe('DeviceList — update offers withheld badge (#6449)', () => {
     expect(screen.queryByTestId(`device-${dev.id}-update-withheld`)).toBeNull();
   });
 });
+
+describe('DeviceList — stuck update badge (#4073)', () => {
+  const stuck = () => ({
+    updateAttemptTargetVersion: '0.110.0',
+    updateAttemptStartedAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+    updateAttemptLastAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  it('flags a device whose update has been retrying past the threshold', () => {
+    const dev = device('99999999-9999-9999-9999-999999999991', 'wedged', { agentVersion: '0.106.0', ...stuck() });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-stuck`)).toBeTruthy();
+  });
+
+  it('flags it in the plain (unknown relation) state too', () => {
+    const dev = device('99999999-9999-9999-9999-999999999992', 'wedged-plain', stuck());
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{}} />);
+    expect(screen.getByTestId(`device-${dev.id}-update-stuck`)).toBeTruthy();
+  });
+
+  it('does not flag an update that only just started', () => {
+    const dev = device('99999999-9999-9999-9999-999999999993', 'updating', {
+      updateAttemptTargetVersion: '0.110.0',
+      updateAttemptStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      updateAttemptLastAt: new Date().toISOString(),
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} effectiveAgentVersionByOrgId={{ 'org-1': '0.110.0' }} />);
+    expect(screen.queryByTestId(`device-${dev.id}-update-stuck`)).toBeNull();
+  });
+});

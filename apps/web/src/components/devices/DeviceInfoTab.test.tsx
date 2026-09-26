@@ -150,6 +150,49 @@ describe('DeviceInfoTab — update offers withheld (#6449)', () => {
   });
 });
 
+describe('DeviceInfoTab — stuck agent update (#4073)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, agentVersion: '0.106.0', ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('shows the stuck-update notice with target and attempt count', async () => {
+    load({
+      updateAttemptTargetVersion: '0.110.0',
+      updateAttemptStartedAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+      updateAttemptLastAt: new Date(Date.now() - 60_000).toISOString(),
+      updateAttemptCount: 180,
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('update-stuck');
+    expect(notice.textContent).toContain('0.110.0');
+    expect(notice.textContent).toContain('180');
+  });
+
+  it('shows no notice while a fresh update is in progress', async () => {
+    load({
+      updateAttemptTargetVersion: '0.110.0',
+      updateAttemptStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      updateAttemptLastAt: new Date().toISOString(),
+      updateAttemptCount: 1,
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('update-stuck')).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — hardware summary display', () => {
   beforeEach(() => {
     vi.clearAllMocks();

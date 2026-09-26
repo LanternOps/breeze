@@ -39,6 +39,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'pamLifetimeProtocolVersion', 'rollbackComponentVersions',
   'agentEdition', 'migrationRequired', 'editionMigrationDispatchedAt',
   'updateOfferWithheldReason', 'updateOfferWithheldSince',
+  'updateAttemptTargetVersion', 'updateAttemptStartedAt', 'updateAttemptLastAt', 'updateAttemptCount',
   'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
   'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',

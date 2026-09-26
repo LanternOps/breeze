@@ -263,6 +263,15 @@ export const devices = pgTable('devices', {
   // on a state change; `since` is when the current episode began.
   updateOfferWithheldReason: varchar('update_offer_withheld_reason', { length: 50 }),
   updateOfferWithheldSince: timestamp('update_offer_withheld_since', { withTimezone: true }),
+  // #4073 — the agent self-update currently being attempted. Stamped by the
+  // WS `update_status` message the agent sends before EVERY attempt, cleared
+  // by the heartbeat once the reported version reaches the target. An open
+  // record that is old and still retrying is a stuck update
+  // (isAgentUpdateStuck in @breeze/shared) — detectable without logs.
+  updateAttemptTargetVersion: varchar('update_attempt_target_version', { length: 50 }),
+  updateAttemptStartedAt: timestamp('update_attempt_started_at', { withTimezone: true }),
+  updateAttemptLastAt: timestamp('update_attempt_last_at', { withTimezone: true }),
+  updateAttemptCount: integer('update_attempt_count'),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links

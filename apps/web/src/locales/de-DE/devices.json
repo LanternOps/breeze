@@ -1096,6 +1096,7 @@
     "linkSpeed": "Verbindungsgeschwindigkeit"
   },
   "deviceInfoTab": {
+    "updateStuck": "Das Agent-Update auf {{target}} scheint festzuhängen: {{attempts}} Versuche seit {{since}}, und das Gerät ist noch auf seiner alten Version. Der Updater versucht es bei jedem Heartbeat erneut; prüfen Sie die Agent-Protokolle oder das Gerät selbst, falls es keine sendet.",
     "updateOfferWithheld": "Update-Angebote werden für dieses Gerät zurückgehalten (seit {{since}}): Es lässt sich nicht bestätigen, dass der Agent-Build die von diesem Server bereitgestellte Edition akzeptiert, daher bleibt er auf seiner aktuellen Version. Stellen Sie ihn mit einem Installer der bereitgestellten Edition oder einem Agent-Release wieder her, das seine Edition meldet.",
     "gpu": "GPU",
     "text": "—",
@@ -1438,6 +1439,8 @@
       "manual": "Manuell"
     },
     "updateWithheld": "Updates zurückgehalten",
+    "updateStuck": "Update hängt",
+    "updateStuckTooltip": "Dieses Gerät versucht seit über einer Stunde erfolglos, sein Agent-Update auf {{target}} abzuschließen.",
     "updateWithheldTooltip": "Der Server bietet diesem Gerät keine Updates an, weil sich nicht bestätigen lässt, dass sein Agent-Build die bereitgestellte Edition akzeptiert. Er bleibt bis zur Wiederherstellung auf seiner aktuellen Version.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
