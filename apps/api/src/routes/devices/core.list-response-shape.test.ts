@@ -350,77 +350,33 @@ describe('GET /devices — response shape', () => {
     expect(row.purchaseDateSource).toBeNull();
   });
 
-  it.each(['warning', 'critical', 'unknown'] as const)('projects and filters hardware %s for rows and total', async health => {
-    const { where, leftJoin } = rigDeviceListRows([{
+  it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
+    const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
       hardwareHealth: health, hardwareHealthSummary: { counts: { 'physical_disk:critical': 2 }, controllerNames: ['PERC'] },
     }]);
-    const countWhere = vi.fn().mockResolvedValue([{ count: 1 }]);
-    const countChain: Record<string, unknown> = { where: countWhere };
-    const countJoin = vi.fn().mockReturnValue(countChain);
-    countChain.leftJoin = countJoin;
-    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue(countChain) } as never);
-    const response = await app.request(`/devices?hardwareHealth=${health}&includeTotal=true`);
+    const response = await app.request('/devices');
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.data[0]).toMatchObject({ hardwareHealth: health, hardwareHealthSummary: { counts: { 'physical_disk:critical': 2 }, controllerNames: ['PERC'] } });
-    expect(body.pagination.total).toBe(1);
-    expect(vi.mocked(db.select).mock.calls[1]?.[0]).toMatchObject({
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
       hardwareHealth: deviceHardwareHealth.health, hardwareHealthSummary: deviceHardwareHealth.summary,
     });
     expect(leftJoin.mock.calls.some(([table]) => table === deviceHardwareHealth)).toBe(true);
-    expect(countJoin.mock.calls.some(([table]) => table === deviceHardwareHealth)).toBe(true);
-    for (const value of [where.mock.calls[0]?.[0], countWhere.mock.calls[0]?.[0]]) {
-      const query = new PgDialect().sqlToQuery(value as SQL);
-      expect(query.sql).toContain('"device_hardware_health"."health"');
-      expect(query.sql).not.toMatch(/coalesce/i);
-      expect(query.params).toContain(health);
-    }
   });
   it('preserves null projection when no hardware row exists', async () => {
     rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', hardwareHealth: null, hardwareHealthSummary: null }]);
     const response = await app.request('/devices');
     expect((await response.json()).data[0]).toMatchObject({ hardwareHealth: null, hardwareHealthSummary: null });
   });
-  it.each(['ok', 'invalid', ''])('rejects unsupported hardware filter %s', async health => {
-    const response = await app.request(`/devices?hardwareHealth=${health}`);
-    expect(response.status).toBe(400);
-    expect(db.select).not.toHaveBeenCalled();
-  });
-  it('rejects a cross-org hardware filter before querying', async () => {
-    const response = await app.request('/devices?hardwareHealth=critical&orgId=22222222-2222-4222-8222-222222222222');
-    expect(response.status).toBe(403);
-    expect(db.select).not.toHaveBeenCalled();
-  });
-  it('keeps the caller organization predicate with the hardware filter', async () => {
-    const orgId = '11111111-1111-4111-8111-111111111111';
-    vi.mocked(authMiddleware).mockImplementationOnce(async (c, next) => {
-      c.set('auth', { scope: 'organization', orgId, accessibleOrgIds: [orgId],
-        canAccessOrg: (id: string) => id === orgId,
-        orgCondition: (column: typeof devices.orgId) => eq(column, orgId),
-      } as never);
-      await next();
-    });
+  // Filtering on hardware health goes through the shared filter engine
+  // (`hardware.health`), not a bespoke list query param.
+  it('does not filter on a hardwareHealth query param', async () => {
     const { where } = rigDeviceListRows([]);
     const response = await app.request('/devices?hardwareHealth=critical');
     expect(response.status).toBe(200);
     const query = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0] as SQL);
-    expect(query.sql).toContain('"devices"."org_id"');
-    expect(query.sql).toContain('"device_hardware_health"."health"');
-    expect(query.params).toEqual(expect.arrayContaining([orgId, 'critical']));
-  });
-  it('returns an empty filtered list without dropping pagination', async () => {
-    rigDeviceListRows([]);
-    const response = await app.request('/devices?hardwareHealth=warning');
-    expect(await response.json()).toMatchObject({ data: [], pagination: { nextCursor: null } });
-  });
-  it('does not query when authentication rejects the request', async () => {
-    vi.mocked(authMiddleware).mockImplementationOnce(async c => c.json({ error: 'Unauthorized' }, 401));
-    expect((await app.request('/devices?hardwareHealth=critical')).status).toBe(401);
-    expect(db.select).not.toHaveBeenCalled();
-  });
-  it('does not report database failure as empty healthy inventory', async () => {
-    vi.mocked(db.select).mockImplementationOnce(() => { throw new Error('database unavailable'); });
-    expect((await app.request('/devices?hardwareHealth=critical')).status).toBe(500);
+    expect(query.sql).not.toContain('device_hardware_health');
+    expect(query.params).not.toContain('critical');
   });
 });

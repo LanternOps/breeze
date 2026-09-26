@@ -13,7 +13,7 @@ Open a device's **Hardware** tab and find **Storage & RAID**. It shows controlle
 
 Breeze detects installed tools and reads their output. It never downloads or bundles vendor utilities, changes controller configuration, starts a rebuild or clears a foreign configuration. Collection works on supported Windows and Linux hosts with an agent; it is capability-detected rather than restricted to devices classified as servers. macOS and agentless hypervisors are outside this feature.
 
-The device list has an optional **Hardware** column. Enable it in the column picker for the rollup pill and component-count tooltip. The hardware filter accepts Warning, Critical or Unknown. A dash means no rollup has been received; it is distinct from an observed Unknown rollup.
+The device list has an optional **Hardware** column. Enable it in the column picker for the rollup pill and component-count tooltip. To filter on it, use **Add filter → Hardware Health** in the device filter bar (values `ok`, `warning`, `critical`, `unknown`); the same field works in saved filters and dynamic groups. A dash means no rollup has been received; it is distinct from an observed Unknown rollup, and such devices match no Hardware Health value.
 
 ## Supported tools
 

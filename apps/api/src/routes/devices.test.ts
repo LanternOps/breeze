@@ -916,9 +916,7 @@ describe('device routes', () => {
         // 1st: count query
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([{ count: 2 }])
-            })
+            where: vi.fn().mockResolvedValue([{ count: 2 }])
           })
         } as any)
         // 2nd: device list query — two chained leftJoins now (deviceHardware,

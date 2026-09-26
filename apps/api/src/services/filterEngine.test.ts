@@ -226,6 +226,36 @@ describe('filterEngine architecture normalization (#3166)', () => {
   });
 });
 
+// #6854: hardware health rollup lives in device_hardware_health, not
+// device_hardware. The `hardware.` prefix would otherwise route it to a
+// non-existent device_hardware.health column.
+describe('filterEngine hardware.health', () => {
+  const renderWithParams = (cond: FilterCondition) => {
+    const q = dialect.sqlToQuery(buildConditionSQL(cond));
+    return { sql: q.sql, params: q.params };
+  };
+
+  it('registers an enum over the rollup values', () => {
+    const def = getFieldDefinition('hardware.health');
+    expect(def?.type).toBe('enum');
+    expect(def?.enumValues).toEqual(['ok', 'warning', 'critical', 'unknown']);
+  });
+
+  it('reads the rollup from device_hardware_health, not device_hardware', () => {
+    const { sql, params } = renderWithParams({ field: 'hardware.health', operator: 'equals', value: 'critical' });
+    expect(sql).toMatch(/from "device_hardware_health"/i);
+    expect(sql).not.toMatch(/"device_hardware"\./i);
+    expect(params).toContain('critical');
+  });
+
+  it('supports in / notIn', () => {
+    for (const operator of ['in', 'notIn'] as const) {
+      const { sql } = renderWithParams({ field: 'hardware.health', operator, value: ['warning', 'critical'] });
+      expect.soft(sql, operator).toMatch(/device_hardware_health/i);
+    }
+  });
+});
+
 describe('filterEngine field registration (#968)', () => {
   it('registers the three boolean fields', () => {
     for (const key of ['patches.pending', 'alerts.critical', 'system.rebootRequired']) {

@@ -2251,7 +2251,8 @@
         "cpuCores": "Cœurs de processeur",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Taille du disque (GB)",
-        "gpuModel": "Modèle GPU"
+        "gpuModel": "Modèle GPU",
+        "health": "État du matériel"
       },
       "network": {
         "ipAddress": "IP Adresse",
@@ -2319,7 +2320,8 @@
         "cpuCores": "Cœurs de processeur",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Taille du disque (GB)",
-        "gpuModel": "Modèle GPU"
+        "gpuModel": "Modèle GPU",
+        "health": "État du matériel"
       },
       "network": {
         "ipAddress": "IP Adresse",
@@ -2404,7 +2406,8 @@
         "cpuCores": "Cœurs de processeur",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Taille du disque (GB)",
-        "gpuModel": "Modèle GPU"
+        "gpuModel": "Modèle GPU",
+        "health": "État du matériel"
       },
       "network": {
         "ipAddress": "IP Adresse",
@@ -3453,7 +3456,6 @@
     "events": "Événements matériels",
     "noEvents": "Aucun événement matériel enregistré.",
     "noComponents": "Aucun composant signalé. Vérifiez les sources.",
-    "all": "Tous les états matériels",
     "managementController": "Contrôleur de gestion",
     "bmcVendor": "Fabricant",
     "bmcFirmware": "Version du micrologiciel",

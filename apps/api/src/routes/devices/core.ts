@@ -948,9 +948,6 @@ coreRoutes.get(
     if (query.search) {
       conditions.push(like(devices.hostname, `%${query.search}%`));
     }
-    if (query.hardwareHealth) {
-      conditions.push(eq(deviceHardwareHealth.health, query.hardwareHealth));
-    }
 
     // Exclude decommissioned by default unless explicitly requested.
     if (!query.status && query.includeDecommissioned !== 'true') {
@@ -976,7 +973,6 @@ coreRoutes.get(
       const countResult = await db
         .select({ count: sql<number>`count(*)` })
         .from(devices)
-        .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
     }
