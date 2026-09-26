@@ -2399,6 +2399,25 @@ async function processCommandResult(
       }
     }
 
+    if (command.type === 'topology_interface_poll') {
+      try {
+        // Own bounded system context; scope/authority come from the stored
+        // command and the registered telemetry authority, never this reply.
+        const { ingestTopologyInterfacePollResult } = await import('../services/topology/snmpInterfaceMetrics');
+        await ingestTopologyInterfacePollResult({
+          commandType: command.type,
+          commandId: result.commandId,
+          deviceId: resolvedDeviceId!,
+          status: normalizedResult.status,
+          result: normalizedResult.result,
+          stdout: normalizedResult.stdout,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology interface poll result ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     // Software installs use persisted command UUIDs on both transports.
     // Reconciliation is idempotent (pending status + matching attempt), so
     // a result reaching both transports is applied once.

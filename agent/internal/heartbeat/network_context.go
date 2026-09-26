@@ -26,6 +26,7 @@ func topologyDiagnosticCapabilities(eventsAvailable bool) []networkcontext.Capab
 		{Name: "change_notifications", Version: 1, Supported: eventsAvailable},
 		{Name: "network_diagnostic", Version: 1, Supported: true},
 		{Name: "network_trace", Version: 1, Supported: traceCapabilitySupported()},
+		{Name: "topology_interface_poll", Version: 1, Supported: true},
 	}
 }
 

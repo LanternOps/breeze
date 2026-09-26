@@ -1,7 +1,9 @@
 import './topologyZod';
 import { z } from 'zod';
 import { collectionOutcomeSchema } from './topology';
-import { topologyReasonSchema, topologySequenceSchema, topologyTimestampSchema, topologyUtf8KeySchema, topologyWireGuard } from './topologyPrimitives';
+import {
+  topologyPortSchema, topologyReasonSchema, topologySequenceSchema, topologyTimestampSchema, topologyUtf8KeySchema, topologyWireGuard,
+} from './topologyPrimitives';
 
 /**
  * Interface measurement transport (M3 Task 1, amendment M3-D1).
@@ -135,6 +137,77 @@ export function parseTopologyInterfaceMetricEnvelopeV1(value: unknown) {
   const result = topologyInterfaceMetricEnvelopeV1WireSchema.safeParse(value);
   return result.success ? { accepted: true as const, envelope: result.data } : { accepted: false as const, reason: 'invalid_envelope' as const, issues: result.error.issues };
 }
+
+// ---- `topology_interface_poll` command payload (M3 Task 3, amendment M3-D2) ----
+/**
+ * One bounded SNMP interface poll, built by the server-side telemetry-arm
+ * dispatcher and delivered over the existing command transport. The agent
+ * collects IF-MIB state/counters for exactly `interfaces` (ifIndex → canonical
+ * interface UUID + epoch, an allowlist it cannot extend) from exactly `target`,
+ * and answers with a `TopologyInterfaceMetricEnvelopeV1` whose producerEpoch,
+ * configurationRevision, sequence and expectedIntervalSeconds echo this payload
+ * and whose commandId is the command's id.
+ *
+ * `binding` is server-only: the result adapter re-derives scope/authority from
+ * the STORED command row, never from the agent's reply; the agent ignores it.
+ * `sequence` is strictly increasing per (arm, producerEpoch) — the dispatcher's
+ * counter — and `producerEpoch`/`configurationRevision` are the telemetry
+ * producer credentials (`resolveTopologyTelemetryProducer`) at dispatch time.
+ * SNMP secrets are TOP-LEVEL strings (`TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS`) so
+ * `sensitiveCommandPayload` field encryption and terminal erasure cover them;
+ * an erased (terminal) payload still parses.
+ */
+export const TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE = 'topology_interface_poll' as const;
+export const TOPOLOGY_INTERFACE_POLL_COMMAND_VERSION = 1;
+export const TOPOLOGY_INTERFACE_POLL_MAX_INTERFACES = TOPOLOGY_INTERFACE_METRICS_MAX_SAMPLES;
+export const TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS = ['snmpCommunity', 'snmpAuthPassphrase', 'snmpPrivPassphrase'] as const;
+/** Capability the agent advertises in its network context when it can run the poll. */
+export const TOPOLOGY_INTERFACE_POLL_CAPABILITY = { name: 'topology_interface_poll', version: 1 } as const;
+export const TOPOLOGY_INTERFACE_POLL_AUTH_PROTOCOLS = ['md5', 'sha', 'sha224', 'sha256', 'sha384', 'sha512'] as const;
+export const TOPOLOGY_INTERFACE_POLL_PRIV_PROTOCOLS = ['des', 'aes', 'aes192', 'aes256', 'aes192c', 'aes256c'] as const;
+const secret = z.string().min(1).max(4096).nullable().optional();
+export const topologyInterfacePollInterfaceSchema = z.object({
+  interfaceId: z.uuid(),
+  interfaceEpoch: key,
+  ifIndex: z.number().int().min(1).max(2147483647),
+  /** Identity the ifIndex must still carry (ifName / ifPhysAddress); null = not asserted. A mismatch is ifIndex reuse: no sample. */
+  expectedName: z.string().min(1).max(255).nullable(),
+  expectedPhysAddress: z.string().regex(/^[\da-f]{2}(:[\da-f]{2}){5}$/).nullable(),
+}).strict();
+export const topologyInterfacePollCommandV1Schema = z.object({
+  version: z.literal(TOPOLOGY_INTERFACE_POLL_COMMAND_VERSION),
+  family: z.literal('if_metrics'),
+  binding: z.object({ orgId: z.uuid(), siteId: z.uuid(), authorityKey: key, armId: z.uuid() }).strict(),
+  producerEpoch: key,
+  configurationRevision: key,
+  sequence: topologySequenceSchema,
+  expectedIntervalSeconds: z.number().int().min(TOPOLOGY_INTERFACE_METRICS_INTERVAL_SECONDS.min).max(TOPOLOGY_INTERFACE_METRICS_INTERVAL_SECONDS.max),
+  /** Collection budget; the envelope window must fit inside the interval. */
+  deadlineMs: z.number().int().min(1000).max(TOPOLOGY_INTERFACE_METRICS_INTERVAL_SECONDS.max * 1000),
+  target: z.object({ address: z.union([z.ipv4(), z.ipv6()]), port: topologyPortSchema }).strict(),
+  snmp: z.object({
+    version: z.enum(['v1', 'v2c', 'v3']),
+    timeoutMs: z.number().int().min(100).max(10_000),
+    retries: z.number().int().min(0).max(3),
+    username: z.string().min(1).max(255).nullable(),
+    authProtocol: z.enum(TOPOLOGY_INTERFACE_POLL_AUTH_PROTOCOLS).nullable(),
+    privProtocol: z.enum(TOPOLOGY_INTERFACE_POLL_PRIV_PROTOCOLS).nullable(),
+  }).strict(),
+  snmpCommunity: secret,
+  snmpAuthPassphrase: secret,
+  snmpPrivPassphrase: secret,
+  interfaces: z.array(topologyInterfacePollInterfaceSchema).min(1).max(TOPOLOGY_INTERFACE_POLL_MAX_INTERFACES),
+}).strict().superRefine((command, ctx) => {
+  if (command.deadlineMs > command.expectedIntervalSeconds * 1000) ctx.addIssue({ code: 'custom', path: ['deadlineMs'], message: 'Deadline exceeds the poll interval' });
+  if (command.snmp.version === 'v3' && command.snmp.username === null) ctx.addIssue({ code: 'custom', path: ['snmp', 'username'], message: 'SNMPv3 needs a username' });
+  if (command.snmp.privProtocol !== null && command.snmp.authProtocol === null) ctx.addIssue({ code: 'custom', path: ['snmp', 'privProtocol'], message: 'Privacy requires authentication' });
+  const ids = new Set<string>(), indexes = new Set<number>();
+  command.interfaces.forEach((entry, index) => {
+    if (ids.has(entry.interfaceId)) ctx.addIssue({ code: 'custom', path: ['interfaces', index, 'interfaceId'], message: 'Duplicate interface' });
+    if (indexes.has(entry.ifIndex)) ctx.addIssue({ code: 'custom', path: ['interfaces', index, 'ifIndex'], message: 'Duplicate ifIndex' });
+    ids.add(entry.interfaceId); indexes.add(entry.ifIndex);
+  });
+});
 
 // ---- History read contract (served by M3 Task 6) ----
 export const TOPOLOGY_INTERFACE_METRIC_SERIES = [

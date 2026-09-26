@@ -191,10 +191,10 @@ func (s *InterfaceMetricSampleV1) Validate() error {
 			return fmt.Errorf("%s: %w", f.name, err)
 		}
 		limit := uint64(math.MaxUint64)
-		switch {
-		case f.bits == 32:
+		switch f.bits {
+		case 32:
 			limit = math.MaxUint32
-		case f.bits == 0:
+		case 0:
 			wide = true
 			if s.CounterWidth != nil && *s.CounterWidth == 32 {
 				limit = math.MaxUint32

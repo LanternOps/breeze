@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fixture from '../testing/topology-interface-metrics-v1.json';
+import pollFixture from '../testing/topology-interface-poll-v1.json';
 import {
   parseTopologyInterfaceMetricEnvelopeV1,
   TOPOLOGY_INTERFACE_METRIC_SERIES,
@@ -9,6 +10,10 @@ import {
   topologyInterfaceHistoryResponseSchema,
   topologyInterfaceMetricEnvelopeV1Schema,
   topologyInterfaceSampleV1Schema,
+  TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE,
+  TOPOLOGY_INTERFACE_POLL_MAX_INTERFACES,
+  TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS,
+  topologyInterfacePollCommandV1Schema,
 } from './topologyTelemetry';
 import * as barrel from './index';
 
@@ -95,5 +100,26 @@ describe('interface history contract', () => {
     expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [{ ...series, unit: 'percent' }] }).success).toBe(false);
     const { gaps: _gaps, ...withoutGaps } = series;
     expect(topologyInterfaceHistoryResponseSchema.safeParse({ ...response, series: [withoutGaps] }).success).toBe(false);
+  });
+});
+
+describe('topology_interface_poll command v1', () => {
+  it('parses the shared valid, v2c and terminally-erased commands', () => {
+    for (const command of [pollFixture.valid, pollFixture.validV2c, pollFixture.erased]) {
+      const parsed = topologyInterfacePollCommandV1Schema.safeParse(command);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+    expect(topologyInterfacePollCommandV1Schema.parse(pollFixture.valid).interfaces[0]!.ifIndex).toBe(7);
+  });
+
+  it.each(pollFixture.invalid)('rejects: $name', ({ command }) => {
+    expect(topologyInterfacePollCommandV1Schema.safeParse(command).success).toBe(false);
+  });
+
+  it('names the command, its secret fields and its bounds once', () => {
+    expect(TOPOLOGY_INTERFACE_POLL_COMMAND_TYPE).toBe('topology_interface_poll');
+    expect(TOPOLOGY_INTERFACE_POLL_SECRET_FIELDS).toEqual(['snmpCommunity', 'snmpAuthPassphrase', 'snmpPrivPassphrase']);
+    expect(TOPOLOGY_INTERFACE_POLL_MAX_INTERFACES).toBe(TOPOLOGY_INTERFACE_METRICS_MAX_SAMPLES);
+    expect(barrel.topologyInterfacePollCommandV1Schema).toBe(topologyInterfacePollCommandV1Schema);
   });
 });

@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import type {
   topologyInterfaceHistoryQuerySchema, topologyInterfaceHistoryResponseSchema, topologyInterfaceHistorySeriesSchema,
-  topologyInterfaceMetricEnvelopeV1Schema, topologyInterfaceSampleV1Schema,
+  topologyInterfaceMetricEnvelopeV1Schema, topologyInterfacePollCommandV1Schema, topologyInterfaceSampleV1Schema,
 } from '../validators/topologyTelemetry';
 
 /** One interface's readings at one instant; counters are uint64 decimal strings, null = not measured (see `unavailable`). */
@@ -11,3 +11,5 @@ export type TopologyInterfaceMetricEnvelopeV1 = z.infer<typeof topologyInterface
 export type TopologyInterfaceHistoryQuery = z.infer<typeof topologyInterfaceHistoryQuerySchema>;
 export type TopologyInterfaceHistorySeries = z.infer<typeof topologyInterfaceHistorySeriesSchema>;
 export type TopologyInterfaceHistoryResponse = z.infer<typeof topologyInterfaceHistoryResponseSchema>;
+/** Server-built `topology_interface_poll` command payload (see the validator for the contract). */
+export type TopologyInterfacePollCommandV1 = z.infer<typeof topologyInterfacePollCommandV1Schema>;
