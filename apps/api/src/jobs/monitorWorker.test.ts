@@ -79,6 +79,7 @@ vi.mock('../db/schema', () => ({
   networkMonitorAlertRules: {
     monitorId: 'networkMonitorAlertRules.monitorId',
     isActive: 'networkMonitorAlertRules.isActive',
+    retiredAt: 'networkMonitorAlertRules.retiredAt',
     $inferSelect: {}
   },
   alerts: {
@@ -286,6 +287,26 @@ describe('recordMonitorCheckResult', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined)
     } as any);
+  });
+
+  it('excludes retired legacy rules from alert evaluation', async () => {
+    const rulesWhere = vi.fn().mockResolvedValue([]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1', orgId: 'org-1', assetId: null, consecutiveFailures: 0,
+      }]) as any)
+      .mockReturnValueOnce({ from: () => ({ where: rulesWhere }) } as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1', status: 'offline', responseMs: 250,
+    }, { orgId: 'org-1', deviceId: 'device-1' });
+
+    const predicate = JSON.stringify(rulesWhere.mock.calls[0]);
+    expect(predicate).toContain('networkMonitorAlertRules.monitorId');
+    expect(predicate).toContain('networkMonitorAlertRules.isActive');
+    expect(predicate).toContain('networkMonitorAlertRules.retiredAt');
+    expect(predicate).toContain('is null');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
   });
 
   it('creates a monitor alert when an active rule matches', async () => {
