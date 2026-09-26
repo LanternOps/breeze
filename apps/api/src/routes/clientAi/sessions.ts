@@ -33,6 +33,7 @@ import {
 import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
 import { checkBillingCredits } from '../../services/aiCostTracker';
 import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import {
@@ -823,8 +824,9 @@ clientAiSessionRoutes.post(
       if (!session.title) {
         const title = generateClientSessionTitle(redactedContent);
         try {
-          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+          await persistAutoSessionTitle(sessionId, title);
         } catch (err) {
+          captureException(err, c);
           console.error('[client-ai] Failed to auto-set session title:', err);
         }
       }
