@@ -352,6 +352,7 @@ type Heartbeat struct {
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
 	networkContextMu          sync.Mutex
+	adjacencyStatePath        string // test override; default is the data dir
 	networkContext            *networkContextManager
 	config                    *config.Config
 	secureToken               *secmem.SecureString

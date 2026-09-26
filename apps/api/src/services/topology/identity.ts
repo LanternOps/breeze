@@ -11,13 +11,17 @@ export function normalizedTopologyScope(scope: TopologyScope): TopologyScope {
 /** Source material is server-owned and immutable. Names, addresses and display
  * labels belong in attributes. Namespaced keys carry collector/routing/owner
  * context; an inventory UUID is already a stable source identity. */
+// Built once: canonicalIdentityKey runs per relationship in publication loops.
+const identityKindSchema = z.union([nodeKindSchema, relationshipKindSchema]);
+const sourceKeySchema = z.string().min(1).max(8192);
+const uuidSourceKeySchema = z.string().uuid();
 export function canonicalIdentityKey(scope: TopologyScope, kind: NodeKind | RelationshipKind, sourceKey: string): string {
   const normalized = normalizedTopologyScope(scope);
-  z.union([nodeKindSchema, relationshipKindSchema]).parse(kind);
-  z.string().min(1).max(8192).parse(sourceKey);
+  identityKindSchema.parse(kind);
+  sourceKeySchema.parse(sourceKey);
   if (sourceKey !== sourceKey.trim() || /\s|\p{Cc}/u.test(sourceKey) || isIP(sourceKey)
     || /^(?:name|label|ip|address|hostname):/i.test(sourceKey)
-    || (!z.string().uuid().safeParse(sourceKey).success && !/^[a-z][a-z0-9_-]*:.+/.test(sourceKey))) {
+    || (!uuidSourceKeySchema.safeParse(sourceKey).success && !/^[a-z][a-z0-9_-]*:.+/.test(sourceKey))) {
     throw new Error('Topology identity requires immutable, context-qualified source material');
   }
   const material = { version: 1, kind, sourceKey };

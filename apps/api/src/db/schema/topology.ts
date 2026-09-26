@@ -14,7 +14,19 @@ export interface TopologyIdentityMaterial {
   sourceKey: string;
 }
 export interface TopologyNodeAttributes { label?: string; notes?: string; prefix?: string; addressFamily?: 4 | 6; }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context'; createdBy?: string; }
+/** Physical (M2) resolution/selection material; bounded and strict in publish.ts. */
+export interface TopologyPhysicalRelationshipAttributes {
+  resolution?: 'resolved' | 'unresolved'; subjectAuthority?: string;
+  remoteChassis?: { subtype: string; value: string }; remotePort?: { subtype: string; value: string };
+  localPort?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
+  remotePortRef?: { namespace: 'if_index' | 'if_name' | 'bridge_port' | 'lldp_local' | 'controller_port'; value: string; resolvedInterfaceKey: string | null };
+  bridgeContext?: string; fdbId?: number | null; vlanIds?: number[];
+  controllerSiteId?: string; controllerDeviceId?: string; uplinkPortIndex?: number;
+  /** UniFi (D16): what the controller association means, and the scoped endpoint keys it joins. */
+  association?: 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink'; endpointKey?: string; uplinkEndpointKey?: string;
+  fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[]; alternativeRelationshipsOmitted?: number;
+}
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.
@@ -31,6 +43,10 @@ export const topologySiteState = pgTable('topology_site_state', {
   effectiveSettings: jsonb('effective_settings').$type<Record<string, unknown>>().notNull().default({}),
   settingsDigest: varchar('settings_digest', { length: 64 }),
   disabledSourceReasons: jsonb('disabled_source_reasons').$type<Record<string, string>>().notNull().default({}),
+  /** D15.2: bumped by identity writers (bindings, interfaces, merges); physical
+   * re-resolution runs while it exceeds resolved_identity_revision. */
+  identityRevision: bigint('identity_revision', { mode: 'bigint' }).notNull().default(0n),
+  resolvedIdentityRevision: bigint('resolved_identity_revision', { mode: 'bigint' }).notNull().default(0n),
   lastBuildStatus: varchar('last_build_status', { length: 32 }),
   lastBuildAt: timestamp('last_build_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -43,6 +59,7 @@ export const topologySiteState = pgTable('topology_site_state', {
   check('topology_site_state_health_revision_chk', sql`health_revision >= 0`),
   check('topology_site_state_build_fence_chk', sql`build_fence >= 0`),
   check('topology_site_state_settings_revision_chk', sql`settings_revision >= 0`),
+  check('topology_site_state_identity_revision_chk', sql`identity_revision >= 0 AND resolved_identity_revision >= 0`),
   check('topology_site_state_effective_settings_chk', sql`jsonb_typeof(effective_settings) = 'object' AND octet_length(effective_settings::text) <= 262144`),
   check('topology_site_state_disabled_source_reasons_chk', sql`jsonb_typeof(disabled_source_reasons) = 'object' AND octet_length(disabled_source_reasons::text) <= 262144`),
   foreignKey({ name: 'topology_site_state_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
@@ -155,6 +172,8 @@ export const topologyRelationships = pgTable('topology_relationships', {
   check('topology_relationships_legacy_source_revision_chk', sql`legacy_source_revision >= 0`),
   uniqueIndex('topology_relationships_id_org_site_uniq').on(table.id, table.orgId, table.siteId),
   uniqueIndex('topology_relationships_canonical_uniq').on(table.orgId, table.siteId, table.canonicalKey),
+  index('topology_relationships_source_node_idx').on(table.orgId, table.siteId, table.sourceNodeId),
+  index('topology_relationships_target_node_idx').on(table.orgId, table.siteId, table.targetNodeId),
   foreignKey({ name: 'topology_relationships_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_relationship_source_scope_fk', columns: [table.sourceNodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_relationship_target_scope_fk', columns: [table.targetNodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
@@ -232,4 +251,28 @@ export const topologyChangeOutbox = pgTable('topology_change_outbox', {
   index('topology_outbox_revision_idx').on(table.orgId, table.siteId, table.sourceRevision),
   index('topology_outbox_pending_idx').on(table.nextAttemptAt, table.createdAt).where(sql`delivered_at IS NULL`),
   foreignKey({ name: 'topology_change_outbox_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+]);
+
+/** M2: scoped, reversible hide of one canonical relationship in one view.
+ * Canonical traversal/evidence ignore it; only view projections apply it. */
+export const topologyViewExclusions = pgTable('topology_view_exclusions', {
+  id: uuid('id').notNull().defaultRandom(),
+  orgId: uuid('org_id').notNull(),
+  siteId: uuid('site_id').notNull(),
+  relationshipId: uuid('relationship_id').notNull(),
+  view: varchar('view', { length: 16 }).$type<TopologyView>().notNull(),
+  reason: varchar('reason', { length: 500 }).notNull(),
+  createdBy: uuid('created_by'),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedBy: uuid('revoked_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ name: 'topology_view_exclusions_pkey', columns: [table.id] }),
+  check('topology_view_exclusions_view_chk', sql`view IN ('overview','physical','logical')`),
+  check('topology_view_exclusions_reason_chk', sql`char_length(reason) BETWEEN 1 AND 500`),
+  uniqueIndex('topology_view_exclusions_active_uniq').on(table.orgId, table.siteId, table.relationshipId, table.view).where(sql`revoked_at IS NULL`),
+  index('topology_view_exclusions_relationship_idx').on(table.relationshipId, table.orgId, table.siteId),
+  foreignKey({ name: 'topology_view_exclusions_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
+  foreignKey({ name: 'topology_view_exclusions_relationship_scope_fk', columns: [table.relationshipId, table.orgId, table.siteId], foreignColumns: [topologyRelationships.id, topologyRelationships.orgId, topologyRelationships.siteId] }).onDelete('cascade'),
 ]);

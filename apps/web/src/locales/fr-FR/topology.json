@@ -155,5 +155,124 @@
       "body": "La vue topologie ne peut pas être affichée pour ce site pour le moment. Réessayez plus tard ou contactez le support si le problème persiste.",
       "details": "Détails techniques"
     }
+  },
+  "physicalView": {
+    "meaning": {
+      "physical_link": "Connexion physique",
+      "attachment": "Association",
+      "network_member": "Appartenance au réseau",
+      "default_route": "Route par défaut",
+      "egress_path": "Chemin de sortie"
+    },
+    "directness": {
+      "direct": "Connexion directe",
+      "via_unmanaged": "Par un appareil non géré",
+      "unknown": "Connexion directe non établie"
+    },
+    "portRole": {
+      "identified": "Port identifié",
+      "learned": "Appris par ce port",
+      "shared": "Port partagé ou montant",
+      "unresolved": "Port non identifié"
+    },
+    "association": {
+      "wired": "Connexion filaire",
+      "wireless": "Association sans fil (signalée par le contrôleur)",
+      "vpn": "Association VPN ou tunnel",
+      "uplink": "Liaison montante signalée par le contrôleur"
+    },
+    "method": {
+      "lldp": "Voisin LLDP",
+      "cdp": "Voisin CDP",
+      "fdb": "Table d’adresses MAC apprises (FDB)",
+      "unifi": "Contrôleur UniFi",
+      "manual": "Déclaration manuelle",
+      "legacy": "Ancienne découverte",
+      "other": "Autre collecteur"
+    },
+    "freshness": {
+      "fresh": "Récent",
+      "stale": "Périmé",
+      "unknown": "Inconnu"
+    },
+    "confidence": {
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "asserted": "Déclarée"
+    },
+    "observationStatus": {
+      "current": "Actuelle",
+      "expired": "Expirée",
+      "withdrawn": "Retirée"
+    },
+    "details": {
+      "expired": "Le détail des observations a expiré ; la connexion a tout de même été confirmée.",
+      "unavailable": "Aucun détail d’observation n’est disponible pour cette connexion."
+    },
+    "meaningLabel": "Signification",
+    "directnessLabel": "Caractère direct",
+    "portRoleLabel": "Port réseau",
+    "associationLabel": "Type d’association",
+    "methodLabel": "Signalé par",
+    "sourcePort": "De",
+    "targetPort": "Vers",
+    "portNotIdentified": "Port non identifié",
+    "reportedPort": "Signalé comme {{namespace}} {{value}}",
+    "retiredPort": "(ancienne identité du port)",
+    "lastConfirmed": "Dernière confirmation",
+    "evidenceExpires": "Expiration de la preuve",
+    "alternatives": "Autres ports candidats",
+    "hiddenFrom": "Masquée dans : {{views}}",
+    "observations": "Observations relevées",
+    "moreEvidence": "Charger plus d’observations",
+    "loadingDetail": "Chargement du détail de la connexion…",
+    "detailFailed": "Impossible de charger le détail de la connexion",
+    "viewOverview": "Voir l’aperçu du réseau",
+    "empty": "Aucune connexion physique n’a encore été signalée pour ce site."
+  },
+  "coveragePanel": {
+    "title": "Couverture de la collecte",
+    "state": {
+      "complete": "Complète",
+      "limited": "Limitée",
+      "unknown": "Inconnue"
+    },
+    "reasons": {
+      "topology_preparing": "Aucun instantané de topologie n’a encore été publié.",
+      "legacy_evidence_only": "Inventaire et données anciennes uniquement ; la couverture de découverte et l’état ne sont pas établis.",
+      "projection_bounded": "Certains appareils ou connexions sont en dehors de cette vue.",
+      "physical_disabled": "La topologie physique est désactivée pour cette organisation.",
+      "no_collector": "Aucun collecteur ne signale de connexions physiques pour ce site.",
+      "collection_pending": "Une collecte physique est toujours en cours.",
+      "collection_not_received": "Une collecte autorisée n’a rien signalé avant son échéance.",
+      "collection_complete_empty": "Une collecte s’est terminée sans trouver de voisins. Cela ne signifie pas que tout le site est couvert.",
+      "collection_unsupported": "Un appareil ne prend pas en charge un protocole demandé.",
+      "collection_timeout": "Une collecte a expiré.",
+      "collection_failed": "Une collecte a échoué.",
+      "collection_partial_limit": "Une collecte a atteint sa limite de lignes ; certaines lignes ont été omises.",
+      "collection_partial": "Une collecte n’a renvoyé qu’une partie de ses tables.",
+      "collection_not_attempted": "Une portée demandée n’a pas été tentée.",
+      "collection_stale": "La preuve physique n’a pas été confirmée récemment.",
+      "credentials_missing": "Aucun identifiant SNMP utilisable n’est configuré pour un appareil.",
+      "credentials_rejected": "Un appareil a refusé les identifiants SNMP configurés.",
+      "interface_unresolved": "Certaines connexions ont été signalées sur des ports qui n’ont pas pu être identifiés.",
+      "controller_site_unmapped": "Un site de contrôleur UniFi n’est associé à aucun site Breeze.",
+      "controller_site_other_org": "Un site de contrôleur UniFi est associé à une autre organisation."
+    },
+    "scopeCount": "({{count}} concernés)"
+  },
+  "exclusions": {
+    "reasonLabel": "Pourquoi masquer cette connexion ?",
+    "hide": "Masquer dans cette vue",
+    "restore": "Rétablir dans cette vue",
+    "hidden": "Connexion masquée dans cette vue",
+    "restored": "Connexion rétablie",
+    "hideFailed": "Impossible de masquer la connexion",
+    "restoreFailed": "Impossible de rétablir la connexion",
+    "hiddenSection": "Masquées ({{count}})",
+    "hiddenReason": "Motif",
+    "hiddenLoadFailed": "Impossible de charger les connexions masquées",
+    "unknownConnection": "Connexion {{id}}"
   }
 }

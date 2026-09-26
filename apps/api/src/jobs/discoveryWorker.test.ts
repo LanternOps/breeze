@@ -8,6 +8,7 @@ const { mockDb } = vi.hoisted(() => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    execute: vi.fn(async (_query: unknown) => [] as unknown[]),
   }
 }));
 
@@ -109,6 +110,9 @@ vi.mock('../services/macVendorLookup', () => ({
 vi.mock('../services/networkBaseline', () => ({
   buildEventFingerprint: vi.fn(() => 'fingerprint')
 }));
+
+vi.mock('../services/topology/identityDirty', () => ({ markTopologyIdentityDirty: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('./networkBaselineWorker', () => ({
   enqueueBaselineComparison: vi.fn(async () => 'enqueued'),
@@ -416,6 +420,34 @@ describe('processResults — type_source', () => {
     expect(capturedInsertValues).not.toBeNull();
     expect(capturedInsertValues!.typeSource).toBe('auto');
     expect(capturedInsertValues!.detectedAssetType).toBe('server');
+  });
+
+  it('marks topology identity dirty when a scan creates a discovered asset (an SNMP target subject by IP)', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    selectQueue = [...baseSelectQueue(), [], []];
+    await processResults(makeData([{ ip: '192.168.1.60', assetType: 'switch', methods: [] }]));
+    const data = makeData([]);
+    expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledWith(expect.anything(), { orgId: data.orgId, siteId: data.siteId });
+  });
+
+  // #5998 review: a failed dirty mark leaves new SNMP subjects unresolved
+  // until some other identity change; it must reach Sentry, not only a log.
+  it('reports a failed topology identity dirty mark to Sentry and still completes the job', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    const { captureException } = await import('../services/sentry');
+    const failure = new Error('dirty mark failed');
+    vi.mocked(markTopologyIdentityDirty).mockRejectedValueOnce(failure);
+    selectQueue = [...baseSelectQueue(), [], []];
+    await processResults(makeData([{ ip: '192.168.1.62', assetType: 'switch', methods: [] }]));
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+  });
+
+  it('does not mark topology identity dirty when a scan only refreshes existing assets', async () => {
+    const { markTopologyIdentityDirty } = await import('../services/topology/identityDirty');
+    selectQueue = [...baseSelectQueue(), [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], [{ linkedDeviceId: null }], []];
+    await processResults(makeData([{ ip: '192.168.1.61', assetType: 'switch', methods: [] }]));
+    expect(vi.mocked(markTopologyIdentityDirty)).not.toHaveBeenCalled();
   });
 
   describe('SNMP identity ingest wiring', () => {
@@ -894,6 +926,11 @@ describe('cleanupSpeculativeTopologyLinks', () => {
 
     expect(deleted).toBe(2);
     expect(vi.mocked(db.delete)).toHaveBeenCalledWith(expect.anything());
+    // M2 D5: tagged as legacy collector absence around the DELETE, then cleared.
+    const settings = vi.mocked(mockDb.execute).mock.calls.map(([query]) => new PgDialect().sqlToQuery(query as never).sql);
+    expect(settings).toEqual([expect.stringContaining("'breeze.topology_delete_cause', 'collector_absence', true"), expect.stringContaining("'breeze.topology_delete_cause', '', true")]);
+    expect(vi.mocked(mockDb.execute).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.delete).mock.invocationCallOrder[0]!);
+    expect(vi.mocked(mockDb.execute).mock.invocationCallOrder[1]).toBeGreaterThan(vi.mocked(db.delete).mock.invocationCallOrder[0]!);
   });
 });
 

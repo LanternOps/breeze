@@ -28,7 +28,7 @@ async function seedDevice() {
     hostname: 'inv-device', osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
   }).returning();
   if (!device) throw new Error('device insert failed');
-  return { id: device.id, orgId: org.id };
+  return { id: device.id, orgId: org.id, siteId: site.id };
 }
 
 /** Run `write` in its own transaction and return the org locks it recorded. */
@@ -119,5 +119,30 @@ describe('inventory disk/network sync (#6698)', () => {
       .resolves.toEqual([device.orgId]);
     expect(await inventoryWatermark(device.id)).toBeGreaterThan(initial);
     expect((await networkRows(device.id)).map((r) => r.interfaceName)).toEqual(['eth0', 'eth0']);
+  });
+
+  // M2 Task 6b (D15.2/D16): agent-reported NIC MACs are the only trusted MAC
+  // binding source of the physical publisher, so a changed MAC set marks the
+  // site's topology identity dirty; identical and IP-only reports do not.
+  runDb('a changed NIC MAC set marks topology identity dirty; identical and IP-only reports do not', async () => {
+    const device = await seedDevice();
+    const db = getTestDb();
+    await db.execute(sql`INSERT INTO topology_site_state (org_id, site_id) VALUES (${device.orgId}::uuid, ${device.siteId}::uuid) ON CONFLICT DO NOTHING`);
+    const revision = async () => {
+      const [row] = await db.execute<{ identity: string; dirty: string }>(sql`SELECT identity_revision::text AS identity, dirty_revision::text AS dirty
+        FROM topology_site_state WHERE org_id=${device.orgId}::uuid AND site_id=${device.siteId}::uuid`);
+      return row!;
+    };
+    const sync = (adapters: NetworkAdapterReport[]) => db.transaction((tx) => syncDeviceNetwork(tx, device, adapters, new Date()));
+    const before = await revision();
+    await sync([{ interfaceName: 'eth0', macAddress: '02:00:00:00:aa:01', ipAddress: '10.0.0.5' }]);
+    const added = await revision();
+    expect(BigInt(added.identity)).toBe(BigInt(before.identity) + 1n);
+    expect(BigInt(added.dirty)).toBeGreaterThan(BigInt(before.dirty));
+    await sync([{ interfaceName: 'eth0', macAddress: '02:00:00:00:aa:01', ipAddress: '10.0.0.5' }]);
+    await sync([{ interfaceName: 'eth0', macAddress: '02:00:00:00:AA:01', ipAddress: '10.0.0.9' }]);
+    expect((await revision()).identity).toBe(added.identity);
+    await sync([{ interfaceName: 'eth0', macAddress: '02:00:00:00:aa:02', ipAddress: '10.0.0.9' }]);
+    expect(BigInt((await revision()).identity)).toBe(BigInt(added.identity) + 1n);
   });
 });

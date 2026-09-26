@@ -52,3 +52,30 @@ it('filters the node list case-insensitively by the search prop', () => {
   expect(screen.queryByTestId(`topology-node-${NODE}`)).not.toBeInTheDocument();
   expect(screen.getByTestId('topology-node-other-node')).toBeVisible();
 });
+
+it('labels a physical edge truthfully and lists hidden connections with a restore action', () => {
+  const graph = topologyGraphFixture();
+  const other = { ...graph.nodes[0], id: 'other-node', label: 'Desk 12' };
+  graph.nodes.push(other);
+  graph.relationships = [{ id: 'edge-3', kind: 'attachment', meaning: 'attachment', directness: 'unknown', sourceNodeId: NODE, targetNodeId: other.id, sourceInterfaceId: null, targetInterfaceId: null, evidence: { classes: ['inferred'], methods: ['fdb'], count: '1', lastObservedAt: null }, freshness: 'fresh', health: { status: 'unknown', coverage: 'unmonitored', scope: 'relationship', originNodeId: null, resultId: null, reasons: [], freshness: 'unknown' } } as never];
+  const onRestore = vi.fn();
+  const item = { id: 'exclusion-1', relationshipId: 'hidden-edge', view: 'physical' as const, reason: 'Lab bench cable', active: true as const,
+    createdAt: '2026-09-26T10:00:00.000Z', createdBy: null, revokedAt: null, revokedBy: null,
+    relationship: { id: 'hidden-edge', kind: 'physical_link', sourceNodeId: 'a', targetNodeId: 'b', sourceInterfaceId: null, targetInterfaceId: null, evidenceClass: 'observed', lifecycle: 'active' } };
+  render(<TopologyList graph={graph} onSelect={vi.fn()} hidden={{ items: [item], canEdit: true, onRestore }} />);
+  expect(screen.getByTestId('topology-edge-edge-3')).toHaveTextContent('Attachment');
+  expect(screen.getByTestId('topology-edge-edge-3').closest('tr')).toHaveTextContent('Direct connection not established');
+  expect(screen.getByTestId('topology-hidden')).toHaveTextContent('Hidden (1)');
+  expect(screen.getByTestId('topology-hidden-exclusion-1')).toHaveTextContent('Lab bench cable');
+  fireEvent.click(screen.getByTestId('topology-restore-exclusion-1'));
+  expect(onRestore).toHaveBeenCalledWith(item);
+});
+
+it('shows hidden connections to a read-only user without a restore action', () => {
+  const item = { id: 'exclusion-1', relationshipId: 'hidden-edge', view: 'physical' as const, reason: 'Lab bench cable', active: true as const,
+    createdAt: '2026-09-26T10:00:00.000Z', createdBy: null, revokedAt: null, revokedBy: null,
+    relationship: { id: 'hidden-edge', kind: 'physical_link', sourceNodeId: 'a', targetNodeId: 'b', sourceInterfaceId: null, targetInterfaceId: null, evidenceClass: 'observed', lifecycle: 'active' } };
+  render(<TopologyList graph={topologyGraphFixture()} onSelect={vi.fn()} hidden={{ items: [item], canEdit: false, onRestore: vi.fn() }} />);
+  expect(screen.getByTestId('topology-hidden-exclusion-1')).toBeVisible();
+  expect(screen.queryByTestId('topology-restore-exclusion-1')).not.toBeInTheDocument();
+});

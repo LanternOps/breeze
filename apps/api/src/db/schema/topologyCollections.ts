@@ -24,6 +24,10 @@ export const topologyInterfaces = pgTable('topology_interfaces', {
   addresses: jsonb('addresses').$type<unknown[]>().notNull().default([]),
   controllerPortKey: varchar('controller_port_key', { length: 255 }),
   parentInterfaceId: uuid('parent_interface_id'),
+  /** D10: SNMP ifPhysAddress, the continuity evidence of a server-owned `gen:<n>` generation. */
+  physAddress: varchar('phys_address', { length: 32 }),
+  /** D10: set when a conflicting report allocated the next generation; links are not inherited. */
+  retiredAt: time('retired_at'),
   lastObservedAt: time('last_observed_at'),
   lastOutcome: varchar('last_outcome', { length: 24 }).$type<CollectionOutcome>(),
   ...timestamps(),
@@ -32,6 +36,7 @@ export const topologyInterfaces = pgTable('topology_interfaces', {
   uniqueIndex('topology_interfaces_scope_uniq').on(t.id, t.orgId, t.siteId),
   uniqueIndex('topology_interfaces_owner_scope_uniq').on(t.id, t.ownerNodeId, t.orgId, t.siteId),
   uniqueIndex('topology_interfaces_identity_uniq').on(t.ownerNodeId, t.interfaceKey, t.epoch),
+  uniqueIndex('topology_interfaces_current_generation_uniq').on(t.ownerNodeId, t.interfaceKey).where(sql`retired_at IS NULL AND epoch LIKE 'gen:%'`),
   foreignKey({ name: 'topology_interfaces_site_fk', columns: [t.siteId, t.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_interfaces_owner_fk', columns: [t.ownerNodeId, t.orgId, t.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_interfaces_parent_fk', columns: [t.parentInterfaceId, t.ownerNodeId, t.orgId, t.siteId], foreignColumns: [t.id, t.ownerNodeId, t.orgId, t.siteId] }),

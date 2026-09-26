@@ -40,7 +40,9 @@ const inputSchema = z.discriminatedUnion('type', [
   z.object({ ...base, type: z.literal('node.upsert'), data: nodeData }).strict(),
   z.object({ ...base, type: z.literal('node.delete'), data: z.null() }).strict(),
   z.object({ ...base, type: z.literal('relationship.upsert'), data: relationshipData }).strict(),
-  z.object({ ...base, type: z.literal('relationship.delete'), data: z.null() }).strict(),
+  // M2 D5: legacy collector-absence cleanup tags its tombstone; replay expires
+  // support instead of deleting. Only ever set by the capture trigger.
+  z.object({ ...base, type: z.literal('relationship.delete'), data: z.null(), cause: z.literal('collector_absence').optional() }).strict(),
   z.object({ ...base, type: z.literal('layout.upsert'), data: layoutData }).strict(),
   // Keep node identity in a layout tombstone: legacy position IDs have no canonical meaning.
   z.object({ ...base, type: z.literal('layout.delete'), data: layoutData.pick({ nodeType: true, nodeId: true }) }).strict(),

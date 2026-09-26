@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceDisks, deviceNetwork } from '../db/schema';
+import { markTopologyIdentityDirty } from './topology/identityDirty';
 
 /**
  * Diff-and-upsert writers for the agent's disk and network inventory (#6698).
@@ -97,6 +98,8 @@ export interface DiskReport {
 interface DeviceRef {
   id: string;
   orgId: string;
+  /** When known, a changed NIC MAC set marks this site's topology identity dirty. */
+  siteId?: string;
 }
 
 export async function syncDeviceDisks(tx: DbTx, device: DeviceRef, disks: readonly DiskReport[], now: Date) {
@@ -194,4 +197,17 @@ export async function syncDeviceNetwork(tx: DbTx, device: DeviceRef, adapters: r
       plan.inserts.map((row) => ({ ...row, deviceId: device.id, orgId: device.orgId, updatedAt: now })),
     );
   }
+  // M2 D15.2/D16: agent-reported NIC MACs are the physical topology publisher's
+  // only trusted MAC binding source. Only a changed MAC SET is an identity
+  // change — identical/IP-only reports stay lock-free (#6698).
+  if (device.siteId && (plan.inserts.length > 0 || plan.deleteIds.length > 0) && !sameMacSet(stored, rows)) {
+    await markTopologyIdentityDirty(tx, { orgId: device.orgId, siteId: device.siteId });
+  }
+}
+
+const macSet = (rows: readonly { macAddress: string | null }[]) =>
+  new Set(rows.map((row) => row.macAddress?.trim().toLowerCase().replace(/-/g, ':')).filter((mac): mac is string => !!mac));
+function sameMacSet(a: readonly { macAddress: string | null }[], b: readonly { macAddress: string | null }[]): boolean {
+  const [x, y] = [macSet(a), macSet(b)];
+  return x.size === y.size && [...x].every((mac) => y.has(mac));
 }

@@ -228,9 +228,28 @@ const graphCountsSchema = z.object({
   omittedRelationships: boundedCountSchema,
 }).strict();
 
-const coverageReasonSchema = z.object({
+/**
+ * Known graph coverage reason codes. M0/M1 codes are kept verbatim; M2 (D11)
+ * adds physical collection reasons, each distinct so the UI never renders a
+ * complete-empty scope, a timeout and an unmapped controller site alike.
+ * `coverageReasonSchema.code` stays an open `snake_case` token so an older web
+ * build tolerates a newer server reason (it falls back to `message`).
+ */
+export const TOPOLOGY_COVERAGE_REASON_CODES = [
+  'topology_preparing', 'legacy_evidence_only', 'projection_bounded',
+  'physical_disabled', 'no_collector', 'collection_pending', 'collection_not_received',
+  'collection_complete_empty', 'collection_unsupported', 'collection_timeout', 'collection_failed',
+  'collection_partial_limit', 'collection_partial', 'collection_not_attempted', 'collection_stale',
+  'credentials_missing', 'credentials_rejected', 'interface_unresolved',
+  'controller_site_unmapped', 'controller_site_other_org',
+] as const;
+export const coverageReasonCodeSchema = z.enum(TOPOLOGY_COVERAGE_REASON_CODES);
+
+export const coverageReasonSchema = z.object({
   code: reasonCodeSchema,
   message: z.string().min(1).max(500),
+  /** Number of expected collection scopes this reason applies to, when scoped. */
+  count: boundedCountSchema.optional(),
 }).strict();
 
 const graphCoverageSchema = z.object({
@@ -278,5 +297,120 @@ export const graphResponseSchema = z.object({
     canEdit: z.boolean(),
     canDiagnose: z.boolean(),
     canConfigureMonitoring: z.boolean(),
+  }).strict(),
+}).strict();
+
+// ---- M2 physical relationship detail and evidence reads (D11, D17) ----
+
+const portLabelSchema = z.object({
+  interfaceId: canonicalIdSchema,
+  name: z.string().max(255).nullable(),
+  alias: z.string().max(255).nullable(),
+  key: z.string().min(1).max(255),
+  /** The interface generation was retired (identity changed); the name is historical. */
+  retired: z.boolean(),
+}).strict();
+
+const reportedPortSchema = z.object({
+  namespace: z.string().min(1).max(64),
+  value: z.string().min(1).max(255),
+}).strict();
+
+const relationshipEndpointSchema = z.object({
+  nodeId: canonicalIdSchema,
+  label: boundedLabelSchema,
+  /** A current or historical scoped interface; null when no port is identified. */
+  port: portLabelSchema.nullable(),
+  /** The collector's own port reference when it did not resolve to an interface. */
+  reportedPort: reportedPortSchema.nullable(),
+}).strict();
+
+export const PHYSICAL_PORT_ROLES = ['identified', 'learned', 'shared', 'unresolved'] as const;
+/**
+ * Presented association of a physical relationship. `vpn` covers every
+ * remote-access tunnel (UniFi VPN and Teleport); `uplink` is a controller
+ * device's reported upstream (never a cable claim). An unknown controller
+ * association presents as null, never as a guess.
+ */
+export const PHYSICAL_ASSOCIATIONS = ['wired', 'wireless', 'vpn', 'uplink'] as const;
+export const FDB_SELECTIONS = ['selected', 'competing', 'excluded', 'none'] as const;
+
+const relationshipPhysicalDetailSchema = z.object({
+  method: observationMethodSchema.nullable(),
+  resolution: z.enum(['resolved', 'unresolved']).nullable(),
+  portRole: z.enum(PHYSICAL_PORT_ROLES),
+  association: z.enum(PHYSICAL_ASSOCIATIONS).nullable(),
+  fdbSelection: z.enum(FDB_SELECTIONS).nullable(),
+}).strict();
+
+const relationshipAlternativeSchema = z.object({
+  relationshipId: canonicalIdSchema,
+  sourceNodeId: canonicalIdSchema,
+  sourceNodeLabel: boundedLabelSchema,
+  targetNodeId: canonicalIdSchema,
+  port: portLabelSchema.nullable(),
+  confidence: confidenceSchema,
+}).strict();
+
+export const relationshipExclusionSummarySchema = z.object({
+  id: canonicalIdSchema,
+  view: topologyViewSchema,
+  reason: z.string().min(1).max(500),
+  createdAt: utcTimestampSchema,
+}).strict();
+
+export const relationshipDetailResponseSchema = z.object({
+  siteId: canonicalIdSchema,
+  graphRevision: topologyRevisionSchema,
+  relationship: graphRelationshipSchema,
+  endpoints: z.object({ source: relationshipEndpointSchema, target: relationshipEndpointSchema }).strict(),
+  physical: relationshipPhysicalDetailSchema.nullable(),
+  alternatives: z.array(relationshipAlternativeSchema).max(50),
+  /** Active per-view exclusions; hidden relationships stay inspectable here. */
+  exclusions: z.array(relationshipExclusionSummarySchema).max(TOPOLOGY_VIEWS.length),
+  detailCoverage: z.object({
+    state: z.enum(['complete', 'limited', 'unknown']),
+    reason: reasonCodeSchema.nullable(),
+  }).strict(),
+}).strict();
+
+export const EVIDENCE_OBSERVATION_STATUSES = ['current', 'expired', 'withdrawn'] as const;
+const producerKindSchema = z.enum(['agent', 'snmp', 'unifi', 'discovery']);
+
+const evidenceObservationSchema = z.object({
+  id: canonicalIdSchema,
+  method: observationMethodSchema,
+  evidenceClass: evidenceClassSchema,
+  producerKind: producerKindSchema,
+  protocol: z.string().min(1).max(32),
+  observedAt: utcTimestampSchema,
+  effectiveAt: utcTimestampSchema,
+  receivedAt: utcTimestampSchema,
+  freshUntil: utcTimestampSchema,
+  status: z.enum(EVIDENCE_OBSERVATION_STATUSES),
+}).strict();
+
+const evidenceConfirmationSchema = z.object({
+  sourceId: canonicalIdSchema,
+  producerKind: producerKindSchema,
+  protocol: z.string().min(1).max(32),
+  firstPositiveAt: utcTimestampSchema,
+  lastPositiveAt: utcTimestampSchema,
+  freshUntil: utcTimestampSchema,
+  lifecycle: lifecycleSchema,
+  completeMissCount: z.number().int().min(0).max(2),
+}).strict();
+
+export const relationshipEvidenceResponseSchema = z.object({
+  siteId: canonicalIdSchema,
+  graphRevision: topologyRevisionSchema,
+  relationshipId: canonicalIdSchema,
+  cursor: boundedTokenSchema.nullable(),
+  observations: z.array(evidenceObservationSchema).max(200),
+  confirmations: z.array(evidenceConfirmationSchema).max(200),
+  summary: evidenceSummarySchema,
+  details: z.object({
+    state: z.enum(['available', 'expired', 'unavailable']),
+    reason: reasonCodeSchema.nullable(),
   }).strict(),
 }).strict();

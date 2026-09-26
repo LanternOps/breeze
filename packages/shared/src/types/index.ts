@@ -936,6 +936,9 @@ export * from './topologyConfiguration';
 
 export * from './topologyDiagnostics';
 
+// Physical topology collection contracts (M2 #5998)
+export * from './topologyPhysical';
+
 export * from './securityScan';
 
 // Metric anomaly episodes (spec 2026-09-21)

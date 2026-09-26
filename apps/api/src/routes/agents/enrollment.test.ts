@@ -6,6 +6,7 @@ const { admitPartnerDeviceCapacityMock } = vi.hoisted(() => ({
   admitPartnerDeviceCapacityMock: vi.fn(),
 }));
 
+vi.mock('../../services/topology/identityDirty', () => ({ markTopologyIdentityDirty: vi.fn() }));
 vi.mock('../../services/partnerDeviceCapacity', () => ({
   admitPartnerDeviceCapacity: admitPartnerDeviceCapacityMock,
   PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
@@ -1233,6 +1234,34 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         }),
       }),
     );
+  });
+
+  it('M2 D15.2: an in-place re-enrollment that rewrites NIC MACs marks topology identity dirty; a fresh row does not', async () => {
+    const { markTopologyIdentityDirty } = await import('../../services/topology/identityDirty');
+    const validToken = 'valid-reenroll-token-nic';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+    mockKeyLookup({ id: 'key-nic', orgId: 'org-nic', siteId: 'site-nic', keySecretHash: null, expiresAt: new Date(Date.now() + 3600_000), maxUsage: 10, usageCount: 0 });
+    mockSelectRows([{ partnerId: 'partner-nic' }]);
+    mockSelectRows([{ id: 'device-nic', agentId: 'agent-nic', status: 'offline', agentTokenHash: validHash, previousTokenHash: null, previousTokenExpiresAt: null, agentTokenSuspendedAt: null }]);
+    mockTransaction({ id: 'device-nic', orgId: 'org-nic', siteId: 'site-nic', hostname: 'host-1' }, 'key-nic');
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-agent-reenrollment-token': validToken },
+      body: JSON.stringify({ ...baseEnrollBody, networkInfo: [{ name: 'eth0', mac: '02:00:00:00:aa:01' }] }),
+    });
+    expect(resp.status).toBe(201);
+    expect(vi.mocked(markTopologyIdentityDirty)).toHaveBeenCalledWith(expect.anything(), { orgId: 'org-nic', siteId: 'site-nic' });
+
+    vi.mocked(markTopologyIdentityDirty).mockClear();
+    mockKeyLookup({ id: 'key-nic-2', orgId: 'org-nic', siteId: 'site-nic', keySecretHash: null, expiresAt: new Date(Date.now() + 3600_000), maxUsage: 10, usageCount: 0 });
+    mockSelectRows([{ partnerId: 'partner-nic' }]);
+    mockSelectRows([]);
+    mockTransaction({ id: 'device-nic-fresh', orgId: 'org-nic', siteId: 'site-nic', hostname: 'host-2' }, 'key-nic-2');
+    const fresh = await buildApp().request('/agents/enroll', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, hostname: 'host-2', networkInfo: [{ name: 'eth0', mac: '02:00:00:00:aa:02' }] }),
+    });
+    expect(fresh.status).toBe(201);
+    expect(vi.mocked(markTopologyIdentityDirty)).not.toHaveBeenCalled();
   });
 
   it('matrix row 4: a valid existing-device token still re-enrolls the SAME row in place (no fresh row)', async () => {

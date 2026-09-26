@@ -168,3 +168,12 @@ export async function seedTopologyCommandFixture(
     },
   };
 }
+
+/**
+ * M2 `physical-enrichment` release fixture: the M1 no-management seed enriched
+ * through the real SNMP/UniFi transports, with the deterministic variants
+ * `fdb-only`, `qbridge-shared-fdb`, `reciprocal-parallel`,
+ * `partial-controller-page`, `source-remap`, `manual-pinned-import` and
+ * `legacy-agent-positive-only` (see ./topologyPhysical.ts).
+ */
+export { PHYSICAL_FIXTURE, TOPOLOGY_PHYSICAL_VARIANTS, seedTopologyPhysicalFixture, type TopologyPhysicalFixture, type TopologyPhysicalVariant } from './topologyPhysical';

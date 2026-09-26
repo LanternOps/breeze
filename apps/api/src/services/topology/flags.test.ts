@@ -24,6 +24,7 @@ import {
   getTopologyCapabilities,
   loadTopologyFlags,
   resolveTopologyFlags,
+  topologyPhysicalExposed,
   withResolvedTopologyFlags,
   type TopologyRequestContextLike,
 } from './flags';
@@ -243,6 +244,19 @@ describe('topology capabilities', () => {
     expect(capabilities.interfaceHealth).toEqual({ available: true, reason: null });
     expect(capabilities.diagnostics).toEqual({ available: true, reason: null });
     expect(capabilities.ai).toEqual({ available: true, reason: null });
+  });
+});
+
+describe('physical exposure (D9/D15.4)', () => {
+  const base = resolveTopologyFlags({});
+  it('is the deployed capability materialization && physical, independent of collectors', () => {
+    expect(topologyPhysicalExposed({ ...base, materialization: true, physical: true })).toBe(true);
+    expect(topologyPhysicalExposed({ ...base, materialization: true, physical: false })).toBe(false);
+    expect(topologyPhysicalExposed({ ...base, materialization: false, physical: true })).toBe(false);
+  });
+  it('reports the settings capability from the same predicate', () => {
+    const capabilities = getTopologyCapabilities({ ...base, materialization: true, physical: true }, true, { physical: topologyPhysicalExposed({ ...base, materialization: true, physical: true }) });
+    expect(capabilities.physical).toEqual({ available: true, reason: null });
   });
 });
 

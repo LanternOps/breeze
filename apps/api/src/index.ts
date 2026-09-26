@@ -257,6 +257,7 @@ import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
+import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
@@ -1866,6 +1867,10 @@ async function bootstrap(): Promise<void> {
       throw err;
     }
   }
+
+  // M2 D1: physical topology producer authorities (discovery target, UniFi
+  // controller site). Default-deny when absent, so install before serving.
+  registerTopologyPhysicalAuthorities();
 
   server = serve({
     fetch: app.fetch,

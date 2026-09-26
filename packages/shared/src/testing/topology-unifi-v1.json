@@ -1,0 +1,160 @@
+{
+  "canonicalizationVersion": 1,
+  "vectors": [
+    {
+      "name": "single-site",
+      "sourceIdentity": "fixture-org:fixture-site:unifi:fixture-device:fixture-collector",
+      "report": {
+        "version": 1,
+        "producerEpoch": "fixture-epoch-1",
+        "snapshotId": "30000000-0000-4000-8000-000000000001",
+        "sequence": "3",
+        "capturedAt": "2026-09-15T12:00:00Z",
+        "captureAgeAtSendMs": 0,
+        "expectedIntervalSeconds": 300,
+        "resources": [
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_list",
+            "contentDigest": "716013111bb77a7f0e43668d7423ab1420f78ebc056b6d77daed271b5ce6b591",
+            "outcome": "complete",
+            "rowCount": 2,
+            "rows": [
+              {
+                "rowKey": "dev-switch-1",
+                "deviceId": "dev-switch-1",
+                "mac": "02:00:00:00:02:01",
+                "name": "USW Lite 8",
+                "model": "USL8LP",
+                "ipAddress": "192.0.2.20",
+                "state": "ONLINE"
+              },
+              {
+                "rowKey": "dev-ap-1",
+                "deviceId": "dev-ap-1",
+                "mac": "02:00:00:00:02:02",
+                "name": "U6 Lite",
+                "model": "UAL6",
+                "ipAddress": "192.0.2.21",
+                "state": "ONLINE"
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "client_list",
+            "contentDigest": "ca346b65733db57a892e90e635164dc7a9d7dfac69ed82b2335b593e980bdd2a",
+            "outcome": "complete",
+            "rowCount": 3,
+            "rows": [
+              {
+                "rowKey": "client-wired-1",
+                "clientId": "client-wired-1",
+                "mac": "02:00:00:00:03:01",
+                "clientType": "WIRED",
+                "uplinkDeviceId": "dev-switch-1",
+                "name": "printer",
+                "ipAddress": "192.0.2.30",
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-wifi-1",
+                "clientId": "client-wifi-1",
+                "mac": "02:00:00:00:03:02",
+                "clientType": "WIRELESS",
+                "uplinkDeviceId": "dev-ap-1",
+                "name": "laptop",
+                "ipAddress": "192.0.2.31",
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              },
+              {
+                "rowKey": "client-vpn-1",
+                "clientId": "client-vpn-1",
+                "mac": null,
+                "clientType": "VPN",
+                "uplinkDeviceId": null,
+                "name": "remote-user",
+                "ipAddress": "198.51.100.5",
+                "uplinkPortIndex": null,
+                "ssid": null,
+                "vlan": null,
+                "signalDbm": null
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_details",
+            "contentDigest": "d24eb3ec439c6b0dfb66256dfe0a173c6e5fe657134f8a8153acd6914354100b",
+            "outcome": "partial",
+            "reasonCode": "page_failed",
+            "rowCount": 1,
+            "rows": [
+              {
+                "rowKey": "dev-switch-1",
+                "deviceId": "dev-switch-1",
+                "uplinkDeviceId": null,
+                "uplinkPortIndex": null,
+                "ports": [
+                  {
+                    "portIndex": 1,
+                    "name": "Port 1",
+                    "linkUp": true,
+                    "speedMbps": 1000,
+                    "poeMode": null
+                  },
+                  {
+                    "portIndex": 2,
+                    "name": "Port 2",
+                    "linkUp": false,
+                    "speedMbps": null,
+                    "poeMode": "auto"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "statistics",
+            "contentDigest": "318fc555633b1a94399a571b81f8bbb6a3594fa09e2dae16bca7a30495e6a7b3",
+            "outcome": "unsupported",
+            "reasonCode": "endpoint_unavailable",
+            "rowCount": 0,
+            "rows": []
+          }
+        ]
+      },
+      "expected": {
+        "resources": [
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_list",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v1\",\"producerEpoch\":\"fixture-epoch-1\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"device_list\",\"outcome\":\"complete\",\"rowCount\":2,\"rows\":[{\"deviceId\":\"dev-ap-1\",\"ipAddress\":\"192.0.2.21\",\"mac\":\"02:00:00:00:02:02\",\"model\":\"UAL6\",\"name\":\"U6 Lite\",\"rowKey\":\"dev-ap-1\",\"state\":\"ONLINE\"},{\"deviceId\":\"dev-switch-1\",\"ipAddress\":\"192.0.2.20\",\"mac\":\"02:00:00:00:02:01\",\"model\":\"USL8LP\",\"name\":\"USW Lite 8\",\"rowKey\":\"dev-switch-1\",\"state\":\"ONLINE\"}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":1}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "client_list",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v1\",\"producerEpoch\":\"fixture-epoch-1\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"client_list\",\"outcome\":\"complete\",\"rowCount\":3,\"rows\":[{\"clientId\":\"client-vpn-1\",\"clientType\":\"VPN\",\"ipAddress\":\"198.51.100.5\",\"mac\":null,\"name\":\"remote-user\",\"rowKey\":\"client-vpn-1\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":null,\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-wifi-1\",\"clientType\":\"WIRELESS\",\"ipAddress\":\"192.0.2.31\",\"mac\":\"02:00:00:00:03:02\",\"name\":\"laptop\",\"rowKey\":\"client-wifi-1\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"dev-ap-1\",\"uplinkPortIndex\":null,\"vlan\":null},{\"clientId\":\"client-wired-1\",\"clientType\":\"WIRED\",\"ipAddress\":\"192.0.2.30\",\"mac\":\"02:00:00:00:03:01\",\"name\":\"printer\",\"rowKey\":\"client-wired-1\",\"signalDbm\":null,\"ssid\":null,\"uplinkDeviceId\":\"dev-switch-1\",\"uplinkPortIndex\":null,\"vlan\":null}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":1}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "device_details",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v1\",\"producerEpoch\":\"fixture-epoch-1\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"device_details\",\"outcome\":\"partial\",\"reasonCode\":\"page_failed\",\"rowCount\":1,\"rows\":[{\"deviceId\":\"dev-switch-1\",\"ports\":[{\"linkUp\":true,\"name\":\"Port 1\",\"poeMode\":null,\"portIndex\":1,\"speedMbps\":1000},{\"linkUp\":false,\"name\":\"Port 2\",\"poeMode\":\"auto\",\"portIndex\":2,\"speedMbps\":null}],\"rowKey\":\"dev-switch-1\",\"uplinkDeviceId\":null,\"uplinkPortIndex\":null}]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":1}"
+          },
+          {
+            "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+            "kind": "statistics",
+            "canonical": "{\"canonicalizationVersion\":1,\"contract\":\"unifi_topology_v1\",\"producerEpoch\":\"fixture-epoch-1\",\"resource\":{\"controllerSiteId\":\"88f7af54-98f8-306a-a1c7-c9349722b1f6\",\"kind\":\"statistics\",\"outcome\":\"unsupported\",\"reasonCode\":\"endpoint_unavailable\",\"rowCount\":0,\"rows\":[]},\"sourceIdentity\":\"fixture-org:fixture-site:unifi:fixture-device:fixture-collector\",\"version\":1}"
+          }
+        ]
+      }
+    }
+  ]
+}

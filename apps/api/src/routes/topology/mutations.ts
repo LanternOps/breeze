@@ -43,10 +43,11 @@ export const limitTopologyMutationBody: MiddlewareHandler = async (c, next) => {
   }
 };
 
-export function topologyMutation(handler: (c: Context, body: unknown) => Promise<object>, status: 200 | 201 = 200) {
+/** `body: false` for a mutation fully addressed by its path (e.g. DELETE of one exclusion). */
+export function topologyMutation(handler: (c: Context, body: unknown) => Promise<object>, status: 200 | 201 = 200, options: { body?: boolean } = {}) {
   return async (c: Context) => {
     c.header('Cache-Control', 'private, no-store');
-    try { return c.json(await handler(c, await readTopologyMutationBody(c.req.raw)), status); }
+    try { return c.json(await handler(c, options.body === false ? undefined : await readTopologyMutationBody(c.req.raw)), status); }
     catch (error) {
       if (error instanceof TopologyWriteError) return c.json({ error: error.message, code: error.code, ...error.details }, error.status);
       if (error instanceof TopologyError) return c.json({ error: error.message, code: error.code }, error.status);

@@ -13,7 +13,7 @@ import { splitRevokedLegacyInventoryLinks } from './legacyIdentitySplit';
 
 type OutboxRow = typeof topologyChangeOutbox.$inferSelect;
 const scopeWhere = (scope: TopologyScope, table: { orgId: AnyPgColumn; siteId: AnyPgColumn }) => and(eq(table.orgId, scope.orgId), eq(table.siteId, scope.siteId));
-type SourceEvent = { source: LegacySource; snapshot: boolean; deletion: boolean; row: OutboxRow };
+type SourceEvent = { source: LegacySource; snapshot: boolean; deletion: boolean; row: OutboxRow; collectorAbsence?: boolean };
 const key = (table: string, id: string) => `${table}:${id}`;
 function nodeProjection(row: typeof topologyNodes.$inferSelect): NodePublication {
   const { createdAt: _created, updatedAt: _updated, revision: _revision, ...rest } = row;
@@ -45,7 +45,8 @@ function decode(scope: TopologyScope, row: OutboxRow): SourceEvent | null {
   // V2-only mutations already commit canonical changes with their intent; the
   // consumer acknowledges their checkpoint and must not mirror them again.
   if (event.sourceTable === 'v2_intents') return null;
-  return { source: { sourceTable: event.sourceTable, sourceId: event.sourceId, sourceRevision: event.sourceRevision, data: event.data }, snapshot: false, deletion, row };
+  return { source: { sourceTable: event.sourceTable, sourceId: event.sourceId, sourceRevision: event.sourceRevision, data: event.data }, snapshot: false, deletion, row,
+    collectorAbsence: event.type === 'relationship.delete' && event.cause === 'collector_absence' };
 }
 
 /** Called with the site capture lock held. Publication, layout CAS, source
@@ -140,7 +141,13 @@ export async function replayLegacyBatch(scope: TopologyScope, rows: OutboxRow[],
     if (deletion) {
       deleteFences.set(key(source.sourceTable, source.sourceId), sourceRevision);
       if (old) {
-        const next = { ...old, lifecycle: 'withdrawn' as const, deletedAt: new Date(0), legacySourceRevision: sourceRevision };
+        // D5: legacy collector absence is not negative evidence — the legacy
+        // collector merely stopped reporting. Expire the projection's support
+        // (archived, like M1 aging) instead of deleting it; any other delete
+        // (user, inventory) still withdraws.
+        const next = event.collectorAbsence
+          ? { ...old, lifecycle: old.lifecycle === 'withdrawn' ? old.lifecycle : 'archived' as const, legacySourceRevision: sourceRevision }
+          : { ...old, lifecycle: 'withdrawn' as const, deletedAt: new Date(0), legacySourceRevision: sourceRevision };
         relationMap.set(source.sourceId, next); stagedRelationships.set(source.sourceId, next);
       }
       counts.tombstone++; counts.imported++; continue;

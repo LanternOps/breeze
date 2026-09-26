@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ transaction: vi.fn(), access: vi.fn(), flags: vi.fn(), order: [] as string[] }));
-vi.mock('../../db', () => ({ db: {}, assertInTransaction: vi.fn(), withDbTransaction: mocks.transaction }));
+const mocks = vi.hoisted(() => ({ transaction: vi.fn(), access: vi.fn(), flags: vi.fn(), drain: vi.fn(), state: vi.fn(), order: [] as string[] }));
+vi.mock('../../db', () => ({ db: { select: () => ({ from: () => ({ where: mocks.state }) }) }, assertInTransaction: vi.fn(), withDbTransaction: mocks.transaction }));
 vi.mock('./access', () => ({ requireTopologySiteAccess: mocks.access }));
-vi.mock('./legacyImport', () => ({ drainTopologyOutbox: vi.fn() }));
+vi.mock('./legacyImport', () => ({ drainTopologyOutbox: mocks.drain }));
 vi.mock('./flags', () => ({ loadTopologyFlags: mocks.flags }));
-import { withTopologyWrite } from './writes';
+import { drainWriteBarrier, withTopologyWrite } from './writes';
 import type { TopologyRequestContext } from './access';
 
 const ctx = { scope: { orgId: '11111111-1111-4111-8111-111111111111', siteId: '22222222-2222-4222-8222-222222222222' } } as TopologyRequestContext;
@@ -46,5 +46,24 @@ describe('topology write flag resolution', () => {
     mocks.flags.mockResolvedValue({ ...on, materialization: false });
     await expect(withTopologyWrite(ctx, true, async () => undefined)).rejects.toMatchObject({ code: 'topology_materialization_disabled', status: 409 });
     expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+});
+
+// Collection ingest, aging, authority revocation and physical identity bumps
+// advance dirty_revision WITHOUT an outbox row, so the legacy checkpoint's
+// deliveredThrough can never reach the barrier. An empty barrier is drained.
+describe('write barrier over non-outbox dirty revisions', () => {
+  it('treats zero pending events through the barrier as drained', async () => {
+    mocks.state.mockResolvedValue([{ dirtyRevision: 9n }]);
+    mocks.drain.mockResolvedValue({ complete: false, pendingThroughBarrier: 0, deliveredThrough: '4' });
+    await expect(drainWriteBarrier(ctx.scope)).resolves.toBeUndefined();
+    expect(mocks.drain).toHaveBeenCalledOnce();
+    expect(mocks.drain).toHaveBeenCalledWith(ctx.scope, { throughRevision: '9', batchSize: 1000 });
+  });
+  it('still refuses when events remain pending through the barrier', async () => {
+    mocks.state.mockResolvedValue([{ dirtyRevision: 9n }]);
+    mocks.drain.mockResolvedValue({ complete: false, pendingThroughBarrier: 3, deliveredThrough: '4' });
+    await expect(drainWriteBarrier(ctx.scope)).rejects.toMatchObject({ code: 'topology_backlog_busy', status: 503 });
+    expect(mocks.drain).toHaveBeenCalledTimes(10);
   });
 });

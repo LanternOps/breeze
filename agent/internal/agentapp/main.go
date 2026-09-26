@@ -979,6 +979,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			// via the ingest worker. Log at Warn so the log shipper (MinLevel
 			// warn) actually delivers them; Debug was invisible in the field.
 			Logf: func(format string, args ...any) { log.Warn(fmt.Sprintf(format, args...)) },
+			// Per-collector topology sequence/digest state (unifi-topology-*.json).
+			StateDir: config.GetDataDir(),
 		})
 	}
 

@@ -179,10 +179,11 @@ describe('manual/layout compatibility writes — real request RLS and atomic rep
     expect(await getTestDb().select().from(auditLogs).where(and(eq(auditLogs.resourceId, a.id), eq(auditLogs.action, 'topology.node.deleted')))).toHaveLength(1);
   });
 
-  it('forbids measured-node deletion and explicitly rejects interface binding', async () => {
+  it('forbids measured-node deletion and hides an unknown interface binding as not found', async () => {
     const env = await fixture(); const a = await createNode(env); const b = await createNode(env);
     const rejected = await v2(env, 'POST', 'manual-relationships', { sourceNodeId: a.id, targetNodeId: b.id, kind: 'physical_link', sourceInterfaceId: randomUUID() });
-    expect(rejected.status).toBe(409); expect(await rejected.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(rejected.status).toBe(404); expect(await rejected.json()).toMatchObject({ code: 'topology_entity_not_found' });
+    expect(await getTestDb().select().from(topologyRelationships)).toHaveLength(0);
     const sourceKey = `inventory:${randomUUID()}`; const id = randomUUID();
     await getTestDb().insert(topologyNodes).values({ ...scope(env), id, kind: 'endpoint', identityKey: canonicalIdentityKey(scope(env), 'endpoint', sourceKey), identityMaterial: { version: 1, kind: 'endpoint', sourceKey } });
     expect((await v2(env, 'DELETE', `manual-nodes/${id}`, { expectedRevision: '0' })).status).toBe(404);

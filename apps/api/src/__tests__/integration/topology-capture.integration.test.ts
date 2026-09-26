@@ -10,6 +10,10 @@ import { enqueueTopologyChange, parseLegacyTopologyEvent, type TopologyChangeInp
 
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext(orgContext(orgId), action);
 const captureMigration = '2026-10-22-150200-topology-legacy-capture.sql';
+// Later migrations CREATE OR REPLACE the capture functions (M2 D5 delete cause).
+// A replay must re-apply the whole chain, or it leaves the M0 bodies installed
+// for every suite that runs after this one in the same database.
+const captureMigrationChain = [captureMigration, '2026-11-03-080200-topology-legacy-delete-cause.sql'];
 type Scope = { orgId: string; siteId: string };
 async function manual(scope: Scope, id = crypto.randomUUID()) {
   await scoped(scope.orgId, () => db.execute(sql`INSERT INTO topology_manual_nodes (id, org_id, site_id, label, role)
@@ -258,7 +262,7 @@ describe('transactionally captured legacy topology changes', () => {
   it('reapplies the migration without losing events or creating duplicate triggers', async () => {
     const scope = await createTopologyTenant(); const id = await manual(scope);
     const admin = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
-    try { await admin.begin(async tx => { await tx.unsafe(await readFile(new URL(`../../../migrations/${captureMigration}`, import.meta.url), 'utf8')); }); }
+    try { for (const file of captureMigrationChain) await admin.begin(async tx => { await tx.unsafe(await readFile(new URL(`../../../migrations/${file}`, import.meta.url), 'utf8')); }); }
     finally { await admin.end(); }
     await scoped(scope.orgId, () => db.execute(sql`UPDATE topology_manual_nodes SET label = 'After replay' WHERE id = ${id}::uuid`));
     expect((await events(scope)).map(r => r.revision)).toEqual(['1', '2']);

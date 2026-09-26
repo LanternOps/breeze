@@ -58,14 +58,39 @@ const (
 	LldpRemPortIDOID    = "1.0.8802.1.1.2.1.4.1.1.7" // lldpRemPortId
 	LldpRemSysNameOID   = "1.0.8802.1.1.2.1.4.1.1.9" // lldpRemSysName
 	LldpLocPortIDOID    = "1.0.8802.1.1.2.1.3.7.1.3" // lldpLocPortId
+
+	LldpRemChassisIDSubtypeOID = "1.0.8802.1.1.2.1.4.1.1.4" // lldpRemChassisIdSubtype
+	LldpRemPortIDSubtypeOID    = "1.0.8802.1.1.2.1.4.1.1.6" // lldpRemPortIdSubtype
+	LldpLocPortIDSubtypeOID    = "1.0.8802.1.1.2.1.3.7.1.2" // lldpLocPortIdSubtype
+	// The target's own chassis identity (scalars under lldpLocalSystemData).
+	LldpLocChassisIDSubtypeOID = "1.0.8802.1.1.2.1.3.1"     // lldpLocChassisIdSubtype
+	LldpLocChassisIDOID        = "1.0.8802.1.1.2.1.3.2"     // lldpLocChassisId
+	LldpLocPortDescOID         = "1.0.8802.1.1.2.1.3.7.1.4" // lldpLocPortDesc
+	// lldpRemManAddrIfSubtype; the management address itself lives in the row
+	// index: timeMark.localPortNum.remIndex.addrSubtype.addrLen.addr...
+	LldpRemManAddrIfSubtypeOID = "1.0.8802.1.1.2.1.4.2.1.3"
 )
 
 // Cisco CDP cdpCacheTable columns under 1.3.6.1.4.1.9.9.23.1.2.1.1.
 const (
-	CdpCacheDeviceIDOID   = "1.3.6.1.4.1.9.9.23.1.2.1.1.6" // cdpCacheDeviceId
-	CdpCacheDevicePortOID = "1.3.6.1.4.1.9.9.23.1.2.1.1.7" // cdpCacheDevicePort
-	CdpCacheAddressOID    = "1.3.6.1.4.1.9.9.23.1.2.1.1.4" // cdpCacheAddress
+	CdpCacheDeviceIDOID    = "1.3.6.1.4.1.9.9.23.1.2.1.1.6" // cdpCacheDeviceId
+	CdpCacheDevicePortOID  = "1.3.6.1.4.1.9.9.23.1.2.1.1.7" // cdpCacheDevicePort
+	CdpCacheAddressOID     = "1.3.6.1.4.1.9.9.23.1.2.1.1.4" // cdpCacheAddress
+	CdpCacheAddressTypeOID = "1.3.6.1.4.1.9.9.23.1.2.1.1.3" // cdpCacheAddressType (1 = ip)
+	CdpGlobalOID           = "1.3.6.1.4.1.9.9.23.1.3"       // cdpGlobal group (support probe)
 )
 
 // IfNameOID is ifName (ifXTable), used to resolve a local ifIndex to a port name.
 const IfNameOID = "1.3.6.1.2.1.31.1.1.1.1"
+
+// Interface inventory and bridge-port mapping columns.
+const (
+	IfAliasOID              = "1.3.6.1.2.1.31.1.1.1.18"    // ifAlias
+	IfPhysAddressOID        = "1.3.6.1.2.1.2.2.1.6"        // ifPhysAddress
+	Dot1dBasePortIfIndexOID = "1.3.6.1.2.1.17.1.4.1.2"     // dot1dBasePortIfIndex (bridge port → ifIndex)
+	Dot1dTpFdbPortOID       = "1.3.6.1.2.1.17.4.3.1.2"     // dot1dTpFdbPort
+	Dot1dTpFdbStatusOID     = "1.3.6.1.2.1.17.4.3.1.3"     // dot1dTpFdbStatus
+	Dot1qTpFdbPortOID       = "1.3.6.1.2.1.17.7.1.2.2.1.2" // dot1qTpFdbPort: .<fdbId>.<6 mac octets>
+	Dot1qTpFdbStatusOID     = "1.3.6.1.2.1.17.7.1.2.2.1.3" // dot1qTpFdbStatus
+	Dot1qVlanFdbIDOID       = "1.3.6.1.2.1.17.7.1.4.2.1.3" // dot1qVlanFdbId: .<timeMark>.<vlan> = fdbId
+)
