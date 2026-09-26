@@ -36,6 +36,7 @@ export const PERMISSION_GRANTS = {
   // Network topology (discovery topology view + saved layout — #1728)
   TOPOLOGY_READ: { resource: 'topology', action: 'read' },
   TOPOLOGY_WRITE: { resource: 'topology', action: 'write' },
+  TOPOLOGY_EXECUTE: { resource: 'topology', action: 'execute' },
 
   // Scripts
   SCRIPTS_READ: { resource: 'scripts', action: 'read' },
