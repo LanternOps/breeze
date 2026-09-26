@@ -20,6 +20,8 @@ export const bandwidthHighHandler: ConditionHandler = {
     // while cond.value is authored in megaBITS per second. Convert each sample
     // to Mbps rather than scaling the threshold, so actualValue is in the same
     // unit the monitor template renders ("{{actualValue}} Mbps").
+    // A null rate reads as 0: the agent serialises these with `omitempty`, so a
+    // genuine zero-traffic interval arrives as null (the column is nullable).
     const sampleMbps = (m: (typeof metrics)[number]): number => {
       const inBps = m.bandwidthInBps !== null ? Number(m.bandwidthInBps) : 0;
       const outBps = m.bandwidthOutBps !== null ? Number(m.bandwidthOutBps) : 0;

@@ -115,6 +115,35 @@ describe('networkErrorsHandler', () => {
     expect(all.passed).toBe(true);
   });
 
+  it('sums same-named interfaces within a sample instead of diffing them against each other', async () => {
+    // Two unnamed adapters in each sample. Keyed naively, the second would be
+    // diffed against the first from the SAME sample (500 vs 10 → fake errors).
+    setRows(
+      row(0, [{ name: '', inErrors: 12, outErrors: 0 }, { name: '', inErrors: 503, outErrors: 0 }]),
+      row(4, [{ name: '', inErrors: 10, outErrors: 0 }, { name: '', inErrors: 500, outErrors: 0 }]),
+    );
+    const result = await networkErrorsHandler.evaluate(
+      { type: 'network_errors', errorType: 'in', operator: 'gt', value: 100 },
+      'dev-1'
+    );
+    expect(result.actualValue).toBe(5);
+    expect(result.passed).toBe(false);
+  });
+
+  it('skips samples without interface stats and accepts string timestamps', async () => {
+    setRows(
+      { timestamp: new Date(NOW.getTime()).toISOString(), interfaceStats: [{ name: 'eth0', inErrors: 40, outErrors: 0 }] } as never,
+      row(2, null),
+      { timestamp: new Date(NOW.getTime() - 4 * 60_000).toISOString(), interfaceStats: [{ name: 'eth0', inErrors: 25, outErrors: 0 }] } as never,
+    );
+    const result = await networkErrorsHandler.evaluate(
+      { type: 'network_errors', errorType: 'in', operator: 'gt', value: 10 },
+      'dev-1'
+    );
+    expect(result.actualValue).toBe(15);
+    expect(result.passed).toBe(true);
+  });
+
   it('reports no data when fewer than two samples carry the interface', async () => {
     setRows(row(0, [{ name: 'eth0', inErrors: 5000, outErrors: 0 }]));
     const result = await networkErrorsHandler.evaluate(

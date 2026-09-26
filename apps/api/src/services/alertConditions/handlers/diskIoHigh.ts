@@ -18,6 +18,8 @@ export const diskIoHighHandler: ConditionHandler = {
     // The agent reports disk rates in BYTES per second; cond.value is authored
     // in MB/s (10^6 bytes). Convert each sample to MB/s so actualValue is in the
     // unit the monitor template renders ("{{actualValue}} MB/s").
+    // A null rate reads as 0: the agent serialises these with `omitempty`, so a
+    // genuine zero-traffic interval arrives as null (the column is nullable).
     const sampleMBps = (m: (typeof metrics)[number]): number => {
       const readBps = m.diskReadBps !== null ? Number(m.diskReadBps) : 0;
       const writeBps = m.diskWriteBps !== null ? Number(m.diskWriteBps) : 0;

@@ -78,6 +78,16 @@ describe('bandwidthHighHandler', () => {
     expect(getRecentMetricsMock).toHaveBeenCalledWith('dev-1', 5);
   });
 
+  it('reads a null rate (agent omitempty for zero) as 0 Mbps', async () => {
+    getRecentMetricsMock.mockResolvedValue([sample(null, null)]);
+    const result = await bandwidthHighHandler.evaluate(
+      { type: 'bandwidth_high', direction: 'total', operator: 'lt', value: 1 },
+      'dev-1'
+    );
+    expect(result.passed).toBe(true);
+    expect(result.actualValue).toBe(0);
+  });
+
   it('reports no data when the window is empty', async () => {
     getRecentMetricsMock.mockResolvedValue([]);
     const result = await bandwidthHighHandler.evaluate(

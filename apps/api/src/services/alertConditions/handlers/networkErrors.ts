@@ -63,11 +63,18 @@ export const networkErrorsHandler: ConditionHandler = {
       const ifStats = m.interfaceStats as InterfaceStat[] | null;
       if (!ifStats || !Array.isArray(ifStats)) continue;
 
+      // Collapse this sample to one reading per name FIRST. Interfaces that
+      // share a name within one sample (blank names, duplicate adapters) are
+      // summed, so the diff below is always sample-to-sample for the same key —
+      // never one interface's counter against another's from the same sample.
+      const readings = new Map<string, number>();
       for (const iface of ifStats) {
         const name = typeof iface.name === 'string' ? iface.name : '';
         if (cond.interfaceName && name !== cond.interfaceName) continue;
+        readings.set(name, (readings.get(name) ?? 0) + errorsFor(iface, cond.errorType));
+      }
 
-        const current = errorsFor(iface, cond.errorType);
+      for (const [name, current] of readings) {
         const state = perIface.get(name);
         if (!state) {
           perIface.set(name, { prev: current, increase: 0, readings: 1 });
