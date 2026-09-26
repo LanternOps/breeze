@@ -1,6 +1,19 @@
 import type { AccountingConnection } from './accountingConnectionService';
 
-export type AccountingProviderId = 'quickbooks' | 'xero';
+export const ACCOUNTING_PROVIDER_IDS = ['quickbooks', 'xero'] as const;
+export type AccountingProviderId = typeof ACCOUNTING_PROVIDER_IDS[number];
+
+/**
+ * What a provider implementation can do today (spec "Provider capabilities").
+ * Enforced at EVERY layer — routes (409 capability_unavailable), producers
+ * (no enqueue), workers (log + complete) and the UI (hidden). This is what lets
+ * each Xero wave ship alone: a W02-connected row defaults to push_mode='auto' /
+ * pull_payments=true / push_payments=true, and without these gates the generic
+ * workers would call provider methods that do not exist yet.
+ */
+export type AccountingCapability =
+  | 'connect' | 'mapping' | 'customerImport' | 'invoicePush' | 'paymentPull' | 'paymentPush';
+export type AccountingCapabilities = Readonly<Record<AccountingCapability, boolean>>;
 
 export interface ConnectionTokens {
   realmId: string;
@@ -289,6 +302,9 @@ export interface ChangeSet {
 
 export interface AccountingProvider {
   readonly provider: AccountingProviderId;
+  /** Brand name used in operator-visible text ("QuickBooks", "Xero"). Never translated. */
+  readonly displayName: string;
+  readonly capabilities: AccountingCapabilities;
   buildAuthUrl(state: string): string;
   exchangeCode(code: string, realmId: string): Promise<ConnectionTokens>;
   refresh(refreshToken: string): Promise<ConnectionTokens>;

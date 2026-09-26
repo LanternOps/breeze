@@ -448,6 +448,10 @@ interface QboTokenResponse {
 
 export class QuickbooksProvider implements AccountingProvider {
   readonly provider = 'quickbooks' as const;
+  readonly displayName = 'QuickBooks';
+  readonly capabilities = {
+    connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+  } as const;
 
   buildAuthUrl(state: string): string {
     const url = new URL(QBO_AUTH_URL);

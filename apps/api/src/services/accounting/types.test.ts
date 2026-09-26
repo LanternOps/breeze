@@ -1,5 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
+  AccountingCapabilities,
   AccountingCustomerPayload,
   AccountingDeletePaymentPayload,
   AccountingEntityMapping,
@@ -107,5 +108,15 @@ describe('payment push seam is fully typed (Phase D2)', () => {
 
   it('a CDC payment line carries the parsed Breeze marker', () => {
     expectTypeOf<ChangeSetPaymentLine['breezePaymentId']>().toEqualTypeOf<string | null>();
+  });
+});
+
+describe('provider capabilities and identity (Xero W01)', () => {
+  it('declares the six capabilities and a display name', () => {
+    expectTypeOf<AccountingProvider['capabilities']>().toEqualTypeOf<AccountingCapabilities>();
+    expectTypeOf<keyof AccountingCapabilities>().toEqualTypeOf<
+      'connect' | 'mapping' | 'customerImport' | 'invoicePush' | 'paymentPull' | 'paymentPush'
+    >();
+    expectTypeOf<AccountingProvider['displayName']>().toEqualTypeOf<string>();
   });
 });
