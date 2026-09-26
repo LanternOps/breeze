@@ -2295,7 +2295,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -2363,7 +2364,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -2448,7 +2450,8 @@
         "cpuCores": "CPU Çekirdekleri",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Boyutu (GB)",
-        "gpuModel": "GPU Modeli"
+        "gpuModel": "GPU Modeli",
+        "health": "Donanım sağlığı"
       },
       "network": {
         "ipAddress": "IP Adres",
@@ -3497,7 +3500,6 @@
     "events": "Donanım olayları",
     "noEvents": "Donanım olayı kaydedilmedi.",
     "noComponents": "Bileşen bildirilmedi. Kaynakları kontrol edin.",
-    "all": "Tüm donanım durumları",
     "managementController": "Yönetim denetleyicisi",
     "bmcVendor": "Üretici",
     "bmcFirmware": "Donanım yazılımı",

@@ -2295,7 +2295,8 @@
         "cpuCores": "CPU Cores",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Size (GB)",
-        "gpuModel": "GPU Model"
+        "gpuModel": "GPU Model",
+        "health": "Hardware Health"
       },
       "network": {
         "ipAddress": "IP Address",
@@ -2363,7 +2364,8 @@
         "cpuCores": "CPU Cores",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Size (GB)",
-        "gpuModel": "GPU Model"
+        "gpuModel": "GPU Model",
+        "health": "Hardware Health"
       },
       "network": {
         "ipAddress": "IP Address",
@@ -2448,7 +2450,8 @@
         "cpuCores": "CPU Cores",
         "ramTotalMb": "RAM (MB)",
         "diskTotalGb": "Disk Size (GB)",
-        "gpuModel": "GPU Model"
+        "gpuModel": "GPU Model",
+        "health": "Hardware Health"
       },
       "network": {
         "ipAddress": "IP Address",
@@ -3497,7 +3500,6 @@
     "events": "Hardware events",
     "noEvents": "No hardware events recorded.",
     "noComponents": "No storage components reported. Check source status below.",
-    "all": "All hardware health",
     "managementController": "Management controller",
     "bmcVendor": "Vendor",
     "bmcFirmware": "Firmware",
