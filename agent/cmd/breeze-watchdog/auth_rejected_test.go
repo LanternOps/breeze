@@ -36,8 +36,8 @@ func TestHandleIPCMessage_StateSyncAuthRejectedReachesHealth(t *testing.T) {
 	if !health.LastKnownHeartbeat(nil).IsZero() {
 		t.Fatal("an auth-rejected state_sync was recorded as a successful heartbeat")
 	}
-	if d, _ := health.EvaluateStaleHeartbeat(nil, true); d != watchdog.StaleAuthRejected {
-		t.Fatalf("decision = %v, want StaleAuthRejected", d)
+	if d, _ := health.EvaluateStaleHeartbeat(nil, true); d == watchdog.StaleRestart || d == watchdog.StaleVetoed {
+		t.Fatalf("decision = %v — an auth-rejected agent was sent toward restart", d)
 	}
 }
 
@@ -104,5 +104,56 @@ func TestRecoveryVerifiedAcceptsAuthRejectedMarker(t *testing.T) {
 	}
 	if ok, _ = recoveryVerified(nil, health, deadline); ok {
 		t.Fatal("nil state verified the restart")
+	}
+}
+
+// Advisor quorum (#2796): a token rotated over IPC must reach the live
+// failover client (it was copied at FAILOVER entry and never refreshed) and
+// clear the auth backoff the old token earned.
+func TestApplyFailoverTokenUpdate(t *testing.T) {
+	var hits atomic.Int32
+	var status atomic.Int32
+	status.Store(http.StatusUnauthorized)
+	var lastAuth atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		lastAuth.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(int(status.Load()))
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	mon := watchdog.NewFailoverAuthMonitor()
+	fc := watchdog.NewFailoverClient(srv.URL, "agent-1", "old", nil)
+	fc.SetAuthMonitor(mon)
+	for i := 0; i < 3; i++ {
+		_, _ = fc.SendHeartbeat("v", "failover", watchdog.RestartStats{})
+	}
+	if !mon.ShouldSkip() {
+		t.Fatal("setup: backoff not armed")
+	}
+
+	// Unchanged token (e.g. a token_update that failed to parse): no reset.
+	applyFailoverTokenUpdate(fc, mon, "old", "old")
+	if !mon.ShouldSkip() {
+		t.Fatal("backoff cleared although the token did not change")
+	}
+
+	status.Store(http.StatusOK)
+	applyFailoverTokenUpdate(fc, mon, "old", "new")
+	if _, err := fc.SendHeartbeat("v", "failover", watchdog.RestartStats{}); err != nil {
+		t.Fatalf("heartbeat after token rotation: %v", err)
+	}
+	if got, _ := lastAuth.Load().(string); got != "Bearer new" {
+		t.Fatalf("Authorization = %q, want the rotated token", got)
+	}
+
+	// No live client (not in FAILOVER): the process-lifetime monitor still resets.
+	mon2 := watchdog.NewFailoverAuthMonitor()
+	mon2.RecordAuthFailure()
+	mon2.RecordAuthFailure()
+	applyFailoverTokenUpdate(nil, mon2, "a", "b")
+	if mon2.ShouldSkip() {
+		t.Fatal("backoff survived a token rotation with no live failover client")
 	}
 }

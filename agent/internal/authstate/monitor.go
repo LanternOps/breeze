@@ -135,6 +135,10 @@ func (m *Monitor) setBackoffLocked(d time.Duration) {
 	if m.windowJitter > 0 {
 		j := float64(d) * m.windowJitter * (2*rand.Float64() - 1)
 		m.window = time.Duration(float64(d) + j)
+		// maxBackoff is a hard ceiling: at the cap, jitter only shortens.
+		if m.window > m.maxBackoff {
+			m.window = m.maxBackoff
+		}
 	}
 }
 
@@ -187,6 +191,17 @@ func (m *Monitor) RecordSuccess() {
 	if wasDead {
 		slog.Info("auth recovered, resuming normal cadence")
 	}
+}
+
+// Reset silently returns the monitor to its initial, not-dead state. Use it
+// when the credentials themselves changed: a backoff earned by the old
+// credential says nothing about the new one.
+func (m *Monitor) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dead = false
+	m.consecutive = 0
+	m.setBackoffLocked(m.initialBackoff)
 }
 
 // ShouldSkip reports whether the caller should skip its HTTP work this tick.

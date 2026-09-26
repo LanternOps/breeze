@@ -184,11 +184,15 @@ func (c *FailoverClient) noteAuthStatus(op string, code int, body []byte) error 
 	}
 }
 
-// UpdateToken replaces the auth token used for subsequent requests.
+// UpdateToken replaces the auth token used for subsequent requests and
+// clears the auth backoff: that backoff was earned by the old credential and
+// must not delay the first attempt with the new one (#2796).
 func (c *FailoverClient) UpdateToken(token string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.token = token
+	auth := c.auth
+	c.mu.Unlock()
+	auth.Reset()
 }
 
 // BaseURL returns the base URL used for subsequent requests.

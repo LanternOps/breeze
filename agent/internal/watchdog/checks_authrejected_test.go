@@ -59,8 +59,10 @@ func TestAuthRejectedViaStateSyncWithoutStateFile(t *testing.T) {
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
 	hc.NoteAuthRejected(time.Now().Add(-20 * time.Second))
 	for i := 0; i < staleVetoLimit*2; i++ {
-		if d, _ := hc.EvaluateStaleHeartbeat(nil, true); d != StaleAuthRejected {
-			t.Fatalf("tick %d: decision=%v, want StaleAuthRejected", i, d)
+		// No heartbeat ever: the fresh marker is the staleness reference, so
+		// the verdict is HeartbeatOK. Either way: no restart, no veto spent.
+		if d, _ := hc.EvaluateStaleHeartbeat(nil, true); d == StaleRestart || d == StaleVetoed {
+			t.Fatalf("tick %d: decision=%v — an auth-rejected agent was sent toward restart", i, d)
 		}
 	}
 	if !hc.AgentAlive(nil) {
@@ -97,5 +99,25 @@ func TestAgentAliveFreshHeartbeat(t *testing.T) {
 	}
 	if hc.AgentAlive(&state.AgentState{LastHeartbeat: time.Now().Add(-time.Hour)}) {
 		t.Fatal("AgentAlive=true with only a stale heartbeat")
+	}
+}
+
+// Advisor quorum (#2796): a state file with no successful heartbeat gets the
+// startup grace. An agent that has written an auth-rejected marker is past
+// startup, so once that marker goes stale (its heartbeat loop wedged) the
+// staleness check must fire instead of granting grace forever.
+func TestExpiredAuthRejectedMarkerEndsStartupGrace(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	s := &state.AgentState{AuthRejectedAt: time.Now().Add(-10 * time.Minute)}
+	if got := hc.CheckHeartbeatStaleness(s); got != CheckHeartbeatStale {
+		t.Fatalf("CheckHeartbeatStaleness = %q, want %q — a wedged, never-authenticated agent got unlimited startup grace", got, CheckHeartbeatStale)
+	}
+	fresh := &state.AgentState{AuthRejectedAt: time.Now()}
+	if got := hc.CheckHeartbeatStaleness(fresh); got != CheckOK {
+		t.Fatalf("fresh marker, no heartbeat: CheckHeartbeatStaleness = %q, want ok", got)
+	}
+	if got := hc.CheckHeartbeatStaleness(&state.AgentState{}); got != CheckOK {
+		t.Fatalf("true startup (no evidence at all) lost its grace: %q", got)
 	}
 }

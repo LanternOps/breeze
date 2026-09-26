@@ -292,6 +292,14 @@ func (h *HealthChecker) AgentAlive(s *state.AgentState) bool {
 // (AV/EDR on ProgramData), not a dead agent.
 func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 	hb := h.LastKnownHeartbeat(s)
+	if hb.IsZero() {
+		// No successful heartbeat yet. An auth-rejected marker still proves
+		// the agent got past startup and ran its heartbeat loop (#2796), so
+		// it takes the heartbeat's place as the staleness reference —
+		// otherwise a loop that wedged after being rejected would sit in the
+		// startup grace below forever.
+		hb = h.LastKnownAuthRejected(s)
+	}
 	if s == nil && hb.IsZero() {
 		return CheckHeartbeatStale
 	}

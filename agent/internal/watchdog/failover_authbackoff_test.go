@@ -139,3 +139,37 @@ func TestFailoverServerErrorDoesNotArmAuthBackoff(t *testing.T) {
 		t.Fatalf("hits = %d, want 10", hits.Load())
 	}
 }
+
+// Advisor quorum (#2796): a rotated token must reach the live failover
+// client and end a backoff earned by the OLD credential, or a valid new
+// token waits out up to 30 minutes of someone else's penalty.
+func TestFailoverUpdateTokenResetsAuthBackoff(t *testing.T) {
+	var status atomic.Int32
+	status.Store(http.StatusUnauthorized)
+	var lastAuth atomic.Value
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		lastAuth.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(int(status.Load()))
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	fc := NewFailoverClient(srv.URL, "agent-1", "old", nil)
+	for i := 0; i < failoverAuthThreshold; i++ {
+		_, _ = fc.SendHeartbeat("v", "failover", RestartStats{})
+	}
+	if _, err := fc.SendHeartbeat("v", "failover", RestartStats{}); !errors.Is(err, ErrAuthBackoff) {
+		t.Fatalf("setup: err = %v, want ErrAuthBackoff", err)
+	}
+
+	status.Store(http.StatusOK)
+	fc.UpdateToken("new")
+	if _, err := fc.SendHeartbeat("v", "failover", RestartStats{}); err != nil {
+		t.Fatalf("heartbeat right after token update: %v", err)
+	}
+	if got, _ := lastAuth.Load().(string); got != "Bearer new" {
+		t.Fatalf("Authorization = %q, want the rotated token", got)
+	}
+}

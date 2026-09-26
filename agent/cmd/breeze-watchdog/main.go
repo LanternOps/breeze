@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -745,7 +746,10 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case env := <-ipcMessages:
-			if intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker); intent != nil {
+			tokenBefore := tokenStore.Reveal()
+			intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
+			applyFailoverTokenUpdate(failoverClient, failoverAuthMon, tokenBefore, tokenStore.Reveal())
+			if intent != nil {
 				standbyReason = intent.Reason
 				standbyRecognized = watchdog.RecognizedShutdownReason(intent.Reason)
 				standbyWindow = watchdog.StandbyWindow(
@@ -1089,6 +1093,23 @@ func ensureAgentStartedBeforeFailover(ctx context.Context, recovery *watchdog.Re
 		return
 	}
 	journal.Log(watchdog.LevelInfo, "recovery.ensure_started_before_failover", fields)
+}
+
+// applyFailoverTokenUpdate pushes a rotated token into the live failover
+// client (which copied the token at FAILOVER entry and never saw an IPC
+// token_update) and clears the auth backoff: that backoff was earned by the
+// old credential and must not delay the new one (#2796). No-op when the
+// token did not change.
+func applyFailoverTokenUpdate(fc *watchdog.FailoverClient, mon *authstate.Monitor, before, after string) {
+	if after == "" || after == before {
+		return
+	}
+	if fc != nil {
+		fc.UpdateToken(after) // also resets fc's monitor (mon, once wired)
+	}
+	if mon != nil {
+		mon.Reset()
+	}
 }
 
 // recoveryVerified reports whether a restart dispatched before verifyDeadline

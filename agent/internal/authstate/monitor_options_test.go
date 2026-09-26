@@ -63,3 +63,30 @@ func TestMonitor_RetryInZeroWhenAlive(t *testing.T) {
 		t.Fatalf("RetryIn on a healthy monitor = %v, want 0", got)
 	}
 }
+
+// Jitter must not push a window past the configured ceiling.
+func TestMonitor_JitterNeverExceedsMaxBackoff(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		now := time.Unix(8_500_000, 0)
+		m := NewMonitor(1, WithBackoff(time.Minute, 30*time.Minute), WithJitter(0.2), WithClock(func() time.Time { return now }))
+		for j := 0; j < 12; j++ {
+			m.RecordAuthFailure()
+		}
+		if w := m.RetryIn(); w > 30*time.Minute {
+			t.Fatalf("jittered window %v exceeds the 30m ceiling", w)
+		}
+	}
+}
+
+// Reset clears the auth-dead state (new credentials arrived).
+func TestMonitor_ResetClearsBackoff(t *testing.T) {
+	m := NewMonitor(1, WithBackoff(time.Minute, time.Hour))
+	m.RecordAuthFailure()
+	if !m.ShouldSkip() {
+		t.Fatal("setup: not dead")
+	}
+	m.Reset()
+	if m.ShouldSkip() || m.RetryIn() != 0 {
+		t.Fatal("Reset did not clear the backoff")
+	}
+}
