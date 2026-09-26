@@ -189,21 +189,17 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 // sendSessionNotify pushes a fire-and-forget desktop notification to the
 // notify-capable helper. Used for the start/ended session notices. An empty
 // targetWinSession keeps the legacy machine-global selection; a non-empty one
-// routes strictly to that Windows session (see sessionWithScopeForTarget).
+// routes strictly to that Windows session (see sessionNoticeTarget).
 func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
 	if h.sessionBroker == nil || body == "" {
 		return
 	}
-	session := h.sessionWithScopeForTarget("notify", targetWinSession)
+	session := h.sessionNoticeTarget(targetWinSession)
 	if session == nil {
 		log.Warn("no notify-capable helper for session notice")
 		return
 	}
-	req := ipc.NotifyRequest{
-		Title:   "Breeze Agent",
-		Body:    body,
-		Urgency: "normal",
-	}
+	req := sessionNoticeRequest(body)
 	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
 	}
@@ -351,4 +347,33 @@ func errString(err error) string {
 // avoid colliding with a pending command on the same session within a tick.
 func randomNotifyID() string {
 	return time.Now().Format("150405.000000000")
+}
+
+// sessionNoticeTarget picks the helper that draws the remote-session start/end
+// notice. A non-empty targetWinSession resolves strictly inside that Windows
+// session and prefers the user-role helper over the system-role one (#6864): the
+// system-role helper runs as SYSTEM, where the Windows toast platform is not
+// available, and it used to win here because the generic lookup ranks by
+// LastSeen and the system-role helper is the one streaming the desktop. An
+// empty target keeps the machine-global PreferredSessionWithScope, which
+// already prefers the user role.
+func (h *Heartbeat) sessionNoticeTarget(targetWinSession string) *sessionbroker.Session {
+	if targetWinSession == "" {
+		return h.sessionBroker.PreferredSessionWithScope("notify")
+	}
+	return h.sessionBroker.NotifySessionInWinSession(targetWinSession)
+}
+
+// sessionNoticeRequest builds the remote-session notice. It is a
+// consent-visibility notice, so it asks the helper for a dialog when the toast
+// cannot be shown (toasts can be disabled, suppressed by Focus Assist, or
+// unavailable to the process). It carries no Actions: it is an announcement,
+// not a prompt.
+func sessionNoticeRequest(body string) ipc.NotifyRequest {
+	return ipc.NotifyRequest{
+		Title:          "Breeze Agent",
+		Body:           body,
+		Urgency:        "normal",
+		FallbackDialog: true,
+	}
 }

@@ -1081,7 +1081,9 @@ func (c *Client) handleNotify(env *ipc.Envelope) {
 			result = ipc.NotifyResult{Delivered: showNotification(req)}
 		}
 	} else {
-		result = ipc.NotifyResult{Delivered: showNotification(req)}
+		// A notice the user must see (FallbackDialog, #6864) becomes a dialog
+		// when the toast fails; any other notice stays toast-only.
+		result = ipc.NotifyResult{Delivered: showNotificationWithFallback(req)}
 	}
 
 	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, result); err != nil {

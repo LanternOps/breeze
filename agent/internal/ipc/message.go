@@ -267,6 +267,13 @@ type NotifyRequest struct {
 	// TimeoutMs is how long the helper should hold an interactive prompt open
 	// before giving up and reporting no decision. Ignored when Actions is empty.
 	TimeoutMs int `json:"timeoutMs,omitempty"`
+	// FallbackDialog asks the helper to show a native, self-dismissing
+	// information dialog when the toast cannot be shown (#6864). Set only for
+	// notices the user must see, such as "a technician connected to your
+	// session"; the reboot ladder leaves it false so it never becomes a dialog.
+	// Ignored when Actions is non-empty. A helper built before this field
+	// existed ignores it and keeps the toast-only behaviour.
+	FallbackDialog bool `json:"fallbackDialog,omitempty"`
 }
 
 // NotifyResult is the user helper's response after showing a notification.
