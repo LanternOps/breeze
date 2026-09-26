@@ -1586,33 +1586,33 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     if (
       shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
     ) {
-      // runOutsideDbContext + system context is load-bearing, not defensive:
-      // this promise is detached, and the surrounding org-scoped
-      // withDbAccessContext TRANSACTION commits when the handler returns — a
-      // detached query on the ambient context would run against the dead tx
-      // handle (same reason as the manifest-trust keyset at the top of this
-      // handler, #1105). System context is safe: everything dispatched was
-      // validated in the org-scoped block, the claim re-binds to the device's
-      // org and liveness, and dispatchScriptToDevice's org-equality invariant
-      // still applies.
+      // runOutsideDbContext is load-bearing, not defensive: this promise is
+      // detached, and the surrounding org-scoped withDbAccessContext
+      // TRANSACTION commits when the handler returns — a detached query on the
+      // ambient context would run against the dead tx handle (same reason as
+      // the manifest-trust keyset at the top of this handler, #1105). The
+      // service opens its OWN system context for the claim and the command
+      // rows and sends only after it commits (#7103) — wrapping it in one here
+      // would make the send precede that commit again. System context is safe:
+      // everything dispatched was validated in the org-scoped block, the claim
+      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
+      // org-equality invariant still applies.
       runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          maybeDispatchEditionMigration({
-            device,
-            reportedAgentVersion: data.agentVersion,
-            normalizedArch,
-            updateGateAllows,
-            pin: versionPins.agent,
-            resolveTarget: () =>
-              resolvePinnedUpgradeTarget({
-                component: 'agent',
-                platform: device.osType,
-                architecture: normalizedArch,
-                pin: versionPins.agent,
-                agentId,
-              }),
-          }),
-        ),
+        maybeDispatchEditionMigration({
+          device,
+          reportedAgentVersion: data.agentVersion,
+          normalizedArch,
+          updateGateAllows,
+          pin: versionPins.agent,
+          resolveTarget: () =>
+            resolvePinnedUpgradeTarget({
+              component: 'agent',
+              platform: device.osType,
+              architecture: normalizedArch,
+              pin: versionPins.agent,
+              agentId,
+            }),
+        }),
         // The service catches everything itself; this catch only exists so a
         // future regression there can never surface as an unhandled rejection
         // on the heartbeat hot path.

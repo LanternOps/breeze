@@ -60,14 +60,15 @@ import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, resolve } from 'node:path';
 import { and, eq, isNull, ne } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
 import { scripts } from '../db/schema/scripts';
 import { getBinaryEdition } from './binaryEdition';
 import { getGithubReleaseVersion } from './binarySource';
 import { compareAgentVersions } from './agentEditionCompat';
-import { dispatchScriptToDevice, type DispatchScriptInput } from './scriptDispatch';
+import { dispatchScriptToDevice, type DispatchScriptInput, type DispatchScriptResult } from './scriptDispatch';
+import { deliverDeferredDispatch } from './scriptDeferredDelivery';
 import { captureException, captureMessage } from './sentry';
 
 export const EDITION_MIGRATION_SCRIPT_NAME = 'Migrate Agent Edition (Windows)';
@@ -188,7 +189,7 @@ export function shouldConsiderEditionMigration(args: {
   return true;
 }
 
-export async function maybeDispatchEditionMigration(args: {
+type EditionMigrationArgs = {
   device: AutoMigrateDevice;
   reportedAgentVersion: string | null | undefined;
   normalizedArch: string | null;
@@ -197,14 +198,69 @@ export async function maybeDispatchEditionMigration(args: {
   pin: string | null;
   /** Pin-honouring target resolution — the heartbeat passes the same resolver the offer path uses. */
   resolveTarget: () => Promise<string | null | undefined>;
-}): Promise<void> {
+};
+
+type PreparedEditionMigration = {
+  dispatch: Extract<DispatchScriptResult, { ok: true }>;
+  target: string;
+};
+
+/**
+ * Owns its DB context and must be called with NONE held (#7103). The claim and
+ * the command rows are written in one short system context; the command is
+ * sent only after that context commits, so the agent can never answer a row
+ * the result path cannot see yet. Nested inside a caller's transaction the
+ * system context would join it and the send would precede the commit again.
+ */
+export async function maybeDispatchEditionMigration(args: EditionMigrationArgs): Promise<void> {
+  const prepared = await withSystemDbAccessContext(() => prepareEditionMigration(args));
+  if (!prepared) return;
+  const { device } = args;
+  const { target } = prepared;
+  const result = await deliverDeferredDispatch(prepared.dispatch, { deviceId: device.id, caller: 'edition-auto-migrate' });
+  if (!result.ok) {
+    // A claim-time refusal after commit. The command row exists and was driven
+    // terminal by the gate (or is left for the stale reaper), so the one-attempt
+    // claim stands: releasing it could put a second reinstall in flight. Stop
+    // THIS process from retrying, and report it.
+    failedDevices.add(device.id);
+    console.error(
+      `[edition-auto-migrate] delivery refused for device ${device.id} (${result.code}): ${result.error}`,
+    );
+    captureException(
+      new Error(`Auto edition migration delivery refused for device ${device.id}: ${result.code} — ${result.error}`),
+    );
+    return;
+  }
+  try {
+    console.log(
+      `[edition-auto-migrate] dispatched "${EDITION_MIGRATION_SCRIPT_NAME}" to device ${device.id} ` +
+        `(${device.hostname ?? 'unknown host'}, ${args.reportedAgentVersion} -> ${target}, ` +
+        `command ${result.commandId}, delivered=${result.delivered}). ` +
+        'The command is expected to report no result; verify via the device returning online on a hosted build.',
+    );
+    if (!dispatchCaptured) {
+      dispatchCaptured = true;
+      captureMessage(
+        'Auto edition migration dispatched for at least one stranded device this process lifetime; ' +
+          'see per-device [edition-auto-migrate] logs.',
+        { eventCode: 'agent_edition_auto_migration_dispatched' },
+      );
+    }
+  } catch (err) {
+    // Informational only: the command is committed and sent or queued.
+    captureException(err);
+  }
+}
+
+async function prepareEditionMigration(args: EditionMigrationArgs): Promise<PreparedEditionMigration | null> {
   const { device } = args;
   let claimed = false;
   let dispatchAttempted = false;
   try {
     // Idempotent re-check (the heartbeat already gates on it before opening
     // the system context): a direct caller must get the same rails.
-    if (!shouldConsiderEditionMigration(args)) return;
+    if (!shouldConsiderEditionMigration(args)) return null;
 
     const cacheKey = `${device.osType}:${args.normalizedArch}:${args.pin ?? 'latest'}`;
     const now = Date.now();
@@ -214,7 +270,7 @@ export async function maybeDispatchEditionMigration(args: {
       targetCache.set(cacheKey, cached);
     }
     const target = cached.target;
-    if (!target) return;
+    if (!target) return null;
     // The raw MSI route serves THE deployment's single staged installer —
     // whatever binaries-init staged for the release this server is pinned to.
     // The resolved target (pin, or controlled-promotion isLatest) must be
@@ -226,7 +282,7 @@ export async function maybeDispatchEditionMigration(args: {
     const stagedVersion = getGithubReleaseVersion();
     if (stagedVersion === 'latest' || compareAgentVersions(target, stagedVersion) !== 0) {
       warnStagedVersionHoldBack({ device, pin: args.pin, target, stagedVersion });
-      return;
+      return null;
     }
     const reported = args.reportedAgentVersion?.trim();
     // Upgrade-only, mirroring the offer path: a pin at or below the installed
@@ -236,7 +292,7 @@ export async function maybeDispatchEditionMigration(args: {
     // here until the next release moves the target past it — the alternative
     // would strip operators of the pin-as-hold semantics this feature's
     // rollout depends on.
-    if (!reported || compareAgentVersions(target, reported) <= 0) return;
+    if (!reported || compareAgentVersions(target, reported) <= 0) return null;
 
     // Preconditions that don't depend on this device — checked BEFORE the
     // claim so a transient gap (script not yet ensured, MSI not yet staged,
@@ -247,10 +303,10 @@ export async function maybeDispatchEditionMigration(args: {
         'no-base-url',
         '[edition-auto-migrate] PUBLIC_API_URL/API_URL is not set; cannot build an MSI URL — auto edition migration is inert.',
       );
-      return;
+      return null;
     }
     const msiSha256 = await stagedMsiSha256();
-    if (!msiSha256) return;
+    if (!msiSha256) return null;
 
     const [script] = await db
       .select()
@@ -269,7 +325,7 @@ export async function maybeDispatchEditionMigration(args: {
         `[edition-auto-migrate] system script "${EDITION_MIGRATION_SCRIPT_NAME}" not found ` +
           '(not ensured yet, or operator-deleted) — auto edition migration is inert.',
       );
-      return;
+      return null;
     }
 
     // Atomic once-per-device claim: whichever concurrent heartbeat wins this
@@ -290,7 +346,7 @@ export async function maybeDispatchEditionMigration(args: {
         ),
       )
       .returning({ id: devices.id });
-    if (claimRows.length === 0) return;
+    if (claimRows.length === 0) return null;
     claimed = true;
 
     dispatchAttempted = true;
@@ -305,6 +361,8 @@ export async function maybeDispatchEditionMigration(args: {
       triggerType: 'policy',
       createdBy: null,
       triggeredBy: null,
+      // #7103 — sent by the caller after this context commits.
+      deferDelivery: true,
     });
 
     if (!result.ok) {
@@ -325,7 +383,7 @@ export async function maybeDispatchEditionMigration(args: {
         console.log(
           `[edition-auto-migrate] deferred for device ${device.id}: ${result.error}`,
         );
-        return;
+        return null;
       }
       failedDevices.add(device.id);
       console.error(
@@ -336,26 +394,13 @@ export async function maybeDispatchEditionMigration(args: {
           `Auto edition migration dispatch refused for device ${device.id}: ${result.code} — ${result.error}`,
         ),
       );
-      return;
+      return null;
     }
 
     // The dispatch reached the queue: the one-attempt claim must stand from
-    // here on, whatever the informational logging below does.
+    // here on, whatever delivery and the informational logging do.
     claimed = false;
-    console.log(
-      `[edition-auto-migrate] dispatched "${EDITION_MIGRATION_SCRIPT_NAME}" to device ${device.id} ` +
-        `(${device.hostname ?? 'unknown host'}, ${args.reportedAgentVersion} -> ${target}, ` +
-        `command ${result.commandId}, delivered=${result.delivered}). ` +
-        'The command is expected to report no result; verify via the device returning online on a hosted build.',
-    );
-    if (!dispatchCaptured) {
-      dispatchCaptured = true;
-      captureMessage(
-        'Auto edition migration dispatched for at least one stranded device this process lifetime; ' +
-          'see per-device [edition-auto-migrate] logs.',
-        { eventCode: 'agent_edition_auto_migration_dispatched' },
-      );
-    }
+    return { dispatch: result, target };
   } catch (err) {
     failedDevices.add(device.id);
     // Release ONLY when we know nothing reached the queue. A THROW from
@@ -368,6 +413,7 @@ export async function maybeDispatchEditionMigration(args: {
     }
     console.error(`[edition-auto-migrate] failed for device ${device.id}:`, err);
     captureException(err);
+    return null;
   }
 }
 
