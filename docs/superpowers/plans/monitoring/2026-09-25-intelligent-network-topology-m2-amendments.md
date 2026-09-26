@@ -158,3 +158,34 @@ dispatches nothing.
 8  Manual physical assertions (D6) + exclusion routes/listing (D17).
 9  Graph read gating (D9), coverage/evidence/ports (D11), UI.
 10 Vertical integration, E2E, verification record.
+
+## D. Known limitations (as built)
+
+Recorded at Task 6b (integration of Tasks 4b/5/6). Each is a deliberate M2 boundary, not a regression; lifting one is
+follow-up work.
+
+- **CDP device ids never resolve.** A CDP row's remote identity is a `cdp_device_id` (usually a hostname/serial
+  string). Names never resolve anything (D3/D15), and LLDP chassis claims are a different namespace, so a CDP-only
+  neighbour always projects onto a scoped unbound `cdp-device:<subtype>:<value>` endpoint node with an attachment
+  candidate. A measured link needs LLDP from at least one end (or a MAC-typed CDP port id that resolves).
+- **LLDP chassis resolution needs a MAC or an exact typed self-report.** A remote chassis resolves only by MAC (agent
+  NIC MACs, current SNMP interface MACs, or a target's own `localChassis` MAC — base MACs are covered through the
+  target's self-report) or by exact typed equality with a target's own non-MAC `localChassis`. A chassis two targets
+  claim resolves nothing. Targets that are not polled (no dispatch authority) never contribute a claim.
+- **LAG parent metadata is not collected.** Every LAG member is its own measured cable (`physical_link` per member
+  port pair); there is no aggregate/parent interface, no LACP state and no member grouping in the graph.
+- **FDB competition is FDB-id level only when the VLAN mapping is complete.** Candidates with a complete FDB-id→VLAN
+  mapping compete per VLAN set; a `partial`/`unknown` mapping is treated as compatible with everything, so such
+  candidates collapse into one competition class (more `competing`, fewer `selected`). Shared/upstream ports above the
+  D13 threshold carry aggregate coverage only and never compete.
+- **UniFi uplinks are attachments, never cables.** UniFi v1 device details name only the UPLINK device's port index
+  (and the Integration API currently leaves it null), never the local uplink port, so a controller uplink cannot
+  resolve both ends and is published as an `attachment` (`association: uplink`, uplink port as material). Wired
+  clients are attachments with the reported uplink port as material; wireless is the only `direct` association;
+  VPN/Teleport are remote-access associations. A client with no uplink device projects nothing (no orphan node).
+- **UniFi bindings are as fresh as the last UniFi snapshot.** `inventoryDeviceId` is computed by the adapter at
+  ingest from same-site agent NIC MACs; a later NIC-MAC change reaches the UniFi rows only on the next poll whose
+  normalized digest changes. The legacy telemetry cross-site MAC mutation/fallback remains a follow-up (D16).
+- **Unbound endpoint nodes do not age.** Scoped unbound nodes (`lldp-chassis:`, `cdp-device:`, `mac-endpoint:`,
+  `physical-target:`, `unifi:`) persist after their relationships withdraw; they are hidden by relationship
+  lifecycle, not removed.
