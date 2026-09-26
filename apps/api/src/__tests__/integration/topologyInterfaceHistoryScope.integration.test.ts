@@ -124,6 +124,23 @@ describe('M3 Task 6 interface history and link health (real DB)', () => {
     expect(await sideEffects(env.organization.id)).toEqual(before);
   });
 
+  it('reads the first sample after the interval so the last bucket is not a false gap', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    await setFlags(env.organization.id, { physical: true, interfaceHealth: true });
+    const s = await seed(env.organization.id, env.site.id);
+    // Samples every minute through s.now; the interval ends 5 minutes earlier, between two samples.
+    const res = await get(env, env.site.id, `interfaces/${s.ids.port}/history?series=in_bps&from=${iso(s.now - 15 * MIN)}&to=${iso(s.now - 5 * MIN)}&resolution=raw&maxBuckets=200`);
+    const body = topologyInterfaceHistoryResponseSchema.parse(await res.json());
+    const bps = body.series.find((series) => series.name === 'in_bps')!;
+    const last = bps.points.at(-1)!;
+    expect(Date.parse(last.at) + body.interval.bucketSeconds * 1000).toBe(Date.parse(body.interval.to));
+    expect(last).toMatchObject({ gapDurationMs: 0, validDurationMs: body.interval.bucketSeconds * 1000 });
+    expect(Math.abs(last.value! - 1000)).toBeLessThan(1e-6);
+    expect(bps.coverage).toBe('complete');
+    // Exactly one boundary sample per epoch is read beyond the interval: it is never counted as a sample in it.
+    expect(bps.points.reduce((n, p) => n + p.sampleCount, 0)).toBeLessThanOrEqual(11);
+  });
+
   it('refuses an otherwise valid interface or link from another site of the same org, and from another org', async () => {
     const env = await setupTestEnvironment({ rolePermissions: READ });
     await setFlags(env.organization.id, { physical: true, interfaceHealth: true });

@@ -286,11 +286,20 @@ export async function getTopologyInterfaceHistory(
     let rowCount = 0;
     if (plan.resolution === 'raw') {
       // Windows reach back at most three of the slowest cadence: read that far before the interval.
+      // The window that closes the last bucket ends at the first sample AT OR AFTER the interval
+      // end, so exactly that one boundary sample per epoch is read too (never counted in a bucket).
       const reach = INTERFACE_WINDOW_MAX_GAP_CADENCES * 300_000;
+      const toIso = new Date(plan.to).toISOString();
       const rows = await tx.execute<{ interface_epoch: string; source_id: string; producer_epoch: string; sampled_at: string | Date; readings: Record<string, unknown> }>(sql`
-        SELECT x.interface_epoch, x.source_id, x.producer_epoch, x.sampled_at, x.readings FROM topology_interface_samples x
-        WHERE ${where} AND x.sampled_at >= ${new Date(plan.from - reach).toISOString()}::timestamptz AND x.sampled_at < ${new Date(plan.to).toISOString()}::timestamptz
-        ORDER BY x.sampled_at LIMIT ${TOPOLOGY_INTERFACE_HISTORY_MAX_ROWS + 1}`);
+        SELECT h.interface_epoch, h.source_id, h.producer_epoch, h.sampled_at, h.readings FROM (
+          SELECT x.interface_epoch, x.source_id, x.producer_epoch, x.sampled_at, x.readings FROM topology_interface_samples x
+          WHERE ${where} AND x.sampled_at >= ${new Date(plan.from - reach).toISOString()}::timestamptz AND x.sampled_at < ${toIso}::timestamptz
+          UNION ALL
+          (SELECT DISTINCT ON (x.interface_epoch, x.source_id, x.producer_epoch) x.interface_epoch, x.source_id, x.producer_epoch, x.sampled_at, x.readings
+          FROM topology_interface_samples x
+          WHERE ${where} AND x.sampled_at >= ${toIso}::timestamptz AND x.sampled_at < ${new Date(plan.to + reach).toISOString()}::timestamptz
+          ORDER BY x.interface_epoch, x.source_id, x.producer_epoch, x.sampled_at)
+        ) h ORDER BY h.sampled_at LIMIT ${TOPOLOGY_INTERFACE_HISTORY_MAX_ROWS + 1}`);
       rowCount = rows.length;
       rawSamples = rows.slice(0, TOPOLOGY_INTERFACE_HISTORY_MAX_ROWS).map(r => ({ interfaceEpoch: r.interface_epoch, sourceId: r.source_id, producerEpoch: r.producer_epoch,
         sampledAt: new Date(r.sampled_at), readings: r.readings as HistoryRawSample['readings'] }));
