@@ -698,8 +698,56 @@ export const updateHardwareSchema = z.object({
   motherboardProduct: z.string().optional(),
   motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
-  gpuModel: z.string().optional()
+  gpuModel: z.string().optional(),
+  // #5351: kept RAW here and validated separately with
+  // agentMemoryInventorySchema by the route, so an invalid memory block is
+  // logged and ignored instead of 400-ing the whole hardware report.
+  memory: z.unknown().optional()
 });
+
+// Per-slot memory inventory (#5351). Wire contract:
+// docs/superpowers/specs/device-lifecycle/2026-09-26-memory-modules-design.md
+// Bounds mirror the device_memory_modules column widths; integers must fit
+// int4. `memory` present = authoritative snapshot of every slot (populated or
+// empty); absent optional fields are stored as NULL.
+export const MEMORY_MODULES_MAX = 256;
+const memoryInt = z.number().int().nonnegative().max(2_147_483_647).nullable().optional();
+const memoryText = (max: number) => z.string().max(max).nullable().optional();
+
+export const agentMemoryModuleSchema = z.object({
+  slotKey: z.string().min(1).max(160),
+  locator: z.string().min(1).max(128),
+  bankLabel: memoryText(128),
+  populated: z.boolean(),
+  capacityMb: memoryInt,
+  memoryType: memoryText(32),
+  formFactor: memoryText(32),
+  speedMts: memoryInt,
+  configuredSpeedMts: memoryInt,
+  manufacturer: memoryText(128),
+  partNumber: memoryText(128),
+  serialNumber: memoryText(128),
+});
+
+export const agentMemoryInventorySchema = z.object({
+  slotsTotal: z.number().int().min(0).max(MEMORY_MODULES_MAX).nullable().optional(),
+  maxCapacityMb: memoryInt,
+  soldered: z.boolean().nullable().optional(),
+  modules: z.array(agentMemoryModuleSchema).max(MEMORY_MODULES_MAX),
+}).superRefine((value, ctx) => {
+  // slotKey is the sync identity (one row per slot); a duplicate would be an
+  // ambiguous snapshot, so the whole block is rejected rather than guessed at.
+  const seen = new Set<string>();
+  value.modules.forEach((entry, index) => {
+    if (seen.has(entry.slotKey)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['modules', index, 'slotKey'], message: 'duplicate slotKey' });
+    }
+    seen.add(entry.slotKey);
+  });
+});
+
+export type AgentMemoryInventory = z.infer<typeof agentMemoryInventorySchema>;
+export type AgentMemoryModule = z.infer<typeof agentMemoryModuleSchema>;
 
 export const updateSoftwareSchema = softwareInventoryReportSchema;
 
