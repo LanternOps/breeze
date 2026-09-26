@@ -756,20 +756,28 @@ aiRoutes.post(
     // quotas reserved and sanitized evidence built BEFORE any provider call;
     // a re-authorized cached answer returns without one. Provider text for
     // the turn goes to the runtime's output gate, never to SSE.
+    //
+    // #3127: the preparation resolves the org's topology flags/readiness with
+    // no context held, then runs in ONE short caller-scoped context
+    // (inRequestDb) — closed before the settle wait, the reservation and the
+    // model stream. The runtime it returns opens its own short contexts for
+    // every later read (aiInvestigation.ts); its lease lives in Redis, so
+    // aborting it (every refusal below) needs no DB context.
     let topology: Extract<PreparedTopologyInvestigation, { kind: 'live' }> | null = null;
     let topologyTurn: Awaited<ReturnType<typeof loadTopologyTurn>> | null = null;
     if (dbSession.type === 'topology') {
       topologyTurn = await loadTopologyTurn();
       const { prepareTopologyTurn, cachedTopologyEvents } = topologyTurn;
-      const prepared = await prepareTopologyTurn(auth, dbSession, sanitizedContent, topologyProviderRevision(resolved));
+      const prepared = await prepareTopologyTurn(auth, dbSession, sanitizedContent, topologyProviderRevision(resolved), inRequestDb);
       if (!prepared.ok) return c.json(prepared.body, prepared.status);
       if (prepared.prepared.kind === 'cached') {
         const explanation = prepared.prepared.explanation;
         try {
-          await db.insert(aiMessages).values([
+          // Its own short context: a failed write never poisons another phase's transaction.
+          await inRequestDb(() => db.insert(aiMessages).values([
             { sessionId, role: 'user', content: sanitizedContent },
             { sessionId, role: 'assistant', content: JSON.stringify(explanation), contentBlocks: [{ type: 'topology_explanation', explanation }] as unknown as Record<string, unknown>[] },
-          ]);
+          ]));
         } catch (err) {
           console.error('[AI] Failed to save cached topology explanation:', err);
         }

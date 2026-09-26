@@ -50,7 +50,7 @@ vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
 import * as dbModule from '../../db';
 import { TopologyError } from './access';
 import {
-  authorizeTopologyAiToolCall, isTopologyAiToolName, loadTopologyAiPreconditions, TOPOLOGY_AI_TOOL_NAMES, withTopologyAiPreconditions, withTopologyReleasePreconditions,
+  authorizeTopologyAiToolCall, authorizeTopologySessionSite, isTopologyAiToolName, loadTopologyAiPreconditions, TOPOLOGY_AI_TOOL_NAMES, withTopologyAiPreconditions, withTopologyReleasePreconditions,
 } from './aiToolGate';
 
 const pool = (dbModule as unknown as { __pool: { acquisitions: Array<{ scope: string; nested: boolean }> } }).__pool;
@@ -203,6 +203,22 @@ describe('topology AI readiness never double-holds the pool (review R1)', () => 
     expect((await loadTopologyAiPreconditions(ORG)).readiness).toEqual({ provider: false, orgPolicy: true });
     mocks.budget.mockRejectedValueOnce(new Error('db down'));
     expect((await loadTopologyAiPreconditions(ORG)).readiness).toEqual({ provider: true, orgPolicy: false });
+  });
+
+  it('#3127: the message route prepares a turn with NO nested connection, and a site that left the session org is still 404 — never a carried-flags 403', async () => {
+    const pre = await loadTopologyAiPreconditions(ORG);
+    pool.acquisitions.length = 0;
+    const ctx = await withTopologyAiPreconditions(pre, () => inRequestContext('organization', () =>
+      authorizeTopologySessionSite(auth(), SITE_A, { sessionOrgId: ORG })));
+    expect(ctx.scope).toEqual({ orgId: ORG, siteId: SITE_A });
+    expect(pool.acquisitions).toEqual([{ scope: 'organization', nested: false }]);
+
+    mocks.access.mockResolvedValueOnce({ scope: { orgId: '10000000-0000-4000-8000-0000000000ff', siteId: SITE_A } });
+    mocks.flags.mockClear();
+    await expect(withTopologyAiPreconditions(pre, () => inRequestContext('organization', () =>
+      authorizeTopologySessionSite(auth(), SITE_A, { sessionOrgId: ORG }))))
+      .rejects.toMatchObject({ code: 'topology_site_unavailable', status: 404 });
+    expect(mocks.flags).not.toHaveBeenCalled();
   });
 
   it('the release hook resolves diagnose_connectivity preconditions before its context opens; any other action is untouched', async () => {

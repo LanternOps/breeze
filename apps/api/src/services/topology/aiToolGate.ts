@@ -295,7 +295,11 @@ export class TopologyAiSessionError extends Error {
  * same read floor and AI availability every later tool call re-checks. The
  * returned context's org (the SITE's stored org) is the session org.
  */
-export async function authorizeTopologySessionSite(auth: AuthContext, siteId: string): Promise<TopologyRequestContext> {
+export async function authorizeTopologySessionSite(
+  auth: AuthContext,
+  siteId: string,
+  options: { sessionOrgId?: string } = {},
+): Promise<TopologyRequestContext> {
   const permissions = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId ?? undefined,
     orgId: auth.orgId ?? undefined,
@@ -308,6 +312,12 @@ export async function authorizeTopologySessionSite(auth: AuthContext, siteId: st
   } catch (error) {
     if (error instanceof TopologyError) throw new TopologyAiSessionError('topology_site_unavailable', 404, REFUSALS.topology_site_unavailable);
     throw error;
+  }
+  // An existing session's site must still belong to the session org. Checked
+  // BEFORE availability: preconditions carried for the session org fail closed
+  // for any other org, which would otherwise surface as `topology_ai_disabled`.
+  if (options.sessionOrgId !== undefined && ctx.scope.orgId !== options.sessionOrgId) {
+    throw new TopologyAiSessionError('topology_site_unavailable', 404, REFUSALS.topology_site_unavailable);
   }
   const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
   if (!topologyAiAvailable(flags, readiness)) throw new TopologyAiSessionError('topology_ai_disabled', 403, REFUSALS.topology_ai_disabled);

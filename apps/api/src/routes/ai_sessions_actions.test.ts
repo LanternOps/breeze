@@ -15,6 +15,26 @@ const openai = vi.hoisted(() => ({
   },
 }));
 
+// Topology M4 turn harness (#6000 on #3127): the lazily-imported route half.
+const topo = vi.hoisted(() => ({
+  prepare: vi.fn(),
+  abort: vi.fn(async () => undefined),
+  cachedEventsDepth: [] as number[],
+}));
+
+vi.mock('./aiTopologyTurn', () => ({
+  prepareTopologyTurn: topo.prepare,
+  cachedTopologyEvents: vi.fn((explanation: unknown) => {
+    topo.cachedEventsDepth.push(dbCtx.depth);
+    return [
+      { type: 'topology_progress', phase: 'validating' },
+      { type: 'topology_explanation', explanation },
+      { type: 'done' },
+    ];
+  }),
+  topologyMcpServerFactory: vi.fn(),
+}));
+
 vi.mock('../config/validate', () => ({
   getConfig: vi.fn(() => ({
     MCP_LLM_PROVIDER: openai.provider,
@@ -188,6 +208,7 @@ import { getUsageSummary, updateBudget, getSessionHistory } from '../services/ai
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { reserveAiBudget, releaseUnusedAiBudgetReservation } from '../services/aiBudgetReservations';
+import { withAuthDbAccessContext } from '../middleware/auth';
 
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -519,6 +540,206 @@ describe('AI routes', () => {
 
         expect(res.status).toBe(409);
         expect(releaseDepth).toBe(0);
+      });
+    });
+
+    // Topology M4 (#6000) on the self-managed route (#3127): the topology
+    // steps each get their own short caller context, and nothing — prepare's
+    // lease, the settle wait, the reservation, the model stream — runs with a
+    // request transaction held across it.
+    describe('#3127: topology investigation turns', () => {
+      const SITE_ID = '33333333-3333-4333-8333-333333333333';
+
+      function mockTopologyPreflight(depths: Record<string, number>) {
+        mockPreflightOk();
+        const preflightImpl = vi.mocked(runPreFlightChecks).getMockImplementation()!;
+        vi.mocked(runPreFlightChecks).mockImplementation(async (...args) => {
+          depths.preflight = dbCtx.depth;
+          const result = await preflightImpl(...args) as any;
+          return {
+            ...result,
+            session: {
+              ...result.session,
+              type: 'topology',
+              topologySiteId: SITE_ID,
+              contextSnapshot: { type: 'topology', siteId: SITE_ID },
+            },
+          };
+        });
+      }
+
+      function mockLivePrepare(depths: Record<string, number>) {
+        topo.prepare.mockImplementation(async (_auth: unknown, _session: unknown, _q: unknown, _rev: unknown, inDb: any) => {
+          depths.prepareCall = dbCtx.depth;
+          return inDb(async () => {
+            depths.prepare = dbCtx.depth;
+            return {
+              ok: true,
+              prepared: {
+                kind: 'live',
+                runtime: { abort: topo.abort },
+                prompt: 'TOPOLOGY PROMPT',
+                systemPrompt: 'TOPOLOGY SYSTEM',
+                allowedMcpTools: ['mcp__breeze__get_topology'],
+              },
+            };
+          });
+        });
+      }
+
+      beforeEach(() => {
+        topo.cachedEventsDepth.length = 0;
+      });
+
+      it('prepares in its own short context, then settles/reserves with none held and streams the model turn with NO context held', async () => {
+        const depths: Record<string, number> = {};
+        mockTopologyPreflight(depths);
+        mockLivePrepare(depths);
+        const activeSession = makeActiveSession();
+        activeSession.eventBus.subscribe = vi.fn(() => (async function* () {
+          depths.stream = dbCtx.depth;
+          yield { type: 'topology_progress', phase: 'gathering_evidence' };
+          depths.streamEnd = dbCtx.depth;
+          yield { type: 'done' };
+        })());
+        activeSession.inputController.pushMessage = vi.fn(() => { depths.push = dbCtx.depth; });
+        vi.mocked(streamingSessionManager.get)
+          .mockReturnValueOnce(activeSession)
+          .mockReturnValueOnce(undefined);
+        vi.mocked(settleBlockedTurnForNewMessage).mockImplementation(async () => {
+          depths.settle = dbCtx.depth;
+          return 'concluded';
+        });
+        const reserveImpl = vi.mocked(reserveAiBudget).getMockImplementation()!;
+        vi.mocked(reserveAiBudget).mockImplementationOnce(async (...args) => {
+          depths.reserve = dbCtx.depth;
+          return reserveImpl(...args);
+        });
+        vi.mocked(streamingSessionManager.getOrCreate).mockImplementation(async () => {
+          depths.getOrCreate = dbCtx.depth;
+          return activeSession;
+        });
+        vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+        vi.mocked(db.insert).mockImplementation(() => {
+          depths.insert = dbCtx.depth;
+          return { values: vi.fn().mockResolvedValue(undefined) } as any;
+        });
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(200);
+        await res.text();
+        expect(depths).toEqual({
+          preflight: 1, prepareCall: 0, prepare: 1, settle: 0, reserve: 0,
+          getOrCreate: 1, insert: 1, push: 1, stream: 0, streamEnd: 0,
+        });
+        expect(dbCtx.depth).toBe(0);
+        // The turn is the topology turn: server-built prompt, topology-only tools, the runtime bound.
+        expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('TOPOLOGY PROMPT');
+        const args = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!;
+        expect(args[4]).toBe('TOPOLOGY SYSTEM');
+        expect(args[7]).toEqual(['mcp__breeze__get_topology']);
+        expect(args[9]).toMatchObject({ topologyInvestigation: { abort: topo.abort }, injectApprovalModeInstructions: false });
+        expect(topo.abort).not.toHaveBeenCalled();
+      });
+
+      it('a cached answer is persisted in its OWN short context and replayed with none held — no reservation, no model call', async () => {
+        const depths: Record<string, number> = {};
+        mockTopologyPreflight(depths);
+        const explanation = { findings: [], missingData: [], nextChecks: [] };
+        topo.prepare.mockImplementation(async (_a: unknown, _s: unknown, _q: unknown, _r: unknown, inDb: any) =>
+          inDb(async () => {
+            depths.prepare = dbCtx.depth;
+            return { ok: true, prepared: { kind: 'cached', explanation } };
+          }));
+        const values = vi.fn().mockResolvedValue(undefined);
+        vi.mocked(db.insert).mockImplementation(() => {
+          depths.insert = dbCtx.depth;
+          return { values } as any;
+        });
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(body).toContain('topology_explanation');
+        expect(depths).toEqual({ preflight: 1, prepare: 1, insert: 1 });
+        // preflight, prepare and the insert each opened their own context.
+        expect(vi.mocked(withAuthDbAccessContext)).toHaveBeenCalledTimes(3);
+        expect(values.mock.calls[0]![0]).toHaveLength(2);
+        expect(topo.cachedEventsDepth).toEqual([0]);
+        expect(reserveAiBudget).not.toHaveBeenCalled();
+        expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+      });
+
+      it('a topology refusal from prepare is returned as-is with nothing reserved', async () => {
+        mockTopologyPreflight({});
+        topo.prepare.mockImplementation(async (_a: unknown, _s: unknown, _q: unknown, _r: unknown, inDb: any) =>
+          inDb(async () => ({ ok: false, status: 429, body: { error: 'limit', code: 'topology_ai_concurrency' } })));
+
+        const res = await postMessage();
+
+        expect(res.status).toBe(429);
+        expect(await res.json()).toEqual({ error: 'limit', code: 'topology_ai_concurrency' });
+        expect(reserveAiBudget).not.toHaveBeenCalled();
+        expect(dbCtx.depth).toBe(0);
+      });
+
+      it('a refused or failed dispatch aborts the runtime (lease) and releases the reservation after the dispatch context closes', async () => {
+        for (const mode of ['refused', 'failed'] as const) {
+          vi.clearAllMocks();
+          const depths: Record<string, number> = {};
+          mockTopologyPreflight(depths);
+          mockLivePrepare(depths);
+          vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+          if (mode === 'refused') {
+            vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
+            vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+          } else {
+            vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new Error('sdk exploded'));
+          }
+          topo.abort.mockImplementation(async () => { depths.abort = dbCtx.depth; });
+          vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
+            depths.release = dbCtx.depth;
+            return { kind: 'released', reservationId: input.reservationId } as any;
+          });
+
+          const res = await postMessage();
+
+          expect(res.status).toBe(mode === 'refused' ? 409 : 500);
+          expect(topo.abort).toHaveBeenCalledTimes(1);
+          expect(depths).toMatchObject({ abort: 0, release: 0 });
+          expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+        }
+      });
+
+      it('OpenAI-compatible: the topology turn dispatches in one short context and a taken slot aborts with none held', async () => {
+        openai.provider = 'openai-compatible';
+        try {
+          const depths: Record<string, number> = {};
+          mockTopologyPreflight(depths);
+          mockLivePrepare(depths);
+          const session = makeActiveSession();
+          openai.manager.getOrCreate.mockReturnValue(session);
+          openai.manager.tryTransitionToProcessing.mockReturnValue(true);
+          openai.manager.startTurn.mockImplementation(() => { depths.startTurn = dbCtx.depth; });
+          vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+          const ok = await postMessage();
+          expect(ok.status).toBe(200);
+          await ok.text();
+          expect(depths).toMatchObject({ prepareCall: 0, prepare: 1, startTurn: 1 });
+          expect(session.topologyInvestigation).toMatchObject({ abort: topo.abort });
+          expect(openai.manager.startTurn.mock.calls[0]!.slice(2, 4)).toEqual(['TOPOLOGY SYSTEM', 'TOPOLOGY PROMPT']);
+
+          openai.manager.tryTransitionToProcessing.mockReturnValue(false);
+          topo.abort.mockImplementation(async () => { depths.abort = dbCtx.depth; });
+          const busy = await postMessage();
+          expect(busy.status).toBe(409);
+          expect(depths.abort).toBe(0);
+        } finally {
+          openai.provider = 'anthropic';
+        }
       });
     });
 

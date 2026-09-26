@@ -10,6 +10,15 @@
  *   - reads the selection stored server-side at session creation;
  *   - prepares the investigation (quotas, sanitized evidence, cache) and maps
  *     every refusal to a fixed status/code — never provider or model text.
+ *
+ * #3127: that route owns its DB contexts (selfManagedDbContextRoutes) — no
+ * request transaction spans the handler. So the session org's topology flags
+ * and AI readiness are resolved FIRST, with no context held (one short system
+ * context, review R1 / #6671), and the preparation then runs inside ONE short
+ * context scoped to the caller (`inDb`, the route's `inRequestDb`) that
+ * carries them: the re-authorization never reaches for a second pooled
+ * connection, and the context closes before the settle wait, the budget
+ * reservation and the model stream.
  */
 import type { TopologyAiExplanation } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
@@ -20,12 +29,16 @@ import { TopologyError } from '../services/topology/access';
 import { TopologyAiEvidenceError, TopologyAiScopeChangedError } from '../services/topology/aiEvidence';
 import { prepareTopologyInvestigation, topologySelectionFromSession, type PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 import { TopologyAiLimitError } from '../services/topology/aiLimits';
-import { authorizeTopologySessionSite, TopologyAiSessionError } from '../services/topology/aiToolGate';
+import {
+  authorizeTopologySessionSite, loadTopologyAiPreconditions, TopologyAiSessionError, withTopologyAiPreconditions,
+} from '../services/topology/aiToolGate';
 import { GraphReadError } from '../services/topology/graphCursor';
 
 export type TopologyTurnSession = { id: string; orgId: string; type: string; topologySiteId: string | null; contextSnapshot: unknown };
 export type TopologyTurnRefusal = { ok: false; status: 403 | 404 | 409 | 429 | 503; body: { error: string; code: string } };
 export type TopologyTurnPrepared = { ok: true; prepared: PreparedTopologyInvestigation };
+/** Runs `fn` in one short DB context scoped to the caller (never system scope, never the bare pool). */
+export type RunInCallerDbContext = <T>(fn: () => Promise<T>) => Promise<T>;
 
 const refusal = (status: TopologyTurnRefusal['status'], code: string, error: string): TopologyTurnRefusal => ({ ok: false, status, body: { error, code } });
 
@@ -34,17 +47,32 @@ export async function prepareTopologyTurn(
   session: TopologyTurnSession,
   question: string,
   providerRevision: string,
+  inDb: RunInCallerDbContext,
 ): Promise<TopologyTurnRefusal | TopologyTurnPrepared> {
-  if (!session.topologySiteId) return refusal(404, 'topology_session_required', 'Session not found');
+  const siteId = session.topologySiteId;
+  if (!siteId) return refusal(404, 'topology_session_required', 'Session not found');
+  // Called with no context held: acquires one short system connection and releases it.
+  const preconditions = await loadTopologyAiPreconditions(session.orgId);
+  return withTopologyAiPreconditions(preconditions, () =>
+    inDb(() => prepareInCallerContext(auth, session, siteId, question, providerRevision)));
+}
+
+async function prepareInCallerContext(
+  auth: AuthContext,
+  session: TopologyTurnSession,
+  siteId: string,
+  question: string,
+  providerRevision: string,
+): Promise<TopologyTurnRefusal | TopologyTurnPrepared> {
   let ctx;
   try {
-    ctx = await authorizeTopologySessionSite(auth, session.topologySiteId);
+    ctx = await authorizeTopologySessionSite(auth, siteId, { sessionOrgId: session.orgId });
   } catch (error) {
     if (error instanceof TopologyAiSessionError) return refusal(error.status, error.code, error.message);
     throw error;
   }
   if (ctx.scope.orgId !== session.orgId) return refusal(404, 'topology_site_unavailable', 'Topology site not found or access denied');
-  const selection = topologySelectionFromSession(session.contextSnapshot, session.topologySiteId);
+  const selection = topologySelectionFromSession(session.contextSnapshot, siteId);
   if (!selection) return refusal(409, 'investigation_scope_changed', 'The investigation selection is unavailable; start a new investigation');
   try {
     return { ok: true, prepared: await prepareTopologyInvestigation(ctx, selection, question, session.id, { providerRevision }) };
