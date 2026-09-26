@@ -76,6 +76,9 @@ export interface Alert {
   /** Rule-template category (e.g. "Security", "Performance"); absent for
    * alerts created without a rule. */
   category?: string;
+  /** The emitter's tag from the alert's context (e.g.
+   * 'maintenance-reboot-sweep'); absent when the server did not send one. */
+  source?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -300,6 +303,8 @@ type MobileAlertRecord = {
    * always-present.
    */
   category?: string | null;
+  /** `alerts.context->>'source'`, sent by `/alerts/inbox`. */
+  source?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -624,6 +629,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     severity: normalizedSeverity,
     type: alert.type || 'alert',
     category: alert.category ?? undefined,
+    source: alert.source ?? undefined,
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),

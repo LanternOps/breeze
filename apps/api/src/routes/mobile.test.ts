@@ -842,7 +842,8 @@ describe('mobile routes', () => {
               deviceHostname: 'host-1',
               deviceOsType: 'linux',
               deviceStatus: 'online',
-              category: 'Security'
+              category: 'Security',
+              source: 'maintenance-reboot-sweep'
             },
             {
               id: 'alert-2',
@@ -860,7 +861,8 @@ describe('mobile routes', () => {
               deviceStatus: null,
               // Alerts can be created without a rule, so the joined category
               // is nullable.
-              category: null
+              category: null,
+              source: null
             }
           ]) as any
         );
@@ -880,6 +882,10 @@ describe('mobile routes', () => {
       // constant the removed TYPE row used to display.
       expect(body.data[0].category).toBe('Security');
       expect(body.data[1].category).toBeNull();
+      // The emitter tag from `context.source` is what lets mobile offer
+      // "Reboot now" on a reboot-pending alert; absent context maps to null.
+      expect(body.data[0].source).toBe('maintenance-reboot-sweep');
+      expect(body.data[1].source).toBeNull();
     });
 
     it('should require organization context for org scope', async () => {

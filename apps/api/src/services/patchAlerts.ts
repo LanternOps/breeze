@@ -62,6 +62,12 @@ async function runWithSystemDbAccess<T>(fn: () => Promise<T>): Promise<T> {
 
 const PATCH_JOB_FAILURE_TEMPLATE_NAME = 'Patch job failure';
 const REBOOT_PENDING_TEMPLATE_NAME = 'Reboot pending too long';
+/**
+ * `alerts.context.source` on a reboot-pending alert. The mobile inbox returns
+ * it so the app can offer "Reboot now" on exactly these alerts; changing it
+ * silently removes that button.
+ */
+export const REBOOT_PENDING_ALERT_SOURCE = 'maintenance-reboot-sweep';
 
 const PATCH_JOB_FAILURE_RULE_NAME = 'Patch job failures';
 const REBOOT_PENDING_RULE_NAME = 'Reboot pending too long';
@@ -92,7 +98,7 @@ const REBOOT_PENDING_TEMPLATE: PatchAlertTemplateConfig = {
   name: REBOOT_PENDING_TEMPLATE_NAME,
   severity: 'medium',
   cooldownMinutes: 1440,
-  conditions: { source: 'maintenance-reboot-sweep' },
+  conditions: { source: REBOOT_PENDING_ALERT_SOURCE },
   titleTemplate: 'Reboot pending on {{hostname}}',
   messageTemplate: '{{hostname}} has needed a restart for {{days}} day(s).',
 };
@@ -400,7 +406,7 @@ export async function emitRebootPendingAlert(
         title: `Reboot pending on ${label}`,
         message: `${label} has needed a restart for ${days} day(s).`,
         context: {
-          source: 'maintenance-reboot-sweep',
+          source: REBOOT_PENDING_ALERT_SOURCE,
           pendingSince: since.toISOString(),
           pendingDays: days,
           category: PATCH_ALERT_CATEGORY,

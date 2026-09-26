@@ -1049,7 +1049,11 @@ mobileRoutes.get(
         // The category one hop away on the rule's template is the closest
         // thing mobile has to a meaningful alert "type" (#4535). Nullable:
         // alerts can be created without a rule.
-        category: alertTemplates.category
+        category: alertTemplates.category,
+        // The emitter's own tag (e.g. 'maintenance-reboot-sweep'), so mobile
+        // can offer an action that fits the alert rather than guessing from
+        // the title. Only this one scalar leaves `context`.
+        source: sql<string | null>`${alerts.context}->>'source'`
       })
       .from(alerts)
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
@@ -1079,6 +1083,7 @@ mobileRoutes.get(
       acknowledgedAt: alert.acknowledgedAt,
       resolvedAt: alert.resolvedAt,
       category: alert.category ?? null,
+      source: alert.source ?? null,
       device: alert.deviceId ? {
         id: alert.deviceId,
         hostname: alert.deviceHostname,
