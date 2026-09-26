@@ -423,3 +423,14 @@ it('self-manages the Graph binding POST but not ordinary verification writes', (
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/orgs/o/caller-verifications')).toBe(false);
   expect(isSelfManagedDbContextRoute('PUT', '/api/v1/orgs/o/caller-verification-policy')).toBe(false);
 });
+
+// #7103 — manual Run Script creates its rows in a short committed context and
+// sends only after that commit, so it cannot run inside the request tx. Only the
+// execute POST opts out; the script's other routes keep the ambient tx.
+it('self-manages POST /scripts/:id/execute and no sibling script route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/scripts/abc-123/execute')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/scripts/abc-123/executions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/duplicate')).toBe(false);
+});

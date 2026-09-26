@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { ScriptAdmissionResult, ScriptTargetAdmission } from '@breeze/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
   scriptExecutionBatches,
@@ -13,7 +13,8 @@ import {
 } from '../db/schema';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
-import { dispatchScriptToDevice } from './scriptDispatch';
+import { dispatchScriptToDevice, type DispatchScriptResult } from './scriptDispatch';
+import { captureException } from './sentry';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 
@@ -33,6 +34,23 @@ type ExecuteScriptOnDevicesInput = {
   targetSessionId?: number;
   auth: ScriptExecutionAuth;
   permissions?: UserPermissions;
+  /**
+   * #7103 — commit the rows before any command is sent.
+   *
+   * Pass this from a route registered in selfManagedDbContextRoutes.ts (so no
+   * request transaction is held), with a runner that opens a short context and
+   * COMMITS when it returns — `(fn) => withAuthDbAccessContext(auth, fn)`.
+   * The service then reads and creates every row through the runner, and only
+   * after the runner has returned claims and sends each device's command.
+   *
+   * Without it, everything runs in the caller's ambient context and each
+   * device's command is sent the moment its rows are inserted — before the
+   * caller commits. A fast agent can answer a row the result path cannot see
+   * yet. Callers that still omit it are the single-device mobile and
+   * remediation routes; they stay exposed to that race until they move to the
+   * self-managed shape too.
+   */
+  runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
 type ExecuteScriptOnDevicesFailure = {
@@ -116,7 +134,19 @@ function resolveScriptAuditOrgId(
   return scriptOrgId ?? deviceOrgId ?? auth.orgId ?? null;
 }
 
-export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput): Promise<ExecuteScriptOnDevicesResult> {
+type ExecutableDevice = typeof devices.$inferSelect;
+
+type AdmissionPhase =
+  | ExecuteScriptOnDevicesFailure
+  | {
+      ok: true;
+      script: typeof scripts.$inferSelect;
+      requestedDeviceIds: string[];
+      targetById: Map<string, ScriptTargetAdmission>;
+      executableDevices: ExecutableDevice[];
+    };
+
+async function admitTargets(input: ExecuteScriptOnDevicesInput): Promise<AdmissionPhase> {
   const script = await getScriptWithOrgCheck(input.scriptId, input.auth);
   if (!script) {
     return { ok: false, status: 404, error: 'Script not found' };
@@ -130,7 +160,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
 
   const deviceById = new Map(deviceRecords.map((device) => [device.id, device]));
   const targetById = new Map<string, ScriptTargetAdmission>();
-  const executableDevices: typeof deviceRecords = [];
+  const executableDevices: ExecutableDevice[] = [];
 
   for (const requestedDeviceId of requestedDeviceIds) {
     const device = deviceById.get(requestedDeviceId);
@@ -182,6 +212,21 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     }
   }
 
+  return { ok: true, script, requestedDeviceIds, targetById, executableDevices };
+}
+
+export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput): Promise<ExecuteScriptOnDevicesResult> {
+  // #7103 — with a runner, every read and write below runs in a context that
+  // COMMITS when the runner returns, and delivery waits for that commit.
+  // Without one, the caller's ambient context is used and each command is sent
+  // inline (the pre-#7103 behaviour, kept for the in-transaction callers).
+  const deferDelivery = input.runInDbContext !== undefined;
+  const run = input.runInDbContext ?? (<T>(fn: () => Promise<T>): Promise<T> => fn());
+
+  const admitted = await run(() => admitTargets(input));
+  if (!admitted.ok) return admitted;
+  const { script, requestedDeviceIds, targetById, executableDevices } = admitted;
+
   const triggerType = input.triggerType ?? 'manual';
   const parameters = input.parameters ?? {};
   const runAs = input.runAs ?? script.runAs;
@@ -191,8 +236,8 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   //
   // Gated on the script actually needing a scope. Without the gate EVERY
   // script run — the overwhelming majority of which reference no variable at
-  // all — would escape the request transaction via runOutsideDbContext and
-  // take a second connection to run a join that is then never consulted.
+  // all — would take a second connection (loadTenantVariableScope escapes
+  // into its own system context) to run a join that is then never consulted.
   // loadTenantVariableScope short-circuits on an empty org list without
   // querying, so passing [] is the no-op path.
   //
@@ -201,79 +246,24 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // in `scripts.parameters`, not in the content, and a content-only gate
   // would hand dispatch an EMPTY scope for it, making every bound parameter
   // resolve as "no value set" for a variable that exists.
+  //
+  // #7103: loaded BETWEEN the runner's phases, not inside one, so a
+  // self-managed caller never holds its context's connection while this
+  // opens a second one (the #6671 pool-deadlock shape). An in-transaction
+  // caller still holds its own across it, as before.
   const variableScope = await loadTenantVariableScope(
     scriptNeedsVariableScope(script) ? [...new Set(executableDevices.map((d) => d.orgId))] : []
   );
 
-  // A multi-org run (partner/system script fanned out across orgs) must not
-  // stamp every batch row with the first device's org — split one batch per
-  // org instead. A single-org, single-device run keeps today's no-batch
-  // behavior; a single-org multi-device run keeps today's one-batch
-  // behavior. Once more than one org is targeted, every org's group gets its
-  // own batch (even an org with just one device in that run) so no execution
-  // is misattributed to another org's batch.
-  const devicesByOrg = new Map<string, typeof executableDevices>();
-  for (const device of executableDevices) {
-    const group = devicesByOrg.get(device.orgId);
-    if (group) {
-      group.push(device);
-    } else {
-      devicesByOrg.set(device.orgId, [device]);
-    }
-  }
-  const multiOrg = devicesByOrg.size > 1;
-
   const batchIdByOrg = new Map<string, string>();
-  const createdBatchIds: string[] = [];
-  for (const [orgId, orgDevices] of devicesByOrg) {
-    if (orgDevices.length <= 1 && !multiOrg) continue;
-    const [batch] = await db
-      .insert(scriptExecutionBatches)
-      .values({
-        scriptId: input.scriptId,
-        orgId,
-        triggeredBy: input.auth.user.id,
-        triggerType,
-        parameters,
-        devicesTargeted: orgDevices.length,
-        status: 'pending',
-      })
-      .returning();
-    if (!batch) {
-      throw new Error('Failed to create batch');
-    }
-    batchIdByOrg.set(orgId, batch.id);
-    createdBatchIds.push(batch.id);
-  }
-
   // A Set, not an array: see `ignoredParameters` on the success type. Insertion
   // order is preserved so the reported order matches definition order.
   const ignoredParameters = new Set<string>();
-  // This loop itself is sequential/awaited and therefore bounded, but
-  // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
-  // fire-and-forget audit transaction PER DEVICE for 'script' commands
-  // (AUDITED_COMMANDS in commandQueue.ts) that this loop cannot see or wait
-  // on. That's the actual unbounded fan-out risk — a large batch launches
-  // that many concurrent transactions against a pool sized for far fewer
-  // while this request also holds a connection (pool-starvation shape).
-  // The real mitigation is the `.max(500)` cap on `deviceIds` in
-  // executeScriptSchema (routes/scripts.ts) — do not raise that cap without
-  // also addressing this fan-out, and do not "fix" it by restructuring
-  // queueCommand's audit dispatch out from under this loop.
-  for (const device of executableDevices) {
-    const dispatch = await dispatchScriptToDevice({
-      device,
-      source: { kind: 'saved', script },
-      trigger: input.trigger,
-      parameters,
-      triggerType,
-      triggeredBy: input.auth.user.id,
-      createdBy: input.auth.user.id,
-      runAs,
-      targetSessionId: input.targetSessionId,
-      batchId: batchIdByOrg.get(device.orgId) ?? null,
-      variableScope,
-    });
+
+  // Records one device's dispatch outcome: its admission target, and the rows
+  // a refusal still owes. Called inline for an immediate dispatch (and for a
+  // refusal at creation time), and after commit for a deferred delivery.
+  const recordDispatchOutcome = async (device: ExecutableDevice, dispatch: DispatchScriptResult): Promise<void> => {
     if (!dispatch.ok) {
       // Three-way branch on the code, by ROW OWNERSHIP:
       //
@@ -303,7 +293,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
           reasonCode: normalizeDispatchReasonCode(dispatch.code),
           ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
         });
-        continue;
+        return;
       }
       await db.insert(scriptExecutions).values({
         triggerKind: input.trigger?.kind ?? null,
@@ -334,7 +324,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
         reasonCode: normalizeDispatchReasonCode(dispatch.code),
         ...(batchId ? { batchId } : {}),
       });
-      continue;
+      return;
     }
     for (const key of dispatch.ignoredParameters) {
       ignoredParameters.add(key);
@@ -375,13 +365,153 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       // which land the row in `queued` (above) awaiting the next heartbeat.
       delivery: dispatch.delivered ? 'delivered' : 'queued_offline',
     });
-  }
+  };
 
-  if (createdBatchIds.length > 0) {
-    await db
-      .update(scriptExecutionBatches)
-      .set({ status: 'queued' })
-      .where(inArray(scriptExecutionBatches.id, createdBatchIds));
+  type PendingDelivery = {
+    device: ExecutableDevice;
+    dispatch: Extract<DispatchScriptResult, { ok: true }>;
+    deliver: () => Promise<DispatchScriptResult>;
+  };
+
+  const pendingDeliveries = await run(async (): Promise<PendingDelivery[]> => {
+    const pending: PendingDelivery[] = [];
+
+    // A multi-org run (partner/system script fanned out across orgs) must not
+    // stamp every batch row with the first device's org — split one batch per
+    // org instead. A single-org, single-device run keeps today's no-batch
+    // behavior; a single-org multi-device run keeps today's one-batch
+    // behavior. Once more than one org is targeted, every org's group gets its
+    // own batch (even an org with just one device in that run) so no execution
+    // is misattributed to another org's batch.
+    const devicesByOrg = new Map<string, ExecutableDevice[]>();
+    for (const device of executableDevices) {
+      const group = devicesByOrg.get(device.orgId);
+      if (group) {
+        group.push(device);
+      } else {
+        devicesByOrg.set(device.orgId, [device]);
+      }
+    }
+    const multiOrg = devicesByOrg.size > 1;
+
+    const createdBatchIds: string[] = [];
+    for (const [orgId, orgDevices] of devicesByOrg) {
+      if (orgDevices.length <= 1 && !multiOrg) continue;
+      const [batch] = await db
+        .insert(scriptExecutionBatches)
+        .values({
+          scriptId: input.scriptId,
+          orgId,
+          triggeredBy: input.auth.user.id,
+          triggerType,
+          parameters,
+          devicesTargeted: orgDevices.length,
+          status: 'pending',
+        })
+        .returning();
+      if (!batch) {
+        throw new Error('Failed to create batch');
+      }
+      batchIdByOrg.set(orgId, batch.id);
+      createdBatchIds.push(batch.id);
+    }
+
+    // This loop itself is sequential/awaited and therefore bounded, but
+    // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
+    // fire-and-forget audit transaction PER DEVICE for 'script' commands
+    // (AUDITED_COMMANDS in commandQueue.ts) that this loop cannot see or wait
+    // on. That's the actual unbounded fan-out risk — a large batch launches
+    // that many concurrent transactions against a pool sized for far fewer
+    // while this loop also holds a connection (pool-starvation shape).
+    // The real mitigation is the `.max(500)` cap on `deviceIds` in
+    // executeScriptSchema (routes/scripts.ts) — do not raise that cap without
+    // also addressing this fan-out, and do not "fix" it by restructuring
+    // queueCommand's audit dispatch out from under this loop.
+    for (const device of executableDevices) {
+      const dispatch = await dispatchScriptToDevice({
+        device,
+        source: { kind: 'saved', script },
+        trigger: input.trigger,
+        parameters,
+        triggerType,
+        triggeredBy: input.auth.user.id,
+        createdBy: input.auth.user.id,
+        runAs,
+        targetSessionId: input.targetSessionId,
+        batchId: batchIdByOrg.get(device.orgId) ?? null,
+        variableScope,
+        ...(deferDelivery ? { deferDelivery: true } : {}),
+      });
+      if (dispatch.ok && dispatch.deliver) {
+        // Deliberately writes nothing yet: a `queued` status written here would
+        // defeat the pending-guarded `running` flip deliver() performs.
+        pending.push({ device, dispatch, deliver: dispatch.deliver });
+        continue;
+      }
+      await recordDispatchOutcome(device, dispatch);
+    }
+
+    if (createdBatchIds.length > 0) {
+      await db
+        .update(scriptExecutionBatches)
+        .set({ status: 'queued' })
+        .where(inArray(scriptExecutionBatches.id, createdBatchIds));
+    }
+    return pending;
+  });
+
+  // #7103 — the runner has returned, so every row above is committed and
+  // visible to the agent result path. Only now does any command go out. Each
+  // deliver() opens its own short system contexts for the claim and the
+  // `running` flip; the follow-up writes get one more. No transaction is held
+  // across a send.
+  for (const { device, dispatch, deliver } of pendingDeliveries) {
+    let settled: DispatchScriptResult;
+    try {
+      settled = await runOutsideDbContext(deliver);
+    } catch (err) {
+      // deliver() hands a claimed command back to `pending` before it rethrows,
+      // so the committed command is picked up at the device's next check-in.
+      // Report the device as queued, never as failed, and keep going: one bad
+      // socket must not strand the rest of the fan-out.
+      console.error('[scriptExecution] deferred script delivery threw; leaving the committed command queued', {
+        deviceId: device.id,
+        commandId: dispatch.commandId,
+        executionId: dispatch.executionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err);
+      settled = { ...dispatch, deliver: undefined, delivered: false, deliveryOutcome: 'send_failed' };
+    }
+    try {
+      await withSystemDbAccessContext(() => recordDispatchOutcome(device, settled));
+    } catch (err) {
+      // Bookkeeping only: the command is committed and either sent or queued.
+      // The execution row is still closed by the agent's result or the reaper.
+      console.error('[scriptExecution] failed to record a delivery outcome', {
+        deviceId: device.id,
+        commandId: dispatch.commandId,
+        executionId: dispatch.executionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err);
+      const batchId = batchIdByOrg.get(device.orgId);
+      targetById.set(device.id, settled.ok
+        ? {
+          requestedDeviceId: device.id,
+          admission: 'admitted',
+          ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
+          commandId: dispatch.commandId,
+          ...(batchId ? { batchId } : {}),
+          delivery: settled.delivered ? 'delivered' : 'queued_offline',
+        }
+        : {
+          requestedDeviceId: device.id,
+          admission: 'excluded',
+          reasonCode: normalizeDispatchReasonCode(settled.code),
+          ...(batchId ? { batchId } : {}),
+        });
+    }
   }
 
   const targets = requestedDeviceIds.map((deviceId) => targetById.get(deviceId)!);

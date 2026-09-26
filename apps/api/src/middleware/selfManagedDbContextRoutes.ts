@@ -216,6 +216,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // #7103 — manual Run Script (up to 500 devices). Under the ambient request
+  // transaction each device's command went out over the agent WebSocket while
+  // its rows (and every later device's) were still uncommitted, so a fast
+  // agent's result found no device_commands row and was dropped as an orphan.
+  // The handler now creates every row in a short withAuthDbAccessContext block
+  // and sends only after it commits (executeScriptOnDevices' runInDbContext).
+  { method: 'POST', pattern: /^\/api\/v1\/scripts\/[^/]+\/execute\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection
