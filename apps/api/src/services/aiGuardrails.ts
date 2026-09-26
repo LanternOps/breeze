@@ -1511,6 +1511,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Topology reads (M3 Task 6): the devices:read floor is enforced by requireTopologySiteAccess.
   get_interface_history: { resource: 'topology', action: 'read' },
   get_link_health: { resource: 'topology', action: 'read' },
+  get_topology_impact: { resource: 'topology', action: 'read' },
+  get_recent_network_changes: { resource: 'topology', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

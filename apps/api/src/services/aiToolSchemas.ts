@@ -223,6 +223,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     site_id: uuid,
     relationship_id: uuid,
   }),
+  get_topology_impact: z.object({
+    site_id: uuid,
+    subject_kind: z.enum(['node', 'relationship']),
+    subject_id: uuid,
+    window_minutes: z.number().int().min(1).max(30).optional(),
+    graph_revision: z.string().regex(/^(0|[1-9]\d*)$/).optional(),
+  }),
+  get_recent_network_changes: z.object({
+    site_id: uuid,
+    since: z.string().datetime(),
+    until: z.string().datetime(),
+    limit: z.number().int().min(1).max(100).optional(),
+    cursor: z.string().max(2048).optional(),
+  }),
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

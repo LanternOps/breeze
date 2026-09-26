@@ -942,6 +942,9 @@ export * from './topologyPhysical';
 // Interface measurement telemetry contracts (M3 #5999)
 export * from './topologyTelemetry';
 
+// Incident impact and change history contracts (M3 #5999 Task 10)
+export * from './topologyInvestigation';
+
 export * from './securityScan';
 
 // Metric anomaly episodes (spec 2026-09-21)

@@ -209,6 +209,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   'get_playbook_history',
   'get_quote',
+  'get_recent_network_changes', // M3 Task 10 topology read
   'get_running_timer', // A-W06 Tier-1 read
   'get_s1_status',
   'get_s1_threats',
@@ -223,6 +224,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_service_monitoring_status',
   'get_site', // A-W06 Tier-1 read
   'get_timesheet', // A-W06 Tier-1 read
+  'get_topology_impact', // M3 Task 10 topology read
   'get_user_experience_metrics',
   'get_vulnerability_report',
   'google_email_report',

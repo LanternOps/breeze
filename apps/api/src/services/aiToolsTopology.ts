@@ -3,6 +3,12 @@
  * over the same services as the REST routes in `routes/topology/history.ts`.
  * - get_interface_history (Tier 1): bounded port history for one interface
  * - get_link_health (Tier 1): current health of one link, per endpoint
+ * - get_topology_impact (Tier 1, M3 Task 10): cautious, cited possible impact
+ *   of one node/link failing — measured failures kept apart from possible
+ *   dependencies; never suppresses, acknowledges or closes an alert
+ * - get_recent_network_changes (Tier 1, M3 Task 10): bounded ≤ 24 h topology
+ *   change history (attachment/route/source/gap/measurement), distinct from
+ *   the older device-level get_network_changes
  *
  * Both authorize through `requireTopologySiteAccess` (exact site, topology:read
  * + devices:read), read stored measurements only, and never poll, probe or
@@ -19,10 +25,17 @@ import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext }
 import { getTopologyLinkHealth } from './topology/graph';
 import { GraphReadError } from './topology/graphCursor';
 import { getTopologyInterfaceHistory } from './topology/interfaceHistory';
+import { getTopologyImpact } from './topology/impact';
+import { getRecentTopologyChanges } from './topology/changes';
 
 /** AI-facing bound: a model never needs the UI's 1,000-bucket resolution. */
 export const AI_INTERFACE_HISTORY_MAX_BUCKETS = 120;
 export const AI_INTERFACE_HISTORY_MAX_SERIES = 4;
+/** Model-sized impact projection; the full cited evidence list stays in the REST contract. */
+export const AI_TOPOLOGY_IMPACT_MAX_AFFECTED = 100;
+export const AI_TOPOLOGY_IMPACT_MAX_ALTERNATIVES = 50;
+export const AI_TOPOLOGY_IMPACT_MAX_FAILURES = 50;
+export const AI_TOPOLOGY_CHANGES_MAX_LIMIT = 100;
 
 const jsonError = (error: string) => JSON.stringify({ error });
 const uuid = z.string().guid();
@@ -114,6 +127,77 @@ export function registerTopologyTools(aiTools: Map<string, AiTool>): void {
       const ctx = await topologyContext(auth, input.site_id);
       if (typeof ctx === 'string') return jsonError(ctx);
       return JSON.stringify(await getTopologyLinkHealth(ctx, String(input.relationship_id ?? '')));
+    }),
+  });
+
+  aiTools.set('get_topology_impact', {
+    tier: 1,
+    domain: 'network',
+    searchHint: 'what else could be affected if this switch, uplink, cable or gateway fails; blast radius; downstream devices',
+    deviceArgs: [],
+    definition: {
+      name: 'get_topology_impact',
+      description: 'Possible impact of one topology node or link failing: fresh measured failures kept apart from possibly affected entities, each with a cited path and uncertainty reasons. Never a certain downstream claim; never suppresses or closes alerts. Reads stored evidence only.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          site_id: { type: 'string', description: 'Site UUID that owns the topology' },
+          subject_kind: { type: 'string', enum: ['node', 'relationship'], description: 'Whether the subject is a node or a relationship (link)' },
+          subject_id: { type: 'string', description: 'Topology node or relationship UUID' },
+          window_minutes: { type: 'number', description: 'Correlation window for measured evidence, 1-30 minutes (default 5)' },
+          graph_revision: { type: 'string', description: 'Optional graph revision to pin; a changed graph returns an error instead of a silent re-read' },
+        },
+        required: ['site_id', 'subject_kind', 'subject_id'],
+      },
+    },
+    handler: (input, auth) => guarded(async () => {
+      if (input.subject_kind !== 'node' && input.subject_kind !== 'relationship') return jsonError('subject_kind must be node or relationship');
+      const ctx = await topologyContext(auth, input.site_id);
+      if (typeof ctx === 'string') return jsonError(ctx);
+      const minutes = Math.min(30, Math.max(1, Math.trunc(Number(input.window_minutes ?? 5)) || 5));
+      const impact = await getTopologyImpact(ctx, { kind: input.subject_kind, id: String(input.subject_id ?? '') },
+        { windowMinutes: minutes, ...(typeof input.graph_revision === 'string' ? { graphRevision: input.graph_revision } : {}) });
+      const { evidence: _evidence, ...rest } = impact;
+      const truncated = impact.potentiallyAffected.length > AI_TOPOLOGY_IMPACT_MAX_AFFECTED
+        || impact.alternatives.length > AI_TOPOLOGY_IMPACT_MAX_ALTERNATIVES || impact.measuredFailures.length > AI_TOPOLOGY_IMPACT_MAX_FAILURES;
+      return JSON.stringify({
+        ...rest,
+        measuredFailures: impact.measuredFailures.slice(0, AI_TOPOLOGY_IMPACT_MAX_FAILURES),
+        potentiallyAffected: impact.potentiallyAffected.slice(0, AI_TOPOLOGY_IMPACT_MAX_AFFECTED),
+        alternatives: impact.alternatives.slice(0, AI_TOPOLOGY_IMPACT_MAX_ALTERNATIVES),
+        truncatedForModel: truncated,
+      });
+    }),
+  });
+
+  aiTools.set('get_recent_network_changes', {
+    tier: 1,
+    domain: 'network',
+    searchHint: 'what changed on the network recently: new or lost links, attachments, routes, collection gaps, diagnostic results',
+    deviceArgs: [],
+    definition: {
+      name: 'get_recent_network_changes',
+      description: 'Topology change history for one site in a window of at most 24 h: links observed/withdrawn, manual assertions, source restarts/revocations, collection gaps, diagnostic results and config changes, with evidence IDs. Reads stored history only.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          site_id: { type: 'string', description: 'Site UUID that owns the topology' },
+          since: { type: 'string', description: 'Window start, ISO 8601 UTC' },
+          until: { type: 'string', description: 'Window end, ISO 8601 UTC (at most 24 h after since)' },
+          limit: { type: 'number', description: `Max changes per page (default 50, max ${AI_TOPOLOGY_CHANGES_MAX_LIMIT})` },
+          cursor: { type: 'string', description: 'Continuation cursor from a previous page' },
+        },
+        required: ['site_id', 'since', 'until'],
+      },
+    },
+    handler: (input, auth) => guarded(async () => {
+      const ctx = await topologyContext(auth, input.site_id);
+      if (typeof ctx === 'string') return jsonError(ctx);
+      const limit = Math.min(AI_TOPOLOGY_CHANGES_MAX_LIMIT, Math.max(1, Math.trunc(Number(input.limit ?? 50)) || 50));
+      return JSON.stringify(await getRecentTopologyChanges(ctx, {
+        since: String(input.since ?? ''), until: String(input.until ?? ''), limit,
+        ...(typeof input.cursor === 'string' && input.cursor ? { cursor: input.cursor } : {}),
+      }));
     }),
   });
 }

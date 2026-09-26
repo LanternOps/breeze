@@ -305,6 +305,9 @@ export const TOOL_TIERS = {
   // wired so they are callable (#2605).
   get_interface_history: 1,
   get_link_health: 1,
+  // M3 Task 10 — cautious impact and topology change history (read-only).
+  get_topology_impact: 1,
+  get_recent_network_changes: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -2700,6 +2703,31 @@ export function buildBreezeSdkTools(
         relationship_id: uuid,
       },
       makeHandler('get_link_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M3 Task 10 — cautious incident impact and bounded topology change history.
+    tool(
+      'get_topology_impact',
+      registryDescription('get_topology_impact'),
+      {
+        site_id: uuid,
+        subject_kind: z.enum(['node', 'relationship']),
+        subject_id: uuid,
+        window_minutes: z.number().int().min(1).max(30).optional(),
+        graph_revision: z.string().regex(/^(0|[1-9]\d*)$/).optional(),
+      },
+      makeHandler('get_topology_impact', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_recent_network_changes',
+      registryDescription('get_recent_network_changes'),
+      {
+        site_id: uuid,
+        since: z.string().datetime(),
+        until: z.string().datetime(),
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().max(2048).optional(),
+      },
+      makeHandler('get_recent_network_changes', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
