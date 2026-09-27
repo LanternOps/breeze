@@ -302,11 +302,16 @@ export const TOOL_TIERS = {
   get_network_asset: 1,
   get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
-  // get_monitor / manage_monitor_definitions remain in the frozen
+  // get_monitor remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
   // — these two are new and wired directly instead of widening that list.
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
+  // #6669: the only chat path to author a monitor (e.g. software_presence
+  // "alert me when <app> is removed"). Tier 3 = approval-gated, matching its
+  // registered tier; the handler's site-ceiling gate (canMutateOrgWideGovernance)
+  // and the alerts:write RBAC map in aiGuardrails.ts were already in place.
+  manage_monitor_definitions: 3,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
   list_incidents: 1,
@@ -2720,6 +2725,24 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
       },
       makeHandler('reset_monitor_escalation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitor definition authoring (#6669). `definition` stays an open record
+    // here: the handler deep-validates it with createMonitorDefinitionSchema /
+    // updateMonitorDefinitionSchema and returns the first issue to the model.
+    tool(
+      'manage_monitor_definitions',
+      registryDescription('manage_monitor_definitions'),
+      {
+        action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        monitorId: uuid.optional(),
+        definition: z.record(z.string(), z.unknown()).optional(),
+        configPolicyId: uuid.optional(),
+        attachmentId: uuid.optional(),
+        enabled: z.boolean().optional(),
+        overrides: z.record(z.string(), z.unknown()).nullable().optional(),
+      },
+      makeHandler('manage_monitor_definitions', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
