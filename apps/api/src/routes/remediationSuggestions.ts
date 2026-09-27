@@ -923,7 +923,7 @@ remediationSuggestionRoutes.post(
     // failure below leaves it unlinked from the suggestion. That was already
     // true under the request tx: a rollback there could undo the link but
     // never the command the agent had been sent.
-    const updated = await withAuthDbAccessContext(auth, async () => {
+    const phase3 = await withAuthDbAccessContext(auth, async () => {
       const now = new Date();
       const [row] = await db
         .update(remediationSuggestions)
@@ -962,12 +962,25 @@ remediationSuggestionRoutes.post(
           riskTier: row.riskTier,
         },
       });
-      return row;
+
+      // AI Suggested Fixes W1 — the attempt the outcome watcher follows.
+      // Rides this same context/transaction so it is atomic with the link:
+      // withDbTransaction opens a SAVEPOINT here, so a failed insert rolls
+      // back to the savepoint and this update + feedback emit still commit.
+      // No extra pool checkout, and no window where the link can commit
+      // while the recorder call itself throws as an uncaught 500.
+      const outcome = await recordExecutionOutcome({
+        suggestion: row,
+        deviceId,
+        scriptExecutionId,
+      });
+      return { row, outcome };
     });
 
-    if (!updated) {
+    if (!phase3) {
       return c.json({ error: 'Failed to update suggestion' }, 500);
     }
+    const { row: updated, outcome } = phase3;
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -986,19 +999,6 @@ remediationSuggestionRoutes.post(
         riskTier: updated.riskTier,
       },
     });
-
-    // AI Suggested Fixes W1 — the attempt the outcome watcher follows. #7109
-    // means no request context is held this far down (it closed with
-    // `updated` above), so recordExecutionOutcome needs its own short-lived
-    // one to satisfy withDbTransaction's assertInTransaction — the brief's
-    // bare call assumed an ambient request tx that this route no longer has.
-    // Own savepoint inside that context; never throws: a recording failure
-    // must not undo a dispatch that already committed and was sent.
-    const outcome = await withAuthDbAccessContext(auth, () => recordExecutionOutcome({
-      suggestion: updated,
-      deviceId,
-      scriptExecutionId,
-    }));
 
     return c.json({
       data: serializeSuggestion(updated, outcome),

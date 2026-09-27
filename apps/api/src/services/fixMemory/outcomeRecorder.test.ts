@@ -19,8 +19,10 @@ vi.mock('../../db', () => {
   }));
   return { db: chain, withDbTransaction: (fn: () => unknown) => fn() };
 });
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import { recordExecutionOutcome } from './outcomeRecorder';
+import { captureException } from '../sentry';
 
 // ONE top-level reset of ALL shared mock state. Every describe in this file
 // (including the ones Task 19 appends) starts clean — no test may inherit
@@ -30,6 +32,7 @@ beforeEach(() => {
   h.values.mockReset();
   h.insertResult = [{ state: 'pending', stateReason: null, humanVote: null }];
   h.insertThrows = false;
+  vi.mocked(captureException).mockReset();
 });
 
 const suggestion = { id: 'sg-1', orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1', scriptId: 's-1' };
@@ -46,13 +49,52 @@ describe('recordExecutionOutcome', () => {
     }));
     const deadline = (h.values.mock.calls[0]![0] as { deadlineAt: Date }).deadlineAt.getTime();
     expect(deadline - Date.now()).toBeGreaterThan(23 * 3_600_000);
+    expect(captureException).not.toHaveBeenCalled();
   });
 
-  it('never throws: a failed insert returns null and leaves the dispatched script alone', async () => {
+  it('never throws: a failed insert returns null, reports to Sentry, and leaves the dispatched script alone', async () => {
     h.rows.push([{ partnerId: 'p-1' }], [{ isSystem: true, orgId: null, partnerId: null }], [{ scriptVersionId: null }]);
     h.insertThrows = true;
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     await expect(recordExecutionOutcome({ suggestion, deviceId: 'd-1', scriptExecutionId: 'e-1' })).resolves.toBeNull();
+    expect(err).toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { component: 'fixMemory.outcomeRecorder' },
+    );
     err.mockRestore();
+  });
+
+  it('warns and returns null (without throwing) when the org lookup misses', async () => {
+    h.rows.push([], [{ isSystem: false, orgId: null, partnerId: 'p-1' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(recordExecutionOutcome({ suggestion, deviceId: 'd-1', scriptExecutionId: 'e-1' })).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    // ids only — never suggestion title/rationale/output text.
+    expect(warn.mock.calls[0]![0]).toContain(suggestion.id);
+    expect(warn.mock.calls[0]![0]).toContain(suggestion.orgId);
+    expect(h.values).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns and returns null (without throwing) when the script lookup misses', async () => {
+    h.rows.push([{ partnerId: 'p-1' }], []);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(recordExecutionOutcome({ suggestion, deviceId: 'd-1', scriptExecutionId: 'e-1' })).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain(suggestion.id);
+    expect(warn.mock.calls[0]![0]).toContain(suggestion.scriptId);
+    expect(h.values).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('is a silent idempotent no-op when the unique suggestion_id conflict fires (already recorded)', async () => {
+    h.rows.push([{ partnerId: 'p-1' }], [{ isSystem: false, orgId: null, partnerId: 'p-1' }], [{ scriptVersionId: 'v-7' }]);
+    h.insertResult = [];
+    await expect(recordExecutionOutcome({ suggestion, deviceId: 'd-1', scriptExecutionId: 'e-1' })).resolves.toBeNull();
+    expect(h.values).toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
   });
 });

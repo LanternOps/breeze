@@ -579,6 +579,7 @@ describe('remediation suggestion routes', () => {
   it('executes accepted script suggestions through the server-side script rail', async () => {
     const accepted = { ...baseSuggestion, status: 'accepted' };
     const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
+    const depths: Record<string, number> = {};
     mockSuggestionLoad(accepted);
     dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
       ok: true,
@@ -598,18 +599,25 @@ describe('remediation suggestion routes', () => {
       runAs: 'system',
       auditOrgId: baseSuggestion.orgId,
     });
-    dbMocks.updateMock.mockReturnValueOnce({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            ...accepted,
-            status: 'executed',
-            scriptExecutionId,
-            executedBy: 'user-1',
-            executedAt: new Date('2026-06-18T12:10:00.000Z'),
-          }]),
+    dbMocks.updateMock.mockImplementationOnce(() => {
+      depths.update = dbMocks.dbContextState.depth;
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...accepted,
+              status: 'executed',
+              scriptExecutionId,
+              executedBy: 'user-1',
+              executedAt: new Date('2026-06-18T12:10:00.000Z'),
+            }]),
+          }),
         }),
-      }),
+      };
+    });
+    dbMocks.recordOutcomeMock.mockImplementationOnce(async () => {
+      depths.recordOutcome = dbMocks.dbContextState.depth;
+      return { state: 'pending', stateReason: null, humanVote: null };
     });
 
     const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
@@ -644,6 +652,11 @@ describe('remediation suggestion routes', () => {
     });
     // The panel swaps its row for this response, so the outcome must be on it.
     expect(body.data.outcome).toEqual({ state: 'pending', stateReason: null, humanVote: null });
+    // Must ride the SAME context/transaction that produced the link (phase 3),
+    // not a separate context opened after it closed — that's the atomicity
+    // this fix restores (see Task 18 review, IMPORTANT 1).
+    expect(depths.recordOutcome).toBeGreaterThan(0);
+    expect(depths.recordOutcome).toBe(depths.update);
   });
 
   // #7109 — the route is registered in selfManagedDbContextRoutes.ts, so no

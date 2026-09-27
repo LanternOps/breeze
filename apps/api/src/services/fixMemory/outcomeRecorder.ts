@@ -8,6 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS, type FixOutcomeState, type FixVote } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { fixOutcomes, organizations, remediationSuggestions, scriptExecutions, scripts } from '../../db/schema';
+import { captureException } from '../sentry';
 import { fixIdentityFor, fixKindForScript } from './aggregate';
 
 type SourceType = 'alert' | 'anomaly' | 'correlation' | 'rca';
@@ -34,7 +35,16 @@ export async function recordExecutionOutcome(input: {
         .where(eq(organizations.id, suggestion.orgId)).limit(1);
       const [script] = await db.select({ isSystem: scripts.isSystem, orgId: scripts.orgId, partnerId: scripts.partnerId })
         .from(scripts).where(eq(scripts.id, suggestion.scriptId!)).limit(1);
-      if (!org || !script) return null;
+      if (!org || !script) {
+        // ids only — never suggestion title/rationale/output, which may hold
+        // customer text. A missing org/script means the outcome row is a
+        // silent no-op; this is the only signal an operator gets of that.
+        console.warn(
+          `[fixMemory] cannot record attempt for suggestion ${suggestion.id}: `
+          + `${!org ? `org ${suggestion.orgId} not found` : `script ${suggestion.scriptId} not found`}`,
+        );
+        return null;
+      }
       const [execution] = await db.select({ scriptVersionId: scriptExecutions.scriptVersionId }).from(scriptExecutions)
         .where(eq(scriptExecutions.id, input.scriptExecutionId)).limit(1);
       const scriptVersionId = execution?.scriptVersionId ?? null;
@@ -61,6 +71,7 @@ export async function recordExecutionOutcome(input: {
     });
   } catch (err) {
     console.error(`[fixMemory] could not record the attempt for suggestion ${suggestion.id}:`, err);
+    captureException(err, undefined, { component: 'fixMemory.outcomeRecorder' });
     return null;
   }
 }
