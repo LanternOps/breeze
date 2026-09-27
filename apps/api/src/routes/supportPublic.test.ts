@@ -889,6 +889,33 @@ describe('GET /download/:platform', () => {
     expect(selectBuilders).toHaveLength(1);
   });
 
+  it('server-only image: proxies the support client from the paired binaries release', async () => {
+    // Real URL builder (the suite's stub hides the release tag): a server-only
+    // image's own version has no agent assets, so the proxy must fetch the
+    // paired release's binary.
+    const actual = await vi.importActual<typeof import('../services/binarySource')>(
+      '../services/binarySource',
+    );
+    getGithubAgentUrl.mockImplementation((os: string, arch: string) => actual.getGithubAgentUrl(os, arch));
+    const saved = { ...process.env };
+    try {
+      process.env.BREEZE_VERSION = '0.118.2';
+      process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+      delete process.env.BINARY_VERSION;
+      delete process.env.BINARY_GITHUB_REPOSITORY;
+      delete process.env.GITHUB_REPO;
+      selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+
+      const res = await download();
+
+      expect(res.status).toBe(200);
+      const proxied = String((fetchMock.mock.calls[0] as unknown[] | undefined)?.[0]);
+      expect(proxied).toContain('/releases/download/v0.118.0/breeze-agent-windows-amd64.exe');
+    } finally {
+      process.env = saved;
+    }
+  });
+
   it('normalizes the human-formatted code into the filename', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const res = await download('windows', '?code=234-567-892');

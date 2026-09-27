@@ -132,6 +132,29 @@ describe('fetchRegularMsi', () => {
     );
   });
 
+  it('server-only image: fetches and verifies the MSI against the paired binaries release', async () => {
+    const asset = Buffer.from('signed-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset, {}, { release: 'v0.118.0' });
+    process.env.BINARY_SOURCE = 'github';
+    delete process.env.BINARY_VERSION;
+    process.env.BREEZE_VERSION = '0.118.2';
+    process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!url.includes('/releases/download/v0.118.0/')) return new Response('wrong release', { status: 404 });
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Expected release tag v0.118.0 (the manifest's), not the server's v0.118.2.
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+    for (const [url] of fetchMock.mock.calls) expect(String(url)).not.toContain('0.118.2');
+  });
+
   it('accepts an unsigned MSI labeled edition self-host', async () => {
     const asset = Buffer.from('unsigned-self-host-msi');
     const signed = signedReleaseManifest('breeze-agent.msi', asset, {

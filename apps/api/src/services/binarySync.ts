@@ -10,7 +10,9 @@ import { isS3Configured, syncDirectory } from "./s3Storage";
 import {
   getBinarySource,
   getAgentAutoPromote,
+  getBinariesVersion,
   getGithubReleaseVersion,
+  getPairedBinariesVersion,
 } from "./binarySource";
 import { getBinaryEdition } from "./binaryEdition";
 import {
@@ -21,6 +23,7 @@ import {
   ReleaseManifestAssetLookupError,
   ReleaseManifestSignatureError,
   verifyReleaseArtifactManifestAsset,
+  verifyReleaseArtifactManifestIdentity,
   verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
 import { EDITION_SELF_HOST, assertGithubFetchableEdition } from "./releaseAssetTrust";
@@ -187,6 +190,29 @@ function assertLocalGithubFallbackAllowed(context: string): void {
     throw new Error(
       `[binarySync] BINARY_EDITION=hosted refuses to fall back to the public GitHub release (${context}). Fix the local binaries volume instead.`,
     );
+  }
+}
+
+/**
+ * A server-only release rebuilds only the server images and ships no agent
+ * binaries; its signed manifest names the full release it carries them from
+ * (binariesRelease). Syncing one BY NAME (a pinned boot version, the safety
+ * net, or `POST /agent-versions/sync-github?version=`) is refused with this
+ * error rather than registering nothing and reporting success. The unpinned
+ * `/releases/latest` path follows binariesRelease instead (one hop).
+ */
+export class ServerOnlyReleaseError extends Error {
+  readonly release: string;
+  readonly binariesRelease: string;
+
+  constructor(release: string, binariesRelease: string) {
+    super(
+      `${release} is a server-only release; its agent binaries are in ${binariesRelease}. ` +
+        `Pin BINARY_VERSION to ${binariesRelease}, or run a server image paired with ${binariesRelease}.`,
+    );
+    this.name = "ServerOnlyReleaseError";
+    this.release = release;
+    this.binariesRelease = binariesRelease;
   }
 }
 
@@ -973,8 +999,79 @@ function unpublishedPinnedReleaseHint(pinnedTag: string, err: unknown): string {
   );
 }
 
+/**
+ * Server-only boots (the image carries BREEZE_BINARIES_VERSION) never write
+ * agent_versions, in either binary-source mode: the binaries they pair with
+ * were registered — and, under AGENT_AUTO_PROMOTE, promoted — when that full
+ * release was deployed, and re-registering on every server-only boot would
+ * re-stamp isLatest (silently reverting a manual fleet promotion). This only
+ * READS the registration state so an operator who skipped the full release
+ * learns why the fleet does not move. Best-effort: never throws.
+ */
+async function reportServerOnlyBoot(paired: string): Promise<void> {
+  const server = process.env.BREEZE_VERSION?.trim() || "unset";
+  const binaries = getBinariesVersion().replace(/^v/, "");
+  const pairing = `server ${server} pairs with binaries ${binaries}`;
+  try {
+    const state = await getVersionRegistrationState(binaries);
+    if (isVersionRegistrationComplete(state)) {
+      console.log(
+        `[binarySync] server-only pairing: ${pairing}, already registered — skipping agent_versions registration`,
+      );
+      return;
+    }
+    console.warn(
+      `[binarySync] server-only pairing: ${pairing}, but binaries ${binaries} is not fully registered in agent_versions ` +
+        `(agent rows: ${state.agentRows.length}, backup rows: ${state.hasBackup ? "yes" : "no"}). ` +
+        `Server-only boots never write agent_versions, so the fleet stays on its current promoted release. ` +
+        `Deploy the full release v${binaries} first, or register it with POST /api/v1/agent-versions/sync-github?version=v${binaries}.` +
+        (paired.replace(/^v/, "") !== binaries
+          ? ` (BINARY_VERSION overrides the image pairing ${paired}.)`
+          : ""),
+    );
+  } catch (err) {
+    console.error(
+      `[binarySync] server-only pairing: ${pairing}; could not read agent_versions registration state (no writes attempted): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+async function syncBinaryDirsToS3(
+  agentBinaryDir: string,
+  viewerBinaryDir: string,
+): Promise<void> {
+  if (!isS3Configured()) return;
+  const logSyncResult = (
+    label: string,
+    result: import("./s3Storage").SyncResult,
+  ) => {
+    console.log(
+      `[binarySync] S3 ${label} sync: ${result.uploaded} uploaded, ${result.skipped} skipped` +
+        (result.errors.length > 0 ? `, ${result.errors.length} errors` : ""),
+    );
+    for (const err of result.errors) {
+      console.error(`[binarySync] S3 ${label} sync error: ${err}`);
+    }
+  };
+
+  const agentSync = await syncDirectory(agentBinaryDir, "agent");
+  logSyncResult("agent", agentSync);
+
+  const viewerSync = await syncDirectory(viewerBinaryDir, "viewer");
+  logSyncResult("viewer", viewerSync);
+}
+
 export async function syncBinaries(): Promise<void> {
+  // Set only in server-only release images (see getPairedBinariesVersion);
+  // undefined for every full-release image, which leaves this function's
+  // behaviour exactly as it was before server-only releases existed.
+  const pairedBinariesVersion = getPairedBinariesVersion();
+
   if (getBinarySource() === "github") {
+    if (pairedBinariesVersion) {
+      await reportServerOnlyBoot(pairedBinariesVersion);
+      return;
+    }
     const pinnedTag = pinnedGithubReleaseTag();
     console.log(
       `[binarySync] BINARY_SOURCE=github, syncing from GitHub release ${pinnedTag ?? "latest"}`,
@@ -1007,7 +1104,7 @@ export async function syncBinaries(): Promise<void> {
     process.env.VIEWER_BINARY_DIR || "./viewer/bin",
   );
   const versionFile = process.env.BINARY_VERSION_FILE;
-  const expectedVersion = process.env.BREEZE_VERSION;
+  const expectedVersion = pairedBinariesVersion ?? process.env.BREEZE_VERSION;
 
   // Read version from VERSION file if available
   let version = "unknown";
@@ -1030,6 +1127,26 @@ export async function syncBinaries(): Promise<void> {
   // the VERSION file from the binaries-init container, the volume wasn't refreshed.
   // Fall back to GitHub sync so agents get the correct binary via direct download.
   if (
+    pairedBinariesVersion &&
+    version !== "unknown" &&
+    version !== pairedBinariesVersion
+  ) {
+    // Server-only image: the volume must hold the paired binaries release. No
+    // GitHub fallback here — a server-only boot never writes agent_versions.
+    const stale =
+      `[binarySync] Stale binaries volume: server ${process.env.BREEZE_VERSION?.trim() || "unset"} ` +
+      `pairs with binaries ${pairedBinariesVersion}; the volume has v${version}.`;
+    if (getBinaryEdition() === "hosted") {
+      throw new Error(
+        `${stale} Set BREEZE_BINARIES_IMAGE_REF to the ${pairedBinariesVersion} hosted digest and recreate binaries-init.`,
+      );
+    }
+    console.error(
+      `${stale} Agents may be served the wrong binaries. Pull the binaries image for ${pairedBinariesVersion} ` +
+        `and run: docker compose up -d --force-recreate binaries-init`,
+    );
+  } else if (
+    !pairedBinariesVersion &&
     expectedVersion &&
     expectedVersion !== "latest" &&
     version !== "unknown" &&
@@ -1059,6 +1176,12 @@ export async function syncBinaries(): Promise<void> {
       );
       reportIfGuardRefusal(err, "stale-volume-fallback");
     }
+  }
+
+  if (pairedBinariesVersion) {
+    await reportServerOnlyBoot(pairedBinariesVersion);
+    await syncBinaryDirsToS3(agentBinaryDir, viewerBinaryDir);
+    return;
   }
 
   // Official-manifest local registration (BYO signing edition follow-up): if
@@ -1393,26 +1516,7 @@ export async function syncBinaries(): Promise<void> {
   await ensureCurrentVersionRegistered();
 
   // Sync to S3 if configured (runs regardless of whether agent binaries were found)
-  if (isS3Configured()) {
-    const logSyncResult = (
-      label: string,
-      result: import("./s3Storage").SyncResult,
-    ) => {
-      console.log(
-        `[binarySync] S3 ${label} sync: ${result.uploaded} uploaded, ${result.skipped} skipped` +
-          (result.errors.length > 0 ? `, ${result.errors.length} errors` : ""),
-      );
-      for (const err of result.errors) {
-        console.error(`[binarySync] S3 ${label} sync error: ${err}`);
-      }
-    };
-
-    const agentSync = await syncDirectory(agentBinaryDir, "agent");
-    logSyncResult("agent", agentSync);
-
-    const viewerSync = await syncDirectory(viewerBinaryDir, "viewer");
-    logSyncResult("viewer", viewerSync);
-  }
+  await syncBinaryDirsToS3(agentBinaryDir, viewerBinaryDir);
 }
 
 /**
@@ -1422,6 +1526,19 @@ export async function syncBinaries(): Promise<void> {
  */
 export async function syncFromGitHub(
   requestedVersion?: string,
+): Promise<{ version: string; synced: string[]; failed: string[] }> {
+  return syncFromGitHubRelease(requestedVersion, null);
+}
+
+/**
+ * `follow` is set only on the single hop from a verified server-only release to
+ * the full release whose binaries it carries: the hop target must verify under
+ * its own tag, be a FULL release, and have been built from the source commit
+ * the server-only manifest names. A second hop is never taken.
+ */
+async function syncFromGitHubRelease(
+  requestedVersion: string | undefined,
+  follow: { from: string; expectedSourceCommit: string } | null,
 ): Promise<{ version: string; synced: string[]; failed: string[] }> {
   const ghUrl = requestedVersion
     ? `${getReleaseSourceApiBase()}/releases/tags/${requestedVersion}`
@@ -1468,6 +1585,55 @@ export async function syncFromGitHub(
 
   const version = release.tag_name.replace(/^v/, "");
   const trustedManifest = await fetchTrustedReleaseManifest(release.assets);
+
+  // Server-only releases. releaseKind/binariesRelease are read ONLY from a
+  // manifest whose signature, repository and release identity have verified —
+  // an unverified manifest (non-production, no trust root) is never followed.
+  // Full releases fall straight through, unchanged.
+  if (trustedManifest) {
+    const identity = verifyReleaseArtifactManifestIdentity({
+      manifestBytes: trustedManifest.manifestBytes,
+      signatureBytes: trustedManifest.signatureBytes,
+      expectedRepository: getReleaseSourceRepository(),
+      expectedRelease: release.tag_name,
+    });
+    if (follow) {
+      if (release.tag_name !== requestedVersion) {
+        throw new Error(
+          `Asked GitHub for binaries release ${requestedVersion} (named by server-only release ${follow.from}) but got ${release.tag_name}`,
+        );
+      }
+      if (identity.releaseKind !== "full") {
+        throw new Error(
+          `Binaries release ${release.tag_name} (named by server-only release ${follow.from}) is not a full release — refusing chained server-only releases`,
+        );
+      }
+      if (identity.sourceCommit !== follow.expectedSourceCommit) {
+        throw new Error(
+          `Binaries release ${release.tag_name} source commit mismatch: server-only release ${follow.from} names ${follow.expectedSourceCommit}, the ${release.tag_name} manifest has ${identity.sourceCommit ?? "none"}`,
+        );
+      }
+    } else if (identity.releaseKind === "server-only") {
+      const binariesRelease = identity.binariesRelease as string;
+      if (requestedVersion) {
+        throw new ServerOnlyReleaseError(release.tag_name, binariesRelease);
+      }
+      console.log(
+        `[binarySync] ${release.tag_name} is a server-only release; syncing the agent binaries it carries from ${binariesRelease}`,
+      );
+      return syncFromGitHubRelease(binariesRelease, {
+        from: release.tag_name,
+        expectedSourceCommit: identity.binariesSourceCommit as string,
+      });
+    }
+  } else if (follow) {
+    // Unreachable in practice (the release we are following from verified, so
+    // a trust root is configured), but never register an unverified hop.
+    throw new Error(
+      `Binaries release ${release.tag_name} (named by server-only release ${follow.from}) has no verifiable release manifest`,
+    );
+  }
+
   const fallbackChecksums = trustedManifest
     ? null
     : await parseChecksumsFallback(release.assets);
@@ -1646,10 +1812,68 @@ export async function syncFromGitHub(
   return { version, synced, failed: failures };
 }
 
+type VersionRegistrationState = {
+  agentRows: {
+    platform: string;
+    architecture: string;
+    isLatest: boolean;
+    edition: string;
+  }[];
+  hasAgent: boolean;
+  hasBackup: boolean;
+};
+
+/**
+ * Which agent_versions rows exist for `version`. "Complete" (the predicate the
+ * boot safety net and the server-only skip share) = at least one agent row and
+ * its version-slaved backup companion.
+ *
+ * #6098: own short system-scoped context around the read — callers run
+ * unconditionally at boot, so this must not depend on (or need) an ambient
+ * context from its caller.
+ */
+async function getVersionRegistrationState(
+  version: string,
+): Promise<VersionRegistrationState> {
+  const existingRows = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        component: agentVersions.component,
+        platform: agentVersions.platform,
+        architecture: agentVersions.architecture,
+        isLatest: agentVersions.isLatest,
+        // Selected because (version, platform, architecture, component,
+        // edition) is the unique key — the same platform/arch can carry both a
+        // self-host and a hosted agent row, and the backup row must mirror the
+        // isLatest of its OWN edition's sibling, not whichever came back first.
+        edition: agentVersions.edition,
+      })
+      .from(agentVersions)
+      .where(
+        and(
+          eq(agentVersions.version, version),
+          inArray(agentVersions.component, ["agent", "backup"]),
+        ),
+      ),
+  );
+  const agentRows = existingRows.filter((r) => r.component === "agent");
+  return {
+    agentRows,
+    hasAgent: agentRows.length > 0,
+    hasBackup: existingRows.some((r) => r.component === "backup"),
+  };
+}
+
+function isVersionRegistrationComplete(state: VersionRegistrationState): boolean {
+  return state.hasAgent && state.hasBackup;
+}
+
 /**
  * Safety net: verify the agentVersions table has entries for the current
  * API version. If not, sync from GitHub. This catches stale Docker volumes,
  * missed CI syncs, and fresh deployments where binaries-init didn't run.
+ * Full-release boots only: a server-only boot returns from syncBinaries()
+ * before reaching this (it never writes agent_versions).
  */
 async function ensureCurrentVersionRegistered(): Promise<void> {
   const currentVersion = (
@@ -1670,36 +1894,10 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
     // component support shipped would otherwise never backfill the backup
     // row — the old check only looked at component="agent" and returned
     // early, leaving breeze-backup permanently unregistered for that version.
-    // #6098: own short system-scoped context around the read — this is the
-    // safety net that runs unconditionally at boot, so it must not depend on
-    // (or need) an ambient context from its caller.
-    const existingRows = await withSystemDbAccessContext(() =>
-      db
-        .select({
-          component: agentVersions.component,
-          platform: agentVersions.platform,
-          architecture: agentVersions.architecture,
-          isLatest: agentVersions.isLatest,
-          // Selected because (version, platform, architecture, component,
-          // edition) is the unique key — the same platform/arch can carry both a
-          // self-host and a hosted agent row, and the backup row must mirror the
-          // isLatest of its OWN edition's sibling, not whichever came back first.
-          edition: agentVersions.edition,
-        })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.version, currentVersion),
-            inArray(agentVersions.component, ["agent", "backup"]),
-          ),
-        ),
-    );
+    const state = await getVersionRegistrationState(currentVersion);
+    const { agentRows, hasAgent, hasBackup } = state;
 
-    const agentRows = existingRows.filter((r) => r.component === "agent");
-    const hasAgent = agentRows.length > 0;
-    const hasBackup = existingRows.some((r) => r.component === "backup");
-
-    if (hasAgent && hasBackup) return; // Already registered
+    if (isVersionRegistrationComplete(state)) return; // Already registered
 
     if (hasAgent && !hasBackup) {
       // The agent row is already registered for this version — running the

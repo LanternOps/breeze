@@ -14,7 +14,7 @@ import {
 } from "../middleware/auth";
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
-import { syncFromGitHub } from "../services/binarySync";
+import { ServerOnlyReleaseError, syncFromGitHub } from "../services/binarySync";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
@@ -1148,6 +1148,15 @@ agentVersionRoutes.post(
             error: `Release sync aborted: the release host returned a body over the ${err.maxBytes}-byte limit.`,
           },
           502,
+        );
+      }
+      // A server-only release ships no agent binaries: syncing it by name is
+      // refused so the operator is pointed at the release that carries them,
+      // instead of "registering" nothing and answering 200.
+      if (err instanceof ServerOnlyReleaseError) {
+        return c.json(
+          { error: err.message, binariesRelease: err.binariesRelease },
+          409,
         );
       }
       const msg = err instanceof Error ? err.message : String(err);

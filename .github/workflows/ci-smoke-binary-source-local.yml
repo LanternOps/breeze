@@ -4,11 +4,24 @@ name: smoke-binary-source-local
 # functional. v0.65.8 (#625) shipped a strict-signing change that broke this
 # silently — the regression only surfaced when an agent tried to update.
 # This job makes that scenario fail the PR instead of the fleet.
+#
+# Two legs:
+#   baseline      — a full-release image: server and binaries at one version.
+#   server-ahead  — a server-only release image: BREEZE_VERSION one patch ahead
+#                   of the staged binaries, with the paired binaries release set
+#                   the way release images bake it (BREEZE_BINARIES_VERSION, a
+#                   process env here — never a compose entry). The binaries are
+#                   first registered by a full-release boot, exactly as a real
+#                   deploy of the base release does, because a server-only boot
+#                   never writes agent_versions.
 
 on:
   pull_request:
     paths:
       - "apps/api/src/services/binarySync.ts"
+      - "apps/api/src/services/binarySource.ts"
+      - "apps/api/src/services/recoveryBootstrap.ts"
+      - "apps/api/src/services/versionInfo.ts"
       - "apps/api/src/services/binarySync.selftest.ts"
       - "apps/api/src/services/manifestSigning.ts"
       - "apps/api/src/routes/agentVersions.ts"
@@ -26,9 +39,21 @@ permissions:
 
 jobs:
   smoke:
-    name: BINARY_SOURCE=local download path
+    name: BINARY_SOURCE=local download path (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline
+            server: "0.65.9"
+            paired: ""
+            staged: "0.65.9"
+          - name: server-ahead
+            server: "0.65.10"
+            paired: "0.65.9"
+            staged: "0.65.9"
 
     services:
       # pgvector-enabled image, though this job no longer NEEDS it: built-in
@@ -90,16 +115,20 @@ jobs:
       - name: Stage a fake local agent binary
         env:
           WORKSPACE: ${{ github.workspace }}
+          STAGED_VERSION: ${{ matrix.staged }}
         run: |
           mkdir -p "$WORKSPACE/tmp/agent/bin"
           dd if=/dev/urandom of="$WORKSPACE/tmp/agent/bin/breeze-agent-linux-amd64" bs=1024 count=4
-          echo "0.65.9" > "$WORKSPACE/tmp/VERSION"
+          dd if=/dev/urandom of="$WORKSPACE/tmp/agent/bin/breeze-backup-linux-amd64" bs=1024 count=4
+          echo "$STAGED_VERSION" > "$WORKSPACE/tmp/VERSION"
 
       - name: Boot API in BINARY_SOURCE=local mode
         env:
           WORKSPACE: ${{ github.workspace }}
           BINARY_SOURCE: local
-          BREEZE_VERSION: "0.65.9"
+          SERVER_VERSION: ${{ matrix.server }}
+          PAIRED_VERSION: ${{ matrix.paired }}
+          STAGED_VERSION: ${{ matrix.staged }}
           DATABASE_URL: postgres://breeze:breeze@localhost:5432/breeze
           DATABASE_URL_APP: postgres://breeze_app:breeze@localhost:5432/breeze
           BREEZE_APP_DB_PASSWORD: breeze
@@ -154,27 +183,73 @@ jobs:
         run: |
           export AGENT_BINARY_DIR="$WORKSPACE/tmp/agent/bin"
           export BINARY_VERSION_FILE="$WORKSPACE/tmp/VERSION"
-          pnpm --filter=@breeze/api start &
-          API_PID=$!
-          echo "Waiting for /health/ready..."
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:3001/health/ready >/dev/null 2>&1; then
-              echo "API healthy after ${i} polls."
-              break
-            fi
-            if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo "API process exited before becoming healthy — boot self-test likely failed."
-              exit 1
-            fi
-            sleep 2
-          done
-          curl -sf http://localhost:3001/health/ready || { echo "API never became healthy"; kill "$API_PID" 2>/dev/null; exit 1; }
+          LOG="$WORKSPACE/tmp/api.log"
+          : > "$LOG"
+
+          boot() {
+            # $1 = BREEZE_VERSION, $2 = BREEZE_BINARIES_VERSION. `exec` makes
+            # the backgrounded PID the node process itself, so kill stops it.
+            (cd "$WORKSPACE/apps/api" && BREEZE_VERSION="$1" BREEZE_BINARIES_VERSION="$2" exec node dist/index.cjs) \
+              > >(tee -a "$LOG") 2>&1 &
+            API_PID=$!
+            echo "Waiting for /health/ready (BREEZE_VERSION=$1 BREEZE_BINARIES_VERSION=${2:-<empty>})..."
+            for i in $(seq 1 60); do
+              if curl -sf http://localhost:3001/health/ready >/dev/null 2>&1; then
+                echo "API healthy after ${i} polls."
+                return 0
+              fi
+              if ! kill -0 "$API_PID" 2>/dev/null; then
+                echo "API process exited before becoming healthy — boot self-test likely failed."
+                exit 1
+              fi
+              sleep 2
+            done
+            curl -sf http://localhost:3001/health/ready || { echo "API never became healthy"; kill "$API_PID" 2>/dev/null; exit 1; }
+          }
+
+          if [ -n "$PAIRED_VERSION" ]; then
+            # Deploy the base (full) release first: its boot registers the
+            # staged binaries. Then stop it and boot the server-only image.
+            boot "$STAGED_VERSION" ""
+            kill "$API_PID"
+            for i in $(seq 1 30); do kill -0 "$API_PID" 2>/dev/null || break; sleep 1; done
+            kill -9 "$API_PID" 2>/dev/null || true
+            : > "$LOG"
+          fi
+
+          boot "$SERVER_VERSION" "$PAIRED_VERSION"
           echo "API_PID=$API_PID" >> "$GITHUB_ENV"
 
+      - name: Verify the server reports the binaries release it serves
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          SERVER_VERSION: ${{ matrix.server }}
+          PAIRED_VERSION: ${{ matrix.paired }}
+          STAGED_VERSION: ${{ matrix.staged }}
+        run: |
+          HEALTH=$(curl -sf http://localhost:3001/health)
+          echo "$HEALTH" | jq .
+          BINARIES=$(echo "$HEALTH" | jq -r .binariesVersion)
+          if [ "$BINARIES" != "$STAGED_VERSION" ]; then
+            echo "Expected /health binariesVersion=$STAGED_VERSION, got $BINARIES"
+            exit 1
+          fi
+          if grep -qi "Stale binaries volume" "$WORKSPACE/tmp/api.log"; then
+            echo "Unexpected stale-volume detection:"
+            grep -i "Stale binaries volume" "$WORKSPACE/tmp/api.log"
+            exit 1
+          fi
+          if [ -n "$PAIRED_VERSION" ]; then
+            grep -F "server-only pairing: server $SERVER_VERSION pairs with binaries $PAIRED_VERSION, already registered" "$WORKSPACE/tmp/api.log" \
+              || { echo "Missing the server-only pairing log line"; exit 1; }
+          fi
+
       - name: Verify download endpoint returns 200 with signed manifest
+        env:
+          STAGED_VERSION: ${{ matrix.staged }}
         run: |
           STATUS=$(curl -s -o /tmp/dl.json -w '%{http_code}' \
-            'http://localhost:3001/api/v1/agent-versions/0.65.9/download?platform=linux&arch=amd64&component=agent')
+            "http://localhost:3001/api/v1/agent-versions/${STAGED_VERSION}/download?platform=linux&arch=amd64&component=agent")
           echo "Download endpoint returned: ${STATUS}"
           cat /tmp/dl.json | jq . || cat /tmp/dl.json
           if [ "$STATUS" != "200" ]; then

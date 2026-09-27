@@ -582,6 +582,8 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'GITHUB_REPO', secret: false },
       { name: 'BINARY_VERSION', secret: false },
       { name: 'BREEZE_VERSION', secret: false },
+      // Image-baked on server-only releases (the paired binaries release).
+      { name: 'BREEZE_BINARIES_VERSION', secret: false },
       { name: 'BINARY_EDITION', secret: false },
       { name: 'AGENT_AUTO_PROMOTE', secret: false },
       { name: 'GITHUB_TOKEN' },
