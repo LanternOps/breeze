@@ -382,4 +382,133 @@ describe('executeDeploySoftwareActions', () => {
     expect(res.logs.some(l => /deploy_software failed/i.test(l.message))).toBe(true);
     expect(res.deployedDeviceIds.size).toBe(0);
   });
+
+  // #3189 — replay idempotency for the batched deploy_software pass.
+  describe('replay idempotency (#3189)', () => {
+    const D1 = { id: 'd1', osType: 'windows' as const, orgId: 'org-1' };
+    const D2 = { id: 'd2', osType: 'windows' as const, orgId: 'org-1' };
+
+    it('creates a deployment only for the newly-claimed device and reports the already-claimed one as replayed', async () => {
+      const replayState = {
+        status: 'queued' as const,
+        commandId: 'c-first',
+        scriptExecutionId: null,
+        deploymentResultId: 'dr-first',
+        agentRunId: null,
+        message: null,
+        error: null,
+      };
+      claimActionDispatchesMock.mockReset().mockResolvedValue({
+        runCancelled: false,
+        claimed: ['d1'],
+        alreadyClaimed: new Map([['d2', replayState]]),
+      });
+      createDeploymentMock.mockResolvedValue({
+        deploymentId: 'dep-1',
+        status: 'pending',
+        dispatchedDeviceIds: ['d1'],
+        deviceResults: [{ deviceId: 'd1', deploymentResultId: 'result-d1', status: 'delivered', deviceCommandId: null }],
+      });
+
+      const res = await executeDeploySoftwareActions({
+        actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+        devices: [D1, D2], createdBy: null, runId: 'run-1',
+      });
+
+      // Exercises: `createSoftwareDeployment` is called with ONLY the devices
+      // `claimAutomationActionDispatches` returned as newly `claimed`, never the
+      // already-claimed ones — the eligibility check ran for both devices, but
+      // the claim (not eligibility) gates what gets a second deployment.
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(['d1']);
+      expect(res.replayed).toEqual([{ deviceId: 'd2', actionIndex: 0, state: replayState }]);
+      expect(res.deployedDeviceIds.has('d2')).toBe(false);
+      expect(res.failedDeviceIds.has('d2')).toBe(false);
+      expect(res.deployedDeviceIds.has('d1')).toBe(true);
+      // Every claimed row gets exactly one stamp; an already-claimed device
+      // must not be stamped a second time by this attempt.
+      expect(stampClaimedActionOutcomeMock).toHaveBeenCalledTimes(1);
+      expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'd1' }));
+    });
+
+    it('creates no deployment and stamps nothing when every eligible device in the batch is already claimed', async () => {
+      const state = (over: Record<string, unknown>) => ({
+        status: 'queued' as const,
+        commandId: 'c1',
+        scriptExecutionId: null,
+        deploymentResultId: 'dr1',
+        agentRunId: null,
+        message: null,
+        error: null,
+        ...over,
+      });
+      claimActionDispatchesMock.mockReset().mockResolvedValue({
+        runCancelled: false,
+        claimed: [],
+        alreadyClaimed: new Map([
+          ['d1', state({ commandId: 'c1', deploymentResultId: 'dr1' })],
+          ['d2', state({ commandId: 'c2', deploymentResultId: 'dr2' })],
+        ]),
+      });
+
+      const res = await executeDeploySoftwareActions({
+        actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+        devices: [D1, D2], createdBy: null, runId: 'run-1',
+      });
+
+      // Exercises the `if (claims.claimed.length === 0) return { claims, result: null };`
+      // early-out: createSoftwareDeployment (and therefore any stamp) must never
+      // be reached when the whole batch was already claimed.
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+      expect(stampClaimedActionOutcomeMock).not.toHaveBeenCalled();
+      expect(res.replayed.map((r) => r.deviceId).sort()).toEqual(['d1', 'd2']);
+      expect(res.deployedDeviceIds.size).toBe(0);
+      expect(res.failedDeviceIds.size).toBe(0);
+    });
+
+    it('propagates a RunCancelledError when the claim reports the run cancelled', async () => {
+      claimActionDispatchesMock.mockReset().mockResolvedValue({
+        runCancelled: true,
+        claimed: [],
+        alreadyClaimed: new Map(),
+      });
+
+      // Exercises `if (claims.runCancelled) throw new RunCancelledError(args.runId);` —
+      // a cancelled run must abort the batch, not silently skip the device.
+      await expect(executeDeploySoftwareActions({
+        actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+        devices: [D1], createdBy: null, runId: 'run-1',
+      })).rejects.toMatchObject({ name: 'RunCancelledError' });
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('reuses another attempt\'s unsupported-OS skip instead of re-recording or re-logging it', async () => {
+      // recordAutomationActionDispatch (onlyFromPending) loses the CAS: some
+      // other attempt already wrote a non-pending outcome for this device+action.
+      recordDispatchMock.mockResolvedValueOnce(false);
+      const skipState = {
+        status: 'skipped' as const,
+        commandId: null,
+        scriptExecutionId: null,
+        deploymentResultId: null,
+        agentRunId: null,
+        message: 'Software is not supported on this device OS',
+        error: null,
+      };
+      readActionStateMock.mockResolvedValueOnce(skipState);
+
+      const res = await executeDeploySoftwareActions({
+        actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+        devices: [MAC], createdBy: null, runId: 'run-1',
+      });
+
+      // Exercises `recordUnclaimedOutcome`'s losing-CAS branch: `state.status !==
+      // 'pending'` -> push to `replayed`, return false, and the caller's
+      // `if (await recordUnclaimedOutcome(...)) { logs.push(...) }` must then
+      // NOT log — that log line is this attempt's own claim of the outcome.
+      expect(res.replayed).toEqual([{ deviceId: 'd-mac', actionIndex: 0, state: skipState }]);
+      expect(res.logs.some((l) => /unsupported OS/i.test(l.message))).toBe(false);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+  });
 });
