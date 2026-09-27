@@ -77,7 +77,7 @@ interface XeroRawError {
 
 function providerError(init: {
   kind: AccountingProviderErrorKind; operation: string; message: string; httpStatus?: number;
-  providerCode?: string; providerMessage?: string; retryAfterMs?: number; logBody?: string;
+  providerCode?: string; providerMessage?: string; retryAfterMs?: number; logBody?: string; cause?: unknown;
 }): AccountingProviderError {
   return new AccountingProviderError({
     provider: 'xero',
@@ -91,6 +91,46 @@ function providerError(init: {
 function retryAfterFor(headers: Headers): number {
   return parseRetryAfterMs(headers.get('retry-after')) ?? DEFAULT_RATE_LIMIT_DELAY_MS;
 }
+
+/**
+ * The leaf round trip every Xero call makes: fetch + body read, with no DB
+ * context held. A fetch that never produced a response (timeout, DNS, reset)
+ * becomes a Xero-attributed `transient` whose message names only the operation
+ * and the failure class — never the URL, a header or a token (the raw error is
+ * kept as `cause` for the server log). An AccountingProviderError is never
+ * re-wrapped, so a throttle keeps its `rate_limited` kind (W01c P5).
+ */
+async function xeroRoundTrip(operation: string, url: string, init: RequestInit): Promise<{ response: Response; text: string }> {
+  try {
+    return await runOutsideDbContext(async () => {
+      const response = await fetch(url, init);
+      return { response, text: await response.text() };
+    });
+  } catch (err) {
+    if (err instanceof AccountingProviderError) throw err;
+    const name = err && typeof err === 'object' ? (err as { name?: unknown }).name : undefined;
+    const failure = name === 'TimeoutError' || name === 'AbortError' ? 'timed out' : 'could not reach Xero';
+    throw providerError({ kind: 'transient', operation, message: `${operation} ${failure}`, cause: err });
+  }
+}
+
+/** Same shape the token decoder accepts: an id, never a query fragment. */
+const AUTH_EVENT_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+
+/**
+ * Which /connections rows a caller may see. There is deliberately no nullable
+ * form: a missing `authentication_event_id` claim (decoder returns null) can
+ * never type-check as — or be coerced into — the unfiltered read.
+ */
+export type XeroConnectionsFilter =
+  | { authEventId: string }
+  /**
+   * The UNFILTERED read. Reserved for the reconnect lookup (plan refinement
+   * item 2): its result may only be used to SELECT the tenant id the partner's
+   * own row already holds. Never a fallback for a missing claim, never used to
+   * pick, list for choice, or delete another tenant.
+   */
+  | { all: true };
 
 /** The most specific human message in a Xero error body, or null. Never the whole body. */
 export function xeroFaultMessage(text: string): string | null {
@@ -163,6 +203,13 @@ export function xeroTokenError(operation: string, status: number, headers: Heade
 export async function requestXeroTokens(grant: XeroTokenGrant): Promise<ConnectionTokens> {
   const { clientId, clientSecret, redirectUri } = xeroOAuthConfig();
   const operation = grant.grantType === 'authorization_code' ? 'Xero token exchange' : 'Xero token refresh';
+  if (!clientId || !clientSecret) {
+    // The partner's grant is fine; THIS instance is misconfigured (env vars
+    // removed while Xero rows exist). Transient, never reauth — flipping every
+    // Xero partner to reauth_required would be wrong and unrecoverable by them.
+    // Refused before any fetch: sending `Basic base64(":")` only earns a 401.
+    throw providerError({ kind: 'transient', operation, message: 'Xero OAuth is not configured on this instance' });
+  }
   const body = new URLSearchParams();
   if (grant.grantType === 'authorization_code') {
     body.set('grant_type', 'authorization_code');
@@ -173,18 +220,15 @@ export async function requestXeroTokens(grant: XeroTokenGrant): Promise<Connecti
     body.set('refresh_token', grant.refreshToken);
   }
 
-  const { response, text } = await runOutsideDbContext(async () => {
-    const res = await fetch(XERO_TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: body.toString(),
-      signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
-    });
-    return { response: res, text: await res.text() };
+  const { response, text } = await xeroRoundTrip(operation, XERO_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: body.toString(),
+    signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) throw xeroTokenError(operation, response.status, response.headers, text);
 
@@ -226,28 +270,43 @@ export function decodeXeroAuthEventId(accessToken: string): string | null {
     const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as unknown;
     if (!claims || typeof claims !== 'object') return null;
     const value = (claims as Record<string, unknown>).authentication_event_id;
-    return typeof value === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(value) ? value : null;
+    return typeof value === 'string' && AUTH_EVENT_ID_RE.test(value) ? value : null;
   } catch {
     return null;
   }
 }
 
 /**
- * GET /connections. With `authEventId`, only links created by THAT auth event:
- * filtered by Xero (query param) AND here (defence in depth — a Xero that ignored
- * the parameter must still never hand back another Breeze partner's links; spec
- * quorum finding 3). `null` is the reconnect lookup ONLY (refinement item 2).
+ * GET /connections.
+ * - `{ authEventId }`: only links created by THAT auth event — filtered by Xero
+ *   (query param) AND here on strict equality (defence in depth: a Xero that
+ *   ignored the parameter must still never hand back another Breeze partner's
+ *   links; spec quorum finding 3). An id that is not the decoder's shape (empty,
+ *   null, a query fragment) fails closed as `validation` before any request.
+ * - `{ all: true }`: the unfiltered reconnect lookup ONLY — see XeroConnectionsFilter.
+ * Anything else fails closed as `validation`.
  */
-export async function listXeroConnections(accessToken: string, authEventId: string | null): Promise<ProviderTenant[]> {
-  const url = authEventId ? `${XERO_CONNECTIONS_URL}?authEventId=${encodeURIComponent(authEventId)}` : XERO_CONNECTIONS_URL;
+export async function listXeroConnections(accessToken: string, filter: XeroConnectionsFilter): Promise<ProviderTenant[]> {
   const operation = 'Xero connections list';
-  const { response, text } = await runOutsideDbContext(async () => {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
-    });
-    return { response: res, text: await res.text() };
+  let authEventId: string | null;
+  if (filter && typeof filter === 'object' && 'authEventId' in filter) {
+    const candidate: unknown = filter.authEventId;
+    if (typeof candidate !== 'string' || !AUTH_EVENT_ID_RE.test(candidate)) {
+      throw providerError({ kind: 'validation', operation, message: `${operation} refused: invalid auth event id` });
+    }
+    authEventId = candidate;
+  } else if (filter && typeof filter === 'object' && 'all' in filter && filter.all === true) {
+    authEventId = null;
+  } else {
+    throw providerError({ kind: 'validation', operation, message: `${operation} refused: no filter mode` });
+  }
+  const url = authEventId === null
+    ? XERO_CONNECTIONS_URL
+    : `${XERO_CONNECTIONS_URL}?authEventId=${encodeURIComponent(authEventId)}`;
+  const { response, text } = await xeroRoundTrip(operation, url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) throw xeroApiError(operation, response.status, response.headers, text);
   let rows: unknown;
@@ -273,13 +332,10 @@ export async function listXeroConnections(accessToken: string, authEventId: stri
 /** DELETE /connections/{id}: removes exactly one link. 404 = already gone = success. Never token revocation. */
 export async function deleteXeroConnection(accessToken: string, connectionRef: string): Promise<void> {
   const operation = 'Xero connection delete';
-  const { response, text } = await runOutsideDbContext(async () => {
-    const res = await fetch(`${XERO_CONNECTIONS_URL}/${encodeURIComponent(connectionRef)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
-    });
-    return { response: res, text: await res.text() };
+  const { response, text } = await xeroRoundTrip(operation, `${XERO_CONNECTIONS_URL}/${encodeURIComponent(connectionRef)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    signal: AbortSignal.timeout(XERO_REQUEST_TIMEOUT_MS),
   });
   if (response.ok || response.status === 404) return;
   throw xeroApiError(operation, response.status, response.headers, text);
@@ -298,8 +354,12 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
   // The slot wraps only this leaf round trip (request + body read), like the
   // QuickBooks boundary; the abort budget starts inside the slot, so a queue
   // wait for a slot never eats into Xero's own response time.
-  const { response, text } = await withProviderCallSlot('xero', ctx.rate, ctx.connectionId, () => runOutsideDbContext(async () => {
-    const res = await fetch(`${XERO_API_BASE}/${path}`, {
+  // A limiter refusal is thrown by withProviderCallSlot itself (outside the
+  // leaf) and propagates untouched as rate_limited.
+  const { response, text } = await withProviderCallSlot('xero', ctx.rate, ctx.connectionId, () => xeroRoundTrip(
+    operation,
+    `${XERO_API_BASE}/${path}`,
+    {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${ctx.accessToken}`,
@@ -307,9 +367,8 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
         Accept: 'application/json',
       },
       signal: AbortSignal.timeout(ctx.timeoutMs ?? XERO_REQUEST_TIMEOUT_MS),
-    });
-    return { response: res, text: await res.text() };
-  }));
+    },
+  ));
 
   const remainingHeader = response.headers.get('x-daylimit-remaining');
   const remaining = remainingHeader === null || remainingHeader.trim() === '' ? NaN : Number(remainingHeader);

@@ -118,6 +118,35 @@ describe('requestXeroTokens', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('<html>oops</html>', { status: 200 }));
     await expect(requestXeroTokens({ grantType: 'authorization_code', code: 'c' })).rejects.toMatchObject({ kind: 'transient' });
   });
+
+  it.each([
+    ['XERO_CLIENT_ID', 'client id'],
+    ['XERO_CLIENT_SECRET', 'client secret'],
+  ])('an instance with %s unset refuses BEFORE any fetch — transient (misconfigured instance), never reauth', async (envVar) => {
+    process.env[envVar] = '  ';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('must not reach the network'));
+    const err = await requestXeroTokens({ grantType: 'refresh_token', refreshToken: 'rt' }).then(
+      () => { throw new Error('expected a rejection'); },
+      (e: AccountingProviderError) => e,
+    );
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'transient', provider: 'xero', message: 'Xero OAuth is not configured on this instance' });
+    expect(err.kind).not.toBe('reauth');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a fetch timeout is a Xero-attributed transient error with no URL or token in its message', async () => {
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(timeout);
+    const err = await requestXeroTokens({ grantType: 'refresh_token', refreshToken: 'rt-secret' }).then(
+      () => { throw new Error('expected a rejection'); },
+      (e: AccountingProviderError) => e,
+    );
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'transient', provider: 'xero', operation: 'Xero token refresh' });
+    expect(err.cause).toBe(timeout);
+    expect(err.message).not.toMatch(/https?:|identity\.xero|rt-secret|Basic|client-abc|secret-xyz/);
+  });
 });
 
 describe('xeroTokenError', () => {
@@ -168,42 +197,74 @@ describe('decodeXeroAuthEventId (Review Focus 4)', () => {
 });
 
 describe('listXeroConnections', () => {
+  const EVT = 'evt-00000001';
   const rows = [
-    { id: 'conn-A', authEventId: 'evt-1', tenantId: 'ten-A', tenantType: 'ORGANISATION', tenantName: 'Alpha Ltd' },
-    { id: 'conn-B', authEventId: 'evt-OTHER', tenantId: 'ten-B', tenantType: 'ORGANISATION', tenantName: 'Other partner Ltd' },
-    { id: 'conn-C', authEventId: 'evt-1', tenantId: 'ten-C', tenantType: 'PRACTICEMANAGER', tenantName: 'Practice' },
+    { id: 'conn-A', authEventId: EVT, tenantId: 'ten-A', tenantType: 'ORGANISATION', tenantName: 'Alpha Ltd' },
+    { id: 'conn-B', authEventId: 'evt-OTHER-01', tenantId: 'ten-B', tenantType: 'ORGANISATION', tenantName: 'Other partner Ltd' },
+    { id: 'conn-C', authEventId: EVT, tenantId: 'ten-C', tenantType: 'PRACTICEMANAGER', tenantName: 'Practice' },
+    { id: 'conn-D', authEventId: null, tenantId: 'ten-D', tenantType: 'ORGANISATION', tenantName: 'No event' },
   ];
 
   it('filters by authEventId in the query AND client-side (never returns another auth event\'s links)', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json(rows));
-    const out = await listXeroConnections('at', 'evt-1');
-    expect(fetchMock.mock.calls[0]![0]).toBe(`${XERO_CONNECTIONS_URL}?authEventId=evt-1`);
+    const out = await listXeroConnections('at', { authEventId: EVT });
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${XERO_CONNECTIONS_URL}?authEventId=${EVT}`);
     expect(out).toEqual([
-      { tenantId: 'ten-A', connectionRef: 'conn-A', name: 'Alpha Ltd', tenantType: 'ORGANISATION', authEventId: 'evt-1' },
-      { tenantId: 'ten-C', connectionRef: 'conn-C', name: 'Practice', tenantType: 'PRACTICEMANAGER', authEventId: 'evt-1' },
+      { tenantId: 'ten-A', connectionRef: 'conn-A', name: 'Alpha Ltd', tenantType: 'ORGANISATION', authEventId: EVT },
+      { tenantId: 'ten-C', connectionRef: 'conn-C', name: 'Practice', tenantType: 'PRACTICEMANAGER', authEventId: EVT },
     ]);
     expect(slotMock).not.toHaveBeenCalled(); // identity API is outside the call slot
   });
 
-  it('unfiltered (reconnect lookup) returns every link', async () => {
+  it.each([
+    ['empty string', ''],
+    ['too short', 'evt-1'],
+    ['odd characters', 'a b;c&all=1'],
+    ['not a string', 42],
+    ['null (a missing claim must never mean "unfiltered")', null],
+  ])('an invalid authEventId (%s) fails closed as validation BEFORE any fetch', async (_label, bad) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('must not reach the network'));
+    const err = await listXeroConnections('at', { authEventId: bad as string }).then(
+      () => { throw new Error('expected a rejection'); },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'validation', provider: 'xero' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a filter naming neither mode fails closed before any fetch', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('must not reach the network'));
+    await expect(listXeroConnections('at', {} as never)).rejects.toMatchObject({ kind: 'validation', provider: 'xero' });
+    await expect(listXeroConnections('at', { all: false } as never)).rejects.toMatchObject({ kind: 'validation', provider: 'xero' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('{ all: true } (reconnect lookup ONLY) sends no filter and returns every link', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json(rows));
-    expect(await listXeroConnections('at', null)).toHaveLength(3);
+    expect(await listXeroConnections('at', { all: true })).toHaveLength(4);
     expect(fetchMock.mock.calls[0]![0]).toBe(XERO_CONNECTIONS_URL);
   });
 
   it('a non-2xx is a provider error', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Title: 'Unauthorized' }, 401));
-    await expect(listXeroConnections('at', 'evt-1')).rejects.toMatchObject({ provider: 'xero', httpStatus: 401 });
+    await expect(listXeroConnections('at', { authEventId: EVT })).rejects.toMatchObject({ provider: 'xero', httpStatus: 401 });
   });
 
   it('a 429 is rate_limited', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({}, 429, { 'retry-after': '5' }));
-    await expect(listXeroConnections('at', 'evt-1')).rejects.toMatchObject({ kind: 'rate_limited', retryAfterMs: 5_000 });
+    await expect(listXeroConnections('at', { authEventId: EVT })).rejects.toMatchObject({ kind: 'rate_limited', retryAfterMs: 5_000 });
   });
 
   it('a non-array body is transient', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ not: 'an array' }));
-    await expect(listXeroConnections('at', 'evt-1')).rejects.toMatchObject({ kind: 'transient' });
+    await expect(listXeroConnections('at', { authEventId: EVT })).rejects.toMatchObject({ kind: 'transient' });
+  });
+
+  it('a network failure is a Xero-attributed transient error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(listXeroConnections('at', { authEventId: EVT }))
+      .rejects.toMatchObject({ kind: 'transient', provider: 'xero', operation: 'Xero connections list' });
   });
 });
 
@@ -221,6 +282,11 @@ describe('deleteXeroConnection', () => {
   it('a 500 throws', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('boom', { status: 500 }));
     await expect(deleteXeroConnection('at', 'conn-A')).rejects.toMatchObject({ kind: 'transient' });
+  });
+  it('a network failure is a Xero-attributed transient error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(deleteXeroConnection('at', 'conn-A'))
+      .rejects.toMatchObject({ kind: 'transient', provider: 'xero', operation: 'Xero connection delete' });
   });
 });
 
@@ -246,9 +312,28 @@ describe('xeroApiGet', () => {
   it('a limiter refusal propagates UNCHANGED as rate_limited, and nothing is sent (W01c P5)', async () => {
     const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'slot', retryAfterMs: 1234, throttleSource: 'local' });
     slotMock.mockImplementationOnce(async () => { throw refusal; });
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('must not reach the network'));
     await expect(xeroApiGet(ctx, 'Accounts', 'Xero account list')).rejects.toBe(refusal);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a fetch TimeoutError inside the slot is a Xero-attributed transient error (no URL, header or token in the message)', async () => {
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(timeout);
+    const err = await xeroApiGet(ctx, 'Organisation', 'Xero organisation read').then(
+      () => { throw new Error('expected a rejection'); },
+      (e: AccountingProviderError) => e,
+    );
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'transient', provider: 'xero', operation: 'Xero organisation read' });
+    expect(err.cause).toBe(timeout);
+    expect(err.message).not.toMatch(/https?:|api\.xero|Bearer|ten-A|\bat\b/);
+  });
+
+  it('an AccountingProviderError raised inside the leaf is never re-wrapped', async () => {
+    const inner = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'inner', retryAfterMs: 7 });
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(inner);
+    await expect(xeroApiGet(ctx, 'Organisation', 'op')).rejects.toBe(inner);
   });
 
   it('429 is rate_limited with Retry-After', async () => {
