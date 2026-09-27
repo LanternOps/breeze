@@ -2349,10 +2349,6 @@ function lifecycleFrozenMessage(status: string | null | undefined): string | und
   return (LIFECYCLE_FROZEN_ORG_STATUSES as Record<string, string | undefined>)[status];
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 /**
  * The org's CURRENT status, read under a system context because a frozen org is
  * outside every request's accessible set. Only called when a status write was
