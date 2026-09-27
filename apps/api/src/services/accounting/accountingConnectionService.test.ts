@@ -1114,7 +1114,7 @@ describe('resolveActiveConnectionId (Xero W01 Task 6 fix round 1 — non-decrypt
     });
     const where = new PgDialect().sqlToQuery(captured.where!);
     expect(where.sql).toContain('"accounting_connections"."partner_id" = $1');
-    expect(where.params).toEqual(['p1']);
+    expect(where.params).toEqual(['p1', 'pending_tenant']);
     expect(decryptSpy).not.toHaveBeenCalled();
     decryptSpy.mockRestore();
   });
@@ -1284,5 +1284,61 @@ describe('Xero W02 columns', () => {
     expect(captured.updateSet).not.toHaveProperty('providerConnectionRef');
     expect(captured.updateSet).not.toHaveProperty('defaultExemptTaxCodeRef');
     expect(captured.updateSet).not.toHaveProperty('defaultPaymentAccountRef');
+  });
+});
+
+describe('pending_tenant (Xero W02)', () => {
+  it('resolveActiveConnection and resolveActiveConnectionRef both exclude pending_tenant (the predicate is duplicated — PR #7182)', async () => {
+    const whereSpy = vi.fn((_cond: SQL) => ({ limit: async () => [] }));
+    const dbc = { select: () => ({ from: () => ({ where: whereSpy }) }) } as any;
+    const { resolveActiveConnection, resolveActiveConnectionRef } = await import('./accountingConnectionService');
+    await resolveActiveConnection(dbc, 'p1');
+    await resolveActiveConnectionRef(dbc, 'p1');
+    const rendered = whereSpy.mock.calls.map(([cond]) => new PgDialect().sqlToQuery(cond as SQL));
+    for (const q of rendered) {
+      expect(q.sql).toContain('"accounting_connections"."status" <>');
+      expect(q.params).toContain('pending_tenant');
+    }
+  });
+
+  it('getPartnerConnectionRef sees every status, pending_tenant included', async () => {
+    const whereSpy = vi.fn((_cond: SQL) => ({ limit: async () => [{ id: 'c1', provider: 'xero', status: 'pending_tenant' }] }));
+    const dbc = { select: () => ({ from: () => ({ where: whereSpy }) }) } as any;
+    const { getPartnerConnectionRef } = await import('./accountingConnectionService');
+    await expect(getPartnerConnectionRef(dbc, 'p1')).resolves.toEqual({ id: 'c1', provider: 'xero', status: 'pending_tenant' });
+    const q = new PgDialect().sqlToQuery(whereSpy.mock.calls[0]![0] as SQL);
+    expect(q.params).not.toContain('pending_tenant');
+  });
+
+  it('conflict message tells the user to finish or cancel a pending connection', async () => {
+    const { AccountingProviderConflictError } = await import('./accountingConnectionService');
+    expect(new AccountingProviderConflictError('xero', 'quickbooks', 'pending_tenant').message)
+      .toBe('Finish or cancel the Xero connection before connecting QuickBooks');
+    expect(new AccountingProviderConflictError('quickbooks', 'xero').message)
+      .toBe('Disconnect QuickBooks before connecting Xero');
+  });
+
+  it('upsertConnection raises the pending-aware conflict when a pending_tenant row of another provider exists', async () => {
+    const { upsertConnection } = await import('./accountingConnectionService');
+    const dbc = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => ({ returning: async () => [] }) }) }),
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ id: 'c1', provider: 'xero', status: 'pending_tenant' }] }) }) }),
+      update: vi.fn(), delete: vi.fn(),
+    } as any;
+    await expect(upsertConnection(dbc, 'p1', 'quickbooks', { realmId: 'r1' })).rejects.toMatchObject({
+      code: 'accounting_provider_conflict', message: 'Finish or cancel the Xero connection before connecting QuickBooks',
+    });
+  });
+
+  it('upsertConnection turns the realm-fingerprint unique violation into AccountingTenantHeldError', async () => {
+    const { upsertConnection, AccountingTenantHeldError } = await import('./accountingConnectionService');
+    const violation = Object.assign(new Error('dup'), { cause: { code: '23505', constraint_name: 'accounting_connections_provider_realm_fp_idx' } });
+    const dbc = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => ({ returning: async () => { throw violation; } }) }) }),
+      select: vi.fn(), update: vi.fn(), delete: vi.fn(),
+    } as any;
+    const err = await upsertConnection(dbc, 'p1', 'xero', { realmId: 't1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(AccountingTenantHeldError);
+    expect(err).toMatchObject({ code: 'accounting_tenant_held', status: 409, message: 'This Xero organisation is connected to another Breeze account' });
   });
 });

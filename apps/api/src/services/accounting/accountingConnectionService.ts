@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -12,7 +12,24 @@ import { captureException } from '../sentry';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
 export type AccountingPushMode = 'auto' | 'manual';
-export type AccountingConnectionStatus = 'connected' | 'disconnected' | 'reauth_required' | 'error';
+export type AccountingConnectionStatus = 'connected' | 'disconnected' | 'reauth_required' | 'error' | 'pending_tenant';
+
+/**
+ * Xero W02: a connect whose grant authorised several organisations, waiting for
+ * the user to pick one. It HOLDS the partner's one-connection slot (the unique
+ * partner index counts it, so a half-finished connect blocks a QuickBooks
+ * connect until cancelled or reaped) but is NOT an active connection: both
+ * resolvers below exclude it, so no worker, producer or route ever acts on it.
+ */
+export const PENDING_TENANT_STATUS = 'pending_tenant' as const;
+
+/** The resolvers' shared predicate. `resolveActiveConnection` and `resolveActiveConnectionRef` MUST stay in lockstep (PR #7182 "Deferred"). */
+function activeConnectionWhere(partnerId: string): SQL {
+  return and(
+    eq(accountingConnections.partnerId, partnerId),
+    ne(accountingConnections.status, PENDING_TENANT_STATUS),
+  ) as SQL;
+}
 
 export interface AccountingConnection {
   id: string;
@@ -181,7 +198,7 @@ export async function getConnection(
  * The partner's ONE accounting connection, any provider (Xero W01, spec D2 —
  * enforced by accounting_connections_partner_idx). Null when none exists.
  * Replaces every `getConnection(db, partnerId, 'quickbooks')` in the core.
- * W02 adds the `pending_tenant` exclusion HERE, and only here.
+ * Excludes `pending_tenant` (Xero W02) via `activeConnectionWhere`, shared with `resolveActiveConnectionRef`.
  */
 export async function resolveActiveConnection(
   dbc: DbExecutor,
@@ -190,7 +207,7 @@ export async function resolveActiveConnection(
   const [row] = await dbc
     .select()
     .from(accountingConnections)
-    .where(eq(accountingConnections.partnerId, partnerId))
+    .where(activeConnectionWhere(partnerId))
     .limit(1);
   return row ? mapConnection(row) : null;
 }
@@ -207,6 +224,8 @@ export async function resolveActiveConnection(
  * response, or a conflict check that only compares providers) — using it instead of
  * `resolveActiveConnection` means a rotated/retired encryption key can never
  * abort a path that was going to ignore the decrypted columns anyway.
+ *
+ * Excludes `pending_tenant` (Xero W02) via `activeConnectionWhere`, shared with `resolveActiveConnection`.
  */
 export async function resolveActiveConnectionRef(
   dbc: DbExecutor,
@@ -215,9 +234,30 @@ export async function resolveActiveConnectionRef(
   const [row] = await dbc
     .select({ id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status })
     .from(accountingConnections)
-    .where(eq(accountingConnections.partnerId, partnerId))
+    .where(activeConnectionWhere(partnerId))
     .limit(1);
   return row ? { id: row.id, provider: row.provider as AccountingProviderId, status: row.status as AccountingConnectionStatus } : null;
+}
+
+/**
+ * The partner's row in ANY status (pending_tenant included), non-decrypting.
+ * For the one-provider CONFLICT checks only: upsertConnection's no-row branch,
+ * the /connect pre-check and GET /accounting/providers. Those must see a
+ * pending Xero row, or a QuickBooks connect over it fails as a generic persist
+ * error instead of 409 and the UI never greys the other card out.
+ */
+export async function getPartnerConnectionRef(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<{ id: string; provider: AccountingProviderId; status: AccountingConnectionStatus } | null> {
+  const [row] = await dbc
+    .select({ id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status })
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row
+    ? { id: row.id, provider: row.provider as AccountingProviderId, status: row.status as AccountingConnectionStatus }
+    : null;
 }
 
 /**
@@ -351,11 +391,32 @@ export class AccountingProviderConflictError extends Error {
   constructor(
     readonly existingProvider: AccountingProviderId,
     readonly requestedProvider: AccountingProviderId,
+    readonly existingStatus?: AccountingConnectionStatus,
   ) {
-    super(`Disconnect ${accountingProviderDisplayName(existingProvider)} before connecting ${accountingProviderDisplayName(requestedProvider)}`);
+    const existing = accountingProviderDisplayName(existingProvider);
+    const requested = accountingProviderDisplayName(requestedProvider);
+    super(existingStatus === PENDING_TENANT_STATUS
+      ? `Finish or cancel the ${existing} connection before connecting ${requested}`
+      : `Disconnect ${existing} before connecting ${requested}`);
     this.name = 'AccountingProviderConflictError';
   }
 }
+
+/**
+ * 409 — the realm/tenant is already connected to ANOTHER partner (spec W02).
+ * Raised from the `(provider, realm_id_fingerprint)` unique index, which Postgres
+ * enforces regardless of RLS, so two partners racing for one tenant cannot both win.
+ */
+export class AccountingTenantHeldError extends Error {
+  readonly code = 'accounting_tenant_held' as const;
+  readonly status = 409 as const;
+  constructor(readonly provider: AccountingProviderId) {
+    super(`This ${accountingProviderDisplayName(provider)} organisation is connected to another Breeze account`);
+    this.name = 'AccountingTenantHeldError';
+  }
+}
+
+export const REALM_FINGERPRINT_UNIQUE_INDEX = 'accounting_connections_provider_realm_fp_idx';
 
 export async function upsertConnection(
   db: DbExecutor,
@@ -431,27 +492,34 @@ export async function upsertConnection(
     updatedAt: now,
   });
 
-  const [row] = await db
-    .insert(accountingConnections)
-    .values(values)
-    .onConflictDoUpdate({
-      // accounting_connections_partner_idx (Xero W01): one row per partner. The
-      // update fires ONLY for a same-provider reconnect; a different provider's
-      // row makes this a no-op that returns nothing (handled below), so a Xero
-      // connect can never overwrite a QuickBooks row's tokens or settings.
-      target: accountingConnections.partnerId,
-      set: updateSet,
-      setWhere: sql`${accountingConnections.provider} = excluded.provider`,
-    })
-    .returning();
+  let row: AccountingConnectionRow | undefined;
+  try {
+    [row] = await db
+      .insert(accountingConnections)
+      .values(values)
+      .onConflictDoUpdate({
+        // accounting_connections_partner_idx (Xero W01): one row per partner. The
+        // update fires ONLY for a same-provider reconnect; a different provider's
+        // row makes this a no-op that returns nothing (handled below), so a Xero
+        // connect can never overwrite a QuickBooks row's tokens or settings.
+        target: accountingConnections.partnerId,
+        set: updateSet,
+        setWhere: sql`${accountingConnections.provider} = excluded.provider`,
+      })
+      .returning();
+  } catch (err) {
+    if (isPgUniqueViolation(err, REALM_FINGERPRINT_UNIQUE_INDEX)) throw new AccountingTenantHeldError(provider);
+    throw err;
+  }
 
   if (!row) {
+    // Any status: a pending_tenant row of another provider must 409 too (W02).
     // Non-decrypting read (Task 5 minor): this branch only compares providers,
     // so a decrypt failure (rotated/retired encryption key) in
     // `resolveActiveConnection` must never mask the real 409 conflict here.
-    const existing = await resolveActiveConnectionRef(db, partnerId);
+    const existing = await getPartnerConnectionRef(db, partnerId);
     if (existing && existing.provider !== provider) {
-      throw new AccountingProviderConflictError(existing.provider, provider);
+      throw new AccountingProviderConflictError(existing.provider, provider, existing.status);
     }
     throw new Error('Failed to persist accounting connection');
   }
@@ -549,7 +617,7 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
       // conflict an operator must see (a stolen/shared realm, or a bug in a
       // migration), not a crash that blocks boot for every other partner.
       // Its transaction is now its own, so the abort dies with it.
-      if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
+      if (isPgUniqueViolation(err, REALM_FINGERPRINT_UNIQUE_INDEX)) {
         skipped++;
         captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
           // #5193: `module` and `op` have no allowlisted equivalent (no

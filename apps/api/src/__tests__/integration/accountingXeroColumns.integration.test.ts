@@ -6,10 +6,14 @@ import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { eq } from 'drizzle-orm';
 import postgres from 'postgres';
 import { db, withSystemDbAccessContext } from '../../db';
+import { accountingConnections } from '../../db/schema';
 import { createPartner } from './db-utils';
-import { upsertConnection } from '../../services/accounting/accountingConnectionService';
+import {
+  AccountingProviderConflictError, getPartnerConnectionRef, resolveActiveConnection, resolveActiveConnectionRef, upsertConnection,
+} from '../../services/accounting/accountingConnectionService';
 
 const RUN = !!process.env.DATABASE_URL;
 const MIGRATION = '2026-11-02-120000-accounting-connections-xero-columns.sql';
@@ -42,5 +46,25 @@ describe.skipIf(!RUN)('accounting_connections Xero columns (W02 Task 1)', () => 
     expect(conn.providerConnectionRef).toBe('conn-cols-1');
     expect(conn.defaultExemptTaxCodeRef).toBeNull();
     expect(conn.defaultPaymentAccountRef).toBeNull();
+  });
+});
+
+describe.skipIf(!RUN)('pending_tenant against real Postgres (W02 Task 2)', () => {
+  it('is invisible to both resolvers, visible to getPartnerConnectionRef, and still holds the one-per-partner slot', async () => {
+    const partner = await createPartner();
+    const pending = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'xero', {
+      accessToken: 'a', refreshToken: 'r', status: 'pending_tenant', environment: 'production',
+    }));
+    await withSystemDbAccessContext(async () => {
+      expect(await resolveActiveConnection(db, partner.id)).toBeNull();
+      expect(await resolveActiveConnectionRef(db, partner.id)).toBeNull();
+      expect(await getPartnerConnectionRef(db, partner.id)).toEqual({ id: pending.id, provider: 'xero', status: 'pending_tenant' });
+    });
+    const err = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'quickbooks', { realmId: 'qbo-realm-pending' })).catch((e) => e);
+    expect(err).toBeInstanceOf(AccountingProviderConflictError);
+    expect(err.message).toBe('Finish or cancel the Xero connection before connecting QuickBooks');
+    const rows = await withSystemDbAccessContext(() => db.select().from(accountingConnections).where(eq(accountingConnections.partnerId, partner.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.provider).toBe('xero');
   });
 });
