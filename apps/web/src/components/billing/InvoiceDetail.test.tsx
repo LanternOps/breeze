@@ -7,6 +7,10 @@ import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
 import { _resetShowMarginMemoryForTests } from './billingUi';
 import { fetchWithAuth } from '../../stores/auth';
 
+const authPerms = vi.hoisted(() => ({
+  permissions: [{ resource: '*', action: '*' }] as { resource: string; action: string }[],
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
@@ -14,7 +18,7 @@ vi.mock('../../stores/auth', () => ({
   // full functionality.
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
-      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+      selector({ user: { permissions: authPerms.permissions } }),
     { getState: () => ({ tokens: null }) },
   ),
 }));
@@ -603,6 +607,39 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
   });
+
+  // Ruling R9: the card's post-Issue watch is what refetches the invoice until
+  // the auto-push lands the mapping row. A user with invoices:write but no
+  // accounting grants can never resolve a push provider (GET
+  // /accounting/providers would 403), and must still get that live status.
+  it('keeps the post-Issue sync watch for a user without accounting grants (no push provider)', async () => {
+    authPerms.permissions = [
+      { resource: 'invoices', action: 'read' },
+      { resource: 'invoices', action: 'write' },
+    ];
+    try {
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/accounting/providers') return json({ error: 'Forbidden' }, false, 403);
+        if (input.endsWith('/payments')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      const onChanged = vi.fn();
+      render(
+        <InvoiceDetail
+          detail={{ ...issued, invoice: { ...issued.invoice, updatedAt: new Date().toISOString() }, accountingSync: null }}
+          onChanged={onChanged}
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+      // No mapping row yet: nothing rendered, but the watch polls the refetch.
+      expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
+      await waitFor(() => expect(onChanged).toHaveBeenCalled(), { timeout: 5000 });
+      // The push provider is not even asked for without accounting:manage.
+      expect(fetchMock).not.toHaveBeenCalledWith('/accounting/providers');
+    } finally {
+      authPerms.permissions = [{ resource: '*', action: '*' }];
+    }
+  }, 10000);
 
   it('renders the card in the rail when accountingSync is present', async () => {
     render(

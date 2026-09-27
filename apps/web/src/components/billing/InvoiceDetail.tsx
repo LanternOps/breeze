@@ -59,8 +59,14 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const { invoice, lines } = detail;
   const canPushInvoices = can('invoices', 'write');
   // Where a push from the sync card goes when the invoice has no mapping row
-  // yet: the partner's active connection, iff it can push invoices.
-  const pushProvider = useActivePushProvider(canPushInvoices);
+  // yet: the partner's active connection, iff it can push invoices. Only asked
+  // when a push could actually be made — the push route also requires
+  // accounting:manage (same gate as the InvoicesPage bulk push), and a mapped
+  // invoice already names its provider. `null` hides only the push action;
+  // the card itself (status + post-Issue watch) always mounts.
+  const pushProvider = useActivePushProvider(
+    canPushInvoices && can('accounting', 'manage') && !detail.accountingSync,
+  );
   const syncProvider = detail.accountingSync?.provider ?? pushProvider;
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
@@ -592,21 +598,19 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
-          {/* Accounting push status (Phase C). Renders only when the API
-              returned a mapping row — no connection, or an org-scoped read that
-              RLS-hides the partner-axis row, both come back null and the card
-              stays off the rail rather than implying "not synced". */}
-          {syncProvider && (
-            <AccountingSyncCard
-              provider={syncProvider}
-              invoiceId={invoice.id}
-              sync={detail.accountingSync}
-              invoiceStatus={invoice.status}
-              invoiceTouchedAt={invoice.updatedAt}
-              canPush={canPushInvoices}
-              onChanged={onChanged}
-            />
-          )}
+          {/* Accounting push status (Phase C). Always mounted: with no mapping
+              row it renders nothing, but its post-Issue watch still polls until
+              the auto-push lands the row. `provider` null (no push-capable
+              connection known to this caller) hides only the push action. */}
+          <AccountingSyncCard
+            provider={syncProvider}
+            invoiceId={invoice.id}
+            sync={detail.accountingSync}
+            invoiceStatus={invoice.status}
+            invoiceTouchedAt={invoice.updatedAt}
+            canPush={canPushInvoices}
+            onChanged={onChanged}
+          />
 
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (

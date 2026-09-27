@@ -315,6 +315,24 @@ describe('AccountingSyncCard', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
+  // Ruling R9: no push-capable provider known to this caller hides ONLY the
+  // push action — the status pill and error text still render.
+  it('renders the status but no Push button when provider is null', () => {
+    render(
+      <AccountingSyncCard
+        provider={null}
+        invoiceId="inv-1"
+        sync={sync({ syncStatus: 'error', lastError: 'HTTP 500' })}
+        invoiceStatus="sent"
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Sync failed');
+    expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent('HTTP 500');
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+  });
+
   it('pushes to the provider named by its provider prop', async () => {
     render(<AccountingSyncCard provider="xero" invoiceId="inv-9" sync={sync({ provider: 'xero' })} invoiceStatus="sent" canPush onChanged={vi.fn()} />);
     fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
@@ -342,6 +360,26 @@ describe('AccountingSyncCard live sync watch', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  // Ruling R9: a caller with no known push provider (e.g. no accounting:read)
+  // still gets the post-Issue watch — `provider` null hides only the push.
+  it('still polls after a fresh issue when provider is null (no mapping row yet)', () => {
+    const onChanged = vi.fn();
+    const { container } = render(
+      <AccountingSyncCard
+        provider={null}
+        invoiceId="inv-1"
+        sync={null}
+        invoiceStatus="sent"
+        invoiceTouchedAt={new Date().toISOString()}
+        canPush
+        onChanged={onChanged}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
   const issued = (onChanged: () => void, initialSync: AccountingSyncSummary | null = null) => {

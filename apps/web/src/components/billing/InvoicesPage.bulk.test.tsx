@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // Mock fetchWithAuth — InvoicesPage calls it directly (no listInvoices wrapper).
 const fetchWithAuth = vi.fn();
@@ -76,6 +76,19 @@ function wireDefault() {
     if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
     if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
     return Promise.resolve(json({}, 404));
+  });
+}
+
+/** Waits until the page has READ the GET /accounting/providers body (its
+ *  `json()` resolved) and React has committed whatever that answer drives, so
+ *  a following absence assertion is about the answer, not a pending fetch. */
+async function settleProvidersResponse() {
+  await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/accounting/providers'));
+  const idx = fetchWithAuth.mock.calls.findIndex((c) => c[0] === '/accounting/providers');
+  const res = (await fetchWithAuth.mock.results[idx]!.value) as Response;
+  await waitFor(() => expect(res.json).toHaveBeenCalled());
+  await act(async () => {
+    await (res.json as () => Promise<unknown>)();
   });
 }
 
@@ -364,10 +377,7 @@ describe('InvoicesPage bulk actions', () => {
     providersBody = body;
     render(<InvoicesPage />);
     await screen.findByTestId(`invoices-row-${I1}`);
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/accounting/providers'));
-    // Let the providers response settle before asserting absence.
-    await waitFor(() => expect(fetchWithAuth.mock.results.some((r) => r.type === 'return')).toBe(true));
-    await new Promise((r) => setTimeout(r, 0));
+    await settleProvidersResponse();
 
     fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
 
@@ -375,6 +385,19 @@ describe('InvoicesPage bulk actions', () => {
     expect(screen.queryByTestId('invoices-bulk-action-xero')).toBeNull();
     // Control: the bar itself rendered.
     expect(screen.getByTestId('invoices-bulk-action-issue')).toBeInTheDocument();
+  });
+
+  // Control for the case above: the SAME settle, with a push-capable
+  // connection, is enough for the action to be present synchronously — so an
+  // absence after that settle is the provider answer, not a race.
+  it('offers the bulk push after the same settle when a push-capable connection exists', async () => {
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+    await settleProvidersResponse();
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
+    expect(screen.getByTestId('invoices-bulk-action-quickbooks')).toBeInTheDocument();
   });
 
   it('pushes to the active provider\'s bulk route', async () => {

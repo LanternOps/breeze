@@ -13,8 +13,10 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
   /** The provider the push goes to: the mapping row's own provider when one
-   *  exists, else the partner's active invoice-push-capable connection. */
-  provider: AccountingProviderId;
+   *  exists, else the partner's active invoice-push-capable connection. `null`
+   *  when neither is known to this caller — that hides ONLY the push action;
+   *  status rendering and the post-Issue watch behave exactly as without it. */
+  provider: AccountingProviderId | null;
   invoiceId: string;
   /**
    * The API's `accountingSync` field. `null`/`undefined` means "no QuickBooks
@@ -190,7 +192,7 @@ export default function AccountingSyncCard({ provider, invoiceId, sync, invoiceS
   // While the watch is live the push is already in flight server-side: the
   // affordance has to go, or the operator double-submits the very push they
   // are waiting on.
-  const pushable = canPush && statusPushable && !voided && !remoteDeleted && !watching;
+  const pushable = canPush && provider !== null && statusPushable && !voided && !remoteDeleted && !watching;
   const statusLabel = watching
     ? t('invoiceDetail.accountingSync.syncing')
     : t(/* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`);
@@ -212,6 +214,7 @@ export default function AccountingSyncCard({ provider, invoiceId, sync, invoiceS
         : AlertTriangle;
 
   async function push() {
+    if (!provider) return;
     setPushing(true);
     try {
       await runAction({
