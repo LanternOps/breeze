@@ -41,4 +41,26 @@ describe('AccountingProviderCards', () => {
     // An unconfigured provider that is NOT the active connection stays hidden.
     expect(screen.queryByTestId('accounting-provider-card-xero')).toBeNull();
   });
+
+  it('shows an empty state when no provider card is visible', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'quickbooks', displayName: 'QuickBooks', configured: false, capabilities: caps },
+      { id: 'xero', displayName: 'Xero', configured: false, capabilities: caps },
+    ], activeConnection: null }));
+    render(<AccountingProviderCards selected={null} onSelect={() => {}} />);
+    expect(await screen.findByTestId('accounting-provider-cards-empty')).toHaveTextContent(
+      'No accounting provider is configured on this instance.',
+    );
+    expect(screen.queryByTestId('accounting-provider-card-quickbooks')).toBeNull();
+  });
+
+  it('shows "Reconnect required" instead of "Connected" for a reauth-required connection', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'quickbooks', displayName: 'QuickBooks', configured: true, capabilities: caps },
+    ], activeConnection: { provider: 'quickbooks', status: 'reauth_required' } }));
+    render(<AccountingProviderCards selected="quickbooks" onSelect={() => {}} />);
+    const qbo = await screen.findByTestId('accounting-provider-card-quickbooks');
+    expect(qbo.textContent).toContain('Reconnect required');
+    expect(qbo.textContent).not.toContain('Connected');
+  });
 });
