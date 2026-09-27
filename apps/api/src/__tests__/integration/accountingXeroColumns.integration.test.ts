@@ -16,7 +16,7 @@ import {
 } from '../../services/accounting/accountingConnectionService';
 
 const RUN = !!process.env.DATABASE_URL;
-const MIGRATION = '2026-11-02-120000-accounting-connections-xero-columns.sql';
+const MIGRATION = '2026-11-05-120000-accounting-connections-xero-columns.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1 });
 afterAll(async () => { await adminSql.end({ timeout: 5 }); });
