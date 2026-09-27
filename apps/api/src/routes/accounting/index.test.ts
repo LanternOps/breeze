@@ -81,6 +81,17 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // Captures the UPDATE's `set` payload so a test can assert what the route
       // actually writes, not just what it echoes back.
       dbUpdateSet: vi.fn(),
+      // Xero W02 (Task 7) — a registered tenant-selecting provider stub, so the
+      // callback's tenant-selection branch runs through the real route.
+      xeroExchangeCode: vi.fn(),
+      xeroFetchRealmSettings: vi.fn(),
+      xeroSelection: {
+        connectableTenantType: 'ORGANISATION',
+        authEventIdOf: vi.fn(),
+        listGrantTenants: vi.fn(),
+        listAllTenants: vi.fn(),
+        removeTenantConnection: vi.fn(),
+      },
     },
     AccountingConnectionErrorClass,
   };
@@ -101,6 +112,9 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  // The callback holds no request DB context (no authMiddleware); the tenant
+  // release path asserts exactly that (dbContextGuard).
+  hasDbAccessContext: () => false,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -140,9 +154,12 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
-  // The REAL conflict class, so its message is the one the route returns.
+  // The REAL conflict / held classes, so their messages are the ones the route returns
+  // and connectFinalize's instanceof checks see the same constructors.
   AccountingProviderConflictError: (await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>())
     .AccountingProviderConflictError,
+  AccountingTenantHeldError: (await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>())
+    .AccountingTenantHeldError,
   getConnection: mocks.getConnection,
   resolveActiveConnectionRef: mocks.resolveActiveConnectionRef,
   getPartnerConnectionRef: mocks.getPartnerConnectionRef,
@@ -180,9 +197,23 @@ vi.mock('../../services/accounting/providerRegistry', () => {
     exchangeCode: mocks.exchangeCode,
     fetchRealmSettings: mocks.fetchRealmSettings,
   };
+  // Xero W02 (Task 7): registered for the tenant-selecting callback branch. Its
+  // capabilities still come from `mocks.providerSupports` (QuickBooks-only by
+  // default), so every existing "xero is refused" assertion is unchanged.
+  const xero = {
+    provider: 'xero',
+    displayName: 'Xero',
+    capabilities: { connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false },
+    configError: () => null,
+    connectEnvironment: () => 'production',
+    buildAuthUrl: mocks.buildAuthUrl,
+    exchangeCode: mocks.xeroExchangeCode,
+    fetchRealmSettings: mocks.xeroFetchRealmSettings,
+    tenantSelection: mocks.xeroSelection,
+  };
   return {
-    getAccountingProvider: vi.fn(() => qbo),
-    findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : null),
+    getAccountingProvider: vi.fn((id: string) => (id === 'xero' ? xero : qbo)),
+    findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : id === 'xero' ? xero : null),
     providerSupports: (id: string, cap: string) => mocks.providerSupports(id, cap),
     accountingProviderDisplayName: (id: string) => ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? id,
     listRegisteredAccountingProviders: () => [qbo],
@@ -194,7 +225,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
 import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
-import { AccountingProviderConflictError } from '../../services/accounting/accountingConnectionService';
+import { AccountingProviderConflictError, AccountingTenantHeldError } from '../../services/accounting/accountingConnectionService';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
@@ -1293,6 +1324,127 @@ describe('accounting routes', () => {
         activeConnection: { provider: 'quickbooks', status: 'connected' },
       });
       expect(mocks.getConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('callback generalisation (Xero W02)', () => {
+    const USER_ID = '33333333-3333-3333-3333-333333333333';
+    const EVT = 'evt-00001';
+    const tenant = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: EVT });
+    const allowXeroConnect = () => mocks.providerSupports.mockImplementation(
+      (id: string, cap: string) => defaultProviderSupports(id, cap) || (id === 'xero' && cap === 'connect'),
+    );
+    async function xeroCallback(query = 'code=xc') {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID, Date.now() + 60_000, 'xero');
+      return app.request(`/accounting/xero/callback?${query}&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+    }
+
+    beforeEach(() => {
+      mocks.xeroExchangeCode.mockResolvedValue(exchangedTokens(''));
+      mocks.xeroFetchRealmSettings.mockResolvedValue({ homeCurrency: 'NZD', multiCurrencyEnabled: false });
+      mocks.xeroSelection.authEventIdOf.mockReset();
+      mocks.xeroSelection.authEventIdOf.mockReturnValue(EVT);
+      mocks.xeroSelection.listGrantTenants.mockReset();
+      mocks.xeroSelection.listAllTenants.mockReset();
+      mocks.getConnection.mockResolvedValue(null);
+    });
+
+    it('consent cancelled at the provider redirects cleanly, with no state work', async () => {
+      const res = await app.request('/accounting/quickbooks/callback?error=access_denied&state=anything');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
+      // An unverified state never clears the browser's in-flight binding cookie.
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('consent cancelled with the flow\'s own verified state clears the binding cookie', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('a callback with neither code nor error is still a 400', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?realmId=realm-A&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Missing code or state' });
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('QuickBooks still requires realmId (400)', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?code=c&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Missing realmId' });
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('a QuickBooks realm held by another partner now redirects with error=tenant_held', async () => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+      mocks.upsertConnection.mockRejectedValueOnce(new AccountingTenantHeldError('quickbooks'));
+      const res = await runCallback(app, 'realm-A');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=tenant_held#accounting');
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+      expect(mocks.fetchRealmSettings).not.toHaveBeenCalled();
+      expect(mocks.captureException).not.toHaveBeenCalled();
+    });
+
+    it('Xero: no realmId is fine; a token with no auth-event claim fails closed (auth_event_missing, nothing listed or persisted)', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.authEventIdOf.mockReturnValue(null);
+      const res = await xeroCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=auth_event_missing#accounting');
+      expect(mocks.xeroExchangeCode).toHaveBeenCalledWith('xc', '');
+      expect(mocks.xeroSelection.listGrantTenants).not.toHaveBeenCalled();
+      expect(mocks.xeroSelection.listAllTenants).not.toHaveBeenCalled();
+      expect(mocks.xeroSelection.removeTenantConnection).not.toHaveBeenCalled();
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
+    it('Xero: one organisation connects it (tenant id + connection ref) and captures its settings', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockResolvedValue([tenant('A')]);
+      mocks.upsertConnection.mockResolvedValueOnce({ id: CONNECTION_ID, partnerId: authState.partnerId, provider: 'xero', realmId: 'ten-A', updatedAt: PERSISTED_AT });
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&connected=1#accounting');
+      expect(mocks.xeroSelection.listGrantTenants).toHaveBeenCalledWith('at', EVT);
+      expect(mocks.upsertConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero', expect.objectContaining({
+        realmId: 'ten-A', providerConnectionRef: 'conn-A', status: 'connected', connectedBy: USER_ID, homeCurrency: null,
+      }));
+      expect(mocks.xeroFetchRealmSettings).toHaveBeenCalledTimes(1);
+      expect(mocks.updateHomeCurrency).toHaveBeenCalledWith(expect.anything(), CONNECTION_ID, authState.partnerId, { updatedAt: PERSISTED_AT, realmId: 'ten-A' }, 'NZD');
+    });
+
+    it('Xero: several organisations park the row and send the browser to the picker', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockResolvedValue([tenant('A'), tenant('B')]);
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&select_tenant=1#accounting');
+      expect(mocks.upsertConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero', expect.objectContaining({ status: 'pending_tenant' }));
+      expect(mocks.xeroFetchRealmSettings).not.toHaveBeenCalled();
+    });
+
+    it('Xero: a failed organisation lookup redirects with error=tenant_lookup_failed', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockRejectedValue(new Error('xero 503'));
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=tenant_lookup_failed#accounting');
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
     });
   });
 });
