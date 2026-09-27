@@ -56,7 +56,7 @@ export default function MonitorConversionAdmin() {
       <ul>{preview.unconvertible.map((item) => <li key={`${item.sourceTable}:${item.sourceId}`}>
         {item.policyName ?? 'Standalone'} · {item.name} · {item.reason}
       </li>)}</ul>
-      <p>Unconvertible sources remain for review or manual retirement in W05c. W05d processes leftovers.</p>
+      <p>Unconvertible sources remain for review or manual retirement now. A future release processes leftovers.</p>
       <button disabled={busy} onClick={() => setPreview(null)}>Cancel</button>
       <button data-testid="admin-conversion-run" disabled={busy} onClick={() => void act(preview.partnerId, true)}>Convert reviewed scope</button>
     </div>}

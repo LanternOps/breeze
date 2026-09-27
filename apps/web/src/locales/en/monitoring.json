@@ -439,7 +439,7 @@
       "review": "Review",
       "convertEverything": "Convert everything…",
       "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
-      "confirmBody": "{{rows}} in {{policies}} across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement in W05c; W05d converts leftovers and retires those it cannot convert.",
+      "confirmBody": "{{rows}} in {{policies}} across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement now; a future release converts leftovers and retires those it cannot convert.",
       "confirmRun": "Convert everything",
       "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
       "errors": {
@@ -512,7 +512,7 @@
       "empty": "No conversion history.",
       "system": "System",
       "reverted": "Reverted",
-      "deadline": "Undo is unavailable after W05d removes the source runtime."
+      "deadline": "Undo is unavailable after the legacy alerting retirement removes the source runtime."
     },
     "errorCodes": {
       "preview_stale": "The policy changed since this preview. Preview again before converting.",

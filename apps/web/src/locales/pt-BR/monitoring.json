@@ -439,7 +439,7 @@
       "review": "Revisar",
       "convertEverything": "Converter tudo…",
       "confirmTitle": "Converter todas as regras legadas, monitoramentos e automações acionadas por alerta em todas as suas políticas?",
-      "confirmBody": "{{rows}} em {{policies}} de todo o parceiro. Linhas convertidas são aposentadas no lugar. As demais ficam para revisão ou aposentadoria manual em W05c; W05d converte as restantes e aposenta as não convertíveis.",
+      "confirmBody": "{{rows}} em {{policies}} de todo o parceiro. Linhas convertidas são aposentadas no lugar. As demais ficam agora para revisão ou aposentadoria manual; uma versão futura converte as restantes e aposenta as não convertíveis.",
       "confirmRun": "Converter tudo",
       "convertedAll": "{{converted}} linhas convertidas em {{policies}} políticas; {{unconvertible}} não puderam ser convertidas.",
       "errors": {
@@ -512,7 +512,7 @@
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
       "reverted": "Revertido",
-      "deadline": "Desfazer fica indisponível após W05d remover o avaliador de origem."
+      "deadline": "Desfazer fica indisponível após a aposentadoria de alertas legados remover o avaliador de origem."
     },
     "errorCodes": {
       "preview_stale": "A política mudou desde esta pré-visualização. Gere uma nova pré-visualização antes de converter.",
