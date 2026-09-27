@@ -51,6 +51,7 @@ const {
   enqueuePaymentDeleteMock,
   providerSupportsMock,
   getConnectionProvidersForMappingsMock,
+  reapStalePendingTenantsMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
   const record = (name: string) => {
@@ -96,6 +97,7 @@ const {
     enqueuePaymentDeleteMock: vi.fn(),
     providerSupportsMock: vi.fn((_id: string, _cap: string) => true),
     getConnectionProvidersForMappingsMock: vi.fn(),
+    reapStalePendingTenantsMock: vi.fn(),
   };
 });
 
@@ -171,6 +173,11 @@ vi.mock('../services/accounting/accountingPaymentPush', () => ({
 vi.mock('./accountingSyncWorker', () => ({
   enqueueAccountingPaymentPush: enqueuePaymentPushMock,
   enqueueAccountingPaymentDelete: enqueuePaymentDeleteMock,
+}));
+
+// Xero W02 Task 9: the sweep's pass 3 (pending_tenant reaper).
+vi.mock('../services/accounting/accountingTenantSelection', () => ({
+  reapStalePendingTenants: reapStalePendingTenantsMock,
 }));
 
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
@@ -332,6 +339,12 @@ beforeEach(() => {
   providerSupportsMock.mockImplementation(() => true);
   enqueuePaymentPushMock.mockResolvedValue(true);
   enqueuePaymentDeleteMock.mockResolvedValue(true);
+
+  // Defaults so processReconcileSweep tests never depend on execution order
+  // (ruling F14): every test that cares about the reaper or the connection
+  // list overrides these explicitly.
+  listReconcilableConnectionsMock.mockResolvedValue([]);
+  reapStalePendingTenantsMock.mockResolvedValue({ stale: 0, reaped: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -940,7 +953,7 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
@@ -961,7 +974,7 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0 });
   });
 
   it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
@@ -984,6 +997,27 @@ describe('processReconcileSweep', () => {
     expect(queueAddMock).toHaveBeenCalledTimes(1);
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
+describe('pending_tenant reaper (Xero W02)', () => {
+  it('reaps stale pending rows on every sweep and reports the count', async () => {
+    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 2, reaped: 2 });
+
+    const out = await processReconcileSweep();
+
+    expect(reapStalePendingTenantsMock).toHaveBeenCalledTimes(1);
+    expect(out.pendingTenantsReaped).toBe(2);
+  });
+
+  it('a reap failure never fails the sweep or blocks the other passes', async () => {
+    reapStalePendingTenantsMock.mockRejectedValueOnce(new Error('db down'));
+
+    const out = await processReconcileSweep();
+
+    expect(out.pendingTenantsReaped).toBe(0);
+    expect(out).toHaveProperty('enqueued');
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 });
@@ -1309,7 +1343,7 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       await expect(processReconcileSweep()).resolves.toEqual({
-        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0,
+        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0,
       });
       expect(logSpy.mock.calls.some((c) => c.some((a) => String(a).includes('deferred=1')))).toBe(true);
     } finally {

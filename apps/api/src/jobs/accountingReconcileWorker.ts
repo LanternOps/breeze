@@ -87,6 +87,7 @@ import {
 } from '../services/accounting/accountingPaymentPull';
 import { listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from './accountingSyncWorker';
+import { reapStalePendingTenants } from '../services/accounting/accountingTenantSelection';
 
 export const ACCOUNTING_RECONCILE_QUEUE = 'accounting-reconcile';
 
@@ -601,6 +602,7 @@ export async function processReconcileConnectionJob(
  */
 export async function processReconcileSweep(): Promise<{
   enqueued: number; failed: number; deferred: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
+  pendingTenantsReaped: number;
 }> {
   return runOutsideDbContext(async () => {
     // Each pass's DB read is its OWN try/catch: a failure reading the
@@ -681,10 +683,28 @@ export async function processReconcileSweep(): Promise<{
       else pendingOpsFailed++;
     }
 
+    // Pass 3 (Xero W02): reap pending_tenant rows older than 1 hour. They hold the
+    // partner's one-connection slot (a half-finished Xero connect blocks a
+    // QuickBooks connect), so they must not live forever. Best-effort: a failure
+    // here is logged and never fails or retries the sweep — the next tick retries.
+    let pendingTenantsReaped = 0;
+    try {
+      pendingTenantsReaped = (await reapStalePendingTenants()).reaped;
+    } catch (err) {
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 3 (reap pending tenants) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.reapPendingTenants',
+      });
+    }
+
     console.log(
       '[AccountingReconcileWorker] sweep complete',
       `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`, `deferred=${deferred}`,
       `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
+      `pendingTenantsReaped=${pendingTenantsReaped}`,
     );
 
     if (connectionsReadFailed || owedReadFailed) {
@@ -697,7 +717,7 @@ export async function processReconcileSweep(): Promise<{
       );
     }
 
-    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed };
+    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped };
   });
 }
 
