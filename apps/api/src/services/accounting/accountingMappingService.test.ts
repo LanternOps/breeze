@@ -1301,6 +1301,26 @@ describe('syncMappedEntity', () => {
     expect(persisted?.lastError).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
   });
 
+  it.each([
+    ['quickbooks', 400, 'QuickBooks rejected the customer sync (HTTP 400)'],
+    ['quickbooks', undefined, 'QuickBooks rejected the customer sync'],
+    ['xero', 400, 'Xero rejected the customer sync (HTTP 400)'],
+    ['xero', undefined, 'Xero rejected the customer sync'],
+  ] as const)('labels the sanitized sync failure with the connection\'s provider (%s, HTTP %s) (Xero W01)', async (provider, status, expected) => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(Object.assign(new Error('upstream body'), status === undefined ? {} : { status }));
+
+    const err: unknown = await syncMappedEntity(syncOrg({ provider }), runCtx).catch((e: unknown) => e);
+
+    expect(upsertCustomerMock).toHaveBeenCalledTimes(1);
+    expect(err).toMatchObject({ code: 'provider_error', status: 502, message: expected });
+    expect(currentMappingRows.find((r) => r.id === 'm1')?.lastError).toBe(expected);
+  });
+
   // ---------------------------------------------------------------------------
   // Review round 3 — DB-context phase split (#1105 / lost-sync-state class).
   // ---------------------------------------------------------------------------

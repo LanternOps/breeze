@@ -584,6 +584,14 @@ describe('applyAccountingPayment', () => {
     expect(paramsOf(lock.where)).toEqual([INVOICE_ID, PARTNER]);
   });
 
+  it('labels a pulled payment\'s note with the connection\'s provider, not a hard-coded QuickBooks (Xero W01)', async () => {
+    const result = await applyAccountingPayment(conn({ provider: 'xero' }), LINE, runCtx, REALM_FP);
+
+    expect(result.outcome).toBe('applied');
+    const paymentInsert = stmts.find((s) => s.kind === 'insert' && s.table === 'invoice_payments')!;
+    expect(paymentInsert.values).toMatchObject({ note: 'Pulled from Xero' });
+  });
+
   it('applies a new payment: inserts the payment row, claims the mapping, recomputes and audits', async () => {
     const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
@@ -748,6 +756,18 @@ describe('applyAccountingPayment', () => {
       service: 'accountingPaymentPull',
       remote_entity_id: QBO_PAYMENT_ID,
       invoice_id: INVOICE_ID,
+    });
+  });
+
+  it('labels the voided-invoice refusal with the connection\'s provider, not a hard-coded QuickBooks (Xero W01)', async () => {
+    currentInvoices = [invoiceRow({ status: 'void' })];
+
+    const result = await applyAccountingPayment(conn({ provider: 'xero' }), LINE, runCtx, REALM_FP);
+
+    expect(result.outcome).toBe('invoice_void');
+    const mappingUpdate = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
+    expect(mappingUpdate.set).toMatchObject({
+      lastError: 'Payment pull: Payment received in Xero against a voided invoice',
     });
   });
 

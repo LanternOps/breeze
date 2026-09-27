@@ -1185,12 +1185,14 @@ function buildItemPayload(
  * `callProviderOrThrow`'s sanitization) — only the HTTP status, when the
  * provider attached one, is safe to keep.
  */
-function sanitizeSyncErrorMessage(err: unknown, breezeEntityType: MappingEntityType): string {
+function sanitizeSyncErrorMessage(err: unknown, breezeEntityType: MappingEntityType, providerLabel: string): string {
   const label = breezeEntityType === 'org' ? 'customer' : 'item';
   const status = err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
     ? (err as { status: number }).status
     : undefined;
-  return status ? `QuickBooks rejected the ${label} sync (HTTP ${status})` : `QuickBooks rejected the ${label} sync`;
+  return status
+    ? `${providerLabel} rejected the ${label} sync (HTTP ${status})`
+    : `${providerLabel} rejected the ${label} sync`;
 }
 
 /**
@@ -1399,7 +1401,7 @@ async function syncMappedEntityUnderLease(
     const throttleSource = rateLimitSourceOf(err) ?? undefined;
     const message = retryAfterMs !== null
       ? providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(conn.provider), 'sync', throttleSource)
-      : sanitizeSyncErrorMessage(err, breezeEntityType);
+      : sanitizeSyncErrorMessage(err, breezeEntityType, accountingProviderDisplayName(conn.provider));
     if (retryAfterMs === null) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, breeze_entity_type: breezeEntityType,
