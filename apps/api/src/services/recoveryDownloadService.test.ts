@@ -5,7 +5,10 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 vi.mock('node:fs', () => ({
-  createReadStream: vi.fn(() => ({ on: vi.fn(), destroy: vi.fn() })),
+  // `pipe` is a harmless passthrough default so the `.gz` branch's
+  // `rawStream.pipe(gunzip)` doesn't throw for tests that don't override
+  // this mock — those tests never inspect stream contents.
+  createReadStream: vi.fn(() => ({ on: vi.fn(), destroy: vi.fn(), pipe: vi.fn((dest: unknown) => dest) })),
 }));
 
 const resolveSnapshotProviderConfigMock = vi.fn();
@@ -57,6 +60,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 import { stat as statMock } from 'node:fs/promises';
+import { createReadStream as createReadStreamMock } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadService';
 
 describe('getAuthenticatedRecoveryDownloadTarget', () => {
@@ -474,6 +481,95 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
       expect(result).toMatchObject({ unavailable: true });
+    });
+  });
+
+  describe('local provider .gz byte contract (#6489)', () => {
+    // agent/internal/backup/providers/local.go gzip-compresses on Upload and
+    // gunzips on Download, keyed purely off the `.gz` key suffix — S3 keys
+    // hold raw bytes even when they end in `.gz` (Part 0 of the W09 plan:
+    // "never add or strip .gz"). Token-mode recovery reads local-provider
+    // storage directly, so the SERVER must mirror that gunzip for local
+    // objects, or a bare-metal recovery counts compressed bytes as
+    // "restored". Decision recorded on the issue: server gunzips.
+    const gzTokenRow = {
+      id: 'token-gz',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      snapshotId: 'snapshot-db-gz',
+      status: 'authenticated' as const,
+      authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+    };
+
+    beforeEach(() => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
+        providerType: 'local',
+        providerConfig: { path: '/var/backups' },
+      });
+    });
+
+    async function readAll(stream: NodeJS.ReadableStream): Promise<Buffer> {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+
+    it('round-trips a gzipped local object through the token-mode download path, matching the original bytes and the SHA-256 the manifest would record', async () => {
+      const original = Buffer.from('bare-metal recovery payload — round trip fixture for #6489\n'.repeat(50));
+      const expectedSha256 = createHash('sha256').update(original).digest('hex');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(gzipSync(original)));
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/payload.dat.gz'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.type).toBe('stream');
+      // The decompressed length isn't knowable without decompressing, so a
+      // fixed Content-Length must NOT be claimed for a local .gz object.
+      expect(result.contentLength).toBeNull();
+
+      const decompressed = await readAll(result.stream as unknown as NodeJS.ReadableStream);
+      expect(decompressed.equals(original)).toBe(true);
+      expect(createHash('sha256').update(decompressed).digest('hex')).toBe(expectedSha256);
+    });
+
+    it('streams a local object whose key does NOT end in .gz verbatim, unchanged', async () => {
+      const raw = Buffer.from('already-uncompressed manifest bytes, unrelated to gzip');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(raw));
+      (statMock as any).mockResolvedValueOnce({ size: raw.length });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/payload.dat'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.contentLength).toBe(raw.length);
+
+      const streamed = await readAll(result.stream as unknown as NodeJS.ReadableStream);
+      expect(streamed.equals(raw)).toBe(true);
+    });
+
+    it('surfaces a corrupt gzip object as an explicit stream error, not truncated success', async () => {
+      const corrupt = Buffer.from('this is not a valid gzip stream at all');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(corrupt));
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/broken.dat.gz'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      await expect(readAll(result.stream as unknown as NodeJS.ReadableStream)).rejects.toThrow();
     });
   });
 });

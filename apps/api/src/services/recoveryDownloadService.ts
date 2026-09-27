@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -307,12 +308,45 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       originStoragePrefix ? `${originStoragePrefix}/${normalizedRemotePath}` : normalizedRemotePath
     );
     const fileInfo = await stat(filePath);
+    const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';
+    const contentType = normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream';
+
+    // #6489: agent/internal/backup/providers/local.go gzip-compresses on
+    // Upload and gunzips again on Download, keyed purely off a `.gz` key
+    // suffix — S3 keys, by contrast, hold raw bytes even when the recorded
+    // key ends in `.gz` (W09 plan Part 0, "never add or strip .gz": the
+    // suffix is just part of the manifest-recorded key there). Token-mode
+    // recovery reads local-provider storage directly rather than through the
+    // agent, so without mirroring the agent's gunzip here a bare-metal
+    // recovery against a local backend would count compressed bytes as
+    // "restored" bytes. Decision recorded on the issue: the SERVER gunzips.
+    // The decompressed length isn't knowable without decompressing the
+    // object, so this branch deliberately omits a fixed Content-Length and
+    // streams instead (see the route handler in routes/backup/bmr.ts, which
+    // only sets the header when contentLength is non-null).
+    if (normalizedRemotePath.endsWith('.gz')) {
+      const rawStream = createReadStream(filePath);
+      const gunzip = createGunzip();
+      // A read error on the raw file (e.g. truncated mid-stream) must also
+      // surface as an explicit stream error, not a silently short gunzip.
+      rawStream.on('error', (error) => gunzip.destroy(error));
+      rawStream.pipe(gunzip);
+      return {
+        unavailable: false,
+        type: 'stream' as const,
+        fileName,
+        contentLength: null,
+        contentType,
+        stream: gunzip,
+      };
+    }
+
     return {
       unavailable: false,
       type: 'stream' as const,
-      fileName: normalizedRemotePath.split('/').pop() || 'recovery-object',
+      fileName,
       contentLength: fileInfo.size,
-      contentType: normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+      contentType,
       stream: createReadStream(filePath),
     };
   }

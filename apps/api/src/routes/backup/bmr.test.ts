@@ -1365,6 +1365,37 @@ describe('bmr routes', () => {
       expect.objectContaining({ id: TOKEN_ID }),
       'snapshots/snap-ext-001/manifest.json'
     );
+    expect(res.headers.get('Content-Length')).toBe('2');
+  });
+
+  // #6489: a local-provider `.gz` object is gunzipped server-side, so its
+  // decompressed length isn't known up front — the service returns
+  // `contentLength: null`. The route must omit the header rather than send
+  // a lying/placeholder one (e.g. `Content-Length: null`).
+  it('omits Content-Length for a decompressed local .gz recovery download whose length is not known up front', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      status: 'authenticated',
+      authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+    }]));
+    getAuthenticatedRecoveryDownloadTargetMock.mockResolvedValueOnce({
+      unavailable: false,
+      type: 'stream',
+      contentType: 'application/octet-stream',
+      contentLength: null,
+      stream: Readable.from(Buffer.from('decompressed payload')),
+    });
+
+    const res = await app.request(
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/files/payload.dat.gz',
+      { headers: { Authorization: `Bearer ${VALID_RECOVERY_TOKEN}` } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('decompressed payload');
+    expect(res.headers.get('Content-Length')).toBeNull();
   });
 
   it('rate limits repeated recovery downloads for the same token', async () => {
