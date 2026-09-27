@@ -90,13 +90,19 @@ The restore runs in the background. Starting it queues the import on the host an
 
 The restore does an `Import-VM -Copy` into the target host's **default** virtual machine and virtual hard disk paths — there's no option to import somewhere else today. Budget roughly **twice** the VM's size in free space on the host's system drive: the export is downloaded, then copied into place. The imported VM comes back in whatever state its backup captured — **Saved** for an application-consistent backup, **Off** for a crash-consistent one — start it manually when you're ready.
 
+From v0.118.0 (with the 0.118 agent), the restore refuses a VM name that already exists on the target host. Rename the VM in the restore dialog, or remove the existing VM first.
+
 ### Restore as New VM
 
 You can also restore a backup snapshot as a new VM from the Restore Wizard. This lets you adjust hardware specs (CPU count, memory, disk size) and select a virtual switch before creating the VM.
 
+From v0.118.0 (with the 0.118 agent), a restore as new VM that cannot place every file fails before any VM is created. Earlier releases could report it as completed.
+
 ### Instant Boot
 
 For fast recovery validation, use **Instant Boot** to boot a VM directly from a snapshot without fully restoring it. This lets you verify that the backup is usable without waiting for a full import. Instant boot status is tracked on the Hyper-V tab.
+
+From v0.118.0 (with the 0.118 agent), the background sync runs inside the instant-boot command and must finish within the command's run time. If it does not finish in time, the VM keeps running, is reported as **degraded**, and the partial staging data is removed.
 
 ---
 

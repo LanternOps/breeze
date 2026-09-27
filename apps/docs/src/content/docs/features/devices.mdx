@@ -122,6 +122,8 @@ A removed device's **Actions** menu offers two choices in place of Remove:
 - **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall.
 - **Delete permanently** -- deletes the device record and every record that references it (open tickets are kept but detached from the device). This cannot be undone.
 
+From v0.118.0, **Delete permanently** (and the automatic purge below) is refused while the device has a backup snapshot under legal hold or inside its immutability window. Release the hold, or wait for the window to end, then try again.
+
 Selecting several removed devices at once in the device list adds bulk equivalents: **Restore Selected** applies immediately, while **Delete Permanently…** asks you to type the device count to confirm, then runs as a background job (up to 500 devices per run) with a progress indicator -- deleting a large batch touches too many records to finish inside a single request.
 
 <Aside type="tip">

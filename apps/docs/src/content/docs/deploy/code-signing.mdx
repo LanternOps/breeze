@@ -150,11 +150,11 @@ Get-AuthenticodeSignature "C:\Program Files\Breeze\breeze-agent.exe"
 ### macOS
 
 ```bash
-# Verify code signature
-codesign --verify --deep --strict /usr/local/bin/breeze-agent
+# Verify code signature (agent 0.118.0+; older agents run from /usr/local/bin/breeze-agent)
+codesign --verify --deep --strict /Library/Breeze/bin/breeze-agent
 
 # Check notarization
-spctl --assess --verbose /usr/local/bin/breeze-agent
+spctl --assess --verbose /Library/Breeze/bin/breeze-agent
 ```
 
 ---

@@ -357,6 +357,8 @@ Breeze uses the TURN **time-limited credential** mechanism (RFC 5766 long-term c
 
 Clients never see `TURN_SECRET` — they only receive short-lived derived credentials.
 
+From v0.118.0, credentials are not issued for sessions that have ended, and each user may request 30 credentials per 10 minutes (`429` above that). Tune the limit with `TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW` and `TURN_CREDENTIAL_MINT_WINDOW_SECONDS`; `0` turns it off. See [Environment Variables](/deploy/environment/#agent-traffic-and-ingest-budgets).
+
 ---
 
 ## Troubleshooting

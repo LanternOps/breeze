@@ -97,16 +97,18 @@ coverage. The device Monitoring tab shows the effective result.
 
 ## Legacy rules
 
-The previous release introduced conversion of legacy alert rules and service/process
-watches to monitors. This release processes remaining sources at startup and retires
-those that cannot convert with a reason. **Alerts → Monitors** lists these items in a
+v0.117.0 introduced conversion of legacy alert rules and service/process
+watches to monitors. From v0.118.0 the API processes remaining sources at startup and
+retires those that cannot convert with a reason (set `BREEZE_LEGACY_ALERTING_SWEEP=false`
+to skip this; leftover rows are then counted and logged at every boot). **Alerts → Monitors** lists these items in a
 banner that you can dismiss after review. Source rows and alert history are retained.
 Open alerts from unconvertible retired rules stay open until someone resolves them;
 converted sources' open alerts move to the compiled monitor path.
 
 **Conversion history → Undo** is no longer available for legacy alert rules,
-templates, inline policy rules or service/process watches after upgrading to this
-release. Review and complete conversion on the previous release before upgrading.
+templates, inline policy rules or service/process watches after upgrading to
+v0.118.0. Review and complete conversion on v0.117.0 before upgrading (see the
+[v0.118.0 upgrade notes](/deploy/upgrades/#v01180--legacy-alerting-retired-network-checks-become-monitors)).
 Network checks retain their runtime and are excluded from automatic conversion and retirement.
 
 **Converting network checks:** use the banner on **Network → Results** to preview

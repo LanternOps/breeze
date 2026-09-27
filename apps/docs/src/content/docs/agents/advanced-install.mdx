@@ -194,6 +194,8 @@ For MDM, configuration management (Ansible, Chef, Puppet, Salt), golden images, 
   </TabItem>
 </Tabs>
 
+On macOS, from agent 0.118.0, `service install` copies the binary to `/Library/Breeze/bin/breeze-agent` and the service runs from there. The copy you downloaded to `/usr/local/bin` is only used to enroll and install.
+
 ### `breeze-agent enroll` — flag reference
 
 | Flag | Required | Notes |
