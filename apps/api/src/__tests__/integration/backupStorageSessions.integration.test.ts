@@ -461,7 +461,7 @@ describe('brokered storage sessions (real database)', () => {
     expect(ended).toEqual({ revoked: true, revoked_reason: 'budget_exhausted' });
   });
 
-  runDb('a snapshot deleted while its session is minted withholds only that command', async () => {
+  runDb('a snapshot deleted while its session is minted never falls back to the destination', async () => {
     const org = await seedOrg();
     const payloadA = { snapshotId: SNAP, ...backupReadCredentialPayload(org.configId, org.orgId, 's3') };
     const claimedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 5000);
@@ -496,16 +496,17 @@ describe('brokered storage sessions (real database)', () => {
         }),
       );
       expect(deleted).toBe(true);
-      // The sibling was prepared after the snapshot vanished, so it falls
-      // back to the destination (snapshot_unresolved) rather than failing.
-      expect(delivered.map((c) => c.id)).toEqual([healthy]);
-      expect(delivered[0]!.payload).not.toHaveProperty('storageSession');
+      // The sibling was prepared after the snapshot vanished: it is refused
+      // (snapshot not found) and left for the reaper to expire, never sent the
+      // destination.
+      expect(delivered).toEqual([]);
       const rows = (await getTestDb().execute(sql`
-        SELECT id, status FROM device_commands WHERE id IN (${doomed}, ${healthy})
-      `)) as unknown as Array<{ id: string; status: string }>;
-      const status = Object.fromEntries(rows.map((r) => [r.id, r.status]));
-      expect(status[doomed]).toBe('pending'); // released for a later attempt, committed with the transaction
-      expect(status[healthy]).toBe('sent');
+        SELECT id, status, result->>'deliveryRefusal' AS refusal FROM device_commands WHERE id IN (${doomed}, ${healthy})
+      `)) as unknown as Array<{ id: string; status: string; refusal: string | null }>;
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+      expect(byId[doomed]).toMatchObject({ status: 'pending', refusal: null }); // released for a later attempt, committed with the transaction
+      expect(byId[healthy]!.status).toBe('pending');
+      expect(byId[healthy]!.refusal).toMatch(/could not be found/);
       const n = (await getTestDb().execute(sql`
         SELECT count(*)::int AS n FROM backup_storage_sessions WHERE command_id IN (${doomed}, ${healthy})
       `)) as unknown as Array<{ n: number }>;
