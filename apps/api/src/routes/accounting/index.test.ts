@@ -43,6 +43,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     mocks: {
       getConnection: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
+      getPartnerConnectionRef: vi.fn(),
       configError: vi.fn((): string | null => null),
       // A vi.fn so the per-route capability table can assert the exact
       // capability each route gates on; the registry mock's default
@@ -144,6 +145,7 @@ vi.mock('../../services/accounting/accountingConnectionService', async (importOr
     .AccountingProviderConflictError,
   getConnection: mocks.getConnection,
   resolveActiveConnectionRef: mocks.resolveActiveConnectionRef,
+  getPartnerConnectionRef: mocks.getPartnerConnectionRef,
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
   updateHomeCurrency: mocks.updateHomeCurrency,
@@ -251,6 +253,7 @@ describe('accounting routes', () => {
     });
     mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
     mocks.resolveActiveConnectionRef.mockResolvedValue(null);
+    mocks.getPartnerConnectionRef.mockResolvedValue(null);
     mocks.configError.mockReturnValue(null);
     mocks.providerSupports.mockImplementation(defaultProviderSupports);
   });
@@ -1182,17 +1185,27 @@ describe('accounting routes', () => {
     });
 
     it('refuses connect with 409 accounting_provider_conflict when another provider is active', async () => {
-      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'xero', status: 'disconnected' });
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: 'c1', provider: 'xero', status: 'disconnected' });
       const res = await app.request('/accounting/quickbooks/connect');
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ code: 'accounting_provider_conflict', error: 'Disconnect Xero before connecting QuickBooks' });
-      expect(mocks.resolveActiveConnectionRef).toHaveBeenCalledWith(expect.anything(), authState.partnerId);
+      expect(mocks.getPartnerConnectionRef).toHaveBeenCalledWith(expect.anything(), authState.partnerId);
       expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
       expect(res.headers.get('set-cookie')).toBeNull();
     });
 
+    it('/connect refuses QuickBooks while a Xero pending_tenant row exists (409, pending wording)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: 'c1', provider: 'xero', status: 'pending_tenant' });
+      const res = await app.request('/accounting/quickbooks/connect');
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: 'accounting_provider_conflict',
+        error: 'Finish or cancel the Xero connection before connecting QuickBooks',
+      });
+    });
+
     it('lets a reconnect to the SAME provider start OAuth', async () => {
-      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required' });
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required' });
       const res = await app.request('/accounting/quickbooks/connect');
       expect(res.status).toBe(200);
       expect(mocks.buildAuthUrl).toHaveBeenCalledTimes(1);
@@ -1271,7 +1284,7 @@ describe('accounting routes', () => {
     });
 
     it('GET /accounting/providers lists registered providers with configuration and capabilities', async () => {
-      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected' });
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected' });
       const res = await app.request('/accounting/providers');
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({

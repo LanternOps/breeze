@@ -11,6 +11,7 @@ vi.mock('./accountingRateLimit', async (orig) => ({
 
 import { xeroProvider, XERO_RATE_LIMIT } from './xeroProvider';
 import type { AccountingConnection } from './accountingConnectionService';
+import { AccountingProviderError } from './accountingProviderError';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
   return {
@@ -119,6 +120,20 @@ describe('fetchRealmSettings', () => {
       .mockResolvedValueOnce(json({ Currencies: 'not-an-array' }));
     await expect(xeroProvider.fetchRealmSettings(conn())).resolves.toEqual({ homeCurrency: null, multiCurrencyEnabled: null });
   });
+
+  it('a 429 from the Organisation call propagates as rate_limited unchanged', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }),
+    );
+    await expect(xeroProvider.fetchRealmSettings(conn())).rejects.toMatchObject({ kind: 'rate_limited', provider: 'xero' });
+  });
+
+  it('a limiter refusal from withProviderCallSlot propagates as the SAME error object', async () => {
+    const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'Xero organisation read', throttleSource: 'local' });
+    slotMock.mockImplementationOnce(async () => { throw refusal; });
+    const err = await xeroProvider.fetchRealmSettings(conn()).catch((e) => e);
+    expect(err).toBe(refusal);
+  });
 });
 
 describe('listSettingsOptions', () => {
@@ -172,6 +187,20 @@ describe('listSettingsOptions', () => {
       bankAccounts: [],
       taxRates: [],
     });
+  });
+
+  it('a 429 from the Organisation call propagates as rate_limited unchanged', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }),
+    );
+    await expect(xeroProvider.listSettingsOptions!(conn())).rejects.toMatchObject({ kind: 'rate_limited', provider: 'xero' });
+  });
+
+  it('a limiter refusal from withProviderCallSlot propagates as the SAME error object', async () => {
+    const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'Xero organisation read', throttleSource: 'local' });
+    slotMock.mockImplementationOnce(async () => { throw refusal; });
+    const err = await xeroProvider.listSettingsOptions!(conn()).catch((e) => e);
+    expect(err).toBe(refusal);
   });
 });
 
