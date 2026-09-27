@@ -164,6 +164,10 @@ describe('POST /accounting/:provider/customers/import', () => {
       expect.anything(),
       expect.objectContaining({ action: 'organization.create', resourceId: 'org-1' }),
     );
+    // Xero W01 derives these keys from :provider — the QuickBooks shape must stay byte-identical.
+    expect(writeRouteAuditMock.mock.calls[0]![1].details).toEqual({
+      source: 'quickbooks_import', quickbooksCustomerId: '1', siteId: 'site-1',
+    });
   });
 
   it('denies a caller without organizations:write (403) before importing anything', async () => {

@@ -122,6 +122,9 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteItems: vi.fn(),
   }),
   providerSupports: (id: string) => id === 'quickbooks',
+  // Xero W01 route gate: only QuickBooks is registered, configured and capable.
+  findAccountingProvider: (id: string) => (id === 'quickbooks'
+    ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({

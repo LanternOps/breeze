@@ -98,6 +98,9 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
   // Only QuickBooks is a registered provider today (Xero W01 capability gate).
   providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap),
   accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : `UNKNOWN_PROVIDER:${id}`),
+  // Xero W01 route gate: only QuickBooks is registered, configured and capable.
+  findAccountingProvider: (id: string) => (id === 'quickbooks'
+    ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
 }));
 
 // Xero W01: push-bulk resolves the partner's ONE connection before enqueueing
@@ -241,7 +244,8 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     const res = await pushInvoice();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ syncStatus: 'synced', docNumber: '1042', taxVarianceCents: 0, totalVarianceCents: 5000 });
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function));
+    // The URL's :provider is the push target (Xero W01): never "whatever is connected now".
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function), { provider: 'quickbooks' });
     await expectAuthContextRunner(pushInvoiceToAccountingMock.mock.calls[0]![2]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -318,7 +322,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     pushInvoiceToAccountingMock.mockResolvedValue(pushOutcome());
     const res = await pushInvoice(INVOICE_ID, `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, expect.any(Function));
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, expect.any(Function), { provider: 'quickbooks' });
   });
 
   it('system scope without an explicit partnerId is rejected (400) before calling the coordinator', async () => {

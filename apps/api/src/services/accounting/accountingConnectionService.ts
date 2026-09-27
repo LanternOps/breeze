@@ -188,7 +188,7 @@ export async function resolveActiveConnection(
 /**
  * The non-decrypting core of `resolveActiveConnection`'s WHERE/limit, shared by
  * every caller that does not need the decrypted realm/token columns. Selects
- * only `id` + `provider` — never the encrypted columns `mapConnection`
+ * only `id` + `provider` + `status` — never the encrypted columns `mapConnection`
  * decrypts. Any future filter added to `resolveActiveConnection` (W02's
  * pending_tenant exclusion) must be mirrored here too.
  *
@@ -201,13 +201,13 @@ export async function resolveActiveConnection(
 export async function resolveActiveConnectionRef(
   dbc: DbExecutor,
   partnerId: string,
-): Promise<{ id: string; provider: AccountingProviderId } | null> {
+): Promise<{ id: string; provider: AccountingProviderId; status: AccountingConnectionStatus } | null> {
   const [row] = await dbc
-    .select({ id: accountingConnections.id, provider: accountingConnections.provider })
+    .select({ id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status })
     .from(accountingConnections)
     .where(eq(accountingConnections.partnerId, partnerId))
     .limit(1);
-  return row ? { id: row.id, provider: row.provider as AccountingProviderId } : null;
+  return row ? { id: row.id, provider: row.provider as AccountingProviderId, status: row.status as AccountingConnectionStatus } : null;
 }
 
 /**
