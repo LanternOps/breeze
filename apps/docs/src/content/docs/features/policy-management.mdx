@@ -117,8 +117,8 @@ Each policy (or compliance rule within a Configuration Policy) declares an enfor
 | Level | Behaviour |
 |---|---|
 | `monitor` | Record the compliance status. No action is taken. |
-| `warn` | Record the compliance status and publish a `policy.violation` event that downstream notification channels can consume. |
-| `enforce` | Same as `warn`, plus automatically trigger a remediation automation if one is configured. Falls back to `warn` behaviour if no remediation script or automation is linked. |
+| `warn` | Record the compliance status and publish a `policy.violation` event. For a compliance rule in a Configuration Policy this raises a medium alert on the device, which resolves itself once the device is compliant again. |
+| `enforce` | Same as `warn` (the compliance alert is high severity), plus automatically trigger a remediation automation if one is configured. Falls back to `warn` behaviour if no remediation script or automation is linked. |
 
 Remediation is triggered only when enforcement is `enforce` **and** the device evaluates as `non_compliant`. The system resolves the remediation automation by:
 

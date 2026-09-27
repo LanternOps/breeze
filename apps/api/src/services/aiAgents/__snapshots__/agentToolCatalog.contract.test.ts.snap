@@ -46,7 +46,6 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "manage_dr_plan",
   "manage_hyperv_checkpoints",
   "manage_hyperv_vm",
-  "manage_monitor_definitions",
   "manage_notification_channels",
   "manage_peripheral_policy",
   "manage_processes",

@@ -59,10 +59,23 @@ vi.mock('./eventBus', () => ({
   getEventBus: vi.fn(),
 }));
 
+// #6669: config-policy compliance payloads are delegated (real-DB behaviour is
+// pinned by configComplianceAlerts.integration.test.ts). Keep the real type
+// guard so the routing decision itself is under test here.
+vi.mock('./configComplianceAlertBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./configComplianceAlertBridge')>();
+  return {
+    isConfigCompliancePayload: actual.isConfigCompliancePayload,
+    handleConfigComplianceViolation: vi.fn().mockResolvedValue(undefined),
+    handleConfigComplianceCompliant: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { automationPolicyCompliance } from '../db/schema';
 import { createAlert } from './alertService';
+import { handleConfigComplianceCompliant, handleConfigComplianceViolation } from './configComplianceAlertBridge';
 import {
   handlePolicyViolation,
   handlePolicyViolationEvent,
@@ -337,5 +350,43 @@ describe('handlePolicyViolation reconciles against persisted compliance state (#
     // row must not be picked arbitrarily — the most-recently-updated row wins.
     const expectedOrderBy = desc(automationPolicyCompliance.updatedAt);
     expect(capturedOrderBys[0]).toEqual(expectedOrderBy);
+  });
+});
+
+describe('config-policy compliance payloads route to configComplianceAlertBridge (#6669)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const compliancePayload = {
+    configPolicyComplianceRuleId: 'cpcr-1',
+    configPolicyId: 'link-1',
+    deviceId: DEVICE_ID,
+    hostname: 'host-1',
+    status: 'non_compliant',
+    enforcementLevel: 'warn',
+  };
+  const complianceEvent = (type: 'policy.violation' | 'policy.compliant') =>
+    ({ id: 'evt-1', type, orgId: 'org-1', payload: compliancePayload }) as any;
+
+  it('delegates a compliance violation (it carries no policyId) instead of dropping it', async () => {
+    await handlePolicyViolationEvent(complianceEvent('policy.violation'));
+    expect(handleConfigComplianceViolation).toHaveBeenCalledWith('org-1', compliancePayload);
+    // The legacy automation-policy path never ran.
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createAlert).not.toHaveBeenCalled();
+  });
+
+  it('delegates a compliance recovery', async () => {
+    await handlePolicyCompliantEvent(complianceEvent('policy.compliant'));
+    expect(handleConfigComplianceCompliant).toHaveBeenCalledWith('org-1', compliancePayload);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('leaves automation-policy payloads on the legacy path', async () => {
+    mockSelectOnce([]); // policy lookup → not found → return
+    await handlePolicyViolationEvent({ id: 'evt-2', type: 'policy.violation', orgId: 'org-1', payload: payload() } as any);
+    expect(handleConfigComplianceViolation).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });

@@ -85,7 +85,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
-  'manage_monitor_definitions',
   'manage_notification_channels',
   'manage_peripheral_policy',
   'manage_processes',

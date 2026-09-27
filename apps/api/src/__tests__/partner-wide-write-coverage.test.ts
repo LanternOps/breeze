@@ -169,6 +169,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
   'services/patchAlerts.ts': 'patch-job finalizer / reboot sweep creating derived alert artifacts (global built-in templates, org-owned rules) in system context — no tenant caller, same class as policyAlertBridge',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
+  'services/configComplianceAlertBridge.ts': 'policy.violation/policy.compliant event subscriber (routed from policyAlertBridge, #6669) creating derived alert artifacts in system context: the one global built-in template (org_id AND partner_id NULL, never partner-owned) and org-owned alert_rules rows stamped with the DEVICE event org_id — no tenant caller, no request-supplied owner axis, same class as policyAlertBridge/patchAlerts',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
   'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',
   'services/stripeReversalState.ts': 'system poller and verified Stripe webhook own the provider-authoritative reversal inbox',
