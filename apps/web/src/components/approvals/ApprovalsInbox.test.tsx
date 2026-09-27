@@ -262,6 +262,8 @@ describe('ApprovalsInbox', () => {
       expect(intentApprovalsMock.decide).toHaveBeenCalledWith(
         'approval-1',
         'approve',
+        undefined,
+        'four_eyes',
       ),
     );
   });
@@ -1080,7 +1082,9 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
 
     await waitFor(() => expect(promoteCalls()).toHaveLength(1));
-    expect(intentApprovalsMock.decide).toHaveBeenCalledWith('ap-a', 'approve');
+    // The row's scope rides along: a supervised card must not be pushed onto
+    // the four-eyes passkey path by the always-allow flow.
+    expect(intentApprovalsMock.decide).toHaveBeenCalledWith('ap-a', 'approve', undefined, 'supervised');
 
     const decideOrder = intentApprovalsMock.decide.mock.invocationCallOrder[0];
     const promoteCallIndex = fetchMock.mock.calls.findIndex(([url]) =>

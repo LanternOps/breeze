@@ -8,6 +8,7 @@ import {
   type AiAgentGraduationDto,
   type AiAgentGraduationRowDto,
   type AiAgentKind,
+  type AiApprovalScope,
 } from '@breeze/shared';
 import { useEventStream } from '@/hooks/useEventStream';
 import {
@@ -176,6 +177,15 @@ function alwaysAllowTargetFor(
   if (opKey === null) return null;
   const kind = info.eligible.get(opKey);
   return kind ? { opKey, kind } : null;
+}
+
+/**
+ * Narrows a row's approvalScope to the two values decideIntentApproval knows.
+ * Anything else becomes `null`, which the helper treats as the strict
+ * (passkey) path.
+ */
+function knownApprovalScope(scope: unknown): AiApprovalScope | null {
+  return scope === 'supervised' || scope === 'four_eyes' ? scope : null;
 }
 
 /**
@@ -715,26 +725,17 @@ export default function ApprovalsInbox() {
     clearRowErrors([approval.id]);
 
     try {
-      // Extra positional args are only ever appended when actually needed —
-      // the existing single-card approve test asserts the exact 2-arg call
-      // (`'approval-1', 'approve'`), so an unconditional `undefined, undefined`
-      // here would break it despite being semantically a no-op.
-      //
-      // The script-proposal card path (`opts` present) also passes the row's
-      // approvalScope: a SUPERVISED proposal is the requester's own plain-click
-      // decision (#5600), and without the scope decideIntentApproval falls back
-      // to the four-eyes passkey ceremony and stops on "register a device".
+      // Every approve passes the row's approvalScope: a SUPERVISED card is the
+      // requester's own plain-click decision (#5600), and without the scope
+      // decideIntentApproval falls back to the four-eyes passkey ceremony and
+      // stops on "register a device". `opts` (the script-proposal card's STRICT
+      // acknowledgements) is only appended when present.
+      const scope = knownApprovalScope(approval.approvalScope);
       const outcome =
         decision === 'approve'
           ? opts
-            ? await decideIntentApproval(
-                approval.id, 'approve', undefined,
-                approval.approvalScope === 'supervised' || approval.approvalScope === 'four_eyes'
-                  ? approval.approvalScope
-                  : null,
-                opts,
-              )
-            : await decideIntentApproval(approval.id, 'approve')
+            ? await decideIntentApproval(approval.id, 'approve', undefined, scope, opts)
+            : await decideIntentApproval(approval.id, 'approve', undefined, scope)
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
         setDecisionError(approval.id, 'noApproverDevice');
@@ -790,7 +791,12 @@ export default function ApprovalsInbox() {
     clearRowErrors([target.approval.id]);
 
     try {
-      const outcome = await decideIntentApproval(target.approval.id, 'approve');
+      const outcome = await decideIntentApproval(
+        target.approval.id,
+        'approve',
+        undefined,
+        knownApprovalScope(target.approval.approvalScope),
+      );
       if (outcome === 'needs_device') {
         setDecisionError(target.approval.id, 'noApproverDevice');
         return;
