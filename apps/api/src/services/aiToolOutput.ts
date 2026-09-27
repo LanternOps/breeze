@@ -170,6 +170,28 @@ function arrayTruncationSentinel(dropped: number, hint: string): string {
   return `...[truncated: ${dropped} more items omitted. ${hint}]`;
 }
 
+// #7131: how many items an array keeps when it is cut off purely by DEPTH
+// (as opposed to the ordinary maxArrayItems cutoff, which already has its own,
+// usually much larger, budget). Small on purpose — the point of this path is
+// to keep the compaction lever real: an array at the depth ceiling is exactly
+// what let a near-budget payload (e.g. a default get_fleet_health page with
+// includeTopIssues) fit at a looser tier instead of falling through to a
+// tighter one that drops whole object keys. Keeping every item whole would
+// give up that lever for no size savings.
+const DEPTH_LIMIT_ARRAY_KEEP = 2;
+// Above this many characters, a single item is no longer "small" enough to
+// keep whole at the depth ceiling (nothing below this point can recurse to
+// truncate its own strings/nested structures) — reduce it to a short preview
+// instead of letting one oversized leaf blow the tier's budget.
+const DEPTH_LIMIT_ITEM_PREVIEW_CHARS = 150;
+
+function shallowGistAtDepthLimit(item: unknown): unknown {
+  if (item === null || typeof item !== 'object') return item;
+  const serialized = safeStringify(item);
+  if (serialized.length <= DEPTH_LIMIT_ITEM_PREVIEW_CHARS) return item;
+  return `${serialized.slice(0, DEPTH_LIMIT_ITEM_PREVIEW_CHARS)}…[truncated at depth limit]`;
+}
+
 /**
  * A-W05 (Q3): a character window a tool sized deliberately — `text` paired
  * with `nextOffset`/`hasMore` (e.g. `read_artifact`), or `stdout`/`stderr`
@@ -283,9 +305,30 @@ function compactValue(
     // as a real item nor re-truncated in place; re-emit or refresh it below.
     const priorOmitted = value.length > 0 ? priorArrayOmitted(value[value.length - 1]) : null;
     const items = priorOmitted !== null ? value.slice(0, -1) : value;
-    const compacted = items
-      .slice(0, config.maxArrayItems)
-      .map((item) => compactValue(item, stats, config, depth + 1));
+    // #7131: this array's ITEMS would land exactly at the depth ceiling
+    // (depth + 1 >= maxDepth). Recursing into them normally hits the generic
+    // depth check above and replaces EVERY item with the opaque
+    // `[truncated: max depth reached]` marker — for a small list of small
+    // objects (e.g. get_fleet_health's devices[].topIssues[]
+    // {type,count,severity,lastOccurrence}), that throws away exactly the
+    // content a caller asked for, and reads as "no issues" rather than
+    // "truncated". Bound it the same way the ordinary array-length cutoff
+    // below does instead: keep a couple of items (whole, when small; a short
+    // preview otherwise) and mark what didn't fit.
+    const atItemDepthCeiling = depth + 1 >= config.maxDepth;
+    const compacted = atItemDepthCeiling
+      ? items.slice(0, DEPTH_LIMIT_ARRAY_KEEP).map(shallowGistAtDepthLimit)
+      : items
+          .slice(0, config.maxArrayItems)
+          .map((item) => compactValue(item, stats, config, depth + 1));
+    if (atItemDepthCeiling && items.length > compacted.length) {
+      stats.depthLimited += 1;
+      stats.arraysTruncated += 1;
+      const dropped = items.length - compacted.length;
+      stats.arrayItemsDropped += dropped;
+      compacted.push(arrayTruncationSentinel((priorOmitted ?? 0) + dropped, stats.sentinelHint));
+      return compacted;
+    }
     const droppedThisPass = items.length - config.maxArrayItems;
     if (droppedThisPass > 0) {
       stats.arraysTruncated += 1;
