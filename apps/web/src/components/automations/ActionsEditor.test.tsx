@@ -14,6 +14,14 @@ function Host({ allowAiTriage = false }: { allowAiTriage?: boolean }) {
   );
 }
 
+describe('ActionsEditor filter selects accessible name (#7156)', () => {
+  it('gives the action type and script selects a real accessible name', () => {
+    render(<Host />);
+    expect(screen.getByRole('combobox', { name: 'Action type' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Script' })).toBeInTheDocument();
+  });
+});
+
 describe('ActionsEditor (#5289)', () => {
   it('adds and removes actions through the form context', () => {
     render(<Host />);

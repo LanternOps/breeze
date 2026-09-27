@@ -151,6 +151,7 @@
     },
     "fields": {
       "name": "Automation name",
+      "actionType": "Action type",
       "cronExpression": "Cron Expression",
       "eventType": "Event Type",
       "webhookUrl": "Webhook URL",
