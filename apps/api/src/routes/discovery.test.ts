@@ -152,7 +152,12 @@ vi.mock('../db/schema', () => ({
     id: 'sites.id',
     orgId: 'sites.orgId',
   },
-  networkMonitors: {},
+  networkMonitors: {
+    id: 'networkMonitors.id',
+    orgId: 'networkMonitors.orgId',
+    assetId: 'networkMonitors.assetId',
+    managedByMonitorId: 'networkMonitors.managedByMonitorId',
+  },
   snmpDevices: {},
   snmpAlertThresholds: {},
   snmpMetrics: {},
@@ -2264,6 +2269,38 @@ describe('discovery routes', () => {
         expect(res.status).toBe(403);
         const body = await res.json();
         expect(body.error).toBe('Access to this site denied');
+        expect(db.select).toHaveBeenCalledTimes(1);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        { kind: 'managed', monitorId: '00000000-0000-0000-0000-000000000101' },
+        { kind: 'unmanaged', monitorId: null },
+        { kind: 'retired', monitorId: null, retiredAt: new Date() },
+      ])('preserves history for a $kind network check bound to the asset', async ({ monitorId, ...check }) => {
+        vi.mocked(db.select).mockReset();
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_IN });
+        const checkId = '00000000-0000-0000-0000-000000000102';
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ ...check, monitorId, checkId }]),
+          }),
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({
+          error: 'asset_has_retained_network_checks',
+          monitorIds: monitorId ? [monitorId] : [],
+          checkIds: [checkId],
+        });
+        expect(db.transaction).not.toHaveBeenCalled();
+        expect(db.delete).not.toHaveBeenCalled();
       });
 
       it('allows deleting an asset whose site is in the allowlist', async () => {

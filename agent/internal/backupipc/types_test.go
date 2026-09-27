@@ -148,3 +148,18 @@ func TestBackupStopDrainStaysUnderForwardTimeout(t *testing.T) {
 		t.Fatalf("keep >=5s of IPC slack between drain %v and forward %v", BackupStopDrainTimeout, BackupStopForwardTimeout)
 	}
 }
+
+// #6664: the rebuild budget must not fall back to the old fixed 4 h, must
+// leave the helper room to unwind and report before the agent stops
+// waiting, and the agent must stop waiting before the server's 24 h reaper.
+func TestBareMetalRebuildBudgetStaysUnderForwardTimeout(t *testing.T) {
+	if BareMetalRebuildRunBudget <= 4*time.Hour {
+		t.Fatalf("run budget %v must be well above the old fixed 4h", BareMetalRebuildRunBudget)
+	}
+	if BareMetalRebuildForwardTimeout-BareMetalRebuildRunBudget < 5*time.Minute {
+		t.Fatalf("keep >=5m between run budget %v and forward timeout %v for unwind + progress post + IPC", BareMetalRebuildRunBudget, BareMetalRebuildForwardTimeout)
+	}
+	if BareMetalRebuildForwardTimeout >= 24*time.Hour {
+		t.Fatalf("forward timeout %v must stay under the API's 24h whole-machine restore reaper", BareMetalRebuildForwardTimeout)
+	}
+}

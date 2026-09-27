@@ -21,7 +21,7 @@ func withInstallRecorder(t *testing.T) *installRecorder {
 	rec := &installRecorder{}
 	orig := installPackageFunc
 	t.Cleanup(func() { installPackageFunc = orig })
-	installPackageFunc = func(pkgPath, binaryPath string) error {
+	installPackageFunc = func(pkgPath, binaryPath, _ string) error {
 		rec.called++
 		rec.paths = append(rec.paths, pkgPath)
 		return nil
@@ -268,7 +268,7 @@ func TestApplyPendingUpdateRetriesAfterTransientUnreadableVersion(t *testing.T) 
 	}
 	installs := 0
 	orig := installPackageFunc
-	installPackageFunc = func(string, string) error { installs++; return nil }
+	installPackageFunc = func(string, string, string) error { installs++; return nil }
 	t.Cleanup(func() { installPackageFunc = orig })
 	// Readable-old before any install; unreadable right after the 1st
 	// install; readable-new after the 2nd.

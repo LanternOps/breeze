@@ -146,7 +146,7 @@ function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed = 40): number {
 /** Render a small standalone PDF for one authored contract block: a branding
  *  header (template name + parties + effective date) over the already-substituted
  *  rich-text body, paginated via renderRichTextIntoPdf's caller-supplied
- *  ensureRoom (mirrors quotePdf.ts's contract-block branch). */
+ *  ensureRoom (mirrors quotePdf.ts's agreement pages). */
 async function renderAuthoredContractPdf(
   templateName: string,
   substitutedHtml: string,

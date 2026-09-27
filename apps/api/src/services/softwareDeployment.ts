@@ -181,6 +181,7 @@ export interface SoftwareInstallFanoutVersionRecord {
   silentInstallArgs: string | null;
   version: string;
   detectionRules?: unknown;
+  successExitCodes?: number[] | null;
 }
 
 /** Structural subset of a software_catalog row the install fan-out needs. */
@@ -712,6 +713,12 @@ export async function buildAndDispatchSoftwareInstalls(
     ? versionRecord.detectionRules
     : undefined;
   const forceReinstall = options?.forceReinstall === true;
+  // #7038: vendor-documented success exit codes. Only sent when declared, so a
+  // version without any produces the same payload an older agent always saw.
+  const successExitCodes =
+    Array.isArray(versionRecord.successExitCodes) && versionRecord.successExitCodes.length > 0
+      ? versionRecord.successExitCodes
+      : undefined;
 
   // Managed software destination policy (Wave 6 Task 5). The mode is read
   // ONCE per dispatch batch so every device in one deployment is decided
@@ -917,6 +924,7 @@ export async function buildAndDispatchSoftwareInstalls(
       softwareName: catalogItem.name,
       version: versionRecord.version,
       ...(detectionRules ? { detectionRules } : {}),
+      ...(successExitCodes ? { successExitCodes } : {}),
       forceReinstall,
     };
     // #5128: the seam refuses (and this throws) for a device that is

@@ -19,7 +19,7 @@ import {
   ticketAlertLinks,
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
-import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
+import { setCooldown } from '../../services/alertCooldown';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
@@ -1082,11 +1082,6 @@ alertsRoutes.post(
           template?.cooldownMinutes ?? 15;
         await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
       }
-    } else if (alert.configPolicyId) {
-      // Config policy alert — cooldownMinutes stored in alert context
-      const ctx = alert.context as Record<string, unknown> | null;
-      const cooldownMinutes = typeof ctx?.cooldownMinutes === 'number' ? ctx.cooldownMinutes : 5;
-      await markConfigPolicyRuleCooldown(alert.configPolicyId, alert.deviceId, cooldownMinutes);
     }
 
     try {

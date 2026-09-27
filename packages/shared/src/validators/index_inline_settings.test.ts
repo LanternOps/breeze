@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as validators from './index';
 import {
   patchInlineSettingsSchema,
   policyAppRuleSchema,
@@ -6,7 +7,6 @@ import {
   mergeRingAutoApproveWrite,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
-  monitoringInlineSettingsSchema,
   deviceLifecycleInlineSettingsSchema,
 } from './index';
 
@@ -511,182 +511,6 @@ describe('sensitiveDataInlineSettingsSchema', () => {
 });
 
 // ============================================
-// Monitoring Inline Settings
-// ============================================
-
-describe('monitoringInlineSettingsSchema', () => {
-  it('should accept defaults', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({});
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.checkIntervalSeconds).toBe(60);
-      expect(result.data.watches).toEqual([]);
-      expect(result.data.eventLogAlerts).toEqual([]);
-      expect(result.data.alertRules).toEqual([]);
-    }
-  });
-
-  it('should accept watch entry', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      watches: [
-        {
-          watchType: 'service',
-          name: 'wuauserv',
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('should accept process watch with thresholds', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      watches: [
-        {
-          watchType: 'process',
-          name: 'nginx',
-          cpuThresholdPercent: 80,
-          memoryThresholdMb: 512,
-          autoRestart: true,
-          maxRestartAttempts: 5,
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  // #3491/#3492: a saved watch loads back from the DB with nulls in the three
-  // nullable columns, and the editor posts them straight back. Rejecting null
-  // made an existing policy impossible to re-save once any watch had an unset
-  // field — the reported error named exactly these three paths.
-  it('should accept a saved watch round-tripped with null optional fields', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      watches: [
-        {
-          watchType: 'service',
-          name: 'wuauserv',
-          displayName: null,
-          cpuThresholdPercent: null,
-          memoryThresholdMb: null,
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      // Preserved as null rather than coerced: the write path stores `?? null`
-      // and the agent delivery check is `!= null`, so both spellings behave
-      // identically downstream.
-      const watch = result.data.watches[0];
-      expect(watch?.displayName).toBeNull();
-      expect(watch?.cpuThresholdPercent).toBeNull();
-      expect(watch?.memoryThresholdMb).toBeNull();
-    }
-  });
-
-  // Covers all three widened fields, not just one: nullable must not become
-  // "accepts anything". Type and range checks have to survive the change.
-  it.each([
-    ['displayName wrong type', { displayName: 42 }],
-    ['displayName too long', { displayName: 'x'.repeat(256) }],
-    ['cpuThresholdPercent wrong type', { cpuThresholdPercent: 'high' }],
-    ['cpuThresholdPercent above max', { cpuThresholdPercent: 101 }],
-    ['cpuThresholdPercent below min', { cpuThresholdPercent: -1 }],
-    ['memoryThresholdMb wrong type', { memoryThresholdMb: 'lots' }],
-    ['memoryThresholdMb below min', { memoryThresholdMb: -1 }],
-  ])('still rejects %s after the nullable widening', (_label, patch) => {
-    expect(
-      monitoringInlineSettingsSchema.safeParse({
-        watches: [{ watchType: 'process', name: 'nginx', ...patch }],
-      }).success
-    ).toBe(false);
-  });
-
-  it('should reject checkIntervalSeconds below 10', () => {
-    expect(
-      monitoringInlineSettingsSchema.safeParse({ checkIntervalSeconds: 9 }).success
-    ).toBe(false);
-  });
-
-  it('should reject checkIntervalSeconds above 3600', () => {
-    expect(
-      monitoringInlineSettingsSchema.safeParse({ checkIntervalSeconds: 3601 }).success
-    ).toBe(false);
-  });
-
-  it('should reject watches over 200', () => {
-    const watches = Array.from({ length: 201 }, (_, i) => ({
-      watchType: 'service' as const,
-      name: `svc${i}`,
-    }));
-    expect(
-      monitoringInlineSettingsSchema.safeParse({ watches }).success
-    ).toBe(false);
-  });
-
-  it('should reject non-empty eventLogAlerts (moved to the Alerts feature)', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      eventLogAlerts: [
-        {
-          name: 'Security Alert',
-          category: 'security',
-          level: 'critical',
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
-    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('Alerts feature');
-  });
-
-  // Pre-consolidation this exercised a 50-item cap; now any non-empty
-  // eventLogAlerts is write-blocked (see write-barrier tests above), so a
-  // large payload is rejected for that reason rather than a size limit.
-  it('should reject a large eventLogAlerts payload (write-blocked, not size-limited)', () => {
-    const alerts = Array.from({ length: 51 }, (_, i) => ({
-      name: `alert${i}`,
-      category: 'security' as const,
-      level: 'error' as const,
-    }));
-    expect(
-      monitoringInlineSettingsSchema.safeParse({ eventLogAlerts: alerts }).success
-    ).toBe(false);
-  });
-
-  it('should reject non-empty alertRules (moved to the Alerts feature)', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      alertRules: [
-        {
-          name: 'CPU Alert',
-          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
-        },
-      ],
-    });
-    expect(result.success).toBe(false);
-    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('Alerts feature');
-  });
-
-  // Pre-consolidation these exercised shape/size validation on individual
-  // rule entries; now any non-empty alertRules is write-blocked outright
-  // (see write-barrier tests above), so these payloads are rejected for
-  // that reason rather than the entry-level rules they used to test.
-  it('should reject a non-empty alertRules payload regardless of entry shape', () => {
-    const result = monitoringInlineSettingsSchema.safeParse({
-      alertRules: [{ name: 'Test', conditions: [] }],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject a large alertRules payload (write-blocked, not size-limited)', () => {
-    const rules = Array.from({ length: 101 }, (_, i) => ({
-      name: `rule${i}`,
-      conditions: [{ type: 'metric' as const }],
-    }));
-    expect(
-      monitoringInlineSettingsSchema.safeParse({ alertRules: rules }).success
-    ).toBe(false);
-  });
-});
-
-
-// ============================================
 // device_lifecycle (#2787 item 4) — purge removed devices after N days
 // ============================================
 
@@ -728,5 +552,11 @@ describe('deviceLifecycleInlineSettingsSchema', () => {
     expect(
       deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 30, purgeEverything: true }).success,
     ).toBe(false);
+  });
+});
+
+describe('retired inline settings validators', () => {
+  it.each(['alertRuleInlineSettingsSchema', 'monitoringInlineSettingsSchema'])('does not export %s', (name) => {
+    expect(validators).not.toHaveProperty(name);
   });
 });

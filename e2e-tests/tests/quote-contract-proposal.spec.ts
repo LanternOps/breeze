@@ -253,6 +253,11 @@ test.describe('quote + contract proposal lifecycle', () => {
 
       const contractBlock = publicPage.getByTestId('contract-block');
       await contractBlock.waitFor({ timeout: 20_000 });
+      // The agreement sits collapsed below the sign panel (#7040) — open it
+      // the way a customer would before reading it.
+      await expect(contractBlock).not.toHaveAttribute('open');
+      await contractBlock.locator('summary').click();
+      await expect(contractBlock).toHaveAttribute('open');
       // {{client.name}} substituted with the org's name, still wrapped in <strong>.
       await expect(contractBlock.locator('strong')).toHaveText(orgName, { timeout: 15_000 });
       // {{governing_state}} substituted, still wrapped in <li>.

@@ -11,6 +11,7 @@ vi.mock('./aiTools', () => ({
       manage_maintenance_windows: 1,
       manage_automations: 1,
       manage_alert_rules: 1,
+      manage_monitors: 1,
       generate_report: 1,
       // Configuration policy tools
       manage_configuration_policy: 1,
@@ -73,6 +74,34 @@ import {
   TIER3_ACTIONS,
 } from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
+
+describe('manage_monitors — retired mutations', () => {
+  it.each(['create', 'update', 'delete'])('%s returns its refusal without approval', (action) => {
+    expect(checkGuardrails('manage_monitors', { action })).toMatchObject({
+      tier: 1,
+      allowed: true,
+      requiresApproval: false,
+    });
+  });
+
+  it.each(['get', 'create', 'update', 'delete'])('%s requires only devices.read', async (action) => {
+    const auth = {
+      user: { id: 'user-1' },
+      token: { roleId: 'operator', scope: 'organization' },
+      orgId: 'org-1',
+      partnerId: null,
+    } as any;
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_permissions, resource, permissionAction) =>
+      resource === 'devices' && permissionAction === 'read',
+    );
+
+    expect(requiredPermissionsForTool('manage_monitors', { action })).toEqual([
+      { resource: 'devices', action: 'read' },
+    ]);
+    expect(await checkToolPermission('manage_monitors', { action }, auth)).toBeNull();
+  });
+});
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
 

@@ -825,6 +825,25 @@ describe('software upload-session routes', () => {
       return p;
     }
 
+    // #7038: declared success codes stored in the session metadata reach the
+    // version insert (the web's chunked-upload path for large installers).
+    it('threads successExitCodes from the session metadata into the version insert', async () => {
+      await seedTempFile('helloworld');
+      const session = makeSession({
+        bytesReceived: 10,
+        versionMetadata: { version: '1.2.3', successExitCodes: [1101, 1000] },
+      });
+      selectQueue([session], [session], [catalogRow]);
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+
+      expect(res.status).toBe(201);
+      expect(vi.mocked(insertLatestSoftwareVersion).mock.calls[0]![1]).toMatchObject({
+        successExitCodes: [1000, 1101],
+      });
+    });
+
     it('uploads to S3, inserts the version, audits, and cleans up', async () => {
       const tempPath = await seedTempFile('helloworld'); // 10 bytes
       // select #1: instance-guard pre-read; #2: session (inside lock); #3: catalog item.

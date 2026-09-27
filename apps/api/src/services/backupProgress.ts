@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, devices, IN_FLIGHT_BACKUP_JOB_STATUSES } from '../db/schema';
 // Imported from the leaf module, not the `../db/schema` barrel: that barrel is
@@ -86,8 +86,9 @@ export function resetUnmatchedBackupProgressCache(): void {
  * unusable.
  *
  * `snapshotId` is best-effort recovery metadata; `current`/`filesDone` and the
- * `lastProgressAt` bump they carry are load-bearing for job liveness — the
- * stale reaper kills a job whose `last_progress_at` goes cold, and
+ * `lastKeepaliveAt`/`lastProgressAt` bumps they carry are load-bearing for job
+ * liveness — the stale reaper kills a job whose liveness or progress goes
+ * cold, and
  * `refreshDispatchedExpectation` keeps the eventual terminal result from being
  * dropped as a replay. Letting the optional field veto the load-bearing ones
  * would invert that priority: a snapshot-id format change that outgrew the
@@ -186,21 +187,40 @@ export async function applyBackupProgress(params: {
   }
 
   const now = new Date();
+  const nowSql = sql`${now.toISOString()}::timestamptz`;
+  // #2798: every applied message proves the agent is alive, but only a real
+  // increase in bytes or files is PROGRESS. The agent re-sends unchanged
+  // counters every 30s as a keepalive; when that bumped last_progress_at, a
+  // live agent with a wedged upload looked healthy forever and the reaper's
+  // stall rule could never fire. Postgres evaluates every SET expression
+  // against the pre-update row, so the comparisons below see the stored
+  // counters, not the ones being written in this same statement.
+  const advanced: SQL[] = [];
+  if (progress.current !== undefined) {
+    advanced.push(sql`${progress.current} > COALESCE(${backupJobs.transferredSize}, 0)`);
+  }
+  if (progress.filesDone !== undefined) {
+    advanced.push(sql`${progress.filesDone} > COALESCE(${backupJobs.fileCount}, 0)`);
+  }
   const updateSet: Record<string, unknown> = {
-    lastProgressAt: now,
+    lastKeepaliveAt: now,
     updatedAt: now,
   };
+  if (advanced.length > 0) {
+    updateSet.lastProgressAt = sql`CASE WHEN ${sql.join(advanced, sql` OR `)} THEN ${nowSql} ELSE ${backupJobs.lastProgressAt} END`;
+  }
   // Queue messages are liveness, not execution. Only the first signal can
   // undo the legacy dispatch-time running marker. A delayed queued ping must
   // never demote a workload that has already emitted its starting signal.
+  // "First signal" = no liveness recorded yet (last_keepalive_at IS NULL).
   if (progress.phase === 'queued') {
-    updateSet.status = sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`;
-    updateSet.startedAt = sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`;
+    updateSet.status = sql`CASE WHEN ${backupJobs.lastKeepaliveAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`;
+    updateSet.startedAt = sql`CASE WHEN ${backupJobs.lastKeepaliveAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`;
   } else {
     // Legacy helpers report uploading/scanning without an explicit starting
     // signal. Their actual execution progress must also win the dispatch race.
     updateSet.status = 'running';
-    updateSet.startedAt = sql`CASE WHEN ${backupJobs.status} = 'pending' OR ${backupJobs.lastProgressAt} IS NULL THEN ${now.toISOString()}::timestamptz ELSE ${backupJobs.startedAt} END`;
+    updateSet.startedAt = sql`CASE WHEN ${backupJobs.status} = 'pending' OR ${backupJobs.lastKeepaliveAt} IS NULL THEN ${nowSql} ELSE ${backupJobs.startedAt} END`;
   }
   if (progress.current !== undefined) {
     updateSet.transferredSize = progress.current;
@@ -332,11 +352,12 @@ export async function applyBackupStartedAck(params: {
   const updated = await db
     .update(backupJobs)
     .set({
-      lastProgressAt: now,
+      // An admission/started ack is liveness, not transfer progress (#2798).
+      lastKeepaliveAt: now,
       updatedAt: now,
       ...(params.queued ? {
-        status: sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`,
-        startedAt: sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`,
+        status: sql`CASE WHEN ${backupJobs.lastKeepaliveAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`,
+        startedAt: sql`CASE WHEN ${backupJobs.lastKeepaliveAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`,
       } : {
         status: 'running' as const,
         startedAt: sql`COALESCE(${backupJobs.startedAt}, ${now.toISOString()}::timestamptz)`,

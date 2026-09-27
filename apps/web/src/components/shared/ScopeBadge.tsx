@@ -34,6 +34,13 @@ export function ScopeBadge({
     icon = <Layers className="h-3 w-3" />;
     label = t('shared.scope.partnerWide');
     tone = 'bg-primary/10 text-primary';
+  } else if (orgId === null && partnerId === null && import.meta.env.DEV) {
+    // Unreachable for rows guarded by the DB `<table>_one_owner_chk` XOR check,
+    // so an owner-less non-system row means the caller passed the wrong fields
+    // (#2600). It still renders as an org badge — make the mislabel loud in dev.
+    console.warn('ScopeBadge: non-system row has neither orgId nor partnerId; rendering as organization', {
+      orgName,
+    });
   }
 
   return (

@@ -334,6 +334,14 @@
       "untitled": "Script",
       "awaiting": "Waiting for the agent to report…",
       "truncated": "Output truncated — see the device's script history for the full text."
+    },
+    "commandOutput": {
+      "show_one": "Show command output",
+      "show_other": "Show command output ({{count}})",
+      "hide_one": "Hide command output",
+      "hide_other": "Hide command output ({{count}})",
+      "label": "Command (action {{index}})",
+      "truncated": "Output truncated — the full text is not kept in this view."
     }
   },
   "automationsPage": {

@@ -1,15 +1,5 @@
-import { monitorConditionSchemas } from '@breeze/shared';
+import { monitorConditionSchemas, type NetworkCheckMonitorCondition } from '@breeze/shared';
 import type { MonitorKindSpec } from './types';
-
-type C = {
-  checkType: 'icmp_ping' | 'tcp_port' | 'http_check' | 'dns_check';
-  target: string;
-  port?: number;
-  expectStatus?: number;
-  pollingIntervalSeconds: number;
-  timeoutSeconds: number;
-  consecutiveFailures: number;
-};
 
 /**
  * `network_check` (#5287 W04, #5291) — the one ADAPTER kind.
@@ -27,10 +17,10 @@ type C = {
  * another tenant's agent at an arbitrary host. Same reasoning as `scriptId` on
  * the `script` kind.
  */
-export const networkCheckKind: MonitorKindSpec<C> = {
+export const networkCheckKind: MonitorKindSpec<NetworkCheckMonitorCondition> = {
   kind: 'network_check',
   conditionSchema: monitorConditionSchemas.network_check,
-  overridableKeys: ['pollingIntervalSeconds', 'consecutiveFailures'],
+  overridableKeys: ['pollingIntervalSeconds', 'consecutiveFailures', 'degradedIsFailure', 'maxResponseMs'],
   defaultSeverity: 'high',
   agentDelivered: true,
   titleTemplate: 'Network check {{ruleName}} failing',
@@ -43,5 +33,7 @@ export const networkCheckKind: MonitorKindSpec<C> = {
     type: 'network_check',
     monitorId: ctx.monitorId,
     consecutiveFailures: c.consecutiveFailures,
+    degradedIsFailure: c.degradedIsFailure,
+    ...(c.maxResponseMs != null ? { maxResponseMs: c.maxResponseMs } : {}),
   }),
 };

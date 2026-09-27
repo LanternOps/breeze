@@ -15,25 +15,22 @@ export const diskIoHighHandler: ConditionHandler = {
       return { passed: false, description: 'No metrics available for disk I/O', dataAvailable: false };
     }
 
-    // cond.value is in MB/s (user-friendly); convert to Bps for DB comparison
-    const thresholdBps = cond.value * 1_000_000;
-
-    const allExceed = metrics.every(m => {
-      let value: number;
+    // The agent reports disk rates in BYTES per second; cond.value is authored
+    // in MB/s (10^6 bytes). Convert each sample to MB/s so actualValue is in the
+    // unit the monitor template renders ("{{actualValue}} MB/s").
+    // A null rate reads as 0: the agent serialises these with `omitempty`, so a
+    // genuine zero-traffic interval arrives as null (the column is nullable).
+    const sampleMBps = (m: (typeof metrics)[number]): number => {
       const readBps = m.diskReadBps !== null ? Number(m.diskReadBps) : 0;
       const writeBps = m.diskWriteBps !== null ? Number(m.diskWriteBps) : 0;
+      const bytesPerSec = cond.direction === 'read' ? readBps : cond.direction === 'write' ? writeBps : readBps + writeBps;
+      return bytesPerSec / 1_000_000;
+    };
 
-      if (cond.direction === 'read') value = readBps;
-      else if (cond.direction === 'write') value = writeBps;
-      else value = readBps + writeBps;
+    const allExceed = metrics.every(m => compareValue(sampleMBps(m), cond.operator, cond.value));
 
-      return compareValue(value, cond.operator, thresholdBps);
-    });
-
-    const latest = metrics[0];
-    const readBps = latest?.diskReadBps !== null && latest?.diskReadBps !== undefined ? Number(latest.diskReadBps) : 0;
-    const writeBps = latest?.diskWriteBps !== null && latest?.diskWriteBps !== undefined ? Number(latest.diskWriteBps) : 0;
-    const latestValue = cond.direction === 'read' ? readBps : cond.direction === 'write' ? writeBps : readBps + writeBps;
+    // metrics are newest-first (getRecentMetrics orders by timestamp desc).
+    const latestValue = Math.round(sampleMBps(metrics[0]!) * 100) / 100;
 
     const operatorDisplay = getOperatorDisplay(cond.operator);
 

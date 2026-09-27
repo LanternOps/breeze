@@ -12,6 +12,9 @@ import { fetchWithAuth } from "@/stores/auth";
 import { fetchAllSites } from "@/lib/fetchAllSites";
 import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
+import { runAction, ActionError } from "@/lib/runAction";
+import { showToast } from "../shared/Toast";
+import type { ScriptAdmissionResult } from "@breeze/shared";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { encodeFilterToHash } from "./filterUrl";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
@@ -99,6 +102,14 @@ type DragPayload = {
   deviceId: string;
   fromGroupId: string;
 };
+
+/**
+ * Mirrors the `deviceIds` cap in the API's `executeScriptSchema`
+ * (`apps/api/src/services/scriptRunRequest.ts`). Checked client-side so the
+ * user gets a sentence naming the device count instead of a raw validation
+ * error; the server still enforces it.
+ */
+const MAX_SCRIPT_TARGETS = 500;
 
 const osLabels: Record<OSType, string> = {
   windows: "Windows",
@@ -770,28 +781,118 @@ export default function DeviceGroupsPage() {
     }
   };
 
+  /**
+   * Run one script across every device in the selected groups (#3429).
+   *
+   * There is deliberately no `/device-groups/bulk` endpoint: this composes the
+   * two canonical, access-checked routes instead of adding a second script
+   * execution entrypoint to keep in sync.
+   *
+   *  1. `GET /device-groups/:id/devices` per group — authorizes each group
+   *     against the caller's org access and site restrictions, and returns only
+   *     members the caller may see.
+   *  2. ONE `POST /scripts/:id/execute` with the de-duplicated device set — the
+   *     server re-authorizes every device (org, site, script-org match, OS) and
+   *     batches per device org, so a selection spanning orgs fans out under
+   *     each device's own org and a device in two groups runs once.
+   *
+   * If any group's membership cannot be read, nothing runs: executing on the
+   * readable subset would silently skip a group the user explicitly chose.
+   */
   const handleBulkScript = async () => {
     if (!bulkScriptId || selectedGroupIds.size === 0) return;
     setSubmitting(true);
+    setFormError(undefined);
+    const script = scripts.find((candidate) => candidate.id === bulkScriptId);
     try {
-      const response = await fetchWithAuth("/device-groups/bulk", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "run-script",
-          scriptId: bulkScriptId,
-          groupIds: Array.from(selectedGroupIds),
+      const memberLists = await Promise.all(
+        Array.from(selectedGroupIds).map(async (groupId) => {
+          const res = await fetchWithAuth(`/device-groups/${groupId}/devices`);
+          const body = await res.json().catch(() => ({}));
+          // A 200 whose body is not the `{ data: [...] }` envelope is a
+          // failure, not an empty group: `asList` would fail closed to `[]`
+          // and the user would be told their groups have no devices.
+          if (!res.ok || !Array.isArray(body?.data)) {
+            const groupName = groups.find((group) => group.id === groupId)?.name ?? groupId;
+            const detail = typeof body?.error === "string" ? `: ${body.error}` : "";
+            throw new Error(
+              `${t("deviceGroupsPage.bulkScriptMembershipFailed", { group: groupName })}${detail}`,
+            );
+          }
+          return (body.data as Array<{ deviceId?: unknown }>)
+            .map((member) => member?.deviceId)
+            .filter((id): id is string => typeof id === "string");
         }),
-      });
+      );
 
-      if (!response.ok) {
-        throw new Error("Failed to run script on groups");
+      const deviceIds = Array.from(new Set(memberLists.flat()));
+      if (deviceIds.length === 0) {
+        setFormError(t("deviceGroupsPage.bulkScriptNoDevices"));
+        return;
+      }
+      if (deviceIds.length > MAX_SCRIPT_TARGETS) {
+        setFormError(
+          t("deviceGroupsPage.bulkScriptTooManyDevices", {
+            count: deviceIds.length,
+            max: MAX_SCRIPT_TARGETS,
+          }),
+        );
+        return;
       }
 
-      await fetchGroups();
+      const result = await runAction<ScriptAdmissionResult>({
+        request: () =>
+          fetchWithAuth(`/scripts/${bulkScriptId}/execute`, {
+            method: "POST",
+            body: JSON.stringify({ deviceIds }),
+          }),
+        errorFallback: t("deviceGroupsPage.failedToRunScriptOnGroups"),
+        friendly: (code) =>
+          code === "MFA_REQUIRED" ? t("devicesPage.toasts.mfaRequired") : undefined,
+      });
+
+      const targets = Array.isArray(result?.targets) ? result.targets : [];
+      const admitted = targets.filter((target) => target.admission === "admitted");
+      const refused = targets.filter((target) => target.admission !== "admitted");
+      const reasons = Array.from(
+        new Set(refused.map((target) => target.reasonCode ?? target.admission)),
+      ).join(", ");
+
+      if (admitted.length === 0) {
+        setFormError(
+          refused.length > 0
+            ? t("deviceGroupsPage.bulkScriptNoneQueued", { reasons })
+            : t("deviceGroupsPage.failedToRunScriptOnGroups"),
+        );
+        return;
+      }
+      if (refused.length > 0) {
+        showToast({
+          type: "warning",
+          message: t("deviceGroupsPage.bulkScriptPartiallyQueued", {
+            admitted: admitted.length,
+            total: targets.length,
+            refused: refused.length,
+            reasons,
+          }),
+        });
+      } else {
+        showToast({
+          type: "success",
+          message: t("deviceGroupsPage.bulkScriptQueued", {
+            script: script?.name ?? "",
+            count: admitted.length,
+          }),
+        });
+      }
+
       setSelectedGroupIds(new Set());
       handleCloseModal();
     } catch (err) {
-      setError(
+      // runAction already toasted any HTTP failure (and a 401 goes to the
+      // auth redirect); only membership/network errors still need showing.
+      if (err instanceof ActionError) return;
+      setFormError(
         err instanceof Error
           ? err.message
           : t("deviceGroupsPage.failedToRunScriptOnGroups"),
@@ -1614,6 +1715,11 @@ export default function DeviceGroupsPage() {
                 ))}
               </select>
             </div>
+            {formError && (
+              <div role="alert" className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"

@@ -3,7 +3,7 @@
  * Uses H264 video track from the agent's pion peer connection.
  */
 
-import { classifyAnswerPoll } from './answerPoll';
+import { classifyAnswerPoll, resolveAnswerTimeoutMs } from './answerPoll';
 import { apiFetch } from './api';
 
 /**
@@ -156,6 +156,21 @@ const DEFAULT_ICE_SERVERS: readonly RTCIceServer[] = [{ urls: 'stun:stun.l.googl
  * (issue #3041).
  */
 export const ANSWER_POLL_INITIAL_INTERVAL_MS = 50;
+/**
+ * How long to wait for the agent's answer when the API gives no budget of its
+ * own (an older API, or a session with no end-user prompt). A consent-mode
+ * start extends this from the poll response's `answerTimeoutMs` (#6818).
+ */
+export const DEFAULT_ANSWER_TIMEOUT_MS = 15_000;
+
+/** Optional progress callbacks for createWebRTCSession. */
+export interface WebRTCSessionHooks {
+  /**
+   * Fires once, while the answer is still outstanding, when the API reports
+   * this start is waiting on the end user's consent dialog (#6818).
+   */
+  onAwaitingUserApproval?: () => void;
+}
 export const ANSWER_POLL_MAX_INTERVAL_MS = 500;
 const ANSWER_POLL_BACKOFF_FACTOR = 1.5;
 
@@ -266,6 +281,7 @@ export async function createWebRTCSession(
   videoEl: HTMLVideoElement,
   displayIndex?: number,
   targetSessionId?: number,
+  hooks: WebRTCSessionHooks = {},
 ): Promise<WebRTCSession> {
   // Bail out before any network work when the WebView has no WebRTC at all.
   // This must come first: the ICE-servers request below would otherwise burn a
@@ -359,7 +375,7 @@ export async function createWebRTCSession(
     }
 
     // Poll for the answer (agent processes offer and returns SDP answer)
-    const answerSdp = await pollForAnswer(params, 15000);
+    const answerSdp = await pollForAnswer(params, DEFAULT_ANSWER_TIMEOUT_MS, hooks);
 
     await pc.setRemoteDescription(
       new RTCSessionDescription({ type: 'answer', sdp: answerSdp }),
@@ -434,8 +450,17 @@ async function fetchSessionEndedReason(params: AuthenticatedConnectionParams): P
  * Also checks for session failure so the viewer sees agent-side errors
  * immediately instead of waiting for the full timeout.
  */
-async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: number): Promise<string> {
+async function pollForAnswer(
+  params: AuthenticatedConnectionParams,
+  defaultTimeoutMs: number,
+  hooks: WebRTCSessionHooks,
+): Promise<string> {
   const start = Date.now();
+  // #6818: re-derived from every successful poll. In consent mode the agent
+  // holds its answer until the end user clicks Allow, so the API's budget
+  // (consent dialog + on-demand helper spawn) replaces the default.
+  let timeoutMs = defaultTimeoutMs;
+  let awaitingApprovalReported = false;
   let intervalMs = ANSWER_POLL_INITIAL_INTERVAL_MS;
   // Remembered so a timeout can say WHY it timed out. Without this a server
   // returning 503 for 15s is indistinguishable from an agent that never
@@ -458,11 +483,21 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
       if (verdict.kind === 'failed') {
         throw new AgentSessionError(verdict.message || 'Remote desktop failed to start on agent');
       }
+      if (verdict.kind === 'denied') {
+        // The consent gate refused the start and the API revoked the viewer
+        // token, so this sessionId can never connect: terminal, no fallback.
+        throw new SessionEndedError(verdict.message);
+      }
       if (verdict.kind === 'ended') {
         throw new SessionEndedError();
       }
       if (verdict.kind === 'answer') {
         return verdict.answer;
+      }
+      timeoutMs = resolveAnswerTimeoutMs(data, defaultTimeoutMs);
+      if (data.promptMode === 'consent' && !awaitingApprovalReported) {
+        awaitingApprovalReported = true;
+        hooks.onAwaitingUserApproval?.();
       }
     } else if (isSessionEndedResponse(resp.status)) {
       // Session ended/revoked server-side mid-poll — stop immediately so the
@@ -490,7 +525,7 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
     } else {
       // 5xx/408 — genuinely transient, so keep polling. Log the first of each
       // kind so a real outage is visible rather than silently absorbed into a
-      // generic timeout 15s later.
+      // generic timeout later.
       if (resp.status !== lastErrorStatus) {
         console.warn(`Answer poll got HTTP ${resp.status}; retrying until timeout`);
       }

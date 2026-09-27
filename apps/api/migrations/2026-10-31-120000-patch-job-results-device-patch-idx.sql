@@ -1,0 +1,24 @@
+-- @no-transaction
+-- #4223: patch_job_results (device_id, patch_id, created_at).
+--
+-- The org Patches list and the device Patches tab now overlay each patch's
+-- latest install attempt (services/patchInstallFailures.ts) so a failed
+-- attempt — e.g. the agent's battery preflight — shows with its reason
+-- instead of "Pending approval". That read is
+--   SELECT DISTINCT ON (device_id, patch_id) ...
+--   WHERE patch_id = ANY($ids) [AND device_id = $device]
+--   ORDER BY device_id, patch_id, created_at DESC
+-- and the table has NO index on device_id or patch_id (FKs only; every other
+-- index is partial on status or reboot state), so without this it is a full
+-- sequential scan of every patch result ever written, on each page load.
+--
+-- uuid equality and timestamp ordering are leakproof, so the index is usable
+-- as breeze_app under forced RLS (unlike enum_eq on status — see
+-- 2026-10-16-190700). Leading device_id also serves the device-join RLS
+-- policy's per-device probe.
+--
+-- CREATE INDEX CONCURRENTLY (autoMigrate's @no-transaction lane): every patch
+-- job writes here, so the build must not take a SHARE lock at deploy time.
+-- Idempotent via IF NOT EXISTS.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_patch_job_results_device_patch_created
+  ON patch_job_results (device_id, patch_id, created_at);

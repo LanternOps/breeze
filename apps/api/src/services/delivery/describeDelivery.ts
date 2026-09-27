@@ -65,7 +65,7 @@ export async function describeDelivery(
   const origin = resolved.source === 'routing_rule' || resolved.source === 'default_row'
     ? `${owner ?? 'unavailable'} ${resolved.source === 'default_row' ? 'default' : 'rule'} "${resolved.routingRuleName ?? ''}"`
     : { monitor_none: 'monitor: inbox only', monitor_channels: 'monitor override',
-        legacy_override: 'legacy override', none: 'no delivery row' }[resolved.source];
+        none: 'no delivery row' }[resolved.source];
   const severity = input.severity[0]!.toUpperCase() + input.severity.slice(1);
   return {
     ...resolved,

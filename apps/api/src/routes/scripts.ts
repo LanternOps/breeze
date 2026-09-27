@@ -22,7 +22,7 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { executeScriptOnDevices } from '../services/scriptExecution';
@@ -1300,6 +1300,11 @@ scriptRoutes.post(
     const { id: scriptId } = c.req.valid('param');
     const data = c.req.valid('json');
 
+    // #7103 — registered in middleware/selfManagedDbContextRoutes.ts, so no
+    // request transaction is held here. The service reads and creates every
+    // row through this runner (a context that commits when it returns) and
+    // only then sends each device's command, so an agent can never answer a
+    // row the result path cannot see yet.
     const result = await executeScriptOnDevices({
       scriptId,
       deviceIds: data.deviceIds,
@@ -1309,6 +1314,7 @@ scriptRoutes.post(
       targetSessionId: data.targetSessionId,
       auth,
       permissions: c.get('permissions') as UserPermissions | undefined,
+      runInDbContext: (fn) => withAuthDbAccessContext(auth, fn),
     });
 
     if (!result.ok) {

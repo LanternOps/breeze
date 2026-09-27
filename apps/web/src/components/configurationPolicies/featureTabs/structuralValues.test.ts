@@ -14,12 +14,7 @@ const files = [
   'BackupTab.tsx',
   'BackupDestinationSection.tsx',
   'backupTabPresets.ts',
-  // Added with the alert consolidation: AlertRuleTab had discriminated its
-  // condition editors on `condition.type === i18n.t(...)`, which only worked
-  // because the en catalog happened to store the machine value verbatim — every
-  // translated locale silently rendered no condition fields at all.
-  'AlertRuleTab.tsx',
-  'MonitoringTab.tsx',
+
 ];
 
 describe('configuration policy structural values', () => {

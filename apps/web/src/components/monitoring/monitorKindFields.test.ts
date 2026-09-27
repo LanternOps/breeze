@@ -81,6 +81,35 @@ describe('monitorKindFields (#5289, #5291)', () => {
       expect(expectStatus?.showWhen).toEqual({ key: 'checkType', equals: 'http_check' });
     });
 
+    it.each([
+      ['count', 'icmp_ping'],
+      ['expectBanner', 'tcp_port'],
+      ['method', 'http_check'],
+      ['expectedBody', 'http_check'],
+      ['followRedirects', 'http_check'],
+      ['verifySsl', 'http_check'],
+      ['recordType', 'dns_check'],
+      ['expectedValue', 'dns_check'],
+      ['nameserver', 'dns_check'],
+    ])('network_check %s is optional and limited to %s', (key, checkType) => {
+      expect(MONITOR_KIND_FIELDS.network_check.find((field) => field.key === key)).toMatchObject({
+        optional: true,
+        showWhen: { key: 'checkType', equals: checkType },
+      });
+    });
+
+    it('network_check preserves legacy ranges and exposes verdict controls', () => {
+      const fields = MONITOR_KIND_FIELDS.network_check;
+      expect(fields.find((field) => field.key === 'pollingIntervalSeconds')).toMatchObject({ min: 10, max: 86400 });
+      expect(fields.find((field) => field.key === 'timeoutSeconds')).toMatchObject({ min: 1, max: 300 });
+      expect(fields.find((field) => field.key === 'count')).toMatchObject({ min: 1, max: 20 });
+      expect(fields.find((field) => field.key === 'maxResponseMs')).toMatchObject({ min: 1, max: 600000, optional: true });
+      expect(fields.find((field) => field.key === 'degradedIsFailure')).toMatchObject({ kind: 'boolean' });
+      expect(defaultConditionFor('network_check')).toMatchObject({ degradedIsFailure: false });
+      expect(fields.map((field) => field.key)).not.toContain('packetSize');
+      expect(fields.map((field) => field.key)).not.toContain('headers');
+    });
+
     it('software_presence version field carries the expected showWhen', () => {
       const version = MONITOR_KIND_FIELDS.software_presence.find((f) => f.key === 'version');
       expect(version?.showWhen).toEqual({ key: 'presence', equals: 'version_below' });

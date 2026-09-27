@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { ChevronDown, FileText } from 'lucide-react';
+import { htmlReadMinutes, parseTermsSections, textReadMinutes } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { useOrgStore } from '../../../stores/orgStore';
@@ -274,43 +276,9 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
     if (!imageId) return null;
     return <DocImage quoteId={block.quoteId} imageId={imageId} caption={caption} />;
   }
-  if (block.blockType === 'contract') {
-    // Server-rendered content (renderContractBlocksForClient) — never the raw
-    // templateId/templateVersionId/variableValues authoring shape.
-    const content = (block.content ?? {}) as Partial<ContractBlockContent>;
-    const templateName = content.templateName?.trim() || '';
-    const versionNumber = content.versionNumber ?? 0;
-    const label = content.label?.trim();
-    return (
-      <div className="space-y-3 rounded-lg border bg-card p-4 sm:p-5" data-testid="contract-block">
-        {label && <h3 className="text-base font-semibold text-foreground">{label}</h3>}
-        {content.sourceType === 'authored' ? (
-          content.renderedHtml ? (
-            // Server-substituted HTML from an authored contract template — same
-            // sanitizer output + HTML-escaped substitution path as rich_text
-            // blocks above, safe to render as-is.
-            <div
-              className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
-              dangerouslySetInnerHTML={{ __html: content.renderedHtml }}
-            />
-          ) : (
-            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
-              {t('quotes.document.contract.unavailable')}
-            </div>
-          )
-        ) : content.fileUrl ? (
-          <DocContractFile fileUrl={content.fileUrl} templateName={templateName} />
-        ) : (
-          <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
-            {t('quotes.document.contract.unavailable')}
-          </div>
-        )}
-        <p className="text-xs text-muted-foreground">
-          {t('quotes.document.contract.versionFooter', { name: templateName, version: versionNumber })}
-        </p>
-      </div>
-    );
-  }
+  // Contract blocks are agreements, not body content: DocAgreements renders them
+  // after the totals, collapsed (#7040).
+  if (block.blockType === 'contract') return null;
   if (block.blockType === 'table') {
     // Structured JSON, never HTML-parsed — column labels and cell values are
     // sanitized server-side with the inline-only profile (quoteService's
@@ -384,6 +352,170 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
     <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground" data-testid="unsupported-block">
       {t('quotes.document.unsupportedBlock')}
     </div>
+  );
+}
+
+/** One contract block, read into what an agreement row needs. Server-rendered
+ *  content (renderContractBlocksForClient) — never the raw
+ *  templateId/templateVersionId/variableValues authoring shape. */
+function contractRow(block: QuoteBlock) {
+  const content = (block.content ?? {}) as Partial<ContractBlockContent>;
+  const templateName = content.templateName?.trim() || '';
+  return {
+    id: block.id,
+    title: content.label?.trim() || templateName,
+    templateName,
+    versionNumber: content.versionNumber ?? 0,
+    sourceType: content.sourceType === 'uploaded' ? ('uploaded' as const) : ('authored' as const),
+    renderedHtml: content.renderedHtml ?? null,
+    fileUrl: content.fileUrl ?? null,
+  };
+}
+
+function DocContractBody({ contract }: { contract: ReturnType<typeof contractRow> }) {
+  const { t } = useTranslation('billing');
+  return (
+    <div className="space-y-3">
+      {contract.sourceType === 'authored' ? (
+        contract.renderedHtml ? (
+          // Server-substituted HTML from an authored contract template — same
+          // sanitizer output + HTML-escaped substitution path as rich_text
+          // blocks, safe to render as-is.
+          <div
+            className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
+            dangerouslySetInnerHTML={{ __html: contract.renderedHtml }}
+          />
+        ) : (
+          <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
+            {t('quotes.document.contract.unavailable')}
+          </div>
+        )
+      ) : contract.fileUrl ? (
+        <DocContractFile fileUrl={contract.fileUrl} templateName={contract.templateName} />
+      ) : (
+        <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
+          {t('quotes.document.contract.unavailable')}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        {t('quotes.document.contract.versionFooter', { name: contract.templateName, version: contract.versionNumber })}
+      </p>
+    </div>
+  );
+}
+
+/** Free-text T&C as readable sections — the same parser and layout as the
+ *  customer's portal page, so the Preview shows what they will read. */
+function DocTermsBody({ text, label }: { text: string; label: string }) {
+  const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
+  if (sectionCount === 0) {
+    return <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{text}</p>;
+  }
+  return (
+    <div className="max-w-prose space-y-2 text-xs leading-relaxed text-muted-foreground">
+      {sectionCount >= 4 && (
+        <nav aria-label={label} className="space-y-1 pb-2">
+          {blocks.map((b) => (b.kind === 'heading' ? <p key={b.id} className="underline underline-offset-2">{b.text}</p> : null))}
+        </nav>
+      )}
+      {blocks.map((b, i) =>
+        b.kind === 'heading'
+          ? <h4 key={b.id} className="pt-2 text-xs font-semibold text-foreground">{b.text}</h4>
+          : <p key={i} className="text-pretty">{b.text}</p>,
+      )}
+    </div>
+  );
+}
+
+interface AgreementRowProps {
+  title: string;
+  meta: string;
+  testId: string;
+  /** Mount the body only while open — an uploaded agreement's viewer fetches
+   *  the whole file, and most previews never open it. */
+  lazy?: boolean;
+  children: ReactNode;
+}
+
+function DocAgreementRow({ title, meta, testId, lazy, children }: AgreementRowProps) {
+  const { t } = useTranslation('billing');
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="group"
+      data-testid={testId}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-foreground">{title}</span>
+          <span className="block text-xs text-muted-foreground">{meta}</span>
+        </span>
+        {/* Visual affordance only — <details> already exposes expanded state. */}
+        <span aria-hidden className="shrink-0 text-xs font-medium" style={{ color: 'var(--doc-accent)' }}>
+          <span className="group-open:hidden">{t('quotes.document.agreements.read')}</span>
+          <span className="hidden group-open:inline">{t('quotes.document.agreements.hide')}</span>
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="border-t px-4 py-4 sm:px-5">{lazy && !open ? null : children}</div>
+    </details>
+  );
+}
+
+/** The quote's agreements — contract blocks in block order, then the T&C — as
+ *  collapsed rows after the totals. Mirrors the portal's QuoteAgreements and
+ *  the PDF's agreement pages, so a long agreement never pushes the price down. */
+function DocAgreements({ blocks, termsAndConditions }: { blocks: QuoteBlock[]; termsAndConditions: string | null }) {
+  const { t } = useTranslation('billing');
+  const contracts = blocks.filter((b) => b.blockType === 'contract').map(contractRow);
+  const terms = termsAndConditions?.trim() || null;
+  const count = contracts.length + (terms ? 1 : 0);
+  if (count === 0) return null;
+  const termsTitle = t('quotes.document.agreements.termsTitle');
+  const termsSections = terms ? parseTermsSections(terms).sectionCount : 0;
+  const termsMinutes = terms ? textReadMinutes(terms) : 0;
+  return (
+    <section className="space-y-3 border-t pt-6" data-testid="quote-document-agreements">
+      {/* A lone row's title already says what it is; the heading names a list. */}
+      {count > 1 && (
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.agreements.heading')}</h3>
+      )}
+      <div className="divide-y overflow-hidden rounded-lg border">
+        {contracts.map((contract) => (
+          <DocAgreementRow
+            key={contract.id}
+            title={contract.title || t('quotes.document.agreements.untitled')}
+            meta={
+              contract.sourceType === 'uploaded'
+                ? t('quotes.document.agreements.pdfDocument')
+                : contract.renderedHtml
+                  ? t('quotes.document.agreements.readTime', { minutes: htmlReadMinutes(contract.renderedHtml) })
+                  : t('quotes.document.agreements.unavailable')
+            }
+            testId="contract-block"
+            lazy={contract.sourceType === 'uploaded'}
+          >
+            <DocContractBody contract={contract} />
+          </DocAgreementRow>
+        ))}
+        {terms && (
+          <DocAgreementRow
+            title={termsTitle}
+            meta={
+              termsSections > 0
+                ? t('quotes.document.agreements.sectionsReadTime', { count: termsSections, minutes: termsMinutes })
+                : t('quotes.document.agreements.readTime', { minutes: termsMinutes })
+            }
+            testId="quote-document-terms-conditions"
+          >
+            <DocTermsBody text={terms} label={termsTitle} />
+          </DocAgreementRow>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -638,15 +770,9 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
           </section>
         )}
 
-        {/* ── Terms & footer ─────────────────────────────────────── */}
-        {quote.termsAndConditions?.trim() && (
-          <section className="space-y-2 border-t pt-6">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.terms')}</h3>
-            <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">
-              {quote.termsAndConditions.trim()}
-            </p>
-          </section>
-        )}
+        {/* ── Agreements (contract blocks, then T&C), collapsed ──── */}
+        <DocAgreements blocks={sortedBlocks} termsAndConditions={quote.termsAndConditions} />
+
         {branding?.footer?.trim() && (
           <footer className="border-t pt-6 text-center text-xs leading-relaxed text-muted-foreground">
             {branding.footer.trim()}

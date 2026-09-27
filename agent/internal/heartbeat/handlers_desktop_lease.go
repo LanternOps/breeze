@@ -20,7 +20,9 @@ const (
 	// consentHelperWait bounds the head start given to the target session's
 	// user helper before the consent prompt is sent. Missing it is not fatal:
 	// the prompt then reports helper-absent and consentUnavailableBehavior
-	// decides.
+	// decides. Mirrored as AGENT_CONSENT_HELPER_WAIT_MS in
+	// apps/api/src/routes/remote/consentTiming.ts, which sizes the viewer's
+	// answer wait from it (#6818); change both together.
 	consentHelperWait = 30 * time.Second
 )
 

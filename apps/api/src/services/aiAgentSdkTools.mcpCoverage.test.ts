@@ -9,7 +9,10 @@ import { aiTools } from './aiTools';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { TIER3_ACTIONS } from './aiGuardrails';
 import { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } from './aiToolsConfigPolicy';
-import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
+import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
+import { getMcpPrompt } from './mcpGuidance';
 
 /**
  * MCP registration coverage guard (#2605).
@@ -381,7 +384,7 @@ describe('prerequisite tool bounds match the columns behind them (#2814)', () =>
     }).success).toBe(true);
   });
 
-  it('manage_policy_feature_link accepts every DB-valid feature type', () => {
+  it('manage_policy_feature_link accepts canonical types and refuses retired types', () => {
     for (const featureType of CONFIG_FEATURE_TYPES) {
       expect(
         validateToolInput('manage_policy_feature_link', {
@@ -393,6 +396,46 @@ describe('prerequisite tool bounds match the columns behind them (#2814)', () =>
       ).toBe(true);
     }
   });
+  it('keeps retired feature types in the database but outside the tool surface', () => {
+    for (const featureType of RETIRED_CONFIG_FEATURE_TYPES) {
+      expect(validateToolInput('manage_policy_feature_link', {
+        action: 'add', configPolicyId: '00000000-0000-4000-8000-000000000000', featureType,
+      }).success).toBe(false);
+    }
+    expect([...CONFIG_FEATURE_TYPES, ...RETIRED_CONFIG_FEATURE_TYPES].sort())
+      .toEqual([...configFeatureTypeEnum.enumValues].sort());
+  });
+
+  it('manage_alert_rules exposes only compiled-rule reads and testing', () => {
+    const definition = aiTools.get('manage_alert_rules')!.definition;
+    const schema = definition.input_schema as { properties: { action: { enum: string[] } } };
+    expect(schema.properties.action.enum).toEqual(['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary']);
+    expect(definition.description).toContain('manage_monitor_definitions');
+    expect(definition.description).not.toMatch(/featureType "alert_rule"/);
+  });
+
+  it('the SDK alert-rule registration omits retired actions and authoring fields', () => {
+    expect(sdkDeclaredKeys('manage_alert_rules')).toEqual(['action', 'limit', 'ruleId', 'severity']);
+    sdkServer ??= createBreezeMcpServer(() => ({}) as never);
+    const schema = (sdkServer as unknown as {
+      instance: { _registeredTools: Record<string, { inputSchema: z.ZodObject<z.ZodRawShape> }> };
+    }).instance._registeredTools['manage_alert_rules']!.inputSchema;
+    for (const action of ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary']) {
+      expect(schema.safeParse({ action }).success).toBe(true);
+    }
+    for (const action of ['list_templates', 'create_rule', 'update_rule', 'delete_rule']) {
+      expect(schema.safeParse({ action }).success).toBe(false);
+    }
+  });
+
+  it('prompt guidance authors alert conditions as monitors', () => {
+    expect(AI_SYSTEM_PROMPT_BASE).not.toMatch(/Other features \(alert_rule|monitoring, maintenance/);
+    expect(AI_SYSTEM_PROMPT_BASE).toContain('manage_alert_rules (read-only, compiled rules)');
+    const guidance = getMcpPrompt('breeze-turnkey-setup', {}).messages[0]!.content.text;
+    expect(guidance).toContain('Core alert conditions as monitors (manage_monitor_definitions');
+    expect(guidance).not.toContain("policy's alert_rule feature");
+  });
+
 });
 
 describe('vulnerability tools reach the chat model (#2605)', () => {

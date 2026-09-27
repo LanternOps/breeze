@@ -57,14 +57,11 @@ vi.mock('./alertConditions', () => ({
 vi.mock('./alertCooldown', () => ({
   isCooldownActive: vi.fn(async () => false),
   setCooldown: vi.fn(),
-  isConfigPolicyRuleCooling: vi.fn(),
-  markConfigPolicyRuleCooldown: vi.fn(),
   recordStateTransition: vi.fn(),
   isFlapping: vi.fn(async () => false),
 }));
 
 vi.mock('./featureConfigResolver', () => ({
-  resolveAlertRulesForDevice: vi.fn(),
   resolveMaintenanceConfigForDevice: vi.fn(),
   isInMaintenanceWindow: vi.fn(),
 }));
@@ -83,7 +80,7 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => null) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn() }));
 
-import { checkAutoResolve, checkAutoResolveFromConfigPolicy, checkAllAutoResolve } from './alertService';
+import { checkAutoResolve, checkAllAutoResolve } from './alertService';
 
 const dialect = new PgDialect();
 const sqlText = (condition: unknown) => dialect.sqlToQuery(condition as SQL).sql;
@@ -124,19 +121,6 @@ describe('checkAutoResolve and requires_human', () => {
     expect(await checkAutoResolve('alert-1')).toBe(false);
     // The point: it got PAST the requires_human guard and read the rule.
     expect(dbMock.select).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('checkAutoResolveFromConfigPolicy and requires_human', () => {
-  it('excludes requires_human alerts in its SELECT', async () => {
-    resultsQueue.push([]); // no active alerts — the WHERE is what we assert
-
-    await checkAutoResolveFromConfigPolicy('device-1');
-
-    const where = sqlText(capturedWheres[0]).toLowerCase();
-    expect(where).toContain('requires_human');
-    // AND, not OR: an OR would re-admit every requires-human alert.
-    expect(where).not.toMatch(/or\s+"?alerts"?\."?requires_human/);
   });
 });
 

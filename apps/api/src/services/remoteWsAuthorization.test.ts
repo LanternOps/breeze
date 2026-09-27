@@ -599,6 +599,20 @@ describe('read-only viewer failure diagnostics preserve live authority', () => {
     expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'))).toEqual({ ok: false, status: 403, reason: 'session_inactive' });
   });
 
+  // #6818: a consent refusal is readable once, for its recorded reason only.
+  it('allows a denied row carrying a consent reason on the diagnostic path only', async () => {
+    const denied = { status: 'denied', errorMessage: 'The user on the remote device declined the connection.' };
+    installAuthorizationRows({ kind: 'desktop', session: denied });
+    expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'), 'failure-diagnostics')).toMatchObject({ ok: true });
+    installAuthorizationRows({ kind: 'desktop', session: denied });
+    expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'))).toEqual({ ok: false, status: 403, reason: 'session_inactive' });
+  });
+
+  it('does not turn a denied row with no recorded reason into a diagnostic exception', async () => {
+    installAuthorizationRows({ kind: 'desktop', session: { status: 'denied' } });
+    expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'), 'failure-diagnostics')).toEqual({ ok: false, status: 403, reason: 'session_inactive' });
+  });
+
   it('does not turn an ordinary disconnected row into a diagnostic exception', async () => {
     installAuthorizationRows({ kind: 'desktop', session: { status: 'disconnected' } });
     expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'), 'failure-diagnostics')).toEqual({ ok: false, status: 403, reason: 'session_inactive' });

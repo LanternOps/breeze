@@ -44,7 +44,6 @@ import {
   configPolicyFeatureLinks,
   configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
-  configPolicyAlertRules,
   configPolicyEventLogSettings,
   devices,
 } from '../../db/schema';
@@ -57,7 +56,6 @@ import {
   PolicyHasChildrenError,
 } from '../../services/configurationPolicy';
 import { resolveEffectiveConfig } from '../../services/configurationPolicy';
-import { resolveAlertRulesForDevice } from '../../services/featureConfigResolver';
 import { buildEventLogConfigUpdate, EVENT_LOG_DEFAULTS } from '../../routes/agents/helpers';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { getOrgPurgeRemovedAfterDays } from '../../services/deviceLifecyclePolicy';
@@ -279,23 +277,6 @@ async function seedInlineLink(
   });
 }
 
-/** An alert_rule link plus one rule row hanging off it. */
-async function seedAlertRuleLink(configPolicyId: string, name: string): Promise<string> {
-  return withDbAccessContext(SYSTEM_CTX, async () => {
-    const [link] = await db
-      .insert(configPolicyFeatureLinks)
-      .values({ configPolicyId, featureType: 'alert_rule' })
-      .returning({ id: configPolicyFeatureLinks.id });
-    await db.insert(configPolicyAlertRules).values({
-      featureLinkId: link!.id,
-      name,
-      severity: 'medium',
-      conditions: { metric: 'cpu', operator: 'gt', threshold: 90 },
-    });
-    return link!.id;
-  });
-}
-
 interface Tenancy {
   p1: string;
   p2: string;
@@ -334,7 +315,7 @@ async function seedPolicy(values: {
   });
 }
 
-async function seedLink(configPolicyId: string, featureType: 'event_log' | 'monitoring'): Promise<string> {
+async function seedLink(configPolicyId: string, featureType: 'event_log' | 'security'): Promise<string> {
   return withDbAccessContext(SYSTEM_CTX, async () => {
     const [row] = await db
       .insert(configPolicyFeatureLinks)
@@ -775,8 +756,8 @@ describe('config policy inheritance — effective-links view (live DB)', () => {
     const parent = await seedPolicy({ orgId: t.a1, name: 'baseline' });
     const child = await seedPolicy({ orgId: t.a1, name: 'child', parentPolicyId: parent.id });
     const parentEventLog = await seedLink(parent.id, 'event_log');
-    const parentMonitoring = await seedLink(parent.id, 'monitoring');
-    const childMonitoring = await seedLink(child.id, 'monitoring');
+    const parentSecurity = await seedLink(parent.id, 'security');
+    const childSecurity = await seedLink(child.id, 'security');
 
     const rows = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
       db.select({
@@ -789,7 +770,7 @@ describe('config policy inheritance — effective-links view (live DB)', () => {
         .where(eq(configPolicyEffectiveFeatureLinks.configPolicyId, child.id)));
 
     const byType = Object.fromEntries(rows.map((r) => [r.featureType, r]));
-    expect(Object.keys(byType).sort()).toEqual(['event_log', 'monitoring']);
+    expect(Object.keys(byType).sort()).toEqual(['event_log', 'security']);
 
     // Inherited: the parent's row, carrying the PARENT link id so joins on
     // config_policy_*_settings.feature_link_id keep resolving.
@@ -799,12 +780,12 @@ describe('config policy inheritance — effective-links view (live DB)', () => {
       inherited: true,
     });
     // Overridden: the child's own row wins completely.
-    expect(byType.monitoring).toMatchObject({
-      id: childMonitoring,
+    expect(byType.security).toMatchObject({
+      id: childSecurity,
       sourcePolicyId: child.id,
       inherited: false,
     });
-    expect(byType.monitoring!.id).not.toBe(parentMonitoring);
+    expect(byType.security!.id).not.toBe(parentSecurity);
   });
 
   it('the parent itself sees only its own links, never its children\'s', async () => {
@@ -812,7 +793,7 @@ describe('config policy inheritance — effective-links view (live DB)', () => {
     const parent = await seedPolicy({ orgId: t.a1, name: 'baseline' });
     const child = await seedPolicy({ orgId: t.a1, name: 'child', parentPolicyId: parent.id });
     const parentEventLog = await seedLink(parent.id, 'event_log');
-    await seedLink(child.id, 'monitoring');
+    await seedLink(child.id, 'security');
 
     const rows = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
       db.select({
@@ -1041,12 +1022,12 @@ describe('config policy inheritance — resolution reaches devices (live DB)', (
     const site = await createSite({ orgId: t.a1 });
     const device = await seedInheritanceDevice(t.a1, site.id);
 
-    // Partner-wide baseline authors event_log; the child overrides monitoring.
+    // Partner-wide baseline authors event_log; the child overrides security.
     const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
     const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
     await seedLink(parent.id, 'event_log');
-    await seedLink(parent.id, 'monitoring');
-    await seedLink(child.id, 'monitoring');
+    await seedLink(parent.id, 'security');
+    await seedLink(child.id, 'security');
     await seedAssignment(child.id, 'organization', t.a1);
 
     const resolved = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
@@ -1065,29 +1046,10 @@ describe('config policy inheritance — resolution reaches devices (live DB)', (
     expect(eventLog.sourceLevel).toBe('organization');
 
     // The overridden feature carries no provenance at all.
-    const monitoring = resolved!.features.monitoring!;
-    expect(monitoring.inheritedFromPolicyId).toBeNull();
-    expect(monitoring.inheritedFromPolicyName).toBeNull();
-    expect(monitoring.sourcePolicyId).toBe(child.id);
-  });
-
-  it('featureConfigResolver: alert rules authored by the parent reach a child\'s device', async () => {
-    const t = await seedTenancy();
-    const site = await createSite({ orgId: t.a2 });
-    const device = await seedInheritanceDevice(t.a2, site.id);
-
-    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
-    const child = await seedPolicy({ orgId: t.a2, name: 'A2 child', parentPolicyId: parent.id });
-    const parentAlertLink = await seedAlertRuleLink(parent.id, 'Baseline CPU rule');
-    await seedAssignment(child.id, 'organization', t.a2);
-
-    const rules = await withDbAccessContext(orgContext(t.a2, t.p1), () =>
-      resolveAlertRulesForDevice(device.id));
-
-    // The rule row hangs off the PARENT's link id — the reason the view keeps
-    // it rather than synthesising a new one.
-    expect(rules.map((r) => r.name)).toEqual(['Baseline CPU rule']);
-    expect(rules[0]!.featureLinkId).toBe(parentAlertLink);
+    const security = resolved!.features.security!;
+    expect(security.inheritedFromPolicyId).toBeNull();
+    expect(security.inheritedFromPolicyName).toBeNull();
+    expect(security.sourcePolicyId).toBe(child.id);
   });
 
   it('agent delivery: an AGENT context receives the partner-wide parent\'s event_log settings', async () => {

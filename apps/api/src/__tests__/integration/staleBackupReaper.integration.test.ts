@@ -84,3 +84,74 @@ runDb('reaps an in-flight stalled backup job but leaves a terminal (completed) j
     expect(completedRow!.errorLog ?? '').not.toContain('[stale-backup-reaper]');
   });
 });
+
+// #2798: a live agent (keepalive fresh) whose transfer counters stopped moving
+// used to be unreapable, because the keepalive refreshed last_progress_at. The
+// no-transfer rule keys on last_progress_at alone, with a window sized so a
+// legitimately slow single large file is not killed.
+runDb('reaps a live-but-wedged job on the no-transfer rule, but spares a live job that may still be uploading a large file', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fresh = new Date(Date.now() - 60 * 1000);
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const GiB = 1024 * 1024 * 1024;
+
+  const ids = await withSystemDbAccessContext(async () => {
+    const [partner] = await db
+      .insert(partners)
+      .values({ name: `Wedge Partner ${unique}`, slug: `wedge-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' })
+      .returning({ id: partners.id });
+    const [org] = await db
+      .insert(organizations)
+      .values({ currencyCode: 'USD', partnerId: partner!.id, name: `Wedge Org ${unique}`, slug: `wedge-org-${unique}`, type: 'customer', status: 'active' })
+      .returning({ id: organizations.id });
+    const [site] = await db.insert(sites).values({ orgId: org!.id, name: `Wedge Site ${unique}` }).returning({ id: sites.id });
+    // Offline status keeps the reap on the no-stop-command branch (no Redis);
+    // the fresh keepalive keeps rule B (offline grace) from firing first.
+    const [device] = await db
+      .insert(devices)
+      .values({
+        orgId: org!.id,
+        siteId: site!.id,
+        agentId: `wedge-agent-${unique}`,
+        hostname: `wedge-host-${unique}`,
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        status: 'offline',
+      })
+      .returning({ id: devices.id });
+    const [config] = await db
+      .insert(backupConfigs)
+      .values({ orgId: org!.id, name: `Wedge Config ${unique}`, type: 'file', provider: 'local', providerConfig: {} })
+      .returning({ id: backupConfigs.id });
+
+    const base = {
+      orgId: org!.id, configId: config!.id, deviceId: device!.id, status: 'running' as const,
+      startedAt: threeHoursAgo, lastProgressAt: threeHoursAgo, lastKeepaliveAt: fresh,
+    };
+    // 1 GiB left: the 2h floor applies, 3h without a transfer is a wedge.
+    const [wedged] = await db
+      .insert(backupJobs)
+      .values({ ...base, totalSize: 10 * GiB, transferredSize: 9 * GiB })
+      .returning({ id: backupJobs.id });
+    // 90 GiB left: at the 512 KiB/s floor rate one remaining file could still
+    // legitimately be in flight after 3h, so this must be spared.
+    const [bigFile] = await db
+      .insert(backupJobs)
+      .values({ ...base, totalSize: 100 * GiB, transferredSize: 10 * GiB })
+      .returning({ id: backupJobs.id });
+    return { wedged: wedged!.id, bigFile: bigFile!.id };
+  });
+
+  await withSystemDbAccessContext(() => reapStaleBackupJobs());
+
+  await withSystemDbAccessContext(async () => {
+    const [wedgedRow] = await db.select().from(backupJobs).where(eq(backupJobs.id, ids.wedged));
+    expect(wedgedRow!.status).toBe('failed');
+    expect(wedgedRow!.errorLog ?? '').toContain('no data transferred');
+
+    const [bigRow] = await db.select().from(backupJobs).where(eq(backupJobs.id, ids.bigFile));
+    expect(bigRow!.status).toBe('running');
+  });
+});

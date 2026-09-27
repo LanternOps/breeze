@@ -332,6 +332,14 @@
       "awaiting": "Temsilcinin rapor vermesi bekleniyor…",
       "truncated": "Çıktı kesildi — tam metin için cihazın komut dosyası geçmişine bakın."
     },
+    "commandOutput": {
+      "show_one": "Komut çıktısını göster",
+      "show_other": "Komut çıktısını göster ({{count}})",
+      "hide_one": "Komut çıktısını gizle",
+      "hide_other": "Komut çıktısını gizle ({{count}})",
+      "label": "Komut (eylem {{index}})",
+      "truncated": "Çıktı kısaltıldı — tam metin bu görünümde gösterilmez."
+    },
     "errors": {
       "cancelRun": "Çalıştırma iptal edilemedi."
     }

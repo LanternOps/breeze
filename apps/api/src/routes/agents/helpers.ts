@@ -484,7 +484,16 @@ export function getSecurityStatusFromResult(resultData: Record<string, unknown> 
   return parsed.data;
 }
 
-export async function upsertSecurityStatusForDevice(deviceId: string, orgId: string, payload: SecurityStatusPayload): Promise<void> {
+/**
+ * Upsert the device's single security_status row. Returns the normalized
+ * `provider` and `threatCount` it wrote so the ingest route can tell a real
+ * change from a re-report (#4340).
+ */
+export async function upsertSecurityStatusForDevice(
+  deviceId: string,
+  orgId: string,
+  payload: SecurityStatusPayload,
+): Promise<{ provider: SecurityProviderValue; threatCount: number }> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
   // `preferredProduct` only backfills the top-level summary when the payload
   // omits it entirely. The current Go agent always marshals `provider` and
@@ -496,6 +505,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
+  const threatCount = payload.threatCount ?? 0;
 
   await db
     .insert(securityStatus)
@@ -509,7 +519,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
       realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
       lastScan: parseDate(payload.lastScan),
       lastScanType: asString(payload.lastScanType) ?? null,
-      threatCount: payload.threatCount ?? 0,
+      threatCount,
       firewallEnabled: payload.firewallEnabled ?? null,
       encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
       encryptionDetails: payload.encryptionDetails ?? null,
@@ -529,7 +539,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
         realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
         lastScan: parseDate(payload.lastScan),
         lastScanType: asString(payload.lastScanType) ?? null,
-        threatCount: payload.threatCount ?? 0,
+        threatCount,
         firewallEnabled: payload.firewallEnabled ?? null,
         encryptionStatus: normalizeEncryptionStatus(payload.encryptionStatus),
         encryptionDetails: payload.encryptionDetails ?? null,
@@ -540,6 +550,8 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
         updatedAt: new Date()
       }
     });
+
+  return { provider, threatCount };
 }
 
 async function updateThreatStatusForAction(command: typeof deviceCommands.$inferSelect): Promise<void> {

@@ -8,11 +8,12 @@ import { siteFixture, request } from './siteHttpFixtures';
 const effects = vi.hoisted(() => ({ audit: vi.fn((_context: unknown, _event: unknown) => { }) }));
 // Audit calls are captured synchronously; audit durability is outside this fixture.
 vi.mock('../../services/auditEvents', async (original) => ({ ...await original<typeof import('../../services/auditEvents')>(), writeRouteAudit: effects.audit }));
+import { LEGACY_ALERTING_GONE } from '../../routes/legacyAlertingGone';
 import { alertTemplateRoutes } from '../../routes/alertTemplates';
 const grants = [{ resource: 'alerts', action: 'read' }, { resource: 'alerts', action: 'write' }];
 beforeEach(() => vi.clearAllMocks());
 describe('legacy alert HTTP with real MFA, site permissions and PostgreSQL', () => {
-    it('keeps denied mutations inert and admits visible rule/template controls', async () => {
+    it('keeps retired mutations inert behind permission and MFA guards and admits visible reads', async () => {
         const f = await siteFixture();
         const app = new Hono().route('/api/v1/alert-templates', alertTemplateRoutes);
         const seed = getTestDb();
@@ -33,22 +34,31 @@ describe('legacy alert HTTP with real MFA, site permissions and PostgreSQL', () 
         const foreignRule = await rule(f.foreignOrg.id, foreignTemplate.id, f.foreign.id, 'foreign-rule');
         const snapshot = () => Promise.all([false, true].map(other => f.scoped(async () => ({ rules: await db.select().from(alertRules).orderBy(alertRules.id), templates: await db.select().from(alertTemplates).orderBy(alertTemplates.id) }), other)));
         const before = await snapshot();
-        const reject = async (token: string, method: string, path: string, body: unknown, status: number) => { const r = await request(app, token, method, '/api/v1/alert-templates' + path, body); expect(r.status).toBe(status); expect(await snapshot()).toEqual(before); expect(effects.audit).not.toHaveBeenCalled(); return r; };
+        const reject = async (token: string, method: string, path: string, body: unknown, status: number) => {
+            const r = await request(app, token, method, '/api/v1/alert-templates' + path, body);
+            expect(r.status).toBe(status);
+            if (status === 410) expect(await r.clone().json()).toEqual(LEGACY_ALERTING_GONE);
+            expect(await snapshot()).toEqual(before);
+            expect(effects.audit).not.toHaveBeenCalled();
+            return r;
+        };
+        // Permission and MFA still gate writes; authorized callers receive the
+        // same retirement response regardless of target/site/tenant visibility.
         for (const targets of [undefined, { deviceIds: [f.hidden.id] }, { deviceIds: [f.foreign.id] }])
-            await reject(selected.token, 'POST', '/rules', { name: 'denied-create', templateId: visibleTemplate.id, ...(targets ? { targets } : {}) }, 403);
-        await reject(empty.token, 'POST', '/rules', { name: 'empty-create', templateId: visibleTemplate.id, targets: { deviceIds: [f.allowed.id] } }, 403);
+            await reject(selected.token, 'POST', '/rules', { name: 'denied-create', templateId: visibleTemplate.id, ...(targets ? { targets } : {}) }, 410);
+        await reject(empty.token, 'POST', '/rules', { name: 'empty-create', templateId: visibleTemplate.id, targets: { deviceIds: [f.allowed.id] } }, 410);
         const noMfaResponse = await reject(noMfa.token, 'PATCH', `/rules/${visibleRule.id}`, { name: 'denied' }, 403);
         expect(await noMfaResponse.json()).toMatchObject({ code: 'MFA_REQUIRED' });
         await reject(denied.token, 'PATCH', `/rules/${visibleRule.id}`, { name: 'no-permission' }, 403);
-        await reject(empty.token, 'PATCH', `/rules/${visibleRule.id}`, { name: 'empty-sites' }, 403);
-        for (const [id, status] of [[hiddenRule.id, 403], [foreignRule.id, 404]] as const) {
-            await reject(selected.token, 'PATCH', `/rules/${id}`, { name: 'denied' }, status);
-            await reject(selected.token, 'POST', `/rules/${id}/toggle`, { enabled: false }, status);
-            await reject(selected.token, 'DELETE', `/rules/${id}`, undefined, status);
+        await reject(empty.token, 'PATCH', `/rules/${visibleRule.id}`, { name: 'empty-sites' }, 410);
+        for (const id of [visibleRule.id, hiddenRule.id, foreignRule.id]) {
+            await reject(selected.token, 'PATCH', `/rules/${id}`, { name: 'denied' }, 410);
+            await reject(selected.token, 'POST', `/rules/${id}/toggle`, { enabled: false }, 410);
+            await reject(selected.token, 'DELETE', `/rules/${id}`, undefined, 410);
         }
-        for (const [id, status] of [[sharedTemplate.id, 403], [foreignTemplate.id, 404]] as const) {
-            await reject(selected.token, 'PATCH', `/templates/${id}`, { name: 'denied' }, status);
-            await reject(selected.token, 'DELETE', `/templates/${id}`, undefined, status);
+        for (const id of [visibleTemplate.id, sharedTemplate.id, foreignTemplate.id]) {
+            await reject(selected.token, 'PATCH', `/templates/${id}`, { name: 'denied' }, 410);
+            await reject(selected.token, 'DELETE', `/templates/${id}`, undefined, 410);
         }
         for (const path of ['/templates', '/templates/built-in', `/templates/${visibleTemplate.id}`, '/rules', `/rules/${visibleRule.id}`])
             await reject(denied.token, 'GET', path, undefined, 403);
@@ -62,19 +72,17 @@ describe('legacy alert HTTP with real MFA, site permissions and PostgreSQL', () 
             expect(ids).toContain(ownId);
             expect(ids).not.toContain(foreignId);
         }
-        const created = await request(app, selected.token, 'POST', '/api/v1/alert-templates/rules', { name: 'allowed-created', templateId: visibleTemplate.id, targets: { deviceIds: [f.allowed.id] } });
-        expect(created.status).toBe(201);
-        const createdRule = (await created.json()).data;
-        expect(createdRule.targetId).toBe(f.allowed.id);
-        expect((await request(app, selected.token, 'PATCH', `/api/v1/alert-templates/rules/${createdRule.id}`, { name: 'allowed-updated' })).status).toBe(200);
-        expect((await request(app, selected.token, 'POST', `/api/v1/alert-templates/rules/${createdRule.id}/toggle`, { enabled: false })).status).toBe(200);
-        expect((await request(app, selected.token, 'DELETE', `/api/v1/alert-templates/rules/${createdRule.id}`)).status).toBe(200);
-        expect((await request(app, selected.token, 'PATCH', `/api/v1/alert-templates/templates/${visibleTemplate.id}`, { name: 'allowed-template-updated' })).status).toBe(200);
-        const spare = await template(f.org.id, 'deletable-template');
-        expect((await request(app, selected.token, 'DELETE', `/api/v1/alert-templates/templates/${spare.id}`)).status).toBe(200);
-        expect(effects.audit.mock.calls.map(x => (x[1] as {
-            action: string;
-        }).action)).toEqual(['alert_rule.create', 'alert_rule.update', 'alert_rule.toggle', 'alert_rule.delete', 'alert_template.update', 'alert_template.delete']);
+        await reject(selected.token, 'POST', '/rules', { name: 'formerly-allowed', templateId: visibleTemplate.id, targets: { deviceIds: [f.allowed.id] } }, 410);
+        await reject(selected.token, 'POST', '/templates', { name: 'formerly-allowed', conditions: { type: 'metric', threshold: 90 }, severity: 'high', titleTemplate: 'Title', messageTemplate: 'Message' }, 410);
+        for (const path of [`/templates/${visibleTemplate.id}`, `/rules/${visibleRule.id}`]) {
+            const response = await request(app, selected.token, 'GET', '/api/v1/alert-templates' + path);
+            expect(response.status).toBe(200);
+            expect((await response.json()).data.id).toBe(path.split('/').pop());
+        }
+        for (const path of [`/templates/${foreignTemplate.id}`, `/rules/${foreignRule.id}`])
+            await reject(selected.token, 'GET', path, undefined, 404);
+        expect(await snapshot()).toEqual(before);
+        expect(effects.audit).not.toHaveBeenCalled();
     });
     it('preserves built-in and exact owning-partner catalog visibility through authenticated reads', async () => {
         const f = await siteFixture();

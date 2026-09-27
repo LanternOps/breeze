@@ -141,15 +141,32 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
       expect(JSON.parse((writes()[0]![1] as RequestInit).body as string)).toEqual({ isActive: true });
     });
 
-    it('disables all monitoring through the mutation hook', async () => {
+    it('disables only SNMP through the mutation hook', async () => {
       wire();
       render(<MonitoringAssetsDashboard />);
 
-      fireEvent.click(await (await row()).findByTestId('monitoring-asset-disable-asset-1'));
+      const disable = await (await row()).findByTestId('monitoring-asset-disable-asset-1');
+      expect(disable).toHaveAttribute('title', 'Disable SNMP monitoring');
+      fireEvent.click(disable);
 
       await waitFor(() => expect(writes()).toHaveLength(1));
-      expect(writes()[0]![0]).toBe('/monitoring/assets/asset-1');
-      expect((writes()[0]![1] as RequestInit).method).toBe('DELETE');
+      expect(writes()[0]![0]).toBe('/monitoring/assets/asset-1/snmp');
+      expect((writes()[0]![1] as RequestInit).method).toBe('PATCH');
+      expect(JSON.parse((writes()[0]![1] as RequestInit).body as string)).toEqual({ isActive: false });
+    });
+
+    it.each([
+      { configured: false, isActive: false },
+      { configured: false, isActive: true },
+      { configured: true, isActive: false },
+    ])('hides SNMP disable when SNMP is $configured configured and $isActive active', async (snmp) => {
+      wire([{ ...baseAsset, snmp: { ...baseAsset.snmp, ...snmp } }]);
+      render(<MonitoringAssetsDashboard />);
+
+      const surfaceRow = await row();
+      await surfaceRow.findByTestId('monitoring-asset-settings-asset-1');
+      expect(surfaceRow.queryByTestId('monitoring-asset-disable-asset-1')).not.toBeInTheDocument();
+      expect(writes()).toHaveLength(0);
     });
   });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { Readable } from 'node:stream';
-import { bmrRoutes, bmrPublicRoutes } from './bmr';
+import { bmrRoutes, bmrPublicRoutes, enforcePublicRateLimit } from './bmr';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -1751,6 +1751,65 @@ describe('bmr routes', () => {
       expect(entry.sha256).toBeNull();
       expect(entry.size).toBeNull();
     }
+  });
+});
+
+// #5409 — when the trusted-proxy config doesn't resolve a client IP,
+// getTrustedClientIp returns the literal 'unknown'. Every recovering machine
+// then shared ONE 10/min bucket. The fallback must be a distinct, roomier
+// bucket (the per-token limit is the real brute-force control) and 429s carry
+// Retry-After.
+describe('enforcePublicRateLimit — unresolved client IP (#5409)', () => {
+  function fakeCtx(remoteAddress?: string) {
+    const headers: Record<string, string> = {};
+    return {
+      req: { header: () => undefined },
+      env: remoteAddress ? { incoming: { socket: { remoteAddress } } } : undefined,
+      header: (k: string, v: string) => { headers[k] = v; },
+      json: (body: unknown, status: number) => ({ body, status, headers }),
+    };
+  }
+
+  beforeEach(() => {
+    rateLimiterMock.mockReset();
+    rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) });
+  });
+
+  it('does not key on the literal "unknown" bucket and widens the limit', async () => {
+    const result = await enforcePublicRateLimit(fakeCtx(), 'authenticate', 10);
+    expect(result).toBeNull();
+    const [, key, limit, window] = rateLimiterMock.mock.calls[0] as unknown as [unknown, string, number, number];
+    expect(key).toBe('bmr:authenticate:unresolved');
+    expect(limit).toBe(200);
+    expect(window).toBe(60);
+  });
+
+  it('uses only a small multiplier for exchange (no effective per-token bound)', async () => {
+    await enforcePublicRateLimit(fakeCtx(), 'exchange', 10);
+    const [, key, limit] = rateLimiterMock.mock.calls[0] as unknown as [unknown, string, number];
+    expect(key).toBe('bmr:exchange:unresolved');
+    expect(limit).toBe(30);
+  });
+
+  it('keeps the strict per-IP limit when the IP resolves', async () => {
+    const prev = process.env.TRUST_PROXY_HEADERS;
+    process.env.TRUST_PROXY_HEADERS = 'false';
+    try {
+      await enforcePublicRateLimit(fakeCtx('203.0.113.7'), 'authenticate', 10);
+    } finally {
+      if (prev === undefined) delete process.env.TRUST_PROXY_HEADERS;
+      else process.env.TRUST_PROXY_HEADERS = prev;
+    }
+    const [, key, limit] = rateLimiterMock.mock.calls[0] as unknown as [unknown, string, number];
+    expect(key).toBe('bmr:authenticate:203.0.113.7');
+    expect(limit).toBe(10);
+  });
+
+  it('returns 429 with Retry-After from the unresolved bucket', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 30_000) });
+    const res: any = await enforcePublicRateLimit(fakeCtx(), 'complete', 5);
+    expect(res.status).toBe(429);
+    expect(Number(res.headers['Retry-After'])).toBeGreaterThanOrEqual(29);
   });
 });
 

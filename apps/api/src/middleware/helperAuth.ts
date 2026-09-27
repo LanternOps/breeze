@@ -9,7 +9,8 @@
 import type { MiddlewareHandler } from 'hono';
 import { createHash } from 'crypto';
 import { eq, or } from 'drizzle-orm';
-import { db, withSystemDbAccessContext, withDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
+import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 import { devices, organizations } from '../db/schema';
 import type { AuthContext } from './auth';
 import { matchAgentTokenHash } from './agentAuth';
@@ -168,25 +169,41 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
 
   c.set('auth', syntheticAuth);
 
-  await withDbAccessContext(
-    {
-      scope: 'organization',
-      orgId: device.orgId,
-      accessibleOrgIds: [device.orgId],
-      // Helper tokens have NO partner-AXIS access. This array gates
-      // `breeze_has_partner_access`, which admits WRITES to partner-owned rows;
-      // it stays empty, exactly as the agent sibling keeps it (agentAuth.ts) and
-      // as the AuthContext design note requires (`helperDevicePartnerId` in
-      // middleware/auth.ts: Helper tokens must never activate partner-wide RLS
-      // branches). `currentPartnerId` below is a strictly separate, read-only
-      // axis — do not merge the two. The partner-LLM BYOK read that needs the
-      // partner runs under its own system context.
-      accessiblePartnerIds: [],
-      // Own partner — read-visibility of partner-wide catalog rows.
-      currentPartnerId: device.partnerId ?? null,
-    },
-    async () => {
-      await next();
-    },
-  );
+  // #3127 — the chat message-send route owns its DB context (it waits on a
+  // blocked turn between two short ones; see selfManagedDbContextRoutes.ts), so
+  // it must not inherit a request transaction held across that wait.
+  if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
+    await next();
+    return;
+  }
+
+  await withDbAccessContext(helperDbAccessContext(device), async () => {
+    await next();
+  });
 };
+
+/**
+ * The org-scoped DB access context every helper request runs under. Exported so
+ * a self-managed helper route re-enters exactly this context for each of its
+ * short DB phases instead of re-deriving it by hand.
+ */
+export function helperDbAccessContext(
+  device: { orgId: string; partnerId: string | null | undefined },
+): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId: device.orgId,
+    accessibleOrgIds: [device.orgId],
+    // Helper tokens have NO partner-AXIS access. This array gates
+    // `breeze_has_partner_access`, which admits WRITES to partner-owned rows;
+    // it stays empty, exactly as the agent sibling keeps it (agentAuth.ts) and
+    // as the AuthContext design note requires (`helperDevicePartnerId` in
+    // middleware/auth.ts: Helper tokens must never activate partner-wide RLS
+    // branches). `currentPartnerId` below is a strictly separate, read-only
+    // axis — do not merge the two. The partner-LLM BYOK read that needs the
+    // partner runs under its own system context.
+    accessiblePartnerIds: [],
+    // Own partner — read-visibility of partner-wide catalog rows.
+    currentPartnerId: device.partnerId ?? null,
+  };
+}

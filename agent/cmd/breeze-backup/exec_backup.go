@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -135,6 +137,27 @@ func defaultVSS(goos string, systemImage bool, hasPaths bool) bool {
 // (main.go). It is stamped into every manifest's BackupIdentity so incremental
 // dedupe only ever references this device's own previous snapshot (D6).
 var helperAgentID string
+
+// helperStagingDir is agent.yaml's backup_staging_dir, resolved at startup by
+// resolveBackupStagingDir (main.go). Empty means the OS temp dir. Carried into
+// the payload-built managers so the operator's staging override applies to
+// policy-managed devices too (#5460) — not only to the agent.yaml manager.
+var helperStagingDir string
+
+// resolveBackupStagingDir validates agent.yaml's backup_staging_dir: it
+// creates the directory and returns it, or returns "" (the OS temp dir) when
+// it is unset or cannot be created.
+func resolveBackupStagingDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Error("configured backup staging dir cannot be created, falling back to OS temp dir", "dir", dir, "error", err.Error())
+		return ""
+	}
+	return dir
+}
 
 func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager, error) {
 	if len(payload) == 0 {
@@ -358,8 +381,10 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 // execHypervRestore, etc.) — never mgr.RunBackupContext — so unlike
 // managerFromBackupRunPayload (which requires paths, or systemImage,
 // because backup_run actually drives a full backup through the manager)
-// this builder needs nothing but a provider. GetStagingDir() on a
-// zero-value StagingDir returns "", and every remaining GetStagingDir()
+// this builder needs nothing but a provider — plus agent.yaml's
+// backup_staging_dir (helperStagingDir), so a Hyper-V export stages where the
+// operator pointed it (#5460). GetStagingDir() on an unset
+// StagingDir returns "", and every remaining GetStagingDir()
 // caller already passes that straight to os.MkdirTemp, which treats "" as
 // "use the OS default temp dir" — so an unset StagingDir here is safe, not
 // a bug.
@@ -384,8 +409,9 @@ func managerFromProviderPayload(payload json.RawMessage) (*backup.BackupManager,
 		return nil, nil
 	}
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider: provider,
-		AgentID:  helperAgentID,
+		Provider:   provider,
+		AgentID:    helperAgentID,
+		StagingDir: helperStagingDir,
 	}), nil
 }
 

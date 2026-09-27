@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
@@ -96,7 +96,7 @@ describe('DeviceReliabilityPanel', () => {
     expect(screen.getByText(/4 in 30d/)).toBeTruthy();
     // Points earned/available make the score arithmetic checkable: 20 × 25% = 5.
     expect(screen.getByText('5 / 25 pts')).toBeTruthy();
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   // Outcome-feedback UI removed: the labels only fed an evaluation endpoint no
@@ -232,7 +232,7 @@ describe('DeviceReliabilityPanel', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     expect(await screen.findByText('Reliability scoring is disabled for this organization.')).toBeTruthy();
-    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/reliability/dev-1');
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/reliability/dev-1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(screen.queryByTestId('reliability-outcome-trigger')).toBeNull();
   });
 
@@ -617,7 +617,7 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(await screen.findByTestId('reliability-factor-details-serviceFailures'));
 
     expect(await screen.findByText('cplspcon')).toBeInTheDocument();
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1/offenders');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1/offenders', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     // The link disappears once the drill-down is open (it can only open, not toggle).
     expect(screen.queryByTestId('reliability-factor-details-serviceFailures')).toBeNull();
   });
@@ -662,7 +662,7 @@ describe('DeviceReliabilityPanel', () => {
 
     expect(await screen.findByText('Spooler')).toBeInTheDocument();
     expect(screen.getByText('1/3 recovered')).toBeInTheDocument();
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1/offenders');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1/offenders', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     // Caching contract: collapsing and re-expanding must NOT refetch.
     fireEvent.click(screen.getByTestId('reliability-offenders-toggle'));
@@ -730,6 +730,91 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
 
     expect(await screen.findByText(/No offending services or components recorded/)).toBeInTheDocument();
+  });
+
+  // Issue #4513: the snapshot/offender fetches kept running after the page
+  // island unmounted (org switch / soft navigation) and a late response for a
+  // previous device could overwrite the current one.
+  describe('request lifecycle (#4513)', () => {
+    const deferred = () => {
+      let resolve!: (r: Response) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<Response>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+    const signalOf = (callIndex: number) =>
+      (fetchWithAuthMock.mock.calls[callIndex]?.[1] as RequestInit | undefined)?.signal;
+
+    it('aborts the in-flight snapshot request on unmount', async () => {
+      const pending = deferred();
+      fetchWithAuthMock.mockReturnValueOnce(pending.promise);
+
+      const { unmount } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+      expect(signalOf(0)).toBeInstanceOf(AbortSignal);
+      expect(signalOf(0)?.aborted).toBe(false);
+
+      unmount();
+      expect(signalOf(0)?.aborted).toBe(true);
+    });
+
+    it('drops a late snapshot for the previous device', async () => {
+      const first = deferred();
+      const second = deferred();
+      fetchWithAuthMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      const { rerender } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+      rerender(<DeviceReliabilityPanel deviceId="dev-2" />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+      expect(signalOf(0)?.aborted).toBe(true);
+      expect(fetchWithAuthMock.mock.calls[1][0]).toBe('/reliability/dev-2');
+
+      await act(async () => {
+        second.resolve(makeJsonResponse({ snapshot: null, history: [] }));
+      });
+      await screen.findByText('No reliability snapshot available yet.');
+
+      await act(async () => {
+        first.resolve(makeJsonResponse({ snapshot: baseSnapshot({ reliabilityScore: 44 }), history: [] }));
+      });
+      expect(screen.queryByText('44')).toBeNull();
+      expect(screen.getByText('No reliability snapshot available yet.')).toBeTruthy();
+    });
+
+    it('does not surface an aborted snapshot request as a load error', async () => {
+      const first = deferred();
+      const second = deferred();
+      fetchWithAuthMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      const { rerender, container } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+      rerender(<DeviceReliabilityPanel deviceId="dev-2" />);
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+
+      await act(async () => {
+        first.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      expect(screen.queryByText('Failed to load reliability score')).toBeNull();
+      expect(container.querySelector('.animate-spin')).not.toBeNull();
+    });
+
+    it('aborts an in-flight offenders request on unmount', async () => {
+      const offenders = deferred();
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ snapshot: baseSnapshot({ serviceFailureCount30d: 3 }), history: [] }),
+        )
+        .mockReturnValueOnce(offenders.promise);
+
+      const { unmount } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+      expect(signalOf(1)?.aborted).toBe(false);
+
+      unmount();
+      expect(signalOf(1)?.aborted).toBe(true);
+    });
   });
 });
 

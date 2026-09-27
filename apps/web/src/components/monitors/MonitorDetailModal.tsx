@@ -6,9 +6,9 @@ import {
   AlertTriangle,
   HelpCircle,
   Loader2,
-  Play,
-  Trash2
+  Play
 } from 'lucide-react';
+import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import { ActionError, runAction } from '../../lib/runAction';
 import { formatDate } from '../../lib/dateTimeFormat';
@@ -19,6 +19,7 @@ import { useStableT } from '@/lib/i18n/useStableT';
 type MonitorDetail = {
   id: string;
   name: string;
+  managedByMonitorId: string | null;
   monitorType: string;
   target: string;
   config: Record<string, unknown>;
@@ -45,14 +46,7 @@ type MonitorDetail = {
     details: Record<string, unknown> | null;
     timestamp: string;
   }>;
-  alertRules: Array<{
-    id: string;
-    condition: string;
-    threshold: string | null;
-    severity: string;
-    message: string | null;
-    isActive: boolean;
-  }>;
+
 };
 
 const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; labelKey: string }> = {
@@ -93,26 +87,16 @@ function formatRelativeTime(dateString: string | null, t: (key: string, options?
 type MonitorDetailModalProps = {
   monitorId: string;
   onClose: () => void;
-  onDeleted: () => void;
   onUpdated: () => void;
 };
 
-export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUpdated }: MonitorDetailModalProps) {
+export default function MonitorDetailModal({ monitorId, onClose, onUpdated }: MonitorDetailModalProps) {
   const { t } = useTranslation('common');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [monitor, setMonitor] = useState<MonitorDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actionLoading, setActionLoading] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editTarget, setEditTarget] = useState('');
-  const [editInterval, setEditInterval] = useState(60);
-  const [editTimeout, setEditTimeout] = useState(5);
-  const [editActive, setEditActive] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
   const fetchDetail = useCallback(async () => {
     try {
       setLoading(true);
@@ -121,11 +105,6 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
       const data = await res.json();
       const m = data.data;
       setMonitor(m);
-      setEditName(m.name);
-      setEditTarget(m.target);
-      setEditInterval(m.pollingInterval);
-      setEditTimeout(m.timeout);
-      setEditActive(m.isActive);
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('longTail.monitors.MonitorDetailModal.errors.generic'));
     } finally {
@@ -140,55 +119,16 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
   const handleCheck = async () => {
     setActionLoading(true);
     try {
-      const res = await fetchWithAuth(`/monitors/${monitorId}/check`, { method: 'POST' });
-      if (!res.ok) throw new Error(t('longTail.monitors.MonitorDetailModal.errors.triggerCheck'));
+      await runAction({
+        request: () => fetchWithAuth(`/monitors/${monitorId}/check`, { method: 'POST' }),
+        successMessage: t('longTail.monitors.NetworkMonitorList.messages.checkQueued'),
+        errorFallback: t('longTail.monitors.MonitorDetailModal.errors.triggerCheck')
+      });
+      onUpdated();
       setTimeout(() => fetchDetail(), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.MonitorDetailModal.errors.generic'));
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(undefined);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/monitors/${monitorId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            name: editName,
-            pollingInterval: editInterval,
-            timeout: editTimeout,
-            isActive: editActive,
-            ...(monitor?.monitorType === 'http_check' && editTarget !== monitor.target
-              ? { target: editTarget }
-              : {})
-          })
-        }),
-        errorFallback: t('longTail.monitors.MonitorDetailModal.errors.updateMonitor'),
-        successMessage: t('longTail.monitors.MonitorDetailModal.saved')
-      });
-      setEditing(false);
-      await fetchDetail();
-      onUpdated();
-    } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      setError(err instanceof Error ? err.message : t('longTail.monitors.MonitorDetailModal.errors.generic'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    setActionLoading(true);
-    try {
-      const res = await fetchWithAuth(`/monitors/${monitorId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(t('longTail.monitors.MonitorDetailModal.errors.deleteMonitor'));
-      onDeleted();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.MonitorDetailModal.errors.generic'));
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('longTail.monitors.MonitorDetailModal.errors.triggerCheck') });
     } finally {
       setActionLoading(false);
     }
@@ -251,6 +191,10 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
           )}
         </div>
 
+        {monitor.managedByMonitorId
+          ? <a data-testid="monitor-check-open-monitor" href={`/alerts/monitors/${monitor.managedByMonitorId}`} className="mt-3 inline-block text-sm text-primary hover:underline">{t('longTail.monitors.MonitorDetailModal.openMonitor')}</a>
+          : <p data-testid="monitor-check-not-converted" className="mt-3 text-sm text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.notConverted')}</p>}
+
         {monitor.tlsState != null && (
           <section data-testid="monitor-check-certificate" aria-labelledby="monitor-certificate-title" className="mt-4 rounded-md border p-4">
             <h3 id="monitor-certificate-title" className="text-sm font-semibold mb-2">{t('longTail.monitors.MonitorDetailModal.certificate.title')}</h3>
@@ -286,91 +230,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             {actionLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
             {t('longTail.monitors.MonitorDetailModal.actions.checkNow')}
           </button>
-          <button
-            type="button"
-            data-testid="monitor-check-edit"
-            onClick={() => setEditing(!editing)}
-            className="flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
-          >
-            {editing ? t('longTail.monitors.MonitorDetailModal.actions.cancelEdit') : t('common:actions.edit')}
-          </button>
         </div>
-
-        {/* Edit Form */}
-        {editing && (
-          <form onSubmit={(event) => { event.preventDefault(); void handleSave(); }} className="mt-4 rounded-md border bg-muted/20 p-4 space-y-3">
-            {monitor.monitorType === 'http_check' && (
-              <div>
-                <label htmlFor="monitor-check-target" className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.MonitorDetailModal.fields.target')}</label>
-                <input
-                  id="monitor-check-target"
-                  data-testid="monitor-check-target"
-                  type="url"
-                  required
-                  maxLength={500}
-                  value={editTarget}
-                  onChange={(event) => setEditTarget(event.target.value)}
-                  aria-describedby="monitor-check-target-note"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-                <p id="monitor-check-target-note" data-testid="monitor-check-target-note" className="mt-1 text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.targetResetNote')}</p>
-              </div>
-            )}
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('common:labels.name')}</label>
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.MonitorDetailModal.fields.interval')}</label>
-                <input
-                  type="number"
-                  value={editInterval}
-                  onChange={(e) => setEditInterval(Number(e.target.value))}
-                  min={10}
-                  max={86400}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.MonitorDetailModal.fields.timeout')}</label>
-                <input
-                  type="number"
-                  value={editTimeout}
-                  onChange={(e) => setEditTimeout(Number(e.target.value))}
-                  min={1}
-                  max={300}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                />
-              </div>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={editActive}
-                onChange={(e) => setEditActive(e.target.checked)}
-                className="rounded border"
-              />
-              {t('common:states.active')}
-            </label>
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                data-testid="monitor-check-save"
-                disabled={saving}
-                className="h-8 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 flex items-center gap-1"
-              >
-                {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-                {t('common:actions.save')}
-              </button>
-            </div>
-          </form>
-        )}
 
         {/* Recent Results */}
         {monitor.recentResults.length > 0 && (
@@ -412,32 +272,6 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
           </div>
         )}
 
-        {/* Alert Rules */}
-        {monitor.alertRules.length > 0 && (
-          <div className="mt-6">
-            <h3 className="text-sm font-semibold mb-2">{t('longTail.monitors.MonitorDetailModal.alertRules.title')}</h3>
-            <div className="space-y-2">
-              {monitor.alertRules.map((rule) => (
-                <div key={rule.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-xs">
-                  <div>
-                    <span className="font-medium">{rule.condition}</span>
-                    {rule.threshold && <span className="text-muted-foreground ml-1">({rule.threshold})</span>}
-                    <span className={`ml-2 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      rule.severity === 'critical' ? 'bg-destructive/15 text-destructive' :
-                      rule.severity === 'high' ? 'bg-warning/15 text-warning' :
-                      rule.severity === 'medium' ? 'bg-primary/15 text-primary' :
-                      'bg-muted text-muted-foreground'
-                    }`}>
-                      {rule.severity}
-                    </span>
-                    {!rule.isActive && <span className="ml-2 text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.alertRules.disabled')}</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {error && (
           <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
@@ -446,37 +280,6 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
 
         {/* Footer */}
         <div className="mt-6 flex items-center justify-between border-t pt-4">
-          <div>
-            {!confirmDelete ? (
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(true)}
-                className="flex items-center gap-1 text-xs text-destructive hover:underline"
-              >
-                <Trash2 className="h-3 w-3" />
-                {t('longTail.monitors.MonitorDetailModal.actions.deleteMonitor')}
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-destructive">{t('longTail.monitors.MonitorDetailModal.delete.confirmShort')}</span>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  disabled={actionLoading}
-                  className="h-7 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                >
-                  {actionLoading ? t('longTail.monitors.MonitorDetailModal.actions.deleting') : t('longTail.monitors.MonitorDetailModal.actions.yesDelete')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(false)}
-                  className="h-7 rounded-md border px-3 text-xs font-medium text-muted-foreground"
-                >
-                  {t('common:actions.cancel')}
-                </button>
-              </div>
-            )}
-          </div>
           <button
             type="button"
             onClick={onClose}

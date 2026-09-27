@@ -21,6 +21,8 @@ import { widthPercentClass } from '@/lib/utils';
 import { formatDateTime as formatDateTimeCentral } from '@/lib/dateTimeFormat';
 import { runAction, ActionError } from '@/lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import type { PatchInstallFailure } from '../patches/PatchList';
+import { readInstallFailure } from '../patches/patchHelpers';
 
 type PatchItem = {
   id?: string;
@@ -43,6 +45,8 @@ type PatchItem = {
   isDownloaded?: boolean;
   approvalStatus?: string;
   scope?: 'machine' | 'user' | null;
+  // #4223 deployment axis: the latest install attempt on this device failed.
+  installFailure?: PatchInstallFailure | null;
 };
 
 type PatchPayload = {
@@ -286,6 +290,40 @@ function getApprovalBadge(patch: PatchItem): { label: string; className: string 
     default:
       return { label: 'Pending Approval', className: 'bg-warning/15 text-warning border-warning/30' };
   }
+}
+
+// #4223: approval and deployment are separate axes. When the latest install
+// attempt on this device failed (e.g. the agent's battery preflight), show the
+// failure and its reason; "Pending Approval" is provably stale at that point
+// (ring auto-approval is evaluated at dispatch and never persisted), so it is
+// suppressed while any real persisted approval state stays visible.
+function PatchApprovalCell({ patch, timezone }: { patch: PatchItem; timezone?: string }) {
+  const { t } = useTranslation('devices');
+  const approvalBadge = getApprovalBadge(patch);
+  const approvalEl = (
+    <span className={`inline-flex w-fit items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${approvalBadge.className}`}>
+      {approvalBadge.label}
+    </span>
+  );
+  const failure = readInstallFailure(patch.installFailure);
+  if (!failure) return approvalEl;
+
+  const isPendingApproval = (patch.approvalStatus ?? 'approved').toLowerCase() === 'pending';
+  const reason = failure.error?.trim() || t('devicePatchStatusTab.installFailure.noReason');
+  return (
+    <div className="flex max-w-xs flex-col gap-1">
+      <span
+        data-testid={`device-patch-${patch.id}-install-failed`}
+        title={t('devicePatchStatusTab.installFailure.failedAt', { when: formatDateTime(failure.failedAt, timezone) })}
+        className="inline-flex w-fit items-center gap-1 whitespace-nowrap rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-1 text-xs font-medium text-destructive"
+      >
+        <AlertTriangle className="h-3.5 w-3.5" />
+        {t('devicePatchStatusTab.installFailure.badge')}
+      </span>
+      <span className="break-words text-xs text-muted-foreground">{reason}</span>
+      {!isPendingApproval && approvalEl}
+    </div>
+  );
 }
 
 function getCategoryBadge(patch: PatchItem, osType: OSType) {
@@ -1294,7 +1332,6 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const patchId = patch.id;
                       const isInstalling = patchId ? installingPatchIds.has(patchId) : false;
                       const notDownloaded = patch.isDownloaded === false;
-                      const approvalBadge = getApprovalBadge(patch);
                       const isApproved = isPatchApprovedForInstall(patch);
                       const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
@@ -1379,9 +1416,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${approvalBadge.className}`}>
-                              {approvalBadge.label}
-                            </span>
+                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} />
                           </td>
                           <td className="px-2 py-3">
                             {patchId && (
@@ -1456,7 +1491,6 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const patchId = patch.id;
                       const isInstalling = patchId ? installingPatchIds.has(patchId) : false;
                       const notDownloaded = patch.isDownloaded === false;
-                      const approvalBadge = getApprovalBadge(patch);
                       const isApproved = isPatchApprovedForInstall(patch);
                       const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
@@ -1555,9 +1589,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${approvalBadge.className}`}>
-                              {approvalBadge.label}
-                            </span>
+                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} />
                           </td>
                           <td className="px-2 py-3">
                             {patchId && (

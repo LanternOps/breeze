@@ -1031,7 +1031,7 @@ describe('issueInvoice document_locale stamp', () => {
 
   /**
    * Settings consolidation W02-API (M11, audit finding 22): the issue-time
-   * `terms` stamp now goes through the SHARED resolveInvoiceFooter, so it
+   * `terms` stamp now goes through the SHARED resolveDocumentFooter, so it
    * considers `portal_branding.footerText` — the fallback the render path has
    * always had. Behaviour note: already-issued invoices are untouched (their
    * `terms` column is written and this path never re-runs); a NEWLY issued

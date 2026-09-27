@@ -47,6 +47,10 @@ import {
   aiAgents,
   aiAgentSchedules,
   configurationPolicies,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
+  configPolicyMonitoringWatches,
+  configPolicyAlertRules,
   deviceGroupMemberships,
   deviceGroups,
   devices,
@@ -61,7 +65,6 @@ import {
 import { buildDbAccessContext, buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { applyFleetDesign } from '../../services/fleetDesign/apply';
 import { attachFleetMonitors } from '../../services/fleetDesign/monitorAttachments';
-import { addFeatureLink } from '../../services/configurationPolicy';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
 import { computeDrift, loadApprovedDesign, loadDriftLiveState } from '../../services/fleetDesign/drift';
 import { fileFleetDesignDocument, fleetDesignDocumentFilename } from '../../services/fleetDesign/documents';
@@ -292,22 +295,36 @@ async function disableWatchByHand(policyId: string, watchName: string): Promise<
   `));
 }
 
-/** Adds an item to the design's own policy by hand after apply: a legacy watch
- *  on a new `monitoring` link (still writable during W05c), or a monitor
- *  attached through the policy's `monitors` link that no design item created. */
-async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext }, policyId: string, kind: 'watch' | 'rule' | 'service_monitor', name: string): Promise<void> {
+/** Adds a live monitor that no design ledger item created. */
+async function addItemByHand(f: { dbCtxA: DbAccessContext; authA: AuthContext }, policyId: string, kind: 'rule' | 'service_monitor', name: string): Promise<void> {
   await withDbAccessContext(f.dbCtxA, async () => {
-    if (kind === 'watch') {
-      await addFeatureLink(policyId, 'monitoring', null, {
-        checkIntervalSeconds: 60,
-        watches: [{ watchType: 'service', name, enabled: true, alertOnStop: true, autoRestart: false }],
-      });
-      return;
-    }
     const definition = kind === 'service_monitor'
       ? { name, kind: 'service', condition: { serviceName: name }, severity: 'low' }
       : { name, kind: 'cpu', condition: { operator: 'gt', value: 95 }, severity: 'low' };
     await db.transaction((tx) => attachFleetMonitors(policyId, [{ itemRef: 'hand', definition }], f.authA, tx));
+  });
+}
+
+/** Historical rows survive upgrading, but retired feature types are no longer writable through the service. */
+async function seedRetiredLegacyItems(policyId: string): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    await db.insert(configPolicyFeatureLinks).values({ configPolicyId: policyId, featureType: 'monitoring' });
+    const [monitorLink] = await db.select().from(configPolicyFeatureLinks).where(and(
+      eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'monitors'),
+    ));
+    // Upgrading retains watches but re-keys their settings to the monitors link.
+    const [settings] = await db.insert(configPolicyMonitoringSettings).values({ featureLinkId: monitorLink!.id })
+      .onConflictDoUpdate({ target: configPolicyMonitoringSettings.featureLinkId, set: { checkIntervalSeconds: 60 } }).returning();
+    await db.insert(configPolicyMonitoringWatches).values({
+      settingsId: settings!.id, watchType: 'service', name: 'RetiredLegacyWatch', enabled: true,
+      retiredAt: new Date(), retiredReason: 'unconvertible:equivalence_delta',
+    });
+    const [ruleLink] = await db.insert(configPolicyFeatureLinks).values({ configPolicyId: policyId, featureType: 'alert_rule' }).returning();
+    await db.insert(configPolicyAlertRules).values({
+      featureLinkId: ruleLink!.id, name: 'Retired legacy rule', severity: 'low',
+      conditions: { type: 'cpu', operator: 'gt', value: 95 },
+      retiredAt: new Date(), retiredReason: 'unconvertible:equivalence_delta',
+    });
   });
 }
 
@@ -385,7 +402,7 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
     ]);
   });
 
-  runDb('2b. a watch and a rule added by hand to the design\'s own policy surface as extra through the real JOINs', async () => {
+  runDb('2b. live monitors surface as extra while retired legacy watches and rules stay absent', async () => {
     const f = await seedFixture();
     const runId = await seedReportRun(f.envA.orgId, buildDriftOutcome(f.deviceIds));
     const applied = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, driftApproval()));
@@ -394,19 +411,21 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
     const ledger = await readLedger(runId);
     const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
 
-    await addItemByHand(f, policyId, 'watch', 'HandAddedWatch');
+    await seedRetiredLegacyItems(policyId);
     await addItemByHand(f, policyId, 'rule', 'Hand-added rule');
     await addItemByHand(f, policyId, 'service_monitor', 'HandAttachedSvc');
 
     const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.envA.orgId, {}));
     const drift = computeDrift(evidence.approvedDesign!, evidence.driftLive!);
 
-    // Both arrive through loadDriftLiveState's own watch/rule JOINs — the
-    // part of the loader the fixture-driven unit tests cannot exercise.
+    // Live attachments arrive through the monitor JOIN; historical source rows stay absent.
     // A hand-attached service monitor with no design provenance is a watch.
-    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch', 'watch:HandAttachedSvc']);
+    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAttachedSvc']);
     // Both devices are still in the function group, so the count is real.
     expect(drift.extra.every((e) => e.deviceCount === 2)).toBe(true);
+    const livePolicy = evidence.driftLive!.policies.find((p) => p.id === policyId)!;
+    expect(livePolicy.watches.some((w) => w.name === 'RetiredLegacyWatch')).toBe(false);
+    expect(livePolicy.rules.some((r) => r.name === 'Retired legacy rule')).toBe(false);
     expect(drift.missing).toEqual([]);
     expect(drift.changed).toEqual([]);
   });

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
 const {
@@ -143,8 +144,6 @@ vi.mock('../services/redis', () => ({
 vi.mock('../services/alertService', () => ({
   evaluateDeviceAlerts: vi.fn(),
   checkAllAutoResolve: vi.fn(),
-  evaluateDeviceAlertsFromPolicy: vi.fn(),
-  checkAutoResolveFromConfigPolicy: vi.fn()
 }));
 
 vi.mock('../services/bullmqUtils', () => ({
@@ -344,17 +343,28 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
     expect(ctx.tripwireViolations).toEqual([]);
   });
 
+  it('evaluate-device runs only the monitor/standalone evaluator', async () => {
+    createAlertWorker();
+    const service = await import('../services/alertService');
+    vi.mocked(service.evaluateDeviceAlerts).mockResolvedValue(['a1']);
+    const result = await workerState.processor!({ data: {
+      type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1',
+    } });
+    expect(result).toMatchObject({ alertsCreated: 1 });
+    expect(readFileSync(new URL('./alertWorker.ts', import.meta.url), 'utf8'))
+      .not.toMatch(/evaluateDeviceAlertsFromPolicy|checkAutoResolveFromConfigPolicy/);
+  });
+
   it('still wraps per-device evaluation in a system DB context', async () => {
     createAlertWorker();
     expect(workerState.processor).toBeTypeOf('function');
 
     const seenDepths: number[] = [];
-    const { evaluateDeviceAlerts, evaluateDeviceAlertsFromPolicy } = await import('../services/alertService');
+    const { evaluateDeviceAlerts } = await import('../services/alertService');
     vi.mocked(evaluateDeviceAlerts).mockImplementation(async () => {
       seenDepths.push(ctx.depth);
       return [];
     });
-    vi.mocked(evaluateDeviceAlertsFromPolicy).mockImplementation(async () => []);
 
     await workerState.processor!({ data: { type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1' } });
 
@@ -365,9 +375,8 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
   it('drains subject events after device commit and outside the fleet context', async () => {
     subjectOutbox.depths.length = 0;
     createAlertWorker();
-    const { evaluateDeviceAlerts, evaluateDeviceAlertsFromPolicy } = await import('../services/alertService');
+    const { evaluateDeviceAlerts } = await import('../services/alertService');
     vi.mocked(evaluateDeviceAlerts).mockResolvedValue([]);
-    vi.mocked(evaluateDeviceAlertsFromPolicy).mockResolvedValue([]);
     await workerState.processor!({ data: { type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1' } });
     expect(subjectOutbox.depths).toEqual([0]);
     fleetState.fleet = [];

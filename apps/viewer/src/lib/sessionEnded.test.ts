@@ -398,6 +398,56 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       expect(polls()).toBe(2);
     });
 
+    // #6818: in consent mode the agent returns no answer until the end user
+    // clicks Allow (up to the 30s dialog, plus an on-demand helper spawn). The
+    // viewer must honour the server's answer budget instead of giving up at 15s.
+    it('waits past 15s for a consent-mode answer when the server extends the budget', async () => {
+      const awaiting = vi.fn();
+      const polls = stubSessionPolls((n) =>
+        n < 60
+          ? jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: null })
+          : jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: 'v=0 answer-sdp' }),
+      );
+
+      const pending = createWebRTCSession(baseParams, videoEl, undefined, undefined, { onAwaitingUserApproval: awaiting });
+      const settled = pending.catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      await expect(settled).resolves.toMatchObject({ pc: expect.anything() });
+      expect(polls()).toBe(60);
+      // Told once, so the UI can say who it is waiting on.
+      expect(awaiting).toHaveBeenCalledOnce();
+    });
+
+    it('still times out at the default budget against an older API', async () => {
+      const awaiting = vi.fn();
+      stubSessionPolls(() => jsonResponse({ status: 'connecting', webrtcAnswer: null }));
+
+      const pending = createWebRTCSession(baseParams, videoEl, undefined, undefined, { onAwaitingUserApproval: awaiting });
+      const settled = pending.catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect((await settled as Error).message).toContain('Timed out');
+      expect(awaiting).not.toHaveBeenCalled();
+    });
+
+    it('fails fast with the consent reason when the end user declines', async () => {
+      const reason = 'The end user declined the remote session.';
+      const polls = stubSessionPolls((n) =>
+        n < 5
+          ? jsonResponse({ status: 'connecting', promptMode: 'consent', answerTimeoutMs: 77_000, webrtcAnswer: null })
+          : jsonResponse({ status: 'denied', terminationPhase: 'confirmed', errorMessage: reason, webrtcAnswer: null }),
+      );
+
+      const settled = createWebRTCSession(baseParams, videoEl).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      const err = await settled;
+      expect(err).toBeInstanceOf(SessionEndedError);
+      expect((err as Error).message).toBe(reason);
+      expect(polls()).toBe(5);
+    });
+
     it('stays bounded on a 429 that carries no Retry-After', async () => {
       // No header means no give-up signal, so the loop runs to the timeout —
       // it must do so at the backed-off cadence, not the old 50ms hot spin.

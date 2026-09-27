@@ -73,7 +73,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
-      const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined);
+      // A read: never answered from the device-page write default (#6675).
+      const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined, { useWriteDefault: false });
       if (orgResolution.error || !orgResolution.orgId) {
         return JSON.stringify({ error: orgResolution.error ?? 'orgId is required' });
       }
@@ -214,7 +215,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
-      const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined);
+      // A read: never answered from the device-page write default (#6675).
+      const orgResolution = resolveWritableToolOrgId(auth, input.orgId as string | undefined, { useWriteDefault: false });
       if (orgResolution.error || !orgResolution.orgId) {
         return JSON.stringify({ error: orgResolution.error ?? 'orgId is required' });
       }

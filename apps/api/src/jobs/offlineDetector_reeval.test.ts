@@ -1,22 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-// Re-evaluation sweep for already-offline devices (issue #1982).
-//
-// The detector marks a device offline exactly once (online→offline transition),
-// and the periodic alertWorker sweep deliberately skips offline devices. So a
-// config-policy offline rule with a duration LONGER than the global ~5-min
-// threshold (e.g. "offline for 60 min") would never fire after the handler was
-// fixed to honor its own duration. This sweep re-evaluates still-offline
-// devices so those longer-duration rules fire when their duration elapses.
+// Jobs left in Redis by the retired evaluator must drain without side effects.
 
-const { evaluateFromPolicyMock, addBulkMock, addMock, getRepeatableJobsMock, deviceRowsState, fleetState, warnSpy } = vi.hoisted(() => ({
-  evaluateFromPolicyMock: vi.fn(),
+const { addBulkMock, addMock, getRepeatableJobsMock, selectMock } = vi.hoisted(() => ({
   addBulkMock: vi.fn(async () => undefined),
   addMock: vi.fn(async () => undefined),
   getRepeatableJobsMock: vi.fn(async () => [] as { key: string }[]),
-  deviceRowsState: { rows: [] as Record<string, unknown>[] },
-  fleetState: { fleet: [] as { id: string; orgId: string }[], chunkCalls: 0 },
-  warnSpy: vi.fn(),
+  selectMock: vi.fn(() => { throw new Error('Retired reevaluation must not read the database'); }),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -37,25 +28,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          // processReevaluateOffline: .where().limit(1) → the single device row
-          limit: () => Promise.resolve(deviceRowsState.rows),
-          // processReevaluateOfflineSweep: .where().orderBy().limit() → fleet chunk
-          orderBy: () => ({
-            limit: (limit: number) => {
-              const start = fleetState.chunkCalls * limit;
-              const slice = fleetState.fleet.slice(start, start + limit);
-              fleetState.chunkCalls++;
-              return Promise.resolve(slice);
-            },
-          }),
-        }),
-      }),
-    }),
-  },
+  db: { select: selectMock },
   withSystemDbAccessContext: undefined,
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
@@ -92,188 +65,45 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/eventBus', () => ({ publishEvent: vi.fn() }));
 
-vi.mock('../services/alertService', () => ({
-  // #2128: and() drops undefined, so this stub keeps the mocked rule query unchanged
-  alertRuleOwnershipConditionForOrg: vi.fn(async () => undefined),
-  createAlert: vi.fn(),
-  evaluateDeviceAlertsFromPolicy: evaluateFromPolicyMock,
-}));
-
-vi.mock('../services/alertConditions', () => ({ interpolateTemplate: vi.fn() }));
-
 vi.mock('../services/bullmqUtils', () => ({ isReusableState: vi.fn(() => false) }));
 
 import { processReevaluateOffline, processReevaluateOfflineSweep, scheduleOfflineJobs } from './offlineDetector';
 
-const buildFleet = (n: number) =>
-  Array.from({ length: n }, (_, i) => ({ id: `device-${String(i).padStart(6, '0')}`, orgId: 'org-1' }));
-
 beforeEach(() => {
-  evaluateFromPolicyMock.mockReset();
   addBulkMock.mockClear();
   addMock.mockClear();
   getRepeatableJobsMock.mockClear();
-  warnSpy.mockClear();
-  deviceRowsState.rows = [];
-  fleetState.fleet = [];
-  fleetState.chunkCalls = 0;
-  vi.spyOn(console, 'warn').mockImplementation(warnSpy);
+  selectMock.mockClear();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
-  delete process.env.OFFLINE_DETECTOR_REEVAL_ENABLED;
-  delete process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN;
-  delete process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE;
-  delete process.env.OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES;
-  delete process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('processReevaluateOffline — per-device re-eval (issue #1982)', () => {
-  const offlineDevice = { id: 'd1', orgId: 'o1', siteId: 's1', status: 'offline', hostname: 'h1', displayName: 'H1' };
-
-  it('re-evaluates config-policy offline rules for a still-offline device', async () => {
-    deviceRowsState.rows = [offlineDevice];
-    evaluateFromPolicyMock.mockResolvedValue(['alert-1']);
-
+describe('processReevaluateOffline — retired queued jobs', () => {
+  it('drains an already queued device without evaluating rules', async () => {
     const result = await processReevaluateOffline({ type: 'reevaluate-offline', deviceId: 'd1', orgId: 'o1' });
-
-    expect(evaluateFromPolicyMock).toHaveBeenCalledWith('d1');
-    expect(result.alertCreated).toBe(true);
-  });
-
-  it('does NOT re-evaluate a device that has reconnected (status no longer offline)', async () => {
-    deviceRowsState.rows = [{ ...offlineDevice, status: 'online' }];
-
-    const result = await processReevaluateOffline({ type: 'reevaluate-offline', deviceId: 'd1', orgId: 'o1' });
-
-    expect(evaluateFromPolicyMock).not.toHaveBeenCalled();
-    expect(result.alertCreated).toBe(false);
-  });
-
-  it('no-ops when the device no longer exists', async () => {
-    deviceRowsState.rows = [];
-
-    const result = await processReevaluateOffline({ type: 'reevaluate-offline', deviceId: 'gone', orgId: 'o1' });
-
-    expect(evaluateFromPolicyMock).not.toHaveBeenCalled();
-    expect(result.alertCreated).toBe(false);
-  });
-
-  it('re-throws an unexpected evaluation error so the BullMQ job fails + retries', async () => {
-    deviceRowsState.rows = [offlineDevice];
-    evaluateFromPolicyMock.mockRejectedValue(new Error('boom'));
-
-    await expect(
-      processReevaluateOffline({ type: 'reevaluate-offline', deviceId: 'd1', orgId: 'o1' })
-    ).rejects.toThrow('boom');
-  });
-
-  it('swallows the 42P01 "tables not migrated" error gracefully', async () => {
-    deviceRowsState.rows = [offlineDevice];
-    evaluateFromPolicyMock.mockRejectedValue(Object.assign(new Error('relation does not exist'), { cause: { code: '42P01' } }));
-
-    const result = await processReevaluateOffline({ type: 'reevaluate-offline', deviceId: 'd1', orgId: 'o1' });
-
-    expect(result.alertCreated).toBe(false);
+    expect(result).toMatchObject({ deviceId: 'd1', alertCreated: false });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(readFileSync(new URL('./offlineDetector.ts', import.meta.url), 'utf8'))
+      .not.toMatch(/evaluateDeviceAlertsFromPolicy|triggerConfigPolicyOfflineAlerts/);
   });
 });
 
-describe('processReevaluateOfflineSweep — fan-out (issue #1982)', () => {
-  it('enqueues a reevaluate-offline job per still-offline device', async () => {
-    fleetState.fleet = buildFleet(50);
-
+describe('retired offline reevaluation jobs', () => {
+  it('does not fan out pending sweep jobs', async () => {
     const result = await processReevaluateOfflineSweep();
-
-    expect(result.queued).toBe(50);
-    expect(addBulkMock).toHaveBeenCalledTimes(1);
-    const enqueued = (addBulkMock.mock.calls[0] as unknown[])[0] as { name: string; data: { type: string } }[];
-    expect(enqueued[0]!.name).toBe('reevaluate-offline');
-    expect(enqueued[0]!.data.type).toBe('reevaluate-offline');
-  });
-
-  it('does nothing when re-evaluation is disabled via env', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_ENABLED = 'false';
-    fleetState.fleet = buildFleet(50);
-
-    const result = await processReevaluateOfflineSweep();
-
     expect(result.queued).toBe(0);
+    expect(selectMock).not.toHaveBeenCalled();
     expect(addBulkMock).not.toHaveBeenCalled();
   });
 
-  it('paginates through multiple chunks when the offline fleet exceeds chunkSize', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE = '500';
-    fleetState.fleet = buildFleet(1500);
-
-    const result = await processReevaluateOfflineSweep();
-
-    expect(result.queued).toBe(1500);
-    expect(addBulkMock).toHaveBeenCalledTimes(3);
-  });
-
-  it('treats cap=0 as unlimited', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE = '500';
-    process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN = '0';
-    fleetState.fleet = buildFleet(1500);
-
-    const result = await processReevaluateOfflineSweep();
-
-    expect(result.queued).toBe(1500);
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
-
-  it('respects OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN cap and warns', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE = '500';
-    process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN = '1000';
-    fleetState.fleet = buildFleet(1500);
-
-    const result = await processReevaluateOfflineSweep();
-
-    expect(result.queued).toBe(1000);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Hit OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN=1000'));
-  });
-
-  it('returns 0 when no devices are offline', async () => {
-    fleetState.fleet = [];
-
-    const result = await processReevaluateOfflineSweep();
-
-    expect(result.queued).toBe(0);
-    expect(addBulkMock).not.toHaveBeenCalled();
-  });
-});
-
-describe('scheduleOfflineJobs — sweep wiring (issue #1982)', () => {
-  const sweepAdds = () =>
-    addMock.mock.calls.filter((c) => (c as unknown[])[0] === 'reevaluate-offline-sweep');
-
-  it('schedules the repeatable reevaluate-offline-sweep at the default 60s interval', async () => {
+  it('does not schedule retired sweeps and keeps detection and recovery scheduled', async () => {
     await scheduleOfflineJobs();
-
-    const calls = sweepAdds();
-    expect(calls).toHaveLength(1);
-    const opts = (calls[0] as unknown[])[2] as { repeat: { every: number } };
-    expect(opts.repeat.every).toBe(60_000);
-  });
-
-  it('does NOT schedule the sweep when re-evaluation is disabled via env', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_ENABLED = 'false';
-
-    await scheduleOfflineJobs();
-
-    expect(sweepAdds()).toHaveLength(0);
-    // detect-offline is still scheduled — only the re-eval sweep is gated off.
-    expect(addMock.mock.calls.some((c) => (c as unknown[])[0] === 'detect-offline')).toBe(true);
-  });
-
-  it('honors the 5s floor on OFFLINE_DETECTOR_REEVAL_INTERVAL_MS', async () => {
-    process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS = '1000';
-
-    await scheduleOfflineJobs();
-
-    const opts = (sweepAdds()[0] as unknown[])[2] as { repeat: { every: number } };
-    expect(opts.repeat.every).toBe(5_000);
+    const names = addMock.mock.calls.map(call => (call as unknown[])[0]);
+    expect(names).not.toContain('reevaluate-offline-sweep');
+    expect(names).toContain('detect-offline');
+    expect(names).toContain('recover-offline-effects');
   });
 });

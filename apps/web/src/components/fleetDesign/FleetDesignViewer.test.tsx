@@ -101,6 +101,13 @@ describe('FleetDesignViewer', () => {
     }
   });
 
+  it('shows historical retired items without offering selection', () => {
+    render(<Harness outcome={OUTCOME} />);
+    const section = screen.getByTestId('fleet-design-section-retired');
+    expect(section.textContent).toContain('Old watch');
+    expect(section.querySelector('input[type="checkbox"]')).toBeNull();
+  });
+
   it('renders an automation script as a selectable row and toggles selection', () => {
     render(<Harness outcome={OUTCOME} />);
     const checkbox = screen.getByTestId('fleet-design-item-automation:shared_workstation:script:0-checkbox') as HTMLInputElement;

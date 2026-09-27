@@ -55,6 +55,11 @@ export type StorageProvider = {
   used?: string | number;
   total?: string | number;
   percent?: number;
+  // What /backup/dashboard sends (#2562): raw usage, no capacity — object
+  // storage has no meaningful total, so the panel shows usage alone.
+  usedBytes?: number;
+  snapshots?: number;
+  configs?: number;
 };
 
 export type AttentionItem = {

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { PublicApiPath, QuoteBlock } from '@/lib/api';
 import { QuoteBlocks } from './quoteBlocks';
+import { QuoteAgreements } from './quoteAgreements';
 
 afterEach(() => cleanup());
 
@@ -23,7 +24,33 @@ function renderBlocks(blocks: QuoteBlock[]) {
   );
 }
 
-describe('QuoteBlocks — contract block rendering', () => {
+// Contract blocks render as collapsed agreement rows after the totals (#7040),
+// not in the body. These open every row so the (lazily mounted) body is in the DOM.
+function renderAgreements(blocks: QuoteBlock[]) {
+  const r = render(<QuoteAgreements blocks={blocks} buildUrl={buildUrl} testIdPrefix="quote" />);
+  for (const el of r.container.querySelectorAll('details')) {
+    el.open = true;
+    fireEvent(el, new Event('toggle'));
+  }
+  return r;
+}
+
+describe('QuoteBlocks — contract blocks stay out of the body', () => {
+  it('renders nothing for a contract block, around the blocks that do render', () => {
+    renderBlocks([
+      { id: 'h', blockType: 'heading', sortOrder: 0, content: { level: 2, text: 'Scope' } },
+      {
+        id: 'k', blockType: 'contract', sortOrder: 1,
+        content: { templateName: 'MSA', versionNumber: 1, sourceType: 'authored', renderedHtml: '<p>Terms body</p>', fileUrl: null },
+      },
+    ]);
+    expect(screen.getByTestId('quote-block-h').textContent).toBe('Scope');
+    expect(screen.queryByTestId('contract-block')).toBeNull();
+    expect(document.body.textContent).not.toContain('Terms body');
+  });
+});
+
+describe('QuoteAgreements — contract block rendering', () => {
   it('renders an authored contract block via dangerouslySetInnerHTML with a template name + version footer', () => {
     const blocks: QuoteBlock[] = [
       {
@@ -40,7 +67,7 @@ describe('QuoteBlocks — contract block rendering', () => {
         },
       },
     ];
-    renderBlocks(blocks);
+    renderAgreements(blocks);
 
     const el = screen.getByTestId('contract-block');
     expect(el.innerHTML).toContain('Acme Co agrees to Texas law.');
@@ -66,7 +93,7 @@ describe('QuoteBlocks — contract block rendering', () => {
         },
       },
     ];
-    renderBlocks(blocks);
+    renderAgreements(blocks);
 
     const el = screen.getByTestId('contract-block');
     const iframe = el.querySelector('iframe');
@@ -87,16 +114,16 @@ describe('QuoteBlocks — contract block rendering', () => {
         content: { templateName: 'MSA', versionNumber: 1, sourceType: 'uploaded', renderedHtml: null, fileUrl: null },
       },
     ];
-    renderBlocks(blocks);
+    renderAgreements(blocks);
     const el = screen.getByTestId('contract-block');
     expect(el.textContent).toContain('Agreement file unavailable');
     expect(el.querySelector('iframe')).toBeNull();
   });
 });
 
-describe('QuoteBlocks — agreement vocabulary (spec §3)', () => {
+describe('QuoteAgreements — agreement vocabulary (spec §3)', () => {
   it('calls a missing authored body an unavailable agreement, not an unavailable contract', () => {
-    renderBlocks([
+    renderAgreements([
       {
         id: 'block-a',
         blockType: 'contract',
@@ -110,7 +137,7 @@ describe('QuoteBlocks — agreement vocabulary (spec §3)', () => {
   });
 
   it('labels the uploaded-file download link "Download agreement"', () => {
-    renderBlocks([
+    renderAgreements([
       {
         id: 'block-b',
         blockType: 'contract',
@@ -124,7 +151,7 @@ describe('QuoteBlocks — agreement vocabulary (spec §3)', () => {
   });
 
   it('falls back to the block label, then to "Agreement", when the template name is missing', () => {
-    renderBlocks([
+    renderAgreements([
       {
         id: 'block-c',
         blockType: 'contract',
@@ -137,7 +164,7 @@ describe('QuoteBlocks — agreement vocabulary (spec §3)', () => {
   });
 
   it('falls back to "Agreement" when neither a template name nor a label is set', () => {
-    renderBlocks([
+    renderAgreements([
       {
         id: 'block-d',
         blockType: 'contract',

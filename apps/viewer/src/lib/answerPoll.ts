@@ -18,16 +18,55 @@ export type AnswerPollSession = {
   terminationPhase?: 'none' | 'pending' | 'confirmed' | string | null;
   webrtcAnswer?: string | null;
   errorMessage?: string | null;
+  /**
+   * #6818: the end-user prompt mode the API shipped with this start
+   * ('consent' | 'notify' | 'off'). Absent on an older API.
+   */
+  promptMode?: string | null;
+  /**
+   * #6818: how long the API expects the agent may take to answer this start,
+   * covering the consent dialog and an on-demand helper spawn. Absent on an
+   * older API, in which case the viewer keeps its default.
+   */
+  answerTimeoutMs?: number | null;
 };
 
 export type AnswerPollVerdict =
   | { kind: 'answer'; answer: string }
   | { kind: 'wait' }
   | { kind: 'failed'; message: string | null }
+  | { kind: 'denied'; message: string }
   | { kind: 'ended' };
 
+/**
+ * Shown when the agent's consent gate refused the start but the API recorded
+ * no reason (an API older than #6818 never writes one).
+ */
+export const CONSENT_DENIED_DEFAULT_MESSAGE =
+  'The remote session was not approved on the device.';
+
+/**
+ * Upper bound on any server-provided answer budget. The API's consent budget is
+ * well under this (#6818); the cap only stops a bad value from leaving the
+ * viewer spinning indefinitely.
+ */
+export const MAX_ANSWER_TIMEOUT_MS = 180_000;
+
+/**
+ * The answer-poll deadline to use given the latest poll response: the
+ * server's budget when it sent a sane one, never shorter than `defaultMs`
+ * and never longer than MAX_ANSWER_TIMEOUT_MS.
+ */
+export function resolveAnswerTimeoutMs(data: AnswerPollSession, defaultMs: number): number {
+  const budget = data.answerTimeoutMs;
+  if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= defaultMs) {
+    return defaultMs;
+  }
+  return Math.min(budget, MAX_ANSWER_TIMEOUT_MS);
+}
+
 /** Statuses that mean the session can never produce a usable answer. */
-const ENDED_STATUSES = new Set(['disconnected', 'denied']);
+const ENDED_STATUSES = new Set(['disconnected']);
 
 export function classifyAnswerPoll(data: AnswerPollSession): AnswerPollVerdict {
   // A terminal failure takes precedence over an answer from an earlier
@@ -38,6 +77,19 @@ export function classifyAnswerPoll(data: AnswerPollSession): AnswerPollVerdict {
       message: typeof data.errorMessage === 'string' && data.errorMessage.length > 0
         ? data.errorMessage
         : null,
+    };
+  }
+  // #6818: the agent's consent gate refused the start (the end user declined,
+  // did not answer in time, or nobody could be asked under a "block" policy).
+  // The API commits that as status 'denied' with phase 'confirmed', so this
+  // must run before the phase check or the reason is lost to a generic
+  // "session ended".
+  if (data.status === 'denied') {
+    return {
+      kind: 'denied',
+      message: typeof data.errorMessage === 'string' && data.errorMessage.length > 0
+        ? data.errorMessage
+        : CONSENT_DENIED_DEFAULT_MESSAGE,
     };
   }
   // The phase is authoritative: 'pending' means the server has already

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 const { authRef, updateMock, deleteMock, dependentAccessMock } = vi.hoisted(() => ({
   authRef: { current: {} as any },
@@ -66,28 +67,31 @@ describe('alert template dependent-rule site boundary', () => {
     };
   });
 
-  it('rejects editing a template consumed by a hidden rule before update', async () => {
+  it('retires editing a template consumed by a hidden rule before update', async () => {
     const res = await app().request(`/alert-templates/templates/${TEMPLATE_ID}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conditions: { threshold: 99 } }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('rejects deleting a template consumed by a hidden rule before delete', async () => {
+  it('retires deleting a template consumed by a hidden rule before delete', async () => {
     const res = await app().request(`/alert-templates/templates/${TEMPLATE_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  it('allows an update when every dependent rule remains visible', async () => {
+  it('retires an update when every dependent rule remains visible', async () => {
     dependentAccessMock.mockResolvedValue(true);
     const res = await app().request(`/alert-templates/templates/${TEMPLATE_ID}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ severity: 'high' }),
     });
-    expect(res.status).toBe(200);
-    expect(updateMock).toHaveBeenCalled();
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });

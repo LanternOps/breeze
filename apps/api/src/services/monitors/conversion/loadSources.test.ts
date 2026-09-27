@@ -104,7 +104,7 @@ describe('countPendingConversions', () => {
   it('deduplicates policies and sums the three grouped row counts and standalone rules', async () => {
     reset([[{ policyId: 'p1', policyName: 'Zulu', count: 2 }], [{ policyId: 'p1', policyName: 'Zulu', count: 3 }, { policyId: 'p2', policyName: 'Alpha', count: 1 }], [{ policyId: 'p2', policyName: 'Alpha', count: 4 }], [{ count: 5 }]]);
     expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: true })).toEqual({
-      policies: 2, rows: 10, standaloneRules: 5,
+      policies: 2, rows: 10, standaloneRules: 5, networkChecks: 0,
       // Same rows as the count, deduplicated and sorted by name (#6644 review 5).
       pendingPolicies: [{ id: 'p2', name: 'Alpha' }, { id: 'p1', name: 'Zulu' }],
     });
@@ -120,7 +120,7 @@ describe('countPendingConversions', () => {
   });
   it('does not include partner-wide rows for org scope without opt-in', async () => {
     reset([[], [], [], []]);
-    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: false })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, pendingPolicies: [] });
+    expect(await countPendingConversions({ orgId: 'o1', partnerId: 'p1', includePartnerWide: false })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, networkChecks: 0, pendingPolicies: [] });
     for (const query of queries) {
       const compiled = dialect.sqlToQuery(query.predicates.at(-1) as SQL);
       expect(compiled.params).not.toContain('p1');
@@ -130,16 +130,29 @@ describe('countPendingConversions', () => {
   it.each([false, true])('counts all partner orgs with partner-wide opt-in %s', async (includePartnerWide) => {
     reset([[], [], [], []]);
     await countPendingConversions({ orgId: null, partnerId: 'partner1', includePartnerWide });
-    for (const query of queries) {
+    for (const query of queries.slice(0, 4)) {
       const compiled = dialect.sqlToQuery(query.predicates.at(-1) as SQL);
       expect(compiled.sql).toContain('in (select "organizations"."id" from "organizations" where "organizations"."partner_id" =');
       expect(compiled.params.filter((p) => p === 'partner1')).toHaveLength(includePartnerWide ? 2 : 1);
       expect(compiled.sql.includes('"org_id" is null')).toBe(includePartnerWide);
     }
   });
+  it.each([
+    [{ orgId: 'o1', partnerId: 'p1', includePartnerWide: true }, ['o1']],
+    [{ orgId: null, partnerId: 'p1', includePartnerWide: true }, ['p1']],
+  ])('counts pending network checks separately using only the org axis: %j', async (scope, params) => {
+    reset([[], [], [], [], [{ count: 7 }]]);
+    expect(await countPendingConversions(scope)).toMatchObject({ rows: 0, policies: 0, networkChecks: 7 });
+    const query = predicates(4).at(-1)!;
+    expect(query.params).toEqual(params);
+    expect(query.sql).toContain('"network_monitors"."managed_by_monitor_id" is null');
+    expect(query.sql).toContain('"network_monitors"."retired_at" is null');
+    expect(query.sql).not.toContain('"network_monitors"."org_id" is null');
+    expect(query.sql).not.toContain('"network_monitors"."partner_id"');
+  });
   it('fails closed when neither owner axis is provided', async () => {
     reset([[], [], [], []]);
-    expect(await countPendingConversions({ orgId: null, partnerId: null, includePartnerWide: true })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, pendingPolicies: [] });
+    expect(await countPendingConversions({ orgId: null, partnerId: null, includePartnerWide: true })).toEqual({ policies: 0, rows: 0, standaloneRules: 0, networkChecks: 0, pendingPolicies: [] });
     for (const query of queries) expect(dialect.sqlToQuery(query.predicates.at(-1) as SQL).sql).toContain('false');
   });
 });

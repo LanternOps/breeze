@@ -63,6 +63,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/notifications', docsPath: '/features/notifications/', label: 'Notifications' },
   { pattern: '/settings/branding', docsPath: '/features/branding/', label: 'Branding' },
   { pattern: '/settings/alert-templates', docsPath: '/features/alert-templates/', label: 'Alert Templates' },
+  { pattern: '/settings/integrations/backup', docsPath: '/backup/backup-providers/', label: 'Backup Providers' },
   { pattern: '/settings/integrations/huntress', docsPath: '/features/edr-integrations/', label: 'EDR Integrations' },
   { pattern: '/settings/integrations/security', docsPath: '/features/edr-integrations/', label: 'Security Integrations' },
   { pattern: '/settings/integrations/communication', docsPath: '/features/notifications/', label: 'Communication Channels' },
@@ -107,6 +108,7 @@ const docsMapping: DocsEntry[] = [
 
   // Admin / Partner
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
+  { pattern: '/admin/system', docsPath: '/deploy/upgrades/', label: 'System' },
   { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
   { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
   { pattern: '/admin/llm-provider-catalog', docsPath: '/features/bring-your-own-llm-key/', label: 'LLM Provider Catalog' },

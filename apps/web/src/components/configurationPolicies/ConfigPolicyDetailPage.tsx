@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Layers,
   Target,
-  Bell,
   Wrench,
   ClipboardCheck,
   PackageCheck,
@@ -17,7 +16,6 @@ import {
   ScrollText,
   ScanSearch,
   Usb,
-  Activity,
   LifeBuoy,
   Monitor,
   Radar,
@@ -45,7 +43,6 @@ import { FEATURE_META } from './featureTabs/types';
 import { useFeatureLink } from './featureTabs/useFeatureLink';
 import AssignmentsTab from './AssignmentsTab';
 import PatchTab from './featureTabs/PatchTab';
-import AlertRuleTab from './featureTabs/AlertRuleTab';
 import MonitorsTab from './featureTabs/MonitorsTab';
 import BackupTab from './featureTabs/BackupTab';
 import SecurityTab from './featureTabs/SecurityTab';
@@ -56,7 +53,6 @@ import EventLogTab from './featureTabs/EventLogTab';
 import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
 import SensitiveDataTab from './featureTabs/SensitiveDataTab';
 import PeripheralControlTab from './featureTabs/PeripheralControlTab';
-import MonitoringTab from './featureTabs/MonitoringTab';
 import WarrantyTab from './featureTabs/WarrantyTab';
 import HelperTab from './featureTabs/HelperTab';
 import RemoteAccessTab from './featureTabs/RemoteAccessTab';
@@ -110,7 +106,6 @@ const createStatusConfig = (): Record<
 // feature type fails to compile until it gets a tab-bar icon. (#2004)
 const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   patch: <PackageCheck className="h-4 w-4" />,
-  alert_rule: <Bell className="h-4 w-4" />,
   monitors: <Radar className="h-4 w-4" />,
   backup: <HardDrive className="h-4 w-4" />,
   security: <Shield className="h-4 w-4" />,
@@ -121,7 +116,6 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   software_policy: <PackageCheck className="h-4 w-4" />,
   sensitive_data: <ScanSearch className="h-4 w-4" />,
   peripheral_control: <Usb className="h-4 w-4" />,
-  monitoring: <Activity className="h-4 w-4" />,
   warranty: <ShieldCheck className="h-4 w-4" />,
   helper: <LifeBuoy className="h-4 w-4" />,
   remote_access: <Monitor className="h-4 w-4" />,
@@ -141,13 +135,19 @@ export const FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
 // Every tab id that may appear in the URL hash, so a deep link / the contextual
 // help button can select the right tab. The feature-tab id is the raw
-// FeatureType key (e.g. `alert_rule`).
+// FeatureType key (e.g. `monitors`).
 const VALID_TABS: Tab[] = [
   "overview",
   ...FEATURE_TYPES,
   "compliance_status",
   "assignments",
 ];
+
+// Preserve saved links to the retired tabs and canonicalize their hashes.
+export const LEGACY_TAB_ALIASES: Record<'alert_rule' | 'monitoring', 'monitors'> = {
+  alert_rule: 'monitors',
+  monitoring: 'monitors',
+};
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -162,6 +162,19 @@ export default function ConfigPolicyDetailPage({
   // reading it in the useState initializer caused a hydration mismatch on
   // deep links to a non-default tab (#2421).
   const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, "overview");
+
+  useEffect(() => {
+    const redirectLegacyHash = () => {
+      const raw = window.location.hash.replace(/^#/, '');
+      if (!Object.prototype.hasOwnProperty.call(LEGACY_TAB_ALIASES, raw)) return;
+      const alias = LEGACY_TAB_ALIASES[raw as keyof typeof LEGACY_TAB_ALIASES];
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${alias}`);
+      setActiveTab(alias);
+    };
+    redirectLegacyHash();
+    window.addEventListener('hashchange', redirectLegacyHash);
+    return () => window.removeEventListener('hashchange', redirectLegacyHash);
+  }, [setActiveTab]);
 
   // Reflect the active tab in the URL hash so tabs are deep-linkable and the
   // contextual help button resolves to the right per-feature doc.
@@ -440,7 +453,6 @@ export default function ConfigPolicyDetailPage({
     };
     switch (ft) {
       case 'patch': return <PatchTab {...props} />;
-      case 'alert_rule': return <AlertRuleTab {...props} />;
       case 'monitors': return <MonitorsTab {...props} />;
       case 'backup': return <BackupTab {...props} />;
       case 'security': return <SecurityTab {...props} />;
@@ -450,7 +462,6 @@ export default function ConfigPolicyDetailPage({
       case 'event_log': return <EventLogTab {...props} />;
       case 'software_policy': return <SoftwarePolicyTab {...props} />;
       case 'sensitive_data': return <SensitiveDataTab {...props} />;
-      case 'monitoring': return <MonitoringTab {...props} />;
       case 'peripheral_control': return <PeripheralControlTab {...props} />;
       case 'warranty': return <WarrantyTab {...props} />;
       case 'helper': return <HelperTab {...props} />;

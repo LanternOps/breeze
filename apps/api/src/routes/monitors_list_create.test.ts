@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const middlewareGate = vi.hoisted(() => ({ denied: '' }));
+
 // ── Mocks ──────────────────────────────────────────────────────────
 
 vi.mock('../db', () => ({
@@ -20,6 +22,8 @@ vi.mock('../db/schema', () => ({
   networkMonitors: {
     id: 'networkMonitors.id',
     orgId: 'networkMonitors.orgId',
+    managedByMonitorId: 'networkMonitors.managedByMonitorId',
+    retiredAt: 'networkMonitors.retiredAt',
     assetId: 'networkMonitors.assetId',
     name: 'networkMonitors.name',
     monitorType: 'networkMonitors.monitorType',
@@ -67,9 +71,9 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requireScope: vi.fn(() => async (c: any, next: any) => middlewareGate.denied === 'scope' ? c.json({ error: 'Forbidden' }, 403) : next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => middlewareGate.denied === 'permission' ? c.json({ error: 'Forbidden' }, 403) : next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => middlewareGate.denied === 'mfa' ? c.json({ error: 'MFA required' }, 403) : next()),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -136,8 +140,38 @@ describe('monitors routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    middlewareGate.denied = '';
     setAuth();
     app = makeApp();
+  });
+
+  describe.each([
+    ['POST', '/monitors'],
+    ['PATCH', `/monitors/${MONITOR_ID}`],
+    ['DELETE', `/monitors/${MONITOR_ID}`],
+    ['POST', '/monitors/alerts'],
+    ['PATCH', `/monitors/alerts/${RULE_ID}`],
+    ['DELETE', `/monitors/alerts/${RULE_ID}`],
+  ])('%s %s middleware', (method, path) => {
+    it('returns 401 before the retired response for unauthenticated callers', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+      const res = await app.request(path, { method });
+      expect(res.status).toBe(401);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(['scope', 'permission', 'mfa'])('retains the %s gate', async (gate) => {
+      middlewareGate.denied = gate;
+      const res = await app.request(path, { method });
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
   });
 
   // ────────────────────── GET / (list monitors) ──────────────────────
@@ -148,6 +182,8 @@ describe('monitors routes', () => {
           id: MONITOR_ID,
           orgId: ORG_ID,
           assetId: null,
+          managedByMonitorId: RULE_ID,
+          retiredAt: null,
           name: 'Google Ping',
           monitorType: 'icmp_ping',
           target: '8.8.8.8',
@@ -184,6 +220,7 @@ describe('monitors routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].name).toBe('Google Ping');
       expect(body.total).toBe(1);
+      expect(body.data[0]).toMatchObject({ managedByMonitorId: RULE_ID, retiredAt: null });
     });
 
     it.each([
@@ -235,6 +272,29 @@ describe('monitors routes', () => {
         tlsObservedAt: tls.tlsObservedAt?.toISOString() ?? null,
       });
     });
+
+    it.each(['', '?includeRetired=false', '?includeRetired=true'])(
+      'applies the retirement filter to both list and count for %s', async (query) => {
+        const listWhere = vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([{
+          id: MONITOR_ID, orgId: ORG_ID, managedByMonitorId: null,
+          retiredAt: NOW, createdAt: NOW, updatedAt: NOW,
+        }]) });
+        const countWhere = vi.fn().mockResolvedValue([{ count: 1 }]);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: listWhere }) } as any)
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: countWhere }) } as any);
+        const res = await app.request(`/monitors${query}`);
+        expect(res.status).toBe(200);
+        for (const where of [listWhere, countWhere]) {
+          const filter = JSON.stringify(where.mock.calls[0]![0]);
+          if (query === '?includeRetired=true') expect(filter).not.toContain('networkMonitors.retiredAt');
+          else expect(filter).toContain('networkMonitors.retiredAt');
+        }
+        expect((await res.json()).data[0]).toMatchObject({
+          managedByMonitorId: null, retiredAt: NOW.toISOString(),
+        });
+      },
+    );
 
     it('filters by monitorType', async () => {
       vi.mocked(db.select)
@@ -335,158 +395,25 @@ describe('monitors routes', () => {
     });
   });
 
-  // ────────────────────── POST / (create monitor) ──────────────────────
-  describe('POST / (create monitor)', () => {
-    it('creates an icmp_ping monitor', async () => {
-      const created = {
-        id: MONITOR_ID,
-        orgId: ORG_ID,
-        name: 'Ping Monitor',
-        monitorType: 'icmp_ping',
-        target: '8.8.8.8',
-        config: {},
-        pollingInterval: 60,
-        timeout: 5,
-        isActive: true,
-        lastStatus: 'unknown',
-        consecutiveFailures: 0,
-        createdAt: NOW,
-        updatedAt: NOW,
-      };
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([created]),
-        }),
-      } as any);
-
+  describe('POST / (retired authoring)', () => {
+    it.each([
+      { name: 'Ping', monitorType: 'icmp_ping', target: '8.8.8.8' },
+      { name: 'TCP', monitorType: 'tcp_port', target: 'example.com', config: { port: 443 } },
+      { name: 'HTTP', monitorType: 'http_check', target: 'https://example.com' },
+      {},
+    ])('returns 410 without inserting for %j', async (payload) => {
       const res = await app.request('/monitors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Ping Monitor',
-          monitorType: 'icmp_ping',
-          target: '8.8.8.8',
-        }),
+        body: JSON.stringify(payload),
       });
-
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body.data.id).toBe(MONITOR_ID);
-      expect(body.data.monitorType).toBe('icmp_ping');
-    });
-
-    it('creates a tcp_port monitor with config', async () => {
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: MONITOR_ID,
-            orgId: ORG_ID,
-            name: 'SSH Check',
-            monitorType: 'tcp_port',
-            target: '10.0.0.1',
-            config: { port: 22 },
-          }]),
-        }),
-      } as any);
-
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'SSH Check',
-          monitorType: 'tcp_port',
-          target: '10.0.0.1',
-          config: { port: 22 },
-        }),
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({
+        error: 'network_check_authoring_retired',
+        hint: { route: 'POST /monitor-definitions', kind: 'network_check' },
       });
-
-      expect(res.status).toBe(201);
-    });
-
-    it('creates an http_check monitor', async () => {
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: MONITOR_ID,
-            orgId: ORG_ID,
-            name: 'Website Check',
-            monitorType: 'http_check',
-            target: 'https://example.com',
-            config: { url: 'https://example.com', expectedStatus: 200 },
-          }]),
-        }),
-      } as any);
-
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Website Check',
-          monitorType: 'http_check',
-          target: 'https://example.com',
-          config: { url: 'https://example.com', expectedStatus: 200 },
-        }),
-      });
-
-      expect(res.status).toBe(201);
-    });
-
-    it('validates tcp_port config requires port', async () => {
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Bad TCP',
-          monitorType: 'tcp_port',
-          target: '10.0.0.1',
-          config: { expectBanner: 'SSH' },
-        }),
-      });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('validates http_check config requires valid url', async () => {
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Bad HTTP',
-          monitorType: 'http_check',
-          target: 'example.com',
-          config: { url: 'not-a-url' },
-        }),
-      });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('validates polling interval bounds', async () => {
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'Too Fast',
-          monitorType: 'icmp_ping',
-          target: '8.8.8.8',
-          pollingInterval: 1, // Below minimum of 10
-        }),
-      });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('validates name is required', async () => {
-      const res = await app.request('/monitors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          monitorType: 'icmp_ping',
-          target: '8.8.8.8',
-        }),
-      });
-
-      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

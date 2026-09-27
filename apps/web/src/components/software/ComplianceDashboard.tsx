@@ -12,6 +12,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { showToast } from "../shared/Toast";
+import RemediateConfirmDialog from "./RemediateConfirmDialog";
 import PolicyForm, {
   type CatalogOption,
   type PolicyFormValues,
@@ -476,43 +477,10 @@ export default function ComplianceDashboard({
     }
   };
 
-  const handleRemediate = async (policy: Policy) => {
-    try {
-      const res = await fetchWithAuth(
-        `/software-policies/${policy.id}/remediate`,
-        {
-          method: "POST",
-          body: JSON.stringify({}),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(
-          (
-            data as {
-              error?: string;
-            }
-          ).error || "Failed to schedule remediation",
-        );
-      }
-      showToast({
-        type: "success",
-        message: `Remediation scheduled for ${
-          (
-            data as {
-              queued?: number;
-            }
-          ).queued ?? 0
-        } device(s)`,
-      });
-    } catch (err) {
-      showToast({
-        type: "error",
-        message:
-          err instanceof Error ? err.message : "Failed to schedule remediation",
-      });
-    }
-  };
+  // Remediate uninstalls software on real machines. It opens a server-backed
+  // preview + confirmation (#3616, incident #3381) rather than POSTing
+  // directly; the dialog confirms with exactly the previewed device ids.
+  const [remediatePolicy, setRemediatePolicy] = useState<Policy | null>(null);
   const closeModal = () => {
     setModalMode("closed");
     setSelectedPolicy(null);
@@ -702,13 +670,14 @@ export default function ComplianceDashboard({
                       {policy.mode !== "audit" && (
                         <button
                           type="button"
-                          onClick={() => handleRemediate(policy)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                          title={i18n.t(
+                          data-testid={`policy-remediate-${policy.id}`}
+                          onClick={() => setRemediatePolicy(policy)}
+                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-destructive/40 px-2.5 text-sm font-medium text-destructive hover:bg-destructive/10"
+                        >
+                          <Wrench className="h-4 w-4" aria-hidden="true" />
+                          {i18n.t(
                             "policies:software.complianceDashboard.remediate",
                           )}
-                        >
-                          <Wrench className="h-4 w-4" />
                         </button>
                       )}
                       <button
@@ -897,6 +866,20 @@ export default function ComplianceDashboard({
           </div>
         </div>
       )}
+
+      <RemediateConfirmDialog
+        open={remediatePolicy !== null}
+        policy={remediatePolicy}
+        onClose={() => setRemediatePolicy(null)}
+        onQueued={() => {
+          refresh().catch((err) =>
+            console.error(
+              "[ComplianceDashboard] refresh() failed after queuing remediation",
+              err,
+            ),
+          );
+        }}
+      />
 
       {/* Delete Confirmation Modal */}
       {modalMode === "delete" && selectedPolicy && (

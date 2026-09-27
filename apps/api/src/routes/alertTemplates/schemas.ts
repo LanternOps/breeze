@@ -80,43 +80,6 @@ export const listTemplatesSchema = z.object({
   search: z.string().optional()
 });
 
-export const createTemplateSchema = z.object({
-  name: z.string().min(1).max(255),
-  description: z.string().optional(),
-  category: z.string().min(1).max(100).optional(),
-  severity: severitySchema,
-  // Scope selector for partner-scope creators (#1425). 'partner' → a partner-
-  // wide template (org_id NULL); 'org' (default) → a specific org. The backend
-  // ignores it for org-scope users. orgId targets a specific org under 'org'.
-  availability: z.enum(['org', 'partner']).optional(),
-  orgId: z.string().uuid().optional(),
-  conditions: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional().default({}),
-  targets: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  defaultCooldownMinutes: z.number().int().min(0).max(10080).optional()
-});
-
-export const updateTemplateSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  description: z.string().optional(),
-  category: z.string().min(1).max(100).optional(),
-  severity: severitySchema.optional(),
-  conditions: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  targets: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  defaultCooldownMinutes: z.number().int().min(0).max(10080).optional()
-});
-
 export const listRulesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -127,44 +90,6 @@ export const listRulesSchema = z.object({
   targetType: z.enum(['device', 'site', 'organization', 'tag']).optional(),
   targetValue: z.string().optional(),
   search: z.string().optional()
-});
-
-export const createRuleSchema = z.object({
-  orgId: z.string().guid().optional(),
-  templateId: z.string().guid(),
-  name: z.string().min(1).max(255),
-  description: z.string().optional(),
-  enabled: z.boolean().optional().default(true),
-  severity: severitySchema.optional(),
-  targets: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  conditions: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  cooldownMinutes: z.number().int().min(0).max(10080).optional()
-});
-
-export const updateRuleSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  description: z.string().optional(),
-  enabled: z.boolean().optional(),
-  severity: severitySchema.optional(),
-  targets: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  conditions: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  cooldownMinutes: z.number().int().min(0).max(10080).optional()
-});
-
-export const toggleRuleSchema = z.object({
-  enabled: z.boolean()
 });
 
 export const listCorrelationsSchema = z.object({

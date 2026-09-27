@@ -64,7 +64,7 @@ func TestInstallDMGDoesNotBlockOnPkgDescendants(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	exitCode, output, descendantsPending, err := installDMG(ctx, "/nonexistent/Acme.dmg")
+	exitCode, output, descendantsPending, err := installDMG(ctx, "/nonexistent/Acme.dmg", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -99,7 +99,7 @@ func TestInstallDMGLabelsTimeoutAsTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg")
+	_, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", nil)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected a timeout label, got %v", err)
 	}
@@ -115,13 +115,13 @@ func TestInstallDMGReportsFailures(t *testing.T) {
 	defer cancel()
 
 	fakeDMGCommands(t, "Acme.pkg", "exit 7")
-	exitCode, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg")
+	exitCode, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", nil)
 	if exitCode != 7 || err == nil || !strings.Contains(err.Error(), "code 7") {
 		t.Fatalf("want exit code 7 surfaced, got exitCode=%d err=%v", exitCode, err)
 	}
 
 	fakeDMGCommands(t, "", "true")
-	_, _, _, err = installDMG(ctx, "/nonexistent/Acme.dmg")
+	_, _, _, err = installDMG(ctx, "/nonexistent/Acme.dmg", nil)
 	if err == nil || !strings.Contains(err.Error(), "no .pkg or .app found in DMG") {
 		t.Fatalf("want the DMG-specific empty-image error, got %v", err)
 	}
@@ -137,8 +137,37 @@ func TestInstallDMGReportsMountFailure(t *testing.T) {
 	defer cancel()
 
 	fakeDMGCommands(t, mountFails, "true")
-	_, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg")
+	_, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", nil)
 	if err == nil || !strings.Contains(err.Error(), "failed to mount DMG") {
 		t.Fatalf("want a mount-failure error, got %v", err)
+	}
+}
+
+// #7038: a .pkg inside a DMG is the version's real installer, so declared
+// success codes apply to it — but never to the hdiutil/cp helpers, whose own
+// contract is zero-only.
+func TestInstallDMGDeclaredSuccessCodesApplyToPkgOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test drives the helpers through sh")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fakeDMGCommands(t, "Acme.pkg", "exit 7")
+	exitCode, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", []uint32{7})
+	if err != nil || exitCode != 7 {
+		t.Fatalf("declared code 7 from the embedded pkg should succeed with the real code, got exitCode=%d err=%v", exitCode, err)
+	}
+
+	// hdiutil attach exits 1; declaring 1 must not turn a failed mount into success.
+	fakeDMGCommands(t, mountFails, "true")
+	if _, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", []uint32{1}); err == nil || !strings.Contains(err.Error(), "failed to mount DMG") {
+		t.Fatalf("want mount failure despite declared code 1, got %v", err)
+	}
+
+	// cp of a .app exits 7; declaring 7 must not turn a failed copy into success.
+	fakeDMGCommands(t, "Acme.app", "exit 7")
+	if _, _, _, err := installDMG(ctx, "/nonexistent/Acme.dmg", []uint32{7}); err == nil {
+		t.Fatal("want cp failure despite declared code 7")
 	}
 }

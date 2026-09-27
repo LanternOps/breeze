@@ -153,7 +153,7 @@ describe('monitors routes', () => {
 
   // ────────────────────── POST /:id/check ──────────────────────
   describe('POST /:id/check', () => {
-    it('queues a monitor check via Redis', async () => {
+    it.each([null, RULE_ID])('queues a monitor check with managedByMonitorId %s', async (managedByMonitorId) => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -161,6 +161,7 @@ describe('monitors routes', () => {
               id: MONITOR_ID,
               orgId: ORG_ID,
               name: 'Ping',
+              managedByMonitorId,
             }]),
           }),
         }),
@@ -251,11 +252,12 @@ describe('monitors routes', () => {
       );
     });
 
-    it('sends test command to an online agent', async () => {
+    it.each([null, RULE_ID])('sends a test command with managedByMonitorId %s', async (managedByMonitorId) => {
       const monitor = {
         id: MONITOR_ID,
         orgId: ORG_ID,
         name: 'Ping',
+        managedByMonitorId,
         monitorType: 'icmp_ping',
         target: '8.8.8.8',
         config: {},
@@ -411,31 +413,14 @@ describe('monitors routes', () => {
   });
 
   describe('PATCH /:id', () => {
-    it('rejects invalid config updates for the monitor type', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: MONITOR_ID,
-              orgId: ORG_ID,
-              monitorType: 'tcp_port',
-            }]),
-          }),
-        }),
-      } as any);
-
+    it('returns 410 before validating obsolete config', async () => {
       const res = await app.request(`/monitors/${MONITOR_ID}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config: { url: 'https://example.com' }
-        })
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { url: 'https://example.com' } }),
       });
-
-      expect(res.status).toBe(400);
-      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
-      const body = await res.json();
-      expect(body.error).toBe('Invalid monitor config');
+      expect(res.status).toBe(410);
+      expect(db.update).not.toHaveBeenCalled();
+      expect((await res.json()).error).toBe('network_check_authoring_retired');
     });
   });
 

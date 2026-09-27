@@ -33,29 +33,6 @@ export const INLINE_SETTINGS_EXAMPLES: Readonly<Partial<Record<ConfigFeatureType
       },
     ],
   },
-  alert_rule: {
-    items: [
-      {
-        name: 'High CPU',
-        severity: 'high',
-        conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90, durationMinutes: 10 }],
-        cooldownMinutes: 30,
-        autoResolve: true,
-      },
-      {
-        name: 'Application crashes',
-        severity: 'medium',
-        conditions: [{ type: 'event_log', category: 'application', level: 'error', sourcePattern: 'Application Error', countThreshold: 3, windowMinutes: 60 }],
-      },
-      { name: 'Device offline', conditions: [{ type: 'offline', durationMinutes: 15 }] },
-    ],
-  },
-  monitoring: {
-    checkIntervalSeconds: 60,
-    watches: [
-      { watchType: 'service', name: 'wuauserv', displayName: 'Windows Update', enabled: true, alertOnStop: true, autoRestart: false },
-    ],
-  },
   maintenance: {
     recurrence: 'weekly',
     windowStart: '02:00',

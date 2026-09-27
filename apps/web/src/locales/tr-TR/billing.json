@@ -1051,7 +1051,8 @@
         "readOnlyHint": "Şablonu, sürümü veya değişkenleri değiştirmek için bu bölümü kaldırıp yeniden ekleyin.",
         "updateToVersion": "v{{version}} Güncellemesi",
         "saveVariables": "Değişkenleri kaydet",
-        "unresolvedWarning": "Çözümlenmemiş değişkenler (göndermeyi engelleyecek): {{names}}"
+        "unresolvedWarning": "Çözümlenmemiş değişkenler (göndermeyi engelleyecek): {{names}}",
+        "placementHint": "Müşteriler bunu toplamlardan sonra, açana kadar daraltılmış olarak görür. PDF’te fiyattan sonra gelir."
       },
       "coverPage": {
         "title": "Kapak sayfası",
@@ -1446,6 +1447,18 @@
         "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
+      "agreements": {
+        "heading": "Anlaşmalar",
+        "termsTitle": "Şartlar ve Koşullar",
+        "read": "Oku",
+        "hide": "Gizle",
+        "readTime": "~{{minutes}} dk okuma",
+        "sectionsReadTime_one": "{{count}} bölüm · ~{{minutes}} dk okuma",
+        "sectionsReadTime_other": "{{count}} bölüm · ~{{minutes}} dk okuma",
+        "pdfDocument": "PDF belgesi",
+        "unavailable": "Kullanılamıyor",
+        "untitled": "Anlaşma"
+      },
       "draft": "Taslak",
       "empty": "Bu teklifin henüz içeriği yok.",
       "imageUnavailable": "Resim kullanılamıyor",
@@ -1473,7 +1486,6 @@
         "tax": "Vergi",
         "unitPrice": "Birim fiyatı"
       },
-      "terms": "Şartlar",
       "totals": {
         "annualRecurring": "Yıllık yinelenen",
         "depositDue": "Depozito ödenmesi gerekiyor",

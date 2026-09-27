@@ -6,6 +6,7 @@ This folder contains the WiX installer definition (v4 authoring schema) and cust
 
 - Windows host (or Windows CI runner)
 - WiX CLI (`wix`; CI uses v7 — the CLI version is independent of the v4 authoring schema)
+- WiX Util extension (`WixToolset.Util.wixext`, same version as the CLI). `build-msi.ps1` installs it with `wix extension add -g` and passes `-ext`; a bare `wix build` needs `-ext WixToolset.Util.wixext/<cli version>` or the link fails on the unresolved `Wix4UtilCA_X64` binary (used by `KillBreezeProcesses`, #3624). Needs nuget.org access the first time.
 - PowerShell
 - Built `breeze-agent-windows-amd64.exe`
 

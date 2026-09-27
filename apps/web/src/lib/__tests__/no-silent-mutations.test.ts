@@ -255,7 +255,9 @@ const TARGET_GLOBS = [
   'src/components/admin/QuarantinedDevices.tsx',
   'src/components/automations/AutomationsPage.tsx',
   // #5313: create-monitor and site-edit saves confirmed nothing on 2xx.
-  'src/components/monitors/CreateMonitorForm.tsx',
+  'src/components/monitors/NetworkCheckConversionBanner.tsx',
+  'src/components/monitors/NetworkMonitorList.tsx',
+  'src/components/monitors/MonitorDetailModal.tsx',
   'src/components/settings/SiteDetailPage.tsx',
   'src/components/automations/PoliciesPage.tsx',
   // #3531 sweep: the same hidden-failure pattern (destructive action behind an
@@ -815,7 +817,8 @@ describe('no silent mutations in targeted set', () => {
     // Backup provider integration (W03 #6011) adds three adopters: 185 → 188.
     // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
     // #5313 adds monitors/CreateMonitorForm.tsx and settings/SiteDetailPage.tsx: 189 → 191.
-    expect(absoluteFiles.length).toBe(191);
+    // Network results replace the deleted create form with three mutation adopters: 191 → 193.
+    expect(absoluteFiles.length).toBe(193);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

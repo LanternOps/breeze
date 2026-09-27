@@ -1,15 +1,13 @@
 import { db } from '../db';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
-import { CONFIG_FEATURE_TYPES, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
-import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
+import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
-  alertRuleInlineSettingsSchema,
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
-  monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -92,18 +90,10 @@ function configPolicyMutationMfaError(auth: AuthContext): string | null {
  * - validating at all — decomposeInlineSettings uses `.parse()`, so a bad payload
  *   throws a ZodError that `safeHandler` hands to `sanitizeThrownToolError`,
  *   which is fail-closed and replaces it with GENERIC_TOOL_ERROR_MESSAGE. The
- *   model then has no idea what to fix: the monitoring write barrier's
- *   "moved to the Alerts feature" pointer never reached the chat at all.
- *
- * `monitoring` is validate-only: its schema defaults the deprecated
- * `alertRules`/`eventLogAlerts` barrier keys to `[]`, and normalizing would write
- * those dead keys back into the stored JSONB mirror. Same call made in the HTTP
- * route (routes/configurationPolicies/featureLinks.ts).
+ *   model then has no idea which input to fix.
  */
 export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unknown) => any }; normalize: boolean }> = {
   onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
-  alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
-  monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
   // #6312: without this entry a malformed maintenance payload throws out of
   // decomposeInlineSettings and reaches the model as GENERIC_TOOL_ERROR_MESSAGE,
   // so it cannot learn that (say) its recurrence value is not one of the four.
@@ -120,20 +110,6 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // caller sent, exactly as the HTTP route stores it.
   compliance: { schema: complianceInlineSettingsSchema, normalize: false },
 };
-
-/**
- * #6669: appended to an alert_rule rejection on a condition `type` or `level`.
- * Those are the two fields the model reaches for when it wants "tell me if an
- * app is removed". Neither can express that, and a bare enum error sent it
- * guessing until it found an event_log rule that could never fire (#6666).
- */
-export const ALERT_RULE_APP_PRESENCE_HINT =
-  'Valid condition types: "metric", "offline", "event_log"; valid event_log levels: "warning", "error", "critical" (a floor: that level and above). '
-  + 'Information-level events can never match, so event_log cannot detect software installs or uninstalls. '
-  + 'To detect a missing or removed app, use featureType "compliance" with a { type: "required_software", softwareName } rule. '
-  + 'It reports the device non-compliant (configuration_policy_compliance). Configuration-policy compliance does not currently create an alert.';
-
-const ALERT_RULE_HINT_PATH = /conditions\.\d+\.(type|level):/i;
 
 /**
  * Refuses an assistant-authored automation action that asks to run a script
@@ -213,15 +189,11 @@ function validateInlineSettingsForFeature(
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
     // describeFirstZodIssue prefixes the field path AND unwraps `invalid_union`
-    // into the offending sub-issue: alert-rule conditions are a union several
-    // levels deep inside items[], and the raw union issue is a bare
-    // "Invalid input" that tells the model nothing about what to fix.
+    // into the offending sub-issue: a raw union issue is a bare "Invalid input"
+    // that tells the model nothing about what to fix.
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
-    const hint = featureType === 'alert_rule' && ALERT_RULE_HINT_PATH.test(described)
-      ? ` ${ALERT_RULE_APP_PRESENCE_HINT}`
-      : '';
-    return { error: `Invalid ${featureType} inline settings — ${described}${hint}` };
+    return { error: `Invalid ${featureType} inline settings — ${described}` };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -254,8 +226,6 @@ export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
   patch: `{ sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } can also use featurePolicyId → existing update ring UUID (for approval deferral), combined with inlineSettings for schedule/reboot`,
-  alert_rule: `server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (a floor: matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins. What the Windows agent collects for event_log: application = Application log error/critical only; system = System log error/critical (disk, driver and WHEA errors, collected only when the event_log feature's hardware category is enabled) plus unexpected-shutdown events; security = Security log warning and above; hardware = a category="hardware" condition never matches a Windows device, because the agent stores its hardware errors under category "system". Information-level events can never match (the lowest level is "warning"), so an event_log condition cannot detect software installs or uninstalls (MsiInstaller events are Information). To detect a missing or removed app, use a compliance required_software rule instead.`,
-  monitoring: `agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.`,
   maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }`,
   automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
   event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }`,
@@ -272,7 +242,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   onedrive_helper: `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }`,
   software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.`,
   peripheral_control: `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.`,
-  monitors: `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"|"replace" (default "cumulative") }. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.`,
+  monitors: `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"|"replace" (default "cumulative"), checkIntervalSeconds: 60 }. Check interval accepts 10–3600 seconds and controls agent service/process checks. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.`,
   hardware_monitoring: `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.`,
 };
 
@@ -284,17 +254,12 @@ const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
   peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
 };
 
-/**
- * W05c2 (#6371): `alert_rule` and `monitoring` links are legacy during the
- * conversion release. Writes still succeed (W05d turns this into a refusal),
- * but every successful one tells the model where new conditions belong. The
- * update path passes the STORED link type, never the caller's featureType.
- */
-export function legacyFeatureWarning(featureType: string | undefined): { warning?: string; useTool?: string } {
-  return featureType === 'alert_rule' || featureType === 'monitoring' ? {
-    warning: `Feature type "${featureType}" is legacy. Use manage_monitor_definitions and attach via featureType "monitors". Existing writes remain available until W05d.`,
+function retiredFeatureRefusal(featureType: string): string {
+  return JSON.stringify({
+    error: `Feature type "${featureType}" was retired by the alerting consolidation. Author the condition with manage_monitor_definitions and attach it to the policy with featureType "monitors".`,
+    retiredFeatureType: featureType,
     useTool: 'manage_monitor_definitions',
-  } : {};
+  });
 }
 
 /**
@@ -391,7 +356,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
               featureType: configPolicyFeatureLinks.featureType,
             })
             .from(configPolicyFeatureLinks)
-            .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds))
+            .where(and(
+              inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+              notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+            ))
         : [];
 
       const linksByPolicy = new Map<string, string[]>();
@@ -928,7 +896,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         const links = await db
           .select({ id: configPolicyFeatureLinks.id, configPolicyId: configPolicyFeatureLinks.configPolicyId, featureType: configPolicyFeatureLinks.featureType })
           .from(configPolicyFeatureLinks)
-          .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds));
+          .where(and(
+            inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+            notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
+          ));
 
         const featureLinkIds = links.map((l) => l.id);
 
@@ -1030,7 +1001,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'configuration policy feature links and bundled settings: add, update, remove, list',
     definition: {
       name: 'manage_policy_feature_link',
-      description: 'Manage configuration-policy feature links. Actions: add, update, remove, list, describe. Use describe with featureType for inlineSettings and featurePolicyId guidance. Device lifecycle purge is irreversible and destroys device history. Backup destinations resolve per device org.',
+      description: 'Policy links: add, update, remove, list; describe for inlineSettings/featurePolicyId. Device purge is irreversible. alert_rule / monitoring: RETIRED. Author conditions with manage_monitor_definitions; attach via featureType "monitors".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1075,6 +1046,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
 
+      if (action === 'add' && isRetiredConfigFeatureType(input.featureType)) {
+        return retiredFeatureRefusal(input.featureType);
+      }
+
       // Verify access to the parent policy
       const policy = await getConfigPolicy(configPolicyId, auth);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
@@ -1112,6 +1087,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           ))
           .limit(1);
         existingFeatureType = existingLink?.featureType as string | undefined;
+        if (isRetiredConfigFeatureType(existingFeatureType)) {
+          return retiredFeatureRefusal(existingFeatureType);
+        }
       }
 
       const touchesMaintenance =
@@ -1175,7 +1153,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
-        return JSON.stringify({ success: true, featureLink: link, ...legacyFeatureWarning(featureType) });
+        return JSON.stringify({ success: true, featureLink: link });
       }
 
       if (action === 'update') {
@@ -1207,7 +1185,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           throw err;
         }
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });
-        return JSON.stringify({ success: true, featureLink: updated, ...legacyFeatureWarning(existingFeatureType) });
+        return JSON.stringify({ success: true, featureLink: updated });
       }
 
       if (action === 'remove') {

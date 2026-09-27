@@ -188,6 +188,13 @@ export const FIXTURE_TABLE_TEMPLATES: Readonly<Record<string, Template>> = {
     vm_name: (t) => q(`fixture-vm-${t.n}`),
   }),
   discovered_assets: discoveredAssets,
+  // #5351 — gains its trigger in 2026-11-01-110000-device-memory-modules.sql.
+  device_memory_modules: deviceChild('device_memory_modules', {
+    slot_key: () => q('smbios:0x1100'),
+    slot_index: () => '0',
+    locator: () => q('DIMM_A1'),
+    populated: () => 'true',
+  }),
   network_baselines: siteChild('network_baselines', {
     subnet: (t) => q(`198.51.${100 + t.n}.0/24`),
   }),

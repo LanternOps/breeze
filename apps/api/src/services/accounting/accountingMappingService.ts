@@ -454,9 +454,15 @@ async function buildOrgProposals(
   // first time reconciliation sees it — every later call hits this as a
   // current-mapping (tier 1) row instead of re-deriving it. ON CONFLICT DO
   // NOTHING: a concurrent caller may have already inserted the same row.
+  // Carry the live SyncToken + currency from the listing just fetched, exactly
+  // as a manual confirm does — a row without a token could never be updated in
+  // QuickBooks (#7134). The provider also self-heals a missing token, so rows
+  // backfilled before this fix recover on their next sync.
+  const remoteById = new Map(remoteCustomers.map((c) => [c.id, c]));
   for (const link of links) {
     if (hiddenOrgIds.has(link.orgId)) continue;
     if (mappingByOrgId.has(link.orgId)) continue;
+    const remote = remoteById.get(link.externalId);
     const [inserted] = await db
       .insert(accountingEntityMappings)
       .values({
@@ -466,6 +472,8 @@ async function buildOrgProposals(
         breezeEntityId: link.orgId,
         remoteEntityType: 'Customer',
         remoteEntityId: link.externalId,
+        remoteSyncToken: remote?.syncToken ?? null,
+        remoteCurrencyCode: remote?.currencyCode ?? null,
         linkStatus: 'confirmed',
         syncStatus: 'pending',
       })

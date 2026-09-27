@@ -42,6 +42,9 @@ vi.mock('../../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../../middleware/clientAiAuth', () => ({
+  clientAiDbAccessContext: (orgId: string) => ({
+    scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null,
+  }),
   clientAiAuthMiddleware: (c: any, next: any) => {
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
     c.set('clientAiAuth', {
@@ -57,6 +60,7 @@ vi.mock('../../middleware/clientAiAuth', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),

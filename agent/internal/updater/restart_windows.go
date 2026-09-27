@@ -20,6 +20,19 @@ const serviceName = "BreezeAgent"
 
 var rollbackRecoveryRestartScheduled atomic.Bool
 
+// detachedHelperSysProcAttr is the process attributes for the powershell.exe
+// update and rollback helpers. CREATE_NEW_PROCESS_GROUP lets the helper outlive
+// the agent it is replacing. CREATE_NO_WINDOW + HideWindow keep the
+// console-subsystem powershell.exe from opening a console window when the agent
+// is not running as the session-0 service (#3624), the same treatment as
+// executor/limits_windows.go and userhelper/spawn_windows.go.
+func detachedHelperSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
+	}
+}
+
 func deferRollbackSwapToRestart() bool { return true }
 
 // Restart restarts the Windows service via SCM.
@@ -309,9 +322,7 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", scriptFile.Name(),
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
-	}
+	cmd.SysProcAttr = detachedHelperSysProcAttr()
 
 	if err := cmd.Start(); err != nil {
 		os.Remove(scriptFile.Name())
@@ -348,7 +359,7 @@ func startWindowsRollbackHelper(journalPath string, operation windowsRollbackOpe
 		return err
 	}
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptFile.Name())
 		return err
@@ -388,7 +399,7 @@ func RestartAfterRollback(journalPath string) error {
 		return err
 	}
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptFile.Name())
 		return err

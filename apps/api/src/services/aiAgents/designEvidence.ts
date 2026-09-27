@@ -800,12 +800,14 @@ async function loadConfiguration(orgId: string, partnerId: string | null): Promi
     JOIN config_policy_monitoring_settings ms ON ms.id = w.settings_id
     JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
     JOIN configuration_policies cp ON cp.id = fl.config_policy_id AND ${ownerPredicate}
+    WHERE w.retired_at IS NULL
   `);
   const rules = policyIds.length === 0 ? [] : await query<RuleRow>(sql`
     SELECT fl.config_policy_id AS policy_id, r.name, r.severity::text AS severity, r.cooldown_minutes
     FROM config_policy_alert_rules r
     JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
     JOIN configuration_policies cp ON cp.id = fl.config_policy_id AND ${ownerPredicate}
+    WHERE r.retired_at IS NULL
   `);
   const watchesByPolicy = new Map<string, RawDesignEvidence['configuration']['policies'][number]['watches']>();
   for (const w of watches) {

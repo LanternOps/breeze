@@ -1939,6 +1939,19 @@ discoveryRoutes.delete(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    // Bound checks, including retired and unmanaged ones, retain results or ledger history.
+    const retainedChecks = await db
+      .select({ monitorId: networkMonitors.managedByMonitorId, checkId: networkMonitors.id })
+      .from(networkMonitors)
+      .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId)));
+    if (retainedChecks.length > 0) {
+      return c.json({
+        error: 'asset_has_retained_network_checks',
+        monitorIds: retainedChecks.map((check) => check.monitorId).filter((id): id is string => id !== null),
+        checkIds: retainedChecks.map((check) => check.checkId)
+      }, 409);
+    }
+
     await db.transaction(async (tx) => {
       const monitoringDevices = await tx.select({ id: snmpDevices.id })
         .from(snmpDevices)

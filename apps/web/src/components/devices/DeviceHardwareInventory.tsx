@@ -46,10 +46,35 @@ type HardwareInventory = {
   cpuThreads?: number | null;
   ramTotalMb?: number | null;
   diskTotalGb?: number | null;
+  // Memory summary (#5351): null until the agent reports slot inventory.
+  memorySlotsTotal?: number | null;
+  memoryMaxCapacityMb?: number | null;
+  memorySoldered?: boolean | null;
+  memoryObservedAt?: string | null;
+};
+
+// One physical memory slot (#5351), populated or empty, as returned by
+// GET /devices/:id/hardware `memoryModules` (ordered by slot).
+type MemoryModule = {
+  id?: string;
+  slotKey?: string;
+  slotIndex?: number;
+  locator?: string;
+  bankLabel?: string | null;
+  populated?: boolean;
+  capacityMb?: number | null;
+  memoryType?: string | null;
+  formFactor?: string | null;
+  speedMts?: number | null;
+  configuredSpeedMts?: number | null;
+  manufacturer?: string | null;
+  partNumber?: string | null;
+  serialNumber?: string | null;
 };
 
 type HardwareInventoryResponse = HardwareInventory & {
   hardware?: HardwareInventory;
+  memoryModules?: MemoryModule[];
   disks?: DiskDrive[];
   diskDrives?: DiskDrive[];
   drives?: DiskDrive[];
@@ -86,6 +111,37 @@ function formatRam(valueMb: number | null | undefined): string {
     : `${formatNumber(valueMb)} MB`;
 }
 
+function formatSpeed(value: number): string {
+  return formatNumber(value);
+}
+
+function positive(values: Array<number | null | undefined>): number[] {
+  return values.filter((v): v is number => typeof v === "number" && v > 0);
+}
+
+/**
+ * Card speed line: one value when every populated module runs at the same
+ * speed, a range when mixed. Configured (running) speed is preferred; rated
+ * speed is the fallback, and the caller labels which one is shown.
+ */
+function summarizeSpeed(
+  modules: MemoryModule[],
+): { label: string; kind: "configured" | "rated" } | null {
+  const populated = modules.filter((module) => module.populated);
+  const configured = positive(populated.map((m) => m.configuredSpeedMts));
+  const rated = positive(populated.map((m) => m.speedMts));
+  const kind = configured.length > 0 ? "configured" : "rated";
+  const speeds = kind === "configured" ? configured : rated;
+  if (speeds.length === 0) return null;
+  const min = Math.min(...speeds);
+  const max = Math.max(...speeds);
+  const label =
+    min === max
+      ? `${formatSpeed(min)} MT/s`
+      : `${formatSpeed(min)}–${formatSpeed(max)} MT/s`;
+  return { label, kind };
+}
+
 function getHealthBadge(health?: string, status?: string) {
   const normalized = (health || status || "").toLowerCase();
   if (["healthy", "ok", "good", "normal"].includes(normalized)) {
@@ -119,6 +175,7 @@ export default function DeviceHardwareInventory({
   const [hardware, setHardware] = useState<HardwareInventory | null>(null);
   const [disks, setDisks] = useState<DiskDrive[]>([]);
   const [adapters, setAdapters] = useState<NetworkAdapter[]>([]);
+  const [memoryModules, setMemoryModules] = useState<MemoryModule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -144,6 +201,9 @@ export default function DeviceHardwareInventory({
       setHardware(normalizedHardware);
       setDisks(Array.isArray(diskList) ? diskList : []);
       setAdapters(Array.isArray(adapterList) ? adapterList : []);
+      setMemoryModules(
+        Array.isArray(payload.memoryModules) ? payload.memoryModules : [],
+      );
     } catch (err) {
       setError(
         err instanceof Error
@@ -190,6 +250,23 @@ export default function DeviceHardwareInventory({
       };
     });
   }, [disks]);
+
+  // #5351: slot usage + speed for the memory card. No module rows and no
+  // memoryObservedAt = the agent never reported slot inventory (it needs an
+  // update) — shown as a hint, not as a misleading "0 of 0 slots".
+  const memorySummary = useMemo(() => {
+    const reported =
+      memoryModules.length > 0 || Boolean(hardware?.memoryObservedAt);
+    const used = memoryModules.filter((module) => module.populated).length;
+    const total = hardware?.memorySlotsTotal ?? memoryModules.length;
+    return {
+      reported,
+      used,
+      total,
+      soldered: hardware?.memorySoldered === true,
+      speed: summarizeSpeed(memoryModules),
+    };
+  }, [memoryModules, hardware?.memoryObservedAt, hardware?.memorySlotsTotal, hardware?.memorySoldered]);
 
   // Compute total storage from disks
   const totalStorageGb = useMemo(() => {
@@ -270,6 +347,41 @@ export default function DeviceHardwareInventory({
           <p className="mt-1 text-sm text-muted-foreground">
             {t("deviceHardwareInventory.totalInstalledRam")}
           </p>
+          {memorySummary.soldered ? (
+            <p
+              className="mt-1 text-sm text-muted-foreground"
+              data-testid="memory-on-package"
+            >
+              {t("deviceHardwareInventory.onPackageMemory")}
+            </p>
+          ) : (
+            memorySummary.reported &&
+            memorySummary.total > 0 && (
+              <p
+                className="mt-1 text-sm text-muted-foreground"
+                data-testid="memory-slots-used"
+              >
+                {t("deviceHardwareInventory.memorySlotsUsed", {
+                  used: memorySummary.used,
+                  total: memorySummary.total,
+                })}
+              </p>
+            )
+          )}
+          {memorySummary.speed && (
+            <p
+              className="mt-1 text-sm text-muted-foreground"
+              data-testid="memory-speed-summary"
+            >
+              {memorySummary.speed.kind === "configured"
+                ? t("deviceHardwareInventory.memorySpeedConfigured", {
+                    speed: memorySummary.speed.label,
+                  })
+                : t("deviceHardwareInventory.memorySpeedRated", {
+                    speed: memorySummary.speed.label,
+                  })}
+            </p>
+          )}
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -284,6 +396,145 @@ export default function DeviceHardwareInventory({
             {t("deviceHardwareInventory.totalDiskCapacity")}
           </p>
         </div>
+      </div>
+
+      <div
+        className="rounded-lg border bg-card p-6 shadow-xs"
+        data-testid="memory-modules-card"
+      >
+        <h3 className="text-sm font-semibold">
+          {t("deviceHardwareInventory.memoryModules")}
+        </h3>
+        {!memorySummary.reported ? (
+          <p
+            className="mt-4 text-sm text-muted-foreground"
+            data-testid="memory-modules-not-reported"
+          >
+            {t("deviceHardwareInventory.memoryNotReported")}
+          </p>
+        ) : memoryModules.length === 0 ? (
+          <p className="mt-4 text-sm text-muted-foreground">
+            {t("deviceHardwareInventory.noMemoryModulesReported")}
+          </p>
+        ) : (
+          <div
+            className="mt-4 overflow-x-auto rounded-md border"
+            data-testid="memory-modules-scroll"
+          >
+            <table
+              className="min-w-full divide-y"
+              data-testid="memory-modules-table"
+            >
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.slot")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.capacity")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.memoryType")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.speed")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.manufacturer")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.partNumber")}
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-3">
+                    {t("deviceHardwareInventory.serialNumber")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {memoryModules.map((module, index) => {
+                  const key = module.id ?? module.slotKey ?? `slot-${index}`;
+                  const slot = (
+                    <td className="whitespace-nowrap px-4 py-3">
+                      <div className="font-medium">
+                        {module.locator || `#${index + 1}`}
+                      </div>
+                      {module.bankLabel && (
+                        <div className="text-xs text-muted-foreground">
+                          {module.bankLabel}
+                        </div>
+                      )}
+                    </td>
+                  );
+                  if (!module.populated) {
+                    return (
+                      <tr
+                        key={key}
+                        className="text-sm"
+                        data-testid="memory-module-row"
+                      >
+                        {slot}
+                        <td
+                          colSpan={6}
+                          className="px-4 py-3 text-muted-foreground"
+                        >
+                          <span
+                            className="inline-flex items-center rounded-full border border-muted bg-muted/40 px-2.5 py-0.5 text-xs font-medium"
+                            data-testid="memory-module-empty"
+                          >
+                            {t("deviceHardwareInventory.emptySlot")}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const running = module.configuredSpeedMts ?? null;
+                  const rated = module.speedMts ?? null;
+                  const shown = running ?? rated;
+                  return (
+                    <tr
+                      key={key}
+                      className="text-sm"
+                      data-testid="memory-module-row"
+                    >
+                      {slot}
+                      <td className="whitespace-nowrap px-4 py-3">
+                        {module.capacityMb
+                          ? formatRam(module.capacityMb)
+                          : "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                        {[module.memoryType, module.formFactor]
+                          .filter(Boolean)
+                          .join(" · ") || "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                        {shown ? `${formatSpeed(shown)} MT/s` : "—"}
+                        {running && rated && running !== rated && (
+                          <span className="ml-1 text-xs">
+                            (
+                            {t("deviceHardwareInventory.ratedSpeed", {
+                              speed: `${formatSpeed(rated)} MT/s`,
+                            })}
+                            )
+                          </span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                        {module.manufacturer || "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
+                        {module.partNumber || "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
+                        {module.serialNumber || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <StorageHealthSection deviceId={deviceId} />

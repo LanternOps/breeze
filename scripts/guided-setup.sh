@@ -3244,6 +3244,22 @@ generate_secret() {
   esac
 }
 
+# APP_ENCRYPTION_KEY_ID makes the API seal secrets as AAD-bound enc:v3
+# envelopes; without it they fall back to unbound enc:v1 (#5568). Generate one
+# on first run, but NEVER replace an existing id: envelopes are tagged with it,
+# so changing it would orphan them. Any [A-Za-z0-9._-]+ value is valid.
+ensure_app_encryption_key_id() {
+  local current
+  current="$(get_env_value "APP_ENCRYPTION_KEY_ID")"
+  if ! looks_like_placeholder "${current}"; then
+    printf '%s' "${current}"
+    return
+  fi
+  current="key-$(date +%Y%m%d)"
+  set_env_value "APP_ENCRYPTION_KEY_ID" "${current}"
+  printf '%s' "${current}"
+}
+
 prompt_secret() {
   local key="$1"
   local label="$2"
@@ -3993,6 +4009,7 @@ configure_core_env() {
   prompt_secret "JWT_SECRET" "JWT signing secret" "base64_64" true >/dev/null
   prompt_secret "AGENT_ENROLLMENT_SECRET" "Agent enrollment secret" "hex32" true >/dev/null
   app_key="$(prompt_secret "APP_ENCRYPTION_KEY" "Application encryption key" "hex32" true)"
+  ensure_app_encryption_key_id >/dev/null
   mfa_key="$(prompt_secret "MFA_ENCRYPTION_KEY" "MFA encryption key" "hex32" true)"
   while [[ "${app_key}" == "${mfa_key}" ]]; do
     warn "MFA_ENCRYPTION_KEY must not reuse APP_ENCRYPTION_KEY."

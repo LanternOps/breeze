@@ -20,38 +20,9 @@ import {
 } from './userRiskScoring';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { filterToDeviceScope, runFrozenDeviceIds } from './aiToolsSiteScope';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-function resolveWritableToolOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
-}
 
 // #6745 (A-W05 follow-up): the largest page of realistic reliability rows that
 // fits the chat budget uncompacted (aiToolsUserRisk.outputShape.test.ts).
@@ -281,9 +252,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'userId is required' });
       }
 
+      // A read: never answered from the device-page write default (#6675).
       const resolved = resolveWritableToolOrgId(
         auth,
-        typeof input.orgId === 'string' ? input.orgId : undefined
+        typeof input.orgId === 'string' ? input.orgId : undefined,
+        { useWriteDefault: false },
       );
       if (resolved.error || !resolved.orgId) {
         return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });

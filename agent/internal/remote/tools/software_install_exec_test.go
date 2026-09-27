@@ -32,7 +32,7 @@ func TestRunInstallerCommandReturnsWhenDescendantHoldsPipe(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	exitCode, output, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 8 & echo wrapper-done"), "exe")
+	exitCode, output, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 8 & echo wrapper-done"), "exe", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -59,7 +59,7 @@ func TestRunInstallerCommandLabelsTimeoutAsTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	_, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 10"), "exe")
+	_, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 10"), "exe", nil)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout to be labeled as such, got err=%v", err)
 	}
@@ -83,7 +83,7 @@ func TestRunInstallerCommandDoesNotMislabelLateSuccessAsTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	exitCode, output, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 30 & echo wrapper-done"), "exe")
+	exitCode, output, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 30 & echo wrapper-done"), "exe", nil)
 	if err != nil {
 		t.Fatalf("expected success for a wrapper that exited 0, got err=%v (exitCode=%d)", err, exitCode)
 	}
@@ -104,7 +104,7 @@ func TestRunInstallerCommandReportsRealExitCode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	exitCode, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "exit 3"), "exe")
+	exitCode, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "exit 3"), "exe", nil)
 	if exitCode != 3 {
 		t.Fatalf("expected exit code 3, got %d", exitCode)
 	}
@@ -127,7 +127,7 @@ func TestRunInstallerCommandReportsDescendantsOutlivedWrapper(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, _, descendantsPending, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 10 & echo wrapper-done"), "exe")
+	_, _, descendantsPending, err := runInstallerCommand(ctx, shInstallerCommand(ctx, "sleep 10 & echo wrapper-done"), "exe", nil)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -135,7 +135,7 @@ func TestRunInstallerCommandReportsDescendantsOutlivedWrapper(t *testing.T) {
 		t.Fatal("expected descendantsPending=true when a descendant outlived the wrapper")
 	}
 
-	_, _, descendantsPending, err = runInstallerCommand(ctx, shInstallerCommand(ctx, "echo done"), "exe")
+	_, _, descendantsPending, err = runInstallerCommand(ctx, shInstallerCommand(ctx, "echo done"), "exe", nil)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}

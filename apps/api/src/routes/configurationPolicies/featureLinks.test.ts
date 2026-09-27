@@ -5,6 +5,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 
 // Hoist mock values so they're available in vi.mock factories
 const {
+  getRetiredFeatureLinkMock,
   getConfigPolicyMock,
   addFeatureLinkMock,
   updateFeatureLinkMock,
@@ -13,6 +14,7 @@ const {
   validateFeaturePolicyExistsMock,
   isBackupProfileReferenceMock,
 } = vi.hoisted(() => ({
+  getRetiredFeatureLinkMock: vi.fn(),
   getConfigPolicyMock: vi.fn(),
   addFeatureLinkMock: vi.fn(),
   updateFeatureLinkMock: vi.fn(),
@@ -26,6 +28,7 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../services/configurationPolicy')>();
   return {
     ...original,
+    getRetiredFeatureLink: getRetiredFeatureLinkMock,
     getConfigPolicy: getConfigPolicyMock,
     addFeatureLink: addFeatureLinkMock,
     updateFeatureLink: updateFeatureLinkMock,
@@ -154,6 +157,38 @@ describe('featureLinks routes', () => {
     permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
     vi.clearAllMocks();
     app = buildApp();
+  });
+
+  it.each(['alert_rule', 'monitoring'])('PATCH on retired %s returns 410 before writes', async featureType => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ inlineSettings: {} }),
+    });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({ retiredFeatureType: featureType });
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH finds a retired link omitted from the public policy listing', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    getRetiredFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'monitoring' });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ inlineSettings: {} }),
+    });
+    expect(res.status).toBe(410);
+    expect(getRetiredFeatureLinkMock).toHaveBeenCalledWith(POLICY_ID, LINK_ID);
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    getRetiredFeatureLinkMock.mockReset();
+  });
+
+  it('does not look up a retired link when the policy is inaccessible', async () => {
+    getConfigPolicyMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ inlineSettings: {} }),
+    });
+    expect(res.status).toBe(404);
+    expect(getRetiredFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 
   it.each(['POST', 'PATCH'])('validates hardware bounds on %s before mutation', async method => {
@@ -730,7 +765,7 @@ describe('featureLinks routes', () => {
       updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule' });
     });
 
-    it('POST rejects an offline rule whose duration exceeds the horizon → 400', async () => {
+    it('POST rejects an offline rule whose duration exceeds the horizon → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -741,13 +776,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(String(body.error)).toContain('1440');
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('POST accepts an offline rule within the horizon → 201', async () => {
+    it('POST refuses an offline rule within the horizon → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -758,11 +794,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(201);
-      expect(addFeatureLinkMock).toHaveBeenCalled();
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('PATCH rejects updating an alert_rule link to an oversized offline duration → 400', async () => {
+    it('PATCH rejects updating an alert_rule link to an oversized offline duration → 410', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...STUB_POLICY,
         featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }],
@@ -775,28 +814,21 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(410);
       expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
   });
 
   // ============================================================
-  // alert_rule / monitoring inline-settings pre-validation.
-  //
-  // decomposeInlineSettings parses both with `.parse()`, so without a route-level
-  // safeParse the ZodError reaches app.onError and the client gets a generic 500
-  // (plus a Sentry event) instead of the schema's own message — the monitoring
-  // write barrier's "moved to the Alerts feature" pointer never reached anyone.
-  // ============================================================
-
-  describe('alert_rule / monitoring inlineSettings validation → 400, never 500', () => {
+  // Retired links refuse even formerly valid legacy settings.
+  describe('alert_rule / monitoring inlineSettings retirement', () => {
     beforeEach(() => {
       validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule' });
       updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule' });
     });
 
-    it('POST alert_rule with a `custom` condition → 400 with issues (not 500)', async () => {
+    it('POST alert_rule with a `custom` condition → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -807,15 +839,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(String(body.error)).toMatch(/alert_rule/i);
-      expect(Array.isArray(body.issues)).toBe(true);
-      expect((body.issues as unknown[]).length).toBeGreaterThan(0);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('POST alert_rule accepts an aliased metric name + durationMinutes → 201', async () => {
+    it('POST alert_rule refuses an aliased metric name + durationMinutes → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -828,16 +859,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(201);
-      // durationMinutes must survive normalization — the threshold handler reads it.
-      const [, , , inlineSettings] = addFeatureLinkMock.mock.calls[0] as any[];
-      expect(inlineSettings.items[0].conditions[0]).toMatchObject({
-        metric: 'cpuPercent',
-        durationMinutes: 15,
-      });
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('POST monitoring with non-empty alertRules → 400 naming the Alerts feature', async () => {
+    it('POST monitoring with non-empty alertRules → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'monitoring' });
       const res = await app.request(`/${POLICY_ID}/features`, {
@@ -853,13 +882,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(JSON.stringify(body.issues)).toContain('moved to the Alerts feature');
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'monitoring', hint: expect.stringContaining('/monitor-definitions'),
+      }));
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('POST monitoring with only watches → 201 (the barrier does not block ordinary saves)', async () => {
+    it('POST monitoring with only watches → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'monitoring' });
       const res = await app.request(`/${POLICY_ID}/features`, {
@@ -871,14 +901,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(201);
-      // Validate-only: the stored JSONB must NOT gain the deprecated barrier keys.
-      const [, , , inlineSettings] = addFeatureLinkMock.mock.calls[0] as any[];
-      expect(inlineSettings).not.toHaveProperty('alertRules');
-      expect(inlineSettings).not.toHaveProperty('eventLogAlerts');
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'monitoring', hint: expect.stringContaining('/monitor-definitions'),
+      }));
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('PATCH alert_rule with a `custom` condition → 400 with issues (not 500)', async () => {
+    it('PATCH alert_rule with a `custom` condition → 410', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...STUB_POLICY,
         featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }],
@@ -891,17 +921,15 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(Array.isArray(body.issues)).toBe(true);
-      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({ hint: expect.stringContaining('/monitor-definitions') });
     });
 
     // Union flattening (lib/zodIssues.ts). Conditions are a union nested inside
     // items[], so Zod's own report is a single `invalid_union` whose message is
     // the useless string "Invalid input" — the tech saw that in a toast with no
     // hint which field was wrong.
-    it('POST alert_rule with an unknown metric → 400 naming the field and the accepted metrics', async () => {
+    it('POST alert_rule with an unknown metric → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -912,19 +940,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      const issuesText = JSON.stringify(body.issues);
-      expect(issuesText).toContain('cpu');
-      expect(JSON.parse(issuesText).some((i: any) => i.path.join('.') === 'items.0.conditions.0.metric')).toBe(true);
-      // `details` is derived from the same flattened set, so whichever the web
-      // client renders first it never gets the bare placeholder.
-      expect(JSON.stringify(body.details)).toContain('items.0.conditions.0.metric');
-      expect(JSON.stringify(body.details)).not.toMatch(/"Invalid input"/);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('PATCH alert_rule with an unknown metric → 400 naming the field', async () => {
+    it('PATCH alert_rule with an unknown metric → 410', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...STUB_POLICY,
         featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }],
@@ -937,14 +960,11 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect((body.issues as any[]).some((i) => i.path.join('.') === 'items.0.conditions.0.metric')).toBe(true);
-      expect(JSON.stringify(body.details)).toContain('items.0.conditions.0.metric');
-      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({ hint: expect.stringContaining('/monitor-definitions') });
     });
 
-    it('POST alert_rule accepts `threshold` as a type alias and canonicalizes it to metric', async () => {
+    it('POST alert_rule refuses `threshold` as a type alias and canonicalizes it to metric → 410', async () => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -955,12 +975,14 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(201);
-      const [, , , inlineSettings] = addFeatureLinkMock.mock.calls[0] as any[];
-      expect(inlineSettings.items[0].conditions[0].type).toBe('metric');
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        retiredFeatureType: 'alert_rule', hint: expect.stringContaining('/monitor-definitions'),
+      }));
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('PATCH monitoring with non-empty alertRules → 400 naming the Alerts feature', async () => {
+    it('PATCH monitoring with non-empty alertRules → 410', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...STUB_POLICY,
         featureLinks: [{ id: LINK_ID, featureType: 'monitoring' }],
@@ -976,10 +998,8 @@ describe('featureLinks routes', () => {
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(JSON.stringify(body.issues)).toContain('moved to the Alerts feature');
-      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({ hint: expect.stringContaining('/monitor-definitions') });
     });
   });
   // ============================================================
@@ -1585,5 +1605,28 @@ describe('retired feature history response', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ success: true, kept: true, reason: 'retired_history' });
     expect(removeFeatureLinkMock).toHaveBeenCalledWith(LINK_ID, POLICY_ID);
+  });
+});
+
+
+describe('retired feature types', () => {
+  beforeEach(() => { vi.clearAllMocks(); mfaState.satisfied = true; });
+  it.each(['alert_rule', 'monitoring'])('refuses %s with a monitor pointer before mutation', async (featureType) => {
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ featureType, inlineSettings: { items: [] } }),
+    });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(expect.objectContaining({ retiredFeatureType: featureType, hint: expect.stringContaining('/monitor-definitions') }));
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it('requires MFA before revealing retirement', async () => {
+    mfaState.satisfied = false;
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ featureType: 'alert_rule' }),
+    });
+    expect(res.status).toBe(403);
   });
 });

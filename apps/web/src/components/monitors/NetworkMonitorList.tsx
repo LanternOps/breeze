@@ -12,15 +12,15 @@ import {
   RefreshCw,
   Plus,
   Settings,
-  Trash2,
   Play,
   Loader2
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import CreateMonitorForm from './CreateMonitorForm';
+import NetworkCheckConversionBanner from './NetworkCheckConversionBanner';
+import { navigateTo } from '@/lib/navigation';
+import { ActionError, runAction } from '../../lib/runAction';
 import MonitorDetailModal from './MonitorDetailModal';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -43,6 +43,8 @@ type NetworkMonitor = {
   consecutiveFailures: number;
   createdAt: string;
   updatedAt: string;
+  managedByMonitorId: string | null;
+  retiredAt: string | null;
 };
 
 const typeIcons: Record<string, typeof Activity> = {
@@ -98,13 +100,11 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
   const [monitors, setMonitors] = useState<NetworkMonitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [showCreateForm, setShowCreateForm] = useState(false);
   const [detailMonitorId, setDetailMonitorId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [filterAssetId, setFilterAssetId] = useState<string | null>(assetId ?? null);
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   useEffect(() => {
     setFilterAssetId(assetId ?? null);
@@ -138,53 +138,27 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
   const handleCheck = async (monitorId: string) => {
     setActionLoading(monitorId);
     try {
-      const res = await fetchWithAuth(`/monitors/${monitorId}/check`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? t('longTail.monitors.NetworkMonitorList.errors.triggerCheck'));
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/monitors/${monitorId}/check`, { method: 'POST' }),
+        successMessage: t('longTail.monitors.NetworkMonitorList.messages.checkQueued'),
+        errorFallback: t('longTail.monitors.NetworkMonitorList.errors.triggerCheck')
+      });
       setTimeout(() => fetchMonitors(), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('longTail.monitors.NetworkMonitorList.errors.triggerCheck') });
     } finally {
       setActionLoading(null);
     }
   };
 
-  const handleDelete = (monitorId: string) => {
-    setDeleteTargetId(monitorId);
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!deleteTargetId) return;
-    const monitorId = deleteTargetId;
-    setDeleteTargetId(null);
-    setActionLoading(monitorId);
-    try {
-      const res = await fetchWithAuth(`/monitors/${monitorId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(t('longTail.monitors.NetworkMonitorList.errors.deleteMonitor'));
-      await fetchMonitors();
-      showToast({ message: t('longTail.monitors.NetworkMonitorList.messages.monitorDeleted'), type: 'success' });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  if (loading && monitors.length === 0) {
-    return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
-        <div className="text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.monitors.NetworkMonitorList.loading')}</p>
-        </div>
-      </div>
-    );
-  }
+  const newCheck = () => void navigateTo(`/alerts/monitors/new#kind=network_check${filterAssetId ? `&assetId=${encodeURIComponent(filterAssetId)}` : ''}`);
 
   return (
     <div className="space-y-4">
+      {currentOrgId && !filterAssetId && (
+        <NetworkCheckConversionBanner key={currentOrgId} orgId={currentOrgId} onConverted={fetchMonitors} />
+      )}
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
@@ -240,11 +214,11 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
           </button>
           <button
             type="button"
-            onClick={() => setShowCreateForm(true)}
+            onClick={newCheck}
             className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            {t('longTail.monitors.NetworkMonitorList.actions.addMonitor')}
+            {t('longTail.monitors.NetworkMonitorList.actions.newCheck')}
           </button>
         </div>
       </div>
@@ -256,6 +230,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
               <th className="px-4 py-3">{t('common:labels.name')}</th>
               <th className="px-4 py-3">{t('common:labels.type')}</th>
               <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.target')}</th>
+              <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.monitor')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.response')}</th>
               <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.interval')}</th>
@@ -264,13 +239,17 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
             </tr>
           </thead>
           <tbody className="divide-y">
-            {monitors.length === 0 ? (
+            {loading && monitors.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={9} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('longTail.monitors.NetworkMonitorList.loading')}</td>
+              </tr>
+            ) : monitors.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-4 py-6 text-center text-sm text-muted-foreground">
                   {t('longTail.monitors.NetworkMonitorList.empty.prefix')}{' '}
                   <button
                     type="button"
-                    onClick={() => setShowCreateForm(true)}
+                    onClick={newCheck}
                     className="text-primary underline-offset-2 hover:underline"
                   >
                     {t('longTail.monitors.NetworkMonitorList.empty.action')}
@@ -307,6 +286,11 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                     <td className="px-4 py-3 text-sm font-mono text-muted-foreground max-w-[200px] truncate" title={monitor.target}>
                       {monitor.target}
                     </td>
+                    <td className="px-4 py-3 text-sm">
+                      {monitor.managedByMonitorId
+                        ? <a data-testid="network-check-open-monitor" href={`/alerts/monitors/${monitor.managedByMonitorId}`} className="text-primary hover:underline">{t('longTail.monitors.NetworkMonitorList.headers.openMonitor')}</a>
+                        : <span data-testid="network-check-not-converted" className="rounded-full bg-warning/15 px-2 py-0.5 text-xs">{t('longTail.monitors.NetworkMonitorList.notConverted')}</span>}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${sc.color}`}>
                         <StatusIcon className="h-3 w-3" />
@@ -341,15 +325,6 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                         >
                           <Settings className="h-4 w-4" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(monitor.id)}
-                          disabled={isLoadingAction}
-                          className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted hover:text-destructive disabled:opacity-50"
-                          title={t('longTail.monitors.NetworkMonitorList.actions.deleteMonitor')}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -360,39 +335,13 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
         </table>
       </div>
 
-      {showCreateForm && (
-        <CreateMonitorForm
-          orgId={currentOrgId ?? undefined}
-          assetId={filterAssetId ?? undefined}
-          onCreated={() => {
-            setShowCreateForm(false);
-            fetchMonitors();
-          }}
-          onCancel={() => setShowCreateForm(false)}
-        />
-      )}
-
       {detailMonitorId && (
         <MonitorDetailModal
           monitorId={detailMonitorId}
           onClose={() => setDetailMonitorId(null)}
-          onDeleted={() => {
-            setDetailMonitorId(null);
-            fetchMonitors();
-          }}
           onUpdated={fetchMonitors}
         />
       )}
-      <ConfirmDialog
-        open={deleteTargetId !== null}
-        onClose={() => setDeleteTargetId(null)}
-        onConfirm={handleConfirmDelete}
-        title={t('longTail.monitors.NetworkMonitorList.delete.title')}
-        message={t('longTail.monitors.NetworkMonitorList.delete.message')}
-        confirmLabel={t('longTail.monitors.NetworkMonitorList.delete.confirmLabel')}
-        variant="destructive"
-        isLoading={actionLoading !== null}
-      />
     </div>
   );
 }

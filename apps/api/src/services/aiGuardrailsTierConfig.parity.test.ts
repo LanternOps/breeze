@@ -27,6 +27,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   checkGuardrails,
+  requiredPermissionsForTool,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER3_ACTIONS,
@@ -38,7 +39,7 @@ import {
   parseToolLabel,
   type ClaimedTierEntry,
 } from './aiGuardrailsTierParity.shared';
-import { RATE_LIMIT_CONFIGS, TIER_DEFINITIONS } from '../../../web/src/components/ai-risk/tierConfig';
+import { RATE_LIMIT_CONFIGS, RBAC_MAPPINGS, TIER_DEFINITIONS } from '../../../web/src/components/ai-risk/tierConfig';
 
 const parsed: ClaimedTierEntry[] = [];
 const unparseable: Array<{ tier: number; name: string }> = [];
@@ -57,6 +58,17 @@ for (const tier of TIER_DEFINITIONS) {
 }
 
 describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['get', 'create', 'update', 'delete'])('lists manage_monitors:%s at Tier 1 with read permission only', (action) => {
+    const entries = parsed.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
+    expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);
+    expect(RBAC_MAPPINGS.manage_monitors).toHaveProperty(action, 'devices.read');
+    expect(requiredPermissionsForTool('manage_monitors', { action })).toEqual([
+      { resource: 'devices', action: 'read' },
+    ]);
+    expect(RATE_LIMIT_CONFIGS.find((config) => config.toolName === 'manage_monitors'))
+      .toMatchObject({ tier: 1, permission: 'devices.read' });
+  });
+
   it('every Tier 1-3 entry is machine-checkable (`tool` or `tool (action/...)`)', () => {
     expect(unparseable).toEqual([]);
   });

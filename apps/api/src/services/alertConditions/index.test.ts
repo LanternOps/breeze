@@ -261,7 +261,7 @@ describe('evaluateConditions context for non-threshold kinds (issue #6932)', () 
       from: () => ({
         where: () => ({
           orderBy: () => ({
-            limit: () => Promise.resolve([{ patchComplianceScore: 50 }]),
+            limit: () => Promise.resolve([{ patchComplianceScore: 50, capturedAt: new Date(), factorDetails: {} }]),
           }),
         }),
       }),
@@ -294,7 +294,8 @@ describe('evaluateConditions context for non-threshold kinds (issue #6932)', () 
 
   it('fills actualValue/operator/threshold for a bandwidth_high condition', async () => {
     getRecentMetricsMock.mockResolvedValue([
-      { bandwidthInBps: 120_000_000, bandwidthOutBps: 0 },
+      // 15,000,000 bytes/sec from the agent = 120 Mbps.
+      { bandwidthInBps: 15_000_000, bandwidthOutBps: 0 },
     ] as never);
 
     const result = await evaluateConditions(
@@ -303,7 +304,7 @@ describe('evaluateConditions context for non-threshold kinds (issue #6932)', () 
     );
 
     expect(result.triggered).toBe(true);
-    expect(result.context.actualValue).toBe(120_000_000);
+    expect(result.context.actualValue).toBe(120);
     expect(result.context.threshold).toBe(100);
     expect(result.context.operator).toBe('>');
 
@@ -313,11 +314,15 @@ describe('evaluateConditions context for non-threshold kinds (issue #6932)', () 
       direction: 'in',
     });
     expect(message).not.toContain('{{');
+    expect(message).toBe('High bandwidth: in bandwidth 120 Mbps (> 100 Mbps)');
   });
 
   it('fills actualValue/operator/threshold for a network_errors condition', async () => {
+    // Cumulative counters, newest first: 12 errors accrued across the window.
+    const now = Date.now();
     getRecentMetricsMock.mockResolvedValue([
-      { interfaceStats: [{ name: 'eth0', inErrors: 12, outErrors: 0 }] },
+      { timestamp: new Date(now), interfaceStats: [{ name: 'eth0', inErrors: 112, outErrors: 0 }] },
+      { timestamp: new Date(now - 2 * 60_000), interfaceStats: [{ name: 'eth0', inErrors: 100, outErrors: 0 }] },
     ] as never);
 
     const result = await evaluateConditions(

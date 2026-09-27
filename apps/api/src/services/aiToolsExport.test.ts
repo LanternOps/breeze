@@ -221,6 +221,25 @@ describe('export_dataset', () => {
     expect(parsed.error).toBe('unknown_dataset');
   });
 
+  it('does not silently resolve an ambiguous multi-org auth to the device-page write default (#6675)', async () => {
+    const tool = getTool();
+    const partnerAuthWithWriteDefault = {
+      orgId: null,
+      accessibleOrgIds: ['org-1', 'org-2'],
+      allowedSiteIds: null,
+      canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
+      aiWriteDefaultOrgId: 'org-2',
+      principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+      user: { id: 'agent-1' },
+    } as never;
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs' }, partnerAuthWithWriteDefault,
+      { runTargets: [], stagedBytesRemaining: 1_000_000 },
+    ));
+    expect(parsed.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
   it('logs orgId/runId/dataset context when an unexpected error escapes the handler', async () => {
     sanitizeThrownToolError.mockClear();
     createPager.mockRejectedValueOnce(new Error('boom'));

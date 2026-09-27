@@ -94,6 +94,39 @@ vi.mock("./M365CustomerGraphReadCard", () => ({
     />
   ),
 }));
+vi.mock("./M365CustomerGraphActionsCard", () => ({
+  M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS: [
+    "active",
+    "degraded",
+    "consent_expired",
+    "consent_state_mismatch",
+    "consent_cancelled",
+    "admin_role_required",
+    "tenant_mismatch",
+    "tenant_already_bound",
+    "credential_unavailable",
+    "identity_token_invalid",
+    "application_token_invalid",
+    "grant_missing",
+    "grant_unexpected",
+    "manifest_stale",
+    "organization_probe_failed",
+    "executor_unavailable",
+  ],
+  default: ({
+    callbackResult,
+    callbackRefreshKey,
+  }: {
+    callbackResult?: string | null;
+    callbackRefreshKey?: number;
+  }) => (
+    <div
+      data-testid="stub-customer-graph-actions"
+      data-callback-result={callbackResult ?? ""}
+      data-callback-refresh-key={String(callbackRefreshKey ?? 0)}
+    />
+  ),
+}));
 vi.mock("./Pax8Integration", () => ({
   default: () => <div data-testid="stub-pax8" />,
 }));
@@ -302,6 +335,59 @@ describe("IntegrationsPage — Customer Graph Read callback fragment", () => {
     expect(window.location.hash).toBe("#m365");
   });
 
+  // #6684: a real return from Microsoft is a full page LOAD at the callback
+  // hash — the org store hasn't hydrated yet, so callbackOrgId is null on the
+  // very first render and only resolves a tick later. The hash-consuming
+  // effect must not permanently drop the captured result just because it ran
+  // once before the org id was known.
+  it("keeps the captured result when the org id resolves after the first render (cold load)", () => {
+    orgState.currentOrgId = null;
+    window.history.replaceState(
+      {},
+      "",
+      "/integrations?org=org-1#m365/customer-graph-read/active",
+    );
+
+    const view = render(<IntegrationsPage />);
+
+    // The hash is consumed (rewritten) immediately, before the org id is known.
+    expect(window.location.hash).toBe("#m365");
+
+    // Org id resolves on a later render (e.g. the org store hydrates).
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    view.rerender(<IntegrationsPage />);
+
+    expect(screen.getByTestId("stub-customer-graph-read")).toHaveAttribute(
+      "data-callback-result",
+      "active",
+    );
+  });
+
+  // Same fix, sibling state (customerGraphActionsCallback) and sibling hash
+  // prefix (m365/customer-graph-actions/) — the two blocks in the effects are
+  // hand-duplicated, so this guards against a copy-paste slip in the actions
+  // branch reintroducing #6684 on that path only.
+  it("keeps the captured actions-callback result when the org id resolves after the first render (cold load)", () => {
+    orgState.currentOrgId = null;
+    window.history.replaceState(
+      {},
+      "",
+      "/integrations?org=org-1#m365/customer-graph-actions/active",
+    );
+
+    const view = render(<IntegrationsPage />);
+
+    expect(window.location.hash).toBe("#m365");
+
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    view.rerender(<IntegrationsPage />);
+
+    expect(screen.getByTestId("stub-customer-graph-actions")).toHaveAttribute(
+      "data-callback-result",
+      "active",
+    );
+  });
+
   it("uses the JWT organization fallback only for an organization-scoped session", () => {
     orgState.currentOrgId = null;
     scope = "organization";
@@ -430,6 +516,48 @@ describe("IntegrationsPage — URL hash deep-linking", () => {
     expect(screen.queryByTestId("stub-psa")).toBeNull();
   });
 
+  it("labels the Google Workspace / Microsoft 365 tab 'Cloud tenants'", () => {
+    render(<IntegrationsPage />);
+    expect(screen.getByRole("button", { name: "Cloud tenants" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Identity" })).toBeNull();
+  });
+
+  it.each(["#cloud-tenants", "#identity"])(
+    "opens the Cloud tenants tab (default Google sub-tab) from %s",
+    (hash) => {
+      window.location.hash = hash;
+      render(<IntegrationsPage />);
+      expect(screen.getByTestId("stub-google")).toBeTruthy();
+      expect(screen.queryByTestId("stub-m365")).toBeNull();
+      expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+    },
+  );
+
+  it("keeps the #google and #m365 sub-tab deep links on the Cloud tenants tab", () => {
+    window.location.hash = "#m365";
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-m365")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-read")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-actions")).toBeTruthy();
+
+    window.location.hash = "#google";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(screen.getByTestId("stub-google")).toBeTruthy();
+    expect(screen.queryByTestId("stub-m365")).toBeNull();
+  });
+
+  it.each([
+    "#m365/customer-graph-read/active",
+    "#m365/customer-graph-actions/active",
+  ])("opens Cloud tenants → Microsoft 365 from the consent callback %s", (hash) => {
+    window.location.hash = hash;
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-m365")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-read")).toBeTruthy();
+    expect(screen.getByTestId("stub-customer-graph-actions")).toBeTruthy();
+    expect(window.location.hash).toBe("#m365");
+  });
+
   it("lets a valid hash override the initialTab prop", () => {
     window.location.hash = "#monitoring";
     render(<IntegrationsPage initialTab="psa" />);
@@ -454,6 +582,18 @@ describe("IntegrationsPage — writing & syncing the URL hash", () => {
     render(<IntegrationsPage />);
     fireEvent.click(screen.getByRole("button", { name: /Monitoring/i }));
     expect(window.location.hash).toBe("#monitoring");
+  });
+
+  it("writes #cloud-tenants when the Cloud tenants tab is clicked and keeps its docs page", () => {
+    openMock.mockClear();
+    render(<IntegrationsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Cloud tenants" }));
+    expect(window.location.hash).toBe("#cloud-tenants");
+    expect(screen.getByTestId("stub-google")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("integrations-docs-link"));
+    expect(openMock).toHaveBeenLastCalledWith(
+      "https://docs.breezermm.com/features/identity-integrations/",
+    );
   });
 
   it("writes the sub-tab id to the hash when a sub-tab is clicked", () => {

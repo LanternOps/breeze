@@ -354,6 +354,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		sd                []byte
 	}
 	var dirSecurity []dirSD
+	var dirAttrs []pendingDirAttrs
 	for _, entry := range append(links, dirs...) {
 		if checkCancelled() {
 			return result, nil
@@ -409,16 +410,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				}
 				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
 				if entryErr == nil {
-					// The walker records a Windows directory entry when the
-					// directory is empty, and for EVERY directory when
-					// security-descriptor capture is on (W06a). A Hidden or
-					// System folder must come back Hidden/System rather than
-					// plain (#5407, review finding). Applied best-effort:
-					// losing a directory attribute is a fidelity warning,
-					// never a failed restore.
-					if attrErr := applyWinAttrs(filepath.Join(targetBase, relativeEntry), entry.WinAttrs); attrErr != nil {
-						result.Warnings = append(result.Warnings,
-							fmt.Sprintf("recreated %s with reduced fidelity: could not reapply windows attributes: %v", displayPath, attrErr))
+					// A Hidden or System folder must come back Hidden/System
+					// rather than plain (#5407, #6506). Deferred to a
+					// post-pass below, after every entry is in place.
+					if entry.WinAttrs != 0 {
+						dirAttrs = append(dirAttrs, pendingDirAttrs{relative: relativeEntry, display: displayPath, attrs: entry.WinAttrs})
 					}
 					if sd := secDescs.forEntry(entry); sd != nil {
 						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, sd: sd})
@@ -439,6 +435,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		result.FilesRestored++
 	}
+
+	result.Warnings = append(result.Warnings, applyDirWinAttrs(targetBase, dirAttrs)...)
 
 	// Directory security descriptors, now that every file, symlink and
 	// directory is in place. Deepest first, so a parent's DACL can never
@@ -887,38 +885,6 @@ func EnsureNoSymlinkAncestor(base, target string) error {
 	return nil
 }
 
-// applyEntryMetadata reapplies mode bits (full ModeBits when known, else the
-// perm-only Mode), owner (root only) and mtime to a restored regular file.
-func applyEntryMetadata(targetPath string, entry SnapshotFile, applyOwnership bool) []string {
-	var warnings []string
-	switch {
-	case entry.ModeBits != 0:
-		if err := os.Chmod(targetPath, os.FileMode(entry.ModeBits)); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not reapply mode %o to %s: %v", entry.ModeBits, entry.SourcePath, err))
-		}
-	case entry.Mode != 0:
-		if err := os.Chmod(targetPath, os.FileMode(entry.Mode).Perm()); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(entry.Mode).Perm(), entry.SourcePath, err))
-		}
-	}
-	if applyOwnership {
-		if err := applyOwner(targetPath, entry.Owner); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not reapply owner to %s: %v", entry.SourcePath, err))
-		}
-	}
-	if !entry.ModTime.IsZero() {
-		if err := os.Chtimes(targetPath, entry.ModTime, entry.ModTime); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not reapply mtime to %s: %v", entry.SourcePath, err))
-		}
-	}
-	// Windows attributes go LAST (#5407): FILE_ATTRIBUTE_READONLY makes the
-	// chmod/chtimes above fail, so they must already have run.
-	if err := applyWinAttrs(targetPath, entry.WinAttrs); err != nil {
-		warnings = append(warnings, fmt.Sprintf("could not reapply windows attributes to %s: %v", entry.SourcePath, err))
-	}
-	return warnings
-}
-
 // RestoreContentlessEntry recreates a symlink or directory entry at
 // targetPath. Exported because bmr's reinstall-then-recover path and the
 // rebuild engine (W03) recreate the same entries.
@@ -985,7 +951,7 @@ func RestoreContentlessEntry(targetPath string, entry SnapshotFile, applyOwnersh
 			return err
 		}
 	default:
-		return fmt.Errorf("entry %s has content; use the file path", entry.SourcePath)
+		return fmt.Errorf("entry %s has content; use the file path", restoreSourcePath(entry))
 	}
 	if applyOwnership {
 		if err := applyOwner(targetPath, entry.Owner); err != nil {

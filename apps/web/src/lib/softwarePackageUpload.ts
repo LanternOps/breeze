@@ -89,6 +89,7 @@ export interface PackageVersionMetadata {
   downloadUrl?: string;
   supportedOs?: string[];
   detectionRules?: DetectionRule[];
+  successExitCodes?: number[];
 }
 
 export interface UploadPackageVersionOptions {

@@ -1,7 +1,4 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import LegacyRulesPage from '../../../components/monitoring/LegacyRulesPage';
+// Legacy rule pages now live under Monitors.
+return Astro.redirect('/alerts/monitors', 301);
 ---
-<DashboardLayout titleKey="titles.alertsRules">
-  <LegacyRulesPage client:load />
-</DashboardLayout>

@@ -136,7 +136,6 @@ function buildS3Client(config: {
 
 function deriveRemoteStorageKey(
   normalizedRemotePath: string,
-  providerConfig: Record<string, unknown>,
   snapshotMetadata: Record<string, unknown>,
   originStoragePrefixOverride?: string | null
 ) {
@@ -162,8 +161,15 @@ function deriveRemoteStorageKey(
     }
   }
 
-  const prefix = getStringValue(providerConfig, 'prefix');
-  return prefix ? `${prefix.replace(/^\/+|\/+$/g, '')}/${normalizedRemotePath}` : normalizedRemotePath;
+  // #6398: the destination's configured `prefix` is deliberately NOT applied.
+  // The agent's storage providers never apply it — every snapshot object is
+  // written at `snapshots/<id>/...` verbatim — so presigning
+  // `<prefix>/snapshots/...` 404'd every token-mode recovery (bmr-recover,
+  // bare-metal / Restore-as-VM rebuild, DR) on a prefixed destination. GC
+  // (backupSnapshotStorage.ts backupSnapshotRootPrefix) already relies on the
+  // same fact. Only a per-snapshot recorded storagePrefix (above) relocates a
+  // snapshot's keys.
+  return normalizedRemotePath;
 }
 
 export async function getAuthenticatedRecoveryDownloadTarget(
@@ -269,7 +275,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       secretAccessKey: getStringValue(providerConfig, 'secretKey') || getStringValue(providerConfig, 'secretAccessKey') || undefined,
       sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
     });
-    const key = deriveRemoteStorageKey(normalizedRemotePath, providerConfig, snapshotMetadata, originStoragePrefix);
+    const key = deriveRemoteStorageKey(normalizedRemotePath, snapshotMetadata, originStoragePrefix);
     const expiresInSeconds = Math.max(
       1,
       Math.min(300, Math.floor((downloadExpiry.getTime() - Date.now()) / 1000))

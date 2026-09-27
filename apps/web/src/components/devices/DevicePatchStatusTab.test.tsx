@@ -909,4 +909,56 @@ describe('DevicePatchStatusTab', () => {
     expect(screen.getByText('Installed (date unknown)')).toBeInTheDocument();
   });
 
+  it('shows a failed install attempt and its reason instead of "Pending Approval" (#4223)', async () => {
+    const BATTERY = 'preflight check "battery" failed: running on battery power (battery: 76%)';
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 50,
+          pending: [
+            {
+              id: 'failed-native-1',
+              title: '2026-08 Cumulative Update for Windows 11 (KB5041585)',
+              source: 'microsoft',
+              category: 'security',
+              status: 'pending',
+              approvalStatus: 'pending',
+              installFailure: { deviceCount: 1, error: BATTERY, failedAt: '2026-08-29T18:00:00.000Z' }
+            },
+            {
+              id: 'failed-third-party-1',
+              title: 'Google Chrome',
+              source: 'third_party',
+              category: 'application',
+              status: 'pending',
+              approvalStatus: 'pending',
+              installFailure: { deviceCount: 1, error: null, failedAt: '2026-08-29T18:00:00.000Z' }
+            },
+            {
+              id: 'clean-native-1',
+              title: '2026-08 .NET Update (KB5041000)',
+              source: 'microsoft',
+              category: 'security',
+              status: 'pending',
+              approvalStatus: 'pending',
+              installFailure: null
+            }
+          ],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    const nativeBadge = await screen.findByTestId('device-patch-failed-native-1-install-failed');
+    expect(nativeBadge.textContent).toContain('Install failed');
+    expect(screen.getByText(BATTERY)).toBeTruthy();
+    const thirdPartyBadge = screen.getByTestId('device-patch-failed-third-party-1-install-failed');
+    expect(thirdPartyBadge.textContent).toContain('Install failed');
+    expect(screen.getByText('No reason reported by the agent')).toBeTruthy();
+    // Only the patch with no failed attempt still reads "Pending Approval".
+    expect(screen.getAllByText('Pending Approval')).toHaveLength(1);
+    expect(screen.queryByTestId('device-patch-clean-native-1-install-failed')).toBeNull();
+  });
 });

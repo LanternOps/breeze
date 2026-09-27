@@ -77,6 +77,8 @@ import {
   authorizeLiveRemoteSessionAccess,
   type LiveRemoteSessionAuthorizationResult,
 } from '../services/remoteWsAuthorization';
+import { isViewerFailureDiagnosticRow } from '../services/viewerFailureDiagnostics';
+import { viewerAnswerTimeoutMs } from './remote/consentTiming';
 import {
   assertRemoteWsUpgradeRuntimeReady,
   getRemoteWsUpgradeConnection,
@@ -323,8 +325,7 @@ async function validateViewerSessionAccess(
     return viewerAuthorizationDenial(live);
   }
   const readingFailure = accessMode === 'failure-diagnostics' &&
-    (live.session.status === 'failed' ||
-      (live.session.status === 'disconnected' && !!live.session.errorMessage));
+    isViewerFailureDiagnosticRow(live.session.status, live.session.errorMessage);
   if (sessionRevoked && !readingFailure) {
     return { valid: false, status: 401, error: 'Session closed' };
   }
@@ -1821,6 +1822,10 @@ export function createDesktopWsRoutes(
         terminationPhase,
         webrtcAnswer: answerWithheld ? null : access.session.webrtcAnswer,
         errorMessage: access.session.errorMessage,
+        // #6818: in consent mode the agent answers only after the end user
+        // does, so the viewer extends its answer poll to this budget.
+        promptMode: access.session.desktopPromptMode ?? 'off',
+        answerTimeoutMs: viewerAnswerTimeoutMs(access.session.desktopPromptMode),
         startedAt: access.session.startedAt,
         endedAt: access.session.endedAt,
       });

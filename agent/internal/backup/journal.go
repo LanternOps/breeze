@@ -374,6 +374,23 @@ func (j *snapshotJournal) Lookup(key string, size int64, modTime time.Time) (Sna
 	return entry, true
 }
 
+// foldCollidingKeys returns the BackupPaths of every entry this journal
+// holds (matched by this run's walk or not) that folds onto another entry's
+// distinct BackupPath — see foldCollidingBackupPaths. Only a journal written
+// by a pre-#5582 agent can hold such a pair; on a case-insensitive store the
+// shared object holds whichever twin landed last, so the caller must not
+// resume either of them. nil for a nil journal or no collisions.
+func (j *snapshotJournal) foldCollidingKeys() map[string]bool {
+	if j == nil || len(j.entries) == 0 {
+		return nil
+	}
+	all := make([]SnapshotFile, 0, len(j.entries))
+	for _, e := range j.entries {
+		all = append(all, e)
+	}
+	return foldCollidingBackupPaths(all)
+}
+
 // ResumedBytes returns the total size of the entries loaded from a resumed
 // journal (0 for a fresh journal). It reflects the state at Open time only
 // — later Record calls in the same run do not change it — so callers should

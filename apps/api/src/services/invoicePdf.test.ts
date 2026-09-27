@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
-import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveInvoiceFooter, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
+import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
 import { invoices, invoiceLines } from '../db/schema';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -482,20 +482,6 @@ describe('Invoice ticket grouping and line labeling (#3319)', () => {
     const textFragments = extractPositionedPdfText(pdf).map((f) => f.text);
     expect(textFragments.some((t) => t.includes('Category: Networking'))).toBe(true);
     expect(textFragments.some((t) => t.includes('Categorie:'))).toBe(false);
-  });
-});
-
-// Settings consolidation W02-API (M11, audit finding 22): the ONE footer/terms
-// resolver, shared by the render path (loadInvoiceForRender) and the issue-time
-// snapshot (invoiceService.issueInvoice).
-describe('resolveInvoiceFooter', () => {
-  it.each<[string, { invoiceTerms: string | null; partnerFooter: string | null; brandingFooter: string | null }, string | null]>([
-    ['invoice terms set — wins over everything', { invoiceTerms: 'Net 30, invoice terms', partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Net 30, invoice terms'],
-    ['invoice terms null, partner footer set — partner wins over portal', { invoiceTerms: null, partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Partner footer'],
-    ['invoice terms null, partner footer null, portal footer set — portal is the last resort', { invoiceTerms: null, partnerFooter: null, brandingFooter: 'Portal footer' }, 'Portal footer'],
-    ['all three null — no footer at all', { invoiceTerms: null, partnerFooter: null, brandingFooter: null }, null],
-  ])('%s', (_name, input, expected) => {
-    expect(resolveInvoiceFooter(input)).toBe(expected);
   });
 });
 

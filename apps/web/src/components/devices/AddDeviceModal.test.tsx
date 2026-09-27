@@ -469,6 +469,7 @@ describe('AddDeviceModal', () => {
       );
       render(<AddDeviceModal isOpen onClose={vi.fn()} />);
       fireEvent.click(screen.getByText('CLI Commands'));
+      fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
       const banner = await screen.findByTestId('token-mfa-required');
       expect(banner.textContent).toContain('required to generate installation tokens');
@@ -519,16 +520,65 @@ describe('AddDeviceModal', () => {
     });
   });
 
-  it('fetches onboarding token when CLI tab is clicked', async () => {
+  // #7035: opening the tab used to POST /devices/onboarding-token on its own,
+  // leaving a live multi-use key behind for every look at the tab.
+  it('does not mint a CLI token just because the CLI tab is opened (#7035)', async () => {
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+
+    expect(screen.getByTestId('cli-regenerate-token').textContent).toContain('Generate token');
+    // Let any effect-driven request settle before asserting none happened.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the no-sites notice on the CLI tab and cannot mint without a site (#7035)', () => {
+    setOrgStore({ sites: [] });
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+
+    expect(screen.getByText(/No sites available/)).toBeDefined();
+    expect(screen.queryByTestId('cli-site')).toBeNull();
+    const generate = screen.getByTestId('cli-regenerate-token') as HTMLButtonElement;
+    expect(generate.disabled).toBe(true);
+    fireEvent.click(generate);
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('mints the CLI token for the site chosen in the modal (#7035)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'site-token', maxUsage: 50, siteId: SITE_B.id })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+    fireEvent.change(screen.getByTestId('cli-site'), { target: { value: SITE_B.id } });
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+
+    await waitFor(() => {
+      expect(screen.getByText('site-token')).toBeDefined();
+    });
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    const init = fetchWithAuthMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      count: 50,
+      ttlMinutes: 43200,
+      siteId: SITE_B.id,
+    });
+    expect(screen.getByTestId('cli-token-site').textContent).toContain('Branch Office');
+  });
+
+  it('fetches onboarding token when Generate is clicked on the CLI tab', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ token: 'test-token-xyz', enrollmentSecret: 'secret-abc' })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
-    // Installer tab is active by default (jsdom UA "darwin" contains "win")
-    // Click CLI Commands tab to trigger lazy-load
+    // Installer tab is active by default (jsdom UA "darwin" contains "win").
+    // Opening the CLI tab no longer mints anything (#7035) — Generate does.
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -539,7 +589,7 @@ describe('AddDeviceModal', () => {
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 50, ttlMinutes: 43200 }),
+          body: JSON.stringify({ count: 50, ttlMinutes: 43200, siteId: SITE_A.id }),
         })
       );
     });
@@ -557,6 +607,7 @@ describe('AddDeviceModal', () => {
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
     await waitFor(() => {
       expect(screen.getByText('test-token-xyz')).toBeDefined();
@@ -575,13 +626,14 @@ describe('AddDeviceModal', () => {
   });
 
   it('requests a multi-use token after the operator raises the device count (#1108)', async () => {
-    // Initial single-device fetch on tab open.
+    // Initial single-device mint on the first Generate click.
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ token: 'token-single', maxUsage: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
     await waitFor(() => {
       expect(screen.getByText('token-single')).toBeDefined();
@@ -602,7 +654,7 @@ describe('AddDeviceModal', () => {
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 5, ttlMinutes: 43200 }),
+          body: JSON.stringify({ count: 5, ttlMinutes: 43200, siteId: SITE_A.id }),
         })
       );
     });
@@ -625,6 +677,7 @@ describe('AddDeviceModal', () => {
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
     await waitFor(() => {
       expect(screen.getByText('token-exp')).toBeDefined();
@@ -647,6 +700,7 @@ describe('AddDeviceModal', () => {
 
     render(<AddDeviceModal isOpen onClose={() => {}} />);
     await userEvent.click(screen.getByTestId('tab-cli'));
+    await userEvent.click(screen.getByTestId('cli-regenerate-token'));
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
     fetchWithAuthMock.mockClear();
 
@@ -748,6 +802,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
     fireEvent.click(screen.getByTestId('tab-cli'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
 
     await waitFor(() => {
       expect(screen.getByText('cli-token')).toBeDefined();
@@ -760,7 +815,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
       '/devices/onboarding-token',
       expect.objectContaining({
-        body: JSON.stringify({ count: 25, ttlMinutes: 10080 }),
+        body: JSON.stringify({ count: 25, ttlMinutes: 10080, siteId: SITE_A.id }),
       }),
     );
 

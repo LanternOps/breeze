@@ -93,31 +93,38 @@ describe('resolveDelivery precedence', () => {
 
   it('2. monitor channels → its channels + its escalation; routing rows never consulted', async () => {
     selectQueue.push(orgLookup(), monitor('channels'));
-    const out = await resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1', legacyOverride: { channelIds: [CH_ORG] } });
+    const out = await resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1' });
     expect(out).toEqual({ skippedChannelIds: [], channelIds: [CH_MON], escalationPolicyId: ESC_MON, source: 'monitor_channels' });
     expect(selectQueue).toHaveLength(0);
   });
 
-  it('3. legacy override (transitional) wins over routing rows; monitor escalation still wins over the override escalation', async () => {
-    selectQueue.push(orgLookup(), monitor('inherit'));
-    const out = await resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1', legacyOverride: { channelIds: [CH_ORG, CH_ORG], escalationPolicyId: ESC_LEGACY } });
-    expect(out).toEqual({ skippedChannelIds: [], channelIds: [CH_ORG], escalationPolicyId: ESC_MON, source: 'legacy_override' });
+  it.each(['routing_rule', 'default_row', 'none'] as const)(
+    'does not inherit legacy escalation in the %s result', async source => {
+      selectQueue.push(orgLookup(), source === 'none' ? [] : [row({
+        id: 'retirement-row', isDefault: source === 'default_row', channelIds: [CH_ORG], escalationPolicyId: null,
+      })]);
+      // @ts-expect-error the public legacyOverride input is retired
+      const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: ESC_MON } });
+      expect(out).toMatchObject({ source, escalationPolicyId: null, skippedChannelIds: [] });
+    },
+  );
+  it.each([{ channelIds: [] }, { channelIds: [CH_PARTNER] }])('ignores stale legacy channel overrides %j', async ({ channelIds }) => {
+    selectQueue.push(orgLookup(), [row({ channelIds: [CH_ORG] })]);
+    // @ts-expect-error removed from the public API
+    const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds } });
+    expect(out.channelIds).toEqual([CH_ORG]);
+    expect(out.skippedChannelIds).toEqual([]);
   });
 
-  it('3b. legacy override with an escalation but no channels does NOT short-circuit routing', async () => {
-    selectQueue.push(orgLookup(), [row({ id: 'r1', conditions: { severities: ['high'] } })]);
-    const out = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { channelIds: [], escalationPolicyId: ESC_LEGACY } });
-    expect(out).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_LEGACY, source: 'routing_rule', routingRuleId: 'r1' });
-  });
-
-  it.each([false, true])('honours legacy escalation before the winning row (default=%s) without a channel override', async isDefault => {
-    const routes = [row({ id: 'r1', isDefault, escalationPolicyId: ESC_ROW })];
-    selectQueue.push(orgLookup(), routes, orgLookup(), routes);
-    const legacy = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: ESC_LEGACY } });
-    const inherited = await resolveDelivery({ orgId: ORG, severity: 'high', legacyOverride: { escalationPolicyId: null } });
-    expect(legacy).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_LEGACY, routingRuleId: 'r1' });
-    expect(inherited).toMatchObject({ channelIds: [CH_ORG], escalationPolicyId: ESC_ROW, routingRuleId: 'r1' });
-  });
+  it.each(['routing_rule', 'default_row', 'none'] as const)(
+    'keeps monitor escalation ahead of the %s fallback', async source => {
+      selectQueue.push(orgLookup(), monitor('inherit'), source === 'none' ? [] : [row({
+        isDefault: source === 'default_row', escalationPolicyId: ESC_ROW,
+      })]);
+      expect(await resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1' }))
+        .toMatchObject({ source, escalationPolicyId: ESC_MON, skippedChannelIds: [] });
+    },
+  );
 
   it('4. first matching non-default row wins; org row beats partner row at equal priority; row escalation used', async () => {
     selectQueue.push(orgLookup(), [

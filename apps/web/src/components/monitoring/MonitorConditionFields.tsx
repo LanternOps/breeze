@@ -22,6 +22,8 @@ export const SELECT_OPTION_NAMESPACE: Record<string, string> = {
   match: 'compositeMatch',
   presence: 'presences',
   checkType: 'checkTypes',
+  'network_check:method': 'httpMethods',
+  'network_check:recordType': 'dnsRecordTypes',
   'antivirus:check': 'antivirusChecks',
   'backup_continuity:check': 'backupChecks',
   'hardware_health:componentTypes': 'monitors.fields.hardware_health.componentTypeOptions',

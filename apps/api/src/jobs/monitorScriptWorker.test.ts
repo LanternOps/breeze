@@ -1,14 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockDb, dispatchMock, resolveMonitorsMock } = vi.hoisted(() => ({
+const { mockDb, dispatchMock, resolveMonitorsMock, txState } = vi.hoisted(() => ({
   mockDb: { select: vi.fn() },
   dispatchMock: vi.fn(),
   resolveMonitorsMock: vi.fn(),
+  // How many system transactions are open right now (#3445).
+  txState: { depth: 0 },
 }));
 
 vi.mock('../db', () => ({
   db: mockDb,
-  withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => {
+    txState.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      txState.depth -= 1;
+    }
+  },
+  runOutsideDbContext: async (fn: () => unknown) => {
+    const saved = txState.depth;
+    txState.depth = 0;
+    try {
+      return await fn();
+    } finally {
+      txState.depth = saved;
+    }
+  },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -47,6 +65,8 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/scriptDispatch', () => ({
   dispatchScriptToDevice: dispatchMock,
 }));
+
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('../services/monitors/monitorResolver', () => ({
   resolveMonitorsForDevice: resolveMonitorsMock,
@@ -279,6 +299,82 @@ describe('processScriptMonitorTick', () => {
     expect(call.monitorId).toBe(MONITOR_ID);
     expect(call.device.id).toBe(DEVICE_ID);
     expect(call.timeoutSeconds).toBe(300);
+  });
+
+  // #3445: the tick runs in ONE system transaction and the probe's
+  // script_executions + device_commands rows are written in it. Sending inside
+  // that transaction lets a fast agent answer before the rows are visible to
+  // the result path, which then drops the result and strands the execution
+  // until the stale reaper times it out.
+  it('writes the probe rows inside the tick transaction and sends only after it commits (#3445)', async () => {
+    setupDb(
+      new Map<TableRef, unknown[]>([
+        [monitorDefinitions, [makeMonitorRow()]],
+        [devices, [makeDeviceRow()]],
+        [scriptExecutions, []],
+        [scripts, [makeScriptRow()]],
+      ]),
+    );
+    const events: Array<{ event: string; depth: number }> = [];
+    const base = {
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      deliverBy: null,
+      ignoredParameters: [],
+      runAs: 'system',
+      targetSessionId: null,
+    };
+    dispatchMock.mockImplementation(async (input: { deferDelivery?: boolean }) => {
+      events.push({ event: 'rows_created', depth: txState.depth });
+      const send = () => {
+        events.push({ event: 'sent', depth: txState.depth });
+        return { ...base, delivered: true, deliveryOutcome: 'sent', executedAt: NOW };
+      };
+      if (input.deferDelivery) {
+        return { ...base, delivered: false, deliveryOutcome: 'deferred', executedAt: null, deliver: async () => send() };
+      }
+      return send();
+    });
+
+    const result = await processScriptMonitorTick();
+
+    expect(result.dispatched).toBe(1);
+    expect(events).toEqual([
+      { event: 'rows_created', depth: 1 },
+      { event: 'sent', depth: 0 },
+    ]);
+  });
+
+  it('a throwing deferred delivery does not fail the tick — the committed command waits for the heartbeat (#3445)', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setupDb(
+      new Map<TableRef, unknown[]>([
+        [monitorDefinitions, [makeMonitorRow()]],
+        [devices, [makeDeviceRow()]],
+        [scriptExecutions, []],
+        [scripts, [makeScriptRow()]],
+      ]),
+    );
+    dispatchMock.mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      deliverBy: null,
+      ignoredParameters: [],
+      runAs: 'system',
+      targetSessionId: null,
+      delivered: false,
+      deliveryOutcome: 'deferred',
+      executedAt: null,
+      deliver: async () => { throw new Error('socket closed'); },
+    });
+
+    const result = await processScriptMonitorTick();
+
+    expect(result.dispatched).toBe(1);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 
   it('never dispatches when no monitor rows are due for consideration', async () => {

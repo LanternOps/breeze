@@ -36,6 +36,25 @@ describe('software dependency identity', () => {
       .not.toBe(fingerprintSoftwareVersionDependency(version, catalog));
   });
 
+  // #7038: declared success exit codes decide whether an install counts as a
+  // success, so editing them after approval must invalidate the pin…
+  it('changes the version fingerprint when successExitCodes change', () => {
+    const withCodes = { ...version, successExitCodes: [1000, 1101] };
+    expect(fingerprintSoftwareVersionDependency(withCodes, catalog))
+      .not.toBe(fingerprintSoftwareVersionDependency(version, catalog));
+    expect(fingerprintSoftwareVersionDependency({ ...version, successExitCodes: [1000] }, catalog))
+      .not.toBe(fingerprintSoftwareVersionDependency(withCodes, catalog));
+  });
+
+  // …but a version with none declared must keep the fingerprint it was pinned
+  // with before the column existed, or every approved deployment in flight at
+  // upgrade time would be refused as "dependency changed".
+  it('keeps the pre-#7038 fingerprint when no success codes are declared', () => {
+    const legacy = fingerprintSoftwareVersionDependency(version, catalog);
+    expect(fingerprintSoftwareVersionDependency({ ...version, successExitCodes: [] }, catalog)).toBe(legacy);
+    expect(fingerprintSoftwareVersionDependency({ ...version, successExitCodes: null }, catalog)).toBe(legacy);
+  });
+
   it('canonicalizes detection-rule object key order', () => {
     const reordered = {
       ...version,

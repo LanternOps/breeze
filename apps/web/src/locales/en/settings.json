@@ -534,7 +534,7 @@
       "saveFailed": "Could not change this setting",
       "remediation": {
         "title": "Suggested fixes",
-        "description": "AI-generated fix suggestions on the alert detail page. This is the default for every organization; an organization can override it on its own AI tab.",
+        "description": "Fix suggestions on the alert detail page, matched from your scripts, templates and playbooks. This is the default for every organization; an organization can override it on its own AI tab.",
         "enabled": "Generate suggested fixes",
         "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page."
       }
@@ -4744,7 +4744,7 @@
         "killSwitch": "Anomaly detection is switched off for the whole platform by the operator. These settings take effect when it is turned back on.",
         "remediation": {
           "title": "Suggested fixes",
-          "description": "AI-generated fix suggestions on this organization's alerts. Blank means the partner default applies.",
+          "description": "Fix suggestions on this organization's alerts, matched from your scripts, templates and playbooks. Blank means the partner default applies.",
           "enabled": "Generate suggested fixes",
           "enabledDescription": "Allow technicians to generate suggested fixes for an alert from its detail page.",
           "killSwitch": "Suggested fixes are switched off for the whole platform by the operator. This setting takes effect when they are turned back on."
@@ -5524,6 +5524,7 @@
       "sendInvite": "Failed to send invitation",
       "updateUser": "Failed to update user",
       "updateRole": "Failed to update role",
+      "updateOrgAccess": "Failed to update organization access",
       "removeUser": "Failed to remove user",
       "resetMfa": "Failed to reset MFA"
     },

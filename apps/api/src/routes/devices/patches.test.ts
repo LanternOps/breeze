@@ -100,6 +100,12 @@ vi.mock('../patches/helpers', () => ({
   resolvePartnerIdForOrg: vi.fn().mockResolvedValue('dddddddd-dddd-dddd-dddd-dddddddddddd'),
 }));
 
+// #4223 deployment overlay — real SQL is covered by
+// __tests__/integration/patchInstallFailureStatus.integration.test.ts.
+vi.mock('../../services/patchInstallFailures', () => ({
+  loadPatchInstallFailures: vi.fn(async () => new Map())
+}));
+
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
 }));

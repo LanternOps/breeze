@@ -74,6 +74,7 @@ export interface ConvertPolicyResult { conversionIds: string[]; retired: number;
 export interface ConvertPartnerResult { policies: number; converted: number; unconvertible: number }
 export interface PendingConversionCounts { policies: number; rows: number }
 export interface PartnerConversionPreview {
+  blocked?: Array<{ orgId: string; sourceTable: 'network_monitors'; reason: 'prerequisite_missing'; missingPrerequisites: string[] }>;
   partnerId: string; previewHash: string; policies: number; rows: number; convertible: number;
   unconvertible: Array<{ policyId: string | null; policyName: string | null;
     sourceTable: ConversionSourceTable; sourceId: string; name: string; reason: string }>;

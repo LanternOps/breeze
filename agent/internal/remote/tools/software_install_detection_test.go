@@ -36,7 +36,7 @@ func TestInstallerExitIndicatesSuccess(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if got := installerExitIndicatesSuccess(tc.fileType, tc.exitCode); got != tc.want {
+			if got := installerExitIndicatesSuccess(tc.fileType, tc.exitCode, nil); got != tc.want {
 				t.Fatalf("installerExitIndicatesSuccess(%q, %d) = %v, want %v", tc.fileType, tc.exitCode, got, tc.want)
 			}
 		})

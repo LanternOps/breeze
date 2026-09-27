@@ -79,6 +79,7 @@ vi.mock('../db/schema', () => ({
   networkMonitorAlertRules: {
     monitorId: 'networkMonitorAlertRules.monitorId',
     isActive: 'networkMonitorAlertRules.isActive',
+    retiredAt: 'networkMonitorAlertRules.retiredAt',
     $inferSelect: {}
   },
   alerts: {
@@ -288,6 +289,26 @@ describe('recordMonitorCheckResult', () => {
     } as any);
   });
 
+  it('excludes retired legacy rules from alert evaluation', async () => {
+    const rulesWhere = vi.fn().mockResolvedValue([]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1', orgId: 'org-1', assetId: null, consecutiveFailures: 0,
+      }]) as any)
+      .mockReturnValueOnce({ from: () => ({ where: rulesWhere }) } as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1', status: 'offline', responseMs: 250,
+    }, { orgId: 'org-1', deviceId: 'device-1' });
+
+    const predicate = JSON.stringify(rulesWhere.mock.calls[0]);
+    expect(predicate).toContain('networkMonitorAlertRules.monitorId');
+    expect(predicate).toContain('networkMonitorAlertRules.isActive');
+    expect(predicate).toContain('networkMonitorAlertRules.retiredAt');
+    expect(predicate).toContain('is null');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
   it('creates a monitor alert when an active rule matches', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectLimitResolved([{
@@ -325,6 +346,8 @@ describe('recordMonitorCheckResult', () => {
 
     // #5241: the alert must go through the shared create+publish path so
     // `alert.triggered` actually fires — never a raw insert into `alerts`.
+    const createSourcedAlertMock = vi.mocked(createSourcedAlert);
+    const legacyId = 'monitor-1';
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledWith(expect.objectContaining({
@@ -335,17 +358,19 @@ describe('recordMonitorCheckResult', () => {
       context: expect.objectContaining({
         source: 'network_monitor',
         monitorId: 'monitor-1',
+        legacyNetworkMonitorId: legacyId,
         alertRuleId: 'rule-1',
       }),
       title: expect.stringContaining('Edge Ping'),
       message: expect.stringContaining('Edge Ping'),
       eventPayload: expect.objectContaining({
-        monitorId: 'monitor-1',
+        legacyNetworkMonitorId: legacyId,
         alertRuleId: 'rule-1',
         monitorType: 'icmp_ping',
         target: '8.8.8.8',
       }),
     }));
+    expect(createSourcedAlertMock.mock.calls.at(-1)![0].eventPayload).not.toHaveProperty('monitorId');
     expect(vi.mocked(isCooldownActive)).toHaveBeenCalledWith('rule-1', 'device-1');
     expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5);
     expect(vi.mocked(resolveAlert)).not.toHaveBeenCalled();

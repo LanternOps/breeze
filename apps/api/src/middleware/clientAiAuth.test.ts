@@ -7,6 +7,7 @@ const {
   dbSelectMock,
   withDbAccessContextMock,
   capturedDbContexts,
+  dbContextDepth,
   getOrgPolicyMock,
 } = vi.hoisted(() => {
   const redis = {
@@ -16,15 +17,22 @@ const {
     expire: vi.fn(() => Promise.resolve(1)),
   };
   const captured: unknown[] = [];
+  const depth = { current: 0 };
   return {
     redisMock: redis,
     getRedisMock: vi.fn(() => redis),
     dbSelectMock: vi.fn(),
-    withDbAccessContextMock: vi.fn((ctx: unknown, fn: () => unknown) => {
+    withDbAccessContextMock: vi.fn(async (ctx: unknown, fn: () => unknown) => {
       captured.push(ctx);
-      return fn();
+      depth.current += 1;
+      try {
+        return await fn();
+      } finally {
+        depth.current -= 1;
+      }
     }),
     capturedDbContexts: captured,
+    dbContextDepth: depth,
     getOrgPolicyMock: vi.fn(),
   };
 });
@@ -52,7 +60,11 @@ vi.mock('../services/clientAiPolicy', () => ({
   ) => policy.userAccess === 'all' || policy.selectedUserIds.includes(id),
 }));
 
-import { clientAiAuthMiddleware, requireClientAiEnabledMiddleware } from './clientAiAuth';
+import {
+  clientAiAuthMiddleware,
+  clientAiDbAccessContext,
+  requireClientAiEnabledMiddleware,
+} from './clientAiAuth';
 
 const ORG_ID = '0c0c0c0c-1111-4222-8333-444455556666';
 const PORTAL_USER_ID = 'beefbeef-1111-4222-8333-444455556666';
@@ -218,5 +230,68 @@ describe('requireClientAiEnabledMiddleware', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ writeMode: 'readonly' });
+  });
+});
+
+// #3127 — POST /client-ai/sessions/:id/messages may wait (bounded) for a turn
+// blocked on approvals to conclude, so it is registered in
+// selfManagedDbContextRoutes: the auth middleware must not hold a request
+// transaction across the handler, and the policy gate reads in its own short
+// context instead.
+describe('self-managed DB context routes (#3127)', () => {
+  const SID = '11111111-1111-4111-8111-111111111111';
+  const ENABLED_POLICY = {
+    orgId: ORG_ID,
+    enabled: true,
+    userAccess: 'all',
+    selectedUserIds: [],
+    writeMode: 'readwrite',
+  };
+
+  function buildChatApp() {
+    const app = new Hono();
+    app.use('*', clientAiAuthMiddleware);
+    app.use('*', requireClientAiEnabledMiddleware);
+    app.post('/api/v1/client-ai/sessions/:id/messages', (c) => c.json({
+      depth: dbContextDepth.current,
+      writeMode: c.get('clientAiPolicy').writeMode,
+    }));
+    app.get('/api/v1/client-ai/sessions/:id/messages', (c) => c.json({ depth: dbContextDepth.current }));
+    return app;
+  }
+
+  it('runs the message-send handler with no request transaction held', async () => {
+    let policyReadDepth = -1;
+    getOrgPolicyMock.mockImplementation(async () => {
+      policyReadDepth = dbContextDepth.current;
+      return ENABLED_POLICY;
+    });
+
+    const res = await buildChatApp().request(`/api/v1/client-ai/sessions/${SID}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ depth: 0, writeMode: 'readwrite' });
+    // The policy gate still reads under the org-scoped context — just a short one.
+    expect(policyReadDepth).toBe(1);
+    expect(capturedDbContexts).toEqual([clientAiDbAccessContext(ORG_ID)]);
+  });
+
+  it('still wraps sibling routes in the request transaction', async () => {
+    getOrgPolicyMock.mockResolvedValue(ENABLED_POLICY);
+
+    const res = await buildChatApp().request(`/api/v1/client-ai/sessions/${SID}/messages`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ depth: 1 });
+  });
+
+  it('clientAiDbAccessContext is exactly the context the middleware opens', async () => {
+    await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+    expect(capturedDbContexts[0]).toEqual(clientAiDbAccessContext(ORG_ID));
   });
 });

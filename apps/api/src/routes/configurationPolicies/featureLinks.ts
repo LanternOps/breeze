@@ -1,29 +1,27 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import {
-  alertRuleInlineSettingsSchema,
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
   clientSuppliedWarrantyHpCmslConsent,
   hardwareMonitoringInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
-  monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
-import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
+import { ORG_SCOPED_ONLY_FEATURE_TYPES, isRetiredConfigFeatureType } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
   getConfigPolicy,
+  getRetiredFeatureLink,
   addFeatureLink,
   updateFeatureLink,
   removeFeatureLink,
@@ -112,12 +110,25 @@ const WARRANTY_CONSENT_REFUSAL = {
   code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE',
 } as const;
 
+export const RETIRED_FEATURE_TYPE_GONE = (featureType: string) => ({
+  error: `Feature type "${featureType}" was retired by the alerting consolidation.`,
+  hint: 'Author the condition as a monitor (POST /monitor-definitions) and attach it to the policy through the "monitors" feature link.',
+  retiredFeatureType: featureType,
+});
+const rejectRetiredFeatureType = async (c: Context, next: Next) => {
+  const body = await c.req.raw.clone().json().catch(() => null);
+  const ft = (body as { featureType?: unknown } | null)?.featureType;
+  if (isRetiredConfigFeatureType(ft)) return c.json(RETIRED_FEATURE_TYPE_GONE(ft), 410);
+  await next();
+};
+
 featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
   requireMfa(),
   zValidator('param', idParamSchema),
+  rejectRetiredFeatureType,
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -284,40 +295,6 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
-    // Reject offline alert rules whose duration exceeds the re-eval horizon —
-    // such a rule could never fire (issue #1982). Runs BEFORE the schema parse
-    // below so an oversized-but-well-formed duration gets this specific message
-    // rather than the enum/range message.
-    if (data.featureType === 'alert_rule' && data.inlineSettings) {
-      const violation = findOfflineDurationViolation(data.inlineSettings);
-      if (violation) return c.json({ error: violation }, 400);
-    }
-
-    if (data.featureType === 'alert_rule' && data.inlineSettings) {
-      const parsed = alertRuleInlineSettingsSchema.safeParse(data.inlineSettings);
-      if (!parsed.success) {
-        return c.json(
-          zodValidationErrorBody('Invalid alert_rule settings', parsed.error),
-          400
-        );
-      }
-      data.inlineSettings = parsed.data;
-    }
-
-    if (data.featureType === 'monitoring' && data.inlineSettings) {
-      const parsed = monitoringInlineSettingsSchema.safeParse(data.inlineSettings);
-      if (!parsed.success) {
-        return c.json(
-          zodValidationErrorBody('Invalid monitoring settings', parsed.error),
-          400
-        );
-      }
-      // Validate only — deliberately NOT `data.inlineSettings = parsed.data`.
-      // The schema defaults the deprecated `alertRules`/`eventLogAlerts` write
-      // barrier keys to `[]`, and normalizing would write those dead keys back
-      // into the stored JSONB mirror on every save.
-    }
-
     if (data.featureType === 'monitors' && data.inlineSettings) {
       const parsed = monitorsInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -427,7 +404,15 @@ featureLinkRoutes.patch(
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
 
     if (!existingLink) {
+      // Public listings omit retired links; look up only their identity after
+      // policy authorization so stale clients receive the retirement pointer.
+      const retiredLink = await getRetiredFeatureLink(id, linkId);
+      if (retiredLink) return c.json(RETIRED_FEATURE_TYPE_GONE(retiredLink.featureType), 410);
       return c.json({ error: 'Feature link not found' }, 404);
+    }
+
+    if (isRetiredConfigFeatureType(existingLink.featureType)) {
+      return c.json(RETIRED_FEATURE_TYPE_GONE(existingLink.featureType), 410);
     }
 
     // Same gate as the POST route (#5511 W02, D4). `data.inlineSettings` is the
@@ -550,32 +535,6 @@ featureLinkRoutes.patch(
           );
         }
         data.inlineSettings = parsed.data;
-      }
-      // Reject offline alert rules whose duration exceeds the re-eval horizon —
-      // such a rule could never fire (issue #1982). Runs before the schema parse
-      // so the specific message wins (same ordering as the POST route).
-      if (existingLink.featureType === 'alert_rule') {
-        const violation = findOfflineDurationViolation(data.inlineSettings);
-        if (violation) return c.json({ error: violation }, 400);
-
-        const parsed = alertRuleInlineSettingsSchema.safeParse(data.inlineSettings);
-        if (!parsed.success) {
-          return c.json(
-            zodValidationErrorBody('Invalid alert_rule settings', parsed.error),
-            400
-          );
-        }
-        data.inlineSettings = parsed.data;
-      }
-      if (existingLink.featureType === 'monitoring') {
-        const parsed = monitoringInlineSettingsSchema.safeParse(data.inlineSettings);
-        if (!parsed.success) {
-          return c.json(
-            zodValidationErrorBody('Invalid monitoring settings', parsed.error),
-            400
-          );
-        }
-        // Validate only — see the POST route for why parsed.data isn't written back.
       }
       if (existingLink.featureType === 'monitors') {
         const parsed = monitorsInlineSettingsSchema.safeParse(data.inlineSettings);

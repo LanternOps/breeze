@@ -1,7 +1,7 @@
 import './setup';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { deviceDisks, deviceIpHistory, devices, discoveredAssets, partnerExportSiteMaterialState } from '../../db/schema';
+import { deviceDisks, deviceHardware, deviceIpHistory, deviceMemoryModules, devices, discoveredAssets, partnerExportSiteMaterialState } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -35,8 +35,18 @@ async function seed() {
     orgId: org.id, siteId: site.id, ipAddress: '10.9.0.1', assetType: 'switch',
     approvalStatus: 'approved', hostname: 'core-sw',
   }).returning();
-  if (!ip || !disk || !asset) throw new Error('child insert failed');
-  return { orgId: org.id, siteId: site.id, ipId: ip.id, diskId: disk.id, assetId: asset.id };
+  const [memoryModule] = await db.insert(deviceMemoryModules).values({
+    deviceId: device.id, orgId: org.id, slotKey: 'smbios:0x1100', slotIndex: 0, locator: 'DIMM_A1',
+    populated: true, capacityMb: 16384,
+  }).returning();
+  await db.insert(deviceHardware).values({
+    deviceId: device.id, orgId: org.id, ramTotalMb: 16384, memorySlotsTotal: 2, memoryObservedAt: new Date(),
+  });
+  if (!ip || !disk || !asset || !memoryModule) throw new Error('child insert failed');
+  return {
+    orgId: org.id, siteId: site.id, deviceId: device.id, ipId: ip.id, diskId: disk.id, assetId: asset.id,
+    memoryModuleId: memoryModule.id,
+  };
 }
 
 async function siteInventoryWatermark(siteId: string): Promise<number> {
@@ -71,6 +81,30 @@ describe('partner-export child UPDATE triggers lock only on material change', ()
       .set({ usedGb: 20, freeGb: 80, usedPercent: 20 }).where(eq(deviceDisks.id, f.diskId)))).resolves.toEqual([]);
     await expect(orgLocksTakenBy((tx) => tx.update(deviceDisks)
       .set({ totalGb: 200 }).where(eq(deviceDisks.id, f.diskId)))).resolves.toEqual([f.orgId]);
+  });
+
+  // #5351 (2026-11-01-110000): the memory sync rewrites updated_at on every
+  // matched slot each report, and memory_observed_at advances on every report
+  // that carries a valid memory block. Neither is exported.
+  runDb('an updated_at-only device_memory_modules update takes no org lock; a slot change does', async () => {
+    const f = await seed();
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceMemoryModules)
+      .set({ updatedAt: new Date() }).where(eq(deviceMemoryModules.id, f.memoryModuleId)))).resolves.toEqual([]);
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceMemoryModules)
+      .set({ capacityMb: 32768 }).where(eq(deviceMemoryModules.id, f.memoryModuleId)))).resolves.toEqual([f.orgId]);
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceMemoryModules)
+      .set({ serialNumber: 'NEW-DIMM' }).where(eq(deviceMemoryModules.id, f.memoryModuleId)))).resolves.toEqual([f.orgId]);
+  });
+
+  runDb('a memory_observed_at-only device_hardware update takes no org lock; a memory summary change does', async () => {
+    const f = await seed();
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceHardware)
+      .set({ memoryObservedAt: new Date(Date.now() + 60_000), updatedAt: new Date() })
+      .where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([]);
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceHardware)
+      .set({ memorySlotsTotal: 4 }).where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([f.orgId]);
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceHardware)
+      .set({ memorySoldered: true }).where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([f.orgId]);
   });
 
   runDb('a last_seen_at-only discovered_assets update takes no org lock; a material one does', async () => {

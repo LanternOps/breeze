@@ -2,7 +2,7 @@ import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNot
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
-import { devices, deviceCustomFieldValues, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
+import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
   FilterFieldCategory,
@@ -108,6 +108,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'hardware.ramTotalMb', label: 'RAM (MB)', category: 'hardware', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'hardware.diskTotalGb', label: 'Disk Size (GB)', category: 'hardware', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: OPERATORS_BY_TYPE.string },
+  { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['ok', 'warning', 'critical', 'unknown'], description: 'Storage/RAID health rollup; devices with no hardware report match none' },
 
   // Network fields
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: OPERATORS_BY_TYPE.string },
@@ -168,6 +169,18 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 type ColumnRef = ReturnType<typeof devices.id.getSQL> | SQL<unknown>;
 
 function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'network' | 'metrics' | 'software' | 'groups'; column: string; computed?: SQL<unknown> } {
+  // #6854: the health rollup lives in device_hardware_health, not
+  // device_hardware, so it must be claimed before the `hardware.` prefix.
+  // Scalar subquery: device_id is that table's PK, and a device with no report
+  // yields NULL, which no enum comparison matches.
+  if (field === 'hardware.health') {
+    return {
+      table: 'hardware',
+      column: 'health',
+      computed: sql`(SELECT ${deviceHardwareHealth.health}::text FROM ${deviceHardwareHealth} WHERE ${deviceHardwareHealth.deviceId} = ${devices.id})`
+    };
+  }
+
   // Handle prefixed fields
   if (field.startsWith('hardware.')) {
     return { table: 'hardware', column: field.replace('hardware.', '') };

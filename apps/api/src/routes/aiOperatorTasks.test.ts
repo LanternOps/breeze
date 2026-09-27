@@ -6,7 +6,7 @@ import { AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
   selectMock, hasPermMock, authOkMock, mfaOkMock,
-  tasksEnabledMock, recipeEnabledMock, admitMock,
+  tasksEnabledMock, recipeEnabledMock, admitMock, resolveEffectiveAgentMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
@@ -15,6 +15,7 @@ const {
   tasksEnabledMock: vi.fn(() => true),
   recipeEnabledMock: vi.fn(() => true),
   admitMock: vi.fn(),
+  resolveEffectiveAgentMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -48,6 +49,10 @@ vi.mock('../config/env', async (importOriginal) => ({
 
 vi.mock('../services/aiOperator/taskService', () => ({
   admitServiceRecoveryTask: (input: unknown) => admitMock(input),
+}));
+
+vi.mock('../services/aiAgents/effectivePolicy', () => ({
+  resolveEffectiveAgent: (...args: unknown[]) => resolveEffectiveAgentMock(...args),
 }));
 
 vi.mock('../db', () => ({
@@ -466,10 +471,16 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
 
   const deviceRow = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'WS-01' };
 
-  /** device row, then agent row, then the pending-cap count. */
+  /**
+   * The device row is the route's only direct read; the agent comes from the
+   * effective-agent resolver (#7015), mocked to an enabled agent below.
+   */
   function happyPathSelects() {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
+  }
+
+  function effectiveAgent(enabled: boolean) {
+    return { agentId: AGENT_ID, kind: 'triage', effective: { enabled } };
   }
 
   beforeEach(() => {
@@ -480,6 +491,8 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     tasksEnabledMock.mockReturnValue(true);
     recipeEnabledMock.mockReturnValue(true);
     admitMock.mockResolvedValue({ ok: true, taskId: ADMITTED_TASK_ID, replayed: false });
+    resolveEffectiveAgentMock.mockReset();
+    resolveEffectiveAgentMock.mockResolvedValue(effectiveAgent(true));
   });
 
   it('admits a valid request with 202 and the new task id', async () => {
@@ -635,9 +648,28 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     expect(admitMock).not.toHaveBeenCalled();
   });
 
-  it('422s when the org has no enabled agent to run the task', async () => {
+  it('pins the EFFECTIVE triage agent for the body org, resolved under the caller auth (#7015)', async () => {
+    happyPathSelects();
+    await post(body());
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledTimes(1);
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_ID }), ORG_ID, 'triage',
+    );
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT_ID }));
+  });
+
+  it('422s when the org has no effective agent to run the task', async () => {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    selectMock.mockReturnValueOnce(selectChain([]));
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_NO_AGENT' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('422s when the effective agent is disabled, rather than admitting a task no run can serve', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    resolveEffectiveAgentMock.mockResolvedValue(effectiveAgent(false));
     const res = await post(body());
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ code: 'OPERATOR_NO_AGENT' });
@@ -682,8 +714,8 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     happyPathSelects();
     const res = await post(body());
     expect(res.status).toBe(202);
-    // Device + agent only; a third select would be a route-level count.
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    // The device read only; a second select would be a route-level count.
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('422s a non-capacity task-limit refusal with its reason', async () => {

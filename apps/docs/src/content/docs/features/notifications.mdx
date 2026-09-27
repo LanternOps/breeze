@@ -381,7 +381,7 @@ Open **Alerts > Delivery > Escalation policies** to create, edit, or delete a po
 
 Steps notify channels, users in-app, or both, with at least one target per step. Use 1..10 steps, integer delays of 1..10080 minutes, repeat intervals of 1..1440 minutes and 1..10 additional sends, with at most 50 total occurrences. Optional `renotify: { everyMinutes, maxTimes }` repeats a step at that interval; `maxTimes` is the number of additional sends after its first notification.
 
-Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise an unretired legacy source's explicit escalation wins, followed by the winning routing/default row's escalation, then none. W05d removes the legacy arm only after conversion or retirement, leaving monitor → row → null. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
+Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise the winning routing/default row's escalation applies, then none. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
 
 ```json
 {

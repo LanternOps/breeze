@@ -44,6 +44,9 @@ vi.mock('../db/schema', () => ({
     isActive: 'networkMonitors.isActive',
     id: 'networkMonitors.id',
     updatedAt: 'networkMonitors.updatedAt',
+    name: 'networkMonitors.name',
+    managedByMonitorId: 'networkMonitors.managedByMonitorId',
+    retiredAt: 'networkMonitors.retiredAt',
   },
   snmpDevices: {
     id: 'snmpDevices.id',
@@ -157,6 +160,8 @@ import { captureException } from '../services/sentry';
 
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
+import { snmpDevices } from '../db/schema';
+import { writeRouteAudit } from '../services/auditEvents';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 
 const ORG_ID = 'org-111';
@@ -703,7 +708,7 @@ describe('monitoring routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
-    it('disables all monitoring for an asset', async () => {
+    function mockAssetAndChecks(checks: unknown[]) {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -711,23 +716,49 @@ describe('monitoring routes', () => {
           }),
         }),
       } as any);
-      // Disable SNMP
-      vi.mocked(db.update)
-        .mockReturnValueOnce({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID }]),
-            }),
+      const checkWhere = vi.fn().mockResolvedValue(checks);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: checkWhere }),
+      } as any);
+      return checkWhere;
+    }
+
+    it('returns actionable checks before any mutation when managed or legacy network checks are active', async () => {
+      const checks = [
+        { id: '44444444-4444-4444-4444-444444444444', name: 'Managed ping', managedByMonitorId: '55555555-5555-5555-5555-555555555555' },
+        { id: '66666666-6666-6666-6666-666666666666', name: 'Legacy HTTPS', managedByMonitorId: null },
+      ];
+      mockAssetAndChecks(checks);
+      // Keep the old mutation path executable so the regression fails on its
+      // incorrect success response, rather than on an incomplete DB mock.
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID }]),
           }),
-        } as any)
-        // Disable network monitors
-        .mockReturnValueOnce({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([{ id: 'net-1' }]),
-            }),
-          }),
-        } as any);
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'network_checks_active', checks });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('disables SNMP when no active unretired network checks exist, using org and asset scoped checks', async () => {
+      const checkWhere = mockAssetAndChecks([]);
+      const snmpWhere = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID }]),
+      });
+      const set = vi.fn().mockReturnValue({ where: snmpWhere });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
         method: 'DELETE',
@@ -735,33 +766,34 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
+      expect(await res.json()).toEqual({ success: true });
+      expect(db.update).toHaveBeenCalledExactlyOnceWith(snmpDevices);
+      expect(set).toHaveBeenCalledWith({ isActive: false });
+      const checkPredicate = JSON.stringify(checkWhere.mock.calls[0]?.[0]);
+      expect(checkPredicate).toContain('networkMonitors.assetId');
+      expect(checkPredicate).toContain(ASSET_ID);
+      expect(checkPredicate).toContain('networkMonitors.orgId');
+      expect(checkPredicate).toContain(ORG_ID);
+      expect(checkPredicate).toContain('networkMonitors.isActive');
+      expect(checkPredicate).toContain(',true,');
+      expect(checkPredicate).toContain('networkMonitors.retiredAt');
+      expect(checkPredicate).toContain(' is null');
+      const snmpPredicate = JSON.stringify(snmpWhere.mock.calls[0]?.[0]);
+      expect(snmpPredicate).toContain('snmpDevices.orgId');
+      expect(snmpPredicate).toContain(ORG_ID);
+      expect(snmpPredicate).toContain('snmpDevices.assetId');
+      expect(snmpPredicate).toContain(ASSET_ID);
     });
 
     it('returns 404 when no active monitoring found', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
+      mockAssetAndChecks([]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_ID }]),
+            returning: vi.fn().mockResolvedValue([]),
           }),
         }),
       } as any);
-      vi.mocked(db.update)
-        .mockReturnValueOnce({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
         method: 'DELETE',
@@ -769,15 +801,14 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'No active monitoring found for this asset' });
+      expect(db.update).toHaveBeenCalledExactlyOnceWith(snmpDevices);
     });
 
-    it('returns 404 for nonexistent asset', async () => {
+    it('returns 404 for a missing or cross-org asset before querying checks or writing', async () => {
+      const assetWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
       vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
+        from: vi.fn().mockReturnValue({ where: assetWhere }),
       } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
@@ -786,6 +817,11 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(db.update).not.toHaveBeenCalled();
+      const assetPredicate = JSON.stringify(assetWhere.mock.calls[0]?.[0]);
+      expect(assetPredicate).toContain('discoveredAssets.orgId');
+      expect(assetPredicate).toContain(ORG_ID);
     });
   });
 

@@ -42,7 +42,7 @@ Each maintenance window controls four independent suppression toggles:
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| **`suppressAlerts`** | `true` | Skips alert evaluation for devices in the window. Alerts that would otherwise fire are silently dropped. |
+| **`suppressAlerts`** | `true` | Skips server-evaluated monitor alerts during an active configuration policy window. See [Alert Suppression Behavior](#alert-suppression-behavior). |
 | **`suppressPatching`** | `true` (standalone) / `false` (config policy) | Prevents patch jobs from being created or dispatched to affected devices. |
 | **`suppressAutomations`** | `false` | Blocks both scheduled and event-triggered automations from running on affected devices. |
 | **`suppressScripts`** | `false` | Prevents ad-hoc script execution on affected devices. |
@@ -237,17 +237,13 @@ For standalone windows, `startTime` and `endTime` are stored as UTC timestamps. 
 
 ## Alert Suppression Behavior
 
-When a device is in an active maintenance window with `suppressAlerts` set to `true`, alert evaluation is skipped entirely for that device. This applies to both alert sources:
+Server-evaluated monitors check the device's effective **configuration policy maintenance settings** before evaluating conditions. During an active window with `suppressAlerts: true`, new alerts are suppressed for every monitor kind, including network checks and component-level hardware alerts. Ordinary monitor evaluation is skipped; component-level hardware checks continue only to recover already-open alerts. No new monitor alerts or recurrence escalations are created by those checks.
 
-- **Configuration policy alert rules** (`evaluateDeviceAlertsFromPolicy`): Before evaluating any alert rules, the system resolves the device's maintenance configuration. If a maintenance window is active with `suppressAlerts: true`, the function returns immediately without creating any alerts.
+Skipped evaluations are not queued. If the condition persists after the window closes, the next evaluation can create an alert. An active window with `suppressAlerts: false` allows evaluation as usual.
 
-- **Standalone alert rules**: The `isDeviceInMaintenance` service function is called during alert processing. If it returns `active: true` with `suppressAlerts: true`, alerts are not generated.
+Already-open alerts remain visible, and their normal auto-resolution checks continue during maintenance. Entering a window does not itself resolve or suppress them.
 
-Alerts that occur during the maintenance window are not queued or deferred -- they are silently dropped. If the underlying condition persists after the window closes, the next evaluation cycle will detect it and create the alert at that time.
-
-<Aside type="caution">
-The `allowedAlertSeverities` field on standalone maintenance windows can be used to permit certain severity levels to pass through even when `suppressAlerts` is enabled. For example, you might suppress `low` and `medium` alerts during patching while still allowing `critical` alerts to fire.
-</Aside>
+This monitor check uses configuration policy settings; standalone windows and their `allowedAlertSeverities` setting do not override it. Feature-engine alerts, such as patch, compliance, and automation alerts, retain their own handling.
 
 ---
 
@@ -332,7 +328,7 @@ This endpoint resolves maintenance status using the unified `isDeviceInMaintenan
 </Steps>
 
 <Aside>
-Partner-wide windows are matched against every enforcement check that consults maintenance status -- alert evaluation, patch job creation, and automation execution -- not just the device status endpoint. A partner-wide window suppresses alerts/patching/automations/scripts for devices in all of the partner's organizations, the same as if that window had been created individually in each one.
+Partner-wide standalone windows are matched by checks that consult standalone maintenance status across the partner's organizations. Server-evaluated monitor alerts instead use the device's effective configuration policy maintenance settings, as described in [Alert Suppression Behavior](#alert-suppression-behavior).
 </Aside>
 
 **Response:**
@@ -485,7 +481,7 @@ All routes are mounted under `/maintenance` and require authentication. Scope re
 ### Alerts still firing during a maintenance window
 
 - Confirm `suppressAlerts` is set to `true` on the maintenance window or configuration policy maintenance settings.
-- The `allowedAlertSeverities` field on standalone windows can let certain severity levels pass through even when suppression is enabled.
+- Server-evaluated monitors use configuration policy maintenance settings. Standalone windows and `allowedAlertSeverities` do not control this check.
 - Alert suppression only applies to new alerts evaluated during the window. Alerts that were already open before the window started are not retroactively suppressed or resolved.
 
 ### Automations running during maintenance

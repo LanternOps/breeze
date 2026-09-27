@@ -8,10 +8,6 @@
  * the apply will do, item by item. `applyFleetDesign` calls this again under
  * the same row lock and refuses to write when anything here is a blocker or
  * an unaccepted displacement.
- *
- * Cost: the displacement pass calls `resolveEffectiveConfig` once per device
- * a function's group will hold — O(devices), bounded by
- * FLEET_DESIGN_DEVICE_IDS_MAX (2,000). Preview is an explicit human action.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -31,7 +27,7 @@ import {
 import { db } from '../../db';
 import { configurationPolicies, deviceGroupMemberships, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { listFeatureLinks, policyAccessCondition, resolveEffectiveConfig } from '../configurationPolicy';
+import { policyAccessCondition } from '../configurationPolicy';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { findSecretVariableReferences, previewBundle } from '../scriptBundle';
 import { findReusableGroup, loadLedger, lockReportRun, type FleetDesignLedgerRow, type LockedReportRun } from './ledger';
@@ -212,33 +208,14 @@ export async function previewFleetDesignApplyWithContext(
     }
     wantedByFunction.set(functionKey, groupDevices);
 
-    const reusedPolicyId = policyRowByFunction.get(functionKey)?.createdRefs?.policyId ?? null;
-    const displaced = new Map<string, FleetDesignApplyPreviewPolicy['displaces'][number]>();
-    for (const deviceId of groupDevices) {
-      const eff = await resolveEffectiveConfig(deviceId, auth);
-      // null means the device is no longer visible to this caller — it was
-      // deleted or moved org between the device-index read above and here.
-      // A device that is gone cannot be displaced, so skipping it is correct;
-      // it is not masking a failure (resolveEffectiveConfig's only null is the
-      // device lookup, configurationPolicy.ts:2120).
-      if (!eff) continue;
-      for (const featureType of ['monitoring', 'alert_rule'] as const) {
-        const winner = eff.features[featureType];
-        if (!winner || winner.sourceLevel === 'default') continue;
-        if (reusedPolicyId && winner.sourcePolicyId === reusedPolicyId) continue;
-        if (!wouldBeDisplaced(winner.sourceLevel, winner.sourcePriority)) continue;
-        const k = `${winner.sourcePolicyId}:${featureType}`;
-        const row = displaced.get(k) ?? { policyId: winner.sourcePolicyId, policyName: winner.sourcePolicyName, featureType, deviceCount: 0 };
-        row.deviceCount += 1;
-        displaced.set(k, row);
-      }
-    }
+    // Fleet Design attaches monitors cumulatively; existing assignments keep
+    // contributing monitors regardless of their level or priority.
     policies.push({
       functionKey,
       policyName: fleetDesignGroupName(label),
       watchCount: items.watches.length,
       ruleCount: items.rules.length,
-      displaces: [...displaced.values()],
+      displaces: [],
     });
   }
 
@@ -257,11 +234,11 @@ export async function previewFleetDesignApplyWithContext(
       kind: item.kind,
       itemName: item.itemName,
       found: resolved?.found ?? false,
-      editable: resolved?.editable ?? false,
+      editable: false,
     });
     if (!resolved || !resolved.found) { if (!appliedRefs.has(ref)) blockers.push({ itemRef: ref, reason: 'retired_item_not_found' }); continue; }
     if (!resolved.editable) { blockers.push({ itemRef: ref, reason: 'partner_wide_write_denied' }); continue; }
-    retiredResolved.set(ref, { item, linkId: resolved.linkId, inlineSettings: resolved.inlineSettings, policyOrgId: resolved.policyOrgId });
+    blockers.push({ itemRef: ref, reason: 'legacy_source_retired' });
   }
 
   // --- Section 5: automation scripts (W04) ---------------------------------
@@ -333,11 +310,10 @@ export async function previewFleetDesignApply(
 }
 
 /**
- * Resolve a retired item against the policy's CURRENT inline link. `found`
- * means the named watch is present and enabled / the named rule is present.
- * `editable` follows `updateConfigPolicy`'s gate: org-owned, or partner-wide
- * with `canManagePartnerWidePolicies`. A policy owned by ANOTHER org (the
- * design named a policy that later moved, or a stale id) reads as not found.
+ * Validate access to a historical retirement proposal's policy. Legacy sources
+ * cannot be edited after upgrading, so no filtered feature-link read is needed.
+ * `found` refers to the accessible historical policy; the preview marks every
+ * legacy proposal non-editable and supplies the typed retirement blocker.
  */
 async function resolveRetiredItem(
   auth: AuthContext,
@@ -356,35 +332,10 @@ async function resolveRetiredItem(
   if (policy.orgId !== null && policy.orgId !== orgId) return null;
 
   const editable = policy.orgId !== null || canManagePartnerWidePolicies(auth);
-  const featureType = item.kind === 'watch' ? 'monitoring' : 'alert_rule';
-  const links = await listFeatureLinks(policy.id);
-  const link = links.find((l) => l.featureType === featureType && !l.featurePolicyId);
-  if (!link) return { found: false, editable, policyName: policy.name, linkId: '', inlineSettings: null, policyOrgId: policy.orgId };
-
-  const settings = (link.inlineSettings ?? {}) as { watches?: Array<{ name: string; enabled?: boolean }>; items?: Array<{ name: string }> };
-  const found = item.kind === 'watch'
-    ? (settings.watches ?? []).some((w) => w.name === item.itemName && w.enabled !== false)
-    : (settings.items ?? []).some((r) => r.name === item.itemName);
-  return { found, editable, policyName: policy.name, linkId: link.id, inlineSettings: link.inlineSettings, policyOrgId: policy.orgId };
+  return { found: true, editable, policyName: policy.name, linkId: '', inlineSettings: null, policyOrgId: policy.orgId };
 }
 
-/**
- * Mirrors `resolveEffectiveConfig`'s winner order (level rank DESC, priority
- * ASC, created_at ASC): a Fleet Design assignment (device_group, priority
- * FLEET_DESIGN_ASSIGNMENT_PRIORITY = 100) out-ranks every site / org /
- * partner assignment, loses to a device-level one, and among device_group
- * assignments only beats a HIGHER priority number (ties go to the older
- * row, i.e. the existing one). Anything the new assignment cannot beat is
- * not displaced and must not be reported as such.
- */
-const LEVEL_RANK: Record<string, number> = { device: 5, device_group: 4, site: 3, organization: 2, partner: 1 };
 export const FLEET_DESIGN_ASSIGNMENT_PRIORITY = 100;
-export function wouldBeDisplaced(sourceLevel: string, sourcePriority: number): boolean {
-  const rank = LEVEL_RANK[sourceLevel] ?? 0;
-  if (rank < LEVEL_RANK.device_group!) return true;
-  if (rank > LEVEL_RANK.device_group!) return false;
-  return sourcePriority > FLEET_DESIGN_ASSIGNMENT_PRIORITY;
-}
 
 function dedupe<T>(values: readonly T[]): T[] {
   return [...new Set(values)];

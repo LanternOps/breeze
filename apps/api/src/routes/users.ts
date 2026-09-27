@@ -150,6 +150,61 @@ const assignRoleSchema = z.object({
   roleId: z.string().guid()
 });
 
+// POST /users/:id/org-access (#7034). Full replacement of a partner member's
+// organization reach. .strict() so a smuggled roleId/name is a 400.
+const updateOrgAccessSchema = z.object({
+  orgAccess: z.enum(['all', 'selected', 'none']),
+  orgIds: z.array(z.string().guid()).optional()
+}).strict();
+
+type PartnerOrgAccess = 'all' | 'selected' | 'none';
+
+/**
+ * Shape rules for a partner membership's organization reach, shared by
+ * POST /users/invite and POST /users/:id/org-access. Returns the value to
+ * persist (org_ids deduplicated for 'selected', NULL otherwise) or the 400
+ * message.
+ */
+function normalizePartnerOrgAccess(
+  orgAccess: PartnerOrgAccess,
+  orgIds: string[] | undefined
+): { ok: true; orgAccess: PartnerOrgAccess; orgIds: string[] | null } | { ok: false; error: string } {
+  const ids = orgIds ?? [];
+  if (orgAccess === 'selected' && ids.length === 0) {
+    return { ok: false, error: 'orgIds required when orgAccess is selected' };
+  }
+  if (orgAccess !== 'selected' && ids.length > 0) {
+    return { ok: false, error: 'orgIds can only be provided when orgAccess is selected' };
+  }
+  return { ok: true, orgAccess, orgIds: orgAccess === 'selected' ? [...new Set(ids)] : null };
+}
+
+/**
+ * Write-time ownership check on a 'selected' org list. The ids are persisted
+ * verbatim into partner_users.org_ids and become the member's organization
+ * allowlist, so every one of them must be an organization of the CALLER's
+ * partner. Downstream access resolution re-scopes by partner, but a foreign id
+ * must never be stored in the first place (defense in depth + data integrity).
+ * Absent and foreign ids get the same answer so the probe is not a
+ * cross-partner existence oracle.
+ *
+ * Reach: this SELECT runs under the caller's own request DB context, so RLS
+ * (`breeze_has_org_access(id)`) bounds it to the orgs the caller can see — for
+ * the full-access partner member the router gate above requires, that is every
+ * active/trial, non-deleted org of the partner. A suspended or soft-deleted
+ * in-partner org is therefore refused too. Deliberate: a caller cannot grant a
+ * member an org the caller cannot see, and the failure mode is fail-closed. Do
+ * NOT lift this probe into a system context to "fix" that.
+ */
+async function allOrgsOwnedByPartner(partnerId: string, orgIds: string[]): Promise<boolean> {
+  const ownedOrgs = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(eq(organizations.partnerId, partnerId), inArray(organizations.id, orgIds)));
+  const owned = new Set(ownedOrgs.map((o) => o.id));
+  return orgIds.every((id) => owned.has(id));
+}
+
 async function getScopedUser(userId: string, scopeContext: ScopeContext) {
   if (scopeContext.scope === 'partner') {
     const [record] = await db
@@ -1286,17 +1341,11 @@ userRoutes.post(
     const scopeContext = getScopeContext(auth);
     const data = c.req.valid('json');
 
-    if (scopeContext.scope === 'partner') {
-      const orgAccess = data.orgAccess ?? 'none';
-      const orgIds = data.orgIds ?? [];
-
-      if (orgAccess === 'selected' && orgIds.length === 0) {
-        return c.json({ error: 'orgIds required when orgAccess is selected' }, 400);
-      }
-
-      if (orgAccess !== 'selected' && orgIds.length > 0) {
-        return c.json({ error: 'orgIds can only be provided when orgAccess is selected' }, 400);
-      }
+    const partnerOrgAccess = scopeContext.scope === 'partner'
+      ? normalizePartnerOrgAccess(data.orgAccess ?? 'none', data.orgIds)
+      : null;
+    if (partnerOrgAccess && !partnerOrgAccess.ok) {
+      return c.json({ error: partnerOrgAccess.error }, 400);
     }
 
     if (scopeContext.scope === 'organization' && data.orgAccess) {
@@ -1312,32 +1361,15 @@ userRoutes.post(
       return c.json({ error: rolePermissionError }, 403);
     }
 
-    // Write-time ownership check on a 'selected' org list. The ids are
-    // persisted verbatim into partner_users.org_ids and become the invitee's
-    // organization allowlist, so every one of them must be an organization of
-    // the CALLER's partner. Downstream access resolution re-scopes by partner,
-    // but a foreign id must never be stored in the first place (defense in
-    // depth + data integrity). Absent and foreign ids get the same answer so
-    // the probe is not a cross-partner existence oracle.
-    //
-    // Reach: this SELECT runs under the caller's own request DB context, so
-    // RLS (`breeze_has_org_access(id)`) bounds it to the orgs the caller can
-    // see — for the full-access partner member the router gate above requires,
-    // that is every active/trial, non-deleted org of the partner. A suspended
-    // or soft-deleted in-partner org is therefore refused too. Deliberate:
-    // an inviter cannot grant an invitee an org the inviter cannot see, and
-    // the failure mode is fail-closed. Do NOT lift this probe into a system
-    // context to "fix" that.
-    if (scopeContext.scope === 'partner' && (data.orgAccess ?? 'none') === 'selected') {
-      const requestedOrgIds = [...new Set(data.orgIds ?? [])];
-      const ownedOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(and(eq(organizations.partnerId, scopeContext.partnerId), inArray(organizations.id, requestedOrgIds)));
-      const owned = new Set(ownedOrgs.map((o) => o.id));
-      if (requestedOrgIds.some((id) => !owned.has(id))) {
-        return c.json({ error: 'One or more organizations are not part of your partner' }, 403);
-      }
+    // Every 'selected' org must belong to the caller's partner — see
+    // allOrgsOwnedByPartner for the reach and fail-closed rationale.
+    if (
+      scopeContext.scope === 'partner' &&
+      partnerOrgAccess?.ok &&
+      partnerOrgAccess.orgIds &&
+      !(await allOrgsOwnedByPartner(scopeContext.partnerId, partnerOrgAccess.orgIds))
+    ) {
+      return c.json({ error: 'One or more organizations are not part of your partner' }, 403);
     }
 
     const normalizedEmail = data.email.toLowerCase();
@@ -1465,17 +1497,14 @@ userRoutes.post(
           return { user, linkCreated: false, delegatedSiteIds };
         }
 
-        const orgAccess = data.orgAccess ?? 'none';
-        const orgIds = orgAccess === 'selected' ? [...new Set(data.orgIds ?? [])] : null;
-
         const [link] = await tx
           .insert(partnerUsers)
           .values({
             partnerId: scopeContext.partnerId,
             userId: user.id,
             roleId: data.roleId,
-            orgAccess,
-            orgIds
+            orgAccess: partnerOrgAccess?.ok ? partnerOrgAccess.orgAccess : 'none',
+            orgIds: partnerOrgAccess?.ok ? partnerOrgAccess.orgIds : null
           })
           .returning();
 
@@ -2026,7 +2055,7 @@ userRoutes.post(
         }
       });
       await clearPermissionCache(userId);
-      await terminateRemoteSessionsAfterRoleChange(userId);
+      await terminateRemoteSessionsAfterAccessChange(userId);
 
       return c.json({ success: true });
     }
@@ -2051,35 +2080,129 @@ userRoutes.post(
       }
     });
     await clearPermissionCache(userId);
-    await terminateRemoteSessionsAfterRoleChange(userId);
+    await terminateRemoteSessionsAfterAccessChange(userId);
 
     return c.json({ success: true });
   }
 );
 
+// Change a partner member's organization reach after the invite (#7034).
+//
+// Gated exactly like the invite that first sets it: USERS_INVITE + MFA, the
+// router-level full-access partner gate, and the same shape + ownership rules
+// (normalizePartnerOrgAccess / allOrgsOwnedByPartner). Two extra guards that
+// have no invite-time equivalent because the member already exists:
+//  - self is refused, like POST /:id/role;
+//  - the target's CURRENT role must be one the caller could assign
+//    (validateAssignableRole) — an invite can only ever set org access for a
+//    role inside the caller's ceiling, so neither can this.
+// The partner_users UPDATE of org_access/org_ids bumps permissions_epoch by
+// trigger (breeze_partner_users_permissions_epoch), exactly as a role change.
+userRoutes.post(
+  '/:id/org-access',
+  requirePermission(PERMISSIONS.USERS_INVITE.resource, PERMISSIONS.USERS_INVITE.action),
+  requireMfa(),
+  zValidator('json', updateOrgAccessSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const scopeContext = getScopeContext(auth);
+    const userId = c.req.param('id')!;
+    const data = c.req.valid('json');
+
+    if (scopeContext.scope !== 'partner') {
+      return c.json({ error: 'orgAccess is only valid for partner scope' }, 400);
+    }
+
+    if (userId === auth.user.id) {
+      return c.json({ error: 'Changing your own organization access is not allowed' }, 403);
+    }
+
+    const next = normalizePartnerOrgAccess(data.orgAccess, data.orgIds);
+    if (!next.ok) {
+      return c.json({ error: next.error }, 400);
+    }
+
+    const record = await getScopedUser(userId, scopeContext);
+    if (!record || !('orgAccess' in record)) {
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
+    }
+
+    const targetRole = await getScopedRole(record.roleId, scopeContext);
+    const targetRoleError = targetRole
+      ? await validateAssignableRole(c, auth, targetRole)
+      : 'Cannot resolve the user\'s role for this scope';
+    if (targetRoleError) {
+      return c.json({ error: targetRoleError }, 403);
+    }
+
+    if (next.orgIds && !(await allOrgsOwnedByPartner(scopeContext.partnerId, next.orgIds))) {
+      return c.json({ error: 'One or more organizations are not part of your partner' }, 403);
+    }
+
+    const previousOrgIds = record.orgIds ?? null;
+    const sameIds =
+      (previousOrgIds === null && next.orgIds === null) ||
+      (previousOrgIds !== null &&
+        next.orgIds !== null &&
+        previousOrgIds.length === next.orgIds.length &&
+        next.orgIds.every((id) => previousOrgIds.includes(id)));
+    if (record.orgAccess === next.orgAccess && sameIds) {
+      return c.json({ success: true, changed: false, orgAccess: next.orgAccess, orgIds: next.orgIds });
+    }
+
+    const updated = await db
+      .update(partnerUsers)
+      .set({ orgAccess: next.orgAccess, orgIds: next.orgIds })
+      .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+      .returning({ id: partnerUsers.id });
+
+    if (updated.length === 0) {
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
+    }
+
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.org_access.update',
+      resourceId: userId,
+      resourceName: record.name,
+      details: {
+        scope: 'partner',
+        previousOrgAccess: record.orgAccess,
+        previousOrgIds,
+        orgAccess: next.orgAccess,
+        orgIds: next.orgIds
+      }
+    });
+    await clearPermissionCache(userId);
+    await terminateRemoteSessionsAfterAccessChange(userId);
+
+    return c.json({ success: true, changed: true, orgAccess: next.orgAccess, orgIds: next.orgIds });
+  }
+);
+
 /**
- * Belt for a role change, matching the one in `removeMembershipForScope`.
+ * Belt for a role or organization-access change, matching the one in
+ * `removeMembershipForScope`.
  *
  * The `organization_users` / `partner_users` UPDATE already advances the
  * target's `permissions_epoch` by trigger, so the next revocation-lease renew
  * (within ~25s) ends any live remote session. Ending it immediately closes that
- * window: a role change is often exactly the moment somebody's remote-control
- * rights were meant to stop.
+ * window: a role or org-access change is often exactly the moment somebody's
+ * remote-control rights were meant to stop.
  *
  * Best-effort by design — a teardown failure is logged (and reported to Sentry
- * inside the service) but never fails the role assignment, which has already
+ * inside the service) but never fails the change, which has already
  * committed.
  */
-async function terminateRemoteSessionsAfterRoleChange(userId: string): Promise<void> {
+async function terminateRemoteSessionsAfterAccessChange(userId: string): Promise<void> {
   try {
     const torn = await terminateUserRemoteSessions(userId);
     if (torn === TEARDOWN_FAILED) {
       console.error(
-        `[users] Remote-session teardown FAILED after role change for user ${userId}; ` +
+        `[users] Remote-session teardown FAILED after access change for user ${userId}; ` +
         'the permissions-epoch recheck remains the only cutoff.'
       );
     }
   } catch (err) {
-    console.error(`[users] Remote-session teardown threw after role change for user ${userId}:`, err);
+    console.error(`[users] Remote-session teardown threw after access change for user ${userId}:`, err);
   }
 }

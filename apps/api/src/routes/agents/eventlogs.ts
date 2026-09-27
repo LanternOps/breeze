@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { devices, deviceEventLogs } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { recordAgentIngestSubmission } from '../metrics';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { submitEventLogsSchema } from './schemas';
@@ -199,8 +200,10 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
   }
 
   const now = new Date();
+  let timestampClampedCount = 0;
   const rows = filteredEvents.map((event: any) => {
     const normalized = normalizeEventLogTimestamp(event.timestamp, now);
+    if (normalized.timestampClamped) timestampClampedCount++;
     return {
       deviceId,
       orgId: deviceOrgId,
@@ -310,21 +313,34 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     }
   }
 
+  // #4340 — audit only an anomalous submit: an insert error or server-clamped
+  // future timestamps. A routine submit (including one whose rows were all
+  // absorbed as #2390 retry duplicates) is only counted; the events themselves
+  // are the durable record in device_event_logs.
+  //
   // writeAuditEvent self-manages its own DB context (services/auditEvents.ts
   // → auditService.ts persistAuditLog), so it is safe to call with none open.
-  writeAuditEvent(c, {
-    orgId,
-    actorType: 'agent',
-    actorId: agent.agentId ?? agentId,
-    action: 'agent.eventlogs.submit',
-    resourceType: 'device',
-    resourceId: deviceId,
-    details: {
-      submittedCount: data.events.length,
-      insertedCount: inserted,
-      filteredCount,
-    },
-  });
+  recordAgentIngestSubmission(
+    'eventlogs',
+    insertError ? (inserted > 0 ? 'partial' : 'failed') : 'success',
+  );
+  if (insertError || timestampClampedCount > 0) {
+    writeAuditEvent(c, {
+      orgId,
+      actorType: 'agent',
+      actorId: agent.agentId ?? agentId,
+      action: 'agent.eventlogs.submit',
+      resourceType: 'device',
+      resourceId: deviceId,
+      result: insertError ? 'failure' : 'success',
+      details: {
+        submittedCount: data.events.length,
+        insertedCount: inserted,
+        filteredCount,
+        ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
+      },
+    });
+  }
 
   if (insertError) {
     return c.json({

@@ -44,7 +44,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'billingProfiles.ts',
   'c2c/configs.ts',
   'catalog/enrich.ts',
-  'configurationPolicies/alertRuleTest.ts',
   'contracts/documents.ts',
   'contracts/generate.ts',
   'contracts/periods.ts',

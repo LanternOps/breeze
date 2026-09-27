@@ -70,8 +70,11 @@ export async function seedFixture(): Promise<DeliveryFixture> {
     osType: 'windows', osVersion: '10.0', architecture: 'x64', agentVersion: '1.0.0',
   }).returning());
   created.devices.push(device!.id);
-  const [pc] = await sys(() => db.insert(notificationChannels).values({ orgId: null, partnerId: partner.id, name: 'Partner NOC', type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/p' }, enabled: true }).returning());
-  const [oc] = await sys(() => db.insert(notificationChannels).values({ orgId: org.id, partnerId: null, name: 'Org email', type: 'slack', config: { webhookUrl: 'https://hooks.slack.example/o' }, enabled: true }).returning());
+  // `config` lives in notification_channel_configs now (#6379); every actual
+  // send in this file's dispatch tests is mocked out via capturedDispatch's
+  // queue spies, so no test ever reads the config value back.
+  const [pc] = await sys(() => db.insert(notificationChannels).values({ orgId: null, partnerId: partner.id, name: 'Partner NOC', type: 'slack', enabled: true }).returning());
+  const [oc] = await sys(() => db.insert(notificationChannels).values({ orgId: org.id, partnerId: null, name: 'Org email', type: 'slack', enabled: true }).returning());
   created.channels.push(pc!.id, oc!.id);
   return { partnerId: partner.id, orgId: org.id, siteId: site!.id, deviceId: device!.id, partnerChannel: pc!.id, orgChannel: oc!.id };
 }
@@ -187,7 +190,7 @@ describe('delivery resolution gate — dispatcher ⇄ resolver', () => {
     const f = await seedFixture();
     const attempts: Array<() => Promise<unknown>> = [
       () => db.insert(notificationChannels).values({ orgId: null, partnerId: f.partnerId,
-        name: 'Forbidden', type: 'slack', config: {}, enabled: true }).returning(),
+        name: 'Forbidden', type: 'slack', enabled: true }).returning(),
       () => db.insert(notificationRoutingRules).values({ orgId: null, partnerId: f.partnerId,
         name: 'Forbidden', priority: 10, conditions: {}, channelIds: [], enabled: true }).returning(),
       () => db.insert(escalationPolicies).values({ orgId: null, partnerId: f.partnerId,
@@ -374,7 +377,7 @@ describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
     await seedRule({ orgId: f.orgId, isDefault: true, channelIds: [], escalationPolicyId: policy!.id });
     await agree(f, { orgId: f.orgId, severity: 'high', siteId: f.siteId }, [], [f.partnerChannel]);
   });
-  runDb('legacy escalation overrides a conflicting row internally; browser preview cannot inject it', async () => {
+  runDb('queued legacy alerts use current routing escalation; browser preview cannot inject overrides', async () => {
     const f = await seedFixture();
     const [legacyPolicy, rowPolicy] = await sys(() => db.insert(escalationPolicies).values([
       { orgId: f.orgId, name: 'Legacy escalation', steps: [{ delayMinutes: 5, channelIds: [f.partnerChannel] }] },
@@ -392,12 +395,12 @@ describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
     const facts = { orgId: f.orgId, severity: 'high' as const, siteId: f.siteId };
     const internalFacts = { ...facts, legacyOverride: { escalationPolicyId: legacyPolicy!.id } };
     const resolved = await sys(() => resolveDelivery(internalFacts));
-    expect(resolved).toMatchObject({ source: 'routing_rule', channelIds: [f.orgChannel], escalationPolicyId: legacyPolicy!.id });
+    expect(resolved).toMatchObject({ source: 'routing_rule', channelIds: [f.orgChannel], escalationPolicyId: rowPolicy!.id });
     const internalPreview = await withDbAccessContext(orgCtx(f), () => describeDelivery(internalFacts, resolved));
     const { display, description, ...decision } = internalPreview;
     expect(decision).toEqual(resolved);
-    expect(description.escalationPolicy).toEqual({ id: legacyPolicy!.id, name: 'Legacy escalation' });
-    expect(display).toContain('escalates via Legacy escalation');
+    expect(description.escalationPolicy).toEqual({ id: rowPolicy!.id, name: 'Row escalation' });
+    expect(display).toContain('escalates via Row escalation');
     const alertId = await seedAlert(f, 'high');
     await sys(() => db.update(alerts).set({ ruleId: rule!.id }).where(eq(alerts.id, alertId)));
     const bulk = vi.spyOn(getNotificationQueue(), 'addBulk').mockResolvedValue([]);
@@ -405,9 +408,9 @@ describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
     try {
       expect((await dispatch(alertId)).queued).toBe(1);
       expect(bulk.mock.calls.flatMap(([jobs]) => jobs.map(job => job.data.channelId))).toEqual(resolved.channelIds);
-      expect(single.mock.calls.map(([, job]) => job.channelId)).toEqual([f.partnerChannel]);
+      expect(single.mock.calls.map(([, job]) => job.channelId)).toEqual([f.orgChannel]);
     } finally { bulk.mockRestore(); single.mockRestore(); }
-    // HTTP previews describe current routing; legacy source facts are internal only.
+    // HTTP previews and queued legacy alerts both describe current routing.
     const preview = await (await previewAs(f, facts)).json() as DeliveryPreview;
     expect(preview.escalationPolicyId).toBe(rowPolicy!.id);
     const injected = await requestAsOrg(f, `/alerts/delivery/resolve?orgId=${f.orgId}&severity=high&legacyOverride=${encodeURIComponent(JSON.stringify(internalFacts.legacyOverride))}`);

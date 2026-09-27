@@ -184,6 +184,7 @@ not represented in it.
 | `breeze_alerts_total` | Counter | Alerts fired, by severity |
 | `breeze_alert_queue_length` | Gauge | Alerts pending processing |
 | `agent_heartbeat_total` | Counter | Authenticated agent heartbeats, by `status` |
+| `breeze_agent_ingest_submissions_total` | Counter | Agent telemetry submits (`logs`, `eventlogs`, `sessions`, `security_status`, `management_posture`) by `kind` and `outcome` (`success`/`partial`/`failed`). Routine submits are counted here instead of being written to `audit_logs` |
 | `breeze_scripts_executed_total` | Counter | Scripts executed |
 
 The two fleet gauges are refreshed from the database on scrape and cached for

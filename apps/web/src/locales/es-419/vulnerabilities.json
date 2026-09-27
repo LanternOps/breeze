@@ -108,9 +108,6 @@
       "createTicket": "No se pudo crear el ticket"
     },
     "summary": {
-      "devices": "dispositivos {{count}}",
-      "devices_one": "dispositivo {{count}}",
-      "devices_other": "dispositivos {{count}}",
       "maxRisk": "riesgo máximo {{risk}}"
     },
     "tickets": {
@@ -119,22 +116,22 @@
     },
     "sections": {
       "cves": "CVE ({{count}})",
-      "devices": "Dispositivos (hallazgos de {{count}})",
-      "devices_one": "Dispositivos (hallazgo {{count}})",
-      "devices_other": "Dispositivos (hallazgos de {{count}})"
+      "devicesHeading": "Dispositivos ({{count}})",
+      "versions": "Versiones instaladas"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
-      "epss": "EPSS {{score}}"
+      "epss": "EPSS {{score}}",
+      "devicesOpen_one": "{{open}} de {{count}} dispositivo abierto",
+      "devicesOpen_other": "{{open}} de {{count}} dispositivos abiertos"
     },
     "selection": {
       "selectAll": "Seleccionar todo",
-      "selectAllAria": "Seleccionar todos los hallazgos",
-      "deselectAllAria": "Deseleccionar todos los hallazgos",
-      "selectFindingAria": "Seleccionar hallazgo {{cveId}} en {{deviceName}}",
-      "selected": "{{count}} seleccionado",
-      "selected_one": "{{count}} seleccionado",
-      "selected_other": "{{count}} seleccionado"
+      "selectAllAria": "Seleccionar todos los dispositivos",
+      "deselectAllAria": "Deseleccionar todos los dispositivos",
+      "selectDeviceAria": "Seleccionar {{deviceName}}",
+      "selectedDevices_one": "{{count}} dispositivo seleccionado · {{findings}} hallazgos abiertos",
+      "selectedDevices_other": "{{count}} dispositivos seleccionados · {{findings}} hallazgos abiertos"
     },
     "empty": {
       "noFindings": "No quedan hallazgos de dispositivos en este grupo: no hay nada sobre lo que actuar."
@@ -152,6 +149,33 @@
     },
     "ticket": {
       "defaultTitle": "Remediar {{name}}"
+    },
+    "headline": {
+      "needUpdating_one": "{{count}} dispositivo necesita actualización",
+      "needUpdating_other": "{{count}} dispositivos necesitan actualización",
+      "nothingOpen": "Ningún dispositivo tiene hallazgos abiertos",
+      "scope_one": "{{count}} CVE en {{devices}} dispositivos",
+      "scope_other": "{{count}} CVEs en {{devices}} dispositivos",
+      "scopeSingleDevice_one": "{{count}} CVE en 1 dispositivo",
+      "scopeSingleDevice_other": "{{count}} CVEs en 1 dispositivo"
+    },
+    "versions": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivos"
+    },
+    "device": {
+      "openOf_one": "{{open}} abierto de {{count}} CVE",
+      "openOf_other": "{{open}} abiertos de {{count}} CVEs",
+      "accepted": "{{count}} aceptados",
+      "mitigated": "{{count}} mitigados",
+      "patched": "{{count}} parcheados",
+      "patchReady": "{{count}} listos para parche",
+      "show": "Hallazgos",
+      "hide": "Ocultar",
+      "expandAria": "Mostrar hallazgos en {{deviceName}}",
+      "collapseAria": "Ocultar hallazgos en {{deviceName}}",
+      "loading": "Cargando hallazgos…",
+      "loadError": "No se pudieron cargar los hallazgos del dispositivo"
     }
   },
   "softwareGroupTable": {
@@ -162,8 +186,7 @@
       "software": "Software",
       "severity": "Gravedad",
       "risk": "Riesgo",
-      "cves": "CVEs",
-      "devices": "Dispositivos",
+      "devices": "Dispositivos afectados",
       "patch": "Parche"
     },
     "help": {
@@ -177,7 +200,11 @@
       "ready_one": "Listo · dispositivo {{ready}}/{{total}}",
       "ready_other": "Listo · dispositivos {{ready}}/{{total}}"
     },
-    "hasMore": "Mostrando los 500 grupos principales por riesgo: reduzca los filtros para ver el resto."
+    "hasMore": "Mostrando los 500 grupos principales por riesgo: reduzca los filtros para ver el resto.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivos",
+    "cves_one": "{{count}} CVE",
+    "cves_other": "{{count}} CVEs"
   },
   "vulnBulkActionModal": {
     "headings": {

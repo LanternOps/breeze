@@ -116,3 +116,36 @@ func (b *Broker) notifyTargets() []*Session {
 	}
 	return targets
 }
+
+// NotifySessionInWinSession returns the helper that should draw a notification
+// in exactly the given Windows session, or nil. It never falls back to another
+// session (the person being shadowed is the one who must be told) and returns
+// nil for an empty id.
+//
+// It ranks with betterNotifyTarget, NOT betterSession (#6864). betterSession
+// orders by LastSeen first, and on an RDSH host the session being viewed holds
+// both a system-role helper (the capture helper, touched on every streamed
+// frame) and a user-role helper. The LastSeen ranking therefore handed the
+// remote-session notice to the system-role helper, whose toast runs as SYSTEM
+// and always fails: E_ACCESSDENIED on a locked session, "the notification
+// platform is unavailable" on an unlocked one. The user-role helper runs as the
+// signed-in user and owns the toast platform for that session. The system-role
+// helper stays the fallback for a session that has no user-role helper.
+func (b *Broker) NotifySessionInWinSession(winSessionID string) *Session {
+	if winSessionID == "" {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if s.WinSessionID != winSessionID || !s.HasScope("notify") {
+			continue
+		}
+		if betterNotifyTarget(s, best) {
+			best = s
+		}
+	}
+	return best
+}

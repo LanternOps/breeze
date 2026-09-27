@@ -48,14 +48,28 @@ export const networkMonitors = pgTable('network_monitors', {
   // never derived: a handshake failure returns before certificate extraction,
   // so a null tls_not_after must never read as "fine".
   tlsState: varchar('tls_state', { length: 16 }),
+  // Explicit retirement: 'unconvertible:<code>' or 'operator'. Converted
+  // checks are adopted through managed_by_monitor_id and stay live.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   idOrgSiteUnique: uniqueIndex('network_monitors_id_org_site_uniq').on(table.id,table.orgId,table.siteId),
   siteScopeFk: foreignKey({name:'network_monitors_site_scope_fk',columns:[table.siteId,table.orgId],foreignColumns:[sites.id,sites.orgId]}),
   assetSiteScopeFk: foreignKey({name:'network_monitors_asset_site_scope_fk',columns:[table.assetId,table.orgId,table.siteId],foreignColumns:[discoveredAssets.id,discoveredAssets.orgId,discoveredAssets.siteId]}),
+  assetOrgFk: foreignKey({
+    name: 'network_monitors_asset_org_fk',
+    columns: [table.assetId, table.orgId],
+    foreignColumns: [discoveredAssets.id, discoveredAssets.orgId],
+  }),
+  assetOrgRequired: check('network_monitors_asset_org_required',
+    sql`${table.assetId} IS NULL OR (${table.orgId} IS NOT NULL AND ${table.partnerId} IS NULL)`),
   siteOwnerCheck: check('network_monitors_site_owner_chk',sql`site_id IS NULL OR org_id IS NOT NULL`),
   orgIdIdx: index('network_monitors_org_id_idx').on(table.orgId),
+  unmanagedPendingIdx: index('network_monitors_unmanaged_pending_idx')
+    .on(table.orgId)
+    .where(sql`${table.managedByMonitorId} IS NULL AND ${table.retiredAt} IS NULL`),
   partnerIdIdx: index('network_monitors_partner_id_idx').on(table.partnerId),
   monitorTypeIdx: index('network_monitors_monitor_type_idx').on(table.monitorType),
   isActiveIdx: index('network_monitors_is_active_idx').on(table.isActive)
@@ -90,5 +104,8 @@ export const networkMonitorAlertRules = pgTable('network_monitor_alert_rules', {
   threshold: varchar('threshold', { length: 100 }),
   severity: alertSeverityEnum('severity').notNull(),
   message: text('message'),
-  isActive: boolean('is_active').notNull().default(true)
+  isActive: boolean('is_active').notNull().default(true),
+  // Stamped 'converted' on adopted checks' rules; revert clears retirement.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  retiredReason: text('retired_reason')
 });

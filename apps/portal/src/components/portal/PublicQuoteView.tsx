@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
+import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
 import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
@@ -276,14 +277,14 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
 
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
         {/* The sign panel sits directly after the price and short terms; the
-            (collapsed) agreement never comes between the totals and the button. */}
+            (collapsed) agreements never come between the totals and the button. */}
         {open && (
           <SignaturePanel
             onAccept={(signerName) => void accept(signerName)}
             onDecline={(reason) => void decline(reason)}
             busy={busy}
             testIdPrefix="public-quote"
-            termsHref={quote.termsAndConditions ? '#terms' : undefined}
+            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
           />
         )}
         {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}
@@ -298,9 +299,12 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
             {msg}
           </div>
         )}
-        {quote.termsAndConditions && (
-          <DocumentTermsCollapsible text={quote.termsAndConditions} testId="public-quote-terms-conditions" />
-        )}
+        <QuoteAgreements
+          blocks={blocks}
+          termsAndConditions={quote.termsAndConditions}
+          buildUrl={publicApiPath}
+          testIdPrefix="public-quote"
+        />
       </DocumentPaper>
 
       {status === 'converted' && (

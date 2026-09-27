@@ -89,6 +89,8 @@ describe('get_device_details — public device projection', () => {
       .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve([]) }) })
       .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve([]) }) })
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
+      // #5351 memory modules (slot-ordered)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) })
       .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
 
     const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));
@@ -108,6 +110,8 @@ describe('get_device_details — public device projection', () => {
       .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(nics) }) })
       .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(diskRows) }) })
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
+      // #5351 memory modules (slot-ordered)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) })
       .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
 
     const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));

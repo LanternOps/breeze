@@ -321,6 +321,68 @@ describe('BackupJobList', () => {
     expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
   });
 
+  it('#2798: no stalled badge while the agent is alive, even if no file has finished for minutes', async () => {
+    // lastProgressAt now advances only when bytes/files move; one large file
+    // legitimately holds it still. The badge is about a silent agent, so it
+    // keys on lastKeepaliveAt.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              transferredSize: 1000,
+              totalSize: 10_000,
+              fileCount: 1,
+              totalFiles: 5,
+              lastProgressAt: '2026-04-01T00:05:00.000Z', // 5 min without a transfer
+              lastKeepaliveAt: '2026-04-01T00:09:45.000Z', // agent alive 15s ago
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
+  });
+
+  it('#2798: shows the stalled badge when the keepalive itself goes quiet', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              transferredSize: 1000,
+              totalSize: 10_000,
+              lastProgressAt: '2026-04-01T00:02:00.000Z',
+              lastKeepaliveAt: '2026-04-01T00:06:00.000Z', // 4 min silent
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    const badge = screen.getByTestId('backup-job-stalled');
+    expect(badge.getAttribute('title')).toContain('4');
+  });
+
   it('renders a legacy running job with null progress fields without NaN or Infinity', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-01T00:01:00.000Z'));

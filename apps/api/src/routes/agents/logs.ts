@@ -8,6 +8,7 @@ import { db } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
 import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { recordAgentIngestSubmission } from '../metrics';
 
 export const logsRoutes = new Hono();
 
@@ -170,26 +171,36 @@ logsRoutes.post(
     console.error(`[AgentLogs] Error batch inserting logs for device ${device.id}:`, err);
   }
 
-  // Content-free ingest audit (counts only, NO log message contents) so the
-  // arrival of diagnostic evidence is itself auditable — mirrors the sibling
-  // eventlogs.ts `agent.eventlogs.submit` event. Fires on success and partial/
-  // total failure alike, so a swallowed insert error still leaves a trail.
+  // Content-free ingest audit (counts only, NO log message contents), written
+  // ONLY for an anomalous batch: an insert shortfall (a swallowed insert error
+  // still leaves a trail) or server-clamped future timestamps. Finding #9
+  // (#2359) originally audited every batch; at one batch per device per minute
+  // that receipt was ~57% of audit_logs (#4340), and the batch itself is
+  // already durable evidence in agent_logs. Routine volume is counted in
+  // breeze_agent_ingest_submissions_total instead.
   const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
   const partialFailure = rows.length - inserted;
-  writeAuditEvent(c, {
-    orgId: agent?.orgId ?? device.orgId,
-    actorType: 'agent',
-    actorId: agent?.agentId ?? agentId,
-    action: 'agent.logs.submit',
-    resourceType: 'device',
-    resourceId: device.id,
-    details: {
-      submittedCount: data.logs.length,
-      insertedCount: inserted,
-      ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
-      ...(partialFailure > 0 ? { partialFailure } : {}),
-    },
-  });
+  recordAgentIngestSubmission(
+    'logs',
+    partialFailure === 0 ? 'success' : inserted === 0 ? 'failed' : 'partial',
+  );
+  if (partialFailure > 0 || timestampClampedCount > 0) {
+    writeAuditEvent(c, {
+      orgId: agent?.orgId ?? device.orgId,
+      actorType: 'agent',
+      actorId: agent?.agentId ?? agentId,
+      action: 'agent.logs.submit',
+      resourceType: 'device',
+      resourceId: device.id,
+      result: partialFailure > 0 ? 'failure' : 'success',
+      details: {
+        submittedCount: data.logs.length,
+        insertedCount: inserted,
+        ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
+        ...(partialFailure > 0 ? { partialFailure } : {}),
+      },
+    });
+  }
 
   if (inserted === 0 && rows.length > 0) {
     return c.json({ error: 'Failed to insert logs', received: 0 }, 500);

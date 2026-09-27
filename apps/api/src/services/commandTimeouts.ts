@@ -111,7 +111,7 @@ export const NETWORK_DIAGNOSTIC_TIMEOUT_MS = 150 * 1000;
  *
  * Why a ceiling and not a stall clock. `backup_jobs` can use a 15-minute stall
  * window because the agent streams `backup_progress` continuously into
- * `last_progress_at`. Nothing equivalent exists here: `device_commands` has no
+ * `last_keepalive_at`. Nothing equivalent exists here: `device_commands` has no
  * progress column, four of these six types report nothing at all mid-flight,
  * and the BMR pair's only mid-flight signal is a PHASE transition posted to
  * `/bmr/recover/progress` — the whole 3-hour restore sits inside a single

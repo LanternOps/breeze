@@ -173,26 +173,13 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ),
 
   manage_alert_rules: z.object({
-    action: z.enum(['list_templates', 'list_rules', 'get_rule', 'create_rule', 'update_rule', 'delete_rule', 'test_rule', 'list_channels', 'alert_summary']),
+    action: z.enum(['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary']),
     ruleId: uuid.optional(),
-    name: z.string().min(1).max(200).optional(),
-    templateId: uuid.optional(),
-    targetType: z.enum(['device', 'group', 'site', 'org', 'all']).optional(),
-    targetId: uuid.optional(),
-    overrideSettings: z.record(z.string(), z.unknown()).optional(),
-    isActive: z.boolean().optional(),
-    category: z.string().max(100).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
-    (d) => {
-      const needsId = ['get_rule', 'update_rule', 'delete_rule', 'test_rule'];
-      return !needsId.includes(d.action) || !!d.ruleId;
-    },
+    (d) => !['get_rule', 'test_rule'].includes(d.action) || !!d.ruleId,
     { message: 'ruleId is required for this action' },
-  ).refine(
-    (d) => d.action !== 'create_rule' || (!!d.name && !!d.templateId && !!d.targetType && !!d.targetId),
-    { message: 'name, templateId, targetType, and targetId are required for create_rule' },
   ),
 
   generate_report: z.object({

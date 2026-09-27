@@ -397,13 +397,11 @@ export default function DevicesPage() {
   // source of truth. This is the hybrid model's client half; the group above is
   // its server half.
   const [listFilters, setListFilters] = useState<ListFilters>(DEFAULT_LIST_FILTERS);
-  // Server-side hardware health rollup filter (#6854 W04). Not persisted to
-  // the URL hash — this is a fleet-wide server predicate, not view state.
-  const [hardwareHealth, setHardwareHealth] = useState<'' | 'warning' | 'critical' | 'unknown'>('');
   // Bumped on every fetchDevices invocation and on unmount, so a late-landing
-  // fetch started before a filter change (e.g. the background refresh timer
-  // racing a hardwareHealth edit) can detect it is stale and skip its
-  // setState calls rather than clobbering a newer, more-filtered result.
+  // fetch — typically a header Refresh (which carries no abort signal) still in
+  // flight when an org switch or a post-mutation refreshDevices() starts a
+  // newer one — can detect it is stale and skip its setState calls rather than
+  // clobbering the newer result.
   const deviceFetchGeneration = useRef(0);
   useEffect(() => () => { deviceFetchGeneration.current += 1; }, []);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
@@ -656,7 +654,6 @@ export default function DevicesPage() {
       const [devicesResult, networkResult, manualResult, orgsResponse, sitesResult, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
-          hardwareHealth: hardwareHealth || undefined,
           signal,
           // Surface the silent-cap case (#778 review). Without this, hitting
           // the safety ceiling would render an incomplete device list and
@@ -743,8 +740,12 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           updateOfferWithheldReason: (d.updateOfferWithheldReason ?? null) as string | null,
+          updateAttemptTargetVersion: (d.updateAttemptTargetVersion ?? null) as string | null,
+          updateAttemptStartedAt: (d.updateAttemptStartedAt ?? null) as string | null,
+          updateAttemptLastAt: (d.updateAttemptLastAt ?? null) as string | null,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           helperVersion: (d.helperVersion ?? null) as string | null,
+          helperInstallIssue: (d.helperInstallIssue ?? null) as string | null,
           agentServerUrl: (d.agentServerUrl ?? null) as string | null,
           // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
           // wire; anything else degrades to null so a malformed value renders
@@ -916,13 +917,7 @@ export default function DevicesPage() {
         enrolledAt: d.enrolledAt as string | undefined,
       }));
 
-      // A hardware filter is agent-only (network/manual rows carry no
-      // hardware rollup); the server already filtered transformedDevices, but
-      // the merged view must not let unfiltered network/manual rows leak back
-      // in as false negatives for the selected filter.
-      const allTransformed = hardwareHealth
-        ? transformedDevices.filter(d => d.hardwareHealth === hardwareHealth)
-        : [...transformedDevices, ...transformedNetworkDevices, ...transformedManualAssets];
+      const allTransformed = [...transformedDevices, ...transformedNetworkDevices, ...transformedManualAssets];
 
       // Fetch orgs for org name lookup
       let orgsList: Org[] = [];
@@ -1020,7 +1015,7 @@ export default function DevicesPage() {
         else setLoading(false);
       }
     }
-  }, [stableT, hardwareHealth]);
+  }, [stableT]);
 
   /**
    * The post-change refresh — use this, not `fetchDevices`, anywhere something
@@ -2312,21 +2307,6 @@ export default function DevicesPage() {
           />
         </div>
       </div>
-
-      <label className="flex items-center gap-2 text-sm">
-        <span>{t('hardwareHealth.hardware')}</span>
-        <select data-testid="hardware-health-filter" value={hardwareHealth}
-          className="rounded-md border bg-background px-3 py-2"
-          onChange={event => {
-            const next = event.target.value;
-            if (next === '' || next === 'warning' || next === 'critical' || next === 'unknown') setHardwareHealth(next);
-          }}>
-          <option value="">{t('hardwareHealth.all')}</option>
-          <option value="warning">{t('hardwareHealth.warning')}</option>
-          <option value="critical">{t('hardwareHealth.critical')}</option>
-          <option value="unknown">{t('hardwareHealth.unknown')}</option>
-        </select>
-      </label>
 
       {filtersV2 ? (
         <DeviceFilterToolbar

@@ -7,15 +7,17 @@ const h = vi.hoisted(() => {
   return {
     TABLE,
     insertedRows: [] as Array<Record<string, unknown>>,
+    // Per-table rows returned by candidate/context selects; reset in beforeEach.
+    rows: {} as Record<string, Array<Record<string, unknown>>>,
     tables: {
       alertCorrelationGroups: tbl('alertCorrelationGroups'),
       alerts: tbl('alerts'),
-      devices: tbl('devices'),
+      devices: tbl('devices', { id: 'd', osType: 'd' }),
       metricAnomalies: tbl('metricAnomalies'),
       playbookDefinitions: tbl('playbookDefinitions', { id: 'p', name: 'p', description: 'p', category: 'p', isBuiltIn: 'p', isActive: 'p', orgId: 'p' }),
       remediationSuggestions: tbl('remediationSuggestions', { orgId: 'r', sourceType: 'r', sourceId: 'r', targetType: 'r', scriptId: 'r', scriptTemplateId: 'r', playbookId: 'r' }),
-      scripts: tbl('scripts', { id: 's', name: 's', description: 's', category: 's', runAs: 's', deletedAt: 's', isSystem: 's', orgId: 's', updatedAt: 's' }),
-      scriptTemplates: tbl('scriptTemplates', { id: 't', name: 't', description: 't', category: 't', rating: 't', downloads: 't' }),
+      scripts: tbl('scripts', { id: 's', name: 's', description: 's', category: 's', runAs: 's', deletedAt: 's', isSystem: 's', orgId: 's', updatedAt: 's', osTypes: 's' }),
+      scriptTemplates: tbl('scriptTemplates', { id: 't', name: 't', description: 't', category: 't', rating: 't', downloads: 't', language: 't' }),
     },
   };
 });
@@ -35,6 +37,7 @@ vi.mock('../db', () => {
     chain.then = (resolve: (v: unknown) => unknown) => {
       // Source-context lookups + candidate lists + existing all resolve empty
       // so generateRemediationSuggestions falls through to the fallback nudge.
+      if (table && h.rows[table]) return resolve(h.rows[table]);
       if (table === 'metricAnomalies') {
         return resolve([{
           id: 'anomaly-1', orgId: 'org-1', deviceId: 'dev-1', linkedAlertId: null,
@@ -65,6 +68,10 @@ vi.mock('../db', () => {
 
 vi.mock('../db/schema', () => h.tables);
 
+vi.mock('./systemScriptLibrary', () => ({
+  SYSTEM_LIBRARY_SCRIPTS: [{ name: 'Migrate Agent Edition (Windows)' }],
+}));
+
 vi.mock('./mlFeatureFlags', () => ({
   shouldProduceMlOutput: vi.fn().mockResolvedValue(true),
 }));
@@ -75,6 +82,7 @@ import { shouldProduceMlOutput } from './mlFeatureFlags';
 describe('generateRemediationSuggestions fallback tagging', () => {
   beforeEach(() => {
     insertedRows.length = 0;
+    h.rows = {};
     vi.mocked(shouldProduceMlOutput).mockResolvedValue(true);
   });
 
@@ -108,7 +116,59 @@ describe('generateRemediationSuggestions fallback tagging', () => {
   });
 });
 
+describe('generateRemediationSuggestions candidate filtering (#7118)', () => {
+  const memoryAnomaly = {
+    id: 'anomaly-2', orgId: 'org-1', deviceId: 'dev-linux', linkedAlertId: null,
+    linkedCorrelationGroupId: null, anomalyType: 'memory_growth', metricType: 'memory',
+    metricName: 'memory_used_percent', evidence: {},
+  };
+  const script = (id: string, name: string, description: string, osTypes: string[], isSystem = false) => ({
+    id, name, description, category: 'Maintenance', runAs: 'system', osTypes, isSystem,
+  });
+
+  beforeEach(() => {
+    insertedRows.length = 0;
+    vi.mocked(shouldProduceMlOutput).mockResolvedValue(true);
+    h.rows = {
+      metricAnomalies: [memoryAnomaly],
+      devices: [{ id: 'dev-linux', osType: 'linux' }],
+      scripts: [
+        script('s-win', 'Clear memory leak (Windows)', 'Restart the leaking process', ['windows']),
+        script('s-linux', 'Clear memory leak (Linux)', 'Restart the leaking process', ['linux']),
+        script('s-migrate', 'Migrate Agent Edition (Windows)', 'Restart and restore memory state', ['windows', 'linux'], true),
+      ],
+      scriptTemplates: [
+        { id: 't-ps', name: 'Memory leak restart', description: 'restart process', category: 'x', rating: 5, language: 'powershell' },
+        { id: 't-sh', name: 'Memory leak restart', description: 'restart process', category: 'x', rating: 5, language: 'bash' },
+      ],
+    };
+  });
+
+  it('never suggests a script or template that cannot run on the device OS', async () => {
+    const result = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-2', limit: 10 });
+
+    const scriptIds = result.suggestions.map((s) => s.scriptId).filter(Boolean);
+    const templateIds = result.suggestions.map((s) => s.scriptTemplateId).filter(Boolean);
+    expect(scriptIds).toContain('s-linux');
+    expect(scriptIds).not.toContain('s-win');
+    expect(templateIds).toEqual(['t-sh']);
+  });
+
+  it('never suggests agent-lifecycle system library scripts', async () => {
+    const result = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-2', limit: 10 });
+
+    expect(result.suggestions.map((s) => s.scriptId)).not.toContain('s-migrate');
+  });
+});
+
 describe('remediation suggestion heuristics', () => {
+  it('matches terms at word starts only, not inside other words', () => {
+    // "ProgramData" must not match the memory term "ram"; "updates" still matches "update".
+    const result = __testOnly.scoreCandidate('c:\\programdata\\breeze installs updates', ['ram', 'update']);
+
+    expect(result.matchedTerms).toEqual(['update']);
+  });
+
   it('maps network egress anomalies to network/security remediation terms', () => {
     const terms = __testOnly.termsForSource({
       sourceType: 'anomaly',

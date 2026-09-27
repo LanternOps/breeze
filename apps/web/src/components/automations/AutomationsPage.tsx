@@ -6,6 +6,7 @@ import AutomationList, { type Automation } from './AutomationList';
 import AutomationRunHistory, {
   type AutomationRun as RunHistoryRun,
   type DeviceRunResult,
+  type DeviceCommandResult,
   type DeviceScriptResult,
 } from './AutomationRunHistory';
 import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/auth';
@@ -185,6 +186,32 @@ function toDeviceScriptResults(raw: unknown): DeviceScriptResult[] | undefined {
   return parsed.length > 0 ? parsed : undefined;
 }
 
+/** Parse the per-device execute_command results a run produced (#3188). */
+export function toDeviceCommandResults(raw: unknown): DeviceCommandResult[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw
+    .map((entry): DeviceCommandResult | null => {
+      if (!isPlainRecord(entry)) return null;
+      if (typeof entry.actionIndex !== 'number') return null;
+      return {
+        actionIndex: entry.actionIndex,
+        status: asString(entry.status) ?? 'pending',
+        output: asString(entry.output),
+        outputTruncated: entry.outputTruncated === true,
+        error: asString(entry.error),
+        errorTruncated: entry.errorTruncated === true,
+        message: asString(entry.message),
+      };
+    })
+    .filter((entry): entry is DeviceCommandResult => entry !== null);
+  if (raw.length > 0 && parsed.length === 0) {
+    console.warn(
+      `[AutomationsPage] discarded all ${raw.length} command result(s) for a device — unexpected payload shape`,
+    );
+  }
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
   if (!isPlainRecord(raw)) return null;
   const deviceId = asString(raw.deviceId);
@@ -204,6 +231,7 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
     output: asString(raw.output),
     error: asString(raw.error),
     scriptResults: toDeviceScriptResults(raw.scriptResults),
+    commandResults: toDeviceCommandResults(raw.commandResults),
   };
 }
 

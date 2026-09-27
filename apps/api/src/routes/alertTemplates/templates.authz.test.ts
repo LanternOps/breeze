@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 // Regression for Finding #6 (MEDIUM): alert-template mutations must gate on
 // ALERTS_WRITE in addition to scope tier.
@@ -104,12 +105,14 @@ describe('alert templates authz (Finding #6)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 
   it('passes the permission gate on DELETE when ALERTS_WRITE is granted', async () => {
     grantedRef.current.add(ALERTS_WRITE);
     const res = await makeApp().request(`/alert-templates/templates/${TEMPLATE_ID}`, { method: 'DELETE' });
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 });

@@ -1043,7 +1043,8 @@
         "readOnlyHint": "Remove and re-add this section to change the template, version, or variables.",
         "updateToVersion": "Update to v{{version}}",
         "saveVariables": "Save variables",
-        "unresolvedWarning": "Unresolved variables (will block sending): {{names}}"
+        "unresolvedWarning": "Unresolved variables (will block sending): {{names}}",
+        "placementHint": "Customers see this after the totals, collapsed until they open it. In the PDF it follows the price."
       },
       "coverPage": {
         "title": "Cover page",
@@ -1446,6 +1447,18 @@
         "unavailable": "Agreement file unavailable",
         "versionFooter": "{{name}} — v{{version}}"
       },
+      "agreements": {
+        "heading": "Agreements",
+        "termsTitle": "Terms & Conditions",
+        "read": "Read",
+        "hide": "Hide",
+        "readTime": "~{{minutes}} min read",
+        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min read",
+        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min read",
+        "pdfDocument": "PDF document",
+        "unavailable": "Unavailable",
+        "untitled": "Agreement"
+      },
       "draft": "Draft",
       "empty": "This proposal doesn’t have any content yet.",
       "imageUnavailable": "Image unavailable",
@@ -1473,7 +1486,6 @@
         "tax": "Tax",
         "unitPrice": "Unit price"
       },
-      "terms": "Terms",
       "totals": {
         "annualRecurring": "Annual recurring",
         "depositDue": "Deposit due",

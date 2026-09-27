@@ -1,0 +1,108 @@
+---
+title: Third-Party Backup Providers
+description: Connect N-able Cove Data Protection to Breeze so third-party backup status appears in backup health, device pages, attention items and alerts.
+sidebar:
+  order: 17
+  label: "Backup Providers (Cove)"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+If some of your customers are protected by a third-party backup product, Breeze can read that product's status and show it alongside Breeze's own backups. A device protected by the provider counts as covered, so it no longer shows up as "no backup" just because Breeze did not run the job.
+
+**N-able Cove Data Protection** is the supported provider today.
+
+<Aside type="note">
+The integration is **read-only**. Breeze reads backup status from Cove; it never changes settings, starts backups, or restores data in Cove. Restores are still done in the Cove console.
+</Aside>
+
+---
+
+## Before You Start
+
+- **Partner accounts only.** Connections belong to your MSP (partner) account and cover every organization under it. Organization-scoped users cannot see or manage them.
+- **Who can manage a connection.** Adding, editing, testing, syncing, deleting and mapping customers requires a partner user with organization write permission, access to *all* organizations, and MFA. Partner users with access to only selected organizations can view the connection but not change it.
+- **A dedicated Cove login.** Cove has no API key, so Breeze signs in as a console user. Create a dedicated Cove user with a **read-only role**, a unique password, and **no two-factor authentication**.
+
+## Connecting Cove
+
+<Steps>
+1. Go to **Integrations** and open the **Backup** tab. (The old address `/settings/integrations/backup` redirects here.)
+2. Click **Add connection** and choose **Cove Data Protection**.
+3. Enter a **Connection name** (for example, *Main Cove account*), your **Cove partner name**, and the **Username** and **Password** of the dedicated console user.
+4. Optionally turn on **Show the provider name in the client portal**. It is off by default, so customer-facing views use the generic label *Managed cloud backup* instead of the vendor name.
+5. Save. Breeze signs in to Cove before saving anything — if the login fails, nothing is created and the error is shown. On success, the first sync starts right away.
+</Steps>
+
+The password is stored encrypted and is never shown again. To change it, use **Re-enter credentials** on the connection card; the new password is tested before it replaces the old one, so a failed change never leaves the connection without a working login.
+
+### Connection card actions
+
+| Action | What it does |
+|--------|--------------|
+| **Test connection** | Signs in to Cove and reports the account name and how many customers are visible. |
+| **Sync now** | Queues an immediate sync instead of waiting for the next scheduled one. |
+| **Active** toggle | Turning a connection off stops syncing and resolves its open alerts. |
+| **Delete** | Removes the connection and its synced devices and history from Breeze. Cove itself is untouched. Open alerts from the connection are resolved. |
+
+The card also shows the last sync time, customer and device counts, how many devices are linked or ambiguous, and how many devices sit under unmapped customers.
+
+## Mapping Customers to Organizations
+
+Each Cove customer must be mapped to a Breeze organization before its devices appear anywhere in Breeze. Devices under an unmapped customer are counted on the connection card but never stored.
+
+On each sync Breeze maps new customers automatically:
+
+1. **By external code** — if the Cove customer's external code is set to a Breeze organization ID, that match wins.
+2. **By name** — otherwise, a customer whose name exactly matches one organization name (ignoring case) is mapped to it.
+
+An organization is only auto-mapped to one customer. Auto-mapped rows show an **Auto** badge.
+
+To map a customer yourself, pick an organization in the **Customer mapping** list, or choose **Unmapped (kept)** to deliberately leave it out. Manual choices are never overridden by auto-mapping. Re-mapping a customer immediately removes its devices, history and open alerts from the old organization and starts a sync so they reappear under the new one.
+
+## Device Matching
+
+Within a mapped organization, Breeze links each Cove device to a Breeze device automatically:
+
+- A Cove device whose computer name matches exactly one Breeze device's hostname or display name (ignoring case) is linked.
+- If several devices share that name, Breeze narrows the match by MAC address.
+- If there is still no single match, or the matching device is already linked to another provider device, the Cove device stays unlinked and is counted as **Ambiguous** on the connection card.
+
+Decommissioned devices are never matched, and Microsoft 365 backup accounts are shown as accounts rather than linked to a device. If an automatic link is wrong, click **Unlink** on the device's external backup card (below). The Cove device stays in Cove and can be linked again later.
+
+## Sync, History and Alerts
+
+Each connection syncs **every 30 minutes**. A connection whose login Cove rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
+
+Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
+
+Alerts are raised only for provider devices **linked to a Breeze device**:
+
+| Condition | Severity |
+|-----------|----------|
+| Backup failed | High |
+| Backup over quota | High |
+| No backups recorded | High |
+| No successful backup in 48 hours | High |
+| Backup completed with errors (or interrupted) | Medium |
+| Nothing selected for backup | Medium |
+
+To avoid noise from one bad poll, an alert is raised only when the **same condition is seen on two consecutive syncs**. It resolves automatically on the **first sync where the condition no longer holds**, with the note *Condition cleared by provider sync*.
+
+## Where Provider Data Appears
+
+- **Backup overview → Backup health.** One table of every managed device plus every device the provider reports, with status, last successful backup, data sources, selected and used size, errors and the 28-day history. Filter by health, by source (Breeze or provider), or search by device or organization. Summary counts show coverage, provider-only endpoints and Microsoft 365 accounts. Partner users in **all-organizations** mode see this health view across every organization.
+- **Device → Backup tab.** An **External backup** card sits above Breeze's own backup sections, showing the Cove device name, status, last successful backup, last session, provider customer, data sources, sizes, errors and the 28-day history.
+- **Attention items.** A device covered by a recent provider backup is no longer listed as overdue.
+
+## Limitations
+
+- Status only: no restores, backup runs, or configuration changes through Breeze.
+- Cove Data Protection is the only supported provider.
+- Cove users with two-factor authentication cannot be used for the connection.
+- Microsoft 365 backup accounts are shown in backup health but never raise device alerts.
+
+## Related
+
+- [Monitoring Backups](/backup/monitoring/)
+- [Backup Overview](/backup/overview/)

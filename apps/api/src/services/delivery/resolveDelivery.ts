@@ -8,12 +8,10 @@
  * Precedence, first hit wins:
  *   1. monitor deliveryMode 'none'      → inbox only            (monitor_none)
  *   2. monitor deliveryMode 'channels'  → monitor's channels    (monitor_channels)
- *   3. legacy override with channels    → those channels        (legacy_override)  [W05b→W05d]
- *   4. first matching routing row       → row's channels        (routing_rule)
- *   5. org is_default row, else partner is_default row          (default_row)
- *   6. nothing                          → inbox only            (none)
- * Escalation resolves independently: monitor's (mode ≠ none) ?? legacy
- * override's ?? winning row's ?? null, preserving unconverted legacy rules.
+ *   3. first matching routing row       → row's channels        (routing_rule)
+ *   4. org is_default row, else partner is_default row          (default_row)
+ *   5. nothing                          → inbox only            (none)
+ * Escalation resolves independently: monitor's (mode ≠ none) ?? winning row's ?? null.
  */
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { AlertSeverity, MonitorKind } from '@breeze/shared';
@@ -24,7 +22,6 @@ import { partnerIdForOrg, railOwnershipCondition, type DbExecutor } from './rail
 export type DeliverySource =
   | 'monitor_none'
   | 'monitor_channels'
-  | 'legacy_override'
   | 'routing_rule'
   | 'default_row'
   | 'none';
@@ -35,13 +32,7 @@ export interface ResolveDeliveryInput {
   monitorId?: string | null;
   kind?: MonitorKind | null;
   siteId?: string | null;
-  /**
-   * Transitional (spec §Delivery resolution "Transitional"): an UNMANAGED
-   * alert_rules row's overrideSettings or a config_policy_alert_rules row's
-   * own channel/escalation columns. W05c adds `retired_at IS NULL` at the
-   * caller; W05d deletes the branch.
-   */
-  legacyOverride?: { channelIds?: string[] | null; escalationPolicyId?: string | null } | null;
+
 }
 
 export interface ResolvedDelivery {
@@ -146,14 +137,7 @@ export async function resolveDelivery(
     return finish({ channelIds: monitorChannels, escalationPolicyId: monitorEscalation, source: 'monitor_channels' });
   }
 
-  // 3. Transitional legacy override (W05b → W05d).
-  const legacyChannels = uniq(input.legacyOverride?.channelIds ?? []);
-  const legacyEscalation = input.legacyOverride?.escalationPolicyId ?? null;
-  if (legacyChannels.length > 0) {
-    return finish({ channelIds: legacyChannels, escalationPolicyId: monitorEscalation ?? legacyEscalation, source: 'legacy_override' });
-  }
-
-  // 4–5. Routing rows for the org and its partner, one ordering.
+  // 3–4. Routing rows for the org and its partner, one ordering.
   const rows = orderRoutingRows(
     await executor
       .select()
@@ -175,7 +159,7 @@ export async function resolveDelivery(
     if (channelIds.length === 0) continue;
     return finish({
       channelIds,
-      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? rule.escalationPolicyId ?? null,
+      escalationPolicyId: monitorEscalation ?? rule.escalationPolicyId ?? null,
       source: 'routing_rule',
       routingRuleId: rule.id,
       routingRuleName: rule.name,
@@ -188,13 +172,13 @@ export async function resolveDelivery(
   if (defaultRow) {
     return finish({
       channelIds: uniq(defaultRow.channelIds ?? []),
-      escalationPolicyId: monitorEscalation ?? legacyEscalation ?? defaultRow.escalationPolicyId ?? null,
+      escalationPolicyId: monitorEscalation ?? defaultRow.escalationPolicyId ?? null,
       source: 'default_row',
       routingRuleId: defaultRow.id,
       routingRuleName: defaultRow.name,
     });
   }
 
-  // 6. Fresh install: nothing configured. Caller logs it.
-  return finish({ channelIds: [], escalationPolicyId: monitorEscalation ?? legacyEscalation, source: 'none' });
+  // 5. Fresh install: nothing configured. Caller logs it.
+  return finish({ channelIds: [], escalationPolicyId: monitorEscalation ?? null, source: 'none' });
 }

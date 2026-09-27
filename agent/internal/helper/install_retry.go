@@ -77,6 +77,35 @@ func (m *Manager) clearInstallFailuresLocked() {
 	m.failuresVersion = ""
 }
 
+// Install-issue codes reported in the heartbeat (helperInstallIssue, #6925)
+// and persisted on the device row. Empty means no issue.
+const (
+	// InstallIssueAwaitingServerOffer: Assist is enabled but not installed and
+	// the server has offered no helper version to install (#6920 root cause).
+	InstallIssueAwaitingServerOffer = "awaiting_server_offer"
+	// InstallIssueInstallAbandoned: the offered version failed to install
+	// maxHelperInstallFailures times and is in its abandon cooldown (#6927).
+	InstallIssueInstallAbandoned = "install_abandoned"
+)
+
+// notInstalledIssueLocked is the heartbeat code for the waiting branch of
+// Apply; it tracks notInstalledReasonLocked. Must be called with m.mu held.
+func (m *Manager) notInstalledIssueLocked() string {
+	if m.abandonedVersion != "" {
+		return InstallIssueInstallAbandoned
+	}
+	return InstallIssueAwaitingServerOffer
+}
+
+// InstallIssue returns the install-issue code the last Apply observed, or ""
+// when there is none (installed, disabled, installing an offered version, or
+// Apply not run yet). Read by the heartbeat to build helperInstallIssue.
+func (m *Manager) InstallIssue() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.installIssue
+}
+
 // notInstalledReasonLocked is the one-per-episode warning Apply logs when
 // Assist is enabled but not installed and nothing is pending. It names an
 // abandoned version so the log does not send an operator to look for a

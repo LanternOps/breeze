@@ -226,6 +226,57 @@ describe('AddPackageModal', () => {
     });
   });
 
+  describe('success exit codes', () => {
+    it('sends parsed successExitCodes when the advanced field has valid codes', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillMinimum();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /advanced options/i }),
+      );
+      fireEvent.change(
+        screen.getByLabelText(/additional success exit codes/i),
+        { target: { value: '1000, 1101' } },
+      );
+
+      await submitCreate();
+      await waitFor(() => expect(onCreated).toHaveBeenCalled());
+
+      const call = fetchMock.mock.calls.find(
+        ([u, o]) => /\/versions$/.test(u as string) && o?.method === 'POST',
+      );
+      const body = JSON.parse((call?.[1] as RequestInit).body as string);
+      expect(body.successExitCodes).toEqual([1000, 1101]);
+    });
+
+    it('blocks submit and shows an inline error for an invalid exit code token', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillMinimum();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /advanced options/i }),
+      );
+      fireEvent.change(
+        screen.getByLabelText(/additional success exit codes/i),
+        { target: { value: 'abc' } },
+      );
+
+      expect(
+        await screen.findByText('"abc" is not a valid exit code'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Create package' }),
+      ).toBeDisabled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create package' }));
+      expect(onCreated).not.toHaveBeenCalled();
+    });
+  });
+
   it('blocks submit when the URL contains an unknown variable', async () => {
     routeMock({});
     render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);

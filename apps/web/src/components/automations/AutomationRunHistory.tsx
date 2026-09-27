@@ -64,6 +64,29 @@ export function isScriptResultPending(status: string): boolean {
   return PENDING_SCRIPT_STATUSES.has(status);
 }
 
+/**
+ * One `execute_command` action's result on one device (#3188). An ad-hoc
+ * command has no `scripts` row and so no `script_executions` row; the agent's
+ * stdout lives on the automation action result instead.
+ */
+export type DeviceCommandResult = {
+  actionIndex: number;
+  status: string;
+  output?: string;
+  outputTruncated?: boolean;
+  error?: string;
+  errorTruncated?: boolean;
+  /** Why the action is not finished yet (e.g. queued for an offline device). */
+  message?: string;
+};
+
+/** Automation action statuses that mean the agent has not reported yet. */
+const PENDING_COMMAND_STATUSES = new Set(['pending', 'queued', 'delivered', 'running']);
+
+export function isCommandResultPending(status: string): boolean {
+  return PENDING_COMMAND_STATUSES.has(status);
+}
+
 /** How often an expanded run re-checks for script output still in flight. */
 const SCRIPT_RESULT_POLL_MS = 5000;
 
@@ -77,6 +100,7 @@ export type DeviceRunResult = {
   output?: string;
   error?: string;
   scriptResults?: DeviceScriptResult[];
+  commandResults?: DeviceCommandResult[];
 };
 
 /** Lazy loader for a run's per-device detail, fetched on expand (#2023). */
@@ -224,8 +248,10 @@ function formatRelativeTime(dateString: string, timezone: string, t: ScriptsT): 
  */
 function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }) {
   const [showScriptOutput, setShowScriptOutput] = useState(false);
+  const [showCommandOutput, setShowCommandOutput] = useState(false);
   const DeviceStatusIcon = statusConfig[result.status].icon;
   const scriptResults = result.scriptResults ?? [];
+  const commandResults = result.commandResults ?? [];
 
   return (
     <div className="rounded-md border bg-background" data-testid="device-result-row">
@@ -313,6 +339,70 @@ function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }
                   )}
                   {script.error && (
                     <p className="mt-1 text-xs text-red-600">{script.error}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {commandResults.length > 0 && (
+        <div className="border-t px-3 py-2">
+          <button
+            type="button"
+            onClick={() => setShowCommandOutput(!showCommandOutput)}
+            className="flex items-center gap-1 text-xs text-primary hover:underline"
+            data-testid="command-output-toggle"
+          >
+            <Terminal className="h-3 w-3" />
+            {showCommandOutput
+              ? t('automationRunHistory.commandOutput.hide', { count: commandResults.length })
+              : t('automationRunHistory.commandOutput.show', { count: commandResults.length })}
+          </button>
+
+          {showCommandOutput && (
+            <div className="mt-2 space-y-2">
+              {commandResults.map(command => (
+                <div key={command.actionIndex} data-testid="command-output-block">
+                  <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {t('automationRunHistory.commandOutput.label', { index: command.actionIndex + 1 })}
+                    </span>
+                  </div>
+                  {isCommandResultPending(command.status) ? (
+                    // Same distinction as script output (#3162): not reported
+                    // yet is not the same as "printed nothing".
+                    <p className="text-xs text-muted-foreground" data-testid="command-awaiting">
+                      {command.message ?? t('automationRunHistory.scriptOutput.awaiting')}
+                    </p>
+                  ) : (
+                    <pre
+                      className="max-h-64 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-gray-100"
+                      data-testid="command-stdout"
+                    >
+                      {command.output ?? t('automationRunHistory.scriptOutput.empty')}
+                    </pre>
+                  )}
+                  {command.outputTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="command-stdout-truncated">
+                      {t('automationRunHistory.commandOutput.truncated')}
+                    </p>
+                  )}
+                  {command.error && (
+                    <pre
+                      className="mt-1 max-h-40 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-red-300"
+                      data-testid="command-error"
+                    >
+                      {command.error}
+                    </pre>
+                  )}
+                  {command.errorTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="command-error-truncated">
+                      {t('automationRunHistory.commandOutput.truncated')}
+                    </p>
+                  )}
+                  {!isCommandResultPending(command.status) && !command.output && !command.error && command.message && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="command-message">{command.message}</p>
                   )}
                 </div>
               ))}
@@ -436,7 +526,8 @@ function RunItem({
   // collapsed and re-expanded the row. Keep polling the detail while any
   // execution is still non-terminal.
   const hasPendingScripts = deviceResults.some(
-    (result) => result.scriptResults?.some((script) => isScriptResultPending(script.status)),
+    (result) => result.scriptResults?.some((script) => isScriptResultPending(script.status))
+      || result.commandResults?.some((command) => isCommandResultPending(command.status)),
   );
   useEffect(() => {
     if (!expanded || !onLoadRunDetail || !hasPendingScripts) return;

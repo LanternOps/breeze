@@ -527,7 +527,6 @@
       "alerts": "Alerts",
       "correlations": "Correlations",
       "monitors": "Monitors",
-      "rules": "Rules",
       "delivery": "Delivery"
     }
   },

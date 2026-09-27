@@ -29,6 +29,7 @@ vi.mock('../db/schema', () => ({
   networkMonitors: {
     id: 'networkMonitors.id',
     orgId: 'networkMonitors.orgId',
+    retiredAt: 'networkMonitors.retiredAt',
     partnerId: 'networkMonitors.partnerId',
     assetId: 'networkMonitors.assetId',
     name: 'networkMonitors.name',
@@ -440,7 +441,7 @@ describe('partner-wide network_monitors read visibility (#5866)', () => {
     // 404 can only come from the org-axis guard itself.
     const unmanagedPartnerWideRow = { ...partnerWideRow, managedByMonitorId: null };
 
-    it('PATCH /:id still refuses a partner-wide row for its own partner', async () => {
+    it('PATCH /:id is retired without looking up a partner-wide row', async () => {
       partnerAuth();
       vi.mocked(db.select).mockReturnValue(mockRowSelect([unmanagedPartnerWideRow]));
 
@@ -449,10 +450,9 @@ describe('partner-wide network_monitors read visibility (#5866)', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'renamed' }),
       });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(410);
       expect(db.update).not.toHaveBeenCalled();
-      // The write path must not even attempt the partner-wide fallback lookup.
-      expect(vi.mocked(db.select).mock.calls).toHaveLength(1);
+      expect(vi.mocked(db.select).mock.calls).toHaveLength(0);
     });
 
     it('DELETE /:id still refuses a partner-wide row for its own partner', async () => {

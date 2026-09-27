@@ -11,6 +11,8 @@
  *  2. The managed `network_monitors` row a `network_check` compiles to.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const { resolveReferencesMock, replaceBindingsMock } = vi.hoisted(() => ({
   resolveReferencesMock: vi.fn(async () => ({})),
@@ -28,10 +30,35 @@ vi.mock('../automationRuntime', () => ({
 const {
   buildCompiledNetworkMonitor,
   buildDiagnosticScriptReferences,
+  buildCompiledTemplate,
+  buildCompiledRule,
+  buildCompiledAutomation,
+  computeCompiledHash,
+  verifyCompiled,
   compileMonitorInTx,
+  NetworkMonitorAdoptionError,
 } = await import('./monitorCompiler');
 
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
+import { networkMonitorAlertRules, networkMonitors } from '../../db/schema/monitors';
+import { discoveredAssets } from '../../db/schema/discovery';
+import { networkCheckKind } from './kinds/networkCheck';
+import { getTenantExportPolicyRegistry } from '../tenantExportPolicyRegistry';
+
+describe('W05e retirement columns', () => {
+  it('network_monitors and network_monitor_alert_rules carry retired_at / retired_reason', () => {
+    expect(networkMonitors.retiredAt.name).toBe('retired_at');
+    expect(networkMonitors.retiredReason.name).toBe('retired_reason');
+    expect(networkMonitorAlertRules.retiredAt.name).toBe('retired_at');
+    expect(networkMonitorAlertRules.retiredReason.name).toBe('retired_reason');
+  });
+
+  it('includes network monitor retirement metadata in tenant exports', () => {
+    const columns = getTenantExportPolicyRegistry().network_monitors?.columns;
+    expect(columns?.retired_at?.decision).toBe('include');
+    expect(columns?.retired_reason?.decision).toBe('include');
+  });
+});
 
 const SCRIPT_ID = 'a0000000-0000-4000-8000-000000000001';
 
@@ -75,7 +102,7 @@ function makeDef(overrides: Partial<MonitorDefinitionRow> = {}): MonitorDefiniti
  * read-then-write, so returning an existing row on the second compile is what
  * proves idempotence keeps the same row id.
  */
-function makeTx(existingByTable: Record<string, string | undefined> = {}) {
+function makeTx(existingByTable: Record<string, string | Record<string, unknown> | undefined> = {}, adoptable: string | null = null, siteId: string | null = null) {
   const inserts: Array<Record<string, unknown>> = [];
   const updates: Array<{ id: string; values: Record<string, unknown> }> = [];
   let selectIdx = 0;
@@ -85,14 +112,25 @@ function makeTx(existingByTable: Record<string, string | undefined> = {}) {
     _inserts: inserts,
     _updates: updates,
     _selectOrder: selectOrder,
+    _adoptionWhere: null as SQL | null,
     select: () => {
       const table = ['alertTemplates', 'alertRules', 'automations', 'networkMonitors'][selectIdx];
       selectIdx++;
       selectOrder.push(table ?? 'unknown');
       const existing = table ? existingByTable[table] : undefined;
       return {
-        from: () => ({
-          where: () => ({ limit: async () => (existing ? [{ id: existing }] : []) }),
+        from: (source: unknown) => ({
+          where: () => ({ limit: () => {
+            const result = () => {
+              if (source === discoveredAssets) {
+                selectIdx--;
+                selectOrder.pop();
+                return [{ siteId }];
+              }
+              return existing ? [typeof existing === 'string' ? { id: existing, ...buildCompiledNetworkMonitor(makeDef()) } : existing] : [];
+            };
+            return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(result()).then(resolve), for: async () => result() };
+          } }),
         }),
       };
     },
@@ -104,19 +142,22 @@ function makeTx(existingByTable: Record<string, string | undefined> = {}) {
         },
       }),
     }),
-    update: () => ({
+    update: (table: unknown) => ({
       set: (values: Record<string, unknown>) => ({
-        where: () => {
-          const chain: any = {
+        where: (predicate: SQL) => {
+          const adoption = table === networkMonitors && Object.keys(values).length === 1 && 'managedByMonitorId' in values;
+          if (adoption) tx._adoptionWhere = predicate;
+          const apply = () => { updates.push({ id: adoption ? adoptable ?? 'missing' : 'existing', values }); };
+          return {
             returning: async () => {
-              updates.push({ id: 'existing', values });
-              return [{ id: 'existing' }];
+              apply();
+              return adoption ? (adoptable ? [{ id: adoptable }] : []) : [{ id: 'existing' }];
+            },
+            then: (resolve: (value: undefined) => unknown) => {
+              apply();
+              return Promise.resolve(undefined).then(resolve);
             },
           };
-          // The final `update(monitorDefinitions).set(...).where(...)` has no
-          // `.returning()`, so `where()` itself must be awaitable.
-          chain.then = (resolve: any) => Promise.resolve(undefined).then(resolve);
-          return chain;
         },
       }),
     }),
@@ -186,6 +227,7 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
       name: '[monitor] Gateway reachable',
       monitorType: 'tcp_port',
       target: '10.0.0.1',
+      assetId: null,
       config: { port: 443 },
       pollingInterval: 120,
       timeout: 5,
@@ -247,7 +289,7 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     {
       label: 'http_check with a 3xx expectStatus but followRedirects explicitly true',
       condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, followRedirects: true, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
-      expectedConfig: { expectedStatus: 301 }, // explicit true == agent's own default, no need to send it
+      expectedConfig: { expectedStatus: 301, followRedirects: true }, // explicit override wins
     },
     {
       label: 'http_check with a 2xx expectStatus but followRedirects explicitly false',
@@ -294,7 +336,12 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     },
   ])('compiles $label config keys to the agent payload keys it reads', ({ condition, expectedConfig }) => {
     const row = buildCompiledNetworkMonitor(makeDef({ condition } as never));
-    expect(row.config).toEqual(expectedConfig);
+    expect(row.config).toEqual({
+      ...(condition.checkType === 'http_check' ? { url: condition.target } : {}),
+      ...(condition.checkType === 'dns_check' ? { hostname: condition.target } : {}),
+      ...expectedConfig,
+      ...('followRedirects' in condition && condition.followRedirects === true ? { followRedirects: true } : {}),
+    });
   });
 
   /**
@@ -364,6 +411,71 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(command.payload.followRedirects).toBe(false);
   });
 
+  it('adopts in place using the existing row id', async () => {
+    const tx = makeTx({ networkMonitors: 'legacy-row-1' }, 'legacy-row-1');
+    await compileMonitorInTx(tx, makeDef(), { adoptNetworkMonitorId: 'legacy-row-1' });
+    expect(tx._updates).toContainEqual({ id: 'legacy-row-1', values: { managedByMonitorId: makeDef().id } });
+    expect(tx._inserts.filter((row: Record<string, unknown>) => 'monitorType' in row)).toHaveLength(0);
+    const networkUpdates = tx._updates.filter((row: { values: Record<string, unknown> }) => 'monitorType' in row.values);
+    expect(networkUpdates).toHaveLength(1);
+    expect(networkUpdates[0].values).toMatchObject({ assetId: null, siteId: null });
+    expect(Object.keys(networkUpdates[0].values).some(key => key.startsWith('tls'))).toBe(false);
+  });
+
+  it.each([
+    ['URL change', 'https://new.example.com', false],
+    ['rename only', 'https://old.example.com', true],
+  ])('invalidates TLS evidence only for execution identity changes: %s', async (_label, target, preserve) => {
+    const observations = { tlsState: 'valid', tlsNotAfter: new Date(), tlsIssuer: 'issuer', tlsObservedHost: 'old.example.com', tlsObservedAt: new Date() };
+    const tx = makeTx({ networkMonitors: { id: 'nm-1', monitorType: 'http_check', target: 'https://old.example.com', config: { url: 'https://old.example.com' }, ...observations } });
+    await compileMonitorInTx(tx, makeDef({ name: 'Renamed check', condition: { checkType: 'http_check', target } }));
+    const update = tx._updates.find((u: { values: Record<string, unknown> }) => u.values.monitorType)?.values;
+    expect(update).toBeDefined();
+    for (const [key, value] of Object.entries(observations)) {
+      expect({ ...observations, ...update }[key]).toEqual(preserve ? value : null);
+    }
+  });
+
+  it('preserves TLS evidence when adopting an equivalent URL stored only in the target column', async () => {
+    const tx = makeTx({ networkMonitors: { id: 'legacy', monitorType: 'http_check', target: 'https://example.com', config: {} } }, 'legacy');
+    await compileMonitorInTx(tx, makeDef({ condition: { checkType: 'http_check', target: 'https://example.com' } }), { adoptNetworkMonitorId: 'legacy' });
+    const update = tx._updates.find((u: { values: Record<string, unknown> }) => u.values.monitorType)?.values;
+    expect(Object.keys(update).some(key => key.startsWith('tls'))).toBe(false);
+  });
+
+  it('rejects a row the conditional adoption update cannot acquire', async () => {
+    await expect(compileMonitorInTx(makeTx({}, null), makeDef(), { adoptNetworkMonitorId: 'legacy-row-1' }))
+      .rejects.toBeInstanceOf(NetworkMonitorAdoptionError);
+  });
+
+  it.each([makeDef().orgId, null])('guards adoption by row id, unmanaged/unretired state and org (%s)', async (orgId) => {
+    const tx = makeTx({}, null);
+    await compileMonitorInTx(tx, makeDef({ orgId }), { adoptNetworkMonitorId: 'legacy-row-1' }).catch(() => undefined);
+    expect(tx._adoptionWhere).not.toBeNull();
+    const query = new PgDialect().sqlToQuery(tx._adoptionWhere);
+    expect(query.sql).toContain('"network_monitors"."id" =');
+    expect(query.sql).toContain('"network_monitors"."managed_by_monitor_id" is null');
+    expect(query.sql).toContain('"network_monitors"."retired_at" is null');
+    if (orgId) {
+      expect(query.sql).toContain('"network_monitors"."org_id" =');
+      expect(query.params).toEqual(['legacy-row-1', orgId]);
+    } else {
+      expect(query.sql).toContain('and false');
+      expect(query.params).toEqual(['legacy-row-1']);
+    }
+    expect(tx._inserts.some((row: Record<string, unknown>) => 'monitorType' in row)).toBe(false);
+  });
+
+  it('adopts with the bound asset’s current site', async () => {
+    const tx = makeTx({ networkMonitors: 'legacy-row-1' }, 'legacy-row-1', 'site-current');
+    await compileMonitorInTx(tx, makeDef({ condition: { checkType: 'icmp_ping', target: 'host', assetId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } }), {
+      adoptNetworkMonitorId: 'legacy-row-1',
+    });
+    expect(tx._updates.find((row: { values: Record<string, unknown> }) => 'monitorType' in row.values)?.values)
+      .toMatchObject({ assetId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', siteId: 'site-current' });
+    expect(tx._updates).toContainEqual({ id: 'legacy-row-1', values: { managedByMonitorId: makeDef().id } });
+  });
+
   it('INSERTS the managed row on a first compile', async () => {
     const tx = makeTx();
     await compileMonitorInTx(tx, makeDef());
@@ -390,5 +502,69 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
       makeDef({ kind: 'disk', condition: { operator: 'gt', value: 80 } } as never),
     );
     expect(tx._selectOrder).toEqual(['alertTemplates', 'alertRules', 'automations']);
+  });
+});
+
+
+describe('network_check widening', () => {
+  const assetId = 'a0000000-0000-4000-8000-0000000000aa';
+
+  it.each([
+    [{ checkType: 'http_check', target: 'https://example.com', assetId, expectStatus: 204, method: 'HEAD', expectedBody: 'ok', headers: { Accept: 'text/plain' }, verifySsl: false, followRedirects: true }, { url: 'https://example.com', expectedStatus: 204, method: 'HEAD', expectedBody: 'ok', headers: { Accept: 'text/plain' }, verifySsl: false, followRedirects: true }],
+    [{ checkType: 'tcp_port', target: 'host', port: 22, expectBanner: 'SSH' }, { port: 22, expectBanner: 'SSH' }],
+    [{ checkType: 'icmp_ping', target: 'host', count: 4, packetSize: 64 }, { count: 4, packetSize: 64 }],
+    [{ checkType: 'dns_check', target: 'example.com', recordType: 'MX', expectedValue: 'mail.example.com', nameserver: 'resolver.example.com' }, { hostname: 'example.com', recordType: 'MX', expectedValue: 'mail.example.com', nameserver: 'resolver.example.com' }],
+  ])('preserves per-type configuration and binding %j', (condition, config) => {
+    const row = buildCompiledNetworkMonitor(makeDef({ condition }));
+    expect(row.config).toEqual(config);
+    expect(row.assetId).toBe('assetId' in condition ? assetId : null);
+  });
+
+  it.each([false, true])('writes the current asset site on compile (existing=%s)', async (existing) => {
+    const tx = makeTx(existing ? { networkMonitors: 'nm-1' } : {}, null, 'site-current');
+    await compileMonitorInTx(tx, makeDef({ condition: { checkType: 'icmp_ping', target: 'host', assetId } }));
+    const rows = [...tx._inserts, ...tx._updates.map((u: { values: Record<string, unknown> }) => u.values)];
+    expect(rows.find(row => row.monitorType)).toMatchObject({ assetId, siteId: 'site-current' });
+  });
+
+  it('explicitly clears the site when unbinding', async () => {
+    const tx = makeTx({ networkMonitors: 'nm-1' });
+    await compileMonitorInTx(tx, makeDef());
+    expect(tx._updates.find((u: { values: Record<string, unknown> }) => u.values.monitorType)?.values).toMatchObject({ assetId: null, siteId: null });
+  });
+
+  it.each([null, 'site-current'])('verifies the site using the supplied executor (%s)', async (siteId) => {
+    const def = makeDef({ condition: { checkType: 'icmp_ping', target: 'host', ...(siteId ? { assetId } : {}) } });
+    def.compiledHash = computeCompiledHash(def);
+    const check = { ...buildCompiledNetworkMonitor(def), siteId };
+    const rows = [
+      { ...buildCompiledTemplate(def), id: 't-1' },
+      { ...buildCompiledRule(def, 't-1'), id: 'r-1' },
+      { ...buildCompiledAutomation(def, 'r-1'), id: 'a-1' },
+      check,
+      { siteId },
+    ];
+    const executor = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [rows.shift()] }) }) }),
+    };
+    expect(await verifyCompiled(def, executor as never)).toEqual({ inSync: true, diff: [] });
+    check.siteId = 'stale-site';
+    rows.length = 0;
+    rows.push(
+      { ...buildCompiledTemplate(def), id: 't-1' },
+      { ...buildCompiledRule(def, 't-1'), id: 'r-1' },
+      { ...buildCompiledAutomation(def, 'r-1'), id: 'a-1' },
+      check,
+      { siteId },
+    );
+    const verification = await verifyCompiled(def, executor as never);
+    expect(verification.inSync).toBe(false);
+    expect(verification.diff.some(diff => diff.startsWith('network_monitors.siteId:'))).toBe(true);
+  });
+
+  it('carries verdict overrides without making asset binding overridable', () => {
+    const condition = networkCheckKind.conditionSchema.parse({ checkType: 'icmp_ping', target: 'host', degradedIsFailure: true, maxResponseMs: 800 });
+    expect(networkCheckKind.toAlertCondition(condition, { monitorId: 'monitor' })).toMatchObject({ degradedIsFailure: true, maxResponseMs: 800 });
+    expect(networkCheckKind.overridableKeys).toEqual(['pollingIntervalSeconds', 'consecutiveFailures', 'degradedIsFailure', 'maxResponseMs']);
   });
 });

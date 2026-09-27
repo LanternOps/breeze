@@ -332,6 +332,14 @@
       "awaiting": "Warten auf Rückmeldung des Agenten…",
       "truncated": "Ausgabe gekürzt — vollständiger Text im Skriptverlauf des Geräts."
     },
+    "commandOutput": {
+      "show_one": "Befehlsausgabe anzeigen",
+      "show_other": "Befehlsausgabe anzeigen ({{count}})",
+      "hide_one": "Befehlsausgabe ausblenden",
+      "hide_other": "Befehlsausgabe ausblenden ({{count}})",
+      "label": "Befehl (Aktion {{index}})",
+      "truncated": "Ausgabe gekürzt — der vollständige Text wird in dieser Ansicht nicht angezeigt."
+    },
     "errors": {
       "cancelRun": "Die Ausführung konnte nicht abgebrochen werden."
     }

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -498,6 +499,13 @@ func runWatchdog(stopCh <-chan struct{}) {
 	var failoverClient *watchdog.FailoverClient
 	var failoverFailures int
 	var lastDiskServerURL string
+	// One auth backoff for the life of the process (#2796): failoverClient
+	// is rebuilt on every FAILOVER entry, and a per-client monitor would
+	// restart the backoff from scratch each time.
+	failoverAuthMon := watchdog.NewFailoverAuthMonitor()
+	// authRejectedJournaled rate-limits check.heartbeat_stale_auth_rejected
+	// to one entry per locked-out episode.
+	var authRejectedJournaled bool
 
 	// --- STANDBY policy (#5252) ---------------------------------------
 	// Details of the shutdown the agent last announced. Only meaningful
@@ -526,8 +534,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 		if !ipcClient.IsConnected() {
 			return false
 		}
-		hb := healthChecker.LastKnownHeartbeat(agentState)
-		return !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold
+		// Fresh heartbeat, or a fresh auth-rejected marker (#2796): an agent
+		// locked out by the server is still running its heartbeat loop.
+		return healthChecker.AgentAlive(agentState)
 	}
 
 	// applyStandby evaluates the standby policy once and acts on it. It is
@@ -720,10 +729,27 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
 					"consecutive_vetoes": vetoes,
 				})
+			case watchdog.StaleAuthRejected:
+				// #2796: running but locked out by the server. A restart
+				// cannot fix a rejected credential and would reset the
+				// agent's auth backoff. Journal on entry only — this holds
+				// for as long as the device stays deauthorized.
+				if !authRejectedJournaled {
+					authRejectedJournaled = true
+					journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_auth_rejected", map[string]any{
+						"auth_rejected_at": healthChecker.LastKnownAuthRejected(agentState).Format(time.RFC3339),
+					})
+				}
+			}
+			if decision != watchdog.StaleAuthRejected {
+				authRejectedJournaled = false
 			}
 
 		case env := <-ipcMessages:
-			if intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker); intent != nil {
+			tokenBefore := tokenStore.Reveal()
+			intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
+			applyFailoverTokenUpdate(failoverClient, failoverAuthMon, tokenBefore, tokenStore.Reveal())
+			if intent != nil {
 				standbyReason = intent.Reason
 				standbyRecognized = watchdog.RecognizedShutdownReason(intent.Reason)
 				standbyWindow = watchdog.StandbyWindow(
@@ -765,13 +791,18 @@ func runWatchdog(stopCh <-chan struct{}) {
 						"path": statePath, "error": err.Error(),
 					})
 				}
-				// Success = heartbeat advanced past (startedAt + grace).
+				// Success = heartbeat (or, #2796, an auth-rejected marker)
+				// advanced past (startedAt + grace).
 				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)
-				if agentState != nil && agentState.LastHeartbeat.After(verifyDeadline) {
-					journal.Log(watchdog.LevelInfo, "recovery.verified", map[string]any{
-						"elapsed_ms":     elapsed.Milliseconds(),
-						"last_heartbeat": agentState.LastHeartbeat.Format(time.RFC3339),
-					})
+				if ok, viaAuth := recoveryVerified(agentState, healthChecker, verifyDeadline); ok {
+					fields := map[string]any{
+						"elapsed_ms":    elapsed.Milliseconds(),
+						"auth_rejected": viaAuth,
+					}
+					if agentState != nil {
+						fields["last_heartbeat"] = agentState.LastHeartbeat.Format(time.RFC3339)
+					}
+					journal.Log(watchdog.LevelInfo, "recovery.verified", fields)
 					pendingVerify = nil
 					wd.HandleEvent(watchdog.EventAgentRecovered)
 					break
@@ -859,16 +890,21 @@ func runWatchdog(stopCh <-chan struct{}) {
 			// on a continuously-connected pipe), so a healthy box could sit
 			// in FAILOVER forever (#2763). Manual `sc start BreezeAgent` on
 			// a stranded box now heals the watchdog too.
-			if ipcClient.IsConnected() {
-				if hb := healthChecker.LastKnownHeartbeat(agentState); !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold {
-					journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
-						"last_heartbeat": hb.Format(time.RFC3339),
-					})
-					// recovery.Reset() happens in the MONITORING block on the
-					// next tick — no need to duplicate it here.
-					wd.HandleEvent(watchdog.EventAgentRecovered)
-					break
-				}
+			//
+			// An agent that is running but locked out by the server (#2796)
+			// also exits: FAILOVER exists to stand in for a dead agent, its
+			// heartbeats use credentials from the same enrollment, and staying
+			// here only multiplies requests against a server that is refusing
+			// them. MONITORING will not restart it (StaleAuthRejected).
+			if ipcClient.IsConnected() && healthChecker.AgentAlive(agentState) {
+				journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
+					"last_heartbeat": healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
+					"auth_rejected":  healthChecker.AgentAuthRejectedAlive(agentState),
+				})
+				// recovery.Reset() happens in the MONITORING block on the
+				// next tick — no need to duplicate it here.
+				wd.HandleEvent(watchdog.EventAgentRecovered)
+				break
 			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
 				// Re-read the on-disk config at every failover-window start:
@@ -886,13 +922,18 @@ func runWatchdog(stopCh <-chan struct{}) {
 				failoverClient = watchdog.NewFailoverClient(
 					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
+				failoverClient.SetAuthMonitor(failoverAuthMon)
 				lastDiskServerURL = failoverBaseURL
 				journal.Log(watchdog.LevelInfo, "failover.start", map[string]any{"server": failoverBaseURL})
 
 				// Send initial failover heartbeat.
 				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
 				resp, err := failoverClient.SendHeartbeat(version, wd.State(), stats)
-				if err != nil {
+				if errors.Is(err, watchdog.ErrAuthBackoff) {
+					journal.Log(watchdog.LevelWarn, "failover.auth_backoff", map[string]any{
+						"retry_in_seconds": int(failoverClient.AuthRetryIn().Seconds()),
+					})
+				} else if err != nil {
 					failoverFailures++
 					lastDiskServerURL = noteFailoverHeartbeatFailure(failoverClient, journal, lastDiskServerURL, failoverFailures)
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
@@ -977,12 +1018,33 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			})
 			return nil
 		}
-		journal.Log(watchdog.LevelInfo, "agent.state_sync", map[string]any{
+		syncFields := map[string]any{
 			"agentVersion":     sync.AgentVersion,
 			"connected":        sync.Connected,
 			"lastHeartbeat":    sync.LastHeartbeat,
 			"activeBackupRuns": sync.ActiveBackupRuns,
-		})
+		}
+		if sync.AuthRejectedAt != "" {
+			syncFields["authRejectedAt"] = sync.AuthRejectedAt
+		}
+		journal.Log(watchdog.LevelInfo, "agent.state_sync", syncFields)
+		// #2796: an agent whose credentials the server rejects never sends a
+		// heartbeat-bearing sync, so without this it reads as wedged and gets
+		// restart-churned. The sync still refreshes the in-flight backup
+		// count and receipt time (a zero heartbeat never regresses the stored
+		// one).
+		if health != nil && sync.AuthRejectedAt != "" {
+			if at, perr := time.Parse(time.RFC3339, sync.AuthRejectedAt); perr == nil {
+				health.NoteAuthRejected(at)
+				if sync.LastHeartbeat == "" {
+					health.NoteStateSync(time.Time{}, sync.ActiveBackupRuns)
+				}
+			} else {
+				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_auth_rejected", map[string]any{
+					"value": sync.AuthRejectedAt, "error": perr.Error(),
+				})
+			}
+		}
 		// Feed the staleness check AND the D3 in-flight-backup IPC veto: the
 		// agent sends a state_sync only after a successful server heartbeat,
 		// so this is authoritative liveness evidence even when agent.state on
@@ -1033,6 +1095,38 @@ func ensureAgentStartedBeforeFailover(ctx context.Context, recovery *watchdog.Re
 	journal.Log(watchdog.LevelInfo, "recovery.ensure_started_before_failover", fields)
 }
 
+// applyFailoverTokenUpdate pushes a rotated token into the live failover
+// client (which copied the token at FAILOVER entry and never saw an IPC
+// token_update) and clears the auth backoff: that backoff was earned by the
+// old credential and must not delay the new one (#2796). No-op when the
+// token did not change.
+func applyFailoverTokenUpdate(fc *watchdog.FailoverClient, mon *authstate.Monitor, before, after string) {
+	if after == "" || after == before {
+		return
+	}
+	if fc != nil {
+		fc.UpdateToken(after) // also resets fc's monitor (mon, once wired)
+	}
+	if mon != nil {
+		mon.Reset()
+	}
+}
+
+// recoveryVerified reports whether a restart dispatched before verifyDeadline
+// has produced a running agent: its heartbeat advanced past the deadline, or
+// (#2796) it wrote an auth-rejected marker past the deadline — the new process
+// is up and running its heartbeat loop, and the server is refusing its
+// credentials, which no further restart can change. viaAuth reports which.
+func recoveryVerified(s *state.AgentState, health *watchdog.HealthChecker, verifyDeadline time.Time) (ok, viaAuth bool) {
+	if s != nil && s.LastHeartbeat.After(verifyDeadline) {
+		return true, false
+	}
+	if health != nil && health.LastKnownAuthRejected(s).After(verifyDeadline) {
+		return true, true
+	}
+	return false, false
+}
+
 // handleFailoverPoll sends a heartbeat and polls for commands during failover.
 // ctx is the watchdog run context — commands that drive recovery inherit it so
 // an SCM stop cancels them on the same boundary as the main loop's own.
@@ -1051,12 +1145,22 @@ func handleFailoverPoll(
 	// Send failover heartbeat.
 	stats := currentRestartStats(recovery, maxPer24h)
 	resp, err := fc.SendHeartbeat(version, wd.State(), stats)
+	if errors.Is(err, watchdog.ErrAuthBackoff) {
+		// Skipped tick (#2796): nothing was sent, so it is neither a
+		// failure (no backup-URL probing, no config reload) nor worth a
+		// journal line every FailoverPollInterval. The rejection that armed
+		// the backoff was journaled below with auth_rejected=true.
+		return
+	}
 	if err != nil {
 		*failoverFailures = *failoverFailures + 1
 		*lastDiskServerURL = noteFailoverHeartbeatFailure(fc, journal, *lastDiskServerURL, *failoverFailures)
-		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
-			"error": err.Error(),
-		})
+		fields := map[string]any{"error": err.Error()}
+		if watchdog.IsAuthRejected(err) {
+			fields["auth_rejected"] = true
+			fields["retry_in_seconds"] = int(fc.AuthRetryIn().Seconds())
+		}
+		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", fields)
 		return
 	}
 	*failoverFailures = 0
@@ -1070,7 +1174,9 @@ func handleFailoverPoll(
 	// Poll for any still-pending commands. A poll failure must not drop the
 	// heartbeat-delivered batch, so fall through with an empty poll set.
 	pollCmds, err := fc.PollCommands()
-	if err != nil {
+	if errors.Is(err, watchdog.ErrAuthBackoff) {
+		pollCmds = nil
+	} else if err != nil {
 		journal.Log(watchdog.LevelError, "failover.poll_failed", map[string]any{
 			"error": err.Error(),
 		})

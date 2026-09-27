@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planChildRowSync } from './inventoryChildSync';
+import { planChildRowSync, planMemoryModuleSync, toMemoryModuleRows } from './inventoryChildSync';
 
 type Stored = { id: string; key: string; exact: string };
 type Reported = { key: string; exact: string };
@@ -69,5 +69,49 @@ describe('planChildRowSync', () => {
   it('handles empty sides', () => {
     expect(planChildRowSync([], [{ key: '/', exact: 'x' }], identity)).toEqual({ updates: [], inserts: [{ key: '/', exact: 'x' }], deleteIds: [] });
     expect(planChildRowSync([{ id: 'a', key: '/', exact: 'x' }], [], identity)).toEqual({ updates: [], inserts: [], deleteIds: ['a'] });
+  });
+});
+
+describe('memory module sync planning (#5351)', () => {
+  const report = (slotKey: string, overrides: Record<string, unknown> = {}) => ({
+    slotKey, locator: slotKey.toUpperCase(), populated: true, capacityMb: 8192, ...overrides,
+  });
+
+  it('matches slots by slotKey so a DIMM swap in the same slot keeps the row id', () => {
+    const stored = [{ id: 'row-a', slotKey: 'smbios:0x1100' }, { id: 'row-b', slotKey: 'smbios:0x1101' }];
+    const rows = toMemoryModuleRows([
+      report('smbios:0x1101', { capacityMb: 32768, serialNumber: 'NEW' }),
+      report('smbios:0x1100'),
+    ]);
+    const plan = planMemoryModuleSync(stored, rows);
+    expect(plan.inserts).toEqual([]);
+    expect(plan.deleteIds).toEqual([]);
+    expect(plan.updates.map((u) => [u.id, u.row.slotKey, u.row.slotIndex])).toEqual([
+      ['row-a', 'smbios:0x1100', 1],
+      ['row-b', 'smbios:0x1101', 0],
+    ]);
+    expect(plan.updates[1]!.row).toMatchObject({ capacityMb: 32768, serialNumber: 'NEW' });
+  });
+
+  it('never matches across slotKeys: a slot that vanished is deleted, a new one inserted', () => {
+    const plan = planMemoryModuleSync(
+      [{ id: 'row-a', slotKey: 'smbios:0x1100' }],
+      toMemoryModuleRows([report('smbios:0x2200')]),
+    );
+    expect(plan).toMatchObject({ updates: [], deleteIds: ['row-a'] });
+    expect(plan.inserts.map((r) => r.slotKey)).toEqual(['smbios:0x2200']);
+  });
+
+  it('stores absent optional fields as NULL (never "keep the old value") and indexes slots in report order', () => {
+    const [empty, full] = toMemoryModuleRows([
+      { slotKey: 'a', locator: 'A', populated: false },
+      report('b', { bankLabel: '', manufacturer: 'Samsung' }),
+    ]);
+    expect(empty).toEqual({
+      slotKey: 'a', slotIndex: 0, locator: 'A', bankLabel: null, populated: false, capacityMb: null,
+      memoryType: null, formFactor: null, speedMts: null, configuredSpeedMts: null,
+      manufacturer: null, partNumber: null, serialNumber: null,
+    });
+    expect(full).toMatchObject({ slotIndex: 1, bankLabel: null, manufacturer: 'Samsung', capacityMb: 8192 });
   });
 });

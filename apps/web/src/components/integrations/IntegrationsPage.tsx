@@ -1,15 +1,15 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
   Boxes,
+  Building2,
   DollarSign,
   HardDrive,
   MessageSquare,
   Network,
   Plug,
   Shield,
-  Users,
   Webhook,
 } from "lucide-react";
 import { DOCS_BASE_URL } from "@breeze/shared";
@@ -51,13 +51,13 @@ type TabId =
   | "psa"
   | "security"
   | "monitoring"
-  | "identity"
+  | "cloud-tenants"
   | "distributors"
   | "accounting"
   | "unifi"
   | "backup";
 type SecuritySubTab = "sentinelone" | "huntress";
-type IdentitySubTab = "google" | "m365";
+type CloudTenantsSubTab = "google" | "m365";
 type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec" | "tdsynnex-sftp";
 type AccountingSubTab = "quickbooks" | "stripe";
 
@@ -71,7 +71,11 @@ const tabs: { id: TabId; labelKey: string; icon: typeof Activity }[] = [
   { id: "psa", labelKey: "integrationsPage.psa", icon: Plug },
   { id: "security", labelKey: "integrationsPage.security", icon: Shield },
   { id: "monitoring", labelKey: "integrationsPage.monitoring", icon: Activity },
-  { id: "identity", labelKey: "integrationsPage.identity", icon: Users },
+  {
+    id: "cloud-tenants",
+    labelKey: "integrationsPage.cloudTenants",
+    icon: Building2,
+  },
   {
     id: "distributors",
     labelKey: "integrationsPage.distributors",
@@ -91,7 +95,7 @@ const securitySubTabs: { id: SecuritySubTab; labelKey: string }[] = [
   { id: "huntress", labelKey: "integrationsPage.huntress" },
 ];
 
-const identitySubTabs: { id: IdentitySubTab; labelKey: string }[] = [
+const cloudTenantsSubTabs: { id: CloudTenantsSubTab; labelKey: string }[] = [
   { id: "google", labelKey: "integrationsPage.googleWorkspace" },
   { id: "m365", labelKey: "integrationsPage.microsoft365" },
 ];
@@ -121,7 +125,8 @@ const tabDocsPaths: Record<TabId, string> = {
   psa: "/features/psa-integrations/",
   security: "/features/edr-integrations/",
   monitoring: "/features/monitoring-integrations/",
-  identity: "/features/identity-integrations/",
+  // The docs page keeps its original slug; only the tab was renamed.
+  "cloud-tenants": "/features/identity-integrations/",
   distributors: "/features/distributor-integrations/",
   accounting: "/features/accounting-integrations/",
   unifi: "/features/unifi-integration/",
@@ -135,7 +140,7 @@ const tabDocsPaths: Record<TabId, string> = {
 function parseHash(fallbackTab: TabId): {
   tab: TabId;
   securitySub?: SecuritySubTab;
-  identitySub?: IdentitySubTab;
+  cloudTenantsSub?: CloudTenantsSubTab;
   distributorSub?: DistributorSubTab;
   accountingSub?: AccountingSubTab;
   customerGraphReadResult?: M365CustomerGraphReadCallbackResult;
@@ -152,8 +157,8 @@ function parseHash(fallbackTab: TabId): {
       (result) => result === candidate,
     );
     return {
-      tab: "identity",
-      identitySub: "m365",
+      tab: "cloud-tenants",
+      cloudTenantsSub: "m365",
       customerGraphReadResult,
       consumeCustomerGraphReadResult: true,
     };
@@ -165,17 +170,20 @@ function parseHash(fallbackTab: TabId): {
       (result) => result === candidate,
     );
     return {
-      tab: "identity",
-      identitySub: "m365",
+      tab: "cloud-tenants",
+      cloudTenantsSub: "m365",
       customerGraphActionsResult,
       consumeCustomerGraphActionsResult: true,
     };
   }
   if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
+  // Legacy alias: this tab was "Identity" (#identity) before it was renamed to
+  // Cloud tenants. Bookmarks and docs links still carry the old hash.
+  if (hash === "identity") return { tab: "cloud-tenants" };
   if (securitySubTabs.some((s) => s.id === hash))
     return { tab: "security", securitySub: hash as SecuritySubTab };
-  if (identitySubTabs.some((s) => s.id === hash))
-    return { tab: "identity", identitySub: hash as IdentitySubTab };
+  if (cloudTenantsSubTabs.some((s) => s.id === hash))
+    return { tab: "cloud-tenants", cloudTenantsSub: hash as CloudTenantsSubTab };
   if (distributorSubTabs.some((s) => s.id === hash))
     return { tab: "distributors", distributorSub: hash as DistributorSubTab };
   if (accountingSubTabs.some((s) => s.id === hash))
@@ -219,7 +227,7 @@ export default function IntegrationsPage({
   // discard the SSR tree with a hydration mismatch on every deep link.
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>("sentinelone");
-  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>("google");
+  const [cloudTenantsSubTab, setCloudTenantsSubTab] = useState<CloudTenantsSubTab>("google");
   const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>("pax8");
   const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>("quickbooks");
   const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
@@ -233,23 +241,42 @@ export default function IntegrationsPage({
     orgId: string | null;
   }>({ result: null, refreshKey: 0, orgId: null });
 
+  // Keep the latest org id available to applyHash below without making it a
+  // dependency of that effect (see the comment there). useRef's initial value
+  // is set synchronously during render, so it's already correct for the
+  // very-first-mount call to applyHash.
+  const callbackOrgIdRef = useRef(callbackOrgId);
+  useIsomorphicLayoutEffect(() => {
+    callbackOrgIdRef.current = callbackOrgId;
+  }, [callbackOrgId]);
+
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
   // The click handlers below set state directly, so this only handles hash
   // changes we didn't make ourselves.
+  //
+  // #6684: on a real return from Microsoft, this runs on the very first
+  // render of a cold page load — the org store hasn't hydrated yet, so
+  // callbackOrgId is still null here. The hash is consumed (and rewritten to
+  // #m365) immediately regardless, so it must NOT be in this effect's
+  // dependency array: if it were, callbackOrgId resolving a tick later would
+  // re-run applyHash against the now-stripped hash, take the "no result in
+  // the hash" else-branch, and wipe the just-captured result before it ever
+  // got a chance to match the resolved org id. A separate effect below
+  // backfills orgId once it's known, without re-parsing the hash.
   useIsomorphicLayoutEffect(() => {
     const applyHash = () => {
       const parsed = parseHash(initialTab);
       setActiveTab(parsed.tab);
       if (parsed.securitySub) setSecuritySubTab(parsed.securitySub);
-      if (parsed.identitySub) setIdentitySubTab(parsed.identitySub);
+      if (parsed.cloudTenantsSub) setCloudTenantsSubTab(parsed.cloudTenantsSub);
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
       if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
       if (parsed.consumeCustomerGraphReadResult) {
         setCustomerGraphReadCallback((current) => ({
           result: parsed.customerGraphReadResult ?? null,
           refreshKey: current.refreshKey + 1,
-          orgId: callbackOrgId,
+          orgId: callbackOrgIdRef.current,
         }));
         window.history.replaceState(
           window.history.state,
@@ -267,7 +294,7 @@ export default function IntegrationsPage({
         setCustomerGraphActionsCallback((current) => ({
           result: parsed.customerGraphActionsResult ?? null,
           refreshKey: current.refreshKey + 1,
-          orgId: callbackOrgId,
+          orgId: callbackOrgIdRef.current,
         }));
         window.history.replaceState(
           window.history.state,
@@ -285,7 +312,25 @@ export default function IntegrationsPage({
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
-  }, [callbackOrgId, initialTab]);
+  }, [initialTab]);
+
+  // Backfill a captured-but-unscoped callback result once the org id resolves
+  // (cold load: the result was captured from the hash before the org store
+  // hydrated, so it went in with orgId: null). This never re-parses the hash,
+  // so it can't clobber a result the hashchange handler above just captured.
+  useEffect(() => {
+    if (callbackOrgId === null) return;
+    setCustomerGraphReadCallback((current) =>
+      current.result !== null && current.orgId === null
+        ? { ...current, orgId: callbackOrgId }
+        : current,
+    );
+    setCustomerGraphActionsCallback((current) =>
+      current.result !== null && current.orgId === null
+        ? { ...current, orgId: callbackOrgId }
+        : current,
+    );
+  }, [callbackOrgId]);
 
   // Select a top-level tab and reflect it in the URL hash so the tab is
   // deep-linkable / shareable and survives a reload.
@@ -412,11 +457,11 @@ export default function IntegrationsPage({
         </div>
       )}
 
-      {/* Identity sub-tabs */}
-      {activeTab === "identity" && (
+      {/* Cloud tenants sub-tabs */}
+      {activeTab === "cloud-tenants" && (
         <div className="flex gap-2">
-          {identitySubTabs.map((sub) => {
-            const isActive = sub.id === identitySubTab;
+          {cloudTenantsSubTabs.map((sub) => {
+            const isActive = sub.id === cloudTenantsSubTab;
             return (
               <button
                 key={sub.id}
@@ -424,7 +469,7 @@ export default function IntegrationsPage({
                 onClick={() => {
                   if (typeof window !== "undefined")
                     window.location.hash = sub.id;
-                  setIdentitySubTab(sub.id);
+                  setCloudTenantsSubTab(sub.id);
                 }}
                 className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
                   isActive
@@ -504,10 +549,10 @@ export default function IntegrationsPage({
         <HuntressIntegration />
       )}
       {activeTab === "monitoring" && <MonitoringIntegration />}
-      {activeTab === "identity" && identitySubTab === "google" && (
+      {activeTab === "cloud-tenants" && cloudTenantsSubTab === "google" && (
         <GoogleWorkspaceIntegration />
       )}
-      {activeTab === "identity" && identitySubTab === "m365" && (
+      {activeTab === "cloud-tenants" && cloudTenantsSubTab === "m365" && (
         <div className="space-y-6">
           <M365Integration />
           <M365CustomerGraphReadCard

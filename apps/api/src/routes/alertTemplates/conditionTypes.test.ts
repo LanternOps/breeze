@@ -1,19 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-// Regression coverage for #2948 on the alert-TEMPLATE routes.
-//
-// These endpoints validate `conditions` as `z.record(z.string(), z.any())` — an
-// OBJECT, never an array — which is a different payload shape from
-// POST /alerts/rules. Two things follow, and both are covered here:
-//
-//   * AlertTemplateEditor posts `{ triggers: [...], thresholdDefaults, ... }`,
-//     so a retired type sits under `conditions.triggers[]`, not at the root. A
-//     structure-aware walk that only recursed on a `conditions` array missed
-//     this entirely and made the guard dead code for the product's own UI.
-//   * The toggle route is the one-click path back to an enabled-but-unfirable
-//     rule after the cleanup migration deactivated it.
-
 const { authRef, dbRef } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -80,6 +67,7 @@ vi.mock('../../utils/pagination', () => ({
 
 import { ruleRoutes } from './rules';
 import { templateRoutes } from './templates';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 const RULE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
 const TEMPLATE_ID = '11112222-3333-4444-8555-666677778888';
@@ -104,151 +92,33 @@ const EDITOR_ENVELOPE = (triggers: unknown[]) => ({
   suppression: {},
 });
 
-describe('alert-template condition types (#2948)', () => {
+describe('retired alert-template condition writes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbRef.current = [];
-    authRef.current = {
-      scope: 'organization',
-      user: { id: 'u-1', name: 'Tess Tech', email: 'tess@org.example' },
-      partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
-    } as typeof authRef.current;
   });
 
-  it('rejects a template whose editor-envelope triggers carry the retired type', async () => {
-    const res = await request(templateRoutes, '/alert-templates/templates', 'POST', {
-      name: 'T', severity: 'high',
-      conditions: EDITOR_ENVELOPE([{ type: 'custom', field: 'x', customCondition: '> 1' }]),
-    });
-
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toContain('custom');
+  it.each(['custom', 'event', 'metric'])('retires template authoring with %s conditions', async (type) => {
+    for (const [method, path] of [
+      ['POST', '/alert-templates/templates'],
+      ['PATCH', `/alert-templates/templates/${TEMPLATE_ID}`],
+    ] as const) {
+      const res = await request(templateRoutes, path, method, {
+        name: 'T', severity: 'high', conditions: EDITOR_ENVELOPE([{ type }]),
+      });
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    }
   });
 
-  it('accepts the same envelope when its triggers are live types', async () => {
-    // `event` is what the editor actually writes and has no registry handler —
-    // a registry-allowlist guard would have 400'd every template save.
-    const res = await request(templateRoutes, '/alert-templates/templates', 'POST', {
-      name: 'T', severity: 'high',
-      conditions: EDITOR_ENVELOPE([{ type: 'event', eventSource: 'system', pattern: 'disk' }]),
-    });
-
-    expect(res.status).not.toBe(400);
-  });
-
-  it('rejects a retired type on template update', async () => {
-    dbRef.current = [[{ id: TEMPLATE_ID, orgId: 'org-1', partnerId: null, isBuiltIn: false }]];
-
-    const res = await request(templateRoutes, `/alert-templates/templates/${TEMPLATE_ID}`, 'PATCH', {
-      conditions: EDITOR_ENVELOPE([{ type: 'custom' }]),
-    });
-
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toContain('custom');
-  });
-
-  it('rejects a retired type in the object-shaped rule override', async () => {
-    const res = await request(ruleRoutes, '/alert-templates/rules', 'POST', {
-      templateId: TEMPLATE_ID, name: 'r',
-      conditions: { type: 'custom', customCondition: 'x' },
-    });
-
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toContain('custom');
-  });
-
-  it('refuses to re-enable a rule the cleanup migration deactivated', async () => {
-    dbRef.current = [
-      // ruleOwnershipConditionForOrg's organizations lookup runs first
-      [{ partnerId: null }],
-      // then the rule lookup — inactive, with all-custom override conditions
-      [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
-        overrideSettings: { conditions: [{ type: 'custom' }] },
-      }],
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
-
-    expect(res.status).toBe(400);
-    const body = await res.json() as { error: string };
-    expect(body.error).toContain('custom');
-    expect(body.error).toMatch(/cannot be re-enabled/i);
-  });
-
-  it('falls back to the template conditions when the rule carries no override', async () => {
-    dbRef.current = [
-      [{ partnerId: null }],
-      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1', overrideSettings: {} }],
-      [{ conditions: [{ type: 'custom' }] }],
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
-
-    expect(res.status).toBe(400);
-  });
-
-  it('still allows re-enabling a rule with a supported condition', async () => {
-    dbRef.current = [
-      [{ partnerId: null }],
-      [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
-        overrideSettings: { conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }] },
-      }],
-      [{ id: RULE_ID, isActive: true }],
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
-
-    expect(res.status).not.toBe(400);
-  });
-
-  it('fails CLOSED when the rule\'s template cannot be read', async () => {
-    // alert_templates SELECT is org-access OR partner-access OR built-in, and an
-    // org token never passes the partner branch — yet an org-owned rule may point
-    // at a partner-owned template. A zero-row read must not read as "nothing
-    // retired", or the gate waves through the rule it exists to stop.
-    dbRef.current = [
-      [{ partnerId: null }],
-      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1', overrideSettings: {} }],
-      [], // template invisible
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
-
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toMatch(/could not be read/i);
-  });
-
-  // PATCH accepts `enabled` too, so it is a second re-activation path. It was
-  // ungated while the toggle route two functions below it was gated.
-  it('refuses to re-enable via PATCH, not just via the toggle route', async () => {
-    dbRef.current = [
-      [{ partnerId: null }],
-      [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
-        overrideSettings: { conditions: [{ type: 'custom' }] },
-      }],
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}`, 'PATCH', { enabled: true });
-
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toMatch(/cannot be re-enabled/i);
-  });
-
-  it('does not re-check an already-active rule being toggled off', async () => {
-    dbRef.current = [
-      [{ partnerId: null }],
-      [{
-        id: RULE_ID, orgId: 'org-1', isActive: true, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
-        overrideSettings: { conditions: [{ type: 'custom' }] },
-      }],
-      [{ id: RULE_ID, isActive: false }],
-    ];
-
-    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: false });
-
-    expect(res.status).not.toBe(400);
+  it.each([
+    ['POST', '/alert-templates/rules', { templateId: TEMPLATE_ID, name: 'r', conditions: { type: 'custom' } }],
+    ['PATCH', `/alert-templates/rules/${RULE_ID}`, { enabled: true }],
+    ['POST', `/alert-templates/rules/${RULE_ID}/toggle`, { enabled: true }],
+    ['POST', `/alert-templates/rules/${RULE_ID}/toggle`, { enabled: false }],
+  ] as const)('retires %s %s regardless of condition or activation state', async (method, path, body) => {
+    const res = await request(ruleRoutes, path, method, body);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
   });
 });

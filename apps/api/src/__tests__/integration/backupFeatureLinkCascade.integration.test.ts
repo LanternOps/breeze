@@ -24,7 +24,7 @@ import { partners, organizations, sites, devices } from '../../db/schema';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAlertRules } from '../../db/schema/configurationPolicies';
 import { backupConfigs, backupJobs, backupSnapshots } from '../../db/schema/backup';
 import { backupVerifications } from '../../db/schema/backupVerification';
-import { removeFeatureLink } from '../../services/configurationPolicy';
+import { listFeatureLinks, removeFeatureLink } from '../../services/configurationPolicy';
 
 let orgId: string;
 let policyId: string;
@@ -192,8 +192,15 @@ describe('retired feature-link cascade preservation', () => {
     expect(result?.kept).toBe(hasRetired);
     const remainingLinks = await tdb.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, link!.id));
     expect(remainingLinks).toHaveLength(hasRetired ? 1 : 0);
-    expect(await tdb.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, live!.id))).toHaveLength(0);
+    // Retired feature types no longer decompose/delete normalized rows. A kept
+    // owner preserves every source row; an owner without history still cascades.
+    expect(await tdb.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, live!.id)))
+      .toEqual(hasRetired ? [live] : []);
+    const visibleLinks = await withDbAccessContext(orgContext, () => listFeatureLinks(policyId));
+    expect(visibleLinks.map(({ id }) => id)).not.toContain(link!.id);
+    expect(visibleLinks.map(({ id }) => id)).toContain(featureLinkId);
     if (retired) {
+      expect(result).toMatchObject({ kept: true, reason: 'retired_history' });
       expect(remainingLinks[0]!.inlineSettings).toEqual({ items: [] });
       expect(await tdb.select().from(configPolicyAlertRules).where(eq(configPolicyAlertRules.id, retired.id))).toEqual([retired]);
     }

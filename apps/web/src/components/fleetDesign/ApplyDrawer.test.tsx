@@ -93,8 +93,8 @@ describe('ApplyDrawer', () => {
           watchCount: 1,
           ruleCount: 0,
           displaces: [
-            { policyId: 'policy-a', policyName: 'Old Monitoring', featureType: 'monitoring', deviceCount: 4 },
-            { policyId: 'policy-b', policyName: 'Old Alerts', featureType: 'alert_rule', deviceCount: 4 },
+            { policyId: 'policy-a', policyName: 'Existing Monitors A', featureType: 'monitors', deviceCount: 4 },
+            { policyId: 'policy-b', policyName: 'Existing Monitors B', featureType: 'monitors', deviceCount: 4 },
           ],
         },
       ],
@@ -122,7 +122,7 @@ describe('ApplyDrawer', () => {
           policyName: 'Fleet Design: Workstation',
           watchCount: 1,
           ruleCount: 0,
-          displaces: [{ policyId: 'policy-a', policyName: 'Old Monitoring', featureType: 'monitoring', deviceCount: 4 }],
+          displaces: [{ policyId: 'policy-a', policyName: 'Existing Monitors A', featureType: 'monitors', deviceCount: 4 }],
         },
       ],
     };

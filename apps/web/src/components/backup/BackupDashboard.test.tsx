@@ -141,6 +141,42 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText(shortNumericPattern)).toBeNull();
   });
 
+  it('renders the /backup/dashboard storageProviders rows instead of the empty state (#2562)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/dashboard') {
+        // The shape apps/api/src/routes/backup/dashboard.ts actually sends.
+        return makeJsonResponse({
+          data: {
+            storage: { totalBytes: 2048, snapshots: 2 },
+            latestJobs: [],
+            attentionItems: [],
+            storageProviders: [
+              { id: 'backblaze', name: 'Backblaze B2', usedBytes: 2048, snapshots: 2, configs: 1 },
+              { id: 's3', name: 'S3', usedBytes: 0, snapshots: 0, configs: 1 },
+            ],
+          },
+        });
+      }
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('Storage by Provider');
+    expect(screen.getByText('Backblaze B2')).toBeTruthy();
+    expect(screen.getByTestId('storage-provider-used-backblaze').textContent).toBe('2.00 KB');
+    // A configured destination with no snapshots yet is still a row, not the
+    // "none configured" empty state.
+    expect(screen.getByTestId('storage-provider-used-s3').textContent).toBe('0 B');
+    expect(screen.queryByText(/No storage providers configured yet/i)).toBeNull();
+    // No capacity is known for object storage, so no "/ --" placeholder.
+    expect(screen.queryByText(/\/ --/)).toBeNull();
+  });
+
   it('shows the recovery bootstrap tab', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);

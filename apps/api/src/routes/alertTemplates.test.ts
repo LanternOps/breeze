@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { randomUUID } from 'crypto';
+import { LEGACY_ALERTING_GONE } from './legacyAlertingGone';
 
 /* ------------------------------------------------------------------ */
 /*  In-memory template store                                          */
@@ -149,23 +150,10 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
 describe('alert template routes', () => {
   let app: Hono;
 
-  const createTemplate = async () => {
-    const res = await app.request('/alert-templates/templates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({
-        name: 'Custom Latency',
-        description: 'Custom latency threshold',
-        severity: 'medium',
-        conditions: {
-          metric: 'network.latencyMs',
-          operator: '>',
-          threshold: 300,
-        },
-      }),
-    });
-    const body = await res.json();
-    return { res, body };
+  const seedTemplate = () => {
+    const data = makeTemplate({ orgId: ORG_ID, name: 'Custom Latency', cooldownMinutes: 15 });
+    store.push(data);
+    return { data };
   };
 
   beforeEach(() => {
@@ -256,19 +244,21 @@ describe('alert template routes', () => {
   });
 
   describe('POST /alert-templates/templates', () => {
-    it('should create a custom template', async () => {
-      const { res, body } = await createTemplate();
-
-      expect(res.status).toBe(201);
-      expect(body.data.isBuiltIn).toBe(false);
-      expect(body.data.name).toBe('Custom Latency');
-      expect(body.data.cooldownMinutes).toBe(15);
+    it('returns retirement guidance without creating a template', async () => {
+      const res = await app.request('/alert-templates/templates', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Custom Latency', severity: 'medium', conditions: {} }),
+      });
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(store).toEqual([]);
     });
   });
 
   describe('GET /alert-templates/templates/:id', () => {
     it('should fetch a template by id', async () => {
-      const { body: created } = await createTemplate();
+      const created = seedTemplate();
 
       const res = await app.request(`/alert-templates/templates/${created.data.id}`, {
         method: 'GET',
@@ -282,8 +272,8 @@ describe('alert template routes', () => {
   });
 
   describe('PATCH /alert-templates/templates/:id', () => {
-    it('should update a custom template', async () => {
-      const { body: created } = await createTemplate();
+    it('returns retirement guidance without updating a custom template', async () => {
+      const created = seedTemplate();
 
       const res = await app.request(`/alert-templates/templates/${created.data.id}`, {
         method: 'PATCH',
@@ -294,13 +284,13 @@ describe('alert template routes', () => {
         }),
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.data.name).toBe('Custom Latency Updated');
-      expect(body.data.cooldownMinutes).toBe(25);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(store[0]).toMatchObject({ name: 'Custom Latency', cooldownMinutes: 15 });
     });
 
-    it('should reject updates to built-in templates', async () => {
+    it('returns retirement guidance for built-in template updates', async () => {
       // Seed a built-in template
       const builtIn = makeTemplate({
         orgId: null,
@@ -316,29 +306,32 @@ describe('alert template routes', () => {
         body: JSON.stringify({ name: 'Nope' }),
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
   describe('DELETE /alert-templates/templates/:id', () => {
-    it('should delete a custom template', async () => {
-      const { body: created } = await createTemplate();
+    it('returns retirement guidance and retains a custom template', async () => {
+      const created = seedTemplate();
 
       const res = await app.request(`/alert-templates/templates/${created.data.id}`, {
         method: 'DELETE',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.data.deleted).toBe(true);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+      expect(db.delete).not.toHaveBeenCalled();
 
-      // After deletion the store is empty, so fetch should 404
+      // Retirement retains legacy rows for history reads.
       const fetchRes = await app.request(`/alert-templates/templates/${created.data.id}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
-      expect(fetchRes.status).toBe(404);
+      expect(fetchRes.status).toBe(200);
+      expect((await fetchRes.json()).data.id).toBe(created.data.id);
     });
   });
 });

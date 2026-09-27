@@ -63,6 +63,7 @@ vi.mock('../securityPosture', () => ({
 // (written before W05) keeps seeing `approvedDesign`/`driftLive` resolve to
 // null without wiring up a `db.select` double it never needed.
 vi.mock('../fleetDesign/drift', () => ({
+  uuidArray: vi.fn((ids: string[]) => ids),
   loadApprovedDesign: vi.fn(async () => null),
   loadDriftLiveState: vi.fn(async () => ({ policies: [], assignments: [], groupMembers: {} })),
 }));
@@ -76,6 +77,7 @@ function sqlText(node: unknown): string {
   return '';
 }
 
+import { db } from '../../db';
 import { captureException } from '../sentry';
 import { loadApprovedDesign, loadDriftLiveState, type ApprovedDesignSummary, type DriftLiveState } from '../fleetDesign/drift';
 import {
@@ -222,6 +224,14 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('excludes retired legacy watches and rules from configuration evidence', async () => {
+    rowsFor.push({ match: 'FROM configuration_policies cp', rows: [{ id: uuid(9), name: 'Policy', status: 'active', org_id: ORG, partner_id: null }] });
+    await loadDesignEvidence(ORG, { siteId: null });
+    const queries = vi.mocked(db.execute).mock.calls.map(([statement]) => sqlText(statement));
+    expect(queries.find((query) => query.includes('FROM config_policy_monitoring_watches w'))).toContain('w.retired_at IS NULL');
+    expect(queries.find((query) => query.includes('FROM config_policy_alert_rules r'))).toContain('r.retired_at IS NULL');
   });
 
   it('a genuinely failing loader statement costs exactly its own section — never an invented zero', async () => {

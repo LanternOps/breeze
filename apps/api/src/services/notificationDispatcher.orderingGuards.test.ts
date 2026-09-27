@@ -27,6 +27,9 @@ vi.mock('../db', () => {
       where: () => chain,
       orderBy: () => chain,
       limit: () => chain,
+      // notificationChannels + notificationChannelConfigs reads (#6379) chain
+      // .leftJoin() right after .from().
+      leftJoin: () => chain,
       then: (resolve: (value: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(selectQueue.shift() ?? []).then(resolve, reject)
     };
@@ -261,8 +264,9 @@ describe('scheduleEscalation job options (carried Task 8 review handoff)', () =>
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'], escalationPolicyId: 'policy-1' } }], // rule
+      [], // No compiled monitor identity.
       ORG_LOOKUP, ORG_LOOKUP,
+      [{ ...DEFAULT_ROW_C1, escalationPolicyId: 'policy-1' }],
       [{ id: 'aaaaaaaa-0000-4000-8000-000000000013', type: 'webhook', config: webhookConfig }], // validChannels (baseline)
       [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }] }], // escalation policy
       [{ id: 'aaaaaaaa-0000-4000-8000-000000000013', type: 'webhook', config: webhookConfig }] // validChannels (escalation)
@@ -350,8 +354,9 @@ describe('scheduleEscalation failed-job recovery (same exposure as the baseline 
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
-      [{ overrideSettings: { notificationChannelIds: ['aaaaaaaa-0000-4000-8000-000000000013'], escalationPolicyId: 'policy-1' } }], // rule
+      [], // No compiled monitor identity.
       ORG_LOOKUP, ORG_LOOKUP,
+      [{ ...DEFAULT_ROW_C1, escalationPolicyId: 'policy-1' }],
       [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }], // validChannels (baseline)
       [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['aaaaaaaa-0000-4000-8000-000000000013'] }] }], // escalation policy
       [{ id: 'aaaaaaaa-0000-4000-8000-000000000013' }] // validChannels (escalation)

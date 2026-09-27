@@ -1,11 +1,4 @@
-/**
- * aiToolsMonitoring — manage_monitors site-axis gate tests.
- *
- * Verifies that the manage_monitors tool's get/update/delete actions enforce
- * the intra-org site axis for site-restricted callers (auth.canAccessSite set).
- * The list action (query_monitors) has its own site gate; these tests cover the
- * per-monitor CRUD actions that previously skipped the axis entirely.
- */
+/** Tests read isolation and retired network-check mutations. */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -26,6 +19,7 @@ vi.mock('../db/schema/monitors', () => ({
     orgId: 'nm.orgId',
     name: 'nm.name',
     assetId: 'nm.assetId',
+    managedByMonitorId: 'nm.managedByMonitorId',
   },
   networkMonitorResults: {
     id: 'nmr.id',
@@ -195,6 +189,19 @@ describe('query_monitors — assetReachability (W01, spec §4.4)', () => {
     });
   });
 
+  it('selects and returns the owning monitor definition for managed checks', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(monitorListLookup([
+      { ...monitorInAllowedSite, managedByMonitorId: 'definition-id' },
+      { ...monitorNoAsset, managedByMonitorId: null },
+    ]));
+    const out = JSON.parse(await buildQueryMonitors()({}, makeUnrestrictedAuth()));
+    expect(db.select).toHaveBeenCalledWith(expect.objectContaining({
+      managedByMonitorId: 'nm.managedByMonitorId',
+    }));
+    expect(out.monitors.map((row: { managedByMonitorId: string | null }) => row.managedByMonitorId))
+      .toEqual(['definition-id', null]);
+  });
+
   it('reports null assetReachability for a monitor with no linked asset', async () => {
     vi.mocked(db.select).mockReturnValueOnce(monitorListLookup([monitorNoAsset]));
 
@@ -258,202 +265,57 @@ describe('manage_monitors — site-axis enforcement', () => {
     });
   });
 
-  // ─── update action ───────────────────────────────────────────────────────
+  describe('mutations are retired (W05e)', () => {
+    const callers = [
+      ['unrestricted', makeUnrestrictedAuth],
+      ['site-restricted', makeSiteRestrictedAuth],
+      ['multi-org', () => ({
+        ...makeUnrestrictedAuth(), scope: 'partner' as const, orgId: null,
+        partnerId: 'partner-1', accessibleOrgIds: ['org-1', 'org-2'],
+      })],
+    ] as const;
 
-  describe('action: update', () => {
-    it('denies site-restricted caller updating a monitor in a forbidden site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(monitorLookup(monitorInDeniedSite)) // monitor row
-        .mockReturnValueOnce(assetLookup('site-2'));             // asset → site-2 (denied)
-
-      const out = JSON.parse(await handle(
-        { action: 'update', monitorId: MONITOR_ID, name: 'hacked' },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.error).toMatch(/not found or access denied/i);
-      // db.update must NOT have been called
-      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
-    });
-
-    it('denies site-restricted caller updating a monitor with no asset (fail-closed)', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(monitorLookup(monitorNoAsset));
-
-      const out = JSON.parse(await handle(
-        { action: 'update', monitorId: MONITOR_ID, name: 'hacked' },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.error).toMatch(/not found or access denied/i);
-      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
-    });
-
-    it('allows site-restricted caller to update a monitor in an allowed site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(monitorLookup(monitorInAllowedSite)) // monitor row
-        .mockReturnValueOnce(assetLookup('site-1'));              // asset → site-1 (allowed)
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-      } as any);
-
-      const out = JSON.parse(await handle(
-        { action: 'update', monitorId: MONITOR_ID, name: 'renamed' },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.success).toBe(true);
-      expect(vi.mocked(db.update)).toHaveBeenCalledOnce();
-    });
-  });
-
-  // ─── delete action ───────────────────────────────────────────────────────
-
-  describe('action: delete', () => {
-    it('denies site-restricted caller deleting a monitor in a forbidden site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(monitorLookup(monitorInDeniedSite))
-        .mockReturnValueOnce(assetLookup('site-2'));
-
-      const out = JSON.parse(await handle(
+    for (const [label, makeAuth] of callers) {
+      it.each([
+        { action: 'create' },
+        { action: 'create', name: 'Gateway', monitorType: 'icmp_ping', target: '10.0.0.1' },
+        { action: 'create', name: 'Gateway', monitorType: 'icmp_ping', target: '10.0.0.1', assetId: ASSET_ALLOWED, orgId: 'org-2' },
+        { action: 'create', assetId: ASSET_DENIED },
+        { action: 'update' },
+        { action: 'update', monitorId: MONITOR_ID, name: 'Renamed' },
+        { action: 'delete' },
         { action: 'delete', monitorId: MONITOR_ID },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.error).toMatch(/not found or access denied/i);
-      expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
-    });
-
-    it('denies site-restricted caller deleting a monitor with no asset (fail-closed)', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(monitorLookup(monitorNoAsset));
-
-      const out = JSON.parse(await handle(
-        { action: 'delete', monitorId: MONITOR_ID },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.error).toMatch(/not found or access denied/i);
-      expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
-    });
-
-    it('allows site-restricted caller to delete a monitor in an allowed site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(monitorLookup(monitorInAllowedSite))
-        .mockReturnValueOnce(assetLookup('site-1'));
-      vi.mocked(db.delete).mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const out = JSON.parse(await handle(
-        { action: 'delete', monitorId: MONITOR_ID },
-        makeSiteRestrictedAuth(),
-      ));
-      expect(out.success).toBe(true);
-      expect(vi.mocked(db.delete)).toHaveBeenCalledOnce();
-    });
-  });
-
-  // ─── create action (SR5-08) ──────────────────────────────────────────────
-
-  describe('action: create', () => {
-    // db.insert().values().returning() → [monitor]
-    function insertReturning(monitor: Record<string, unknown>) {
-      return {
-        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([monitor]) }),
-      } as any;
+      ])(`${label} caller gets guidance without DB access: %j`, async (input) => {
+        const out = JSON.parse(await handle(input, makeAuth()));
+        if (input.action === 'delete') {
+          expect(out).toMatchObject({
+            error: 'network_check_cleanup_retired',
+            hint: {
+              route: 'POST /monitor-definitions/conversion/retire',
+              sourceTable: 'network_monitors', reason: 'operator',
+            },
+          });
+          expect(out.hint.sourceId).toBe(input.monitorId);
+          expect(out.message).toMatch(/history/i);
+        } else {
+          expect(out).toMatchObject({
+            error: 'network_check_authoring_retired',
+            useTool: 'manage_monitor_definitions',
+            example: {
+              action: 'create',
+              definition: {
+                kind: 'network_check', name: expect.any(String),
+                condition: { checkType: 'icmp_ping', target: '10.0.0.1', assetId: expect.any(String) },
+              },
+            },
+          });
+        }
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.insert).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(db.delete).not.toHaveBeenCalled();
+      });
     }
-    // db.select().from().where().limit() → [{ id }] (asset org-ownership check).
-    function assetOwnerLookup(found: boolean) {
-      return {
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(found ? [{ id: ASSET_ALLOWED }] : []) }),
-        }),
-      } as any;
-    }
-
-    const CREATE = {
-      action: 'create',
-      name: 'db-probe',
-      monitorType: 'tcp_port',
-      target: '10.0.0.5:5432',
-    };
-
-    it('denies a site-restricted caller creating an UNBOUND monitor (fail-closed)', async () => {
-      const out = JSON.parse(await handle({ ...CREATE }, makeSiteRestrictedAuth()));
-      expect(out.error).toMatch(/site-restricted/i);
-      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-    });
-
-    it('denies a site-restricted caller binding an asset in a forbidden site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(assetOwnerLookup(true))   // org-ownership check passes
-        .mockReturnValueOnce(assetLookup('site-2'));    // asset resolves to denied site
-      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_ALLOWED }, makeSiteRestrictedAuth()));
-      expect(out.error).toMatch(/site-restricted/i);
-      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-    });
-
-    it('rejects a cross-org assetId (fail-closed)', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(assetOwnerLookup(false)); // asset not in caller org
-      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_DENIED }, makeSiteRestrictedAuth()));
-      expect(out.error).toMatch(/asset not found or access denied/i);
-      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-    });
-
-    it('allows a site-restricted caller binding an asset in an allowed site', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(assetOwnerLookup(true))   // org-ownership check passes
-        .mockReturnValueOnce(assetLookup('site-1'));    // asset resolves to allowed site
-      vi.mocked(db.insert).mockReturnValue(insertReturning({ id: 'new-mon', name: 'db-probe' }));
-      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_ALLOWED }, makeSiteRestrictedAuth()));
-      expect(out.success).toBe(true);
-      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
-    });
-
-    it('allows an unrestricted caller to create an assetless monitor (behavior preserved)', async () => {
-      vi.mocked(db.insert).mockReturnValue(insertReturning({ id: 'new-mon', name: 'db-probe' }));
-      const out = JSON.parse(await handle({ ...CREATE }, makeUnrestrictedAuth()));
-      expect(out.success).toBe(true);
-      // No asset lookups for an unrestricted, unbound create.
-      expect(vi.mocked(db.select)).not.toHaveBeenCalled();
-      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
-    });
-  });
-
-  // ─── create action — write-org resolution (#6667) ────────────────────────
-
-  describe('action: create — write-org resolution (#6667)', () => {
-    // A partner tech reachable to TWO orgs with no anchored auth.orgId — the
-    // shape that silently picked accessibleOrgIds[0] before the fix.
-    function makeMultiOrgAuth(): AuthContext {
-      return {
-        principal: { kind: 'user_session' },
-        user: { id: 'user-1', email: 'u@example.com', name: 'U', isPlatformAdmin: false },
-        token: {} as any,
-        partnerId: 'partner-1',
-        orgId: null,
-        scope: 'partner',
-        accessibleOrgIds: ['org-1', 'org-2'],
-        orgCondition: () => undefined,
-        canAccessOrg: (id: string) => id === 'org-1' || id === 'org-2',
-      } as AuthContext;
-    }
-
-    const CREATE = {
-      action: 'create',
-      name: 'db-probe',
-      monitorType: 'tcp_port',
-      target: '10.0.0.5:5432',
-    };
-
-    it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
-      const out = JSON.parse(await handle({ ...CREATE }, makeMultiOrgAuth()));
-      expect(out.error).toBe('orgId is required: you have access to multiple organizations');
-      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-    });
-
-    it('uses the explicit accessible orgId for the insert', async () => {
-      const insertValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'new-mon', name: 'db-probe' }]) });
-      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
-
-      const out = JSON.parse(await handle({ ...CREATE, orgId: 'org-2' }, makeMultiOrgAuth()));
-      expect(out.success).toBe(true);
-      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
-    });
   });
 
   // ─── unrestricted caller invariant ───────────────────────────────────────

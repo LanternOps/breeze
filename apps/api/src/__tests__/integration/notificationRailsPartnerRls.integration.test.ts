@@ -23,8 +23,6 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
-  alertRules,
-  alertTemplates,
   alerts,
   devices,
   escalationPolicies,
@@ -39,8 +37,6 @@ const createdChannels: string[] = [];
 const createdRules: string[] = [];
 const createdPolicies: string[] = [];
 const createdAlerts: string[] = [];
-const createdAlertRules: string[] = [];
-const createdTemplates: string[] = [];
 const createdDevices: string[] = [];
 const createdSites: string[] = [];
 
@@ -62,12 +58,6 @@ afterEach(async () => {
     if (createdAlerts.length > 0) {
       await db.delete(alerts).where(inArray(alerts.id, createdAlerts));
     }
-    for (const id of createdAlertRules) {
-      await db.delete(alertRules).where(eq(alertRules.id, id));
-    }
-    for (const id of createdTemplates) {
-      await db.delete(alertTemplates).where(eq(alertTemplates.id, id));
-    }
     for (const id of createdRules) {
       await db.delete(notificationRoutingRules).where(eq(notificationRoutingRules.id, id));
     }
@@ -88,8 +78,6 @@ afterEach(async () => {
   createdRules.length = 0;
   createdPolicies.length = 0;
   createdAlerts.length = 0;
-  createdAlertRules.length = 0;
-  createdTemplates.length = 0;
   createdDevices.length = 0;
   createdSites.length = 0;
 });
@@ -128,12 +116,13 @@ async function seedPartnerChannel(partnerId: string): Promise<string> {
   const rows = await withDbAccessContext(partnerContext(partnerId, []), () =>
     db
       .insert(notificationChannels)
+      // `config` lives in notification_channel_configs now (#6379); this
+      // fixture only exercises id/ownership, never reads config back.
       .values({
         orgId: null,
         partnerId,
         name: 'Partner NOC Slack',
         type: 'slack',
-        config: { webhookUrl: 'https://hooks.slack.example/noc' },
         enabled: true,
       })
       .returning(),
@@ -153,7 +142,6 @@ const RAIL_CASES = [
         ...owner,
         name: 'Rail case channel',
         type: 'slack',
-        config: { webhookUrl: 'https://hooks.slack.example/x' },
         enabled: true,
       }).returning({ id: notificationChannels.id, orgId: notificationChannels.orgId, partnerId: notificationChannels.partnerId }),
     selectById: (id: string) =>
@@ -435,61 +423,28 @@ describe('processAlertNotifications — partner-wide rail fan-out (#2130)', () =
     );
     createdPolicies.push(policy!.id);
 
-    // Org-owned alert rule binding the partner-wide escalation policy + channel.
-    const [template] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .insert(alertTemplates)
-        .values({
-          orgId: org.id,
-          name: 'Escalation template',
-          conditions: { type: 'metric', metric: 'cpu', operator: '>', threshold: 95 },
-          severity: 'critical',
-          titleTemplate: 'High CPU',
-          messageTemplate: 'CPU exceeded threshold',
-        })
-        .returning(),
+    // Escalation now comes from a live delivery routing row; legacy alert-rule
+    // overrideSettings no longer participates in delivery resolution.
+    const [routingRule] = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db.insert(notificationRoutingRules).values({
+        orgId: null,
+        partnerId: partner.id,
+        name: 'Criticals to partner escalation',
+        priority: 5,
+        conditions: { severities: ['critical'] },
+        channelIds: [channelId],
+        escalationPolicyId: policy!.id,
+        enabled: true,
+      }).returning(),
     );
-    createdTemplates.push(template!.id);
-
-    const [rule] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .insert(alertRules)
-        .values({
-          orgId: org.id,
-          templateId: template!.id,
-          name: 'Escalating rule',
-          targetType: 'org',
-          targetId: org.id,
-          overrideSettings: {
-            notificationChannelIds: [channelId],
-            escalationPolicyId: policy!.id,
-          },
-        })
-        .returning(),
-    );
-    createdAlertRules.push(rule!.id);
-
-    const [alert] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .insert(alerts)
-        .values({
-          orgId: org.id,
-          deviceId,
-          ruleId: rule!.id,
-          severity: 'critical',
-          status: 'active',
-          title: 'Escalation fan-out test alert',
-          message: 'CPU on fire',
-        })
-        .returning(),
-    );
-    createdAlerts.push(alert!.id);
+    createdRules.push(routingRule!.id);
+    const alertId = await seedAlert(org.id, deviceId);
 
     const result = await withDbAccessContext(SYSTEM_CTX, () =>
-      processAlertNotifications({ type: 'process-alert', alertId: alert!.id }),
+      processAlertNotifications({ type: 'process-alert', alertId }),
     );
 
-    // The immediate send used the partner-wide channel (rule override), and
+    // The immediate send used the partner-wide channel (routing row), and
     // scheduleEscalation found the PARTNER-WIDE policy (org_id NULL) and
     // validated its step channel dual-axis — previously both lookups were
     // eq(orgId, alert.orgId) and would have silently no-opped.
@@ -498,7 +453,7 @@ describe('processAlertNotifications — partner-wide rail fan-out (#2130)', () =
     const { getNotificationQueue } = await import('../../services/notificationDispatcher');
     const delayed = await getNotificationQueue().getDelayed();
     const escalationJobs = delayed.filter(
-      (job) => job.data?.alertId === alert!.id && job.data?.escalationStep,
+      (job) => job.data?.alertId === alertId && job.data?.escalationStep,
     );
     expect(escalationJobs.length).toBe(1);
     expect(escalationJobs[0]!.data.channelId).toBe(channelId);

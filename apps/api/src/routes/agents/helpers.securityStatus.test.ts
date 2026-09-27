@@ -67,6 +67,16 @@ describe('upsertSecurityStatusForDevice — avProducts persistence (#3641)', () 
     conflictSets.length = 0;
   });
 
+  // #4340 — the ingest route diffs these against the previously stored row to
+  // decide whether a submit is a real change worth an audit record, so they
+  // must be the NORMALIZED values actually written.
+  it('returns the normalized provider and threat count it wrote', async () => {
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { provider: 'Defender', threatCount: 2 }))
+      .resolves.toEqual({ provider: 'windows_defender', threatCount: 2 });
+    await expect(upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, {}))
+      .resolves.toEqual({ provider: 'other', threatCount: 0 });
+  });
+
   it('persists the per-product array on insert and on conflict update', async () => {
     await upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, {
       provider: 'windows_defender',

@@ -206,6 +206,10 @@ type Manager struct {
 	// when the binary appears or the policy turns off, so the log carries one
 	// line per transition instead of one per heartbeat (#6872).
 	notInstalledWarned bool
+
+	// installIssue: the install-issue code (install_retry.go) the last Apply
+	// observed; "" when none. Reported in the heartbeat (#6925). Guarded by mu.
+	installIssue string
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -351,6 +355,7 @@ func (m *Manager) Apply(settings *Settings) {
 		// abandoned (pending cleared) and we fall through to the waiting branch.
 		m.abandonIfExhaustedLocked()
 		if m.pendingHelperVersion == "" {
+			m.installIssue = m.notInstalledIssueLocked()
 			if !m.notInstalledWarned {
 				log.Warn(m.notInstalledReasonLocked())
 				m.notInstalledWarned = true
@@ -362,6 +367,10 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 			return
 		}
+		// An offered version is being installed: not stuck, whatever happens
+		// next (a failure is retried; exhausting the budget abandons it and a
+		// later tick reports install_abandoned).
+		m.installIssue = ""
 		if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 			m.recordInstallFailureLocked(m.pendingHelperVersion)
 			// downloadAndInstall wraps the verified downloader's error, which for
@@ -379,6 +388,7 @@ func (m *Manager) Apply(settings *Settings) {
 	}
 	if !settings.Enabled || m.isInstalled() {
 		m.notInstalledWarned = false
+		m.installIssue = ""
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
@@ -781,7 +791,7 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 	defer os.Remove(verifiedPath)
 
-	if err := installPackageFunc(verifiedPath, m.binaryPath); err != nil {
+	if err := installPackageFunc(verifiedPath, m.binaryPath, version); err != nil {
 		return fmt.Errorf("install helper package: %w", err)
 	}
 
@@ -943,9 +953,25 @@ func (m *Manager) applyPendingUpdate() {
 		stopped = append(stopped, state)
 	}
 
+	// The rollback below restores only the file. On Windows, an msiexec that
+	// succeeded has already registered the product at the target, so a
+	// restored exe sits under a newer registration. That is deliberate (a
+	// working old helper beats a new one that will not start), and the next
+	// retry recovers from it: installMSI forces a file reinstall when the
+	// product is registered at the target (#6868).
 	backupPath := m.binaryPath + ".backup"
 	if err := copyFile(m.binaryPath, backupPath); err != nil {
 		log.Warn("failed to backup helper binary", "error", err.Error())
+	}
+	// The pre-update version lets a rollback that cannot replace the exe tell
+	// "nothing to restore" (msiexec rolled its own change back) from "the good
+	// copy is only in the backup" (#6869). "" when unknown.
+	preVersion, err := m.readBinaryVersion()
+	if err != nil {
+		if !errors.Is(err, errBinaryVersionUnsupported) {
+			log.Warn("failed to read pre-update helper version", "path", m.binaryPath, "error", err.Error())
+		}
+		preVersion = ""
 	}
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
@@ -954,32 +980,33 @@ func (m *Manager) applyPendingUpdate() {
 		key, value := updater.SafeDownloadErrorFields(err)
 		log.Error("failed to install helper update", key, value,
 			"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
-		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
-			log.Error("failed to rollback helper", "error", restoreErr.Error())
-		}
-		for _, state := range stopped {
-			state.watcherGaveUp = false // intentional stop, not a crash
-			if err := m.ensureRunningSession(state); err != nil {
-				log.Error("failed to restart helper after rollback", "session", state.key, "error", err.Error())
-			} else {
-				m.startSessionWatcher(state)
-			}
-		}
+		m.rollbackBinaryLocked(backupPath, preVersion)
+		m.restartSessionsLocked(stopped)
 		return
 	}
 
-	for _, state := range stopped {
+	for i, state := range stopped {
 		state.pid = 0
 		state.watcherGaveUp = false // new binary — give it a fresh chance
 		if err := m.ensureRunningSession(state); err != nil {
-			log.Error("failed to start updated helper", "session", state.key, "error", err.Error())
-			if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
-				log.Error("failed to rollback helper", "error", restoreErr.Error())
+			// A new build that will not start is a failed attempt, the same as
+			// a failed msiexec, so it counts toward the retry cap (#7049).
+			m.recordInstallFailureLocked(m.pendingHelperVersion)
+			log.Error("failed to start updated helper", "session", state.key, "error", err.Error(),
+				"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
+			// The sessions started before this one run the new exe, and Windows
+			// refuses to replace a mapped image ("Access is denied"). Stop them,
+			// and this one in case its spawn half-succeeded, before restoring
+			// (#6869).
+			for _, started := range stopped[:i+1] {
+				m.stopSessionWatcher(started)
+				if err := m.ensureStoppedSession(started); err != nil {
+					log.Warn("failed to stop updated helper before rollback", "session", started.key, "error", err.Error())
+				}
+				started.pid = 0
 			}
-			for _, restartState := range stopped {
-				_ = m.ensureRunningSession(restartState)
-				m.startSessionWatcher(restartState)
-			}
+			m.rollbackBinaryLocked(backupPath, preVersion)
+			m.restartSessionsLocked(stopped)
 			return
 		}
 		m.startSessionWatcher(state)
@@ -1063,8 +1090,4 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0755)
-}
-
-func restoreBackup(backupPath, targetPath string) error {
-	return os.Rename(backupPath, targetPath)
 }

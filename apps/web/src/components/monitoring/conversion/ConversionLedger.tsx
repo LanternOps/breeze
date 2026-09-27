@@ -41,7 +41,6 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
   };
   return <section data-testid="conversion-ledger" className="space-y-3 rounded border p-4">
     <h3>{t('monitoring:conversion.ledger.title')}</h3>
-    <p>{t('monitoring:conversion.ledger.deadline')}</p>
     {loading && <p>{t('common:states.loading')}</p>}
     {error && <button onClick={() => void load()}>{t('common:actions.retry')}</button>}
     {!loading && !error && rows.length === 0 && <p>{t('monitoring:conversion.ledger.empty')}</p>}
@@ -50,6 +49,7 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
       <ul>{row.outputs.map((output) => <li key={`${output.monitorId}:${output.role}`}>
         <a href={`/alerts/monitors/${output.monitorId}`}>{output.monitorName ?? output.monitorId}</a> · {output.role}
       </li>)}</ul>
+      {row.sourceTable !== 'network_monitors' && <p>{t('monitoring:conversion.ledger.deadline')}</p>}
       {row.revertedAt && <span data-testid={`ledger-reverted-${row.id}`}>{t('monitoring:conversion.ledger.reverted')}</span>}
       <button data-testid={`ledger-undo-${row.id}`} disabled={loading || error || busy || !row.revertable || !!row.revertedAt}
         onClick={() => void undo(row)}>{t('monitoring:conversion.ledger.undo')}</button>

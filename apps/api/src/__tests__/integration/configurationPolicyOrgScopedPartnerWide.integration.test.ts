@@ -11,7 +11,7 @@
  * carries `accessiblePartnerIds: []`. Under that context Postgres silently
  * drops every partner-owned policy row: no error, just zero rows. The
  * predicate reads as correct while the join resolves nothing, and a
- * partner-wide Monitoring policy appears never to reach the device.
+ * partner-wide Monitors policy appears never to reach the device.
  *
  * The fix is `withDevicePartnerPolicyVisibility` (services/configPolicyOwnership.ts)
  * around ONLY the policy join. It is the SAME-CONNECTION variant of
@@ -49,7 +49,6 @@ import {
   configPolicyFeatureLinks,
   configPolicyAssignments,
   configPolicyMonitoringSettings,
-  configPolicyMonitoringWatches,
   devices,
 } from '../../db/schema';
 import { resolveEffectiveConfig, previewEffectiveConfig } from '../../services/configurationPolicy';
@@ -137,11 +136,11 @@ async function seedDevice(orgId: string, siteId: string) {
 }
 
 /**
- * A Monitoring policy with one enabled service watch — the reporter's exact
- * configuration. `checkIntervalSeconds` is carried through so an assertion can
- * prove WHICH policy resolved rather than merely that something did.
+ * A policy using the live Monitors link after legacy Monitoring retirement.
+ * `checkIntervalSeconds` proves WHICH policy resolved rather than merely that
+ * something did.
  */
-async function seedMonitoringPolicy(
+async function seedMonitorsPolicy(
   owner: { orgId: string | null; partnerId: string | null },
   checkIntervalSeconds: number,
 ) {
@@ -151,25 +150,23 @@ async function seedMonitoringPolicy(
       .values({
         orgId: owner.orgId,
         partnerId: owner.partnerId,
-        name: `monitoring policy ${randomUUID()}`,
+        name: `monitors policy ${randomUUID()}`,
         status: 'active',
       })
       .returning();
     createdPolicies.push(policy!.id);
     const [link] = await db
       .insert(configPolicyFeatureLinks)
-      .values({ configPolicyId: policy!.id, featureType: 'monitoring' })
+      .values({
+        configPolicyId: policy!.id,
+        featureType: 'monitors',
+        inlineSettings: { items: [], checkIntervalSeconds },
+      })
       .returning();
-    const [settings] = await db
+    await db
       .insert(configPolicyMonitoringSettings)
       .values({ featureLinkId: link!.id, checkIntervalSeconds })
       .returning();
-    await db.insert(configPolicyMonitoringWatches).values({
-      settingsId: settings!.id,
-      watchType: 'service',
-      name: 'TestService',
-      enabled: true,
-    });
     return policy!.id;
   });
 }
@@ -189,15 +186,15 @@ async function assign(
 }
 
 describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', () => {
-  it('resolves a partner-wide Monitoring policy assigned at the ORGANIZATION level', async () => {
-    // The reporter's exact flow: create a partner-wide policy with one
-    // Service & Monitoring item, then assign it to a single organization.
+  it('resolves a partner-wide Monitors policy assigned at the ORGANIZATION level', async () => {
+    // Preserve the reporter's ownership/assignment flow using the live
+    // Monitors link, which now carries the check interval.
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org!.id });
     const device = await seedDevice(org!.id, site!.id);
 
-    const policyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 777);
+    const policyId = await seedMonitorsPolicy({ orgId: null, partnerId: partner.id }, 777);
     await assign(policyId, 'organization', org!.id);
 
     const result = await withDbAccessContext(orgDbContext(org!.id), () =>
@@ -207,9 +204,10 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
     expect(result).not.toBeNull();
     // Before the fix this was `undefined`: the app-layer predicate matched,
     // RLS dropped the row, and the feature simply vanished from the result.
-    expect(result!.features.monitoring).toBeDefined();
-    expect(result!.features.monitoring!.sourcePolicyId).toBe(policyId);
-    expect(result!.features.monitoring!.sourceLevel).toBe('organization');
+    expect(result!.features.monitors).toBeDefined();
+    expect(result!.features.monitors!.sourcePolicyId).toBe(policyId);
+    expect(result!.features.monitors!.sourceLevel).toBe('organization');
+    expect(result!.features.monitors!.inlineSettings).toMatchObject({ checkIntervalSeconds: 777 });
     expect(result!.inheritanceChain.some((e) => e.policyId === policyId)).toBe(true);
   });
 
@@ -225,7 +223,7 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
     const deviceA = await seedDevice(orgA!.id, siteA!.id);
     const deviceB = await seedDevice(orgB!.id, siteB!.id);
 
-    const policyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 888);
+    const policyId = await seedMonitorsPolicy({ orgId: null, partnerId: partner.id }, 888);
     await assign(policyId, 'partner', partner.id);
 
     const resultA = await withDbAccessContext(orgDbContext(orgA!.id), () =>
@@ -235,8 +233,10 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
       resolveEffectiveConfig(deviceB.id, orgAuth(orgB!.id, partner.id, randomUUID())),
     );
 
-    expect(resultA!.features.monitoring?.sourcePolicyId).toBe(policyId);
-    expect(resultB!.features.monitoring?.sourcePolicyId).toBe(policyId);
+    expect(resultA!.features.monitors?.sourcePolicyId).toBe(policyId);
+    expect(resultB!.features.monitors?.sourcePolicyId).toBe(policyId);
+    expect(resultA!.features.monitors?.inlineSettings).toMatchObject({ checkIntervalSeconds: 888 });
+    expect(resultB!.features.monitors?.inlineSettings).toMatchObject({ checkIntervalSeconds: 888 });
   });
 
   it('restores the caller\'s partner visibility after the policy join', async () => {
@@ -249,12 +249,12 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
     const site = await createSite({ orgId: org!.id });
     const device = await seedDevice(org!.id, site!.id);
 
-    const policyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 555);
+    const policyId = await seedMonitorsPolicy({ orgId: null, partnerId: partner.id }, 555);
     await assign(policyId, 'organization', org!.id);
 
     const after = await withDbAccessContext(orgDbContext(org!.id), async () => {
       const resolved = await resolveEffectiveConfig(device.id, orgAuth(org!.id, partner.id, randomUUID()));
-      expect(resolved!.features.monitoring?.sourcePolicyId).toBe(policyId);
+      expect(resolved!.features.monitors?.sourcePolicyId).toBe(policyId);
       const rows = await db.execute(
         sql`select current_setting('breeze.accessible_partner_ids', true) as ids`,
       );
@@ -284,9 +284,9 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
 
     const user = await createUser({ partnerId: partner.id, orgId: org!.id });
 
-    const partnerPolicyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 444);
+    const partnerPolicyId = await seedMonitorsPolicy({ orgId: null, partnerId: partner.id }, 444);
     await assign(partnerPolicyId, 'organization', org!.id);
-    const orgPolicyId = await seedMonitoringPolicy({ orgId: org!.id, partnerId: null }, 111);
+    const orgPolicyId = await seedMonitorsPolicy({ orgId: org!.id, partnerId: null }, 111);
 
     const preview = await withDbAccessContext(orgDbContext(org!.id), () =>
       previewEffectiveConfig(
@@ -297,10 +297,12 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
     );
 
     expect(preview).not.toBeNull();
-    // current: the partner-wide policy is the only monitoring source (the fix).
-    expect(preview!.current!.features.monitoring?.sourcePolicyId).toBe(partnerPolicyId);
+    // current: the partner-wide policy is the only monitors source (the fix).
+    expect(preview!.current!.features.monitors?.sourcePolicyId).toBe(partnerPolicyId);
     // proposed: the device-level org policy now wins...
-    expect(preview!.proposed!.features.monitoring?.sourcePolicyId).toBe(orgPolicyId);
+    expect(preview!.proposed!.features.monitors?.sourcePolicyId).toBe(orgPolicyId);
+    expect(preview!.current!.features.monitors?.inlineSettings).toMatchObject({ checkIntervalSeconds: 444 });
+    expect(preview!.proposed!.features.monitors?.inlineSettings).toMatchObject({ checkIntervalSeconds: 111 });
     // ...but the partner-wide policy must still be VISIBLE inside the
     // transaction. If the widening did not apply to `tx`, RLS would have
     // dropped it and this chain entry would be missing.

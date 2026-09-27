@@ -47,7 +47,7 @@ vi.mock('../services/tenantStatus', () => ({
   getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
-import { helperAuth } from './helperAuth';
+import { helperAuth, helperDbAccessContext } from './helperAuth';
 import { db, withDbAccessContext } from '../db';
 import { matchAgentTokenHash } from './agentAuth';
 import { getAgentTenantState } from '../services/tenantStatus';
@@ -210,5 +210,53 @@ describe('helperAuth middleware', () => {
     expect(ctx.accessiblePartnerIds).toEqual([]);
     // read-only partner axis is unchanged
     expect(ctx.currentPartnerId).toBe('partner-1');
+  });
+
+  // #3127 — the chat message-send route may wait (bounded) for a turn blocked
+  // on approvals to conclude. It is registered in selfManagedDbContextRoutes, so
+  // helperAuth must NOT wrap it in a request transaction: the handler opens its
+  // own short contexts (via helperDbAccessContext) around that wait.
+  describe('self-managed DB context routes (#3127)', () => {
+    const SID = '11111111-1111-4111-8111-111111111111';
+    const selfManagedApp = new Hono();
+    selfManagedApp.use('*', helperAuth);
+    selfManagedApp.post('/api/v1/helper/chat/sessions/:id/messages', (c) => c.json({
+      deviceId: c.get('helperDevice').id,
+      orgId: c.get('auth').orgId,
+    }));
+    selfManagedApp.get('/api/v1/helper/chat/sessions/:id/messages', (c) => c.json({ ok: true }));
+
+    it('authenticates but opens no request transaction for the message-send POST', async () => {
+      mockDeviceRow();
+
+      const res = await selfManagedApp.request(`/api/v1/helper/chat/sessions/${SID}/messages`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ deviceId: 'dev-1', orgId: 'org-1' });
+      expect(withDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('still wraps sibling routes in the request transaction', async () => {
+      mockDeviceRow();
+
+      const res = await selfManagedApp.request(`/api/v1/helper/chat/sessions/${SID}/messages`, {
+        headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) },
+      });
+
+      expect(res.status).toBe(200);
+      expect(withDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('helperDbAccessContext is exactly the context the middleware opens', async () => {
+      mockDeviceRow();
+
+      await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+
+      const middlewareCtx = vi.mocked(withDbAccessContext).mock.calls[0]?.[0];
+      expect(middlewareCtx).toEqual(helperDbAccessContext({ orgId: 'org-1', partnerId: 'partner-1' }));
+    });
   });
 });

@@ -53,6 +53,7 @@ import {
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
+import { useServerSyncedDraft } from '../shared/useServerSyncedDraft';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import { feedCurrencyCode } from '../../settings/marginMath';
@@ -332,12 +333,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [catalogLoadFailed, setCatalogLoadFailed] = useState(false);
   const [ecActive, setEcActive] = useState(false);
   const [pax8Active, setPax8Active] = useState(false);
-  const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
-  const [termsDirty, setTermsDirty] = useState(false);
+  // Drafts re-seed from the server during render and keep text typed while a
+  // save's refetch is in flight — see useServerSyncedDraft (#4807, #4296).
+  const { draft: terms, dirty: termsDirty, edit: editTerms, markSaved: markTermsSaved } =
+    useServerSyncedDraft(quote.termsAndConditions ?? '');
   // Per-quote footer line (`quotes.terms`) — distinct from Terms & Conditions
   // above (#6648). Blank = inherit the partner/brand footer.
-  const [footer, setFooter] = useState(quote.terms ?? '');
-  const [footerDirty, setFooterDirty] = useState(false);
+  const { draft: footer, dirty: footerDirty, edit: editFooter, markSaved: markFooterSaved } =
+    useServerSyncedDraft(quote.terms ?? '');
   const [footerSaved, flashFooterSaved] = useSavedFlash();
   // Quiet "Saved" cue for the blur-to-save terms field (title moved to the
   // workspace header — see QuoteHeaderMeta).
@@ -436,30 +439,6 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [contractVarErrors, setContractVarErrors] = useState<Record<string, string>>({});
   const [contractLabel, setContractLabel] = useState('');
 
-  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
-  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
-  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
-  // passive effect is flushed AFTER commit, so a keystroke landing between the
-  // prop's commit and the effect's later run gets silently overwritten by the
-  // stale string the effect captured. Comparing the rendered STRING (not the
-  // prop's identity) means a refetch that hands back an equal-but-unchanged
-  // value changes nothing on screen and can't discard an in-progress edit.
-  const termsSeed = quote.termsAndConditions ?? '';
-  const [termsSeededFrom, setTermsSeededFrom] = useState(termsSeed);
-  if (termsSeededFrom !== termsSeed) {
-    setTermsSeededFrom(termsSeed);
-    setTerms(termsSeed);
-    setTermsDirty(false);
-  }
-  // Same render-phase reseed for the footer line (see the #4807 note above).
-  const footerSeed = quote.terms ?? '';
-  const [footerSeededFrom, setFooterSeededFrom] = useState(footerSeed);
-  if (footerSeededFrom !== footerSeed) {
-    setFooterSeededFrom(footerSeed);
-    setFooter(footerSeed);
-    setFooterDirty(false);
-  }
-
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
   // input update instantly and the rail's live deposit figure recomputes
@@ -547,11 +526,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         errorFallback: t('quotes.editor.errors.saveTerms'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setTermsDirty(false);
+      markTermsSaved(terms);
       refresh();
     }, t('quotes.editor.errors.saveTerms'));
     if (ok) flashTermsSaved();
-  }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved, t]);
+  }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved, markTermsSaved, t]);
 
   // Blank → null, not '': the resolver uses `??`, so an empty string would WIN
   // over the partner/brand footer and print a blank footer instead of inheriting.
@@ -566,11 +545,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         errorFallback: t('quotes.editor.errors.saveFooter'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setFooterDirty(false);
+      markFooterSaved(value ?? '');
       refresh();
     }, t('quotes.editor.errors.saveFooter'));
     if (ok) flashFooterSaved();
-  }, [footerDirty, footer, quote.id, refresh, runScoped, flashFooterSaved, t]);
+  }, [footerDirty, footer, quote.id, refresh, runScoped, flashFooterSaved, markFooterSaved, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -3110,7 +3089,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             </p>
             <textarea
               value={terms}
-              onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
+              onChange={(e) => editTerms(e.target.value)}
               onBlur={() => { if (canWrite) void saveTerms(); }}
               disabled={!canWrite || isPending('terms')}
               data-testid="quote-terms"
@@ -3136,7 +3115,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               type="text"
               value={footer}
               maxLength={QUOTE_FOOTER_MAX}
-              onChange={(e) => { setFooter(e.target.value); setFooterDirty(true); }}
+              onChange={(e) => editFooter(e.target.value)}
               onBlur={() => { if (canWrite) void saveFooter(); }}
               disabled={!canWrite || isPending('footer')}
               data-testid="quote-footer"

@@ -82,3 +82,10 @@ it.each([
   fireEvent.click(undo);
   expect(request.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });
+
+it('keeps network Undo available without the retired-runtime deadline', async () => {
+  request.mockResolvedValueOnce(json({ items: [{ ...entry, sourceTable: 'network_monitors' }], nextCursor: null }));
+  render(<ConversionLedger />);
+  expect(await screen.findByTestId('ledger-undo-c1')).toBeEnabled();
+  expect(screen.getByTestId('conversion-ledger')).not.toHaveTextContent('W05d');
+});

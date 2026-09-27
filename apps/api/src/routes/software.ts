@@ -55,6 +55,7 @@ import {
 } from '../services/softwareDependencyIdentity';
 import {
   detectionRulesSchema,
+  successExitCodesSchema,
   softwareDownloadPolicySchema,
   SOFTWARE_FILE_TYPES,
   defaultSilentArgsForFileType,
@@ -587,7 +588,9 @@ const createVersionSchema = z.object({
   silentUninstallArgs: z.string().max(2000).optional(),
   preInstallScript: z.string().optional(),
   postInstallScript: z.string().optional(),
-  detectionRules: detectionRulesSchema.optional()
+  detectionRules: detectionRulesSchema.optional(),
+  // #7038: vendor-documented success exit codes, additive to the defaults.
+  successExitCodes: successExitCodesSchema.optional()
 });
 
 /**
@@ -617,7 +620,9 @@ const updateVersionSchema = z.object({
   architecture: z.string().max(20).optional(),
   silentInstallArgs: z.string().max(2000).nullable().optional(),
   silentUninstallArgs: z.string().max(2000).nullable().optional(),
-  detectionRules: detectionRulesSchema.nullable().optional()
+  detectionRules: detectionRulesSchema.nullable().optional(),
+  // null or [] clears the declared codes back to the built-in defaults.
+  successExitCodes: successExitCodesSchema.nullable().optional()
 });
 
 const listDeploymentsSchema = z.object({
@@ -1169,6 +1174,7 @@ softwareRoutes.post(
       preInstallScript: payload.preInstallScript ?? null,
       postInstallScript: payload.postInstallScript ?? null,
       detectionRules: payload.detectionRules ?? null,
+      successExitCodes: payload.successExitCodes ?? [],
     });
 
     if (!version) {
@@ -1290,6 +1296,23 @@ softwareRoutes.post(
         detectionRules = parsedDetection.data;
       }
 
+      // #7038: same stance as detectionRules — a malformed declaration is a 400,
+      // never silently dropped (dropping it reports every such install failed).
+      let successExitCodes: number[] = [];
+      if (typeof fields.successExitCodes === 'string' && fields.successExitCodes.trim() !== '') {
+        let rawCodes: unknown;
+        try {
+          rawCodes = JSON.parse(fields.successExitCodes);
+        } catch {
+          return c.json({ error: 'successExitCodes must be valid JSON' }, 400);
+        }
+        const parsedCodes = successExitCodesSchema.safeParse(rawCodes);
+        if (!parsedCodes.success) {
+          return c.json({ error: 'successExitCodes is invalid', details: parsedCodes.error.issues }, 400);
+        }
+        successExitCodes = parsedCodes.data;
+      }
+
       let supportedOs: string[] | null = null;
       if (typeof fields.supportedOs === 'string') {
         try {
@@ -1375,6 +1398,7 @@ softwareRoutes.post(
           preInstallScript,
           postInstallScript,
           detectionRules,
+          successExitCodes,
         });
       } catch (err) {
         captureException(err, c);
@@ -1440,6 +1464,7 @@ softwareRoutes.patch(
     if (payload.silentInstallArgs !== undefined) updates.silentInstallArgs = payload.silentInstallArgs;
     if (payload.silentUninstallArgs !== undefined) updates.silentUninstallArgs = payload.silentUninstallArgs;
     if (payload.detectionRules !== undefined) updates.detectionRules = payload.detectionRules;
+    if (payload.successExitCodes !== undefined) updates.successExitCodes = payload.successExitCodes ?? [];
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No fields to update' }, 400);
     }

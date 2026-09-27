@@ -17,8 +17,9 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 // Mock all services
 vi.mock('../services', () => ({}));
 
-const { executeScriptOnDevicesMock } = vi.hoisted(() => ({
+const { executeScriptOnDevicesMock, withAuthDbAccessContextMock } = vi.hoisted(() => ({
   executeScriptOnDevicesMock: vi.fn(),
+  withAuthDbAccessContextMock: vi.fn((_auth: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
 const { applyAutomationActionTerminalMock } = vi.hoisted(() => ({
@@ -197,6 +198,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: withAuthDbAccessContextMock,
 }));
 
 import { desc } from 'drizzle-orm';
@@ -2373,6 +2375,29 @@ describe('scripts routes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ deviceIds }),
+    });
+
+    // #7103 — the route is self-managed; it must hand the service a runner that
+    // opens the caller's own committed context, or the rows would be created
+    // contextless (and the send would no longer wait for any commit).
+    it('passes a runner that opens the caller\'s own DB access context', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        admission: { requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'rejected', targets: [] },
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        triggerType: 'manual',
+        runAs: 'system',
+        ignoredParameters: [],
+        auditOrgId: ORG_ID,
+      });
+
+      await app.request(`/scripts/${SCRIPT_ID_1}/execute`, executeBody(['11111111-1111-1111-1111-111111111111']));
+
+      const input = executeScriptOnDevicesMock.mock.calls[0]![0];
+      expect(typeof input.runInDbContext).toBe('function');
+      const inner = vi.fn(async () => 'ran');
+      await expect(input.runInDbContext(inner)).resolves.toBe('ran');
+      expect(withAuthDbAccessContextMock).toHaveBeenCalledWith(input.auth, inner);
     });
 
     it('returns an exact rejected 201 body and writes no success audit', async () => {

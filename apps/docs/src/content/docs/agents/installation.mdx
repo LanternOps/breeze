@@ -228,12 +228,12 @@ There is no downloadable pre-configured installer for Linux, so the **Add Device
 
 <Steps>
 1. Open **Add Device** from the Devices page and switch to the **CLI Commands** tab (this is the default tab when Linux is the detected platform).
-2. Under **Step 1 — Copy your installation token**, set **Number of devices** and **Link expires in**, then click **Generate new token** if you change either.
+2. Pick the **Site** the new devices should join. Under **Step 1 — Copy your installation token**, set **Number of devices** and **Link expires in**, then click **Generate token**. Opening the tab does not create a key — nothing is minted until you click. Use **Generate new token** if you change any of the three afterwards; the line under the token names the site it enrolls into.
 3. Under **Step 2 — Run the install command**, copy the one-liner shown for the Linux/macOS tab.
 4. Paste and run it on the target machine.
 </Steps>
 
-The generated command downloads and runs the same `install.sh` used by [Quick Install](#quick-install) above, with `--token` and `--server` filled in for you. Generating a token requires MFA on your account. Behind the scenes, the token is a short-lived **enrollment key** minted specifically for this dialog (`POST /devices/onboarding-token`) — not the same bootstrap-token mechanism the macOS GUI installer uses above — scoped to the device count and expiry you chose, up to 1000 devices and 365 days.
+The generated command downloads and runs the same `install.sh` used by [Quick Install](#quick-install) above, with `--token` and `--server` filled in for you. Generating a token requires MFA on your account. Behind the scenes, the token is a short-lived **enrollment key** minted specifically for this dialog (`POST /devices/onboarding-token`) — not the same bootstrap-token mechanism the macOS GUI installer uses above — scoped to the site, device count and expiry you chose, up to 1000 devices and 365 days. API callers that omit `siteId` get the organization's oldest site they can access (by creation time).
 
 ---
 

@@ -167,47 +167,54 @@ func uninstallSoftwareWindows(name, version string) error {
 	// Resolve winget once for all attempts: under the SYSTEM service the
 	// per-user "winget" PATH alias doesn't exist (see resolveWingetCommand).
 	wingetCmd := resolveWingetCommand()
-	attempts := []uninstallAttempt{
-		{
+	attempts := []uninstallAttempt{}
+	if version != "" {
+		attempts = append(attempts, uninstallAttempt{
 			command: wingetCmd,
 			args: []string{
 				"uninstall",
 				"--name", name,
+				"--version", version,
 				"--silent",
 				"--accept-source-agreements",
 				"--disable-interactivity",
 			},
+		})
+	}
+	attempts = append(attempts, uninstallAttempt{
+		command: wingetCmd,
+		args: []string{
+			"uninstall",
+			"--name", name,
+			"--silent",
+			"--accept-source-agreements",
+			"--disable-interactivity",
 		},
-		{
-			command: "wmic",
-			args: []string{
-				"product",
-				"where",
-				fmt.Sprintf("name='%s'", name),
-				"call",
-				"uninstall",
-				"/nointeractive",
-			},
-		},
+	})
+
+	wingetErr := runUninstallAttempts(name, attempts)
+	if wingetErr == nil {
+		return nil
 	}
 
-	if version != "" {
-		attempts = append([]uninstallAttempt{
-			{
-				command: wingetCmd,
-				args: []string{
-					"uninstall",
-					"--name", name,
-					"--version", version,
-					"--silent",
-					"--accept-source-agreements",
-					"--disable-interactivity",
-				},
-			},
-		}, attempts...)
+	// winget could not run, could not see the package, or did not remove it.
+	// Fall back to what the program registers under the machine-wide Uninstall
+	// key (#7037). wmic used to be the fallback, but it is removed from
+	// Windows 11 24H2+ and only ever covered MSI products, which the registry
+	// path handles directly by product code.
+	regErr := uninstallViaRegistryEntries(name, version)
+	if regErr != nil {
+		return fmt.Errorf("%w; registry fallback: %v", wingetErr, regErr)
 	}
 
-	return runUninstallAttempts(name, attempts)
+	// The matched Uninstall keys are verifiably gone. Cross-check the same
+	// inventory the next report is built from; a collector error is not
+	// evidence against the removal we just observed.
+	stillPresent, verifyErr := uninstallVerifyStillPresent(name)
+	if verifyErr == nil && stillPresent {
+		return fmt.Errorf("removed the machine-wide Uninstall entries for %q, but it is still present in this device's software inventory", name)
+	}
+	return nil
 }
 
 func safeMacOSApplicationPath(name string) (string, error) {

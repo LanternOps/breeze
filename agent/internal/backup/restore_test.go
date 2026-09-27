@@ -1485,3 +1485,25 @@ func TestRestore_SetuidSurvivesWhenTheEntryAlsoCarriesAnOwner(t *testing.T) {
 		t.Fatalf("perm = %v, want 0755", info.Mode().Perm())
 	}
 }
+
+// #7050: an error naming a VSS-backed entry must print the real path
+// (OriginalPath) the operator recognises, never the per-run shadow-copy
+// device path VSS rewrote SourcePath to.
+func TestRestoreContentlessEntry_ErrorNamesOriginalPathNotShadowPath(t *testing.T) {
+	shadow := `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\data\report.docx`
+	entry := SnapshotFile{
+		SourcePath:   shadow,
+		OriginalPath: `C:\data\report.docx`,
+		BackupPath:   "files/report.docx",
+	}
+	err := RestoreContentlessEntry(filepath.Join(t.TempDir(), "report.docx"), entry, false)
+	if err == nil {
+		t.Fatal("expected an error for a content entry")
+	}
+	if strings.Contains(err.Error(), "HarddiskVolumeShadowCopy") {
+		t.Fatalf("error %q names the VSS shadow-copy path", err)
+	}
+	if !strings.Contains(err.Error(), `C:\data\report.docx`) {
+		t.Fatalf("error %q does not name the original path", err)
+	}
+}

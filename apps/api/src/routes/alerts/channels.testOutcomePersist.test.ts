@@ -64,10 +64,14 @@ vi.mock('../../db', () => {
     returning: () => Promise.resolve([]),
   };
   // `where` has to be thenable for the UPDATE (awaited directly) AND chainable
-  // for the SELECT (…where().limit()). Give the select path its own object.
+  // for the SELECT (…where().leftJoin().orderBy().$dynamic().limit(), per
+  // getNotificationChannelWithConfig / #6379). Give the select path its own object.
   const selectBuilder: any = {
     from: () => selectBuilder,
     where: () => selectBuilder,
+    leftJoin: () => selectBuilder,
+    orderBy: () => selectBuilder,
+    $dynamic: () => selectBuilder,
     limit: () => Promise.resolve(channelRowRef.current ? [channelRowRef.current] : []),
   };
   return {
@@ -98,6 +102,7 @@ vi.mock('../../db/schema', () => ({
     updatedAt: { name: 'updated_at' },
     createdAt: { name: 'created_at' },
   },
+  notificationChannelConfigs: { channelId: { name: 'channel_id' }, config: { name: 'config' } },
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   alertRules: {},

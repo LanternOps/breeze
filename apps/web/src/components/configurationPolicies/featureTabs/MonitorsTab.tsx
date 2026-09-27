@@ -63,13 +63,6 @@ function readCheckInterval(link: InlineSettingsLike): number | undefined {
   const raw = (link?.inlineSettings as { checkIntervalSeconds?: unknown } | null | undefined)?.checkIntervalSeconds;
   return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
-// Empty-watch monitoring links carry only the check interval.
-function linkHasLegacyRows(link: FeatureLink): boolean {
-  if (link.featureType === "alert_rule" || link.featureType === "automation") return true;
-  const watches = link.inlineSettings?.watches;
-  return link.featureType === "monitoring" && Array.isArray(watches) && watches.length > 0;
-}
-
 const SEVERITY_BADGE: Record<string, string> = {
   critical: "border-destructive/40 bg-destructive/15 text-destructive",
   warning: "border-warning/40 bg-warning/15 text-warning",
@@ -83,14 +76,12 @@ export default function MonitorsTab({
   linkedPolicyId,
   parentLink,
   allLinks = [],
-  siblingLinks,
 }: FeatureTabProps) {
   const { t } = useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
   const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
   const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
 
-  const hasLegacyRows = (siblingLinks ?? []).some(linkHasLegacyRows);
   const [ledgerRevision, setLedgerRevision] = useState(0);
   const refreshLinks = async () => {
     setLedgerRevision((n) => n + 1);
@@ -98,7 +89,7 @@ export default function MonitorsTab({
     if (!res.ok) return;
     const json = await res.json();
     const links: FeatureLink[] = Array.isArray(json?.data) ? json.data : [];
-    for (const type of ["monitors", "alert_rule", "monitoring", "automation"] as const) {
+    for (const type of ["monitors", "automation"] as const) {
       onLinkChanged(links.find((link) => link.featureType === type) ?? null, type);
     }
   };
@@ -571,7 +562,8 @@ export default function MonitorsTab({
             })}
           </ul>
         )}
-        <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows={hasLegacyRows} onChanged={() => void refreshLinks()} />
+        {/* Retired links are hidden by the policy API; conversion checks its own sources and hides empty previews. */}
+        <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
         <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
       </div>
     </FeatureTabShell>

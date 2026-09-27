@@ -26,7 +26,13 @@ type LiveAuthoritySession = Pick<ActiveSession, 'auth' | 'toolAuth' | 'orgId' | 
  * a device-bound platform admin is still bound to the device.
  */
 function deviceBoundToolAuth(auth: AuthContext, session: LiveAuthoritySession): AuthContext {
-  if (!session.deviceId) return auth;
+  if (!session.deviceId) {
+    // #6675: a device-page session's write default rides on its tool auth.
+    // Carry it over so an approved Tier-2 write still lands in the page org;
+    // `resolveWritableToolOrgId` re-checks it against this rebuilt reach.
+    const writeDefault = session.toolAuth.aiWriteDefaultOrgId;
+    return writeDefault ? { ...auth, aiWriteDefaultOrgId: writeDefault } : auth;
+  }
   return {
     ...auth,
     orgId: session.orgId,

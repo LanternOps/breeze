@@ -267,6 +267,13 @@ type NotifyRequest struct {
 	// TimeoutMs is how long the helper should hold an interactive prompt open
 	// before giving up and reporting no decision. Ignored when Actions is empty.
 	TimeoutMs int `json:"timeoutMs,omitempty"`
+	// FallbackDialog asks the helper to show a native, self-dismissing
+	// information dialog when the toast cannot be shown (#6864). Set only for
+	// notices the user must see, such as "a technician connected to your
+	// session"; the reboot ladder leaves it false so it never becomes a dialog.
+	// Ignored when Actions is non-empty. A helper built before this field
+	// existed ignores it and keeps the toast-only behaviour.
+	FallbackDialog bool `json:"fallbackDialog,omitempty"`
 }
 
 // NotifyResult is the user helper's response after showing a notification.
@@ -569,6 +576,14 @@ type StateSync struct {
 	// recent (D3): killing the backup helper mid-run on a transient IPC
 	// hiccup previously had no guard at all.
 	ActiveBackupRuns int `json:"activeBackupRuns,omitempty"`
+	// AuthRejectedAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but the server is rejecting its
+	// credentials (401/403, or an auth-dead backoff tick). The watchdog
+	// treats a fresh value as "running, locked out" and does not restart the
+	// agent for its stale heartbeat (#2796). Watchdogs that predate the field
+	// ignore it, and LastHeartbeat stays empty so they cannot mistake it for
+	// a successful heartbeat.
+	AuthRejectedAt string `json:"authRejectedAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

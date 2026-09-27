@@ -103,7 +103,9 @@ describe('PublicQuoteView exact public quote contract', () => {
     const el = screen.getByTestId('public-quote-terms-conditions') as HTMLDetailsElement;
     expect(el.tagName).toBe('DETAILS');
     expect(el.open).toBe(false);
-    expect(el.querySelector('summary')!.textContent).toMatch(/Terms & Conditions · 2 sections · ~1 min read/);
+    const summary = el.querySelector('summary')!.textContent;
+    expect(summary).toContain('Terms & Conditions');
+    expect(summary).toContain('2 sections · ~1 min read');
   });
 
   it('opens the T&C when location.hash is #terms', async () => {
@@ -258,5 +260,129 @@ describe('PublicQuoteView — cover page', () => {
   it('renders no cover when the quote has none or it is switched off', () => {
     render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, quote: { ...DETAIL.quote, coverPage: { enabled: false, title: 'x', coverImageId: null, preparedForName: null, showPreparedBy: true } } }} />);
     expect(screen.queryByTestId('doc-cover')).toBeNull();
+  });
+});
+
+// A contract block (an agreement from a contract template) is long-form legal
+// text. It used to render inline in the body, in block order — ahead of the
+// totals — so a long agreement pushed the price and the sign button to the
+// bottom of the page (#7040).
+const MSA_BLOCK = {
+  id: 'blk-msa',
+  blockType: 'contract',
+  sortOrder: 0,
+  content: {
+    label: 'Managed Services Agreement',
+    templateName: 'MSA',
+    versionNumber: 3,
+    sourceType: 'authored',
+    // 450 words → ~3 min at 200 wpm.
+    renderedHtml: `<p>${'clause '.repeat(450)}</p>`,
+    fileUrl: null,
+  },
+};
+const UPLOADED_BLOCK = {
+  id: 'blk-nda',
+  blockType: 'contract',
+  sortOrder: 1,
+  content: {
+    templateName: 'Mutual NDA',
+    versionNumber: 1,
+    sourceType: 'uploaded',
+    renderedHtml: null,
+    fileUrl: '/quotes/public/public-token/contract-file/blk-nda',
+  },
+};
+const WITH_AGREEMENTS: PublicQuoteDetail = { ...DETAIL, blocks: [MSA_BLOCK, UPLOADED_BLOCK] };
+
+describe('PublicQuoteView — agreements come after the price (#7040)', () => {
+  const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it('renders contract blocks after the totals and the sign panel, then the T&C', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const [msa, nda] = screen.getAllByTestId('contract-block');
+    expect(follows(screen.getByTestId('public-quote-due-on-acceptance'), msa!)).toBe(true);
+    expect(follows(screen.getByTestId('public-quote-agree'), msa!)).toBe(true);
+    expect(follows(msa!, nda!)).toBe(true);
+    expect(follows(nda!, screen.getByTestId('public-quote-terms-conditions'))).toBe(true);
+  });
+
+  it('collapses each agreement by default and summarises it', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const [msa, nda] = screen.getAllByTestId('contract-block') as HTMLDetailsElement[];
+    expect(msa!.tagName).toBe('DETAILS');
+    expect(msa!.open).toBe(false);
+    expect(msa!.querySelector('summary')!.textContent).toContain('Managed Services Agreement');
+    expect(msa!.querySelector('summary')!.textContent).toContain('~3 min read');
+    expect(nda!.open).toBe(false);
+    expect(nda!.querySelector('summary')!.textContent).toContain('Mutual NDA');
+    expect(nda!.querySelector('summary')!.textContent).toContain('PDF');
+  });
+
+  it('does not load an uploaded agreement until it is opened', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const nda = screen.getAllByTestId('contract-block')[1] as HTMLDetailsElement;
+    expect(nda.querySelector('iframe')).toBeNull();
+    nda.open = true;
+    fireEvent(nda, new Event('toggle'));
+    expect(nda.querySelector('iframe')?.getAttribute('src')).toContain('/contract-file/blk-nda');
+    expect(screen.getByTestId('contract-block-download').getAttribute('href')).toContain('/contract-file/blk-nda');
+  });
+
+  it('opens an agreement from its #agreement-<id> deep link', async () => {
+    window.location.hash = '#agreement-blk-msa';
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    await waitFor(() => expect((screen.getAllByTestId('contract-block')[0] as HTMLDetailsElement).open).toBe(true));
+  });
+
+  it('names and links every agreement in the signature checkbox', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const label = screen.getByTestId('public-quote-agree').closest('label')!;
+    const links = [...label.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]);
+    expect(links).toEqual([
+      ['Managed Services Agreement', '#agreement-blk-msa'],
+      ['Mutual NDA', '#agreement-blk-nda'],
+      ['Terms & Conditions', '#terms'],
+    ]);
+    expect(label.textContent).toContain('Managed Services Agreement, Mutual NDA and Terms & Conditions');
+  });
+
+  it('clicking an agreement link in the checkbox opens that agreement', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const msa = screen.getAllByTestId('contract-block')[0] as HTMLDetailsElement;
+    const link = screen.getByTestId('public-quote-agree').closest('label')!.querySelector('a')!;
+    fireEvent.click(link);
+    expect(msa.open).toBe(true);
+  });
+
+  it('expands every agreement for print and restores after', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const rows = screen.getAllByTestId('contract-block') as HTMLDetailsElement[];
+    fireEvent(window, new Event('beforeprint'));
+    expect(rows.every((r) => r.open)).toBe(true);
+    fireEvent(window, new Event('afterprint'));
+    expect(rows.some((r) => r.open)).toBe(false);
+  });
+
+  // The browser snapshots the page for print right after `beforeprint`
+  // returns. A plain dispatch (no act()) is how the browser fires it: React
+  // must have committed the open rows by the time the handler returns, not on
+  // a later task (fireEvent's act() wrapper would hide exactly that delay).
+  it('opens every row synchronously inside beforeprint', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const rows = [
+      ...screen.getAllByTestId('contract-block'),
+      screen.getByTestId('public-quote-terms-conditions'),
+    ] as HTMLDetailsElement[];
+    window.dispatchEvent(new Event('beforeprint'));
+    expect(rows.map((r) => r.open)).toEqual([true, true, true]);
+    window.dispatchEvent(new Event('afterprint'));
+    expect(rows.map((r) => r.open)).toEqual([false, false, false]);
+  });
+
+  it('keeps contract blocks out of the proposal body', () => {
+    render(<PublicQuoteView token="public-token" initial={WITH_AGREEMENTS} />);
+    const agreements = screen.getByTestId('public-quote-agreements');
+    for (const row of screen.getAllByTestId('contract-block')) expect(agreements.contains(row)).toBe(true);
   });
 });

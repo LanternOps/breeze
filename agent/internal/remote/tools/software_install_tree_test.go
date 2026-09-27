@@ -29,7 +29,7 @@ func TestRunInstallerCommandKillsProcessTreeOnTimeout(t *testing.T) {
 	// The wrapper hangs past the deadline while a descendant keeps working; the
 	// descendant writes its marker only after the wrapper has been killed.
 	script := "( sleep 2; echo alive > " + marker + " ) & sleep 30"
-	_, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, script), "exe")
+	_, _, _, err := runInstallerCommand(ctx, shInstallerCommand(ctx, script), "exe", nil)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRunInstallerCommandLeavesDescendantsAloneOnSuccess(t *testing.T) {
 	defer cancel()
 
 	script := "( sleep 1; echo alive > " + marker + " ) & echo wrapper-done"
-	_, _, descendantsPending, err := runInstallerCommand(ctx, shInstallerCommand(ctx, script), "exe")
+	_, _, descendantsPending, err := runInstallerCommand(ctx, shInstallerCommand(ctx, script), "exe", nil)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}

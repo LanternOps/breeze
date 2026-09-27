@@ -90,7 +90,8 @@ const TOKEN_SHAPE = /^[A-Za-z]+(?:_[A-Za-z0-9]+)+$/;
  */
 export function conversionErrorMessage(body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
-  const { error, message } = body as { error?: unknown; message?: unknown };
+  const { error: rawError, message } = body as { error?: unknown; message?: unknown };
+  const error = rawError === 'stale_preview' ? 'preview_stale' : rawError;
   if (typeof error === 'string' && (CONVERSION_ERROR_CODES as readonly string[]).includes(error)) {
     return i18n.t(/* i18n-dynamic */ `monitoring:conversion.errorCodes.${error}`);
   }

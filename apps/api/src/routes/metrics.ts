@@ -237,6 +237,19 @@ const agentHeartbeatTotal = new Counter({
   registers: [register]
 });
 
+// #4340 — routine agent-telemetry submits used to be chained into audit_logs
+// (~97% of its volume). They are audited now only on failure or on a real
+// change; this counter is where the routine volume stays observable.
+export type AgentIngestKind = 'logs' | 'eventlogs' | 'sessions' | 'security_status' | 'management_posture';
+export type AgentIngestOutcome = 'success' | 'partial' | 'failed';
+
+const agentIngestSubmissionsTotal = new Counter({
+  name: 'breeze_agent_ingest_submissions_total',
+  help: 'Agent telemetry submissions by kind and outcome',
+  labelNames: ['kind', 'outcome'] as const,
+  registers: [register]
+});
+
 const scriptsExecutedTotal = new Counter({
   name: 'breeze_scripts_executed_total',
   help: 'Total scripts executed',
@@ -726,6 +739,10 @@ export function recordHttpRequest(
 export function recordAgentHeartbeat(status: 'success' | 'failed'): void {
   agentHeartbeatTotal.labels(status).inc();
   upsertCounterState(agentHeartbeatState, { status });
+}
+
+export function recordAgentIngestSubmission(kind: AgentIngestKind, outcome: AgentIngestOutcome): void {
+  agentIngestSubmissionsTotal.labels(kind, outcome).inc();
 }
 
 export function updateBusinessMetrics(metrics: {

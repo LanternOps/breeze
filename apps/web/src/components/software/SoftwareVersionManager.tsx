@@ -13,6 +13,8 @@ import { asList } from '@/lib/asList';
 import {
   SOFTWARE_FILE_TYPES,
   deriveSoftwareFileTypeFromUrl,
+  formatSuccessExitCodes,
+  parseSuccessExitCodesText,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
@@ -45,6 +47,7 @@ type VersionEntry = {
   silentUninstallArgs: string;
   supportedOs: string[];
   detectionRules: DetectionRule[];
+  successExitCodes: number[];
 };
 function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -76,6 +79,7 @@ function normalizeVersion(
   }
   const supportedOsRaw = raw.supportedOs;
   const detectionRulesRaw = raw.detectionRules;
+  const successExitCodesRaw = raw.successExitCodes;
   return {
     id: String(raw.id ?? raw.versionId ?? `ver-${index}`),
     version: String(raw.version ?? ""),
@@ -95,6 +99,11 @@ function normalizeVersion(
       : [],
     detectionRules: Array.isArray(detectionRulesRaw)
       ? (detectionRulesRaw as DetectionRule[])
+      : [],
+    successExitCodes: Array.isArray(successExitCodesRaw)
+      ? successExitCodesRaw
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n))
       : [],
   };
 }
@@ -132,6 +141,10 @@ const EMPTY_FORM = {
   fileType: "" as "" | SoftwareFileType,
   supportedOs: [] as string[],
   detectionRules: [] as DetectionRule[],
+  // Raw free text (issue #7038); parsed with parseSuccessExitCodesText at
+  // submit time. Codes ADD to the agent's built-in success codes (0 always;
+  // 3010/1641 for exe/msi) — they never replace them.
+  successExitCodesRaw: "",
   file: null as File | null,
   fileName: "",
 };
@@ -286,6 +299,20 @@ export default function SoftwareVersionManager({
     knownCustomKeys,
     knownVariableKeys,
   ]);
+  const successExitCodesResult = useMemo(
+    () => parseSuccessExitCodesText(formState.successExitCodesRaw),
+    [formState.successExitCodesRaw],
+  );
+  const successExitCodesError = successExitCodesResult.ok
+    ? null
+    : "invalidToken" in successExitCodesResult
+      ? i18n.t(
+          "policies:software.softwareVersionManager.invalidSuccessExitCode",
+          { token: successExitCodesResult.invalidToken },
+        )
+      : i18n.t(
+          "policies:software.softwareVersionManager.tooManySuccessExitCodes",
+        );
   const latestVersion = useMemo(
     () => versions.find((item) => item.id === latestId) ?? versions[0],
     [versions, latestId],
@@ -370,11 +397,17 @@ export default function SoftwareVersionManager({
             silentUninstallArgs: seed.silentUninstallArgs,
             supportedOs: [...seed.supportedOs],
             detectionRules: seed.detectionRules.map((r) => ({ ...r })),
+            successExitCodesRaw: formatSuccessExitCodes(seed.successExitCodes),
           }
         : EMPTY_FORM,
     );
     setAdvancedOpen(
-      Boolean(seed && (seed.silentUninstallArgs || seed.detectionRules.length)),
+      Boolean(
+        seed &&
+          (seed.silentUninstallArgs ||
+            seed.detectionRules.length ||
+            seed.successExitCodes.length),
+      ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
     setIsFormOpen(true);
@@ -392,12 +425,14 @@ export default function SoftwareVersionManager({
       silentUninstallArgs: entry.silentUninstallArgs,
       supportedOs: [...entry.supportedOs],
       detectionRules: entry.detectionRules.map((r) => ({ ...r })),
+      successExitCodesRaw: formatSuccessExitCodes(entry.successExitCodes),
     });
     setAdvancedOpen(
       Boolean(
         entry.silentUninstallArgs ||
           entry.detectionRules.length ||
-          entry.notes.length,
+          entry.notes.length ||
+          entry.successExitCodes.length,
       ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -451,6 +486,7 @@ export default function SoftwareVersionManager({
     event.preventDefault();
     if (!formState.version.trim()) return;
     if (!catalogId) return;
+    if (!successExitCodesResult.ok) return;
     // Edit mode: metadata PATCH — no file handling, empty string clears.
     if (editingVersionId) {
       try {
@@ -473,6 +509,12 @@ export default function SoftwareVersionManager({
                 formState.detectionRules.length > 0
                   ? formState.detectionRules
                   : null,
+              // Edit always sends the array — an empty one clears previously
+              // declared codes (mirrors detectionRules' null-clears semantics
+              // via an always-present value instead, per the API contract).
+              successExitCodes: successExitCodesResult.ok
+                ? successExitCodesResult.codes
+                : [],
             }),
           },
         );
@@ -532,6 +574,10 @@ export default function SoftwareVersionManager({
             detectionRules:
               formState.detectionRules.length > 0
                 ? formState.detectionRules
+                : undefined,
+            successExitCodes:
+              successExitCodesResult.ok && successExitCodesResult.codes.length > 0
+                ? successExitCodesResult.codes
                 : undefined,
           },
           onProgress: (sent, total) => setUploadProgress(toPercent(sent, total)),
@@ -595,6 +641,10 @@ export default function SoftwareVersionManager({
               detectionRules:
                 formState.detectionRules.length > 0
                   ? formState.detectionRules
+                  : undefined,
+              successExitCodes:
+                successExitCodesResult.ok && successExitCodesResult.codes.length > 0
+                  ? successExitCodesResult.codes
                   : undefined,
             }),
           },
@@ -1016,6 +1066,44 @@ export default function SoftwareVersionManager({
                 />
 
                 <div>
+                  <label
+                    className="text-xs font-semibold uppercase text-muted-foreground"
+                    htmlFor="version-success-exit-codes"
+                  >
+                    {i18n.t(
+                      "policies:software.softwareVersionManager.additionalSuccessExitCodes",
+                    )}
+                  </label>
+                  <input
+                    id="version-success-exit-codes"
+                    type="text"
+                    value={formState.successExitCodesRaw}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        successExitCodesRaw: event.target.value,
+                      }))
+                    }
+                    placeholder={i18n.t(
+                      "policies:software.softwareVersionManager.eG10001101",
+                    )}
+                    aria-invalid={successExitCodesError != null}
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  />
+                  {successExitCodesError ? (
+                    <p className="mt-1 text-xs text-destructive">
+                      {successExitCodesError}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:software.softwareVersionManager.successExitCodesHelp",
+                      )}
+                    </p>
+                  )}
+                </div>
+
+                <div>
                   <label className="text-xs font-semibold uppercase text-muted-foreground">
                     {i18n.t(
                       "policies:software.softwareVersionManager.releaseNotes",
@@ -1070,7 +1158,7 @@ export default function SoftwareVersionManager({
             </button>
             <button
               type="submit"
-              disabled={saving || tokenErrors.length > 0}
+              disabled={saving || tokenErrors.length > 0 || !successExitCodesResult.ok}
               className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {editingVersionId

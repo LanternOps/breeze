@@ -103,14 +103,14 @@
          product), and the Launch Condition blocks install before any files
          are touched if the other edition is found. -->
     <MajorUpgrade
-      DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
+      DowngradeErrorMessage="A newer version of Breeze Agent is already installed, so this older installer cannot run. To repair or re-enroll this device, download the current installer from your Breeze console and run that instead, or Uninstall Breeze Agent (Settings, Apps) and then run this installer again."
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallExecute" />
 
     <Upgrade Id="$(var.OtherUpgradeCode)">
       <UpgradeVersion Minimum="0.0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="OTHEREDITIONFOUND" />
     </Upgrade>
-    <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
+    <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it first (Settings, Apps), then run this installer again; or download the installer for the edition your Breeze server uses from your Breeze console." />
     <!-- Stock InstallExecuteSequence numbers are LaunchConditions 100,
          FindRelatedProducts 200, AppSearch 400, so on a silent install
          OTHEREDITIONFOUND (above) and WINDOWS_CURRENT_MAJOR_VERSION (below)
@@ -215,7 +215,6 @@
     <Property Id="MsiLogging" Value="voicewarmupx" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
-    <Property Id="BREEZE_KILL_CMD" Secure="yes" />
     <Property Id="BREEZE_ACL_CMD" Secure="yes" />
     <Property Id="BREEZE_SC_FAILURE_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
@@ -269,11 +268,24 @@
          that's why PrepareServiceShutdown below repeats the disarm (both
          services) + watchdog stop as a deferred LocalSystem action before
          StopServices. -->
-    <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
+    <!-- Console window (#3624): an immediate EXE custom action runs
+         impersonated on the installing user's desktop, and Windows Installer
+         launches it with no CREATE_NO_WINDOW / SW_HIDE, so a plain cmd.exe CA
+         showed a black console, held on screen for the ~3s wait in step 3 on
+         every upgrade over a running agent. The CA cannot become deferred
+         (it must beat InstallValidate, see above) and the wait cannot go
+         (it is what makes the stop graceful), so the same command line now
+         runs through the WiX Util extension's WixQuietExec, which spawns it
+         with no window and copies its output into the MSI log. In immediate
+         mode WixQuietExec reads the command from the WixQuietExecCmdLine
+         property; nothing else in this package uses that property, so it is
+         free to set here. build-msi.ps1 loads the extension (-ext
+         WixToolset.Util.wixext), which provides the Wix4UtilCA_* binary. -->
+    <SetProperty Id="WixQuietExecCmdLine" Value="&quot;[System64Folder]cmd.exe&quot; /c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0" Before="KillBreezeProcesses" Sequence="execute" />
     <CustomAction
       Id="KillBreezeProcesses"
-      Property="BREEZE_KILL_CMD"
-      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
       Execute="immediate"
       Return="ignore" />
 
@@ -668,18 +680,41 @@
            with the key and the server URL flag, same arguments used
            by the CA above) is picked up live without a service
            restart. This is the intended flow for imaged/sysprep'd
-           deployments. -->
-      <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+           deployments.
+
+           Both enrollment CAs run on every non-uninstall path, INCLUDING
+           maintenance mode (Installed is true): re-running the SAME MSI file
+           has the same ProductCode, so it is a maintenance run, not an
+           upgrade, and a `NOT Installed` gate made that retry a silent no-op
+           on a box whose agent never enrolled (#4127). Running them there is
+           safe because the agent is idempotent: `enroll` (without the force
+           flag, which this CA never passes) and `bootstrap` both exit 0
+           WITHOUT contacting the server when agent.yaml already has an
+           agent_id, so an enrolled agent is never re-enrolled and a
+           single-use bootstrap token is never burned. A maintenance run
+           launched from the Windows Installer cache (Apps repair) has a
+           tokenless OriginalDatabase and takes the soft no-token path. -->
+      <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT REMOVE AND SERVER_URL AND ENROLLMENT_KEY" />
       <!-- Filename/property bootstrap enrollment: only when explicit
            SERVER_URL+ENROLLMENT_KEY were NOT supplied (those take the
            EnrollAgent path above). The deferred CA references [OriginalDatabase]
            directly (baked at schedule time, here, while it still names the
            downloaded file) — no immediate capture CA is needed. -->
-      <Custom Action="BootstrapEnroll" Before="InstallServices" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
+      <Custom Action="BootstrapEnroll" Before="InstallServices" Condition="NOT REMOVE AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
       <!-- Post-upgrade backstop: undo whatever the OLD product's nested
            uninstall (REP, scheduled afterInstallExecute) did to the NEW
-           services and scheduled task. See CA definitions above. -->
-      <Custom Action="RecoverBreezeAfterUpgrade" After="RemoveExistingProducts" Condition="WIX_UPGRADE_DETECTED" />
+           services and scheduled task. See CA definitions above.
+
+           RecoverBreezeAfterUpgrade also runs on maintenance runs
+           (Installed AND NOT REMOVE, e.g. the same MSI file re-run, #4127):
+           KillBreezeProcesses stops both services on every non-uninstall
+           path, but in maintenance mode no component changes state, so
+           ServiceControl Start="install" never starts them again and the
+           device stayed offline until the next reboot, including right after
+           a maintenance run that just enrolled it. Its `sc start` is a no-op
+           against running services, and it re-arms the failure actions the
+           kill disarmed. -->
+      <Custom Action="RecoverBreezeAfterUpgrade" After="RemoveExistingProducts" Condition="WIX_UPGRADE_DETECTED OR (Installed AND NOT REMOVE)" />
       <Custom Action="ReRegisterUserHelperTaskAfterUpgrade" After="RecoverBreezeAfterUpgrade" Condition="WIX_UPGRADE_DETECTED" />
       <!-- NOT UPGRADINGPRODUCTCODE: when THIS version is later the old
            product being removed by a successor's RemoveExistingProducts,

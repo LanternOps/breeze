@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 
 const { authRef, selectQueue, insertValuesMock, updateSetMock, deleteWhereMock, resolveTemplateMock, ruleRef } = vi.hoisted(() => ({
   authRef: { current: {} as any },
@@ -134,18 +135,19 @@ describe('alert rule site target authorization', () => {
     ['site', [{ id: TARGET_A, orgId: ORG_ID }]],
     ['device', [{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }]],
     ['group', [{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }]],
-  ] as const)('rejects a denied %s target before template or rule writes', async (type, rows) => {
+  ] as const)('retires creation with a denied %s target before writes', async (type, rows) => {
     selectQueue.push(rows as unknown as unknown[]);
     const res = await app().request('/alerts/rules', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(createBody(type, [TARGET_A])),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(resolveTemplateMock).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('rejects mixed allowed/denied device targets atomically before writes', async () => {
+  it('retires mixed allowed/denied device targets before writes', async () => {
     selectQueue.push([
       { id: TARGET_A, orgId: ORG_ID, siteId: ALLOWED_SITE },
       { id: TARGET_B, orgId: ORG_ID, siteId: DENIED_SITE },
@@ -154,30 +156,33 @@ describe('alert rule site target authorization', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(createBody('device', [TARGET_A, TARGET_B])),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(resolveTemplateMock).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('allows a matching-site target', async () => {
+  it('retires creation for a matching-site target', async () => {
     selectQueue.push([{ id: TARGET_A, orgId: ORG_ID, siteId: ALLOWED_SITE }]);
     const res = await app().request('/alerts/rules', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(createBody('device', [TARGET_A])),
     });
-    expect(res.status).toBe(201);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('preserves unrestricted target creation behavior', async () => {
+  it('retires unrestricted target creation', async () => {
     authRef.current.allowedSiteIds = undefined;
     selectQueue.push([{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }]);
     const res = await app().request('/alerts/rules', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(createBody('device', [TARGET_A])),
     });
-    expect(res.status).toBe(201);
-    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('hides a persisted denied device target on detail reads', async () => {
@@ -227,7 +232,7 @@ describe('alert rule site target authorization', () => {
     });
   });
 
-  it('rejects updating a persisted denied group target before any write', async () => {
+  it('retires updating a persisted denied group target before writes', async () => {
     ruleRef.current = {
       id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'group', targetId: TARGET_A,
       overrideSettings: { targets: { type: 'group', ids: [TARGET_A] }, targetIds: [TARGET_A] },
@@ -236,11 +241,12 @@ describe('alert rule site target authorization', () => {
     const res = await app().request(`/alerts/rules/${RULE_ID}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Updated' }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('rejects changing an allowed rule to a denied target before any write', async () => {
+  it('retires changing an allowed rule to a denied target before writes', async () => {
     ruleRef.current = {
       id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'device', targetId: TARGET_A,
       overrideSettings: { targets: { type: 'device', ids: [TARGET_A] }, targetIds: [TARGET_A] },
@@ -253,22 +259,24 @@ describe('alert rule site target authorization', () => {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targets: { type: 'device', ids: [TARGET_B] } }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('rejects deleting a persisted denied site target before reads or deletes with side effects', async () => {
+  it('retires deleting a persisted denied site target without side effects', async () => {
     ruleRef.current = {
       id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'site', targetId: TARGET_A,
       overrideSettings: { targets: { type: 'site', ids: [TARGET_A] }, targetIds: [TARGET_A] },
     };
     selectQueue.push([{ id: TARGET_A, orgId: ORG_ID }]);
     const res = await app().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
     expect(db.delete).not.toHaveBeenCalled();
   });
 
-  it('hides a denied requested device from rule test simulation', async () => {
+  it('retires simulation before looking up a requested device', async () => {
     ruleRef.current = {
       id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'device', targetId: TARGET_A,
       overrideSettings: { targets: { type: 'device', ids: [TARGET_A] }, targetIds: [TARGET_A] },
@@ -281,7 +289,8 @@ describe('alert rule site target authorization', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId: TARGET_B }),
     });
-    expect(res.status).toBe(404);
-    expect(db.select).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(LEGACY_ALERTING_GONE);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

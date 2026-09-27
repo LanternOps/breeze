@@ -1073,6 +1073,51 @@ describe('createSoftwareDeployment', () => {
     expect(dispatched.payload.forceReinstall).toBe(true);
   });
 
+  // #7038: declared vendor success codes ride along with the install command;
+  // a version without any sends no key at all (identical to the old payload).
+  it.each([
+    ['threads declared codes', [1000, 1101], [1000, 1101]],
+    ['omits an empty list', [], undefined],
+  ] as const)('successExitCodes: %s', async (_label, stored, expected) => {
+    const versionRecord = {
+      id: 'ver-codes',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: null,
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/silent',
+      version: '13.1.1.700',
+      detectionRules: null,
+      successExitCodes: [...stored],
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'Veeam Agent', integrationProvider: null };
+    const deployment = { id: 'dep-codes', orgId: 'org-1' };
+    const targetDevices = [{ id: 'dev-1', agentId: 'agent-1' }];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock
+      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(ins());
+
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-codes',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    const dispatched = dispatchDeviceCommandMock.mock.calls[0]![0];
+    expect(dispatched.payload.successExitCodes).toEqual(expected);
+    if (expected === undefined) expect('successExitCodes' in dispatched.payload).toBe(false);
+  });
+
   it('omits detectionRules and defaults forceReinstall false when version has none', async () => {
     const versionRecord = {
       id: 'ver-none',

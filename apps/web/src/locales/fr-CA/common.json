@@ -28,7 +28,7 @@
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
     "aiForOffice": "IA pour Office",
-    "networkMonitor": "Moniteur réseau",
+    "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "monitoring": "Surveillance",
     "networkDiscovery": "Découverte du réseau",
@@ -874,97 +874,18 @@
       }
     },
     "monitors": {
-      "CreateMonitorForm": {
-        "actions": {
-          "createMonitor": "Créer un moniteur",
-          "creating": "Création…"
-        },
-        "errors": {
-          "createMonitor": "Impossible de créer un moniteur",
-          "generic": "Une erreur s’est produite",
-          "nameRequired": "Le nom est requis",
-          "targetRequired": "Une cible est requise"
-        },
-        "fields": {
-          "expectedBanner": "Bannière attendue (optionnelle)",
-          "expectedBody": "Contenu attendu du corps (optionnel)",
-          "expectedStatus": "Statut attendu",
-          "expectedValue": "Valeur espérée (optionnelle)",
-          "followRedirects": "Suivre les redirections",
-          "hostname": "Nom d’hôte à résoudre",
-          "method": "Méthode",
-          "monitorType": "Type de moniteur",
-          "nameserver": "Serveur de noms personnalisé (optionnel)",
-          "pingCount": "Nombre de ping",
-          "pollingInterval": "Intervalle de sondage (secondes)",
-          "port": "Port",
-          "recordType": "Type d’enregistrement",
-          "target": "Cible (IP/Nom d’hôte)",
-          "timeout": "Temps mort (secondes)",
-          "url": "URL",
-          "verifySsl": "Vérifier SSL"
-        },
-        "monitorTypes": {
-          "dnsCheck": {
-            "description": "Vérifier que les enregistrements DNS se résolvent correctement",
-            "label": "Contrôle DNS"
-          },
-          "httpCheck": {
-            "description": "Surveillez les terminaux HTTP/HTTPS",
-            "label": "Vérification HTTP"
-          },
-          "icmpPing": {
-            "description": "Vérifiez si un hôte est joignable via ping",
-            "label": "Ping ICMP"
-          },
-          "tcpPort": {
-            "description": "Vérifiez si un port TCP est ouvert et répond",
-            "label": "Port TCP"
-          }
-        },
-        "placeholders": {
-          "expectedBanner": "par exemple SSH-",
-          "expectedBody": "par exemple « statut » : « ok »",
-          "expectedValue": "par exemple 93.184.216.34",
-          "hostname": "example.com",
-          "name": "par exemple serveur web de production",
-          "nameserver": "8.8.8.8",
-          "target": "192.168.1.1 ou server.example.com",
-          "url": "https://example.com/health"
-        },
-        "subtitle": "Configurez un nouveau contrôle de surveillance pour une cible réseau.",
-        "title": "Créer un moniteur réseau"
-      },
       "MonitorDetailModal": {
         "actions": {
-          "cancelEdit": "Annuler la modification",
-          "checkNow": "Vérifiez maintenant",
-          "deleteMonitor": "Supprimer le moniteur",
-          "deleting": "Suppression…",
-          "yesDelete": "Oui, supprimez"
-        },
-        "alertRules": {
-          "disabled": "(désactivé)",
-          "title": "Règles d’alerte"
+          "checkNow": "Vérifiez maintenant"
         },
         "consecutiveFailures": "{{count}} échec consécutif",
         "consecutiveFailures_plural": "{{count}} échecs consécutifs",
-        "delete": {
-          "confirmShort": "Confirmez-vous ?"
-        },
         "errors": {
-          "deleteMonitor": "Impossible de supprimer le moniteur",
           "generic": "Une erreur s’est produite",
           "loadDetails": "Impossible de charger les détails du moniteur",
-          "triggerCheck": "Impossible de déclencher le test",
-          "updateMonitor": "Impossible de mettre à jour le moniteur"
+          "triggerCheck": "Impossible de déclencher le test"
         },
         "fallbackTitle": "Moniteur",
-        "fields": {
-          "interval": "Intervalle (s)",
-          "timeout": "Temps mort (s)",
-          "target": "URL cible"
-        },
         "labels": {
           "lastChecked": "Dernière vérification : {{time}}",
           "response": "Réponse : {{response}}",
@@ -992,8 +913,6 @@
           "icmpPing": "Ping ICMP",
           "tcpPort": "Port TCP"
         },
-        "targetResetNote": "La modification de l’URL réinitialise l’observation TLS.",
-        "saved": "Moniteur mis à jour",
         "certificate": {
           "title": "Certificat",
           "issuer": "Émetteur",
@@ -1005,27 +924,22 @@
             "handshakeFailed": "Échec de la négociation TLS",
             "notTls": "Sans TLS"
           }
-        }
+        },
+        "openMonitor": "Ouvrir le moniteur de cette vérification",
+        "notConverted": "Vérifiez la conversion dans Résultats."
       },
       "NetworkMonitorList": {
         "actions": {
-          "addMonitor": "Ajouter un moniteur",
-          "deleteMonitor": "Supprimer le moniteur",
           "runCheckNow": "Vérifiez maintenant",
-          "viewDetails": "Voir les détails"
+          "viewDetails": "Voir les détails",
+          "newCheck": "Nouvelle vérification"
         },
         "assetFilter": "Filtrer les moniteurs selon l’actif sélectionné.",
-        "delete": {
-          "confirmLabel": "Supprimer le moniteur",
-          "message": "Êtes-vous sûr de vouloir supprimer ce moniteur ? Cela supprimera également tous les résultats et les règles d’alerte. Cette action ne peut être annulée.",
-          "title": "Supprimer le moniteur réseau"
-        },
         "empty": {
-          "action": "Créez-en un maintenant.",
-          "prefix": "Aucun moniteur réseau configuré."
+          "action": "Créer un moniteur.",
+          "prefix": "Aucune vérification réseau."
         },
         "errors": {
-          "deleteMonitor": "Impossible de supprimer le moniteur",
           "fetchMonitors": "Impossible de récupérer les moniteurs",
           "generic": "Une erreur s’est produite",
           "triggerCheck": "Impossible de déclencher le test"
@@ -1038,11 +952,13 @@
           "interval": "Intervalle",
           "lastChecked": "Dernière vérification",
           "response": "Réponse",
-          "target": "Cible"
+          "target": "Cible",
+          "monitor": "Moniteur",
+          "openMonitor": "Ouvrir le moniteur"
         },
         "loading": "Chargement des moniteurs...",
         "messages": {
-          "monitorDeleted": "Moniteur supprimé"
+          "checkQueued": "Vérification réseau mise en file d’attente"
         },
         "status": {
           "degraded": "Dégradé"
@@ -1059,6 +975,19 @@
           "httpCheck": "Vérification HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Port TCP"
+        },
+        "notConverted": "Non converti"
+      },
+      "NetworkCheckConversionBanner": {
+        "pending": "{{count}} vérifications réseau sont à examiner.",
+        "review": "Examiner la conversion",
+        "title": "Conversion des vérifications réseau",
+        "convert": "Convertir {{count}}",
+        "converted": "{{count}} vérifications réseau converties",
+        "failed": "Impossible de convertir les vérifications réseau",
+        "outcome": {
+          "convertible": "Convertible",
+          "unconvertible": "Conversion impossible"
         }
       }
     },
@@ -1847,7 +1776,7 @@
         "configureMonitoring": "Configurer la surveillance",
         "pauseSnmpPolling": "Pause SNMP sondage",
         "resumeSnmpPolling": "Reprendre l’interrogation SNMP",
-        "disableAllActiveMonitoring": "Désactiver toute surveillance active pour cet actif",
+        "disableSnmpMonitoring": "Désactiver la surveillance SNMP",
         "needsOrgSelection": "Les actifs de surveillance réseau sont limités à une seule organisation.",
         "loadingAssets": "Chargement des moyens de surveillance...",
         "showingAllDiscoveredAssets": "Affichage de tous les actifs découverts",
@@ -1943,11 +1872,12 @@
       "MonitoringPage": {
         "tabs": {
           "assets": "Actifs",
-          "checks": "Contrôles réseau",
-          "templates": "Modèles SNMP"
+          "templates": "Modèles SNMP",
+          "results": "Résultats"
         },
-        "title": "Surveillance",
-        "description": "Interrogation SNMP et contrôles réseau. La découverte peut alimenter la surveillance, qui se gère ici."
+        "title": "Réseau",
+        "description": "Actifs, modèles SNMP et résultats des vérifications réseau. Les vérifications sont créées comme moniteurs sous Alertes.",
+        "newCheck": "Nouvelle vérification"
       }
     },
     "fleet": {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CONFIG_FEATURE_TYPES } from '@breeze/shared';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from '@breeze/shared';
 
 import { ALL_FEATURE_TYPES, EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES } from './DeviceEffectiveConfigTab';
 
@@ -24,4 +24,8 @@ describe('device Effective Config tab feature-type parity (#2004)', () => {
       expect(CONFIG_FEATURE_TYPES).toContain(excluded);
     }
   });
+});
+
+it('renders no retired feature types', () => {
+  for (const retired of RETIRED_CONFIG_FEATURE_TYPES) expect(ALL_FEATURE_TYPES as readonly string[]).not.toContain(retired);
 });

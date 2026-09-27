@@ -184,6 +184,13 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // `eq(…, device.id)` for the agent authenticated by agentBearerAuthMiddleware.
   // Surfaced by #4019 — the writes sit well past the old 4000-byte window.
   'routes/agents/mtls.ts:POST /renew-cert',
+  // Agent-token security-status ingest (requireAgentRole + agentAuthMiddleware
+  // on agentRoutes '/:id/*'). #4340's change-only audit added a pre-read of
+  // `securityStatus` keyed on `device.id`, where `device` is resolved from the
+  // authenticated agent's own `:id` (token hash bound to that agentId). No
+  // user session, no caller-supplied device selector, so allowedSiteIds never
+  // applies.
+  'routes/agents/security.ts:PUT /:id/security/status',
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
   'routes/agents/state.ts:PUT /:id/registry-state',

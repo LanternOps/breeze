@@ -19,7 +19,7 @@ import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
-import { settleCheckoutSession } from '../../services/stripeSettle';
+import { HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
@@ -421,35 +421,45 @@ invoiceRoutes.post('/invoices/:id/settle',
     const { id } = c.req.valid('param');
     const { sessionId } = c.req.valid('json');
 
-    // Org-scoped: the invoice must belong to this portal user's org (404, not 403,
-    // so we don't leak existence cross-tenant).
-    const [inv] = await db.select({ id: invoices.id, partnerId: invoices.partnerId })
-      .from(invoices)
-      .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
-      .limit(1);
-    if (!inv) return c.json({ error: 'Invoice not found' }, 404);
+    // #7065 — this route owns its DB context (SELF_MANAGED_DB_CONTEXT_ROUTES):
+    // the portal middleware opens no request transaction, so the ownership reads
+    // below run in one short context and the settle (Stripe retrieve + capture)
+    // runs with NO context held — it opens its own short transactions around the
+    // Stripe call instead of pinning a pooled connection across it.
+    //
+    // System scope with explicit org filters, like POST /invoices/:id/pay: the
+    // invoice must belong to this portal user's org (404, not 403, so we don't
+    // leak existence cross-tenant), and the session must be one WE created for
+    // THIS invoice in THIS org — which blocks a customer from passing a foreign
+    // session_id to settle (and reveal) someone else's checkout.
+    const owned = await withSystemDbAccessContext(async () => {
+      const [inv] = await db.select({ id: invoices.id, partnerId: invoices.partnerId })
+        .from(invoices)
+        .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
+        .limit(1);
+      if (!inv) return null;
+      const [mapping] = await db.select({ id: invoiceStripePayments.id })
+        .from(invoiceStripePayments)
+        .where(and(
+          eq(invoiceStripePayments.stripeObjectId, sessionId),
+          eq(invoiceStripePayments.invoiceId, inv.id),
+          eq(invoiceStripePayments.orgId, auth.user.orgId),
+        ))
+        .limit(1);
+      return { inv, hasMapping: !!mapping };
+    });
+    if (!owned) return c.json({ error: 'Invoice not found' }, 404);
+    if (!owned.hasMapping) return c.json({ settled: false });
+    const { inv } = owned;
 
-    // The session must be one WE created for THIS invoice — a pending/recorded
-    // mapping row, read in org scope (RLS confirms ownership). This blocks a customer
-    // from passing a foreign session_id to settle (and reveal) someone else's checkout.
-    const [mapping] = await db.select({ id: invoiceStripePayments.id })
-      .from(invoiceStripePayments)
-      .where(and(
-        eq(invoiceStripePayments.stripeObjectId, sessionId),
-        eq(invoiceStripePayments.invoiceId, inv.id),
-        eq(invoiceStripePayments.orgId, auth.user.orgId),
-      ))
-      .limit(1);
-    if (!mapping) return c.json({ settled: false });
-
-    // settleCheckoutSession reads the partner-axis key + records the payment — both
-    // need system scope (the portal request runs in ORG scope, where the key row is
-    // RLS-invisible — the #1375 class). The service expects the caller to establish it.
     try {
-      const result = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() => settleCheckoutSession(inv.partnerId, sessionId)));
+      const result = await settleCheckoutSession(inv.partnerId, sessionId);
       return c.json(result);
     } catch (err) {
+      // A held-context assertion means this route lost its SELF_MANAGED
+      // registration — a programming error. Surface it (500 + Sentry via the
+      // error handler), never as "processing" (#7065).
+      if (err instanceof HeldDbContextForStripeError) throw err;
       // Never strand the customer on an error just because instant-settle hiccuped —
       // the sweep settles it within the minute. Log + report unsettled (200), so the
       // page can show "processing" rather than a failure.

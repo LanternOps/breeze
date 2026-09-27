@@ -2526,6 +2526,223 @@ describe('user routes', () => {
     });
   });
 
+  describe('POST /users/:id/org-access (#7034)', () => {
+    const TARGET = '11111111-1111-1111-1111-111111111111';
+    const ORG_A = '33333333-3333-3333-3333-333333333333';
+    const ORG_B = '55555555-5555-5555-5555-555555555555';
+    const FOREIGN = '66666666-6666-6666-6666-666666666666';
+    const TARGET_ROLE = '44444444-4444-4444-4444-444444444444';
+
+    // Select order in the handler: scoped target membership, the target's
+    // scoped role, the role-ceiling reads (parent role, role permissions),
+    // then — for 'selected' only — the partner-org ownership probe.
+    function mockScopedTarget(row: Record<string, unknown> | null) {
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(row ? [row] : [])
+              })
+            })
+          })
+        })
+      } as any;
+    }
+    function mockTargetRole() {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: TARGET_ROLE, scope: 'partner', name: 'Technician', description: null,
+              isSystem: false, parentRoleId: null, partnerId: 'partner-123', orgId: null
+            }])
+          })
+        })
+      } as any;
+    }
+    function mockParentRole() {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any;
+    }
+    function mockRolePermissions(perms: Array<{ resource: string; action: string }>) {
+      return { from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(perms) }) }) } as any;
+    }
+    function mockOwnedOrgs(ids: string[]) {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(ids.map((id) => ({ id }))) }) } as any;
+    }
+    const targetRow = (orgAccess: string, orgIds: string[] | null) => ({
+      id: TARGET, email: 'tech@example.com', name: 'Tech', status: 'active',
+      roleId: TARGET_ROLE, roleName: 'Technician', orgAccess, orgIds
+    });
+    function captureUpdate(returned: Array<{ id: string }> = [{ id: 'link-1' }]) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(returned) })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+      return setSpy;
+    }
+    function post(body: unknown, id = TARGET) {
+      return app.request(`/users/${id}/org-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+
+    it('grants an additional organization to a selected-access partner user, audited, cache cleared, sessions ended', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedTarget(targetRow('selected', [ORG_A])))
+        .mockReturnValueOnce(mockTargetRole())
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]))
+        .mockReturnValueOnce(mockOwnedOrgs([ORG_A, ORG_B]));
+      const setSpy = captureUpdate();
+
+      const res = await post({ orgAccess: 'selected', orgIds: [ORG_A, ORG_B, ORG_B] });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ success: true, orgAccess: 'selected', orgIds: [ORG_A, ORG_B] });
+      // Deduplicated, exactly like the invite path persists it.
+      expect(setSpy).toHaveBeenCalledWith({ orgAccess: 'selected', orgIds: [ORG_A, ORG_B] });
+      // The ownership probe is scoped to the caller's partner, not a bare id lookup.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(organizations.partnerId, 'partner-123');
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'user.org_access.update',
+        resourceType: 'user',
+        resourceId: TARGET,
+        details: expect.objectContaining({
+          scope: 'partner',
+          previousOrgAccess: 'selected',
+          previousOrgIds: [ORG_A],
+          orgAccess: 'selected',
+          orgIds: [ORG_A, ORG_B]
+        })
+      }));
+      expect(clearPermissionCache).toHaveBeenCalledWith(TARGET);
+      expect(vi.mocked(terminateUserRemoteSessions)).toHaveBeenCalledWith(TARGET);
+    });
+
+    it("switches to 'all' and stores org_ids as NULL", async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedTarget(targetRow('selected', [ORG_A])))
+        .mockReturnValueOnce(mockTargetRole())
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]));
+      const setSpy = captureUpdate();
+
+      const res = await post({ orgAccess: 'all' });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith({ orgAccess: 'all', orgIds: null });
+    });
+
+    it('rejects an organization outside the caller partner before any write', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedTarget(targetRow('selected', [ORG_A])))
+        .mockReturnValueOnce(mockTargetRole())
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]))
+        .mockReturnValueOnce(mockOwnedOrgs([ORG_A]));
+
+      const res = await post({ orgAccess: 'selected', orgIds: [ORG_A, FOREIGN] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/organization/i);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, [ORG_A, FOREIGN]);
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    });
+
+    it("requires orgIds for 'selected' and refuses them otherwise", async () => {
+      const missing = await post({ orgAccess: 'selected' });
+      expect(missing.status).toBe(400);
+      expect((await missing.json()).error).toContain('orgIds');
+
+      const empty = await post({ orgAccess: 'selected', orgIds: [] });
+      expect(empty.status).toBe(400);
+
+      const stray = await post({ orgAccess: 'all', orgIds: [ORG_A] });
+      expect(stray.status).toBe(400);
+      expect((await stray.json()).error).toContain('orgIds');
+
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('rejects unknown keys (strict schema)', async () => {
+      const res = await post({ orgAccess: 'all', roleId: TARGET_ROLE });
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('refuses changing your own organization access', async () => {
+      const res = await post({ orgAccess: 'all' }, 'user-123');
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the target is not a member of the caller partner', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedTarget(null));
+      const res = await post({ orgAccess: 'all' });
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('refuses a target whose role exceeds what the caller could assign', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'invite' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-user-manager',
+        scope: 'partner'
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedTarget(targetRow('none', null)))
+        .mockReturnValueOnce(mockTargetRole())
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([{ resource: 'devices', action: 'write' }]));
+
+      const res = await post({ orgAccess: 'all' });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op (no write, no audit, no teardown) when nothing changed', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedTarget(targetRow('selected', [ORG_A, ORG_B])))
+        .mockReturnValueOnce(mockTargetRole())
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]))
+        .mockReturnValueOnce(mockOwnedOrgs([ORG_A, ORG_B]));
+
+      const res = await post({ orgAccess: 'selected', orgIds: [ORG_B, ORG_A] });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).changed).toBe(false);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+      expect(vi.mocked(terminateUserRemoteSessions)).not.toHaveBeenCalled();
+    });
+
+    it('is refused for an organization-scoped caller', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: 'partner-123',
+          orgId: 'org-123',
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      const res = await post({ orgAccess: 'all' });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+  });
+
   describe('DELETE /users/:id (Task 9/14: epoch bump + refresh-family revoke + post-commit cleanup on removal)', () => {
     // removeMembershipForScope now runs the membership delete + orphan
     // neutralization + advanceUserEpochs + revokeAllRefreshFamilies in ONE

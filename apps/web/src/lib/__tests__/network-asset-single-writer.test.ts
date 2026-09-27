@@ -16,11 +16,9 @@
  * Deliberately OUT of scope, with reasons:
  *  - `/discovery/assets/bulk-approve` | `/bulk-dismiss` — list-level triage that
  *    spec §10 leaves on the Discovery rows and bulk bar.
- *  - `/monitors`, `/monitors/:id` — the generic monitor surface owned by
- *    CreateMonitorForm / NetworkMonitorList / MonitorDetailModal. Spec §10 tells
- *    the settings modal to reuse CreateMonitorForm for Add, so a blanket ban
- *    would contradict the spec. The writer still exposes createCheck/deleteCheck
- *    so the modal has one typed path.
+ *  - `/monitors/:id/check` — manual execution from the read-only results views.
+ *    Network check authoring goes through the monitor editor; retirement and
+ *    reversal go through the conversion ledger.
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -178,10 +176,12 @@ describe('network asset single writer', () => {
     expect(files.some((f) => relative(SRC_ROOT, f) === WRITER)).toBe(true);
   });
 
-  it('the writer actually covers every guarded shape (no vacuous pass)', () => {
+  it('the writer covers every active shape and never calls the legacy disable route', () => {
     const source = readFileSync(join(SRC_ROOT, WRITER), 'utf8');
     const covered = new Set(findAssetWrites(source, WRITER).map((v) => v.shape));
-    expect([...covered].sort()).toEqual(GUARDED.map((g) => g.shape).sort());
+    // Keep guarding the retired DELETE route so a new caller cannot restore it.
+    expect([...covered].sort()).toEqual(GUARDED.map((g) => g.shape).filter((shape) => shape !== '/monitoring/assets/*').sort());
+    expect(covered.has('/monitoring/assets/*')).toBe(false);
   });
 
   it('no other module mutates an asset-scoped endpoint', () => {

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,37 @@ import (
 )
 
 var errNoBootstrapInput = errors.New("no bootstrap token from filename or properties")
+
+// errBootstrapInputUnusable means the install carried enrollment material that
+// cannot be used: a BOOTSTRAP_TOKEN property with no SERVER_URL (and no
+// filename token to fall back on), or an installer file name whose
+// (TOKEN@HOST) / [TOKEN@HOST] group has been mangled (lowercased, truncated,
+// host stripped). Enrollment was clearly intended, so unlike
+// errNoBootstrapInput this is a hard failure: soft-succeeding here is how a
+// deploy tool reported "installed" for machines that never enrolled (#4127).
+var errBootstrapInputUnusable = errors.New("enrollment token present but unusable")
+
+// mangledFilenameTokenRe matches a parenthesised or bracketed group whose
+// pre-'@' part is exactly the 10-character alphanumeric bootstrap-token length
+// in EITHER case, with anything (or nothing) as the host. It is only consulted
+// after the strict installerTokenParenRe/installerTokenBracketRe parse fails,
+// and only against the package's own file name (never its directory), so it
+// flags a token that was intended but mangled (lowercased by a deploy tool,
+// host stripped or garbled) and nothing else. Keeping the token part this
+// specific matters because a match rolls the install back: an ordinary rename
+// such as "Breeze Agent (support@acme.com).msi", "Breeze Agent (1).msi" or a
+// cached C:\Windows\Installer\*.msi must still resolve to errNoBootstrapInput.
+var mangledFilenameTokenRe = regexp.MustCompile(`\(\s*[A-Za-z0-9]{10}\s*@[^()]*\)|\[\s*[A-Za-z0-9]{10}\s*@[^\[\]]*\]`)
+
+// installerBaseName returns the final path element of an MSI path, splitting
+// on both separators: OriginalDatabase is a Windows path, but this code (and
+// its tests) also runs on Unix where filepath.Base ignores backslashes.
+func installerBaseName(path string) string {
+	if i := strings.LastIndexAny(path, `\/`); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
 
 // gateBootstrapServer refuses, in a hosted build, to contact a control-plane host
 // outside the compiled allowlist — called BEFORE the token is redeemed so a
@@ -87,6 +119,13 @@ func resolveBootstrapInputs(data string) (token, server string, err error) {
 
 	if tok, host, ferr := parseInstallerFilenameToken(installerPath); ferr == nil {
 		return tok, "https://" + host, nil
+	}
+	if propToken != "" {
+		return "", "", fmt.Errorf("%w: BOOTSTRAP_TOKEN was supplied without SERVER_URL", errBootstrapInputUnusable)
+	}
+	if mangledFilenameTokenRe.MatchString(installerBaseName(installerPath)) {
+		return "", "", fmt.Errorf("%w: the installer file name carries a malformed (TOKEN@HOST) group; "+
+			"re-download the installer or rename it back to the name it was downloaded with", errBootstrapInputUnusable)
 	}
 	return "", "", errNoBootstrapInput
 }
@@ -182,11 +221,30 @@ func reportBootstrapFailure(line string) {
 	eventLogError("BreezeAgent", line)
 }
 
+// unenrolledInstallNotice is what a bare (tokenless) install leaves behind. It
+// names the likely cause and both recovery paths.
+const unenrolledInstallNotice = "Breeze Agent installed but not enrolled: no enrollment token reached the installer " +
+	"(the installer file was renamed, or no ENROLLMENT_KEY/SERVER_URL was passed). " +
+	"The device will not appear in Breeze until it is enrolled: re-run the installer as downloaded " +
+	"(file name unchanged), or run: breeze-agent.exe enroll <key> --server <url>"
+
+// reportBootstrapUnenrolled records a soft (exit 0) unenrolled install in the
+// durable sinks an admin checks when a device never shows up, at warning
+// rather than error level. stderr lands in the MSI verbose log; exit stays 0,
+// so it cannot trip Return="check".
+func reportBootstrapUnenrolled(line string) {
+	fmt.Fprintln(os.Stderr, line)
+	writeLastErrorFile(line)
+	eventLogWarning("BreezeAgent", line)
+}
+
 // runBootstrap resolves enrollment inputs, redeems the token, and enrolls.
 // Soft-exits 0 when there is genuinely no token (manual install with no token
 // and no properties), so the install completes with an unenrolled agent that
-// idles in the wait-for-enrollment loop. A present-but-bad token is a real
-// error and exits non-zero so the MSI rolls back cleanly.
+// idles in the wait-for-enrollment loop (leaving a warning in the durable
+// sinks, #4127). A present-but-bad token, or enrollment material that is
+// present but unusable (errBootstrapInputUnusable), is a real error and exits
+// non-zero so the MSI rolls back cleanly and the deploy tool sees the failure.
 func runBootstrap() {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -212,8 +270,21 @@ func runBootstrap() {
 	}
 
 	token, server, err := resolveBootstrapInputs(bootstrapInstallData)
+	if errors.Is(err, errBootstrapInputUnusable) {
+		bsLog.Error("bootstrap refused: enrollment material present but unusable", "error", err.Error())
+		reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: %v", err))
+		osExit(1) // hard — the install intended to enroll; a deploy tool must see this fail (#4127)
+		return
+	}
 	if err != nil {
-		bsLog.Info("no bootstrap token present; skipping enrollment (agent will idle until enrolled)")
+		// Genuinely bare install (no property token, no token-shaped file
+		// name): imaged/sysprep and "enroll later" flows rely on this staying
+		// exit 0. But a deploy tool that renamed the file lands here too and
+		// reports success for a machine that will never appear in Breeze, so
+		// leave a durable trace an admin can find on the box (#4127).
+		// enrollDevice clears enroll-last-error.txt on the next attempt.
+		bsLog.Warn("no bootstrap token present; skipping enrollment (agent will idle until enrolled)")
+		reportBootstrapUnenrolled(unenrolledInstallNotice)
 		if !quietEnroll {
 			fmt.Println("No enrollment token found; install will complete unenrolled.")
 		}

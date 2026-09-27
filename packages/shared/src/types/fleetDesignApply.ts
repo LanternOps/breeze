@@ -44,7 +44,7 @@ export interface FleetDesignApplyPreviewFunction {
 export interface FleetDesignApplyDisplacement {
   policyId: string;
   policyName: string;
-  featureType: 'monitoring' | 'alert_rule';
+  featureType: 'monitors';
   deviceCount: number;
 }
 
@@ -120,6 +120,7 @@ export interface FleetDesignLedgerItem {
 }
 
 export type FleetDesignRollbackRefusal =
+  | 'legacy_source_retired'
   | 'modified_since_apply'
   | 'group_has_other_members'
   | 'policy_missing'

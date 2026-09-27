@@ -13,7 +13,6 @@ export interface OfflineObservation {
 
 export interface OfflineRulePlan {
   ruleId: string;
-  policy: boolean;
   name: string;
   severity: AlertSeverity;
   conditions: unknown;
@@ -29,6 +28,6 @@ export type OfflineEffectPayload =
   | { type: 'alert-rule'; observation: OfflineObservation; rule: OfflineRulePlan }
   | { type: 'alert-event'; siteId: string; occurredAt: string; event: Record<string, unknown> }
   | {
-    type: 'alert-postprocess'; ruleId: string; policy: boolean; alertId: string | null;
+    type: 'alert-postprocess'; ruleId: string; alertId: string | null;
     occurredAt: string; multiplier: number; recordTrigger: boolean;
   };

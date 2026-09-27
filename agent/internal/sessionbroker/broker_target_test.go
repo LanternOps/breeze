@@ -78,3 +78,49 @@ func TestFindCapableSessionUntargetedUnchanged(t *testing.T) {
 		t.Fatalf("untargeted lookup must still resolve console, got %+v", got)
 	}
 }
+
+// TestNotifySessionInWinSessionPrefersUserRole is the #6864 regression guard.
+// On an RDSH host the targeted session holds BOTH a system-role helper (the
+// capture helper, streaming the desktop and so touched on every frame) and a
+// user-role helper. SessionWithScopeInWinSession ranks by LastSeen, so it handed
+// the session notice to the system-role helper, whose toast runs as SYSTEM and
+// fails (E_ACCESSDENIED / "notification platform is unavailable"). The notice
+// must go to the helper running as the signed-in user.
+func TestNotifySessionInWinSessionPrefersUserRole(t *testing.T) {
+	b := New("notify-target-role", nil)
+	user := addTestSession(b, "3", ipc.HelperRoleUser, []string{"notify", "clipboard", "run_as_user"}, nil)
+	system := addTestSession(b, "3", ipc.HelperRoleSystem, []string{"notify", "tray", "clipboard", "desktop"}, nil)
+	// The capture helper is the one the broker heard from most recently.
+	system.LastSeen = user.LastSeen.Add(5 * time.Second)
+	system.ConnectedAt = user.ConnectedAt.Add(5 * time.Second)
+	addTestSession(b, "5", ipc.HelperRoleUser, []string{"notify"}, nil)
+
+	if got := b.NotifySessionInWinSession("3"); got != user {
+		t.Fatalf("notice must go to the user-role helper, got %+v", got)
+	}
+}
+
+func TestNotifySessionInWinSessionSystemFallbackAndStrictness(t *testing.T) {
+	b := New("notify-target-fallback", nil)
+	system := addTestSession(b, "3", ipc.HelperRoleSystem, []string{"notify", "desktop"}, nil)
+	addTestSession(b, "4", ipc.HelperRoleAssist, []string{ipc.ScopeConsentUI}, nil)
+	addTestSession(b, "5", ipc.HelperRoleUser, []string{"notify"}, nil)
+
+	// No user-role helper in the session: the system-role helper is the only
+	// thing that can draw there, so it is still used (the helper falls back to a
+	// dialog when its toast fails).
+	if got := b.NotifySessionInWinSession("3"); got != system {
+		t.Fatalf("expected the system-role helper as fallback, got %+v", got)
+	}
+	// A helper without the notify scope is never chosen.
+	if got := b.NotifySessionInWinSession("4"); got != nil {
+		t.Fatalf("a helper without the notify scope must not be chosen, got %+v", got)
+	}
+	// Strict: never another Windows session's helper.
+	if got := b.NotifySessionInWinSession("9"); got != nil {
+		t.Fatalf("expected nil for a session with no helper, got %+v", got)
+	}
+	if got := b.NotifySessionInWinSession(""); got != nil {
+		t.Fatalf("empty target must not match, got %+v", got)
+	}
+}

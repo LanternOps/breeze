@@ -9,6 +9,7 @@ import { formatTime } from '../../lib/dateTimeFormat';
 import { showToast } from '../shared/Toast';
 import { UnsavedBadge, MarginPanel, useShowMargin } from './billingUi';
 import { useSavedFlash, SrSaved, fieldRing, unsavedHintId, UnsavedFieldHint } from './shared/saveCues';
+import { useServerSyncedDraft } from './shared/useServerSyncedDraft';
 import {
   type InvoiceDetail,
   type InvoiceLine,
@@ -211,18 +212,15 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
 
   const serverNotes = invoice.notes ?? '';
   const serverTerms = invoice.termsAndConditions ?? '';
-  const [notes, setNotes] = useState(serverNotes);
-  const [notesDirty, setNotesDirty] = useState(false);
   const [notesSaved, flashNotesSaved] = useSavedFlash();
-  const [terms, setTerms] = useState(serverTerms);
-  const [termsDirty, setTermsDirty] = useState(false);
   const [termsSaved, flashTermsSaved] = useSavedFlash();
 
   // Re-sync the free-text fields when the SERVER value changes — a refetch
   // brought different notes/terms, so the local draft is stale and must be
-  // replaced. Derived DURING RENDER (React's documented "adjusting state when a
-  // prop changes" pattern) rather than from a `useEffect`, and that distinction
-  // is the entire fix for #3277.
+  // replaced, UNLESS the new value is the echo of our own save and the user has
+  // typed since (#4296 — see useServerSyncedDraft). Derived DURING RENDER
+  // (React's documented "adjusting state when a prop changes" pattern) rather
+  // than from a `useEffect`, and that distinction is the entire fix for #3277.
   //
   // The previous shape was:
   //   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
@@ -250,18 +248,8 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // value. Comparing the NORMALISED strings additionally stops a null → ''
   // round-trip from spuriously clobbering a draft, which the raw-prop dependency
   // did not.
-  const [syncedServerNotes, setSyncedServerNotes] = useState(serverNotes);
-  if (syncedServerNotes !== serverNotes) {
-    setSyncedServerNotes(serverNotes);
-    setNotes(serverNotes);
-    setNotesDirty(false);
-  }
-  const [syncedServerTerms, setSyncedServerTerms] = useState(serverTerms);
-  if (syncedServerTerms !== serverTerms) {
-    setSyncedServerTerms(serverTerms);
-    setTerms(serverTerms);
-    setTermsDirty(false);
-  }
+  const { draft: notes, dirty: notesDirty, edit: editNotes, markSaved: markNotesSaved } = useServerSyncedDraft(serverNotes);
+  const { draft: terms, dirty: termsDirty, edit: editTerms, markSaved: markTermsSaved } = useServerSyncedDraft(serverTerms);
 
   // Per-line dirty fields, reported up from each LineRow. This MUST be lifted:
   // a line field whose save failed keeps its local value (nothing reverts it)
@@ -594,11 +582,11 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
         successMessage: t('invoiceEditor.success.notesSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setNotesDirty(false);
+      markNotesSaved(notes);
       refresh();
     }, t('invoiceEditor.errors.saveNotes'));
     if (ok) flashNotesSaved();
-  }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved, t]);
+  }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved, markNotesSaved, t]);
 
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
@@ -611,11 +599,11 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
         successMessage: t('invoiceEditor.success.termsSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setTermsDirty(false);
+      markTermsSaved(terms);
       refresh();
     }, t('invoiceEditor.errors.saveTerms'));
     if (ok) flashTermsSaved();
-  }, [termsDirty, terms, invoice.id, refresh, runScoped, flashTermsSaved, t]);
+  }, [termsDirty, terms, invoice.id, refresh, runScoped, flashTermsSaved, markTermsSaved, t]);
 
   // Tax rate is inherited from partner Billing settings, not set per invoice. When
   // a line is marked taxable but no rate is configured, the Tax row reads $0.00
@@ -915,7 +903,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             </div>
             <textarea
               value={notes}
-              onChange={(e) => { setNotes(e.target.value); setNotesDirty(true); }}
+              onChange={(e) => editNotes(e.target.value)}
               // Gate ENTRY, not save (disabled, like the qty/price inputs) — a
               // readOnly field is still focusable, so if canWrite flipped false
               // mid-edit the onBlur guard would silently drop the typed note.
@@ -938,7 +926,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             </div>
             <textarea
               value={terms}
-              onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
+              onChange={(e) => editTerms(e.target.value)}
               onBlur={() => { if (canWrite) void saveTerms(); }}
               disabled={!canWrite || isPending('terms')}
               data-testid="invoice-terms"

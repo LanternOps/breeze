@@ -35,6 +35,11 @@ export interface WebRTCDeps {
    * (issue #3410). Fires only for a permanent gap, never for a failed attempt.
    */
   onWebRTCUnsupported?: () => void;
+  /**
+   * The agent is holding its answer until the end user answers the consent
+   * dialog (#6818). Fires at most once per attempt, before the answer lands.
+   */
+  onAwaitingUserApproval?: () => void;
 }
 
 export interface WebRTCSessionWrapper extends TransportSession {
@@ -52,7 +57,9 @@ export async function connectWebRTC(
   const videoEl = deps.videoElement;
 
   try {
-    const session = await createWebRTCSession(auth, videoEl, undefined, deps.targetSessionId);
+    const session = await createWebRTCSession(auth, videoEl, undefined, deps.targetSessionId, {
+      onAwaitingUserApproval: deps.onAwaitingUserApproval,
+    });
 
     // Reduce input lag under loss: caller manages mouse-move coalescing via the
     // returned inputChannel, but set the low-water threshold here so it can hook

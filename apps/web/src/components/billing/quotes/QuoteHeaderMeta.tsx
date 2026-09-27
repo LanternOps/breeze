@@ -24,6 +24,7 @@ import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { UNAUTHORIZED, SrSaved, fieldRing, seamless, useSavedFlash } from './quoteEditorShared';
+import { useServerSyncedDraft } from '../shared/useServerSyncedDraft';
 
 interface Props {
   detail: QuoteDetailData;
@@ -46,24 +47,14 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
   const { t } = useTranslation('billing');
   const { quote } = detail;
 
-  const [title, setTitle] = useState(quote.title ?? '');
-  const [titleDirty, setTitleDirty] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleFailed, setTitleFailed] = useState(false);
   const [titleSaved, flashTitleSaved] = useSavedFlash();
-  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
-  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
-  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
-  // passive effect flushes AFTER commit, so a keystroke landing between the
-  // prop's commit and the effect's later run gets silently overwritten by the
-  // stale string the effect captured.
-  const titleSeed = quote.title ?? '';
-  const [titleSeededFrom, setTitleSeededFrom] = useState(titleSeed);
-  if (titleSeededFrom !== titleSeed) {
-    setTitleSeededFrom(titleSeed);
-    setTitle(titleSeed);
-    setTitleDirty(false);
-  }
+  // Re-seeds from the prop DURING RENDER, never from a passive effect (#4807),
+  // and keeps a title typed while this save's refetch is still in flight
+  // instead of clobbering it with the echo (#4296) — see useServerSyncedDraft.
+  const { draft: title, dirty: titleDirty, edit: editTitle, markSaved: markTitleSaved } =
+    useServerSyncedDraft(quote.title ?? '');
 
   const saveTitle = useCallback(async () => {
     if (!titleDirty) return;
@@ -76,7 +67,7 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
         errorFallback: t('quotes.editor.errors.saveTitle'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setTitleDirty(false);
+      markTitleSaved(title.trim());
       setTitleFailed(false);
       flashTitleSaved();
       onChanged();
@@ -91,7 +82,7 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
     } finally {
       setTitleBusy(false);
     }
-  }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, onSaveFailure, t]);
+  }, [titleDirty, title, quote.id, flashTitleSaved, markTitleSaved, onChanged, onSaveFailure, t]);
 
   // Pending means IN FLIGHT only. A dirty title is not a promise of a save: the
   // Send gate still holds from the first keystroke because clicking Send blurs
@@ -121,7 +112,7 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
           maxLength={200}
           placeholder={quote.quoteNumber ?? t('quotes.editor.title.placeholder')}
           aria-label={t('quotes.editor.title.label')}
-          onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+          onChange={(e) => editTitle(e.target.value)}
           onBlur={() => void saveTitle()}
           disabled={titleBusy}
           data-testid="quote-title"

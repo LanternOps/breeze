@@ -693,5 +693,59 @@ describe('InvoiceEditor', () => {
       rerender(<InvoiceEditor detail={draft([manualLine], { notes: 'Updated on the server' })} onChanged={vi.fn()} />);
       expect(screen.getByTestId('invoice-notes')).toHaveValue('Updated on the server');
     });
+
+    // #4296: saveNotes() awaits the PATCH, then fires the quiet refetch WITHOUT
+    // awaiting it, and the textarea re-enables as soon as the PATCH resolves. A
+    // keystroke typed before that refetch lands is NEWER than the value the
+    // refetch carries (the echo of our own save), so the resync must not
+    // replace it — and must leave it dirty, or the next blur no-ops and the
+    // edit is lost with no request and no cue.
+    const patchBodies = () => fetchMock.mock.calls
+      .filter((c) => (c[1] as RequestInit)?.method === 'PATCH')
+      .map((c) => String((c[1] as RequestInit)?.body));
+
+    it.each([
+      ['notes', 'invoice-notes'],
+      ['termsAndConditions', 'invoice-terms'],
+    ] as const)('keeps %s typed during the save round-trip when the refetch echoes the saved value', async (field, testId) => {
+      const onChanged = vi.fn();
+      const { rerender } = render(<InvoiceEditor detail={draft([manualLine], { [field]: 'Original' })} onChanged={onChanged} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId(testId), { target: { value: 'First save' } });
+      fireEvent.blur(screen.getByTestId(testId));
+      // PATCH resolved → refetch requested (not yet landed) → field re-enabled.
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId(testId)).not.toBeDisabled());
+
+      fireEvent.change(screen.getByTestId(testId), { target: { value: 'First save, then more' } });
+
+      // The refetch lands carrying the value we just PATCHed.
+      rerender(<InvoiceEditor detail={draft([manualLine], { [field]: 'First save' })} onChanged={onChanged} />);
+      expect(screen.getByTestId(testId)).toHaveValue('First save, then more');
+
+      // Still dirty, so the next blur actually saves it.
+      fireEvent.blur(screen.getByTestId(testId));
+      await waitFor(() => expect(patchBodies().some((b) => b.includes('First save, then more'))).toBe(true));
+    });
+
+    it('still replaces the draft when, after our save, the server brings a DIFFERENT value', async () => {
+      const onChanged = vi.fn();
+      const { rerender } = render(<InvoiceEditor detail={draft([manualLine], { notes: 'Original' })} onChanged={onChanged} />);
+      await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Mine' } });
+      fireEvent.blur(screen.getByTestId('invoice-notes'));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('invoice-notes')).not.toBeDisabled());
+
+      rerender(<InvoiceEditor detail={draft([manualLine], { notes: 'Mine' })} onChanged={onChanged} />);
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Mine');
+
+      // The echo was consumed; a later genuine server change wins as before.
+      fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Mine, edited' } });
+      rerender(<InvoiceEditor detail={draft([manualLine], { notes: 'Someone else' })} onChanged={onChanged} />);
+      expect(screen.getByTestId('invoice-notes')).toHaveValue('Someone else');
+    });
   });
 });

@@ -75,7 +75,7 @@ func (g *GCSProvider) UploadContext(ctx context.Context, localPath, remotePath s
 
 	writer := client.Bucket(g.bucketName).Object(remotePath).NewWriter(ctx)
 
-	if _, err := io.Copy(writer, file); err != nil {
+	if _, err := io.Copy(writer, uploadProgressSource(ctx, file)); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("failed to upload file to gcs: %w", err)
 	}

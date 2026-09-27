@@ -6,7 +6,9 @@ import '../../../lib/i18n';
 vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => ({
     ok: true,
-    json: async () => (url.startsWith('/monitor-definitions')
+    json: async () => (url.includes('/conversion/')
+      ? { data: { policyId: 'p-1', previewHash: 'hash', items: [], inheritanceMode: 'cumulative', equivalence: { devicesChecked: 0, deltas: [] } } }
+      : url.startsWith('/monitor-definitions')
       ? { data: [
           { id: 'm-cpu', name: 'High CPU usage', kind: 'cpu', condition: { operator: 'gt', value: 90 }, severity: 'high', enabled: true, builtinKey: 'cpu_high' },
           { id: 'm-svc', name: 'Spooler stopped', kind: 'service', condition: { serviceName: 'Spooler' }, severity: 'high', enabled: true, builtinKey: null },
@@ -15,8 +17,6 @@ vi.mock('../../../stores/auth', () => ({
   })),
 }));
 
-import AlertRuleTab from './AlertRuleTab';
-import MonitoringTab from './MonitoringTab';
 import MonitorsTab from './MonitorsTab';
 
 const alertRuleLink = {
@@ -26,22 +26,7 @@ const alertRuleLink = {
 const monitorsLink = { id: 'l-mon', featureType: 'monitors', featurePolicyId: null, inlineSettings: { items: [{ monitorId: 'm-cpu', enabled: true }] } } as any;
 const base = { policyId: 'p-1', linkedPolicyId: null, orgId: 'o-1', onLinkChanged: vi.fn() } as any;
 
-describe('legacy tabs after W05a', () => {
-  it('AlertRuleTab shows the freeze notice instead of an add button', () => {
-    render(<AlertRuleTab {...base} existingLink={alertRuleLink} allLinks={[alertRuleLink, monitorsLink]} />);
-    expect(screen.getByTestId('legacy-freeze-notice')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /add alert rule/i })).toBeNull();
-  });
-  it('AlertRuleTab warns about the CPU duplicate', async () => {
-    render(<AlertRuleTab {...base} existingLink={alertRuleLink} allLinks={[alertRuleLink, monitorsLink]} />);
-    expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent('Alert Rule 1 ↔ High CPU usage');
-  });
-  it('MonitoringTab shows the freeze notice and no add-watch control', () => {
-    const monLink = { id: 'l-w', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] } } as any;
-    render(<MonitoringTab {...base} existingLink={monLink} allLinks={[monLink, monitorsLink]} />);
-    expect(screen.getByTestId('legacy-freeze-notice')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Add Watch$/i })).toBeNull();
-  });
+describe('monitor duplicate advisories', () => {
   it('MonitorsTab warns about the same duplicate from its side', async () => {
     render(<MonitorsTab {...base} existingLink={monitorsLink} allLinks={[alertRuleLink, monitorsLink]} />);
     expect(await screen.findByTestId('duplicate-condition-notice')).toHaveTextContent('High CPU usage');

@@ -43,15 +43,15 @@ function chain(rows: unknown[]) {
   return result;
 }
 
-const row = { id: 'link-1', orgId: 'org-1', configPolicyId: 'policy-1', featureType: 'alert_rule' };
+const row = { id: 'link-1', orgId: 'org-1', configPolicyId: 'policy-1', featureType: 'event_log' };
 const auth = { scope: 'system', orgCondition: () => undefined } as unknown as AuthContext;
 
 describe('configuration policy caller transaction', () => {
   it.each([
     ['create', (tx: any) => createConfigPolicy({ orgId: 'org-1' }, { name: 'Policy' }, 'user-1', tx)],
     ['update', (tx: any) => updateConfigPolicy('policy-1', { name: 'Changed' }, auth, tx)],
-    ['add feature', (tx: any) => addFeatureLink('policy-1', 'alert_rule', null, { items: [] }, undefined, tx)],
-    ['update feature', (tx: any) => updateFeatureLink('link-1', { inlineSettings: { items: [] } }, 'policy-1', undefined, tx)],
+    ['add feature', (tx: any) => addFeatureLink('policy-1', 'event_log', null, {}, undefined, tx)],
+    ['update feature', (tx: any) => updateFeatureLink('link-1', { inlineSettings: {} }, 'policy-1', undefined, tx)],
     ['list features and normalized settings', (tx: any) => listFeatureLinks('policy-1', tx)],
     ['assign', (tx: any) => assignPolicy('policy-1', 'organization', 'org-1', 0, 'user-1', undefined, undefined, tx)],
   ])('%s uses the supplied transaction exclusively', async (_name, invoke) => {

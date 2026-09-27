@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { classifyAnswerPoll } from './answerPoll';
+import {
+  classifyAnswerPoll,
+  CONSENT_DENIED_DEFAULT_MESSAGE,
+  MAX_ANSWER_TIMEOUT_MS,
+  resolveAnswerTimeoutMs,
+} from './answerPoll';
 
 // SEC-038 W06 (#5537): a server-side End commits before the agent acknowledges
 // the stop, leaving the session terminal with terminationPhase='pending'. The
@@ -44,7 +49,46 @@ describe('classifyAnswerPoll', () => {
   it('treats a terminal status with no phase (legacy row) as ended', () => {
     expect(classifyAnswerPoll({ status: 'disconnected', webrtcAnswer: null }))
       .toEqual({ kind: 'ended' });
+  });
+});
+
+// #6818: the agent finalizes a consent refusal as status 'denied' with
+// terminationPhase 'confirmed'. The viewer must fail fast with the consent
+// reason instead of the generic "session ended" text.
+describe('classifyAnswerPoll — consent denial (#6818)', () => {
+  it('surfaces the recorded consent reason, ahead of the confirmed phase', () => {
+    expect(classifyAnswerPoll({
+      status: 'denied',
+      terminationPhase: 'confirmed',
+      errorMessage: 'The end user declined the remote session.',
+      webrtcAnswer: null,
+    })).toEqual({ kind: 'denied', message: 'The end user declined the remote session.' });
+  });
+
+  it('falls back to a consent-specific message when no reason was recorded', () => {
     expect(classifyAnswerPoll({ status: 'denied', webrtcAnswer: null }))
-      .toEqual({ kind: 'ended' });
+      .toEqual({ kind: 'denied', message: CONSENT_DENIED_DEFAULT_MESSAGE });
+  });
+});
+
+describe('resolveAnswerTimeoutMs (#6818)', () => {
+  it('keeps the default when the server sends no budget (older API)', () => {
+    expect(resolveAnswerTimeoutMs({ status: 'connecting' }, 15_000)).toBe(15_000);
+  });
+
+  it('extends to the server budget for a consent-mode session', () => {
+    expect(resolveAnswerTimeoutMs({ answerTimeoutMs: 77_000 }, 15_000)).toBe(77_000);
+  });
+
+  it('never shortens below the default', () => {
+    expect(resolveAnswerTimeoutMs({ answerTimeoutMs: 1_000 }, 15_000)).toBe(15_000);
+  });
+
+  it('caps an absurd budget so a broken agent cannot hang the viewer forever', () => {
+    expect(resolveAnswerTimeoutMs({ answerTimeoutMs: 10_000_000 }, 15_000)).toBe(MAX_ANSWER_TIMEOUT_MS);
+  });
+
+  it.each([Number.NaN, -5, 'soon', null])('ignores a malformed budget (%s)', (value) => {
+    expect(resolveAnswerTimeoutMs({ answerTimeoutMs: value as never }, 15_000)).toBe(15_000);
   });
 });

@@ -259,6 +259,12 @@ func runBackupHelper() {
 	if cfgErr != nil {
 		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
 	}
+	helperStagingDir = resolveBackupStagingDir(cfg.BackupStagingDir)
+	// #5460: a helper killed mid-export never ran its deferred cleanup; reclaim
+	// those VM-sized dirs from both places they could have been staged.
+	if n := sweepOrphanedHypervStaging([]string{helperStagingDir, os.TempDir()}, hypervOrphanMinAge, hypervOrphanLegacyMinAge); n > 0 {
+		log.Info("removed orphaned Hyper-V staging dirs", "count", n)
+	}
 	log.Info("breeze-backup starting",
 		"version", version,
 		"pid", os.Getpid(),
@@ -405,13 +411,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	}
 
 	// Ensure the configured staging directory exists before use.
-	stagingDir := cfg.BackupStagingDir
-	if stagingDir != "" {
-		if err := os.MkdirAll(stagingDir, 0700); err != nil {
-			slog.Error("configured backup staging dir cannot be created, falling back to OS temp dir", "dir", stagingDir, "error", err.Error())
-			stagingDir = ""
-		}
-	}
+	stagingDir := resolveBackupStagingDir(cfg.BackupStagingDir)
 
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:           backupProvider,

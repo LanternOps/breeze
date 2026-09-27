@@ -1,6 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { NetworkOverview } from '../../components/portal/NetworkOverview';
+import { NetworkAssetTable } from '../../components/portal/NetworkAssetTable';
 import { ErrorNotice } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -8,9 +9,16 @@ import { redirectToLoginAfter401 } from '../../lib/session';
 import { redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 
 const config = buildServerApiConfig(Astro.request);
-const response = await portalApi.getNetworkOverview(config);
+// The dashboard rides along only for `timezone` (the network DTOs carry no
+// zone, same as the backups page); its failure is not the page's failure.
+const [response, assets, dashboard] = await Promise.all([
+  portalApi.getNetworkOverview(config),
+  portalApi.getNetworkAssets({ page: 1, limit: 50 }, config),
+  portalApi.getDashboard(config),
+]);
+const timezone = dashboard.data?.timezone ?? 'UTC';
 
-if (response.statusCode === 401) {
+if (response.statusCode === 401 || assets.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
 }
 
@@ -18,7 +26,7 @@ if (response.statusCode === 401) {
 // "Network visibility" flag comes back as dataStatus: 'not_enabled' in the
 // body, not a 403, so isPortalPageDisabled (which only understands the API's
 // 403 gate codes) cannot catch it. Check the DTO directly instead.
-if (response.data?.dataStatus === 'not_enabled') {
+if (response.data?.dataStatus === 'not_enabled' || assets.data?.dataStatus === 'not_enabled') {
   return redirectToPortalHomeAfterDisabled(Astro);
 }
 ---
@@ -35,4 +43,12 @@ if (response.data?.dataStatus === 'not_enabled') {
       </div>
     )
   }
+  {/* Overview says "not_enabled" -> already bounced above. client:load so the
+      hash-driven filters and paging run. */}
+  <NetworkAssetTable
+    initial={assets.data ?? null}
+    timezone={timezone}
+    error={assets.error}
+    client:load
+  />
 </PortalLayout>

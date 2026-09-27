@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { sql, type SQL } from 'drizzle-orm';
+import { RETIRED_CONFIG_FEATURE_TYPES } from '@breeze/shared/constants';
+import { notInArray, sql, type SQL } from 'drizzle-orm';
 import {
   CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY,
   containsConfigPolicyReservedKey,
@@ -304,6 +305,7 @@ function policySource(principal: PartnerApiPrincipalContext, query: ExportQueryI
         MAX(fl.updated_at) AS updated_at
       FROM public.config_policy_feature_links fl
       WHERE fl.config_policy_id = cp.id
+        AND ${notInArray(sql`fl.feature_type`, [...RETIRED_CONFIG_FEATURE_TYPES])}
     ) features ON true
     LEFT JOIN LATERAL (
       SELECT MAX(a.created_at) AS updated_at

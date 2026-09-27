@@ -1,0 +1,39 @@
+{
+  // Runtime-code half of the api type check (#6270). A composite project so it
+  // emits .d.ts, which tsconfig.tests.json type-checks against instead of
+  // re-checking all of src inside one ~10 GB program. Run both with:
+  //   tsc -b apps/api/tsconfig.tests.json
+  // tsconfig.json (the full single program) is unchanged for the IDE and tsup.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    // src imports packages/shared, packages/extension-sdk and ee/workspace by
+    // source, and a composite project must list every file it reaches.
+    "rootDir": "../..",
+    "outDir": "./.tsbuild/src",
+    "tsBuildInfoFile": "./.tsbuild/src.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*",
+    "src/**/*.json",
+    "../../packages/shared/src/**/*",
+    "../../packages/shared/src/**/*.json",
+    "../../packages/extension-sdk/src/**/*",
+    "../../ee/workspace/src/**/*"
+  ],
+  // Test-only files belong to tsconfig.tests.json. Runtime code must never
+  // import them: that is reported here as TS6307.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "../../**/*.test.ts",
+    "../../**/*.test.tsx",
+    "../../**/__tests__/**",
+    "../../ee/workspace/src/web/**",
+    "src/**/*.fixtures.ts"
+  ]
+}

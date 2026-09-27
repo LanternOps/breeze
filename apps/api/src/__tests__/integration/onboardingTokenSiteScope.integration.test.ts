@@ -103,4 +103,39 @@ describe('POST /devices/onboarding-token site scope as breeze_app', () => {
       .where(eq(enrollmentKeys.orgId, org!.id));
     expect(rows).toEqual([{ siteId: allowedSite!.id }]);
   });
+
+  // #7035: the Add Device CLI tab now sends the site the operator picked.
+  it('binds the key to a caller-selected siteId and refuses foreign or out-of-scope sites', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner!.id });
+    const otherOrg = await createOrganization({ partnerId: partner!.id });
+    const firstSite = await createSite({ orgId: org!.id });
+    const chosenSite = await createSite({ orgId: org!.id });
+    const foreignSite = await createSite({ orgId: otherOrg!.id });
+
+    activeOrgId = org!.id;
+    const app = await onboardingApp();
+    const post = (siteId: string) => app.request('/devices/onboarding-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId }),
+    });
+
+    const chosen = await post(chosenSite!.id);
+    expect(chosen.status).toBe(200);
+    expect((await chosen.json()).siteId).toBe(chosenSite!.id);
+
+    const foreign = await post(foreignSite!.id);
+    expect(foreign.status).toBe(400);
+
+    activeAllowedSiteIds = [firstSite!.id];
+    const outOfScope = await post(chosenSite!.id);
+    expect(outOfScope.status).toBe(403);
+
+    const rows = await getTestDb()
+      .select({ siteId: enrollmentKeys.siteId })
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.orgId, org!.id));
+    expect(rows).toEqual([{ siteId: chosenSite!.id }]);
+  });
 });

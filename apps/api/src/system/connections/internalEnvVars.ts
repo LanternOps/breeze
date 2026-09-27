@@ -296,11 +296,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // OFFLINE_*
   OFFLINE_DETECTOR_CHUNK_SIZE: 'worker throughput knob',
   OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN: 'worker throughput knob',
-  OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE: 'worker throughput knob',
-  OFFLINE_DETECTOR_REEVAL_ENABLED: 'job toggle',
   OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES: 'timing knob',
-  OFFLINE_DETECTOR_REEVAL_INTERVAL_MS: 'timing knob',
-  OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN: 'worker throughput knob',
   OFFLINE_DETECTOR_WORKER_CONCURRENCY: 'worker throughput knob',
   // ORG_*
   ORG_ARCHIVE_DEFAULT_RETENTION_DAYS: 'data retention window',

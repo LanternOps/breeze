@@ -53,7 +53,7 @@ vi.mock('../../db', () => ({
   },
 }));
 
-import { previewFleetDesignApply, previewFleetDesignApplyWithContext, wouldBeDisplaced } from './preview';
+import { previewFleetDesignApply, previewFleetDesignApplyWithContext } from './preview';
 import { configurationPolicies, deviceGroupMemberships, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -112,21 +112,6 @@ beforeEach(() => {
   configPolicyMock.policyAccessCondition.mockReturnValue(undefined);
 });
 
-describe('wouldBeDisplaced', () => {
-  it.each([
-    ['site', 0, true],
-    ['organization', 999, true],
-    ['partner', 0, true],
-    ['device', 0, false],
-    ['device_group', 0, false],
-    ['device_group', 100, false],
-    ['device_group', 101, true],
-    ['unknown_level', 0, true],
-  ] as const)('sourceLevel=%s priority=%s -> %s', (level, priority, expected) => {
-    expect(wouldBeDisplaced(level, priority)).toBe(expected);
-  });
-});
-
 describe('previewFleetDesignApplyWithContext — functions', () => {
   it('lists devices added/removed against a reusable group and counts manual-kept devices', async () => {
     const outcome = makeOutcome({
@@ -163,7 +148,7 @@ describe('previewFleetDesignApplyWithContext — functions', () => {
 });
 
 describe('previewFleetDesignApplyWithContext — monitoring displacement', () => {
-  it('computes displaced policies per feature type from resolveEffectiveConfig, deduped with device counts, skipping default/device/low-priority device_group winners', async () => {
+  it('does not displace existing monitors when attaching cumulative monitors', async () => {
     const outcome = makeOutcome({
       functions: [{ functionKey: 'file_server', label: 'File Server', deviceIds: ['d1', 'd2', 'd3'], confidence: 0.9, evidence: [] }],
       monitoring: [{
@@ -185,7 +170,7 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
         return {
           deviceId, inheritanceChain: [],
           features: {
-            monitoring: { sourceLevel: 'organization', sourcePolicyId: 'p1', sourcePolicyName: 'Org Monitoring', sourcePriority: 0 },
+            monitors: { sourceLevel: 'organization', sourcePolicyId: 'p1', sourcePolicyName: 'Org Monitoring', sourcePriority: 0 },
             alert_rule: { sourceLevel: 'device', sourcePolicyId: 'p-device', sourcePolicyName: 'Device Local', sourcePriority: 0 },
           },
         };
@@ -194,7 +179,7 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
         return {
           deviceId, inheritanceChain: [],
           features: {
-            monitoring: { sourceLevel: 'device_group', sourcePolicyId: 'p2', sourcePolicyName: 'Legacy Group Monitoring', sourcePriority: 0 },
+            monitors: { sourceLevel: 'device_group', sourcePolicyId: 'p2', sourcePolicyName: 'Legacy Group Monitoring', sourcePriority: 0 },
             alert_rule: { sourceLevel: 'default', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
           },
         };
@@ -202,7 +187,7 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
       return {
         deviceId, inheritanceChain: [],
         features: {
-          monitoring: { sourceLevel: 'organization', sourcePolicyId: 'p1', sourcePolicyName: 'Org Monitoring', sourcePriority: 0 },
+          monitors: { sourceLevel: 'organization', sourcePolicyId: 'p1', sourcePolicyName: 'Org Monitoring', sourcePriority: 0 },
           alert_rule: { sourceLevel: 'device_group', sourcePolicyId: 'p3', sourcePolicyName: 'Old Group Rules', sourcePriority: 150 },
         },
       };
@@ -215,13 +200,7 @@ describe('previewFleetDesignApplyWithContext — monitoring displacement', () =>
     );
 
     expect(preview.policies).toHaveLength(1);
-    expect(preview.policies[0]!.displaces).toEqual(
-      expect.arrayContaining([
-        { policyId: 'p1', policyName: 'Org Monitoring', featureType: 'monitoring', deviceCount: 2 },
-        { policyId: 'p3', policyName: 'Old Group Rules', featureType: 'alert_rule', deviceCount: 1 },
-      ]),
-    );
-    expect(preview.policies[0]!.displaces).toHaveLength(2);
+    expect(preview.policies[0]!.displaces).toEqual([]);
   });
 });
 
@@ -271,9 +250,9 @@ describe('previewFleetDesignApplyWithContext — legacy rule proposals (W05c2)',
 });
 
 describe('previewFleetDesignApplyWithContext — retired', () => {
-  it('marks a retired item not found when the current link no longer has the named watch', async () => {
+  it.each(['watch', 'rule'] as const)('blocks an accessible legacy %s proposal without reading filtered feature links', async (kind) => {
     const outcome = makeOutcome({
-      retired: [{ kind: 'watch', policyId: 'p2', policyName: 'Old Policy', itemName: 'Spooler', reason: 'unused' }],
+      retired: [{ kind, policyId: 'p2', policyName: 'Old Policy', itemName: 'Spooler', reason: 'unused' }],
     });
     ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcome));
     dbSeed(configurationPolicies, [{ id: 'p2', orgId: ORG, name: 'Old Policy' }]);
@@ -283,8 +262,20 @@ describe('previewFleetDesignApplyWithContext — retired', () => {
 
     const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({ retired: ['retired:0'] }));
 
-    expect(preview.retired).toEqual([{ itemRef: 'retired:0', policyId: 'p2', policyName: 'Old Policy', kind: 'watch', itemName: 'Spooler', found: false, editable: true }]);
+    expect(preview.retired).toEqual([{ itemRef: 'retired:0', policyId: 'p2', policyName: 'Old Policy', kind, itemName: 'Spooler', found: true, editable: false }]);
+    expect(configPolicyMock.listFeatureLinks).not.toHaveBeenCalled();
+    expect(preview.blockers).toEqual([{ itemRef: 'retired:0', reason: 'legacy_source_retired' }]);
+  });
+
+  it.each([null, '33333333-3333-4333-8333-333333333333'])('keeps missing and cross-org policy proposals hidden (%s)', async (policyOrgId) => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(makeOutcome({
+      retired: [{ kind: 'rule', policyId: 'p2', policyName: 'Historical policy', itemName: 'Disk', reason: 'unused' }],
+    })));
+    dbSeed(configurationPolicies, policyOrgId ? [{ id: 'p2', orgId: policyOrgId, name: 'Other org' }] : []);
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({ retired: ['retired:0'] }));
+    expect(preview.retired[0]).toMatchObject({ found: false, editable: false });
     expect(preview.blockers).toEqual([{ itemRef: 'retired:0', reason: 'retired_item_not_found' }]);
+    expect(configPolicyMock.listFeatureLinks).not.toHaveBeenCalled();
   });
 
   it('marks a retired item non-editable when the policy is partner-wide and the caller cannot manage partner-wide policies', async () => {

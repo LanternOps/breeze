@@ -4,7 +4,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction, ActionError, handleActionError } from '@/lib/runAction';
-import CreateMonitorForm from '../monitors/CreateMonitorForm';
+import { navigateTo } from '@/lib/navigation';
 
 // #5213 W02/W03 — hand-enter a network asset. A manual asset IS a
 // discovered_assets row (source='manual'), so this form posts the same
@@ -75,11 +75,10 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Post-create hand-off (W03): a website/service asset has no monitoring of
-  // its own yet, so offer an inline "Add an HTTP check" step instead of
+  // its own yet, so offer an "Add an HTTP check" editor handoff instead of
   // closing immediately. Every other asset type keeps the W02 behavior —
   // close right away.
   const [createdAsset, setCreatedAsset] = useState<{ id: string; url: string } | null>(null);
-  const [showMonitorForm, setShowMonitorForm] = useState(false);
 
   useEffect(() => {
     if (isOpen && currentOrgId && sites.length === 0) void fetchSites();
@@ -107,7 +106,6 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
     setNotes('');
     setError(null);
     setCreatedAsset(null);
-    setShowMonitorForm(false);
   };
 
   const handleClose = () => {
@@ -180,35 +178,27 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
         {createdAsset ? (
           <div className="space-y-4" data-testid="asset-post-create">
             <p className="text-sm text-muted-foreground">{t('addNetworkAssetModal.postCreate.monitorPrompt')}</p>
-            {!showMonitorForm && (
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  data-testid="asset-post-create-done"
-                  onClick={handleClose}
-                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-                >
-                  {t('common:actions.done')}
-                </button>
-                <button
-                  type="button"
-                  data-testid="asset-post-create-add-http-check"
-                  onClick={() => setShowMonitorForm(true)}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-                >
-                  {t('addNetworkAssetModal.postCreate.actions.addHttpCheck')}
-                </button>
-              </div>
-            )}
-            {showMonitorForm && (
-              <CreateMonitorForm
-                assetId={createdAsset.id}
-                defaultTarget={createdAsset.url}
-                defaultMonitorType="http_check"
-                onCreated={handleClose}
-                onCancel={() => setShowMonitorForm(false)}
-              />
-            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                data-testid="asset-post-create-done"
+                onClick={handleClose}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                {t('common:actions.done')}
+              </button>
+              <button
+                type="button"
+                data-testid="asset-post-create-add-http-check"
+                onClick={() => {
+                  void navigateTo(`/alerts/monitors/new#kind=network_check&assetId=${encodeURIComponent(createdAsset.id)}&checkType=http_check&target=${encodeURIComponent(createdAsset.url)}`);
+                  handleClose();
+                }}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                {t('addNetworkAssetModal.postCreate.actions.addHttpCheck')}
+              </button>
+            </div>
           </div>
         ) : (
         <form onSubmit={handleSubmit} className="space-y-4">

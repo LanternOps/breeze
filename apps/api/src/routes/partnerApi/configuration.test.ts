@@ -154,6 +154,14 @@ describe('partner desired-configuration exports', () => {
     expect(mocks.execute).toHaveBeenCalledTimes(2);
   });
 
+  it('excludes retired feature links from exported policy definitions in SQL', async () => {
+    const response = await request('/configuration-policies', 'configuration:read');
+    expect(response.status).toBe(200);
+    const query = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]);
+    expect(query.sql).toMatch(/fl\.feature_type.*not in/i);
+    expect(query.params).toEqual(expect.arrayContaining(['alert_rule', 'monitoring']));
+  });
+
   it('exports policy definitions and distinct assignment records', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Server baseline', description: 'Durable desired state',

@@ -92,7 +92,7 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
     h.convertPartnerLegacy.mockResolvedValueOnce({ policies: 0, converted: 0, unconvertible: 0 });
     const out = await runLegacyAlertingRetirement();
     expect(h.convertPartnerLegacy).toHaveBeenCalledTimes(2);
-    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'a'.repeat(64), expect.objectContaining({ scope: 'system' }));
+    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'a'.repeat(64), expect.objectContaining({ scope: 'system' }), { sources: 'retired_runtime_only' });
     expect(h.retireSource).toHaveBeenCalledWith('config_policy_alert_rules', 'r1', 'unconvertible:custom_condition', expect.objectContaining({ scope: 'system' }));
     expect(out).toMatchObject({ partners: 2, converted: 2, retired: 1, failed: 0 });
     expect(h.updateSet).toHaveBeenCalledTimes(1);
@@ -113,7 +113,7 @@ describe('runLegacyAlertingRetirement (W05d)', () => {
     });
     h.convertPartnerLegacy.mockResolvedValueOnce({ converted: 1 });
     expect(await runLegacyAlertingRetirement()).toMatchObject({ partners: 1, converted: 1, retired: 2, failed: 0 });
-    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'active-child', expect.anything());
+    expect(h.convertPartnerLegacy).toHaveBeenCalledWith('p1', 'active-child', expect.anything(), { sources: 'retired_runtime_only' });
     expect(h.updateSet).toHaveBeenCalledTimes(1);
   });
   it('keeps the previous marker when a sweep converts and retires nothing', async () => {

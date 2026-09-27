@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// #3127: depth of the (mocked) short per-phase DB contexts the message-send
+// handler opens now that it no longer runs inside a request transaction.
+const dbCtx = vi.hoisted(() => ({ depth: 0 }));
+
 // ── Mocks ──────────────────────────────────────────────────────────
 
 vi.mock('../db', () => ({
@@ -12,6 +16,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -24,6 +29,14 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+    dbCtx.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth -= 1;
+    }
+  }),
 }));
 
 // Mock zValidator to parse body/query and pass through (avoids needing real Zod schemas)
@@ -107,7 +120,9 @@ import { scriptAiRoutes } from './scriptAi';
 import {
   getScriptBuilderSession,
 } from '../services/scriptBuilderService';
-import { runPreFlightChecks } from '../services/aiAgentSdk';
+import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
+import { reserveAiBudget } from '../services/aiBudgetReservations';
+import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { handleApproval } from '../services/aiAgent';
@@ -187,6 +202,73 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it('#3127: waits and reserves with no DB context held; reads and writes each run in a short one', async () => {
+      const depths: Record<string, number> = {};
+      vi.mocked(runPreFlightChecks).mockImplementation(async () => {
+        depths.preflight = dbCtx.depth;
+        return {
+          ok: true,
+          session: {
+            id: SESSION_ID,
+            type: 'script_builder',
+            orgId: ORG_ID,
+            sdkSessionId: null,
+            model: 'claude-sonnet-4-6',
+            maxTurns: 50,
+            turnCount: 0,
+            systemPrompt: 'System prompt',
+            title: 'existing',
+          },
+          sanitizedContent: 'Hello',
+          systemPrompt: 'System prompt',
+          maxBudgetUsd: 1,
+          resolved: { source: 'platform', apiKey: 'k', model: 'claude-sonnet-4-6' },
+        } as any;
+      });
+      const activeSession = {
+        state: 'processing',
+        inputController: { pushMessage: vi.fn() },
+        eventBus: {
+          subscribe: vi.fn(() => (async function* () { yield { type: 'done' }; })()),
+          unsubscribe: vi.fn(),
+          publish: vi.fn(),
+        },
+      } as any;
+      vi.mocked(streamingSessionManager.get)
+        .mockReturnValueOnce(activeSession)
+        .mockReturnValueOnce(undefined);
+      vi.mocked(settleBlockedTurnForNewMessage).mockImplementationOnce(async () => {
+        depths.settle = dbCtx.depth;
+        return 'concluded';
+      });
+      const reserveImpl = vi.mocked(reserveAiBudget).getMockImplementation()!;
+      vi.mocked(reserveAiBudget).mockImplementationOnce(async (...args) => {
+        depths.reserve = dbCtx.depth;
+        return reserveImpl(...args);
+      });
+      vi.mocked(streamingSessionManager.getOrCreate).mockImplementation(async () => {
+        depths.getOrCreate = dbCtx.depth;
+        return activeSession;
+      });
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+      vi.mocked(db.insert).mockImplementation(() => {
+        depths.insert = dbCtx.depth;
+        return { values: vi.fn().mockResolvedValue(undefined) } as any;
+      });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(depths).toEqual({ preflight: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
+      expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('Hello');
+      expect(dbCtx.depth).toBe(0);
     });
 
     it('threads the resolved config into SDK session creation', async () => {

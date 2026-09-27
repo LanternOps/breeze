@@ -6,6 +6,7 @@ import { deviceHardwareComponents,deviceHardwareEvents,deviceHardwareHealth,devi
 import { resolveAlertsForRemovedComponents } from './retire';
 import { linkBmcAssetFromAgentReport, type BmcLinkTx } from '../discovery/agentReportedBmcLink';
 import { captureException } from '../sentry';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 export type ComponentRow=typeof deviceHardwareComponents.$inferSelect;
 type EventRow=typeof deviceHardwareEvents.$inferInsert;
 export type ComponentInput=Omit<HardwareComponentReport,'componentType'> & {componentType:HardwareComponentType};
@@ -124,7 +125,8 @@ export function acceptsAgentSequence(health:{lastReceivedAt:Date|null;lastAgentS
 }
 export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgId:string};snapshot:HardwareHealthSnapshot;writer:'agent'|'server';receivedAt:Date}):Promise<IngestResult>{
  const {device,snapshot,receivedAt,writer}=input;
- return withDbTransaction(async()=>{
+ let previousHealth:HardwareHealth|undefined;
+ const result=await withDbTransaction(async():Promise<IngestResult>=>{
   const tx = db satisfies BmcLinkTx;
   const [owner]=await tx.select({id:devices.id,siteId:devices.siteId}).from(devices).where(and(eq(devices.id,device.id),eq(devices.orgId,device.orgId))).for('key share');
   if(!owner)throw new Error('Hardware device missing or ownership changed');
@@ -132,6 +134,7 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
   const [health]=await tx.select().from(deviceHardwareHealth).where(and(eq(deviceHardwareHealth.deviceId,device.id),eq(deviceHardwareHealth.orgId,device.orgId))).for('update');
   if(!health)throw new Error('Hardware health ownership mismatch');
   if(writer==='agent'&&!acceptsAgentSequence(health,snapshot.sequence,receivedAt))return {accepted:false,reason:'stale_snapshot'};
+  previousHealth=health.health;
   const previous=await tx.select().from(deviceHardwareComponents).where(eq(deviceHardwareComponents.deviceId,device.id));
   const change=reduceSnapshot(previous,device,snapshot,receivedAt);
   for(const row of change.upserts){
@@ -173,4 +176,11 @@ export async function ingestHardwareHealthSnapshot(input:{device:{id:string;orgI
   }).where(eq(deviceHardwareHealth.deviceId,device.id));
   return {accepted:true,events:change.events.length,health:change.health};
  });
+ // Dynamic groups filtering on `hardware.health` re-evaluate only on a change
+ // event naming that field, and this is the rollup's only writer. Enqueued after
+ // the transaction (the job is delayed and never rejects), per deviceGroupJobs.
+ if(result.accepted&&result.health!==previousHealth){
+  void requestDeviceGroupReevaluation({deviceId:device.id,orgId:device.orgId,eventType:'device.updated',changedFields:['hardware.health'],reason:'hardware_health_change'});
+ }
+ return result;
 }

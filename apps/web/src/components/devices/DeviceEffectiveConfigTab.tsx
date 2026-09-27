@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Bell,
   Boxes,
   ClipboardCheck,
   Cloud,
@@ -15,7 +14,6 @@ import {
   Shield,
   ShieldCheck,
   ShieldAlert,
-  Activity,
   Usb,
   Wrench,
   Trash2,
@@ -117,14 +115,12 @@ type EffectiveConfiguration = {
 // exclusion set stays honest. (#2004)
 const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   patch: { label: "Patch Management", Icon: PackageCheck },
-  alert_rule: { label: "Alert Rules", Icon: Bell },
   monitors: { label: "Monitors", Icon: Radar },
   automation: { label: "Automation", Icon: Zap },
   maintenance: { label: "Maintenance Windows", Icon: Wrench },
   compliance: { label: "Compliance", Icon: ClipboardCheck },
   security: { label: "Security", Icon: Shield },
   backup: { label: "Backup", Icon: HardDrive },
-  monitoring: { label: "Monitoring", Icon: Activity },
   warranty: { label: "Warranty", Icon: ShieldCheck },
   software_policy: { label: "Software Policy", Icon: Boxes },
   sensitive_data: { label: "Data Discovery", Icon: FileSearch },

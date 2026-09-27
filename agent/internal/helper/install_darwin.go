@@ -36,7 +36,7 @@ func uninstallPackage() error {
 }
 
 // installPackage mounts the DMG, copies the .app bundle, and unmounts.
-func installPackage(dmgPath, _ string) error {
+func installPackage(dmgPath, _, _ string) error {
 	// Mount the DMG to a temp mount point
 	mountPoint, err := os.MkdirTemp("", "breeze-helper-mount-")
 	if err != nil {

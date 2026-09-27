@@ -11,6 +11,7 @@ import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 /**
  * #6911: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
@@ -34,36 +35,6 @@ function refuseSavedFiltersAgentPrincipal(action: string): string {
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-function resolveWritableToolOrgId(
-  auth: AuthContext,
-  inputOrgId?: string
-): { orgId?: string; error?: string } {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required' };
-    if (inputOrgId && inputOrgId !== auth.orgId) {
-      return { error: 'Cannot access another organization' };
-    }
-    return { orgId: auth.orgId };
-  }
-
-  if (inputOrgId) {
-    if (!auth.canAccessOrg(inputOrgId)) {
-      return { error: 'Access denied to this organization' };
-    }
-    return { orgId: inputOrgId };
-  }
-
-  if (auth.orgId) {
-    return { orgId: auth.orgId };
-  }
-
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return { orgId: auth.accessibleOrgIds[0] };
-  }
-
-  return { error: 'orgId is required for this operation' };
-}
 
 export function registerUITools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {

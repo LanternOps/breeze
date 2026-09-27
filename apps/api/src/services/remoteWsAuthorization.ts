@@ -30,6 +30,7 @@ import type {
   RemoteWsKind,
 } from './remoteWsOwnership';
 import { tightenStatementTimeout } from '../db/lockTimeout';
+import { isViewerFailureDiagnosticRow } from './viewerFailureDiagnostics';
 
 const ACTIVE_SESSION_STATES = ['pending', 'connecting', 'active'];
 const REMOTE_WS_RATE_LIMIT = 10;
@@ -270,8 +271,7 @@ async function resolveRemoteWsLiveAuthority(
     // can mint credentials, signal or relay always use the default live mode.
     const readingFailure = accessMode === 'failure-diagnostics' &&
       consumed.sessionType === 'desktop' &&
-      (joined.session.status === 'failed' ||
-        (joined.session.status === 'disconnected' && !!joined.session.errorMessage));
+      isViewerFailureDiagnosticRow(joined.session.status, joined.session.errorMessage);
     if (!ACTIVE_SESSION_STATES.includes(joined.session.status) && !readingFailure) return { denied: 'session_inactive' as const };
     if (joined.device.status !== 'online' && !readingFailure) return { denied: 'device_offline' as const };
 
