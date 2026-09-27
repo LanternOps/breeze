@@ -446,6 +446,62 @@ export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date =
 }
 
 /**
+ * GDPR erasure, durability net for the race markFixMemoryStaleForOrgErasure
+ * cannot close (Task 12 review carry-forward). That function's request only
+ * covers identities the erased org had ALREADY contributed to at the moment
+ * it ran, matched via `EXISTS (fix_outcomes WHERE org_id = ...)`. Called again
+ * after the cascade, it is a guaranteed no-op: the cascade has by then deleted
+ * both the org's fix_outcomes rows (so the EXISTS predicate matches nothing)
+ * and the organizations row itself (so its own org lookup returns nothing).
+ * So an identity whose FIRST counted outcome from the erased org lands
+ * between the pre-cascade mark and the fix_outcomes table's commit is never
+ * flagged by that function, at any point.
+ *
+ * This function is the real closure: called once, after the cascade and
+ * before the rebuild attempt, it marks stale EVERY partner-owned fix_memory
+ * row (org_id IS NULL) for the given partner, unconditionally — no EXISTS
+ * check, no org lookup, so it cannot miss a row for the reason above. Org-id
+ * rows are excluded on purpose: they belong either to the org just erased
+ * (already gone) or to OTHER orgs under this partner that the erased org's
+ * outcomes have no bearing on; only partner-owned rows aggregate across the
+ * whole partner and can be contaminated by any org under it.
+ *
+ * Guarantee: if the rebuild that immediately follows this call succeeds, it
+ * recomputes every one of these rows fresh (rebuildFixMemory scans the whole
+ * partner) and the mark is moot. If that rebuild instead fails, every row
+ * this call touched is left `stale_since`-set, so `stalePartnerIds` surfaces
+ * this partner and jobs/fixOutcomeWorker.ts's sweeper retries it. The only
+ * residual risk is a process crash strictly between the cascade's commit and
+ * THIS call's own commit — a window measured in one DB round trip, not the
+ * whole cascade's duration.
+ *
+ * If the partner row itself no longer exists (a partner-erasure path), this
+ * simply finds no rows and no-ops.
+ *
+ * Locking: same reasoning as markFixMemoryStaleForOrgErasure — SELECT the
+ * target identities first, lock them all (sorted, same order rebuildFixMemory
+ * uses), THEN restrict the UPDATE to exactly those rows, so this can never
+ * lock-order-invert against a concurrent rebuild.
+ */
+export async function markPartnerFixMemoryStale(partnerId: string, now: Date = new Date()): Promise<void> {
+  assertSystemScope('markPartnerFixMemoryStale');
+  const predicate = and(isNull(fixMemory.orgId), eq(fixMemory.partnerId, partnerId))!;
+  const targets = await db.select({
+    id: fixMemory.id, partnerId: fixMemory.partnerId, signatureVersion: fixMemory.signatureVersion,
+    signatureKey: fixMemory.signatureKey, osType: fixMemory.osType, fixIdentity: fixMemory.fixIdentity,
+  }).from(fixMemory).where(predicate);
+  if (targets.length === 0) return;
+  await lockIdentitiesSorted(targets.map((t) => ({
+    partnerId: t.partnerId!, signatureVersion: t.signatureVersion, signatureKey: t.signatureKey,
+    osType: t.osType, fixIdentity: t.fixIdentity,
+  })));
+  await db.update(fixMemory).set({
+    staleSince: sql`COALESCE(${fixMemory.staleSince}, ${now.toISOString()}::timestamptz)`,
+    updatedAt: now,
+  }).where(inArray(fixMemory.id, targets.map((t) => t.id)));
+}
+
+/**
  * The script's CURRENT owner no longer matches the row's owner. routes/scripts.ts
  * re-scopes org→partner, partner→org and org A→org B (:921-928), keeping the
  * version for scope-only edits (:997-1038, :1097). The row is expected to be:

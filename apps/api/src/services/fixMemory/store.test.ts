@@ -47,7 +47,8 @@ vi.mock('./signatureLoader', () => sigMock);
 
 import {
   fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure, markOwnerDriftStale,
-  recomputeForOutcome, recomputeIdentity, rebuildFixMemory, transitionOutcome, type ContributingRow,
+  markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity, rebuildFixMemory, transitionOutcome,
+  type ContributingRow,
 } from './store';
 
 /** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
@@ -252,6 +253,36 @@ describe('markFixMemoryStaleForOrgErasure — identity locks before the UPDATE (
   });
 });
 
+describe('markPartnerFixMemoryStale — identity locks before the UPDATE, partner-owned rows only', () => {
+  it('locks every partner-owned identity (sorted) before writing the stale mark, and only touches those rows', async () => {
+    selectRows.push([
+      { id: 'm-2', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' },
+      { id: 'm-1', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' },
+    ]); // target identities, selected in arbitrary (not sorted) order
+    executeRows.push([], []); // two advisory locks
+    await markPartnerFixMemoryStale('p-1');
+    expect(calls).toEqual(['select', 'execute', 'execute', 'update']);
+    const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' });
+    // Locks are taken in SORTED key order regardless of the select's row order.
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(keyA);
+    expect(flatten(executeMock.mock.calls[1]![0]).params).toContain(keyB);
+    // The final UPDATE only sets staleSince/updatedAt (no rebuildPendingOrgIds
+    // — this function has no org id to append) and targets the resolved ids.
+    expect(Object.keys(updates.at(-1)!.set).sort()).toEqual(['staleSince', 'updatedAt']);
+    const q = new PgDialect().sqlToQuery(updates.at(-1)!.where as never);
+    expect(q.sql.toLowerCase()).toContain('"id" in');
+  });
+
+  it('does nothing — no locks, no update — when the partner has no partner-owned fix_memory rows', async () => {
+    selectRows.push([]); // no targets
+    await markPartnerFixMemoryStale('p-1');
+    expect(calls).toEqual(['select']);
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
+});
+
 describe('markOwnerDriftStale — identity locks before the UPDATE', () => {
   it('locks every affected identity (sorted; an org row is resolved via its organization\'s partner) before marking drift stale', async () => {
     selectRows.push([
@@ -306,6 +337,12 @@ describe('system-scope guard — every fix_memory writer requires an open system
   it('markOwnerDriftStale refuses outside system scope', async () => {
     outsideSystem();
     await expect(markOwnerDriftStale()).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('markPartnerFixMemoryStale refuses outside system scope', async () => {
+    outsideSystem();
+    await expect(markPartnerFixMemoryStale('p-1')).rejects.toThrow(/system-scoped/);
     expect(calls).toHaveLength(0);
   });
 

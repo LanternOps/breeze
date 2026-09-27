@@ -34,7 +34,7 @@ import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, users } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { markFixMemoryStaleForOrgErasure, rebuildFixMemory } from '../services/fixMemory/store';
+import { markFixMemoryStaleForOrgErasure, markPartnerFixMemoryStale, rebuildFixMemory } from '../services/fixMemory/store';
 
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
@@ -97,39 +97,37 @@ export async function enqueueTenantErasure(
 }
 
 /**
- * AI Suggested Fixes W1 (spec "Erasure"). Three steps:
+ * AI Suggested Fixes W1 (spec "Erasure"). Four steps:
  *  1. BEFORE the org's outcomes are deleted, stale-mark the partner fix memory
  *     it contributed to AND persist a durable rebuild request (the org id in
  *     fix_memory.rebuild_pending_org_ids). The rows drop out of "proven" at once.
  *  2. Cascade.
- *  3. Rebuild.
- * A failure to mark aborts before any row is deleted. The request is removed
- * only by a rebuild that saw this org's organizations row already gone before
- * it read contributions, so a sweeper rebuild that races the cascade cannot
- * satisfy it. A failed step-3 rebuild does not fail the erasure: the rows stay
- * stale and requested, and jobs/fixOutcomeWorker.ts retries them every sweep.
+ *  3. Re-mark, unconditionally, EVERY partner-owned fix_memory row for the
+ *     partner this org belonged to (markPartnerFixMemoryStale). Step 1's
+ *     request only covers identities the org had ALREADY contributed to when
+ *     it ran; an identity whose first-ever counted outcome from this org
+ *     landed between step 1 and the cascade's fix_outcomes commit was never
+ *     flagged, and re-running step 1's own function here is a guaranteed
+ *     no-op (its EXISTS(fix_outcomes) and its own org lookup both need state
+ *     the cascade just deleted). Step 3 exists specifically to close that gap:
+ *     it needs no EXISTS check and no org lookup, so it cannot miss a row for
+ *     that reason.
+ *  4. Rebuild.
+ * A failure to mark (step 1) aborts before any row is deleted. Step 3's mark
+ * is best-effort: if it fails, log + captureException, then still attempt the
+ * rebuild — do not fail the erasure.
+ *
+ * Durable-retry guarantee: if step 4's rebuild succeeds, it recomputes every
+ * one of the partner's identities fresh (rebuildFixMemory scans the whole
+ * partner) and both marks are moot. If step 4 instead fails, every row step 1
+ * and/or step 3 touched is left `stale_since`-set, so `stalePartnerIds`
+ * surfaces this partner and jobs/fixOutcomeWorker.ts's sweeper retries it.
+ * The only residual risk is a process crash strictly between the cascade's
+ * commit and step 3's own commit — one DB round trip, not the whole cascade's
+ * duration.
+ *
  * Exported so the real-Postgres merge and erasure proofs run exactly this.
  * `hooks.rebuild` is a test seam only.
- *
- * Durability gap (Task 12 review carry-forward): an outcome of this org could
- * count into a fix_memory identity CREATED between step 1's mark and step 2's
- * deletes — one step 1 never saw, since it only flags rows that already
- * existed. Step 3 is what actually closes this even without a marker:
- * rebuildFixMemory recomputes every fix_memory row the partner has (not just
- * flagged ones), so a newly-created row is still caught by the identity union
- * it builds from the fix_memory table itself, once it recomputes from the
- * post-cascade fix_outcomes (this org's rows already gone). The re-mark below,
- * run right before step 3, is a no-op for THIS org today — the cascade already
- * deleted its organizations row, so the lookup markFixMemoryStaleForOrgErasure
- * depends on finds nothing — but it is cheap, matches the store's documented
- * contract (a request "survives" any rebuild that has not yet seen the org's
- * organizations row gone), and costs nothing if cascade ordering ever changes.
- * It does not, by itself, close the one remaining sliver: this org's very
- * first-ever contribution landing in the race window AND step 3 then failing
- * — that combination leaves no existing fix_memory row to flag, so the
- * sweeper has nothing to pick up for that partner. Closing that fully needs a
- * partner-level durability marker independent of any fix_memory row, which is
- * a store-schema change out of this task's scope.
  */
 export async function eraseOrgWithFixMemory(
   orgId: string,
@@ -138,15 +136,17 @@ export async function eraseOrgWithFixMemory(
   hooks: { rebuild?: typeof rebuildFixMemory } = {},
 ) {
   const rebuild = hooks.rebuild ?? rebuildFixMemory;
-  const markStale = () =>
-    runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
-  const fixMemoryPartnerId = await markStale();
+  const fixMemoryPartnerId = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
   const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
   if (fixMemoryPartnerId) {
-    // See the durability-gap note above: no-op for this org today, kept cheap
-    // and consistent with the store's re-arm contract.
-    await markStale().catch(() => null);
+    try {
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => markPartnerFixMemoryStale(fixMemoryPartnerId), 'tenantErasure.fixMemoryStalePartner'));
+    } catch (markErr) {
+      console.error(`[TenantErasure] post-cascade partner fix-memory mark failed for partner ${fixMemoryPartnerId} (org ${orgId}); continuing to the rebuild attempt`, markErr);
+      captureException(markErr);
+    }
     try {
       await runOutsideDbContext(() =>
         withSystemDbAccessContext(() => rebuild({ partnerId: fixMemoryPartnerId }), 'tenantErasure.fixMemoryRebuild'));

@@ -18,6 +18,7 @@ const {
   actorStateRows,
   capturedWorkerProcessor,
   markStaleMock,
+  markPartnerMock,
   rebuildMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -32,6 +33,7 @@ const {
     current: null as null | ((job: unknown) => Promise<unknown>),
   },
   markStaleMock: vi.fn(),
+  markPartnerMock: vi.fn(),
   rebuildMock: vi.fn(),
 }));
 
@@ -87,6 +89,7 @@ vi.mock('../services/auditService', () => ({
 
 vi.mock('../services/fixMemory/store', () => ({
   markFixMemoryStaleForOrgErasure: (...a: unknown[]) => markStaleMock(...(a as [])),
+  markPartnerFixMemoryStale: (...a: unknown[]) => markPartnerMock(...(a as [])),
   rebuildFixMemory: (...a: unknown[]) => rebuildMock(...(a as [])),
 }));
 
@@ -108,6 +111,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+import { captureException } from '../services/sentry';
 import {
   __testOnly,
   createTenantErasureWorker,
@@ -227,6 +231,7 @@ describe('tenantErasure worker', () => {
 
   it('marks partner fix memory stale BEFORE the cascade and rebuilds it after', async () => {
     markStaleMock.mockResolvedValue('partner-1');
+    markPartnerMock.mockResolvedValue(undefined);
     rebuildMock.mockResolvedValue({ identities: 1 });
     createTenantErasureWorker();
     await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
@@ -236,36 +241,85 @@ describe('tenantErasure worker', () => {
     expect(rebuildMock.mock.invocationCallOrder[0]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
   });
 
-  it('a failed rebuild does not fail the erasure (the request persisted by markStale keeps rows stale; the sweeper retries)', async () => {
+  it('a failed rebuild does not fail the erasure (the request persisted by markStale/markPartner keeps rows stale; the sweeper retries) and is reported', async () => {
     markStaleMock.mockResolvedValue('partner-1');
-    rebuildMock.mockRejectedValue(new Error('lock timeout'));
+    markPartnerMock.mockResolvedValue(undefined);
+    const rebuildErr = new Error('lock timeout');
+    rebuildMock.mockRejectedValue(rebuildErr);
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     createTenantErasureWorker();
     const result = await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
-    err.mockRestore();
     expect(result).toMatchObject({ totalRowsDeleted: 2 });
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('fix-memory rebuild failed'), rebuildErr);
+    expect(captureException).toHaveBeenCalledWith(rebuildErr);
+    err.mockRestore();
   });
 
   /**
-   * Controller carry-forward (Task 12 review, durability gap): an outcome of
-   * the erasing org could count into a fix_memory identity created between
-   * the pre-cascade mark and the cascade's deletes, one the pre-cascade mark
-   * never saw. eraseOrgWithFixMemory re-marks (idempotently) right before the
-   * post-cascade rebuild to stay consistent with the store's re-arm contract,
-   * and the rebuild itself (not this second mark) is what actually catches a
-   * newly-created row, since it recomputes every fix_memory row the partner
-   * has. This test pins the ORDER: markStale runs a second time strictly
-   * between the cascade and the rebuild.
+   * Controller ruling (Task 21 review, fix round 1): markFixMemoryStaleForOrgErasure
+   * re-run after the cascade is a guaranteed no-op — its EXISTS(fix_outcomes)
+   * and its own organizations lookup both need state the cascade just deleted.
+   * markPartnerFixMemoryStale is the real closure: it marks every partner-owned
+   * fix_memory row stale unconditionally, so it cannot miss an identity whose
+   * first-ever counted outcome from the erased org landed between the
+   * pre-cascade mark and the cascade's fix_outcomes commit. This test pins the
+   * ORDER: mark(org) -> cascade -> markPartner -> rebuild.
    */
-  it('re-marks the org between the cascade and the rebuild, closing the mark-to-cascade race window', async () => {
-    markStaleMock.mockResolvedValueOnce('partner-1').mockResolvedValueOnce(null);
+  it('marks the org, cascades, marks the whole partner, then rebuilds — in that order', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    markPartnerMock.mockResolvedValue(undefined);
     rebuildMock.mockResolvedValue({ identities: 1 });
     createTenantErasureWorker();
     await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
-    expect(markStaleMock).toHaveBeenCalledTimes(2);
-    expect(markStaleMock.mock.calls[1]).toEqual(['org-xyz']);
-    expect(markStaleMock.mock.invocationCallOrder[1]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
-    expect(markStaleMock.mock.invocationCallOrder[1]!).toBeLessThan(rebuildMock.mock.invocationCallOrder[0]!);
+    expect(markStaleMock).toHaveBeenCalledTimes(1);
+    expect(markStaleMock).toHaveBeenCalledWith('org-xyz');
+    expect(markPartnerMock).toHaveBeenCalledTimes(1);
+    expect(markPartnerMock).toHaveBeenCalledWith('partner-1');
+    const markOrder = markStaleMock.mock.invocationCallOrder[0]!;
+    const cascadeOrder = cascadeDeleteOrgMock.mock.invocationCallOrder[0]!;
+    const markPartnerOrder = markPartnerMock.mock.invocationCallOrder[0]!;
+    const rebuildOrder = rebuildMock.mock.invocationCallOrder[0]!;
+    expect(markOrder).toBeLessThan(cascadeOrder);
+    expect(cascadeOrder).toBeLessThan(markPartnerOrder);
+    expect(markPartnerOrder).toBeLessThan(rebuildOrder);
+  });
+
+  it('a failed post-cascade partner mark does not fail the erasure and still attempts the rebuild', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    const markPartnerErr = new Error('advisory lock timeout');
+    markPartnerMock.mockRejectedValue(markPartnerErr);
+    rebuildMock.mockResolvedValue({ identities: 1 });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createTenantErasureWorker();
+    const result = await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    expect(result).toMatchObject({ totalRowsDeleted: 2 });
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('post-cascade partner fix-memory mark failed'), markPartnerErr);
+    expect(captureException).toHaveBeenCalledWith(markPartnerErr);
+    expect(rebuildMock).toHaveBeenCalledWith({ partnerId: 'partner-1' });
+    err.mockRestore();
+  });
+
+  /**
+   * MINOR 2 (Task 21 review): a pre-cascade mark failure must abort the
+   * erasure before any row is deleted — cascadeDeleteOrg must never run.
+   */
+  it('a failed pre-cascade mark aborts the erasure before the cascade runs, and is audited as a failure', async () => {
+    const markErr = new Error('advisory lock deadlock');
+    markStaleMock.mockRejectedValue(markErr);
+    createTenantErasureWorker();
+    await expect(
+      capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } }),
+    ).rejects.toThrow(/advisory lock deadlock/);
+    expect(cascadeDeleteOrgMock).not.toHaveBeenCalled();
+    expect(markPartnerMock).not.toHaveBeenCalled();
+    expect(rebuildMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.failed',
+        resourceId: 'org-xyz',
+        result: 'failure',
+      }),
+    );
   });
 
   it.each([
