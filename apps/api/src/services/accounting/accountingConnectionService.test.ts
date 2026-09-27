@@ -476,6 +476,35 @@ describe('accountingConnectionService', () => {
       expect(fetchRealmSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }));
     });
 
+    it('labels its errors with the provider (Xero W02); QuickBooks strings are byte-identical', async () => {
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+
+      dbRef.current = makeAmbientFakeDb(null).db;
+      await expect(refreshRealmSettings('p1', 'xero', runCtx))
+        .rejects.toMatchObject({ code: 'not_connected', message: 'Xero is not connected for this partner' });
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx))
+        .rejects.toMatchObject({ code: 'not_connected', message: 'QuickBooks is not connected for this partner' });
+
+      dbRef.current = makeAmbientFakeDb(ambientConnectionRow({ provider: 'xero', status: 'reauth_required' })).db;
+      await expect(refreshRealmSettings('p1', 'xero', runCtx))
+        .rejects.toMatchObject({ code: 'reauth_required', message: 'Xero needs to be reconnected' });
+      dbRef.current = makeAmbientFakeDb(ambientConnectionRow({ status: 'reauth_required' })).db;
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx))
+        .rejects.toMatchObject({ code: 'reauth_required', message: 'QuickBooks needs to be reconnected' });
+
+      // A pending_tenant row is "not connected" too, labelled by provider.
+      dbRef.current = makeAmbientFakeDb(ambientConnectionRow({ provider: 'xero', status: 'pending_tenant' })).db;
+      await expect(refreshRealmSettings('p1', 'xero', runCtx))
+        .rejects.toMatchObject({ code: 'not_connected', message: 'Xero is not connected for this partner' });
+
+      // Token refresh reports the grant is dead.
+      dbRef.current = makeAmbientFakeDb(ambientConnectionRow({ provider: 'xero' })).db;
+      getValidAccessTokenMock.mockRejectedValueOnce(new ReauthRequiredErrorClass());
+      await expect(refreshRealmSettings('p1', 'xero', runCtx))
+        .rejects.toMatchObject({ code: 'reauth_required', message: 'Xero needs to be reconnected' });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
     it('throws not_connected (404) when the partner has no connection', async () => {
       const { db } = makeAmbientFakeDb(null);
       dbRef.current = db;

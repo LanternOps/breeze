@@ -9,7 +9,7 @@ const { slotMock } = vi.hoisted(() => ({
 vi.mock('./accountingRateLimit', () => ({ withProviderCallSlot: slotMock }));
 import {
   quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, mapQboCdcPayment, QBO_PREFERENCES_TIMEOUT_MS,
-  QBO_CDC_CURSOR_SLACK_MS, parseRetryAfterMs,
+  QBO_CDC_CURSOR_SLACK_MS,
 } from './quickbooksProvider';
 import { AccountingProviderError } from './accountingProviderError';
 import type { AccountingConnection } from './accountingConnectionService';
@@ -1854,30 +1854,5 @@ describe('rate limiting — slot coverage, refusal pass-through and catch audit 
       .catch((e) => e);
     expect(up).toMatchObject({ kind: 'rate_limited', status: 429 });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('parseRetryAfterMs', () => {
-  it.each([
-    [null, null],
-    ['', null],
-    ['30', 30_000],
-    ['0', 0],
-    ['1.5', 1_500],
-    ['-5', null],
-    ['soon', null],
-  ])('%j -> %j', (header, expected) => {
-    expect(parseRetryAfterMs(header)).toBe(expected);
-  });
-
-  it('reads an HTTP-date as the wait until then, clamping a past date to 0', () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date('2026-09-26T12:00:00.000Z'));
-      expect(parseRetryAfterMs('Sat, 26 Sep 2026 12:00:45 GMT')).toBe(45_000);
-      expect(parseRetryAfterMs('Sat, 26 Sep 2026 11:00:00 GMT')).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

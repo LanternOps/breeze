@@ -24,6 +24,18 @@ export interface ConnectionTokens {
   refreshTokenExpiresAt: Date;
 }
 
+/** One tenant (organisation) an OAuth grant can reach (Xero W02). */
+export interface ProviderTenant {
+  tenantId: string;
+  /** The provider's id for this user's link to the tenant (Xero: the connection id). */
+  connectionRef: string;
+  name: string;
+  /** Provider tenant type (Xero: 'ORGANISATION', 'PRACTICEMANAGER', …). */
+  tenantType: string;
+  /** The auth event that FIRST linked this tenant (Xero connection.authEventId). */
+  authEventId: string | null;
+}
+
 export interface RemoteEntity {
   id: string;
   displayName: string;

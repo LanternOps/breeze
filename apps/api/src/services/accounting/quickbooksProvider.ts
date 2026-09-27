@@ -4,6 +4,7 @@ import { runOutsideDbContext } from '../../db';
 import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
 import { AccountingProviderError } from './accountingProviderError';
 import { withProviderCallSlot } from './accountingRateLimit';
+import { parseRetryAfterMs } from './retryAfter';
 import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -305,21 +306,6 @@ function qboFaultBody(err: unknown): string {
   return err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
     ? (err as { body: string }).body
     : '';
-}
-
-/**
- * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
- * Returns null when absent or unreadable (a negative delta included), so the
- * caller picks its own default.
- */
-export function parseRetryAfterMs(header: string | null): number | null {
-  if (!header || !header.trim()) return null;
-  if (/^\s*-?\d+(?:\.\d+)?\s*$/.test(header)) {
-    const seconds = Number(header);
-    return seconds >= 0 ? Math.ceil(seconds * 1000) : null;
-  }
-  const at = Date.parse(header);
-  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
 }
 
 /**

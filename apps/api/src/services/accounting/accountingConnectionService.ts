@@ -1159,17 +1159,18 @@ export async function refreshRealmSettings(
   runInDbContext: DbContextRunner,
 ): Promise<{ homeCurrency: string | null; multiCurrencyEnabled: boolean | null }> {
   assertNoAmbientDbContext('refreshRealmSettings');
+  const label = accountingProviderDisplayName(provider);
 
   const conn = await runInDbContext(async () => {
     const conn = await getConnection(db, partnerId, provider);
     if (!conn) {
-      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+      throw new AccountingConnectionError('not_connected', 404, `${label} is not connected for this partner`);
     }
     if (conn.status === 'reauth_required') {
-      throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+      throw new AccountingConnectionError('reauth_required', 409, `${label} needs to be reconnected`);
     }
     if (conn.status !== 'connected') {
-      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+      throw new AccountingConnectionError('not_connected', 404, `${label} is not connected for this partner`);
     }
     return conn;
   });
@@ -1181,7 +1182,7 @@ export async function refreshRealmSettings(
     accessToken = await getValidAccessToken(db, conn);
   } catch (err) {
     if (err instanceof ReauthRequiredError) {
-      throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+      throw new AccountingConnectionError('reauth_required', 409, `${label} needs to be reconnected`);
     }
     throw err;
   }
@@ -1191,7 +1192,7 @@ export async function refreshRealmSettings(
   const freshConn = await runInDbContext(async () => {
     const freshConn = await getConnection(db, partnerId, provider);
     if (!freshConn) {
-      throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+      throw new AccountingConnectionError('not_connected', 404, `${label} is not connected for this partner`);
     }
     return freshConn;
   });
