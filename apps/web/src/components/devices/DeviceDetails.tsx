@@ -817,7 +817,7 @@ export default function DeviceDetails({
                 "14d 13h 24m" and "Logged-in User" stay on one line; only the
                 username (arbitrary length) is allowed to truncate. */}
             <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6">
-              <div className="flex flex-1 gap-x-6">
+              <div className="flex min-w-0 flex-1 gap-x-6">
                 <div className="shrink-0">
                   <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
                     <Cpu className="h-3.5 w-3.5" />
@@ -867,9 +867,11 @@ export default function DeviceDetails({
                   </p>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
-                    <User className="h-3.5 w-3.5" />
-                    {t("deviceDetails.loggedInUser")}{" "}
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <User className="h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {t("deviceDetails.loggedInUser")}
+                    </span>
                   </div>
                   <p
                     className="mt-1 truncate text-lg font-semibold"
