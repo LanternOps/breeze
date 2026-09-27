@@ -24,7 +24,7 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
     highlights: [
       'Network checks are now authored and managed under Monitors, and maintenance windows suppress monitor alerts again.',
       'Backup restores download files through short-lived per-file links, and Hyper-V restores (to a new VM, restore as VM, instant boot) are more reliable and report failures clearly.',
-      'Work types reach the mobile ticket timer and the Outlook add-in, and the billables CSV gains work-type columns.',
+      'Device pages show memory modules per slot, flag stuck agent self-updates and missing Breeze Assist installs, and failed patch installs now show their reason.',
       'Security and reliability hardening across the agent, remote sessions, installers, AI tools and account management — upgrade your agents to 0.118.0.',
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
