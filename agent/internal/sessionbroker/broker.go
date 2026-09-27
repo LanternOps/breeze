@@ -297,7 +297,17 @@ type Broker struct {
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
 	onSessionAuthed SessionAuthenticatedHandler
-	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
+	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries; guarded by mu
+
+	// helperPathsFn overrides allowedHelperPaths (test seam). Nil in
+	// production, where the allowlist is derived from os.Executable().
+	helperPathsFn func() []string
+
+	// hashRefreshMu serializes the on-miss allowlist refresh in
+	// verifyPeerBinaryHash; lastHashMissRefresh (guarded by hashRefreshMu)
+	// rate-limits it to one full rehash per hashMissRefreshInterval.
+	hashRefreshMu       sync.Mutex
+	lastHashMissRefresh time.Time
 
 	// consoleSessionIDFn returns the active console (physical-monitor) Windows
 	// session id. It is the injectable seam that makes the assist/user
@@ -334,6 +344,10 @@ type Broker struct {
 // while still guaranteeing the key is released even if the PID stays alive,
 // becomes unprobeable, or is reused.
 const helperKillRetentionTTL = 5 * time.Minute
+
+// hashMissRefreshInterval bounds how often a helper hash miss may trigger a
+// full rehash of the allowlisted binaries (see verifyPeerBinaryHash).
+const hashMissRefreshInterval = 30 * time.Second
 
 // retainedHelperKey is a bounded record that a failed kill left a helper PID
 // possibly alive, so a respawn for this key must be blocked until the PID is
@@ -2187,7 +2201,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			"identity", identityKey,
 			"pid", creds.PID,
 			"path", creds.BinaryPath,
-			"allowed", b.allowedHelperPaths(),
+			"allowed", b.helperPaths(),
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -2199,7 +2213,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
-	if len(b.selfHashes) == 0 {
+	if b.allowedHashCount() == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
 			"pid", creds.PID,
@@ -2212,7 +2226,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
-	peerHash, err := hashFileSHA256(creds.BinaryPath)
+	peerHash, hashVerified, err := b.verifyPeerBinaryHash(creds.BinaryPath)
 	if err != nil {
 		log.Warn("failed to hash peer binary",
 			"identity", identityKey,
@@ -2228,15 +2242,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
-	hashVerified := b.isAllowedBinaryHash(peerHash)
 	if !hashVerified {
-		allowed := make([]string, 0, len(b.selfHashes))
-		for h := range b.selfHashes {
-			allowed = append(allowed, h)
-		}
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
-			"expected", allowed,
+			"path", creds.BinaryPath,
+			"expected", b.allowedHashList(),
 			"got", peerHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -2639,13 +2649,13 @@ func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
 // setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
-	ok := binaryPathMatchesAllowed(peerPath, b.allowedHelperPaths())
+	ok := binaryPathMatchesAllowed(peerPath, b.helperPaths())
 	if ok {
 		return true
 	}
 	log.Debug("verifyBinaryPath: no match",
 		"peer", filepath.Clean(peerPath),
-		"allowed", b.allowedHelperPaths(),
+		"allowed", b.helperPaths(),
 	)
 	return false
 }
@@ -2779,7 +2789,7 @@ func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
 		return false
 	}
 	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
-	for _, candidate := range b.allowedHelperPaths() {
+	for _, candidate := range b.helperPaths() {
 		if !strings.Contains(filepath.Base(candidate), "breeze-desktop-helper") {
 			continue
 		}
@@ -2792,6 +2802,15 @@ func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
 		}
 	}
 	return false
+}
+
+// helperPaths returns the allowlisted helper binary paths, honouring the
+// helperPathsFn test seam.
+func (b *Broker) helperPaths() []string {
+	if b.helperPathsFn != nil {
+		return b.helperPathsFn()
+	}
+	return b.allowedHelperPaths()
 }
 
 func (b *Broker) allowedHelperPaths() []string {
@@ -2895,11 +2914,11 @@ func assistHelperBinaryPathsForOS(agentDir, goos, programFiles string) []string 
 }
 
 // RefreshAllowedHashes recomputes the helper binary hash allowlist from the
-// binaries currently present on disk. Call this after a dev push that
-// replaces a helper binary so the next connection from the newly spawned
-// helper (which will hash to a new value) is accepted.
-// RefreshAllowedHashes recomputes the helper binary hash allowlist from
-// disk and atomically swaps the broker's selfHashes map.
+// binaries currently present on disk. Call this after anything that installs
+// or replaces a binary at an allowlisted path (dev push, user-helper install,
+// Breeze Helper install/update) so the next connection from the new binary is
+// accepted. The recomputed set atomically replaces the broker's selfHashes
+// map.
 //
 // Returns the count of successfully-hashed binaries and a non-nil error if
 // the recompute produced zero hashes (every allowed path failed to hash,
@@ -2937,7 +2956,7 @@ func (b *Broker) HashAndVerifyAllowed(path string) (string, bool, error) {
 
 func (b *Broker) computeAllowedHashes() map[string]struct{} {
 	hashes := make(map[string]struct{})
-	for _, path := range b.allowedHelperPaths() {
+	for _, path := range b.helperPaths() {
 		sum, err := hashFileSHA256(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -2959,8 +2978,90 @@ func (b *Broker) isAllowedBinaryHash(hash string) bool {
 	if hash == "" {
 		return false
 	}
+	b.mu.RLock()
 	_, ok := b.selfHashes[hash]
+	b.mu.RUnlock()
 	return ok
+}
+
+func (b *Broker) allowedHashCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.selfHashes)
+}
+
+func (b *Broker) allowedHashList() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]string, 0, len(b.selfHashes))
+	for h := range b.selfHashes {
+		out = append(out, h)
+	}
+	return out
+}
+
+// verifyPeerBinaryHash hashes the kernel-resolved peer binary and reports
+// whether that hash is in the allowlist. The returned hash is for logging.
+//
+// The allowlist is a snapshot of the files at the allowlisted paths, taken in
+// New() and on RefreshAllowedHashes. A binary installed or replaced after that
+// snapshot (the Breeze Helper MSI lands after the agent starts on a fresh
+// enrollment, and every helper update swaps the file) would otherwise be
+// rejected until the agent restarts (#7043). So on a miss from a peer whose
+// path is itself allowlisted, re-hash the allowlisted files once and re-check.
+//
+// This does not widen trust: the peer is accepted only if its bytes hash to
+// the current bytes of a file at an allowlisted (admin-owned) path, which is
+// exactly what the startup snapshot establishes. There is no path-only
+// acceptance. The refresh is serialized and rate-limited so a peer that keeps
+// failing cannot force repeated full rehashing of the agent binaries.
+func (b *Broker) verifyPeerBinaryHash(peerPath string) (string, bool, error) {
+	peerHash, err := hashFileSHA256(peerPath)
+	if err != nil {
+		return "", false, err
+	}
+	if b.isAllowedBinaryHash(peerHash) {
+		return peerHash, true, nil
+	}
+	if !binaryPathMatchesAllowed(peerPath, b.helperPaths()) {
+		return peerHash, false, nil
+	}
+	return peerHash, b.refreshAllowedHashesOnMiss(peerPath, peerHash), nil
+}
+
+// refreshAllowedHashesOnMiss re-hashes the allowlisted binaries at most once
+// per hashMissRefreshInterval and reports whether peerHash is allowed after.
+func (b *Broker) refreshAllowedHashesOnMiss(peerPath, peerHash string) bool {
+	b.hashRefreshMu.Lock()
+	defer b.hashRefreshMu.Unlock()
+	// Another connection may have refreshed while this one waited.
+	if b.isAllowedBinaryHash(peerHash) {
+		return true
+	}
+	now := b.now()
+	if !b.lastHashMissRefresh.IsZero() && now.Sub(b.lastHashMissRefresh) < hashMissRefreshInterval {
+		log.Info("helper hash miss at allowlisted path; allowlist refresh rate-limited, rejecting until the next window",
+			"path", peerPath,
+			"lastRefresh", b.lastHashMissRefresh,
+		)
+		return false
+	}
+	b.lastHashMissRefresh = now
+	count, err := b.RefreshAllowedHashes()
+	if err != nil {
+		log.Warn("helper hash miss at allowlisted path; allowlist refresh failed",
+			"path", peerPath,
+			"error", err.Error(),
+		)
+		return false
+	}
+	accepted := b.isAllowedBinaryHash(peerHash)
+	log.Info("helper hash miss at allowlisted path; refreshed allowlist from disk",
+		"path", peerPath,
+		"count", count,
+		"accepted", accepted,
+	)
+	return accepted
 }
 
 func hashFileSHA256(path string) (string, error) {

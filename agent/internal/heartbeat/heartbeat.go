@@ -1027,6 +1027,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithManifestKeys(h.pinnedManifestPubKeys),
 			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
+			// Re-hash the broker's allowlist when a new helper binary lands, or
+			// the broker rejects it until the agent restarts (#7043). Reads
+			// h.sessionBroker at call time: the broker is built further down.
+			helper.WithOnInstalled(h.onHelperInstalled),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -1063,6 +1067,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithManifestKeys(h.pinnedManifestPubKeys),
 			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
+			// Re-hash the broker's allowlist when a new helper binary lands, or
+			// the broker rejects it until the agent restarts (#7043). Reads
+			// h.sessionBroker at call time: the broker is built further down.
+			helper.WithOnInstalled(h.onHelperInstalled),
 		)
 	}
 

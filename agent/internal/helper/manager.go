@@ -135,6 +135,24 @@ func WithBackupServerURL(backupServerURL func() string) Option {
 	return func(m *Manager) { m.backupServerURL = backupServerURL }
 }
 
+// WithOnInstalled sets a callback that runs after a verified install puts a
+// new helper binary on disk, before any session is (re)spawned from it. It
+// runs again when an update whose new build would not start is rolled back,
+// before the previous build is respawned. It receives the binary's path.
+//
+// The agent wires it to the session broker's RefreshAllowedHashes, so the
+// binary's hash is allowlisted before its first IPC connection (#7043).
+// Without it, the broker's startup snapshot rejects a helper installed after
+// the agent started until the agent restarts. The same applies after every
+// helper update.
+//
+// It runs synchronously with the Manager's lock held, so it must not call
+// back into the Manager. It is not called when the download, the package
+// install or the post-install version check fails.
+func WithOnInstalled(fn func(binaryPath string)) Option {
+	return func(m *Manager) { m.onInstalled = fn }
+}
+
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
 type Manager struct {
 	mu         sync.Mutex
@@ -187,6 +205,9 @@ type Manager struct {
 	manifestKeys func() []string
 
 	requireManifestSigningKeyID func() bool
+
+	// onInstalled runs after a successful, verified install. See WithOnInstalled.
+	onInstalled func(binaryPath string)
 
 	// now is the clock for the abandon cooldown; nil means time.Now (tests inject).
 	now func() time.Time
@@ -819,7 +840,18 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 
 	log.Info("helper installed", "path", m.binaryPath, "version", version)
+	// The binary at an allowlisted path just changed. Let the session broker
+	// re-hash it before any session spawns the new build (#7043).
+	m.notifyInstalledLocked()
 	return nil
+}
+
+// notifyInstalledLocked runs the WithOnInstalled callback, if any. Must be
+// called with m.mu held.
+func (m *Manager) notifyInstalledLocked() {
+	if m.onInstalled != nil {
+		m.onInstalled(m.binaryPath)
+	}
 }
 
 // readBinaryVersion reads the installed helper binary's stamped version.
@@ -1006,6 +1038,10 @@ func (m *Manager) applyPendingUpdate() {
 				started.pid = 0
 			}
 			m.rollbackBinaryLocked(backupPath, preVersion)
+			// The install already told the broker about the new build, and
+			// the rollback just put the previous one back. Refresh again
+			// before respawning it, or the broker rejects it (#7043).
+			m.notifyInstalledLocked()
 			m.restartSessionsLocked(stopped)
 			return
 		}
