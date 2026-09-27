@@ -441,7 +441,7 @@
       "confirmTitle": "Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren?",
       "confirmBody": "{{rows}} in {{policies}} des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben jetzt zur Prüfung oder manuellen Stilllegung; eine künftige Version konvertiert Reste und legt nicht konvertierbare still.",
       "confirmRun": "Alles konvertieren",
-      "convertedAll": "{{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar.",
+      "convertedAll": "{{rows}} in {{policies}} konvertiert; {{unconvertible}} nicht konvertierbar.",
       "errors": {
         "convertAll": "Konvertierung aller Einträge fehlgeschlagen"
       }

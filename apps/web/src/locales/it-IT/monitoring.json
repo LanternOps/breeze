@@ -441,7 +441,7 @@
       "confirmTitle": "Convertire tutte le regole legacy, i controlli e le automazioni attivate da avvisi in tutte le policy?",
       "confirmBody": "{{rows}} in {{policies}} dell’intero partner. Le righe convertite vengono ritirate sul posto. Le altre restano ora da esaminare o ritirare manualmente; una versione futura converte le rimanenti e ritira quelle non convertibili.",
       "confirmRun": "Converti tutto",
-      "convertedAll": "Convertite {{converted}} righe in {{policies}} policy; {{unconvertible}} non convertibili.",
+      "convertedAll": "Convertite {{rows}} in {{policies}}; {{unconvertible}} non convertibili.",
       "errors": {
         "convertAll": "Conversione completa non riuscita"
       }

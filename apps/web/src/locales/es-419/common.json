@@ -979,11 +979,13 @@
         "notConverted": "Sin convertir"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} verificaciones de red requieren revisión.",
+        "pending_one": "{{count}} verificación de red requiere revisión.",
+        "pending_other": "{{count}} verificaciones de red requieren revisión.",
         "review": "Revisar conversión",
         "title": "Conversión de verificaciones de red",
         "convert": "Convertir {{count}}",
-        "converted": "Se convirtieron {{count}} verificaciones de red",
+        "converted_one": "Se convirtió {{count}} verificación de red",
+        "converted_other": "Se convirtieron {{count}} verificaciones de red",
         "failed": "No se pudieron convertir las verificaciones de red",
         "outcome": {
           "convertible": "Convertible",

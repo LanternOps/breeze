@@ -441,7 +441,7 @@
       "confirmTitle": "Converter todas as regras legadas, monitoramentos e automações acionadas por alerta em todas as suas políticas?",
       "confirmBody": "{{rows}} em {{policies}} de todo o parceiro. Linhas convertidas são aposentadas no lugar. As demais ficam agora para revisão ou aposentadoria manual; uma versão futura converte as restantes e aposenta as não convertíveis.",
       "confirmRun": "Converter tudo",
-      "convertedAll": "{{converted}} linhas convertidas em {{policies}} políticas; {{unconvertible}} não puderam ser convertidas.",
+      "convertedAll": "{{rows}} convertidas em {{policies}}; {{unconvertible}} não puderam ser convertidas.",
       "errors": {
         "convertAll": "Falha ao converter tudo"
       }

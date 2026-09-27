@@ -441,7 +441,7 @@
       "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
       "confirmBody": "İş ortağının tümünde {{policies}}de {{rows}}. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri şimdi inceleme veya elle emekliye ayırma için kalır; gelecekteki bir sürüm kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
       "confirmRun": "Tümünü dönüştür",
-      "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
+      "convertedAll": "{{policies}}de {{rows}} dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
       "errors": {
         "convertAll": "Tümü dönüştürülemedi"
       }

@@ -441,7 +441,7 @@
       "confirmTitle": "Convert every legacy rule, watch and alert-triggered automation across all your policies?",
       "confirmBody": "{{rows}} in {{policies}} across the whole partner. Converted rows retire in place. Unconvertible rows remain for review or manual retirement now; a future release converts leftovers and retires those it cannot convert.",
       "confirmRun": "Convert everything",
-      "convertedAll": "Converted {{converted}} rows across {{policies}} policies; {{unconvertible}} could not be converted.",
+      "convertedAll": "Converted {{rows}} across {{policies}}; {{unconvertible}} could not be converted.",
       "errors": {
         "convertAll": "Failed to convert everything"
       }
