@@ -8,6 +8,10 @@ import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 // place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
 // fails the row closed if it ever is not.
 import './topology/diagnosticDispatch';
+// Side-effect import: registers the `script` delivery revalidation (rehydrates
+// the requester's live RBAC — role/org-access/site — at claim time, same
+// rationale as the diagnostic import above).
+import './scriptCommandRevalidation';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
@@ -30,6 +34,7 @@ export async function claimPendingCommandForDelivery(
         type: deviceCommands.type,
         deviceId: deviceCommands.deviceId,
         payload: deviceCommands.payload,
+        createdBy: deviceCommands.createdBy,
       })
       .from(deviceCommands)
       .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')))
@@ -118,6 +123,46 @@ export async function releaseClaimedCommandDelivery(
     db
       .update(deviceCommands)
       .set({ status: 'pending', executedAt: null })
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.status, 'sent'),
+          eq(deviceCommands.executedAt, executedAt),
+        ),
+      ),
+  );
+}
+
+/**
+ * Put a claimed command whose delivery was REFUSED back to `pending` with a
+ * delivery deadline of "now", recording why in `result.deliveryRefusal`.
+ *
+ * Why not a plain release: a refusal (a storage destination reference that no
+ * longer resolves, say) is permanent, so a released row would be re-claimed
+ * and refused on every heartbeat until its execution clock ran out — up to 24
+ * hours for a whole-machine restore. Why not a terminal write here: the stale
+ * reaper's delivery clock is the one owner of "never delivered" propagation
+ * (restore jobs, DR executions, script and patch records). A `deliver_by` in
+ * the past is excluded by every claim query and picked up by that clock on its
+ * next pass, which reports `result.deliveryRefusal` as the reason.
+ *
+ * Same `(id, status='sent', executedAt=<claim ts>)` fence as
+ * `releaseClaimedCommandDelivery`, and the same context note applies.
+ */
+export async function expireRefusedClaimedCommandDelivery(
+  commandId: string,
+  executedAt: Date,
+  reason: string,
+): Promise<void> {
+  await withSystemDbAccessContext(() =>
+    db
+      .update(deviceCommands)
+      .set({
+        status: 'pending',
+        executedAt: null,
+        deliverBy: new Date(),
+        result: { deliveryRefusal: reason },
+      })
       .where(
         and(
           eq(deviceCommands.id, commandId),

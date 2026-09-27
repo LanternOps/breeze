@@ -566,6 +566,94 @@ describe('POST /devices/:id/agent-token/rotate — live socket revocation', () =
       details: { agentWsDisconnect: 'closed' },
     }));
   });
+
+  it('tells the caller watchdog/helper recovery is unavailable until the agent reconnects', async () => {
+    const device = {
+      ...ONLINE_DEVICE,
+      agentId: 'agent-abc-123',
+      agentTokenHash: 'a'.repeat(64),
+      previousTokenHash: 'b'.repeat(64),
+      pendingTokenHash: 'c'.repeat(64),
+    };
+    const limit = vi.fn().mockResolvedValue([device]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit }),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([device]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/agent-token/rotate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    const body = await res.json();
+    expect(body.watchdogHelperRecovery).toEqual({
+      status: 'pending_agent_reconnect',
+      message: expect.stringMatching(/watchdog.*unavailable.*(reconnect|next heartbeat)/i),
+    });
+  });
+
+  it('also re-keys (nulls) the live watchdog and helper credentials, and includes their hashes in the revocation', async () => {
+    const device = {
+      ...ONLINE_DEVICE,
+      agentId: 'agent-abc-123',
+      agentTokenHash: 'a'.repeat(64),
+      previousTokenHash: 'b'.repeat(64),
+      pendingTokenHash: 'c'.repeat(64),
+      watchdogTokenHash: 'd'.repeat(64),
+      previousWatchdogTokenHash: 'e'.repeat(64),
+      helperTokenHash: 'f'.repeat(64),
+      previousHelperTokenHash: '1'.repeat(64),
+    };
+    const limit = vi.fn().mockResolvedValue([device]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit }),
+      }),
+    } as never);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([device]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as never);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/agent-token/rotate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        watchdogTokenHash: null,
+        watchdogTokenIssuedAt: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        helperTokenHash: null,
+        helperTokenIssuedAt: null,
+        previousHelperTokenHash: null,
+        previousHelperTokenExpiresAt: null,
+      }),
+    );
+    expect(disconnectAgentCredentialGeneration).toHaveBeenCalledWith(
+      'agent-abc-123',
+      expect.arrayContaining(['d'.repeat(64), 'e'.repeat(64), 'f'.repeat(64), '1'.repeat(64)]),
+      'Agent credentials rotated',
+    );
+    expect(publishAgentCredentialRevocation).toHaveBeenCalledWith({
+      agentId: 'agent-abc-123',
+      revokedTokenHashes: expect.arrayContaining(['d'.repeat(64), 'e'.repeat(64), 'f'.repeat(64), '1'.repeat(64)]),
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

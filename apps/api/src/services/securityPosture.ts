@@ -11,6 +11,7 @@ import {
   securityStatus,
   securityThreats
 } from '../db/schema';
+import { EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 
 const SECURITY_FACTOR_WEIGHTS = {
   patch_compliance: 25,
@@ -579,14 +580,20 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     db
       .select({
         deviceId: devicePatches.deviceId,
-        severity: patches.severity,
+        // Effective per-device severity (patchSeverityOverlay.ts): falls back
+        // to this device's own reported severity when the shared, un-tenanted
+        // `patches.severity` is 'unknown' (the permanent state for
+        // microsoft/apple/linux/custom sources). Computed per device_patches
+        // row, inside a query already pinned to this org's deviceIds, before
+        // the groupBy below folds rows together — never mixed across orgs.
+        severity: EFFECTIVE_PATCH_SEVERITY_SQL,
         status: devicePatches.status,
         count: sql<number>`count(*)`
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
       .where(inArray(devicePatches.deviceId, deviceIds))
-      .groupBy(devicePatches.deviceId, patches.severity, devicePatches.status),
+      .groupBy(devicePatches.deviceId, EFFECTIVE_PATCH_SEVERITY_SQL, devicePatches.status),
     db
       .select({
         deviceId: securityThreats.deviceId,

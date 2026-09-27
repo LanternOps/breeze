@@ -70,6 +70,7 @@ import {
   bmrCreateTokenSchema,
   bmrMediaCreateSchema,
   bmrMediaListSchema,
+  bmrRecoveryBinarySignatureSchema,
   bmrTokenListSchema,
 } from './schemas';
 
@@ -90,10 +91,33 @@ const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
 // stolen token brute-forcing paths within that same snapshot — a case the path
 // scoping already bounds regardless of how high this request-rate ceiling is.
 // 10,000/minute comfortably covers the largest recoveries seen while still
-// bounding runaway retry loops; the per-IP limiter (enforcePublicRateLimit,
-// used by authenticate/complete) is unchanged.
+// bounding runaway retry loops.
 const BMR_DOWNLOAD_TOKEN_LIMIT = 10_000;
 const BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS = 60;
+// A per-IP backstop alongside the per-token limit above: the token limiter
+// alone never engages for a request carrying no token, a malformed token, or
+// a random guess — exactly the anonymous flood this route is otherwise
+// exposed to (each such request still ran the system-wide expiry sweep
+// below). Set to the same order of magnitude as the token limit so it never
+// becomes the bottleneck for one legitimate large recovery running from a
+// single machine — it exists to bound a source sending garbage, not to
+// second-guess a valid, path-scoped token's own request volume.
+const BMR_DOWNLOAD_IP_LIMIT = 10_000;
+// Same per-IP backstop shape as BMR_DOWNLOAD_IP_LIMIT above, for the
+// token-authed phase-progress route (bmrRecoveries.ts): the per-token limiter
+// there never engages for a request carrying no token, a malformed token, or
+// a random guess, leaving an anonymous flood of that route otherwise
+// unbounded. Exported so bmrRecoveries.ts can size its call the same way the
+// download route sizes its own.
+export const BMR_PROGRESS_IP_LIMIT = 10_000;
+// Bounds how often the system-wide expired-token sweep actually runs. It was
+// previously invoked unconditionally on every single request to this public,
+// unauthenticated route (before even the per-IP/per-token checks or token
+// format validation) — an anonymous flood turned into a flood of full-table
+// UPDATEs. The sweep itself is idempotent housekeeping (see
+// expireUnusedRecoveryTokens's own docblock), so skipping it when another
+// request already ran it recently is always safe.
+const BMR_EXPIRY_SWEEP_MIN_INTERVAL_SECONDS = 30;
 const recoveryDownloadQuerySchema = z.object({
   token: z.string().min(1).optional(),
   path: z.string().min(1).max(4096),
@@ -322,7 +346,7 @@ let lastUnresolvedWarnAt = 0;
 
 export async function enforcePublicRateLimit(
   c: any,
-  action: 'authenticate' | 'complete' | 'exchange',
+  action: 'authenticate' | 'complete' | 'exchange' | 'download' | 'progress' | 'binary-signature',
   limit: number
 ) {
   const ip = getTrustedClientIp(c);
@@ -354,9 +378,27 @@ export async function enforcePublicRateLimit(
   return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
 }
 
+// Runs the expired-recovery-token sweep at most once per
+// BMR_EXPIRY_SWEEP_MIN_INTERVAL_SECONDS, using the rate limiter as a shared
+// "has anyone already done this recently" gate rather than a per-caller
+// bucket (every caller shares one bucket key). Fails OPEN (still runs the
+// sweep) on a Redis error — the sweep is safe to run redundantly; only its
+// FREQUENCY is bounded here, so a Redis outage must not silently stop the
+// housekeeping it gates.
+async function expireUnusedRecoveryTokensThrottled(): Promise<void> {
+  try {
+    const redis = getRedis();
+    const gate = await rateLimiter(redis, 'bmr:expire-sweep', 1, BMR_EXPIRY_SWEEP_MIN_INTERVAL_SECONDS);
+    if (!gate.allowed) return;
+  } catch (err) {
+    console.error('[bmr] expiry-sweep throttle check failed (running sweep anyway):', err instanceof Error ? err.message : err);
+  }
+  await expireUnusedRecoveryTokens();
+}
+
 export async function enforceTokenRateLimit(
   c: any,
-  action: 'authenticate' | 'download' | 'exchange' | 'progress' | 'reissue',
+  action: 'authenticate' | 'download' | 'exchange' | 'progress' | 'reissue' | 'binary-signature',
   tokenHash: string,
   limit: number,
   windowSeconds: number
@@ -1403,11 +1445,114 @@ bmrPublicRoutes.post(
   }
 );
 
+// Recovery-token-authenticated (same auth model as /bmr/recover/authenticate
+// above, never a user session — the launch script only ever holds the
+// plaintext recovery token) delivery of the per-binary minisign signature,
+// so run-recovery.sh/.ps1 can verify the helper binary before executing it
+// instead of trusting the archive's contents blindly. Detached signatures
+// are not secrets; what this route guards is *which* artifact a caller may
+// ask about — only a valid, non-terminal token for that exact artifact's
+// own recovery token.
+//
+// Deliberately never returns the verification public key: the launch
+// script's trust root is the key baked into its own bundle at build time
+// (see recoveryMediaService.ts's buildLaunchScript), never anything this
+// route hands back over the same connection the script is trying to
+// verify. Verification must not depend on the server being verified, so a
+// binary signed by any other key is refused no matter what this route
+// returns.
+bmrPublicRoutes.post(
+  '/bmr/recover/binary-signature',
+  zValidator('json', bmrRecoveryBinarySignatureSchema),
+  async (c) => {
+    const rateLimited = await enforcePublicRateLimit(c, 'binary-signature', 20);
+    if (rateLimited) return rateLimited;
+
+    const { token, platform, architecture } = c.req.valid('json');
+    if (!isValidRecoveryTokenFormat(token)) {
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
+
+    const tokenHash = hashRecoveryToken(token);
+    const tokenRateLimited = await enforceTokenRateLimit(
+      c,
+      'binary-signature',
+      tokenHash,
+      BMR_AUTHENTICATE_TOKEN_LIMIT,
+      BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS
+    );
+    if (tokenRateLimited) return tokenRateLimited;
+
+    // System-scoped lookup for the same reason authenticate's is: the
+    // caller presents an opaque bearer token, not a JWT, so there is no org
+    // to scope to until this resolves the token's own org. Everything after
+    // is read inside runInRecoveryOrgContext(row.orgId, ...).
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: recoveryTokens.id, orgId: recoveryTokens.orgId, status: recoveryTokens.status })
+        .from(recoveryTokens)
+        .where(eq(recoveryTokens.tokenHash, tokenHash))
+        .limit(1)
+    );
+    if (!row) {
+      return c.json({ error: 'Invalid recovery token' }, 401);
+    }
+    if (row.status === 'revoked' || row.status === 'expired') {
+      return c.json({ error: `Token is ${row.status}` }, 401);
+    }
+
+    return runInRecoveryOrgContext(row.orgId, async () => {
+      const [artifact] = await db
+        .select({ metadata: recoveryMediaArtifacts.metadata, status: recoveryMediaArtifacts.status })
+        .from(recoveryMediaArtifacts)
+        .where(
+          and(
+            eq(recoveryMediaArtifacts.tokenId, row.id),
+            eq(recoveryMediaArtifacts.platform, platform),
+            eq(recoveryMediaArtifacts.architecture, architecture)
+          )
+        )
+        .limit(1);
+
+      if (!artifact || artifact.status !== 'ready') {
+        return c.json({ error: 'Recovery media artifact not found' }, 404);
+      }
+
+      const metadata = asRecord(artifact.metadata);
+      const signature = typeof metadata.binarySignatureBase64 === 'string' ? metadata.binarySignatureBase64 : null;
+      const keyId = typeof metadata.binarySignatureKeyId === 'string' ? metadata.binarySignatureKeyId : null;
+      if (!signature) {
+        // Matches the artifact's own `legacy_unsigned` status vocabulary:
+        // this build was produced without RECOVERY_SIGNING_* configured, so
+        // there is nothing to verify against. The launch script fails
+        // closed on this, by design — see the fixer record.
+        return c.json({ error: 'No binary signature is available for this recovery media artifact' }, 404);
+      }
+
+      writeRouteAudit(c, {
+        orgId: row.orgId,
+        action: 'bmr.recover.binarySignature',
+        resourceType: 'recovery_token',
+        resourceId: row.id,
+      });
+
+      // No publicKey field, deliberately — see this route's doc comment.
+      return c.json({ signature, keyId });
+    });
+  }
+);
+
 bmrPublicRoutes.get(
   '/bmr/recover/download',
   zValidator('query', recoveryDownloadQuerySchema),
   async (c) => {
-    await expireUnusedRecoveryTokens();
+    // Per-IP backstop FIRST — before the expiry sweep or any token
+    // validation — so an anonymous flood of garbage requests is rejected
+    // before it can trigger either.
+    const ipRateLimited = await enforcePublicRateLimit(c, 'download', BMR_DOWNLOAD_IP_LIMIT);
+    if (ipRateLimited) return ipRateLimited;
+
+    await expireUnusedRecoveryTokensThrottled();
 
     const { token: queryToken, path } = c.req.valid('query');
     if (queryToken?.trim() && !allowRecoveryQueryToken()) {

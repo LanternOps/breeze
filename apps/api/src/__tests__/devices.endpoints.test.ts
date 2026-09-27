@@ -130,6 +130,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   // routes/devices/events.ts builds module-level SQL fragments from auditLogs at import time (#4835).
   auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },

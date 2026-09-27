@@ -853,6 +853,7 @@
     "hideExpired": "Abgelaufene ausblenden",
     "deleteExpired": "Abgelaufene löschen",
     "shortCode": "Kurzcode",
+    "shortCodeHidden": "Ausgeblendet — erfordert die Berechtigung für Registrierungsschlüssel",
     "installerUsage": "Installer-Geräte {{consumed}} / {{max}}",
     "installerUsageExpired": "Installer-Geräte {{consumed}} / {{max}} (abgelaufen)",
     "installerUsageMixed": "Installer-Geräte {{liveConsumed}} / {{liveMax}} aktiv · {{expired}} abgelaufen",

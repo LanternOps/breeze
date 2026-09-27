@@ -18,16 +18,6 @@ type InstantBootConfig struct {
 	WorkDir    string `json:"workDir,omitempty"`
 }
 
-// InstantBootResult holds the outcome of an instant boot operation.
-type InstantBootResult struct {
-	VMName               string `json:"vmName"`
-	NewVMID              string `json:"newVmId"`
-	Status               string `json:"status"`
-	BootTimeMs           int64  `json:"bootTimeMs"`
-	BackgroundSyncActive bool   `json:"backgroundSyncActive"`
-	Error                string `json:"error,omitempty"`
-}
-
 // InstantBoot is a stub for non-Windows platforms.
 func InstantBoot(
 	_ context.Context,

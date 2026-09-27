@@ -1,12 +1,18 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq, gte, lte, desc, sql } from 'drizzle-orm';
+import { and, eq, gte, lte, desc, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceEventLogs } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination } from './helpers';
+import {
+  canReadSensitiveEventLogCategory,
+  resolveVisibleCategories,
+  SENSITIVE_EVENT_LOG_CATEGORY,
+  SensitiveEventLogAccessError,
+} from '../../services/eventLogSensitivity';
 
 export const eventLogsRoutes = new Hono();
 
@@ -42,10 +48,26 @@ eventLogsRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const conditions: ReturnType<typeof eq>[] = [eq(deviceEventLogs.deviceId, deviceId)];
+    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
+    let visibleCategories: typeof query.category[] | undefined;
+    try {
+      visibleCategories = resolveVisibleCategories(
+        query.category ? [query.category] : undefined,
+        canReadSensitiveCategory
+      );
+    } catch (error) {
+      if (error instanceof SensitiveEventLogAccessError) {
+        return c.json({ error: error.message }, 403);
+      }
+      throw error;
+    }
 
-    if (query.category) {
-      conditions.push(eq(deviceEventLogs.category, query.category));
+    const conditions: SQL[] = [eq(deviceEventLogs.deviceId, deviceId)];
+
+    if (visibleCategories && visibleCategories.length > 0) {
+      conditions.push(eq(deviceEventLogs.category, visibleCategories[0]!));
+    } else if (!visibleCategories && !canReadSensitiveCategory) {
+      conditions.push(sql`${deviceEventLogs.category}::text != ${SENSITIVE_EVENT_LOG_CATEGORY}`);
     }
     if (query.level) {
       conditions.push(eq(deviceEventLogs.level, query.level));

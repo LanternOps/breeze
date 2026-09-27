@@ -63,6 +63,11 @@ vi.mock('../../services/commandQueue', () => ({
   }
 }));
 
+vi.mock('../../services/aiRemoteToolsPolicy', () => ({
+  REMOTE_TOOLS_DISABLED_BY_POLICY: 'REMOTE_TOOLS_DISABLED_BY_POLICY',
+  checkDeviceRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+}));
+
 vi.mock('../../services/filesystemAnalysis', () => ({
   getLatestFilesystemSnapshot: vi.fn(),
   getFilesystemScanState: vi.fn(),
@@ -110,6 +115,7 @@ import { runCleanupExecution } from '../../services/filesystemCleanupExecution';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { filesystemRoutes } from './filesystem';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { executeCommand, executeCommandWithSystemPrecheck, queueCommandForExecution } from '../../services/commandQueue';
 import {
@@ -650,6 +656,44 @@ describe('device filesystem routes', () => {
 
     expect(res.status).toBe(403);
     expect(getLatestFilesystemSnapshot).not.toHaveBeenCalled();
+  });
+
+  // The scan and the cleanup delete dispatch to the device, the
+  // same class as /system-tools, and honour the per-device remote-tools policy.
+  it('refuses the filesystem scan when the remote-tools policy is off, before queueing', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValueOnce({ allowed: false, reason: 'Remote tools is disabled by policy "Locked"' });
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/scan`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/tmp' }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBe('REMOTE_TOOLS_DISABLED_BY_POLICY');
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledWith(deviceId);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('refuses cleanup-execute when the remote-tools policy is off, without claiming the run or deleting', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValueOnce({ allowed: false, reason: 'Remote tools is disabled by policy "Locked"' });
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('REMOTE_TOOLS_DISABLED_BY_POLICY');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(runCleanupExecution).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('denies filesystem scan when site scope excludes the device', async () => {

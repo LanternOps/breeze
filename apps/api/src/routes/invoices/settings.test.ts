@@ -292,6 +292,14 @@ describe('billing settings routes', () => {
     );
   });
 
+  it('PATCH /orgs/:orgId/billing-settings requires MFA before validation or service effects', async () => {
+    authState.value = { ...PARTNER_ACTOR, token: { mfa: false } };
+    const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ taxExempt: true }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(svc.updateOrgBillingSettings).not.toHaveBeenCalled();
+  });
+
   it.each(['33333333-3333-4333-8333-333333333333', null])('accepts billingProfileId %s alongside settings', async billingProfileId => {
     vi.mocked(svc.updateOrgBillingSettings).mockResolvedValue({ id: ORG_ID } as any);
     const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({ billingProfileId, taxExempt: true }));

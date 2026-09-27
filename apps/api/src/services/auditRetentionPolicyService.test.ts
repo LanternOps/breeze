@@ -56,7 +56,12 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-import { getOrgAuditRetentionPolicy, upsertOrgAuditRetentionPolicy } from './auditRetentionPolicyService';
+import {
+  AUDIT_RETENTION_ORG_FLOOR_DAYS,
+  AuditRetentionFloorError,
+  getOrgAuditRetentionPolicy,
+  upsertOrgAuditRetentionPolicy,
+} from './auditRetentionPolicyService';
 
 const ORG_ID = '7c0a1f7e-4444-4666-9777-888899990000';
 
@@ -137,5 +142,33 @@ describe('upsertOrgAuditRetentionPolicy', () => {
     dbMocks.insertResult = [{ retentionDays: 30, lastCleanupAt: null }];
     const result = await upsertOrgAuditRetentionPolicy(ORG_ID, 30);
     expect(result).toEqual({ orgId: ORG_ID, configured: true, retentionDays: 30, lastCleanupAt: null });
+  });
+
+  // With no floor at all, an org-scoped caller (the customer-side Org
+  // Admin, a lower-trust principal than the partner/MSP that services the
+  // org) could set retentionDays: 1 and have the whole audit trail —
+  // including the MSP's own recorded actions on that org — pruned within
+  // the next daily job run.
+  describe('enforceOrgFloor', () => {
+    it('below the floor + enforceOrgFloor -> throws AuditRetentionFloorError, never reaches the insert', async () => {
+      await expect(
+        upsertOrgAuditRetentionPolicy(ORG_ID, AUDIT_RETENTION_ORG_FLOOR_DAYS - 1, { enforceOrgFloor: true }),
+      ).rejects.toThrow(AuditRetentionFloorError);
+      expect(dbMocks.insertedValues).toEqual([]);
+    });
+
+    it('exactly at the floor + enforceOrgFloor -> succeeds', async () => {
+      dbMocks.insertResult = [{ retentionDays: AUDIT_RETENTION_ORG_FLOOR_DAYS, lastCleanupAt: null }];
+      const result = await upsertOrgAuditRetentionPolicy(ORG_ID, AUDIT_RETENTION_ORG_FLOOR_DAYS, {
+        enforceOrgFloor: true,
+      });
+      expect(result.retentionDays).toBe(AUDIT_RETENTION_ORG_FLOOR_DAYS);
+    });
+
+    it('below the floor WITHOUT enforceOrgFloor (partner/system caller) -> unaffected, still succeeds', async () => {
+      dbMocks.insertResult = [{ retentionDays: 1, lastCleanupAt: null }];
+      const result = await upsertOrgAuditRetentionPolicy(ORG_ID, 1);
+      expect(result.retentionDays).toBe(1);
+    });
   });
 });

@@ -853,6 +853,7 @@
     "hideExpired": "Ocultar expiradas",
     "deleteExpired": "Excluir expiradas",
     "shortCode": "Código curto",
+    "shortCodeHidden": "Oculto — requer permissão de registro",
     "installerUsage": "Dispositivos do instalador {{consumed}} / {{max}}",
     "installerUsageExpired": "Dispositivos do instalador {{consumed}} / {{max}} (expirado)",
     "installerUsageMixed": "Dispositivos do instalador {{liveConsumed}} / {{liveMax}} ativos · {{expired}} expirados",

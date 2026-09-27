@@ -246,6 +246,21 @@ export const devices = pgTable('devices', {
   // desktop-start dispatch sites refuse with 503 agent_upgrade_required, same
   // shape as the revocation-lease gate above. Non-sticky: rewritten every beat.
   desktopFenceProtocolVersion: integer('desktop_fence_protocol_version').notNull().default(0),
+  // Consent/notification prompt capability. 1 = this agent build parses the
+  // `prompt` block on a desktop-stream-start command and gates on it
+  // (consent dialog / on-screen notice) before capturing. 0 (default, and
+  // every agent that omits the field) means the agent silently ignores an
+  // unfamiliar `prompt` key and streams unconditionally — so any dispatch
+  // site that resolves a policy requiring consent or notification must
+  // refuse to start rather than send a prompt block a capability-0 agent
+  // will not honor. Non-sticky, same contract as the versions above.
+  consentPromptProtocolVersion: integer('consent_prompt_protocol_version').notNull().default(0),
+  // Brokered storage-read protocol of the INSTALLED backup helper, reported by
+  // the main agent as a top-level heartbeat field. 1 = the helper can restore
+  // through a short-lived storage session instead of reusable storage
+  // credentials; 0 (default, and every agent that omits the field) = no.
+  // Non-sticky: rewritten every beat so a helper downgrade clears the claim.
+  backupReadProtocolVersion: integer('backup_read_protocol_version').notNull().default(0),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally

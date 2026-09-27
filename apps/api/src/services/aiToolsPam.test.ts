@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -268,37 +270,48 @@ describe('aiToolsPam handlers', () => {
     );
   });
 
-  it('auto-approves a request when an auto_approve PAM rule matches', async () => {
+  // AI-originated elevation requests are never auto-approved: a matching
+  // auto_approve rule leaves the request pending for a PAM approver. The rule
+  // is matched on the subject username and AD groups supplied in the tool
+  // input, so an approval verdict from it is not applied.
+  it('leaves the request pending when an auto_approve PAM rule matches', async () => {
     mockSelectSequence([[deviceRow()], [pamRule('auto_approve')]]);
-    mockInsertSequence([[{ id: REQUEST_ID, status: 'auto_approved', expiresAt: new Date('2026-06-11T00:30:00.000Z') }], []]);
+    mockInsertSequence([[{ id: REQUEST_ID, status: 'pending', expiresAt: null }], []]);
 
     const result = await toolMap.get('request_elevation')!.handler(
-      { deviceId: DEVICE_ID, subjectUsername: 'localadmin', reason: 'Patch', durationMinutes: 30 },
+      {
+        deviceId: DEVICE_ID,
+        subjectUsername: 'localadmin',
+        reason: 'Patch',
+        durationMinutes: 30,
+        subjectAdGroups: ['Domain Admins'],
+      },
       makeAuth(),
     );
     const parsed = JSON.parse(result);
     const requestInsert = vi.mocked(db.insert).mock.results[0]!.value;
     const requestValues = requestInsert.values.mock.calls[0]![0];
     const auditInsert = vi.mocked(db.insert).mock.results[1]!.value;
-    const auditValues = auditInsert.values.mock.calls[0]![0];
+    const auditValues = [auditInsert.values.mock.calls[0]![0]].flat();
 
-    expect(parsed.status).toBe('auto_approved');
-    expect(parsed.expiresAt).toBeTruthy();
-    expect(requestValues.status).toBe('auto_approved');
-    expect(requestValues.approvedAt).toBeInstanceOf(Date);
-    expect(requestValues.expiresAt).toBeInstanceOf(Date);
-    expect(requestValues.metadata).toMatchObject({ triggerSource: 'brain', pamRuleId: RULE_ID });
-    expect(auditValues.map((r: any) => r.eventType)).toEqual(['requested', 'auto_approved']);
-    expect(auditValues[0].actor).toBe('system');
-    expect(auditValues[1].actor).toBe('policy');
-    expect(publishEvent).toHaveBeenCalledWith(
-      'elevation.auto_approved',
-      ORG_ID,
-      expect.objectContaining({ elevationRequestId: REQUEST_ID, pamRuleId: RULE_ID, triggerSource: 'brain' }),
-      'brain',
-    );
+    expect(parsed).toEqual({ elevationRequestId: REQUEST_ID, status: 'pending' });
+    expect(requestValues).toMatchObject({
+      status: 'pending',
+      approvedAt: null,
+      expiresAt: null,
+      denialReason: null,
+    });
+    expect(requestValues.metadata).not.toHaveProperty('pamRuleId');
+    expect(requestValues.metadata).toMatchObject({ requestedDurationMinutes: 30 });
+    expect(auditValues.map((r: any) => r.eventType)).toEqual(['requested']);
+    expect(auditValues.some((r: any) => r.actor === 'policy')).toBe(false);
+    const published = vi.mocked(publishEvent).mock.calls.map((c) => c[0]);
+    expect(published).toEqual(['elevation.requested']);
   });
 
+  // auto_deny rules still apply to AI-originated requests, exactly as on the
+  // other elevation paths: the request is denied immediately, with the
+  // policy audit row and the elevation.denied event.
   it('denies a request when an auto_deny PAM rule matches', async () => {
     mockSelectSequence([[deviceRow()], [pamRule('auto_deny')]]);
     mockInsertSequence([[{ id: REQUEST_ID, status: 'denied', expiresAt: null }], []]);
@@ -311,21 +324,37 @@ describe('aiToolsPam handlers', () => {
     const requestInsert = vi.mocked(db.insert).mock.results[0]!.value;
     const requestValues = requestInsert.values.mock.calls[0]![0];
     const auditInsert = vi.mocked(db.insert).mock.results[1]!.value;
-    const auditValues = auditInsert.values.mock.calls[0]![0];
+    const auditValues = [auditInsert.values.mock.calls[0]![0]].flat();
 
-    expect(parsed.status).toBe('denied');
+    expect(parsed).toMatchObject({ elevationRequestId: REQUEST_ID, status: 'denied', pamRuleId: RULE_ID });
     expect(requestValues).toMatchObject({
       status: 'denied',
+      approvedAt: null,
+      expiresAt: null,
       denialReason: 'Blocked by PAM rule "auto_deny rule"',
     });
+    expect(requestValues.metadata).toMatchObject({ triggerSource: 'brain', pamRuleId: RULE_ID });
     expect(auditValues.map((r: any) => r.eventType)).toEqual(['requested', 'denied']);
+    expect(auditValues[0].actor).toBe('system');
     expect(auditValues[1].actor).toBe('policy');
+    expect(auditValues[1].details).toMatchObject({ pamRuleId: RULE_ID, triggerSource: 'brain' });
     expect(publishEvent).toHaveBeenCalledWith(
       'elevation.denied',
       ORG_ID,
       expect.objectContaining({ elevationRequestId: REQUEST_ID, pamRuleId: RULE_ID, triggerSource: 'brain' }),
       'brain',
     );
+    const published = vi.mocked(publishEvent).mock.calls.map((c) => c[0]);
+    expect(published).toEqual(['elevation.requested', 'elevation.denied']);
+  });
+
+  it('has no code path that can produce an auto_approved elevation', () => {
+    // revoke_elevation NAMES auto_approved as a revocable (already-active)
+    // status; strip that one declaration, nothing else.
+    const source = readFileSync(fileURLToPath(new URL('./aiToolsPam.ts', import.meta.url)), 'utf8')
+      .replace(/^const ACTIVE_STATUSES = .*$/m, '');
+    expect(source).not.toMatch(/['"]auto_approved['"]/);
+    expect(source).not.toMatch(/elevation\.auto_approved/);
   });
 
   it('honors orgCondition while creating Brain elevation requests', async () => {

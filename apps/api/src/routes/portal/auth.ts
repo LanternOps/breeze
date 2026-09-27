@@ -11,6 +11,7 @@ import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { rateLimitIpKey } from '../../services/clientIp';
+import { portalAccountRateLimitKey } from '../../services/portal/rateLimit';
 import { resolveOrgTimezone } from '../../services/portal/timezone';
 import {
   loginSchema,
@@ -410,7 +411,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   const normalizedEmail = normalizeEmail(email);
   const clientIp = getClientIp(c);
   const ipRateKey = `portal:login:ip:${rateLimitIpKey(clientIp)}`;
-  const accountRateKey = `portal:login:account:${orgId ?? 'any'}:${normalizedEmail}`;
+  const accountRateKey = portalAccountRateLimitKey('login', normalizedEmail);
 
   for (const rateKey of [ipRateKey, accountRateKey]) {
     const rate = await checkRateLimit(rateKey, LOGIN_RATE_LIMIT);
@@ -522,8 +523,9 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
       .where(eq(portalUsers.id, user.id))
   );
 
-  const resolvedAccountRateKey = `portal:login:account:${user.orgId}:${normalizedEmail}`;
-  await clearRateLimitKeys([ipRateKey, accountRateKey, resolvedAccountRateKey]);
+  // accountRateKey is now keyed on email alone, so it already covers every
+  // org this address might belong to — nothing further to resolve/clear here.
+  await clearRateLimitKeys([ipRateKey, accountRateKey]);
 
   setPortalSessionCookies(c, token);
 
@@ -545,7 +547,7 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
   const normalizedEmail = normalizeEmail(email);
   const clientIp = getClientIp(c);
   const ipRateKey = `portal:forgot:ip:${rateLimitIpKey(clientIp)}`;
-  const accountRateKey = `portal:forgot:account:${orgId ?? 'any'}:${normalizedEmail}`;
+  const accountRateKey = portalAccountRateLimitKey('forgot', normalizedEmail);
 
   for (const rateKey of [ipRateKey, accountRateKey]) {
     const rate = await checkRateLimit(rateKey, FORGOT_PASSWORD_RATE_LIMIT);

@@ -708,6 +708,19 @@ export async function resolveBackupConfigForDevice(
 /**
  * Resolves maintenance settings for a device via the hierarchy.
  * Returns the single maintenance settings row from the WINNING assignment, or null.
+ *
+ * Field-provenance tiering — KNOWN RESIDUAL, not gated by field
+ * provenance in this pass. `buildTargetConditions(hierarchy)` folds the
+ * device's raw group memberships into a device_group-level match, same as
+ * every other resolver sharing that helper (13+ call sites across this
+ * file). A device_group-level maintenance policy can suppress alerts/
+ * patching/automations/scripts — capability-granting, same as the standalone
+ * `maintenance_windows` path gated in `maintenanceService.ts`. Gating it
+ * properly means threading a per-feature-type classification through
+ * `buildTargetConditions`'s shared call sites (the same shape as
+ * `configurationPolicy.ts`'s CONFIG_POLICY_FEATURE_TRUST_TIER gate), which
+ * is a broader change than this round's scope — tracked as an explicit
+ * follow-up rather than guessed at here.
  */
 export async function resolveMaintenanceConfigForDevice(
   deviceId: string

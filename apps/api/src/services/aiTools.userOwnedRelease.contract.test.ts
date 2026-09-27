@@ -152,25 +152,25 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:597', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBrowser.ts:606', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:331', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
+  ['services/aiToolsIntegrations.ts:338', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:691', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1667', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:707', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1693', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:784', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:800', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:624', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:713', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:629', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:718', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.

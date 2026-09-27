@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, isNull, lt } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, supportSessions } from '../db/schema';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../services/deviceDeletion';
+import { hasProtectedBackupSnapshots } from '../services/deviceLifecycle';
 import { endSupportSession } from '../services/quickSupportEnd';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -177,6 +178,19 @@ export async function reapOnce(): Promise<void> {
         // Shared cascade, wrapped in a transaction so a device is never left
         // half-deleted with orphaned children behind an FK.
         await db.transaction(async (tx) => {
+          // Same guard as the button/bulk-purge path (services/deviceLifecycle.ts
+          // purgeRemovedDevice): an ephemeral Quick Support device is not
+          // expected to carry a held backup snapshot, but this reaper is an
+          // unattended background purge, so it must not be the one place that
+          // skips the check if one somehow does.
+          if (await hasProtectedBackupSnapshots(tx, session.deviceId!)) {
+            console.error(
+              `[QuickSupportReaper] REFUSING to purge device ${session.deviceId} ` +
+              `(session ${session.id}) — it has a backup snapshot under legal hold ` +
+              `or inside its immutability window`,
+            );
+            return;
+          }
           await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, session.deviceId!);
         });
       } catch (err) {

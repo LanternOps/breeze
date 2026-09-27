@@ -177,6 +177,16 @@ describe('user delete → neutralize orphan (#1367)', () => {
     });
     await assignUserToOrganization(target.id, orgA.id, role.id);
     await assignUserToOrganization(target.id, orgB.id, role.id);
+    // The org-B admin making the DELETE: the route resolves the caller's own
+    // permissions and site access to check they may manage the target, so it
+    // needs a real org-B member (org-wide, same role) rather than no caller.
+    const caller = await createUser({
+      partnerId: partner.id,
+      orgId: orgB.id,
+      email: `caller-b-${Date.now()}@example.com`,
+      status: 'active',
+    });
+    await assignUserToOrganization(caller.id, orgB.id, role.id);
 
     activeAuthContext = {
       scope: 'organization',
@@ -184,6 +194,7 @@ describe('user delete → neutralize orphan (#1367)', () => {
       orgId: orgB.id,
       accessibleOrgIds: [orgB.id],
       accessiblePartnerIds: null,
+      userId: caller.id,
     };
 
     const app = await buildApp();

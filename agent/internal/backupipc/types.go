@@ -28,6 +28,19 @@ type BackupCapabilities struct {
 	Providers           []string `json:"providers"` // s3, local, azure, gcs, b2
 }
 
+// ProtocolInfoFlag is the breeze-backup flag that prints ProtocolInfo as one
+// JSON object and exits. The main agent runs the INSTALLED helper with it to
+// learn which storage protocols that binary implements; a helper that
+// predates the flag exits non-zero, which the agent reads as version 0.
+const ProtocolInfoFlag = "protocol-info"
+
+// ProtocolInfo is the --protocol-info output.
+type ProtocolInfo struct {
+	// BackupReadProtocolVersion is the brokered storage-read protocol the
+	// helper implements (0 = none).
+	BackupReadProtocolVersion int `json:"backupReadProtocolVersion"`
+}
+
 // BackupCommandRequest is sent from the agent to the backup helper.
 type BackupCommandRequest struct {
 	CommandID   string          `json:"commandId"`
@@ -136,6 +149,19 @@ const (
 const (
 	BareMetalRebuildForwardTimeout = 23 * time.Hour
 	BareMetalRebuildRunBudget      = BareMetalRebuildForwardTimeout - 10*time.Minute
+)
+
+// Helper-side run budgets for the long-running VM restore commands. The
+// helper bounds each run with its budget (cmd/breeze-backup); the agent's
+// forwarder waits the budget plus HelperResultGrace, so the helper's own
+// terminal result, not a forwarder timeout, is what the server records. A
+// forwarder wait at or below the budget reports "failed" while the restore
+// keeps running in the helper. Pinned by heartbeat/handlers_bmr_test.go, which
+// also pins BareMetalRebuildForwardTimeout against BareMetalRebuildRunBudget.
+const (
+	VMRestoreFromBackupRunBudget = 2 * time.Hour
+	VMInstantBootRunBudget       = 30 * time.Minute
+	HelperResultGrace            = 5 * time.Minute
 )
 
 // BackupStopForwardTimeout is how long the agent waits for the helper's

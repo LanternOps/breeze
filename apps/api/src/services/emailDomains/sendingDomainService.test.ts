@@ -310,6 +310,23 @@ describe('createSendingDomain', () => {
     expect(enqueueSyncMock).toHaveBeenCalledWith(DOMAIN_ID);
   });
 
+  it('refuses to create while a release row still names the domain', async () => {
+    rows.push([{ count: 0 }]);
+    rows.push([]);                                    // no inbound conflict
+    rows.push([{ id: 'release-1' }]);                  // pending release row
+    expect(await codeOf(create)).toBe('domain_unavailable');
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('the release-row refusal uses the same non-revealing message as the other create conflicts', async () => {
+    rows.push([{ count: 0 }]);
+    rows.push([]);
+    rows.push([{ id: 'release-1' }]);
+    let err: SendingDomainServiceError | undefined;
+    try { await create(); } catch (e) { err = e as SendingDomainServiceError; }
+    expect(err!.message).toBe(DOMAIN_UNAVAILABLE_MESSAGE);
+  });
+
   it('normalises before storing — the stored value is the lowercase A-label', async () => {
     rows.push([{ count: 0 }]);
     rows.push([]);

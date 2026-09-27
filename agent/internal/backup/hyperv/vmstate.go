@@ -15,24 +15,9 @@ func ChangeVMState(vmName, targetState string) (*VMStateResult, error) {
 		return nil, fmt.Errorf("vmName is required")
 	}
 
-	vmNameEsc := escapePSString(vmName)
-
-	var psCmd string
-	switch targetState {
-	case "start":
-		psCmd = fmt.Sprintf(`Start-VM -Name '%s'`, vmNameEsc)
-	case "stop":
-		psCmd = fmt.Sprintf(`Stop-VM -Name '%s' -Force:$false`, vmNameEsc)
-	case "force_stop":
-		psCmd = fmt.Sprintf(`Stop-VM -Name '%s' -Force -TurnOff`, vmNameEsc)
-	case "pause":
-		psCmd = fmt.Sprintf(`Suspend-VM -Name '%s'`, vmNameEsc)
-	case "resume":
-		psCmd = fmt.Sprintf(`Resume-VM -Name '%s'`, vmNameEsc)
-	case "save":
-		psCmd = fmt.Sprintf(`Save-VM -Name '%s'`, vmNameEsc)
-	default:
-		return nil, fmt.Errorf("unsupported target state: %s", targetState)
+	psCmd, err := buildVMStateScript(vmName, targetState)
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Info("hyperv: changing VM state", "vm", vmName, "targetState", targetState)

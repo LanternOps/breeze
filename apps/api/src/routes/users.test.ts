@@ -274,6 +274,18 @@ vi.mock('../services/mfaPolicy', async (importOriginal) => {
   };
 });
 
+// Rank + scope check for user-management mutations (role assign, MFA reset,
+// delete) against an existing target. Default permissive (allowed) so
+// pre-existing route tests, which don't exercise this axis, keep passing;
+// tests below override with mockResolvedValueOnce to exercise the denial.
+const { assertCanManageTargetMock } = vi.hoisted(() => ({
+  assertCanManageTargetMock: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../services/roleAssignment', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/roleAssignment')>();
+  return { ...actual, assertCanManageTarget: assertCanManageTargetMock };
+});
+
 vi.mock('../services/pendingEmail', () => ({
   requestPendingEmailChange: requestPendingEmailChangeMock
 }));
@@ -326,6 +338,14 @@ import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 // Mocked above — imported to drive failure paths via mockResolvedValueOnce.
 import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
 
+// A `.innerJoin()…where().limit()` builder that tolerates any number of joins.
+function joinChain(rows: unknown[]): any {
+  return {
+    innerJoin: vi.fn(() => joinChain(rows)),
+    where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve(rows)) }))
+  };
+}
+
 describe('user routes', () => {
   let app: Hono;
 
@@ -358,7 +378,12 @@ describe('user routes', () => {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(() => Promise.resolve([]))
-        }))
+        })),
+        // Join chains (getScopedUser's two joins, the membership-only
+        // target lookup's one) aren't exercised by most tests, but must not
+        // throw when they are — tests that need a real target row queue an
+        // explicit mockReturnValueOnce ahead of this default.
+        innerJoin: vi.fn(() => joinChain([]))
       }))
     } as any);
     vi.mocked(db.update).mockReset().mockReturnValue({
@@ -406,6 +431,16 @@ describe('user routes', () => {
     app = new Hono();
     app.route('/users', userRoutes);
   });
+
+  // Queues one `db.select()` return value for a
+  // `.from().innerJoin()…where().limit()` chain with any number of joins — used
+  // to seed the rank/scope pre-check's target-membership fetch ahead of a
+  // route's own select queue.
+  function queueScopedUserRow(row: Record<string, unknown> | null) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue(joinChain(row ? [row] : []))
+    } as any);
+  }
 
   describe('GET /users', () => {
     const MEMBER = '11111111-1111-1111-1111-111111111111';
@@ -731,6 +766,8 @@ describe('user routes', () => {
         .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
         .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
         .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) } as any)
+        // Cross-tenant email-claimed pre-check (system-scoped probe): not claimed elsewhere.
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) } as any)
         // Post-commit organization-name lookup for the invite email.
         .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Org A' }]) }) }) } as any);
 
@@ -909,6 +946,71 @@ describe('user routes', () => {
       expect(body.email).toBe('invitee@example.com');
       expect(body.status).toBe('invited');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    // The response for an address claimed by a DIFFERENT
+    // tenant (invisible to the caller's own ambient RLS context) must be
+    // indistinguishable from a genuine new invite — no insert, no distinct
+    // status code, no distinct body shape.
+    it('answers with the same 201 success shape when the email is claimed by a different tenant, without writing anything', async () => {
+      const ROLE_ID = '22222222-2222-2222-2222-222222222222';
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: ROLE_ID, scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        // Ambient tombstone pre-flight: the row is invisible to the caller's own RLS context.
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) } as any)
+        // System-scoped cross-tenant probe: the email IS claimed, just not by this tenant.
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: 'foreign-user' }]) }) }) } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'foreign-tenant-user@example.com',
+          name: 'Foreign Tenant User',
+          roleId: ROLE_ID,
+          orgAccess: 'none',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.email).toBe('foreign-tenant-user@example.com');
+      expect(body.status).toBe('invited');
+      expect(body.inviteEmailSent).toBe(false);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    // Belt: a race between the pre-check above and the insert (a foreign
+    // tenant's own invite lands in between) must map the resulting 23505 to
+    // the SAME response, not an unmapped 500.
+    it('maps a unique-violation race on the invite insert to the same success shape, not a 500', async () => {
+      const ROLE_ID = '22222222-2222-2222-2222-222222222222';
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: ROLE_ID, scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) } as any)
+        // Pre-check misses (no race yet observed) — the transaction itself loses the race.
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) } as any);
+
+      vi.mocked(db.transaction).mockRejectedValueOnce({ code: '23505', constraint_name: 'users_email_unique' });
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'raced@example.com',
+          name: 'Raced User',
+          roleId: ROLE_ID,
+          orgAccess: 'none',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.inviteEmailSent).toBe(false);
     });
 
     it('rejects a selected-org invite naming an organization outside the caller partner before any write', async () => {
@@ -2386,6 +2488,17 @@ describe('user routes', () => {
 
   describe('POST /users/:id/role', () => {
     it('should assign a partner role', async () => {
+      queueScopedUserRow({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'target@example.com',
+        name: 'Target User',
+        status: 'active',
+        roleId: 'role-current',
+        roleName: 'Viewer',
+        roleIsSystem: false,
+        orgAccess: 'all',
+        orgIds: null
+      });
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -2420,13 +2533,25 @@ describe('user routes', () => {
           })
         } as any);
 
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
-          })
-        })
-      } as any);
+      // The membership update, the auth-epoch advance, and the durable
+      // refresh-family revoke must all land in the SAME db.transaction,
+      // matching removeMembershipForScope/suspend/MFA-reset — a role change
+      // must end an already-live MCP OAuth bearer, not just make it useless.
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => ({
+              returning: () =>
+                'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : Promise.resolve([{ id: 'link-1' }])
+            })
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({ update: txUpdate }));
 
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111/role', {
         method: 'POST',
@@ -2439,7 +2564,13 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      // advanceUserEpochs-shaped update on `users` (auth_epoch increment).
+      expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
+      // revokeAllRefreshFamilies-shaped update on `refresh_token_families`
+      // (revoked_at/revoked_reason via COALESCE).
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
       // Belt to the permissions-epoch braces: a role change must also END any
       // live remote session the target holds, not merely make the NEXT
       // revocation-lease renew fail ~25s later.
@@ -2479,6 +2610,17 @@ describe('user routes', () => {
         roleId: 'role-user-manager',
         scope: 'partner'
       } as any);
+      queueScopedUserRow({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'target@example.com',
+        name: 'Target User',
+        status: 'active',
+        roleId: 'role-current',
+        roleName: 'Viewer',
+        roleIsSystem: false,
+        orgAccess: 'all',
+        orgIds: null
+      });
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -2522,6 +2664,47 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    // The target's CURRENT role/site access must be
+    // checked against the caller, independent of whether the NEW role is
+    // within the caller's ceiling.
+    it('404s when the target has no membership in the caller scope', async () => {
+      queueScopedUserRow(null);
+
+      const res = await app.request('/users/99999999-9999-9999-9999-999999999999/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roleId: '44444444-4444-4444-4444-444444444444' })
+      });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('rejects the mutation when the caller may not manage the target (rank/scope check)', async () => {
+      queueScopedUserRow({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'target@example.com',
+        name: 'Target User',
+        status: 'active',
+        roleId: 'role-current',
+        roleName: 'Admin',
+        roleIsSystem: false,
+        orgAccess: 'all',
+        orgIds: null
+      });
+      assertCanManageTargetMock.mockResolvedValueOnce('Cannot manage a user outside your site access');
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roleId: '44444444-4444-4444-4444-444444444444' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Cannot manage a user outside your site access' });
       expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
   });
@@ -2759,6 +2942,22 @@ describe('user routes', () => {
       targetId?: string;
     }) {
       const { deletedRows, hasOtherMembership = true, passkeyRows = [], targetId = 'target' } = opts;
+      // Rank/scope pre-check's target fetch always finds a manageable target
+      // here — these tests exercise removeMembershipForScope's own behavior
+      // (including the race where the row is gone by delete time), not the
+      // pre-check itself. See the dedicated pre-check tests below.
+      queueScopedUserRow({
+        id: targetId,
+        email: 'target@example.com',
+        name: 'Target User',
+        status: 'active',
+        roleId: 'role-current',
+        roleName: 'Viewer',
+        roleIsSystem: false,
+        orgAccess: 'all',
+        orgIds: null,
+        siteIds: null
+      });
       const capturedUpdates: Array<Record<string, unknown>> = [];
       // Ordered trace of tx operations so tests can assert D3's order.
       const calls: string[] = [];
@@ -2936,6 +3135,43 @@ describe('user routes', () => {
       expect(capturedUpdates.some((v) => v.status === 'disabled')).toBe(false);
       expect(calls).not.toContain('delete-passkeys');
     });
+
+    // Rank + scope pre-check runs BEFORE the membership
+    // delete transaction — a denial must never reach db.transaction.
+    it('404s when the target has no membership in the caller scope', async () => {
+      queueScopedUserRow(null);
+
+      const res = await app.request('/users/99999999-9999-9999-9999-999999999999', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('rejects the deletion when the caller may not manage the target (rank/scope check)', async () => {
+      queueScopedUserRow({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'target@example.com',
+        name: 'Target User',
+        status: 'active',
+        roleId: 'role-current',
+        roleName: 'Admin',
+        roleIsSystem: false,
+        orgAccess: 'all',
+        orgIds: null
+      });
+      assertCanManageTargetMock.mockResolvedValueOnce('Cannot assign a role with permission not held by caller: users:delete');
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /users/:id/mfa/reset (admin recovery: clear factor + invalidate assurance)', () => {
@@ -3099,6 +3335,21 @@ describe('user routes', () => {
       vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(false));
       const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
       expect(res.status).toBe(404);
+      expect(userIsMfaProtectedMock).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    // Rank + scope check runs BEFORE the factor-inventory
+    // probe — a caller who may not manage the target must never learn whether
+    // MFA is even enabled for them.
+    it('rejects the reset when the caller may not manage the target (rank/scope check)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      assertCanManageTargetMock.mockResolvedValueOnce('Cannot manage a user outside your site access');
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Cannot manage a user outside your site access' });
       expect(userIsMfaProtectedMock).not.toHaveBeenCalled();
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });

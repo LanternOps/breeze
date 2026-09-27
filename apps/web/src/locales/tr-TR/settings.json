@@ -853,6 +853,7 @@
     "hideExpired": "Süresi dolmuşları gizle",
     "deleteExpired": "Silinme süresi doldu",
     "shortCode": "Kısa kod",
+    "shortCodeHidden": "Gizli — kayıt izni gerektirir",
     "installerUsage": "Kurulum cihazları {{consumed}} / {{max}}",
     "installerUsageExpired": "Kurulum cihazları {{consumed}} / {{max}} (süresi doldu)",
     "installerUsageMixed": "Yükleyici cihazlar {{liveConsumed}} / {{liveMax}} yayında · {{expired}} süresi doldu",

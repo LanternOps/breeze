@@ -286,6 +286,7 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     permissionState.last = { resource, action };
     if (permissionState.deny) {

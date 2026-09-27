@@ -599,6 +599,131 @@ describe('backup config routes', () => {
     expect(JSON.stringify(body)).not.toContain('existing-nested-token');
   });
 
+  // Same origin-binding contract as credentialOriginBinding.ts: a
+  // masked/omitted S3 credential must not be carried forward to a new storage
+  // endpoint.
+  it('refuses to carry masked S3 credentials forward across a storage-endpoint change', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        endpoint: 'https://storage.trusted-vendor.example',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+      },
+    })]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          endpoint: 'https://storage.other-origin.example',
+          accessKey: { redacted: true, hasSecret: true, masked: '********' },
+          secretKey: { redacted: true, hasSecret: true, masked: '********' },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(updateMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('existing-secret-key');
+  });
+
+  it('allows a storage-endpoint change when the full credential set is re-entered', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        endpoint: 'https://storage.trusted-vendor.example',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        endpoint: 'https://storage.new-vendor.example',
+        accessKey: 'freshly-typed-access-key',
+        secretKey: 'freshly-typed-secret-key',
+      },
+      updatedAt: new Date('2026-03-31T02:00:00.000Z'),
+    })]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          endpoint: 'https://storage.new-vendor.example',
+          accessKey: 'freshly-typed-access-key',
+          secretKey: 'freshly-typed-secret-key',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({
+        endpoint: expect.stringContaining('storage.new-vendor.example'),
+        accessKey: 'freshly-typed-access-key',
+        secretKey: 'freshly-typed-secret-key',
+      }),
+    }));
+  });
+
+  it('allows an endpoint change that keeps the same origin without re-entering credentials', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        endpoint: 'https://storage.trusted-vendor.example/old-path',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        endpoint: 'https://storage.trusted-vendor.example',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+      },
+      updatedAt: new Date('2026-03-31T02:00:00.000Z'),
+    })]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          endpoint: 'https://storage.trusted-vendor.example',
+          accessKey: { redacted: true, hasSecret: true, masked: '********' },
+          secretKey: { redacted: true, hasSecret: true, masked: '********' },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+      }),
+    }));
+  });
+
   it('bumps approval_generation on every PATCH (site-ceiling gate contract §3)', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
     updateMock.mockReturnValueOnce(chainMock([makeConfig({ name: 'renamed' })]));

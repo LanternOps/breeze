@@ -53,6 +53,12 @@ import {
   SERVICE_MONITOR_LIST_DEVICE_CAP,
 } from './monitors/listServiceMonitors';
 import {
+  AGGREGATED_EFFECTIVE_PATCH_CATEGORY_SQL,
+  AGGREGATED_EFFECTIVE_PATCH_SEVERITY_SQL,
+  EFFECTIVE_PATCH_CATEGORY_SQL,
+  EFFECTIVE_PATCH_SEVERITY_SQL,
+} from './patchSeverityOverlay';
+import {
   addFeatureLink,
   updateFeatureLink,
   policyAccessCondition,
@@ -1146,20 +1152,21 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
         const { limit, offset, fingerprint } = page;
 
+        // Effective severity/category (patchSeverityOverlay.ts): the trusted
+        // shared classification when known, else this device's (or, org-wide,
+        // any of this org's devices') own reported value. `patches.severity`/
+        // `.category` alone stay 'unknown'/NULL forever for
+        // microsoft/apple/linux/custom sources — an AI query like "list
+        // critical outstanding patches" would otherwise silently omit or
+        // mis-bucket most of a Windows-heavy fleet's patch volume, and would
+        // disagree with what patchEligibility.ts's auto-approval check sees
+        // for the same patch. Every query below is already pinned to
+        // `devicePatches.orgId = orgId` (and, for the device-scoped branch,
+        // also `devicePatches.deviceId = deviceId`), so this never crosses a
+        // tenant boundary.
         const catalogConds: SQL[] = [];
         if (typeof input.source === 'string') catalogConds.push(eq(patches.source, input.source as any));
-        if (typeof input.severity === 'string') catalogConds.push(eq(patches.severity, input.severity as any));
-
-        const patchCols = {
-          id: patches.id,
-          source: patches.source,
-          externalId: patches.externalId,
-          title: patches.title,
-          severity: patches.severity,
-          category: patches.category,
-          releaseDate: patches.releaseDate,
-          requiresReboot: patches.requiresReboot,
-        };
+        if (typeof input.severity === 'string') catalogConds.push(sql`${EFFECTIVE_PATCH_SEVERITY_SQL} = ${input.severity}`);
 
         // Both axes, independent of each other: a site-restricted human sees
         // their sites' patch inventory, a device-bound or device-LESS agent run
@@ -1172,6 +1179,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         if (deviceId) {
           // Per-device: patches on this specific device, with install status.
+          // One device_patches row per patch here, so the per-row effective
+          // fragment applies directly — no aggregation needed.
+          const patchCols = {
+            id: patches.id,
+            source: patches.source,
+            externalId: patches.externalId,
+            title: patches.title,
+            severity: EFFECTIVE_PATCH_SEVERITY_SQL,
+            category: EFFECTIVE_PATCH_CATEGORY_SQL,
+            releaseDate: patches.releaseDate,
+            requiresReboot: patches.requiresReboot,
+          };
           const rows = await db.select({ ...patchCols, status: devicePatches.status })
             .from(devicePatches)
             .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -1182,14 +1201,30 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ ...pageEnvelope({ key: 'patches', items: rows, limit, offset, fingerprint }), scope: { deviceId } });
         }
 
-        // Org-wide: distinct catalog entries present on any of the org's
-        // devices. selectDistinct collapses the per-device fan-out to one row
-        // per patch; createdAt is in the projection so the DISTINCT + ORDER BY
-        // is valid in Postgres.
-        const rows = await db.selectDistinct({ ...patchCols, createdAt: patches.createdAt })
+        // Org-wide: one row per catalog entry present on any of the org's
+        // devices. A plain per-row severity/category column can't be shown
+        // here — several of the org's devices can report different values for
+        // the same shared patch row — so this collapses via GROUP BY (instead
+        // of the previous selectDistinct) and shows the most severe effective
+        // value seen across the org's own devices reporting this patch (worst
+        // case wins, never under-reports risk). Aggregated within this org's
+        // own device_patches rows only (`devicePatches.orgId = orgId`),
+        // never across orgs.
+        const rows = await db.select({
+          id: patches.id,
+          source: patches.source,
+          externalId: patches.externalId,
+          title: patches.title,
+          severity: AGGREGATED_EFFECTIVE_PATCH_SEVERITY_SQL,
+          category: AGGREGATED_EFFECTIVE_PATCH_CATEGORY_SQL,
+          releaseDate: patches.releaseDate,
+          requiresReboot: patches.requiresReboot,
+          createdAt: patches.createdAt,
+        })
           .from(patches)
           .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
           .where(and(eq(devicePatches.orgId, orgId), ...patchListScope, ...catalogConds))
+          .groupBy(patches.id, patches.source, patches.externalId, patches.title, patches.releaseDate, patches.requiresReboot, patches.createdAt)
           .orderBy(desc(patches.createdAt), desc(patches.id))
           .limit(limit + 1)
           .offset(offset);

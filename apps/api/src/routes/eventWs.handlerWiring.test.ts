@@ -30,8 +30,12 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('ioredis', () => {
   class MockRedis {
-    subscribe = vi.fn((_channel: string, cb: (err: Error | null) => void) => cb(null));
-    unsubscribe = vi.fn().mockResolvedValue(undefined);
+    // eventDispatcher.ts now opens one shared PSUBSCRIBE connection per
+    // process instead of one SUBSCRIBE per org (see eventDispatcher.test.ts
+    // for the dedicated coverage) — this file only exercises the delivery
+    // filter, so the mock just needs to not throw.
+    psubscribe = vi.fn((_pattern: string, cb: (err: Error | null, count?: number) => void) => cb(null, 1));
+    punsubscribe = vi.fn().mockResolvedValue(undefined);
     quit = vi.fn().mockResolvedValue(undefined);
     on = vi.fn();
   }

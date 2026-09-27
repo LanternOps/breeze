@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { gzipSync } from 'node:zlib';
 
 const AGENT_ID = 'agent-001';
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -41,11 +42,23 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// Default: no Redis client, so the ingest quota check fails open (allowed)
+// and existing tests are unaffected. Quota-specific tests below override
+// `checkAndConsumeIngestQuota` directly.
+vi.mock('../../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../../services/ingestQuota', () => ({
+  checkAndConsumeIngestQuota: vi.fn().mockResolvedValue({ allowed: true, rowsUsed: 0, bytesUsed: 0 }),
+}));
+
 const recordAgentIngestSubmission = vi.hoisted(() => vi.fn());
 vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
 
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { logsRoutes } from './logs';
 
 // ---------------------------------------------------------------------------
@@ -458,6 +471,96 @@ describe('agent logs routes', () => {
       expect(JSON.stringify(event.details)).not.toContain('token=');
 
       consoleError.mockRestore();
+    });
+  });
+
+  describe('daily ingest budget', () => {
+    it('drops the batch with 429 once the per-device quota is exceeded', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      vi.mocked(checkAndConsumeIngestQuota).mockResolvedValueOnce({
+        allowed: false,
+        rowsUsed: 2_000_100,
+        bytesUsed: 1000,
+      });
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual(expect.objectContaining({ received: 0, dropped: 1 }));
+      expect(values).not.toHaveBeenCalled();
+    });
+
+    it('drops the batch with 429 once the per-org quota is exceeded', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      vi.mocked(checkAndConsumeIngestQuota)
+        .mockResolvedValueOnce({ allowed: true, rowsUsed: 10, bytesUsed: 100 }) // device check
+        .mockResolvedValueOnce({ allowed: false, rowsUsed: 20_000_100, bytesUsed: 1000 }); // org check
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(429);
+      expect(values).not.toHaveBeenCalled();
+    });
+
+    it('inserts normally when both quotas are within budget', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalled();
+    });
+  });
+
+  describe('gzip decoding', () => {
+    it('decodes a gzip-encoded body (async gunzip)', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      const payload = JSON.stringify({ logs: [makeLogEntry()] });
+      const compressed = gzipSync(Buffer.from(payload));
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+        body: compressed,
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalled();
+    });
+
+    it('rejects a gzip body that decompresses past the output cap', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      // A highly compressible payload whose decompressed size blows the 10MB cap.
+      const oversizedPayload = JSON.stringify({
+        logs: [makeLogEntry({ message: 'a'.repeat(15 * 1024 * 1024) })],
+      });
+      const compressed = gzipSync(Buffer.from(oversizedPayload));
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+        body: compressed,
+      });
+
+      expect(res.status).toBe(400);
+      expect(values).not.toHaveBeenCalled();
     });
   });
 });

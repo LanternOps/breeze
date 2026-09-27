@@ -76,6 +76,11 @@ vi.mock('../auditService', () => ({ createAuditLogAsync: auditMock }));
 const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: captureMessageMock }));
 
+const { verifyDnsOwnershipTokenMock } = vi.hoisted(() => ({
+  verifyDnsOwnershipTokenMock: vi.fn(async () => false),
+}));
+vi.mock('./dnsOwnershipProof', () => ({ verifyDnsOwnershipToken: verifyDnsOwnershipTokenMock }));
+
 import { FAILED_RETRY_WINDOW_MS, markStaticDomainVerified, nextCheckDelayMs, syncSendingDomain } from './domainSync';
 
 const MIN = 60_000;
@@ -138,6 +143,7 @@ function row(overrides: Record<string, unknown> = {}) {
     provider: 'fake',
     providerDomainId: null,
     providerManaged: true,
+    ownershipVerifyToken: null,
     provisionAttemptedAt: null,
     providerRegion: null,
     status: 'provisioning',
@@ -240,39 +246,131 @@ describe('syncSendingDomain (spec §6.1)', () => {
     expect(updates.at(-1)).toMatchObject({ providerDomainId: 'pd-1', providerManaged: true, status: 'pending' });
   });
 
-  it('case 4 — found and OLDER than our attempt: pre-existing, adopted as NOT managed', async () => {
+  it('case 4 — found and OLDER than our attempt: pre-existing, unallowlisted, provisioning REFUSED', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
     setRow({ provisionAttemptedAt: new Date(NOW.getTime() - 60_000) });
     providerMock.findDomainByName.mockResolvedValue({
       providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
       createdAt: new Date(NOW.getTime() - 86_400_000),
     });
 
-    await syncSendingDomain(DOMAIN_ID, { now: NOW });
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
 
+    // NOT adopted: no providerManaged/providerDomainId patch, just a terminal
+    // failure — an unproven pre-existing object must never become sendable.
+    expect(lastStatus()).toBe('failed');
+    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_conflict' });
+    expect(updates.at(-1)?.providerManaged).toBeUndefined();
+    expect(providerMock.requestVerification).not.toHaveBeenCalled();
+  });
+
+  it('case 4 with the domain operator-allowlisted for adoption: adopted as NOT managed, same as before', async () => {
+    process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST = 'mail.acme.test';
+    setRow({ provisionAttemptedAt: new Date(NOW.getTime() - 60_000) });
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
+      createdAt: new Date(NOW.getTime() - 86_400_000),
+    });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provisioned');
+
+    expect(updates.at(-1)).toMatchObject({ providerManaged: false });
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
+  });
+
+  it('case 4 proven by a matching DNS-TXT record: adopted as NOT managed, without any allowlist entry', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
+    verifyDnsOwnershipTokenMock.mockResolvedValueOnce(true);
+    setRow({
+      provisionAttemptedAt: new Date(NOW.getTime() - 60_000),
+      ownershipVerifyToken: 'the-issued-token',
+    });
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
+      createdAt: new Date(NOW.getTime() - 86_400_000),
+    });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provisioned');
+
+    expect(verifyDnsOwnershipTokenMock).toHaveBeenCalledWith('mail.acme.test', 'the-issued-token');
     expect(updates.at(-1)).toMatchObject({ providerManaged: false });
   });
 
-  it('an ambiguous provider object (no createdAt) resolves to NOT managed', async () => {
+  it('case 4 with a row that has no issued token: DNS proof is never attempted, refuses without allowlist', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
+    setRow({
+      provisionAttemptedAt: new Date(NOW.getTime() - 60_000),
+      ownershipVerifyToken: null,
+    });
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
+      createdAt: new Date(NOW.getTime() - 86_400_000),
+    });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
+
+    expect(verifyDnsOwnershipTokenMock).not.toHaveBeenCalled();
+    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_conflict' });
+  });
+
+  it('case 4 where DNS proof fails: still refuses even with a token issued, unless allowlisted', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
+    verifyDnsOwnershipTokenMock.mockResolvedValueOnce(false);
+    setRow({
+      provisionAttemptedAt: new Date(NOW.getTime() - 60_000),
+      ownershipVerifyToken: 'the-issued-token',
+    });
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
+      createdAt: new Date(NOW.getTime() - 86_400_000),
+    });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
+
+    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_conflict' });
+  });
+
+  it('DNS proof is checked BEFORE falling back to the allowlist, but the allowlist still works standalone', async () => {
+    process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST = 'mail.acme.test';
+    verifyDnsOwnershipTokenMock.mockResolvedValueOnce(false); // DNS proof absent/failed
+    setRow({
+      provisionAttemptedAt: new Date(NOW.getTime() - 60_000),
+      ownershipVerifyToken: 'the-issued-token',
+    });
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', region: 'us-east-1', state: 'pending', records: [],
+      createdAt: new Date(NOW.getTime() - 86_400_000),
+    });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provisioned');
+
+    expect(updates.at(-1)).toMatchObject({ providerManaged: false });
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
+  });
+
+  it('an ambiguous provider object (no createdAt) also refuses to adopt when unallowlisted', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
     setRow({ provisionAttemptedAt: new Date(NOW.getTime() - 60_000) });
     providerMock.findDomainByName.mockResolvedValue({
       providerDomainId: 'pd-1', state: 'pending', records: [],
     });
-    await syncSendingDomain(DOMAIN_ID, { now: NOW });
-    expect(updates.at(-1)).toMatchObject({ providerManaged: false });
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
+    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_conflict' });
   });
 
-  it('an adopted already-verified domain is verified at once and never asked to verify again', async () => {
+  it('an already-verified pre-existing domain is refused, not silently adopted verified', async () => {
+    delete process.env.EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST;
     setRow({ provisionAttemptedAt: new Date(NOW.getTime() - 60_000) });
     providerMock.findDomainByName.mockResolvedValue({
       providerDomainId: 'pd-1', state: 'verified', records: [], createdAt: new Date(NOW.getTime() - 86_400_000),
     });
 
-    await syncSendingDomain(DOMAIN_ID, { now: NOW });
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
 
-    expect(lastStatus()).toBe('verified');
-    expect(updates.at(-1)!.verifiedAt).toBeInstanceOf(Date);
+    expect(lastStatus()).toBe('failed');
+    expect(updates.at(-1)?.verifiedAt).toBeUndefined();
     expect(providerMock.requestVerification).not.toHaveBeenCalled();
-    expect(statusMailMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'verified' }));
+    expect(statusMailMock).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'verified' }));
   });
 
   it('a static row waits in pending for its test send: no verification request is ever made', async () => {
@@ -322,7 +420,11 @@ describe('syncSendingDomain (spec §6.1)', () => {
   it('reports an unmapped provider state to Sentry rather than only warning', async () => {
     setRow();
     providerMock.findDomainByName.mockResolvedValue({
-      providerDomainId: 'pd-1', state: 'brand_new_resend_state' as never, records: [], createdAt: new Date(0),
+      // createdAt AFTER attemptedAt (managed=true, case 3) — this test is
+      // about the unmapped-state warning, not adoption; an older createdAt
+      // would hit the pre-existing-object refusal path instead.
+      providerDomainId: 'pd-1', state: 'brand_new_resend_state' as never, records: [],
+      createdAt: new Date(NOW.getTime() + 1000),
     });
 
     await syncSendingDomain(DOMAIN_ID, { now: NOW });

@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
+import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export { getPagination } from '../../utils/pagination';
 
@@ -117,6 +117,39 @@ export async function getDeviceWithOrgAndSiteCheck(
     return SITE_ACCESS_DENIED;
   }
   return device;
+}
+
+/**
+ * Explicit `devices:execute` check for system-tools reads that expose raw,
+ * high-signal device content rather than metadata: file download, registry
+ * key/value reads, and events from a sensitive event-log channel. The
+ * router-wide split in `routes/systemTools/index.ts` maps every GET to
+ * `devices:read`, which is enough for listing/browsing but not for reading
+ * content back off an agent that runs as root/LocalSystem — the AI tool path
+ * already requires devices:execute for the equivalent operations
+ * (aiGuardrails.ts TOOL_PERMISSIONS file_operations.read/list and
+ * registry_operations.read_key/get_value). This brings the REST routes to the
+ * same tier.
+ *
+ * Reads permissions from `c.get('permissions')` when present (set by the
+ * router-wide middleware) and fetches lazily otherwise, mirroring
+ * `getDeviceWithOrgAndSiteCheck`.
+ */
+export async function requireDevicesExecute(
+  c: Context,
+  auth: Pick<AuthContext, 'user' | 'orgId' | 'partnerId'>
+): Promise<boolean> {
+  let userPerms = c.get('permissions') as UserPermissions | undefined;
+  if (!userPerms) {
+    const fetched = await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+    });
+    userPerms = fetched || undefined;
+    if (userPerms) c.set('permissions', userPerms);
+  }
+  if (!userPerms) return false;
+  return hasPermission(userPerms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

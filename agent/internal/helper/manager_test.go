@@ -41,7 +41,7 @@ func TestApplyDisabledStopsRunningHelperAfterRestart(t *testing.T) {
 	removeAutoStartFunc = func() error { return nil }
 	stopHelperLegacyFunc = func() {}
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -90,7 +90,7 @@ func TestApplyRestartsHelperOnConfigChangeWhenIdle(t *testing.T) {
 
 	stopped := 0
 	spawned := 0
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
@@ -151,7 +151,7 @@ func TestApplyDefersRestartWhileChatActive(t *testing.T) {
 
 	stopped := 0
 	spawned := 0
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	t.Cleanup(mgr.Shutdown) // the already-running session still gets a watcher (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
@@ -199,7 +199,7 @@ func TestApplyEnabledSpawnsPerSession(t *testing.T) {
 	removeAutoStartFunc = func() error { return nil }
 	stopHelperLegacyFunc = func() {}
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	t.Cleanup(mgr.Shutdown) // stop the watchers this test spawns (#6872: avoid leaking them into later tests)
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
@@ -252,7 +252,7 @@ func TestApplyDisabledUninstalledIsStableNoOp(t *testing.T) {
 	uninstallPackageFunc = func() error { uninstallCalls++; return nil }
 	stopHelperLegacyFunc = func() { stopLegacyCalls++ }
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper") // absent → not installed
 	mgr.sessionEnumerator = &mockEnumerator{}
@@ -299,7 +299,7 @@ func TestApplyDisabledInstalledCleansUpOnce(t *testing.T) {
 	migrationTargetsFunc = func() ([]string, error) { return nil, nil }
 	prepareSessionDirFunc = func(path, sessionKey string) error { return nil }
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = binPath
 	mgr.sessionEnumerator = &mockEnumerator{}
@@ -330,7 +330,7 @@ func TestApplySweepsLegacyAutoStartOncePerProcess(t *testing.T) {
 	stopHelperLegacyFunc = func() {}
 	sweepLegacyAutoStart = true // simulate Windows on any test platform
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
 	// (false) regardless of whether the platform-default helper binary path
@@ -365,7 +365,7 @@ func TestApplySkipsLegacyAutoStartSweepOffWindows(t *testing.T) {
 	stopHelperLegacyFunc = func() {}
 	sweepLegacyAutoStart = false
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
 	// (false) regardless of whether the platform-default helper binary path
@@ -407,7 +407,7 @@ func TestApplyReapsOnDiskSessionNotSurfacedByEnumerator(t *testing.T) {
 	stopHelperLegacyFunc = func() {}
 
 	var stoppedPIDs []int
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	t.Cleanup(mgr.Shutdown) // stop the watcher this test spawns (#6872: avoid leaking it into later tests)
 	mgr.baseDir = tmpDir
 	// Console-only enumerator: only the interactive console session surfaces,
@@ -505,7 +505,7 @@ func TestInstalledVersionSessionStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.sessions["100"] = newSessionState("100", tmpDir)
 
@@ -522,7 +522,7 @@ func TestInstalledVersionLegacyFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 
 	if got := mgr.InstalledVersion(); got != "0.111.1" {
@@ -542,7 +542,7 @@ func TestInstalledVersionLegacyFallbackIgnoredWhenSessionsDirExists(t *testing.T
 		t.Fatal(err)
 	}
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 
 	// With sessions dir present, legacy root status must not be read to prevent stale update loops
@@ -553,7 +553,7 @@ func TestInstalledVersionLegacyFallbackIgnoredWhenSessionsDirExists(t *testing.T
 
 func TestInstalledVersionEmptyWhenNoStatus(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.sessions["100"] = newSessionState("100", tmpDir)
 
@@ -572,7 +572,7 @@ func TestInstalledVersionPrefersOnDiskBinaryVersion(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmpDir, "sessions", "2"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper.exe")
 	mgr.sessions["2"] = newSessionState("2", tmpDir) // no status file
@@ -600,7 +600,7 @@ func TestInstalledVersionOnDiskWinsOverSessionStatus(t *testing.T) {
 	if err := os.WriteFile(statusPath, []byte("version: 0.108.0\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.sessions["1"] = newSessionState("1", tmpDir)
 	mgr.binaryVersionFunc = func(string) (string, error) { return "0.114.0", nil }
@@ -624,7 +624,7 @@ func TestInstalledVersionFallsBackToStatusWhenBinaryVersionUnreadable(t *testing
 		"read error":  fmt.Errorf("no version resource"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			mgr := New(context.Background(), nil, nil, "")
+			mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 			mgr.baseDir = tmpDir
 			mgr.sessions["1"] = newSessionState("1", tmpDir)
 			mgr.binaryVersionFunc = func(string) (string, error) { return "", readErr }
@@ -660,7 +660,7 @@ func TestApplySpawnsWithConfigWhenOnlyOnDiskVersionKnown(t *testing.T) {
 	}
 
 	var spawnArgs [][]string
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = helperBinary
 	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "3", Username: "bob", UID: 503}}}
@@ -698,7 +698,7 @@ func newNotInstalledManager(t *testing.T) (*Manager, *int) {
 	stopHelperLegacyFunc = func() {}
 
 	spawns := 0
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper") // never written
 	mgr.sessionEnumerator = &mockEnumerator{sessions: []SessionInfo{{Key: "1", Username: "kit", UID: 1}}}

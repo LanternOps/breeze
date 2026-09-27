@@ -231,3 +231,21 @@ func TestTryCreateRecoveryConsoleLock_NeverObservablyEmpty(t *testing.T) {
 		t.Errorf("leftover file in lock directory: %s", e.Name())
 	}
 }
+
+func TestReadBakedRecoveryConfig_MissingFileReturnsEmpty(t *testing.T) {
+	got := readBakedRecoveryConfig(filepath.Join(t.TempDir(), "does-not-exist"))
+	if got != "" {
+		t.Fatalf("expected empty string for a missing file, got %q", got)
+	}
+}
+
+func TestReadBakedRecoveryConfig_TrimsWhitespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server")
+	if err := os.WriteFile(path, []byte("https://baked.example\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := readBakedRecoveryConfig(path)
+	if got != "https://baked.example" {
+		t.Fatalf("expected trimmed baked value, got %q", got)
+	}
+}

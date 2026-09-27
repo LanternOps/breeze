@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // orderedIndex returns the index of needle in haystack, failing the test when
@@ -457,5 +458,38 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 		if strings.Contains(s, "com.breeze.agent-user") || strings.Contains(s, "com.breeze.helper") {
 			t.Errorf("unowned label: %s", s)
 		}
+	}
+}
+
+func TestResolveTrustedOrLegacyBinaryPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		exists bool
+		want   string
+	}{
+		{
+			name:   "trusted path exists: prefer it",
+			exists: true,
+			want:   securefs.TrustedExecutableDir + "/breeze-agent",
+		},
+		{
+			name:   "trusted path missing (migration never ran): fall back to legacy",
+			exists: false,
+			want:   securefs.LegacyExecutableDir + "/breeze-agent",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statFn := func(path string) error {
+				if tt.exists {
+					return nil
+				}
+				return os.ErrNotExist
+			}
+			got := resolveTrustedOrLegacyBinaryPath("breeze-agent", statFn)
+			if got != tt.want {
+				t.Errorf("resolveTrustedOrLegacyBinaryPath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

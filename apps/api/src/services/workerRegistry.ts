@@ -185,6 +185,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'helperScreenshotRetentionWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/helperScreenshotRetention');
+      return {
+        init: m.initializeHelperScreenshotRetentionWorker,
+        shutdown: m.shutdownHelperScreenshotRetentionWorker,
+      };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {

@@ -13,6 +13,12 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('./commandQueue', () => ({ CommandTypes: { BACKUP_RESTORE: 'backup_restore' } }));
+// The org/cross-site restore authorization is covered by
+// aiToolsRestoreAuthorization.test.ts and aiToolsRestoreScope.integration.test.ts;
+// here it is stubbed so the select sequences below stay the handler's own.
+vi.mock('./aiToolsRestoreAuthorization', () => ({
+  authorizeAiRestore: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));

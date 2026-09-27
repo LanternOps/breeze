@@ -524,8 +524,8 @@
         "description": "O interruptor de emergência de IA é um controle em toda a plataforma gerenciado pelos administradores de plataforma da Breeze. Sua conta não pode visualizá-lo ou alterá-lo."
       },
       "status": {
-        "active": "Ações de IA ativas",
-        "killed": "Ações de IA interrompidas"
+        "active": "Ações de IA não supervisionadas ativas",
+        "killed": "Ações de IA não supervisionadas interrompidas"
       },
       "fields": {
         "epoch": "Época",

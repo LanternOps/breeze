@@ -118,6 +118,7 @@ vi.mock('jose', async () => {
 
 import { importJWK, jwtVerify, type JWK } from 'jose';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from './mcpTenantToolSelfManagedContext';
 import { oauthGrants } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -939,6 +940,39 @@ describe('bearerTokenAuthMiddleware', () => {
       }),
       expect.any(Function)
     );
+  });
+
+  it('skips the ambient withDbAccessContext wrap when the MCP tenant-tool-call flag is set (org token)', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      jti: 'org-token-skip-ambient-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    c.set(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY, true);
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('still wraps the ambient context for an ordinary org-token request (flag unset)', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      jti: 'org-token-ambient-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(withDbAccessContext).toHaveBeenCalledTimes(1);
   });
 });
 

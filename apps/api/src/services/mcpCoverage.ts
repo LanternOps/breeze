@@ -187,6 +187,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/security.ts': { exempt: 'agent_transport' },
   'agents/sessions.ts': { exempt: 'agent_transport' },
   'agents/state.ts': { exempt: 'agent_transport' },
+  'agents/storageSessions.ts': { exempt: 'agent_transport' },
   'agents/token.ts': { exempt: 'agent_transport' },
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },

@@ -343,6 +343,37 @@ describe('manage_tickets tool', () => {
     expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
   });
 
+  it('comment defaults to private when isPublic is not specified (interactive chat/MCP)', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-2', content: 'on it' }, firstResponseStamped: false });
+    const out = await getTool().handler(
+      { action: 'comment', ticketId: 't-1', content: 'On it' },
+      auth
+    );
+    expect(serviceMocks.addTicketComment).toHaveBeenCalledWith(
+      't-1',
+      expect.objectContaining({ content: 'On it', isPublic: false }),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+    expect(JSON.parse(out)).toHaveProperty('comment');
+  });
+
+  it('comment stays private when isPublic:false is explicitly passed', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-3', content: 'note' }, firstResponseStamped: false });
+    const out = await getTool().handler(
+      { action: 'comment', ticketId: 't-1', content: 'note', isPublic: false },
+      auth
+    );
+    expect(serviceMocks.addTicketComment).toHaveBeenCalledWith(
+      't-1',
+      expect.objectContaining({ content: 'note', isPublic: false }),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+    expect(JSON.parse(out)).toHaveProperty('comment');
+  });
+
+
   // ── assign ────────────────────────────────────────────────────────────────
 
   it('assign delegates to assignTicket when ticket is in scope', async () => {

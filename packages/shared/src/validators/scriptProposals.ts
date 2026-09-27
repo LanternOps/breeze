@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { SCRIPT_LANGUAGES } from '../constants';
 import type { RiskTier } from '../utils/assuranceLevel';
+import { validateRegexSafety } from './clientAiDlp';
 
 /**
  * `RiskTier` is the SAME type the assurance-floor module already exports (the
@@ -34,11 +35,17 @@ export const scriptVerificationClaimSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('file_exists'), path: z.string().min(1).max(1024) }),
   z.object({
     kind: z.literal('output_matches'),
-    // Compiled here so an uncompilable claim is rejected at authoring time
-    // rather than throwing inside the verification worker three minutes later.
-    regex: z.string().min(1).max(512).refine((value) => {
-      try { new RegExp(value); return true; } catch { return false; }
-    }, { message: 'regex must compile' }),
+    // Compiled AND pattern-complexity-checked here (shared with the DLP
+    // custom-rule validator: backreference ban, nested-quantifier heuristic,
+    // bounded timed probes) so a catastrophic-backtracking claim is rejected
+    // at authoring time rather than run synchronously inside the
+    // socket-owner verification worker three minutes later — this proposal
+    // stage is self-approvable at low/medium risk tier, so schema rejection
+    // is the only gate between an author and that sink.
+    regex: z.string().min(1).max(512).refine(
+      (value) => validateRegexSafety(value).ok,
+      { message: 'regex must compile and pass pattern-complexity checks' },
+    ),
   }),
 ]);
 export type ScriptVerificationClaim = z.infer<typeof scriptVerificationClaimSchema>;

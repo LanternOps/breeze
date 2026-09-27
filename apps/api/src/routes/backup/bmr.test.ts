@@ -1456,13 +1456,101 @@ describe('bmr routes', () => {
     );
   });
 
+  // Before this fix, `/bmr/recover/download` had no per-IP limiter (unlike
+  // authenticate/complete) and ran a system-wide expired-token UPDATE
+  // unconditionally on every request, before any validation.
+  it('rate limits recovery downloads per source IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await app.request(
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { 'X-Recovery-Token': VALID_RECOVERY_TOKEN } },
+    );
+
+    expect(res.status).toBe(429);
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringMatching(/^bmr:download:/),
+      expect.any(Number),
+      60,
+    );
+    expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
+  });
+
+  it('bounds the expired-token sweep to at most once per throttle window', async () => {
+    selectMock.mockReturnValue(chainMock([{
+      id: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      status: 'authenticated',
+      authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+    }]));
+    getAuthenticatedRecoveryDownloadTargetMock.mockResolvedValue({
+      unavailable: false,
+      type: 'stream',
+      contentType: 'application/json',
+      contentLength: 2,
+      stream: Readable.from(Buffer.from('{}')),
+    });
+
+    await app.request(
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { 'X-Recovery-Token': VALID_RECOVERY_TOKEN } },
+    );
+
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'bmr:expire-sweep',
+      1,
+      expect.any(Number),
+    );
+  });
+
+  it('skips the expiry sweep write when the sweep throttle gate denies', async () => {
+    // First call is the per-IP gate (allowed), second is the sweep throttle
+    // gate (denied) — the route must skip the sweep, not fail the request.
+    rateLimiterMock
+      .mockResolvedValueOnce({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 60_000) });
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      status: 'authenticated',
+      authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+    }]));
+    getAuthenticatedRecoveryDownloadTargetMock.mockResolvedValueOnce({
+      unavailable: false,
+      type: 'stream',
+      contentType: 'application/json',
+      contentLength: 2,
+      stream: Readable.from(Buffer.from('{}')),
+    });
+
+    const res = await app.request(
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { 'X-Recovery-Token': VALID_RECOVERY_TOKEN } },
+    );
+
+    // The request itself still succeeds — only the sweep is skipped.
+    expect(res.status).toBe(200);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it('rejects recovery download query tokens by default', async () => {
     const res = await app.request(
       `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
     );
 
     expect(res.status).toBe(400);
-    expect(rateLimiterMock).not.toHaveBeenCalled();
+    // The per-IP backstop runs before any token validation (it must — it
+    // exists precisely to bound requests that never reach a valid token),
+    // so it (and the throttled expiry-sweep gate) is expected to fire here.
+    // What must NOT happen is the expensive per-token lookup.
     expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
   });
 
@@ -1782,6 +1870,92 @@ describe('bmr routes', () => {
       expect(entry.sha256).toBeNull();
       expect(entry.size).toBeNull();
     }
+  });
+
+  describe('POST /bmr/recover/binary-signature (launch-script binary verification)', () => {
+    it('returns the binary signature (never the public key) for a valid, non-terminal token and a signed artifact', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: TOKEN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'ready',
+          metadata: {
+            binarySignatureBase64: 'c2lnbmF0dXJlLWJ5dGVz',
+            binarySignatureKeyId: 'key-1',
+            binarySignaturePublicKey: 'RWRUZXN0UHViS2V5MTIzNA==',
+          },
+        }]));
+
+      const res = await app.request('/backup/bmr/recover/binary-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, platform: 'linux', architecture: 'amd64' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // The trust root for this endpoint's caller (run-recovery.sh/.ps1)
+      // is a public key baked into the bundle at build time, never one
+      // this route hands back — see recoveryMediaService.ts's
+      // buildLaunchScript. Serving the key over the same connection the
+      // caller is trying to verify would make verification depend on that
+      // same server, so the key never comes from this route.
+      expect(body).toMatchObject({
+        signature: 'c2lnbmF0dXJlLWJ5dGVz',
+        keyId: 'key-1',
+      });
+      expect(body.publicKey).toBeUndefined();
+    });
+
+    it('fails closed (404) when the artifact has no signature available (legacy_unsigned)', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: TOKEN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([{ status: 'legacy_unsigned', metadata: {} }]));
+
+      const res = await app.request('/backup/bmr/recover/binary-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, platform: 'linux', architecture: 'amd64' }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('fails closed (404) when no matching artifact exists', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: TOKEN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request('/backup/bmr/recover/binary-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, platform: 'linux', architecture: 'amd64' }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects an invalid token format without any DB lookup', async () => {
+      const res = await app.request('/backup/bmr/recover/binary-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'not-a-real-token', platform: 'linux', architecture: 'amd64' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a revoked token', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: TOKEN_ID, orgId: ORG_ID, status: 'revoked' }]));
+
+      const res = await app.request('/backup/bmr/recover/binary-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, platform: 'linux', architecture: 'amd64' }),
+      });
+
+      expect(res.status).toBe(401);
+    });
   });
 });
 

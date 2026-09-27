@@ -36,6 +36,9 @@ const executeCommandWithSystemPrecheck = vi.hoisted(() =>
   vi.fn<(deviceId: string, type: string, payload: Record<string, unknown>, options: Record<string, unknown>) =>
     Promise<{ status: string; stdout?: string; error?: string }>>());
 vi.mock('../commandQueue', () => ({ executeCommandWithSystemPrecheck }));
+// The verify lane runs the remote-tools policy check itself.
+const checkAiRemoteToolsPolicy = vi.hoisted(() => vi.fn());
+vi.mock('../aiRemoteToolsPolicy', () => ({ checkAiRemoteToolsPolicy }));
 
 import { ACT_MANIFEST } from './actManifest';
 import type { ActOperation } from './actManifest';
@@ -80,6 +83,8 @@ beforeEach(() => {
   dbMockState.ambientContext = undefined;
   dbMockState.insertedRows = [];
   dbMockState.insertShouldThrow = false;
+  checkAiRemoteToolsPolicy.mockReset();
+  checkAiRemoteToolsPolicy.mockResolvedValue({ allowed: true });
 });
 
 afterEach(() => {
@@ -420,5 +425,29 @@ describe('*ForTask shims — aiOrigin (#5022 W01 / #5789)', () => {
 
     const call = executeCommandWithSystemPrecheck.mock.calls[0]!;
     expect(call[3]).not.toHaveProperty('aiOrigin');
+  });
+});
+
+describe('verify read-backs honour the per-device remote-tools policy', () => {
+  const denied = { allowed: false, reason: 'off', error: 'REMOTE_TOOLS_DISABLED_BY_POLICY: off' };
+
+  it('service_running: a policy-denied device is inconclusive and never dispatched to', async () => {
+    checkAiRemoteToolsPolicy.mockResolvedValue(denied);
+    const result = await verifyActExecution({
+      pin: pin(restartOp, { kind: 'service', serviceName: 'Spooler' }),
+      toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      isError: false, run: RUN, agentUserId: AGENT_USER_ID,
+    });
+    expect(result.verification).toBe('inconclusive');
+    expect(checkAiRemoteToolsPolicy).toHaveBeenCalledWith('device-1', 'list_services');
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
+  });
+
+  it('process_absent (by name, *ForTask): a policy-denied device is inconclusive and never dispatched to', async () => {
+    checkAiRemoteToolsPolicy.mockResolvedValue(denied);
+    const result = await verifyProcessAbsentByNameForTask({ processName: 'notepad.exe' }, { deviceId: 'device-1', orgId: 'org-1' }, AGENT_USER_ID);
+    expect(result).toEqual({ verification: 'inconclusive', detail: denied.error });
+    expect(checkAiRemoteToolsPolicy).toHaveBeenCalledWith('device-1', 'list_processes');
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 });

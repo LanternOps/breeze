@@ -5,6 +5,8 @@ import { partnerSendingDomains, partners } from '../../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { createAuditLogAsync } from '../auditService';
 import { captureException, captureMessage } from '../sentry';
+import { getEmailDomainsConfig } from './config';
+import { verifyDnsOwnershipToken } from './dnsOwnershipProof';
 import { ProviderDomainConflictError, ProviderDomainRejectedError, ProviderQuotaExhaustedError } from './provider';
 import type { EmailDomainProvider, ProviderDomain, SendingDomainStatus } from './provider';
 import { getEmailDomainProvider } from './providerRegistry';
@@ -284,6 +286,37 @@ async function provision(
       // recoverable, deleting an operator's primary sending domain is not
       // (spec §5.1).
       managed = found.createdAt instanceof Date && found.createdAt.getTime() > attemptedAt.getTime();
+
+      // A pre-existing provider object with no Breeze row proves nothing
+      // about who controls the domain — Breeze has never asked this partner
+      // to prove ownership before this point. Silently adopting it
+      // (especially when the provider already reports it verified) lets ANY
+      // trusted partner claim a domain it never proved, and on a shared
+      // partner-lane provider team this crosses tenants.
+      //
+      // Two ways to prove it, checked in order: (1) self-service — a TXT
+      // record at _breeze-verify.<domain> equal to this row's
+      // ownershipVerifyToken (issued at createSendingDomain); (2) operator
+      // override — EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST, for a migration
+      // case where DNS cannot be arranged. Neither proving it: adoption is
+      // refused.
+      if (!managed) {
+        const dnsProven = row.ownershipVerifyToken
+          ? await verifyDnsOwnershipToken(row.domain, row.ownershipVerifyToken)
+          : false;
+        if (!dnsProven) {
+          const allowlist = getEmailDomainsConfig().adoptExistingAllowlist;
+          if (!allowlist.includes(row.domain)) {
+            console.error(`[SendingDomains] provisioning ${row.domain} found a pre-existing, unproven provider object — refusing to adopt`);
+            captureMessage('sending domain adoption refused: pre-existing unproven provider object', {
+              eventCode: 'sending_domain_adoption_refused',
+              level: 'warning',
+            });
+            await commitTransition(row, 'failed', 'provider_conflict', {}, now, rng);
+            return 'provision_failed';
+          }
+        }
+      }
     }
   } catch (err) {
     const reason = terminalStatusReasonOf(err);

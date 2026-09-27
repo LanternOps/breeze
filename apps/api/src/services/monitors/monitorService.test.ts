@@ -658,6 +658,25 @@ describe('listMonitorDefinitions / listMonitorDefinitionsPage paging (#6735)', (
     pageChains([{ total: 0, row: null }]);
     expect(await listMonitorDefinitionsPage(auth(), undefined, { limit: 25, offset: 0 })).toEqual({ rows: [], total: 0 });
   });
+
+  it('pages get the same display-safe projection as the unpaged list for an org-scope caller', async () => {
+    const partnerWide = {
+      id: 'pw', orgId: null, partnerId: PARTNER,
+      responses: [{ type: 'run_script', scriptId: 's1' }],
+      recurrenceActions: [{ type: 'run_script', scriptId: 's2' }],
+      deliveryChannelIds: ['c1'], escalationPolicyId: 'e1', aiAgentId: 'a1',
+    };
+    const ownOrg = { ...partnerWide, id: 'own', orgId: ORG, partnerId: null };
+    pageChains([{ total: 2, row: partnerWide }, { total: 2, row: ownOrg }]);
+
+    const out = await listMonitorDefinitionsPage(auth(), undefined, { limit: 25, offset: 0 });
+
+    expect(out.rows[0]).toMatchObject({
+      id: 'pw', responses: [], recurrenceActions: [], deliveryChannelIds: [], escalationPolicyId: null, aiAgentId: null,
+    });
+    // The caller's own org row is returned as stored.
+    expect(out.rows[1]).toEqual(ownOrg);
+  });
 });
 
 describe('network check asset ownership', () => {
@@ -771,5 +790,91 @@ describe('deleteMonitorDefinition: adopted network history', () => {
     expect(predicate.params).toContain('legacy');
     expect(predicate.params).toContain(ORG);
     expect(predicate.params).toContain('network_monitors');
+  });
+});
+
+/**
+ * Display-safe projection of a partner-wide monitor for an org-scope reader.
+ * Action payloads, delivery routing and escalation/AI-agent wiring are
+ * stripped; everything else (id, name, condition, severity, ownership) stays
+ * intact so the org technician can still tell what the monitor does and that
+ * it exists.
+ */
+describe('monitor read projection for org-scope callers', () => {
+  function partnerWideRow(overrides: Record<string, unknown> = {}) {
+    return existingRow({
+      orgId: null,
+      partnerId: PARTNER,
+      responses: [{ type: 'execute_command', command: 'rm -rf /secret' }],
+      recurrenceActions: [{ type: 'run_script', parameters: { token: 'shh' } }],
+      deliveryChannelIds: ['channel-1'],
+      escalationPolicyId: ESCALATION_POLICY,
+      aiAgentId: 'agent-1',
+      ...overrides,
+    });
+  }
+
+  it('getMonitorDefinition strips action/delivery/escalation fields for an org-scope caller', async () => {
+    mockExisting(partnerWideRow());
+
+    const monitor = await getMonitorDefinition('monitor-1', auth());
+
+    expect(monitor).toMatchObject({
+      id: 'monitor-1',
+      orgId: null,
+      partnerId: PARTNER,
+      responses: [],
+      recurrenceActions: [],
+      deliveryChannelIds: [],
+      escalationPolicyId: null,
+      aiAgentId: null,
+    });
+  });
+
+  it('getMonitorDefinition returns the row unredacted for a partner-scope caller', async () => {
+    mockExisting(partnerWideRow());
+
+    const monitor = await getMonitorDefinition(
+      'monitor-1',
+      auth({ scope: 'partner', orgId: null, canAccessOrg: () => true }),
+    );
+
+    expect(monitor).toMatchObject({
+      responses: [{ type: 'execute_command', command: 'rm -rf /secret' }],
+      deliveryChannelIds: ['channel-1'],
+      escalationPolicyId: ESCALATION_POLICY,
+      aiAgentId: 'agent-1',
+    });
+  });
+
+  it('getMonitorDefinition leaves an org-owned row untouched for an org-scope caller', async () => {
+    mockExisting(existingRow({
+      orgId: ORG,
+      partnerId: null,
+      responses: [{ type: 'execute_command', command: 'echo hi' }],
+    }));
+
+    const monitor = await getMonitorDefinition('monitor-1', auth());
+
+    expect(monitor).toMatchObject({ responses: [{ type: 'execute_command', command: 'echo hi' }] });
+  });
+
+  it('listMonitorDefinitions strips action/delivery/escalation fields on partner-wide rows for an org-scope caller', async () => {
+    dbMock.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([partnerWideRow(), existingRow({ orgId: ORG, partnerId: null })]),
+        }),
+      }),
+    });
+
+    const rows = await listMonitorDefinitions(auth());
+
+    expect(rows[0]).toMatchObject({ orgId: null, responses: [], deliveryChannelIds: [], aiAgentId: null });
+    // The org-owned row (unaffected by the projection) keeps its own
+    // (empty-by-default) responses array untouched, confirming the
+    // redaction is keyed on `orgId === null`, not applied blanket to every
+    // row in the list.
+    expect(rows[1]).toMatchObject({ orgId: ORG, responses: [] });
   });
 });

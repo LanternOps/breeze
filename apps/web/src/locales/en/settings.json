@@ -853,6 +853,7 @@
     "hideExpired": "Hide expired",
     "deleteExpired": "Delete expired",
     "shortCode": "Short code",
+    "shortCodeHidden": "Hidden — requires enrollment permission",
     "installerUsage": "Installer devices {{consumed}} / {{max}}",
     "installerUsageExpired": "Installer devices {{consumed}} / {{max}} (expired)",
     "installerUsageMixed": "Installer devices {{liveConsumed}} / {{liveMax}} live · {{expired}} expired",

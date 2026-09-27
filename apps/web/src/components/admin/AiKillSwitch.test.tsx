@@ -65,6 +65,12 @@ describe('AiKillSwitch', () => {
     mockApi(activeRow);
     render(<AiKillSwitch />);
     await waitFor(() => expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/active/i));
+    // The badge is the one glanceable status indicator on the page — every
+    // other string here ('description', 'impactNote') correctly scopes the
+    // switch to unattended/autonomous AI activity, and the badge must match
+    // so an incident responder skimming only the badge does not conclude
+    // interactive chat sessions are also affected.
+    expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/unattended/i);
     expect(screen.getByTestId('ai-kill-switch-epoch').textContent).toContain('4');
     expect(screen.getByTestId('ai-kill-switch-updated-by').textContent).toContain('Ada Lovelace');
     expect(screen.getByTestId('ai-kill-switch-last-reason').textContent).toContain('restored after incident 123');
@@ -117,6 +123,7 @@ describe('AiKillSwitch', () => {
     mockApi(killedRow);
     render(<AiKillSwitch />);
     await waitFor(() => expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/killed/i));
+    expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/unattended/i);
   });
 
   it('requires a reason before the confirm button is enabled', async () => {

@@ -18,12 +18,18 @@ import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import { authorizeAiRestore, type AiRestoreAuthorization } from './aiToolsRestoreAuthorization';
 import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+function restoreDenied(authorization: AiRestoreAuthorization): string | null {
+  if (authorization.ok) return null;
+  return JSON.stringify({ error: authorization.error, ...(authorization.code ? { code: authorization.code } : {}) });
 }
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
@@ -123,6 +129,13 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         // handler runs; the service re-checks it inside the snapshot's org.
         const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
         if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
+        // The rebuild host must be in the snapshot's org, and a host at another
+        // site than the backup source needs backup:cross_site_restore (route parity).
+        const rebuildDenied = restoreDenied(await authorizeAiRestore(auth, {
+          snapshot: snapshotResult.snapshot,
+          targetDeviceId: rebuildHostDeviceId,
+        }));
+        if (rebuildDenied) return rebuildDenied;
 
         // `identity` is deliberately not read from the input: the server forces
         // `identity: 'new'` for engine-produced images (spec §9).
@@ -180,6 +193,10 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
       if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // The job is created in the SNAPSHOT's org, so the target must be in that
+      // same org; a cross-site target needs backup:cross_site_restore (route parity).
+      const targetDenied = restoreDenied(await authorizeAiRestore(auth, { snapshot, targetDeviceId }));
+      if (targetDenied) return targetDenied;
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -311,6 +328,10 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
       if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // The job is created in the SNAPSHOT's org, so the target must be in that
+      // same org; a cross-site target needs backup:cross_site_restore (route parity).
+      const targetDenied = restoreDenied(await authorizeAiRestore(auth, { snapshot, targetDeviceId }));
+      if (targetDenied) return targetDenied;
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'

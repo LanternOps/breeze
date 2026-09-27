@@ -470,6 +470,39 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // The service/process monitoring ingest runs a per-result Redis
+  // failure-counter loop. The handler opens its own short org-scoped context
+  // for the device read + insert (routes/agents/heartbeat.ts) and runs the
+  // Redis work after releasing it, so the middleware must NOT open a
+  // request-long one around it.
+  it('skips the request-long org wrap for the self-managed monitoring-results route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/monitoring-results' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+  });
+
+  it('a crafted monitoring-results TAIL under an extension mount keeps the request DB context', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/monitoring-results',
+    });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // #6260 — the pam/reconciliation-bindings ingest route's per-device
   // consumePamReconciliationRateLimit Redis round-trip ran inside the
   // request-long wrap (same #1105 shape as elevation-requests above). The

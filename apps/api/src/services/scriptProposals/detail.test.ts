@@ -20,12 +20,19 @@ vi.mock('../../db', async (importOriginal) => ({
 const loadProposalRow = vi.fn();
 const loadProposalRequesterUserId = vi.fn();
 const loadLatestReview = vi.fn<(...a: unknown[]) => Promise<unknown>>(async () => null);
+const loadProposalExecutions = vi.fn<(...a: unknown[]) => Promise<unknown[]>>(async () => []);
+const loadProposalDevices = vi.fn<(...a: unknown[]) => Promise<unknown[]>>(async () => []);
 vi.mock('./queries', () => ({
   loadProposalRow: (...a: unknown[]) => loadProposalRow(...a),
   loadProposalRequesterUserId: (...a: unknown[]) => loadProposalRequesterUserId(...a),
   loadLatestReview: (...a: unknown[]) => loadLatestReview(...a),
-  loadProposalExecutions: vi.fn(async () => []),
-  loadProposalDevices: vi.fn(async () => []),
+  loadProposalExecutions: (...a: unknown[]) => loadProposalExecutions(...a),
+  loadProposalDevices: (...a: unknown[]) => loadProposalDevices(...a),
+}));
+
+const scopeDeviceIdsToCaller = vi.fn<(...a: unknown[]) => Promise<string[] | null>>(async () => null);
+vi.mock('../aiToolsSiteScope', () => ({
+  scopeDeviceIdsToCaller: (...a: unknown[]) => scopeDeviceIdsToCaller(...a),
 }));
 
 import { loadScriptProposalDetail } from './detail';
@@ -56,6 +63,9 @@ beforeEach(() => {
   loadProposalRequesterUserId.mockResolvedValue(REQUESTER);
   getUserPermissions.mockResolvedValue({});
   hasPermission.mockReturnValue(false);
+  loadProposalExecutions.mockResolvedValue([]);
+  loadProposalDevices.mockResolvedValue([]);
+  scopeDeviceIdsToCaller.mockResolvedValue(null);
 });
 
 describe('loadScriptProposalDetail', () => {
@@ -142,5 +152,44 @@ describe('loadScriptProposalDetail', () => {
     const unknown = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
     expect(unknown.ok && unknown.dto.verification).toMatchObject({ outcome: 'unknown', attempts: 3 });
     expect(unknown.ok && unknown.dto.viewer.canPromote).toBe(false);
+  });
+
+  it('denies a decide-holder whose site ceiling excludes every target device', async () => {
+    userCanDecideApprovals.mockReturnValue(true);
+    canAccessOrg.mockReturnValue(true);
+    loadProposalRow.mockResolvedValue({ ...baseRow(), targetDeviceIds: ['dev-1', 'dev-2'] });
+    scopeDeviceIdsToCaller.mockResolvedValue([]); // site-restricted, no overlap
+    expect(await loadScriptProposalDetail(auth(STRANGER), PROPOSAL)).toEqual({ ok: false, reason: 'forbidden' });
+    expect(scopeDeviceIdsToCaller).toHaveBeenCalledWith(auth(STRANGER), ORG, ['dev-1', 'dev-2']);
+  });
+
+  it('narrows the device and execution lists to the caller site-visible subset', async () => {
+    userCanDecideApprovals.mockReturnValue(true);
+    canAccessOrg.mockReturnValue(true);
+    loadProposalRow.mockResolvedValue({ ...baseRow(), targetDeviceIds: ['dev-1', 'dev-2'] });
+    scopeDeviceIdsToCaller.mockResolvedValue(['dev-1']); // site-restricted, only dev-1 visible
+    loadProposalDevices.mockResolvedValue([
+      { id: 'dev-1', hostname: 'h1', osType: 'windows', status: 'online' },
+    ] as never);
+    loadProposalExecutions.mockResolvedValue([
+      { id: 'e1', deviceId: 'dev-1', status: 'success', exitCode: 0, startedAt: null, completedAt: null, hostname: 'h1' },
+      { id: 'e2', deviceId: 'dev-2', status: 'success', exitCode: 0, startedAt: null, completedAt: null, hostname: 'h2' },
+    ] as never);
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.dto.devices.map((d) => d.id)).toEqual(['dev-1']);
+    expect(r.dto.executions.map((e) => e.id)).toEqual(['e1']);
+    expect(loadProposalDevices).toHaveBeenCalledWith(['dev-1']);
+  });
+
+  it('does not narrow for an unrestricted caller (null = no site/device ceiling)', async () => {
+    userCanDecideApprovals.mockReturnValue(true);
+    canAccessOrg.mockReturnValue(true);
+    loadProposalRow.mockResolvedValue({ ...baseRow(), targetDeviceIds: ['dev-1', 'dev-2'] });
+    scopeDeviceIdsToCaller.mockResolvedValue(null);
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok).toBe(true);
+    expect(loadProposalDevices).toHaveBeenCalledWith(['dev-1', 'dev-2']);
   });
 });

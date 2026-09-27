@@ -329,6 +329,60 @@ describe('content routes — settings (exempt from the content flag gate)', () =
     expect(body.dlpConfig.detectors.ssn).toBe('redact');
   });
 
+  it('rejects a custom DLP pattern with a catastrophic nested-quantifier shape', async () => {
+    const { app } = makeApp({ db: fakeSettingsDb() });
+    const res = await app.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dlpConfig: { customPatterns: [{ name: 'evil', pattern: '(a+)+$', action: 'redact' }] },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details[0]).toMatchObject({ name: 'evil', reason: 'nested_quantifier' });
+  });
+
+  it('rejects a custom DLP pattern that exceeds the shared length cap', async () => {
+    const { app } = makeApp({ db: fakeSettingsDb() });
+    const res = await app.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dlpConfig: { customPatterns: [{ name: 'too-long', pattern: 'a'.repeat(201), action: 'redact' }] },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details[0]).toMatchObject({ name: 'too-long', reason: 'pattern_too_long' });
+  });
+
+  it('rejects more than the shared max custom DLP pattern count', async () => {
+    const { app } = makeApp({ db: fakeSettingsDb() });
+    const many = Array.from({ length: 51 }, (_, i) => ({ name: `p${i}`, pattern: `p${i}`, action: 'redact' }));
+    const res = await app.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dlpConfig: { customPatterns: many } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts and persists a safe custom DLP pattern', async () => {
+    const db = fakeSettingsDb();
+    const { app } = makeApp({ db });
+    const putRes = await app.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dlpConfig: { customPatterns: [{ name: 'employee-id', pattern: 'EMP-\\d{6}', action: 'redact' }] },
+      }),
+    });
+    expect(putRes.status).toBe(200);
+    const body = await putRes.json();
+    expect(body.dlpConfig.customPatterns).toEqual([{ name: 'employee-id', pattern: 'EMP-\\d{6}', action: 'redact' }]);
+  });
+
   it('rejects unknown top-level keys', async () => {
     const { app } = makeApp({ db: fakeSettingsDb() });
     const res = await app.request(`/content/settings?orgId=${ORG_ID}`, {
@@ -345,6 +399,72 @@ describe('content routes — settings (exempt from the content flag gate)', () =
     });
     const res = await app.request(`/content/settings?orgId=${ORG_ID}`);
     expect(res.status).toBe(403);
+  });
+
+  it('rejects enabling content with only workspace:write (no workspace:execute/devices:execute)', async () => {
+    // Simulate a caller that only has the configuration-authority grant, same
+    // shape as adminGate's write-only fallback for the rest of /content/*.
+    const writeOnlyApp = new Hono<WorkspaceRouteEnv>();
+    writeOnlyApp.use('*', async (c, next) => {
+      c.set('auth', { user: { id: 'u1' }, scope: 'partner', accessibleOrgIds: [ORG_ID] } as WorkspaceRouteEnv['Variables']['auth']);
+      c.set('extensionAuthorization', {
+        hasPermission: (resource: string, action: string) => resource === 'workspace' && action === 'write',
+        mfaSatisfied: true,
+      });
+      await next();
+    });
+    writeOnlyApp.route('/', createContentRoutes({
+      contentIngestService: { run: vi.fn(), status: vi.fn() } as unknown as ContentRouteDeps['contentIngestService'],
+      ingestJobs: { ensureJob: vi.fn(), list: vi.fn() } as unknown as ContentRouteDeps['ingestJobs'],
+      ingestRunner: { advance: vi.fn() } as unknown as ContentRouteDeps['ingestRunner'],
+      db: fakeSettingsDb(),
+      audit: vi.fn(async () => {}),
+      log: vi.fn(),
+    }));
+
+    const res = await writeOnlyApp.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contentEnabled: true }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects relaxing a DLP detector with only workspace:write', async () => {
+    const writeOnlyApp = new Hono<WorkspaceRouteEnv>();
+    writeOnlyApp.use('*', async (c, next) => {
+      c.set('auth', { user: { id: 'u1' }, scope: 'partner', accessibleOrgIds: [ORG_ID] } as WorkspaceRouteEnv['Variables']['auth']);
+      c.set('extensionAuthorization', {
+        hasPermission: (resource: string, action: string) => resource === 'workspace' && action === 'write',
+        mfaSatisfied: true,
+      });
+      await next();
+    });
+    writeOnlyApp.route('/', createContentRoutes({
+      contentIngestService: { run: vi.fn(), status: vi.fn() } as unknown as ContentRouteDeps['contentIngestService'],
+      ingestJobs: { ensureJob: vi.fn(), list: vi.fn() } as unknown as ContentRouteDeps['ingestJobs'],
+      ingestRunner: { advance: vi.fn() } as unknown as ContentRouteDeps['ingestRunner'],
+      db: fakeSettingsDb(),
+      audit: vi.fn(async () => {}),
+      log: vi.fn(),
+    }));
+
+    const res = await writeOnlyApp.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dlpConfig: { detectors: { ssn: 'off' } } }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('allows a workspace:execute + devices:execute caller to enable content', async () => {
+    const { app } = makeApp({ db: fakeSettingsDb() });
+    const res = await app.request(`/content/settings?orgId=${ORG_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contentEnabled: true }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it('audits the settings update', async () => {

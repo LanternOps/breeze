@@ -38,6 +38,11 @@ func newHashRefreshFixture(t *testing.T) *hashRefreshFixture {
 	if err := os.MkdirAll(filepath.Dir(f.helperPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The temp dir is owned by the test user, not an administrator; the
+	// install-location gate has its own tests (broker_hash_refresh_trust_test.go).
+	orig := helperBinaryInstallTrustedFn
+	helperBinaryInstallTrustedFn = func(string) error { return nil }
+	t.Cleanup(func() { helperBinaryInstallTrustedFn = orig })
 	f.b = New(filepath.Join(dir, "broker.sock"), nil)
 	f.b.helperPathsFn = func() []string {
 		f.pathCalls.Add(1)

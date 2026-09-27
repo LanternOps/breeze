@@ -45,6 +45,10 @@ vi.mock('../middleware/auth', async () => ({
       partnerId: null,
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
+      // Real hasSatisfiedMfa (imported actual below) reads this — an
+      // MFA-satisfied session by default so the many pre-existing tests in
+      // this file exercise the same "trusted caller" shape as before.
+      token: { mfa: true },
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
@@ -58,10 +62,21 @@ vi.mock('../middleware/auth', async () => ({
   siteAccessCheck: (
     await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')
   ).siteAccessCheck,
+  hasSatisfiedMfa: (
+    await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')
+  ).hasSatisfiedMfa,
 }));
 
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
+}));
+
+// Controls whether the caller resolves as holding organizations:write — the
+// permission the list route requires to reveal an enrollment key's
+// shortCode. Defaults to granted so the many pre-existing tests in this file
+// (none of which assert on `shortCode`) are unaffected.
+const { shortCodeVisibilityGate } = vi.hoisted(() => ({
+  shortCodeVisibilityGate: { grantOrgsWrite: true },
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -69,6 +84,18 @@ vi.mock('../services/permissions', () => ({
     ORGS_READ: { resource: 'orgs', action: 'read' },
     ORGS_WRITE: { resource: 'orgs', action: 'write' },
   },
+  getUserPermissions: vi.fn(async () => ({
+    permissions: shortCodeVisibilityGate.grantOrgsWrite
+      ? ['orgs:read', 'orgs:write']
+      : ['orgs:read'],
+  })),
+  hasPermission: (
+    userPerms: { permissions: string[] },
+    resource: string,
+    action: string,
+  ) =>
+    userPerms.permissions.includes(`${resource}:${action}`) ||
+    userPerms.permissions.includes('*:*'),
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
@@ -232,6 +259,7 @@ describe('enrollment key routes — list & create', () => {
     // the permissive default every test (mirrors the other route suites).
     assertTtlWithinCapMock.mockReset();
     assertTtlWithinCapMock.mockImplementation(async () => null);
+    shortCodeVisibilityGate.grantOrgsWrite = true;
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
   });
@@ -474,6 +502,47 @@ describe('enrollment key routes — list & create', () => {
       expect(body.data).toHaveLength(2);
       expect(body.pagination.total).toBe(2);
       expect(body.data[0].key).toBeUndefined();
+    });
+
+    // A read-only caller (organizations:read only, no organizations:write)
+    // must not receive shortCode: it is a bearer secret for the
+    // unauthenticated /s/:code self-enrollment endpoint.
+    it('redacts shortCode on the list for a caller without organizations:write', async () => {
+      shortCodeVisibilityGate.grantOrgsWrite = false;
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ name: 'Key 1', shortCode: 'A1B2C3D4E5' }),
+      ]);
+      mockSelectFromWhereGroupBy([]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].shortCode).toBeNull();
+      expect(body.data[0].hasShortLink).toBe(true);
+    });
+
+    it('reveals shortCode on the list for a caller with organizations:write', async () => {
+      shortCodeVisibilityGate.grantOrgsWrite = true;
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ name: 'Key 1', shortCode: 'A1B2C3D4E5' }),
+      ]);
+      mockSelectFromWhereGroupBy([]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].shortCode).toBe('A1B2C3D4E5');
+      expect(body.data[0].hasShortLink).toBe(true);
     });
 
     it('returns an empty page without database or capacity work for an empty site ceiling', async () => {

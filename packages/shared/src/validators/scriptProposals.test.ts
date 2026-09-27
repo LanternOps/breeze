@@ -34,6 +34,25 @@ describe('scriptVerificationClaimSchema', () => {
   it('rejects an output_matches regex that does not compile', () => {
     expect(scriptVerificationClaimSchema.safeParse({ kind: 'output_matches', regex: '(' }).success).toBe(false);
   });
+
+  it('rejects a catastrophic-backtracking output_matches pattern at write time', () => {
+    // Nested-quantifier shape: compiles fine, but backtracks exponentially
+    // against a long near-miss haystack — the same class of pattern the DLP
+    // custom-rule validator already rejects.
+    const result = scriptVerificationClaimSchema.safeParse({
+      kind: 'output_matches',
+      regex: '(a+)+$',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a backreference output_matches pattern (also enables exponential backtracking)', () => {
+    const result = scriptVerificationClaimSchema.safeParse({
+      kind: 'output_matches',
+      regex: '(a*)\\1\\1\\1$',
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('proposeScriptInputSchema', () => {

@@ -537,6 +537,13 @@ func TestConsole_LockAcquisitionFailureAbortsBeforeAnyIO(t *testing.T) {
 // stubs it again with stubHoldAfterPower.
 func TestMain(m *testing.M) {
 	holdAfterPower = func() {}
+	// `go test` builds this package's own test binary, which stands in
+	// for the CI/test-only recovery-media build in unattendedCmdlineAllowed's
+	// own doc comment — every test in this package that exercises
+	// breeze.ci=1 depends on it being honored. Tests that specifically
+	// need to simulate a *production* build (the flag unset) save/restore
+	// it themselves — see TestConsole_CiCmdlineIgnoredWithoutBuildTimeFlag.
+	unattendedCmdlineEnabled = "1"
 	os.Exit(m.Run())
 }
 
@@ -989,5 +996,112 @@ func TestConsole_WidenScopeRunsBeforeDryRun(t *testing.T) {
 	}
 	if strings.Count(strings.Join(order, ","), "widen") != 1 {
 		t.Fatalf("widen called %d times, want 1", strings.Count(strings.Join(order, ","), "widen"))
+	}
+}
+
+// TestPromptServer_InsecureCmdlineIgnoredOutsideCI: breeze.insecure=1 on the
+// kernel cmdline does not relax the https:// requirement of the interactive
+// (non-CI) prompt. The insecure token only applies to CI's unattended path,
+// where ci=true short-circuits promptServer entirely before this check is
+// reached.
+func TestPromptServer_InsecureCmdlineIgnoredOutsideCI(t *testing.T) {
+	io := &fakeIO{Answers: []string{"http://other-origin.example", "https://real.example"}}
+	c := &Console{IO: io}
+	answers := Answers{Insecure: true}
+
+	server, err := c.promptServer(false, answers)
+	if err != nil {
+		t.Fatalf("promptServer: %v", err)
+	}
+	if server != "https://real.example" {
+		t.Fatalf("expected the http:// answer to be refused and https:// accepted, got %q", server)
+	}
+	if !strings.Contains(io.transcript.String(), "https://") {
+		t.Fatalf("expected the operator to see the https:// requirement message, transcript: %s", io.transcript.String())
+	}
+}
+
+// TestConsole_CiCmdlineIgnoredWithoutBuildTimeFlag: breeze.ci=1 comes from
+// the same unauthenticated kernel cmdline as breeze.server=/breeze.insecure=1,
+// so it must not be able to skip the interactive prompts on its own.
+// Console.Run only honors a cmdline breeze.ci=1 when
+// unattendedCmdlineAllowed() reports the build was linked with the
+// CI/test-only ldflag — this test
+// simulates a production build (flag unset) and proves the console still
+// falls through to the interactive, https-required prompt instead of
+// trusting the cmdline's answers directly. fakeIO.FailReadLine proves a
+// prompt was actually attempted (CI mode never touches IO at all).
+func TestConsole_CiCmdlineIgnoredWithoutBuildTimeFlag(t *testing.T) {
+	prev := unattendedCmdlineEnabled
+	unattendedCmdlineEnabled = ""
+	t.Cleanup(func() { unattendedCmdlineEnabled = prev })
+
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=http://other-origin.example breeze.insecure=1 " +
+		"breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: &fakeIO{FailReadLine: true}, Deps: (&fakeDeps{}).build("0.111.1"), Cmdline: cmdline}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() succeeded with no operator confirmation; want an error from the interactive prompt a non-test build must fall back to")
+	}
+	if strings.Contains(err.Error(), "other-origin.example") {
+		t.Fatalf("Run() error = %v; the unauthenticated cmdline server URL must never reach Exchange without operator confirmation", err)
+	}
+}
+
+// TestConsole_CiCmdlineHonoredWithBuildTimeFlag is the paired green case:
+// the exact same cmdline runs fully unattended once the build actually
+// opted into it (as every CI/test build does via TestMain below).
+func TestConsole_CiCmdlineHonoredWithBuildTimeFlag(t *testing.T) {
+	prev := unattendedCmdlineEnabled
+	unattendedCmdlineEnabled = "1"
+	t.Cleanup(func() { unattendedCmdlineEnabled = prev })
+
+	io := &fakeIO{FailReadLine: true}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj " +
+		"breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: cmdline}
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if io.readLineCalls != 0 {
+		t.Fatalf("expected zero prompts in CI mode, got %d", io.readLineCalls)
+	}
+}
+
+// TestPromptServer_CiRequiresHTTPSUnlessExplicitlyInsecure closes the
+// second half of the same requirement: even on a build where
+// breeze.ci=1 IS honored, the ci branch itself must not accept a
+// plaintext server unless the cmdline also carries the explicit
+// breeze.insecure=1 opt-out (the same token the interactive path already
+// requires — see TestPromptServer_InsecureCmdlineIgnoredOutsideCI).
+// Before the fix, the ci branch performed no scheme check at all.
+func TestPromptServer_CiRequiresHTTPSUnlessExplicitlyInsecure(t *testing.T) {
+	c := &Console{IO: &fakeIO{FailReadLine: true}}
+	_, err := c.promptServer(true, Answers{Server: "http://other-origin.example"})
+	if err == nil {
+		t.Fatal("expected a ci-mode plaintext server with no breeze.insecure=1 to be refused")
+	}
+}
+
+func TestPromptServer_CiHonorsExplicitInsecure(t *testing.T) {
+	c := &Console{IO: &fakeIO{FailReadLine: true}}
+	server, err := c.promptServer(true, Answers{Server: "http://other-origin.example", Insecure: true})
+	if err != nil {
+		t.Fatalf("promptServer: %v", err)
+	}
+	if server != "http://other-origin.example" {
+		t.Fatalf("server = %q, want the explicitly-insecure cmdline value", server)
 	}
 }

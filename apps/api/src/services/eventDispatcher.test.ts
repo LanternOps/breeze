@@ -7,15 +7,41 @@ vi.mock('./redis', () => ({
   REDIS_CLIENT_BASE_OPTIONS: { protocol: 2 },
 }));
 
-vi.mock('ioredis', () => {
-  class MockRedis {
-    subscribe = vi.fn((_channel: string, cb: (err: Error | null) => void) => cb(null));
-    unsubscribe = vi.fn().mockResolvedValue(undefined);
+// Tracks every MockRedis instance ever constructed, across the whole test
+// file — used to assert how many actual Redis connections the dispatcher
+// opened (the whole point of the fix under test: one shared connection, not
+// one per org). Declared via vi.hoisted so it's initialized before the
+// hoisted vi.mock('ioredis', ...) factory below (which is what actually
+// needs it) runs.
+const { MockRedis, mockRedisInstances } = vi.hoisted(() => {
+  class MockRedisImpl {
+    psubscribeMock = vi.fn((_pattern: string, cb: (err: Error | null, count?: number) => void) => cb(null, 1));
+    punsubscribe = vi.fn().mockResolvedValue(undefined);
     quit = vi.fn().mockResolvedValue(undefined);
-    on = vi.fn();
+    handlers = new Map<string, (...args: unknown[]) => void>();
+
+    constructor() {
+      instances.push(this);
+    }
+
+    psubscribe(...args: Parameters<MockRedisImpl['psubscribeMock']>) {
+      return this.psubscribeMock(...args);
+    }
+
+    on(event: string, handler: (...args: unknown[]) => void) {
+      this.handlers.set(event, handler);
+    }
+
+    /** Simulate Redis delivering a message on a channel matching our pattern. */
+    emitPmessage(channel: string, message: string) {
+      this.handlers.get('pmessage')?.('breeze:events:live:*', channel, message);
+    }
   }
-  return { default: MockRedis };
+  const instances: InstanceType<typeof MockRedisImpl>[] = [];
+  return { MockRedis: MockRedisImpl, mockRedisInstances: instances };
 });
+
+vi.mock('ioredis', () => ({ default: MockRedis }));
 
 describe('matchesEventType', () => {
   it('matches exact event type', () => {
@@ -55,6 +81,7 @@ describe('EventDispatcher', () => {
 
   afterEach(async () => {
     await shutdownEventDispatcher();
+    mockRedisInstances.length = 0;
   });
 
   it('dispatches event only to the correct org (multi-tenant isolation)', () => {
@@ -371,16 +398,124 @@ describe('EventDispatcher', () => {
     dispatcher.unregister('org-1', unrestricted);
   });
 
-  it('unsubscribes from Redis when last client for org disconnects', () => {
+  it('drops the org from the in-memory routing map when its last client disconnects, without tearing down the shared Redis connection', () => {
     const dispatcher = getEventDispatcher();
     const ws = mockWs();
     const client = { ws, userId: 'user-1', subscribedTypes: new Set(['device.*']) };
     dispatcher.register('org-1', client);
 
-    // Verify org has subscribers
     expect((dispatcher as any).clients.has('org-1')).toBe(true);
 
     dispatcher.unregister('org-1', client);
     expect((dispatcher as any).clients.has('org-1')).toBe(false);
+    // The shared connection is a process-wide resource, not a per-org one —
+    // the whole point of the fix is that org churn no longer opens/closes a
+    // Redis connection at all. It stays up until shutdown().
+    expect((dispatcher as any).sharedSubscriber).not.toBeNull();
+    expect((dispatcher as any).sharedSubscriber.quit).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------
+  // Finding: one Redis connection per org per process, unbounded, is what a
+  // large org-access-all partner (or organic org growth) exhausts Redis
+  // `maxclients` with. These prove the fix directly: ONE shared connection
+  // regardless of how many orgs are registered, routed via PSUBSCRIBE + the
+  // channel name in `pmessage`, not one SUBSCRIBE per org.
+  // -------------------------------------------------------------------
+  describe('shared Redis subscriber (one connection per process, not one per org)', () => {
+    it('opens exactly ONE Redis connection for many distinct orgs', () => {
+      const dispatcher = getEventDispatcher();
+      const clients = Array.from({ length: 50 }, (_, i) => ({
+        ws: mockWs(),
+        userId: `user-${i}`,
+        subscribedTypes: new Set(['device.*']),
+      }));
+      clients.forEach((client, i) => dispatcher.register(`org-${i}`, client));
+
+      expect(mockRedisInstances).toHaveLength(1);
+      expect(mockRedisInstances[0]!.psubscribeMock).toHaveBeenCalledTimes(1);
+      expect(mockRedisInstances[0]!.psubscribeMock.mock.calls[0]![0]).toBe('breeze:events:live:*');
+
+      clients.forEach((client, i) => dispatcher.unregister(`org-${i}`, client));
+      // A second wave of orgs after the first fully drains still reuses the
+      // same connection — it is process-scoped, not tied to any one org's
+      // lifetime.
+      const client2 = { ws: mockWs(), userId: 'user-later', subscribedTypes: new Set(['device.*']) };
+      dispatcher.register('org-later', client2);
+      expect(mockRedisInstances).toHaveLength(1);
+      dispatcher.unregister('org-later', client2);
+    });
+
+    it('routes an incoming pmessage to only the clients registered for that channel\'s org', () => {
+      const dispatcher = getEventDispatcher();
+      const ws1 = mockWs();
+      const ws2 = mockWs();
+      const client1 = { ws: ws1, userId: 'user-1', subscribedTypes: new Set(['device.*']) };
+      const client2 = { ws: ws2, userId: 'user-2', subscribedTypes: new Set(['device.*']) };
+      dispatcher.register('org-a', client1);
+      dispatcher.register('org-b', client2);
+
+      mockRedisInstances[0]!.emitPmessage(
+        'breeze:events:live:org-a',
+        JSON.stringify({ type: 'device.online', orgId: 'org-a', payload: {} }),
+      );
+
+      expect(ws1.send).toHaveBeenCalledTimes(1);
+      expect(ws2.send).not.toHaveBeenCalled();
+
+      dispatcher.unregister('org-a', client1);
+      dispatcher.unregister('org-b', client2);
+    });
+
+    it('ignores a pmessage on a channel outside the live-event prefix', () => {
+      const dispatcher = getEventDispatcher();
+      const ws = mockWs();
+      const client = { ws, userId: 'user-1', subscribedTypes: new Set(['*']) };
+      dispatcher.register('org-a', client);
+
+      expect(() =>
+        mockRedisInstances[0]!.emitPmessage('breeze:events:global', JSON.stringify({ type: 'device.online' })),
+      ).not.toThrow();
+      expect(ws.send).not.toHaveBeenCalled();
+
+      dispatcher.unregister('org-a', client);
+    });
+
+    it('clears the shared connection and lets the next register() retry when the initial psubscribe fails', () => {
+      // Force the FIRST connection's psubscribe to fail.
+      const dispatcher = getEventDispatcher();
+      const ws = mockWs();
+      const client = { ws, userId: 'user-1', subscribedTypes: new Set(['device.*']) };
+
+      // Patch the constructor's next instance to report a subscribe failure.
+      const origPsubscribe = MockRedis.prototype.psubscribe;
+      MockRedis.prototype.psubscribe = function (
+        this: InstanceType<typeof MockRedis>,
+        pattern: string,
+        cb: (err: Error | null, count?: number) => void,
+      ) {
+        cb(new Error('ECONNREFUSED'));
+        return undefined as unknown as ReturnType<typeof origPsubscribe>;
+      };
+
+      dispatcher.register('org-a', client);
+      expect(mockRedisInstances).toHaveLength(1);
+      expect((dispatcher as any).sharedSubscriber).toBeNull();
+      expect(mockRedisInstances[0]!.quit).toHaveBeenCalledTimes(1);
+
+      // Restore, and prove the NEXT register() opens a fresh connection
+      // rather than being permanently stuck with no subscriber (the exact
+      // bug this replaces: the old per-org map left `clients[orgId]`
+      // present with a deleted subscriber, silently starving that org of
+      // events until every client disconnected).
+      MockRedis.prototype.psubscribe = origPsubscribe;
+      const client2 = { ws: mockWs(), userId: 'user-2', subscribedTypes: new Set(['device.*']) };
+      dispatcher.register('org-b', client2);
+      expect(mockRedisInstances).toHaveLength(2);
+      expect((dispatcher as any).sharedSubscriber).not.toBeNull();
+
+      dispatcher.unregister('org-a', client);
+      dispatcher.unregister('org-b', client2);
+    });
   });
 });

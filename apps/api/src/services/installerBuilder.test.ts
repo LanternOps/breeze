@@ -11,10 +11,16 @@ import {
   fetchRegularMsi,
   fetchVerifiedMacosPkg,
   fetchMacosInstallerAppZip,
+  fetchVerifiedHelperInstaller,
   __resetVerifiedMacosPkgCache,
+  __resetVerifiedHelperInstallerCache,
+  __resetRegularMsiCache,
+  startRegularMsiCacheWarmer,
+  __stopRegularMsiCacheWarmer,
   assertMacosInstallerPkgsReachable,
   serveWindowsBootstrapMsi,
 } from './installerBuilder';
+import { HELPER_FILENAMES } from './binarySource';
 import type { Context } from 'hono';
 import * as s3Storage from './s3Storage';
 
@@ -84,6 +90,7 @@ describe('fetchRegularMsi', () => {
     // mockClear, not mockReset: the forwarding implementation must survive.
     safeFetchFollowingRedirectsMock.mockClear();
     __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
   });
 
   afterEach(() => {
@@ -91,6 +98,7 @@ describe('fetchRegularMsi', () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
   });
 
   it('verifies GitHub release MSI bytes against the signed release artifact manifest', async () => {
@@ -202,6 +210,180 @@ describe('fetchRegularMsi', () => {
     // Both violations apply (unsigned + hosted); the baseline trust check
     // fires first.
     await expect(fetchRegularMsi()).rejects.toThrow(/windows-authenticode-required/);
+  });
+
+  // The installer routes that call fetchRegularMsi() all run under a held
+  // ambient DB transaction — a slow/cold fetch on every request pins a
+  // pooled connection idle-in-transaction for as long as GitHub takes.
+  // Caching the verified buffer means only the first request in the TTL
+  // window pays that cost.
+  it('caches the verified buffer so a second call does not refetch', async () => {
+    const asset = Buffer.from('cached-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+    const msiCallsAfterFirst = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith('/breeze-agent.msi'),
+    ).length;
+    expect(msiCallsAfterFirst).toBe(1);
+
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+    const msiCallsAfterSecond = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith('/breeze-agent.msi'),
+    ).length;
+    // A cache hit must not issue a second network fetch for the MSI.
+    expect(msiCallsAfterSecond).toBe(1);
+  });
+
+  it('does not cache a failed fetch (a transient GitHub failure must not stick)', async () => {
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    await expect(fetchRegularMsi()).rejects.toThrow(/Failed to fetch regular MSI/);
+
+    // A subsequent call must retry, not replay the cached rejection.
+    const asset = Buffer.from('recovered-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    }));
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+  });
+
+  it('passes a bounded abort signal so a hung origin cannot hold the fetch open indefinitely', async () => {
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
+
+    const fetchMock = vi.fn(async () => new Response('unused'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchRegularMsi().catch(() => undefined);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('breeze-agent.msi'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+});
+
+describe('startRegularMsiCacheWarmer', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    safeFetchFollowingRedirectsMock.mockClear();
+    __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    __stopRegularMsiCacheWarmer();
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
+  });
+
+  // Request handlers run inside an ambient DB transaction opened by auth
+  // middleware before the route handler runs — there is no "before the
+  // handler opens its DB context" point available to a single-flight fetch
+  // for that authenticated route. A background warmer keeps the cache hot
+  // independent of request traffic so a request almost always finds a warm
+  // cache instead of paying the network round trip while holding a pooled
+  // connection.
+  it('populates the cache immediately on start, without waiting for a request', async () => {
+    const asset = Buffer.from('warmed-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    startRegularMsiCacheWarmer();
+    // startRegularMsiCacheWarmer's immediate warm populates fetchRegularMsi's
+    // single-flight cache synchronously — a request arriving now shares that
+    // SAME in-flight promise rather than issuing its own fetch.
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+
+    const msiCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/breeze-agent.msi')).length;
+    expect(msiCalls).toBe(1);
+  });
+
+  it('refreshes on an interval before the cache entry would expire', async () => {
+    const asset = Buffer.from('warmed-msi-2');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset);
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    startRegularMsiCacheWarmer();
+    await fetchRegularMsi();
+    const firstRoundCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/breeze-agent.msi')).length;
+    expect(firstRoundCalls).toBe(1);
+
+    // Advance past a full 5-minute cache TTL — a background refresh must have
+    // fired well before the entry would have gone stale.
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    const secondRoundCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/breeze-agent.msi')).length;
+    expect(secondRoundCalls).toBeGreaterThan(firstRoundCalls);
+  });
+
+  it('is idempotent — calling it twice does not double the refresh rate', () => {
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    startRegularMsiCacheWarmer();
+    startRegularMsiCacheWarmer();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a background fetch failure instead of throwing (must never crash the process)', async () => {
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+
+    expect(() => startRegularMsiCacheWarmer()).not.toThrow();
+    // fetchRegularMsi() shares the same single-flight promise the warmer
+    // kicked off — awaiting (and swallowing) its rejection here proves the
+    // warmer's own .catch() already observed it without an unhandled
+    // rejection or a thrown error.
+    await expect(fetchRegularMsi()).rejects.toThrow();
   });
 });
 
@@ -325,6 +507,57 @@ describe('fetchVerifiedMacosPkg', () => {
       writeFileSync(join(binaryDir, assetName), Buffer.from('local-evil-pkg!!'));
       __resetVerifiedMacosPkgCache();
       await expect(fetchVerifiedMacosPkg('arm64')).rejects.toThrow(/digest mismatch/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('local mode verifies the Helper installer when HELPER_BINARY_DIR differs from AGENT_BINARY_DIR', async () => {
+    // Self-hosters may point the Helper installer's own directory somewhere
+    // other than the agent/MSI binaries (HELPER_BINARY_DIR predates this
+    // fetch path specifically to support that split). The signed manifest
+    // pair must be looked up next to the asset it verifies — HELPER_BINARY_DIR
+    // for the Helper — never hardcoded to AGENT_BINARY_DIR.
+    // The manifest pair is staged in the PARENT of the binary directory
+    // (localReleaseManifestPaths: `dirname(resolve(binaryDir))`), so
+    // AGENT_BINARY_DIR and HELPER_BINARY_DIR must have DIFFERENT parents too
+    // — otherwise a lookup keyed off the wrong env var would still stumble
+    // onto the right manifest by accident and this test would not discriminate.
+    const root = mkdtempSync(join(tmpdir(), 'breeze-local-helper-split-'));
+    const agentDir = join(root, 'agent-root', 'agent');
+    const helperDir = join(root, 'helper-root', 'helper');
+    const os = 'windows';
+    const assetName = HELPER_FILENAMES[os]!;
+    const asset = Buffer.from('local-signed-helper-installer');
+    const signed = signedReleaseManifest(assetName, asset, {
+      platformTrust: 'windows-authenticode-required',
+      edition: 'self-host',
+    });
+    try {
+      mkdirSync(agentDir, { recursive: true });
+      mkdirSync(helperDir, { recursive: true });
+      // The manifest pair and the asset both live under HELPER_BINARY_DIR's
+      // tree — the "natural place" a self-hoster stages them (per the
+      // finding). AGENT_BINARY_DIR's tree stays real but manifest-less:
+      // staging the manifest there too would defeat this test.
+      writeFileSync(join(helperDir, assetName), asset);
+      writeFileSync(join(root, 'helper-root', 'release-artifact-manifest.json'), signed.manifest);
+      writeFileSync(join(root, 'helper-root', 'release-artifact-manifest.json.ed25519'), signed.signature);
+      process.env = {
+        ...originalEnv,
+        BINARY_SOURCE: 'local',
+        BINARY_VERSION: '1.2.3',
+        BINARY_EDITION: 'self-host',
+        AGENT_BINARY_DIR: agentDir,
+        HELPER_BINARY_DIR: helperDir,
+        RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: signed.publicKey,
+      };
+      delete process.env.S3_BUCKET;
+      delete process.env.S3_ACCESS_KEY;
+      delete process.env.S3_SECRET_KEY;
+
+      __resetVerifiedHelperInstallerCache();
+      await expect(fetchVerifiedHelperInstaller(os)).resolves.toMatchObject({ buffer: asset });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,7 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-BINARY="/usr/local/bin/breeze-agent"
+# TRUSTED_BIN_DIR is root-owned and Breeze-only, unlike /usr/local/bin,
+# which a package manager (Homebrew on Intel is the known case) can chown
+# to a local admin account. The privileged agent/watchdog daemons refuse to
+# trust a binary sitting in a directory they don't own; installing here
+# keeps that true regardless of what else has touched /usr/local/bin.
+TRUSTED_BIN_DIR="/Library/Breeze/bin"
+BINARY="$TRUSTED_BIN_DIR/breeze-agent"
 PLIST_SRC="$(dirname "$0")/../../service/launchd/com.breeze.agent.plist"
 PLIST_DST="/Library/LaunchDaemons/com.breeze.agent.plist"
 LOG_DIR="/Library/Logs/Breeze"
@@ -90,9 +96,11 @@ if [ -f "$PLIST_DST" ]; then
 fi
 
 # Create directories
-mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$TRUSTED_BIN_DIR"
 chmod 700 "$CONFIG_DIR"
 chmod 755 "$LOG_DIR"
+chown root:wheel "$TRUSTED_BIN_DIR"
+chmod 755 "$TRUSTED_BIN_DIR"
 
 # Copy binary
 if [ -f bin/breeze-agent ]; then
@@ -103,43 +111,49 @@ else
     echo "Error: breeze-agent binary not found. Run 'make build' first." >&2
     exit 1
 fi
+chown root:wheel "$BINARY"
 chmod 755 "$BINARY"
 
 # Install watchdog
 if [ -f "bin/breeze-watchdog" ]; then
     echo "Installing watchdog..."
-    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
+    cp bin/breeze-watchdog "$TRUSTED_BIN_DIR/breeze-watchdog"
+    chown root:wheel "$TRUSTED_BIN_DIR/breeze-watchdog"
+    chmod 755 "$TRUSTED_BIN_DIR/breeze-watchdog"
 elif [ -f "breeze-watchdog" ]; then
     echo "Installing watchdog..."
-    cp breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
+    cp breeze-watchdog "$TRUSTED_BIN_DIR/breeze-watchdog"
+    chown root:wheel "$TRUSTED_BIN_DIR/breeze-watchdog"
+    chmod 755 "$TRUSTED_BIN_DIR/breeze-watchdog"
 fi
 
 # Install backup helper. The agent spawns breeze-backup from its own directory
 # (os.Executable dir), and neither the updater nor the heartbeat delivers it, so
 # it MUST be on disk next to breeze-agent or every backup fails with
-# "backup binary not found at /usr/local/bin/breeze-backup". The production .pkg
-# (installer/macos/build-pkg.sh) already bundles it; this dev/manual install path
-# must match so `make install-service` yields a working backup setup.
+# "backup binary not found". The production .pkg (installer/macos/build-pkg.sh)
+# still installs to /usr/local/bin (its own migration is tracked separately);
+# this dev/manual install path targets TRUSTED_BIN_DIR to match where
+# breeze-agent itself now lives.
 if [ -f "bin/breeze-backup" ]; then
     echo "Installing backup helper..."
-    cp bin/breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
+    cp bin/breeze-backup "$TRUSTED_BIN_DIR/breeze-backup"
+    chown root:wheel "$TRUSTED_BIN_DIR/breeze-backup"
+    chmod 755 "$TRUSTED_BIN_DIR/breeze-backup"
 elif [ -f "breeze-backup" ]; then
     echo "Installing backup helper..."
-    cp breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
+    cp breeze-backup "$TRUSTED_BIN_DIR/breeze-backup"
+    chown root:wheel "$TRUSTED_BIN_DIR/breeze-backup"
+    chmod 755 "$TRUSTED_BIN_DIR/breeze-backup"
 else
     echo "Warning: breeze-backup binary not found — backups will fail with" \
          "'backup binary not found'. Run 'make build' (or 'make build-backup') first." >&2
 fi
 
 # Register watchdog service
-if [ -f "/usr/local/bin/breeze-watchdog" ]; then
+if [ -f "$TRUSTED_BIN_DIR/breeze-watchdog" ]; then
     if [ ! -f "/Library/LaunchDaemons/com.breeze.watchdog.plist" ]; then
         echo "Registering watchdog service..."
-        /usr/local/bin/breeze-watchdog service install
+        "$TRUSTED_BIN_DIR/breeze-watchdog" service install
     else
         echo "Restarting watchdog service..."
         launchctl kickstart -k system/com.breeze.watchdog 2>/dev/null || true

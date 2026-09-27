@@ -76,6 +76,71 @@ describe('buildActionLabel', () => {
     expect(buildActionLabel({ toolName: 'run_script', input: { scriptId: 'abc' } })).toBe('Run script');
   });
 
+  // The deferred human-fanout path
+  // (intentService.ts) never threads the guardrail's `reason` — it always
+  // rebuilds the label from tool + arguments alone, so the generic fallback
+  // (which only reads action/commandType/serviceName/processName/scriptName/
+  // name) previously showed the bare tool name for these mail/calendar
+  // tools, with no destination address, on the mobile takeover/push surface.
+  describe('Google external-destination fallback (no reason threaded)', () => {
+    it('google_set_forwarding names the destination and flags a cross-domain one', () => {
+      const label = buildActionLabel({
+        toolName: 'google_set_forwarding',
+        input: { userEmail: 'alice@acme.example', forwardTo: 'ext-recipient@foreign.example' },
+      });
+      expect(label).toContain('ext-recipient@foreign.example');
+      expect(label).toContain('different domain from source mailbox');
+    });
+
+    it('google_set_forwarding to a same-domain destination has no domain-mismatch flag', () => {
+      const label = buildActionLabel({
+        toolName: 'google_set_forwarding',
+        input: { userEmail: 'alice@acme.example', forwardTo: 'bob@acme.example' },
+      });
+      expect(label).toContain('bob@acme.example');
+      expect(label).not.toContain('different domain from source mailbox');
+    });
+
+    it('google_add_mail_delegate names the delegate and flags a cross-domain one', () => {
+      const label = buildActionLabel({
+        toolName: 'google_add_mail_delegate',
+        input: { userEmail: 'alice@acme.example', delegateEmail: 'ext-recipient@foreign.example' },
+      });
+      expect(label).toContain('ext-recipient@foreign.example');
+      expect(label).toContain('different domain from source mailbox');
+    });
+
+    it('google_share_calendar names the share target and flags a cross-domain one', () => {
+      const label = buildActionLabel({
+        toolName: 'google_share_calendar',
+        input: { ownerEmail: 'alice@acme.example', shareWithEmail: 'ext-recipient@foreign.example' },
+      });
+      expect(label).toContain('ext-recipient@foreign.example');
+      expect(label).toContain('different domain from source mailbox');
+    });
+
+    it('google_disable_forwarding names and flags the removed address when removeAddress is set', () => {
+      const label = buildActionLabel({
+        toolName: 'google_disable_forwarding',
+        input: {
+          userEmail: 'alice@acme.example',
+          forwardTo: 'ext-recipient@foreign.example',
+          removeAddress: true,
+        },
+      });
+      expect(label).toContain('ext-recipient@foreign.example');
+      expect(label).toContain('different domain from source mailbox');
+    });
+
+    it('google_disable_forwarding without removeAddress falls back to the generic label, not a stale destination', () => {
+      const label = buildActionLabel({
+        toolName: 'google_disable_forwarding',
+        input: { userEmail: 'alice@acme.example', forwardTo: 'ext-recipient@foreign.example' },
+      });
+      expect(label).not.toContain('ext-recipient@foreign.example');
+    });
+  });
+
   it('leaves an already-human M365 summary untouched apart from whitespace', () => {
     expect(
       buildActionLabel({

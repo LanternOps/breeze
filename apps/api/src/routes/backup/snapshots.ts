@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupConfigs, backupSnapshotFiles, backupSnapshots } from '../../db/schema';
+import { backupConfigs, backupSnapshotFiles, backupSnapshots, organizations } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -27,6 +27,26 @@ import {
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().guid() });
+
+/**
+ * True once this org's erasure cascade has been handed to the worker
+ * (`organizations.status = 'purging'` — the same marker
+ * `jobs/tenantErasure.ts`'s status guard and `routes/orgs.ts`'s lifecycle
+ * freeze read). A hold accepted after that point cannot retroactively protect
+ * anything: the cascade's own `backup_snapshots` step re-checks for an active
+ * hold immediately before deleting (`services/tenantCascade.ts`), so a hold
+ * placed here either loses that race outright or gives the requester a false
+ * sense that the snapshot is now safe. Refuse up front instead of letting the
+ * write silently do nothing useful.
+ */
+async function isOrgErasureInProgress(orgId: string): Promise<boolean> {
+  const [org] = await db
+    .select({ status: organizations.status })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.status === 'purging';
+}
 
 type SnapshotProtectionState = {
   legalHold: boolean;
@@ -338,6 +358,13 @@ snapshotsRoutes.post(
       { kind: 'snapshot', id: snapshotId, role: 'source' },
     ], 'verify');
     if (!authorization.ok) return authorization.response;
+
+    if (await isOrgErasureInProgress(orgId)) {
+      return c.json(
+        { error: 'This organization is being erased; a new legal hold cannot be placed.' },
+        409,
+      );
+    }
 
     const [before] = await db
       .select()

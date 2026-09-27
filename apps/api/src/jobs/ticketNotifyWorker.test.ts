@@ -166,6 +166,20 @@ describe('handleTicketEvent', () => {
     }));
   });
 
+  it('strips embedded line breaks from the ticket subject before composing the assignee email subject header', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer down\r\nBcc: other@example.com', submitterEmail: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-2b', payload: { assigneeId: 'u-2' }
+    });
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { subject: string };
+    expect(arg.subject).not.toMatch(/[\r\n]/);
+  });
+
   it('skips self-assignment notifications', async () => {
     await handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
@@ -582,6 +596,21 @@ describe('handleTicketEvent', () => {
       subject: 'SLA breached: T-2026-0001 — Printer',
       html: expect.stringContaining('response')
     }));
+  });
+
+  it('strips embedded line breaks from the ticket subject before composing the SLA-breach email subject header', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0001', subject: 'Printer down\r\nBcc: other@example.com', submitterEmail: 'requester@acme.example' }])
+      .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, eventId: 'evt-19b',
+      payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
+    });
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { subject: string };
+    expect(arg.subject).not.toMatch(/[\r\n]/);
   });
 
   it('ticket.sla_breached with a deleted assignee and no subscribers creates no notification and no email', async () => {

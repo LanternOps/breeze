@@ -1,7 +1,9 @@
 // W09 (#6464) Task 4 — BullMQ worker that runs hydrateSnapshotFileIndex
-// (services/backupSnapshotFileIndex.ts) out of band. Enqueued from three
-// places: a backup result with referencedFiles > 0
-// (backupResultPersistence.ts), a bare-metal recovery creation preflight
+// (services/backupSnapshotFileIndex.ts) out of band. Enqueued from: a
+// persisted backup result — every S3 snapshot a brokered read can serve, plus
+// any snapshot with referencedFiles > 0 (backupResultPersistence.ts); the
+// first brokered-read delivery that finds no complete index
+// (backupStorageSessions.ts); a bare-metal recovery creation preflight
 // (bareMetalRecoveryService.ts, Task 5), and the exchange/authenticate
 // negotiation's 'pending' branch (recoveryCapabilities.ts route glue, Task
 // 5). jobId is snapshot-scoped so BullMQ's own dedupe collapses concurrent
@@ -10,7 +12,6 @@
 // non-retryable failures).
 import { Job, Queue, UnrecoverableError, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
-import { withSystemDbAccessContext } from '../db';
 import { hydrateSnapshotFileIndex } from '../services/backupSnapshotFileIndex';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
@@ -26,8 +27,26 @@ const JOB_OPTIONS = {
 
 type HydrationJobData = {
   snapshotDbId: string;
-  reason: 'result' | 'recovery_create' | 'authenticate' | 'exchange' | 'manual';
+  reason:
+    | 'result'
+    | 'result_brokered_read'
+    | 'recovery_create'
+    | 'authenticate'
+    | 'exchange'
+    | 'manual'
+    | 'brokered_read';
 };
+
+/**
+ * Reasons that need an authoritative index even for a full snapshot (no
+ * referenced older snapshots): a brokered storage read authorizes objects by
+ * exact index membership. `result_brokered_read` is the eager request made
+ * when a backup result lands on a destination brokered reads can serve.
+ */
+const FULL_INDEX_REASONS: ReadonlySet<HydrationJobData['reason']> = new Set([
+  'brokered_read',
+  'result_brokered_read',
+]);
 
 let queue: Queue<HydrationJobData> | null = null;
 let worker: Worker<HydrationJobData> | null = null;
@@ -78,7 +97,17 @@ export async function enqueueSnapshotFileIndexHydration(
 }
 
 async function processHydrationJob(job: Job<HydrationJobData>): Promise<{ status: string }> {
-  const outcome = await withSystemDbAccessContext(() => hydrateSnapshotFileIndex(job.data.snapshotDbId));
+  // hydrateSnapshotFileIndex opens its own system-scoped context
+  // (runOutsideDbContext + withSystemDbAccessContext) around its DB work.
+  // Wrapping it in a SECOND one here held a whole pooled connection idle in
+  // a transaction — doing nothing — for the entire hydration, including the
+  // uncapped manifest download inside it (two connections tied
+  // up per job across a large download). Let the callee own its own context.
+  // A brokered storage read needs an authoritative index even for a full
+  // snapshot (no referenced older snapshots), which the other reasons skip.
+  const outcome = await hydrateSnapshotFileIndex(job.data.snapshotDbId, {
+    includeUnreferenced: FULL_INDEX_REASONS.has(job.data.reason),
+  });
   if (outcome.status === 'failed' && !outcome.retryable) {
     // A non-retryable failure (bad manifest, unverifiable provenance, drifted
     // storage identity) will never succeed on retry — completing the job

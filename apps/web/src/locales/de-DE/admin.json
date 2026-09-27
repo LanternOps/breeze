@@ -524,8 +524,8 @@
         "description": "Der KI-Notausschalter ist eine plattformweite Kontrolle, die von Breeze-Plattformadministratoren verwaltet wird. Ihr Konto kann ihn nicht einsehen oder ändern."
       },
       "status": {
-        "active": "KI-Aktionen aktiv",
-        "killed": "KI-Aktionen gestoppt"
+        "active": "Unbeaufsichtigte KI-Aktionen aktiv",
+        "killed": "Unbeaufsichtigte KI-Aktionen gestoppt"
       },
       "fields": {
         "epoch": "Epoche",

@@ -74,6 +74,7 @@ vi.mock('./recoveryBootstrap', () => ({
 }));
 
 import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from './backupSnapshotFileIndex';
+import { BackupObjectTooLargeError } from './backupSnapshotStorage';
 
 function snapshotRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -155,6 +156,15 @@ describe('hydrateSnapshotFileIndex', () => {
     const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_missing', retryable: true });
+  });
+
+  it('fails terminally (not retryable) when the manifest object exceeds the fetch size cap', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const tooLarge = new BackupObjectTooLargeError('snapshots/snap-current/manifest.json', 999999999, 1000);
+    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(tooLarge) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_too_large', retryable: false });
   });
 
   it('fails closed and names the bad key when a manifest entry has an unparseable backupPath', async () => {

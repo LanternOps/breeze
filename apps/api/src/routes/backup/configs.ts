@@ -16,6 +16,14 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
+  isRecord,
+  isRedactedSecretMarker,
+  isSecretField,
+  MASKED_SECRET,
+  preserveSecretFields,
+  s3EndpointOriginChanged,
+} from '../../services/backupProviderConfigSecrets';
+import {
   assertBackupStorageEncryptionSupported,
   buildBackupStorageEncryptionResponse,
 } from '../../services/backupEncryption';
@@ -28,45 +36,8 @@ import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, valid
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().guid() });
-const MASKED_SECRET = '********';
-const SECRET_FIELD_NAMES = new Set([
-  'accesskey',
-  'accesskeyid',
-  'apikey',
-  'apisecret',
-  'authtoken',
-  'clientsecret',
-  'credential',
-  'credentials',
-  'password',
-  'secret',
-  'secretaccesskey',
-  'secretkey',
-  'sessiontoken',
-  'token',
-]);
 
 type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isSecretField(key: string): boolean {
-  const normalized = key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  return SECRET_FIELD_NAMES.has(normalized) || normalized.endsWith('token') || normalized.endsWith('secret');
-}
-
-function isRedactedSecretMarker(value: unknown): boolean {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed === MASKED_SECRET || /^\*+$/.test(trimmed);
-  }
-  if (isRecord(value)) {
-    return value.redacted === true || value.hasSecret === true || value.masked === MASKED_SECRET;
-  }
-  return false;
-}
 
 function redactProviderConfig(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -89,36 +60,6 @@ function redactProviderConfig(value: unknown): unknown {
     }
   }
   return redacted;
-}
-
-function preserveSecretFields(incoming: unknown, existing: unknown): unknown {
-  if (!isRecord(incoming)) {
-    return incoming;
-  }
-
-  const existingRecord = isRecord(existing) ? existing : {};
-  const merged: JsonRecord = {};
-
-  for (const [key, value] of Object.entries(incoming)) {
-    const previous = existingRecord[key];
-    if (isSecretField(key) && isRedactedSecretMarker(value)) {
-      merged[key] = previous;
-    } else if (isRecord(value) && isRecord(previous)) {
-      merged[key] = preserveSecretFields(value, previous);
-    } else {
-      merged[key] = value;
-    }
-  }
-
-  for (const [key, value] of Object.entries(existingRecord)) {
-    if (isSecretField(key) && !(key in merged)) {
-      merged[key] = value;
-    } else if (isRecord(value) && isRecord(merged[key])) {
-      merged[key] = preserveSecretFields(merged[key], value);
-    }
-  }
-
-  return merged;
 }
 
 function buildCapabilityState(
@@ -445,6 +386,34 @@ configsRoutes.patch(
         canonicalizeS3CredentialFields(canonicalizedIncoming);
         incomingDetails = canonicalizedIncoming;
       }
+
+      // Same origin-binding contract as credentialOriginBinding.ts:
+      // a masked or omitted accessKey/secretKey must not be carried forward
+      // across a storage-endpoint change. `preserveSecretFields` below has no
+      // notion of "the destination changed" — it would otherwise reattach the
+      // stored real S3 credentials to whatever endpoint this PATCH names.
+      if (current.provider === 's3' && isRecord(incomingDetails)) {
+        const storedDetails = isRecord(current.providerConfig) ? current.providerConfig : {};
+        const storedHasAccessKey = typeof storedDetails.accessKey === 'string' && storedDetails.accessKey.length > 0;
+        const storedHasSecretKey = typeof storedDetails.secretKey === 'string' && storedDetails.secretKey.length > 0;
+        if (
+          (storedHasAccessKey || storedHasSecretKey)
+          && s3EndpointOriginChanged(storedDetails.endpoint, incomingDetails.endpoint)
+        ) {
+          const hasFreshAccessKey = typeof incomingDetails.accessKey === 'string'
+            && incomingDetails.accessKey.length > 0
+            && !isRedactedSecretMarker(incomingDetails.accessKey);
+          const hasFreshSecretKey = typeof incomingDetails.secretKey === 'string'
+            && incomingDetails.secretKey.length > 0
+            && !isRedactedSecretMarker(incomingDetails.secretKey);
+          if (!hasFreshAccessKey || !hasFreshSecretKey) {
+            return c.json({
+              error: 'Changing the storage endpoint requires re-entering the access key and secret key',
+            }, 400);
+          }
+        }
+      }
+
       const nextProviderConfig = incomingDetails !== undefined
         ? preserveSecretFields(incomingDetails, current.providerConfig)
         : current.providerConfig;

@@ -218,6 +218,17 @@ const MANAGE_POLICY_FEATURE_LINK_SCHEMA = {
   },
 };
 
+// manage_tickets' comment action, trimmed the same way as the schemas above
+// — the multiplexer's full enum lives in aiToolSchemas.ts, unreachable from
+// this suite for the same db-mocking reason MANAGE_ORGANIZATIONS_SCHEMA is.
+const MANAGE_TICKETS_COMMENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['comment', 'create', 'update_status'] },
+    isPublic: { type: 'boolean' },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
@@ -525,6 +536,61 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
       const body = await res.json();
       expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
       expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // (c4) manage_tickets:comment — a customer-visible reply escalates by
+  // input (isPublic), same mechanism as manage_policy_feature_link above.
+  // aiToolsTicketing.ts/aiGuardrails.ts prove the SHARED checkGuardrails
+  // function resolves this correctly; this block is the missing MCP-specific
+  // proof that a public-comment request actually reaches Tier 3 (and is
+  // therefore refused, MCP having no interactive-approval surface) when it
+  // arrives over `tools/call`, not just when checkGuardrails is called
+  // directly in a unit test.
+  describe('manage_tickets:comment — a customer-visible reply escalates by input (isPublic)', () => {
+    beforeEach(() => {
+      mocks.getToolDefinitions.mockReturnValue([
+        { name: 'manage_tickets', description: 'Manage tickets.', input_schema: MANAGE_TICKETS_COMMENT_SCHEMA },
+      ]);
+      // Base tier 2 in the real registry — the gate comes from the
+      // input-aware escalation (TIER3_INPUT_AWARE_ACTIONS), not the base tier.
+      mocks.getToolTier.mockImplementation((name: string) => (name === 'manage_tickets' ? 2 : undefined));
+    });
+
+    it('an explicit isPublic:true comment is denied MCP_APPROVAL_REQUIRED without executing', async () => {
+      const res = await callTool('manage_tickets', {
+        action: 'comment', ticketId: 'ticket-1', body: 'Restarted the service.', isPublic: true,
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBe(true);
+      expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('a comment with isPublic omitted (defaults private) still executes — this gate is narrow, not a tool ban', async () => {
+      const res = await callTool('manage_tickets', {
+        action: 'comment', ticketId: 'ticket-1', body: 'Internal note.',
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledWith(
+        'manage_tickets',
+        expect.objectContaining({ action: 'comment' }),
+        expect.anything(),
+      );
+    });
+
+    it('a comment with isPublic:false explicitly set also executes ungated', async () => {
+      const res = await callTool('manage_tickets', {
+        action: 'comment', ticketId: 'ticket-1', body: 'Internal note.', isPublic: false,
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledWith(
+        'manage_tickets',
+        expect.objectContaining({ action: 'comment' }),
+        expect.anything(),
+      );
     });
   });
 

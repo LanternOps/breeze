@@ -76,6 +76,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 export const customFieldRoutes = new Hono();
 const requireCustomFieldRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -304,6 +305,13 @@ customFieldRoutes.post(
   zValidator('json', createCustomFieldRequestSchema),
   async (c) => {
     const auth = c.get('auth');
+    // A definition is an org-wide (or partner-wide) governance object with no
+    // per-site ownership model — same capability class as
+    // `canMutateOrgWideGovernance`'s other objects, even though this table
+    // isn't in that contract's hand-listed set yet.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
 
     if (payload.orgId && payload.partnerId) {
@@ -402,6 +410,9 @@ customFieldRoutes.patch(
   zValidator('json', updateCustomFieldSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
@@ -454,6 +465,9 @@ customFieldRoutes.delete(
   zValidator('param', customFieldIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
 
     const field = await getCustomFieldWithAccess(id, auth);

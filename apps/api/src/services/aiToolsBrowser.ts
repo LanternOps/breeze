@@ -205,6 +205,15 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
       if (extDeviceCond) conditions.push(extDeviceCond);
 
       const siteScopeOrgId = auth.orgId ?? (typeof input.orgId === 'string' ? input.orgId : null);
+      // Fail closed: a site-restricted caller whose org never
+      // resolves must never fall through to an unfiltered query.
+      if ((auth.allowedSiteIds || auth.allowedDeviceIds) && !siteScopeOrgId) {
+        return JSON.stringify({
+          summary: { total: 0, low: 0, medium: 0, high: 0, critical: 0, sideloaded: 0 },
+          extensions: [],
+          violations: [],
+        });
+      }
       let siteAllowedDeviceIds: string[] | null = null;
       if ((auth.allowedSiteIds || auth.allowedDeviceIds) && siteScopeOrgId) {
         siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, auth);

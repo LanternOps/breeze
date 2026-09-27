@@ -9,6 +9,7 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from '../../services/backupProviderConfig';
+import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 import {
@@ -312,8 +313,9 @@ restoreRoutes.post(
             snapshotId: snapshot.snapshotId,
             targetPath: row.targetPath ?? '',
             selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
-            provider: backupProviderConfig.provider,
-            providerConfig: backupProviderConfig.providerConfig,
+            // A reference only: the destination is resolved when the command
+            // is delivered, so it is never written to the command row.
+            ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
           },
           { userId: auth?.user?.id ?? undefined }
         )

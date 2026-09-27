@@ -16,9 +16,6 @@ vi.mock('./aiDispatch', () => ({
   aiQueueCommand,
   aiExecuteCommand: vi.fn(async () => ({ status: 'completed' })),
 }));
-vi.mock('./commandTypes', () => ({
-  CommandTypes: { ENCRYPT_FILE: 'encrypt_file', QUARANTINE_FILE: 'quarantine_file', SECURE_DELETE_FILE: 'secure_delete_file' },
-}));
 vi.mock('./securityPosture', () => ({
   getLatestSecurityPostureForDevice: vi.fn(),
   listLatestSecurityPosture: vi.fn(),
@@ -134,7 +131,7 @@ describe('get_sensitive_data_overview — site narrowing (device-keyed PII reads
         return selectAllowedDevices([{ id: 'd1', siteId: 'site-FORBIDDEN' }]);
       }
       findingsRead = true;
-      return { from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'leak', filePath: '/secret' }]) }) }) }) }) };
+      return { from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'unscoped-row', filePath: '/secret' }]) }) }) }) }) };
     });
     const r = await handlerFor('get_sensitive_data_overview')({ view: 'findings' }, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
@@ -160,10 +157,37 @@ describe('get_sensitive_data_overview — site narrowing (device-keyed PII reads
 
   it('unrestricted caller reads normally (no regression)', async () => {
     mockDb.select.mockImplementation(() => ({
-      from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'leak', filePath: '/secret' }]) }) }) }) }),
+      from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'unscoped-row', filePath: '/secret' }]) }) }) }) }),
     }));
     const r = await handlerFor('get_sensitive_data_overview')({ view: 'findings' }, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.totalReturned).toBe(1);
+  });
+
+  it('fails closed (empty, no query) for a site-restricted caller whose org never resolves', async () => {
+    let anyQueryRan = false;
+    mockDb.select.mockImplementation(() => {
+      anyQueryRan = true;
+      return { from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'unscoped-row', filePath: '/secret' }]) }) }) }) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: [] };
+    const r = await handlerFor('get_sensitive_data_overview')({ view: 'findings' }, auth);
+    const parsed = JSON.parse(r);
+    expect(parsed.totalReturned).toBe(0);
+    expect(parsed.findings).toEqual([]);
+    expect(anyQueryRan).toBe(false);
+  });
+
+  it('dashboard view also fails closed for a site-restricted caller whose org never resolves', async () => {
+    let anyQueryRan = false;
+    mockDb.select.mockImplementation(() => {
+      anyQueryRan = true;
+      return { from: () => ({ where: () => Promise.resolve([]) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: [] };
+    const r = await handlerFor('get_sensitive_data_overview')({ view: 'dashboard' }, auth);
+    const parsed = JSON.parse(r);
+    expect(parsed.totals.findings).toBe(0);
+    expect(anyQueryRan).toBe(false);
   });
 });

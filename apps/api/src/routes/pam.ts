@@ -698,7 +698,8 @@ pamRoutes.post(
           }
         }
 
-        return { kind: 'ok' as const, row, newStatus: updated[0]!.status, actuation };
+        const newStatus = actuation.refusalReason ? 'denied' : updated[0]!.status;
+        return { kind: 'ok' as const, row, newStatus, actuation };
       });
     } catch (err) {
       if (err instanceof StepUpRequiredError) {
@@ -807,9 +808,12 @@ pamRoutes.post(
       success: true,
       id: result.row.id,
       status: result.newStatus,
-      enforcementStatus: result.actuation.desiredState === 'active'
-        ? 'pending_dispatch'
-        : 'cleanup_pending',
+      enforcementStatus: result.actuation.refusalReason
+        ? 'refused'
+        : result.actuation.desiredState === 'active'
+          ? 'pending_dispatch'
+          : 'cleanup_pending',
+      ...(result.actuation.refusalReason ? { reason: result.actuation.refusalReason } : {}),
     });
   },
 );

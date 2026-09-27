@@ -347,6 +347,10 @@ function makeRunRow(overrides?: Record<string, unknown>) {
     orgId: ORG_ID,
     deviceId: DEVICE_ID,
     policySnapshot: POLICY_SNAPSHOT,
+    // Matches POLICY_SNAPSHOT.effective.mode by default, like a real,
+    // never-forced-shadow run — hardening tests below deliberately diverge
+    // this from the snapshot's mode.
+    modeAtStart: 'act',
     ...overrides,
   };
 }
@@ -654,6 +658,26 @@ describe('attemptPolicyDecision', () => {
     expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
     // Gated BEFORE the guardrail re-run, exactly like the key-authorization gate.
     expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('agent currently in act mode, run\'s policy snapshot ALSO reads act — but the run was actually admitted with modeAtStart \'shadow\' (anomaly/ticket forced-shadow downgrade) -> human path, never authorized', async () => {
+    // Distinct from the SAFETY GATE test above, which forces the CURRENT
+    // live policy to shadow. Here the current live policy AND the run's own
+    // policySnapshot.effective.mode both genuinely read 'act' (an anomaly-
+    // or ticket-triggered run is admitted against an agent whose resolved
+    // policy mode is 'act' — runService.ts's forced-shadow downgrade only
+    // changes what the run RECORDS as `modeAtStart`, never the snapshot's
+    // own `effective.mode`). Neither the current-policy check nor the
+    // snapshot-key check catches this; only a direct `modeAtStart` read
+    // does.
+    pushRows('action_intents', [makeIntentRow()]);
+    queueRunAndAgent({ run: { modeAtStart: 'shadow' } });
+    await attemptPolicyDecision(INTENT_ID);
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    // Never reached the guardrail re-run or the authorize transaction.
+    expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues.ai_unattended_exposure ?? []).toHaveLength(0);
+    expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
   });
 
   it('deterministic: key not in the agent\'s CURRENT supervisedActionKeys -> human path', async () => {

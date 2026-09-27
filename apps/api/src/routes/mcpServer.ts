@@ -28,6 +28,7 @@ import { getToolDefinitions, executeTool, getToolTier, getToolDomain } from '../
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
+import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
 import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../services/toolSources/guardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -189,6 +190,37 @@ async function readJsonRpcBodyWithLimit(
   }
 }
 
+/**
+ * Cheap, side-effect-free predicate: does this request's body already look
+ * like a `tools/call` against a tenant (BYO MCP) tool? Used only to decide
+ * whether the auth middleware may skip opening the ambient per-request DB
+ * transaction — see MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment.
+ *
+ * Reads the body via a CLONED request (`{ clone: true }`), so the original
+ * stream is untouched for `preflightMcpRequest`'s real parse later. Any
+ * failure (no body, wrong method, oversized, malformed JSON) is a safe false
+ * negative: the request just keeps today's ambient-context behavior.
+ */
+export async function __isMcpTenantToolCallRequestForTests(c: Context): Promise<boolean> {
+  return isMcpTenantToolCallRequest(c);
+}
+
+async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
+  if (c.req.method !== 'POST') return false;
+  try {
+    const parsed = await readJsonRpcBodyWithLimit(c.req.raw, { clone: true });
+    if (parsed.tooLarge || parsed.parseError || !parsed.body || typeof parsed.body !== 'object') {
+      return false;
+    }
+    const body = parsed.body as { method?: unknown; params?: { name?: unknown } };
+    if (body.method !== 'tools/call') return false;
+    const name = body.params?.name;
+    return typeof name === 'string' && isTenantToolName(name);
+  } catch {
+    return false;
+  }
+}
+
 // ============================================
 // Bootstrap module (authenticated tools only)
 // ============================================
@@ -250,6 +282,13 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
  * account-creation path is OAuth Create Account → /auth/register-partner.
  */
 async function mcpAuthMiddleware(c: Context, next: Next) {
+  // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: a cheap, side-effect-free
+  // peek at the JSON-RPC body decides whether the auth middlewares below may
+  // skip opening the ambient per-request DB transaction. Set unconditionally
+  // (false for every non-tenant-tool-call request) so the two middlewares
+  // never fall back to a stale value from a prior request.
+  c.set(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY, await isMcpTenantToolCallRequest(c));
+
   const authHeader = c.req.header('Authorization') ?? '';
   const hasBearer = MCP_OAUTH_ENABLED && authHeader.startsWith('Bearer ');
   if (hasBearer) {

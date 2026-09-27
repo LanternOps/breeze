@@ -3,6 +3,7 @@ package bmr
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,8 +18,20 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
+// newHTTPClient backs every core BMR trust-boundary request (authenticate,
+// exchange, progress, completion) — see certpin.go. VerifyPeerCertificate
+// runs alongside (never instead of) Go's normal certificate-chain
+// validation, so with no pin configured this is exactly the client that
+// existed before certificate pinning did.
 var newHTTPClient = func() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				VerifyPeerCertificate: verifyPinnedServerCert,
+			},
+		},
+	}
 }
 
 var runRecovery = RunRecoveryContext

@@ -687,9 +687,18 @@ runsRoutes.post(
     // reports suite's module graph and breaks the ones whose partial
     // `vi.mock('../../db/schema')` factories do not declare it. Same reason
     // routes/tickets/attachments.ts and ticketAttachmentStorage defer it.
-    const { resolveArtifact } = await import('../../services/artifacts/artifactService');
-    const artifact = await resolveArtifact(handle, { orgId });
-    if (!artifact) {
+    //
+    // OBJECT-LEVEL check (not a coarse permission) — same as the ticket
+    // attachment sibling route: `findArtifactForAuth` is the canonical
+    // `GET /ai/artifacts/:id` route's own authorization helper, proving the
+    // CALLER may read this specific artifact under their own org-axis scoping
+    // without requiring `ai_agents:read` as a standing grant. That alone is
+    // not sufficient — the artifact must ALSO belong to the RUN's own org,
+    // never just an org the caller happens to be able to reach, or a sibling
+    // org's file could land on this report.
+    const { findArtifactForAuth } = await import('../../services/artifacts/artifactService');
+    const artifact = await findArtifactForAuth(handle, auth);
+    if (!artifact || artifact.orgId !== orgId) {
       return c.json(
         { error: 'No such artifact is available to this organization', code: 'ARTIFACT_NOT_FOUND' },
         404,

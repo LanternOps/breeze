@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
@@ -30,6 +31,7 @@ import {
   getScopeContext,
   getScopedRole,
   validateAssignableRole,
+  assertCanManageTarget,
   type ScopeContext,
 } from '../services/roleAssignment';
 import { createAuditLogAsync } from '../services/auditService';
@@ -215,6 +217,7 @@ async function getScopedUser(userId: string, scopeContext: ScopeContext) {
         status: users.status,
         roleId: roles.id,
         roleName: roles.name,
+        roleIsSystem: roles.isSystem,
         orgAccess: partnerUsers.orgAccess,
         orgIds: partnerUsers.orgIds
       })
@@ -235,6 +238,7 @@ async function getScopedUser(userId: string, scopeContext: ScopeContext) {
       status: users.status,
       roleId: roles.id,
       roleName: roles.name,
+      roleIsSystem: roles.isSystem,
       siteIds: organizationUsers.siteIds,
       deviceGroupIds: organizationUsers.deviceGroupIds
     })
@@ -245,6 +249,37 @@ async function getScopedUser(userId: string, scopeContext: ScopeContext) {
     .limit(1);
 
   return record || null;
+}
+
+/**
+ * The target's CURRENT membership in the caller's own tenant — role and (org
+ * scope) site allowlist — for the rank + scope check on member-management
+ * mutations. Reads only the membership row and its role, never `users`: a
+ * member's `users` row is homed in one org, and an org-scoped RLS context
+ * hides it when that home is another org, even though the member is this
+ * org's to manage through this org's membership row.
+ */
+async function getScopedMembership(
+  userId: string,
+  scopeContext: ScopeContext
+): Promise<{ roleId: string; roleIsSystem: boolean; siteIds?: string[] | null } | null> {
+  if (scopeContext.scope === 'partner') {
+    const [row] = await db
+      .select({ roleId: roles.id, roleIsSystem: roles.isSystem })
+      .from(partnerUsers)
+      .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
+      .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  const [row] = await db
+    .select({ roleId: roles.id, roleIsSystem: roles.isSystem, siteIds: organizationUsers.siteIds })
+    .from(organizationUsers)
+    .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
+    .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+    .limit(1);
+  return row ?? null;
 }
 
 function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeContext): string | null {
@@ -1393,7 +1428,45 @@ userRoutes.post(
       await resetAllFactorsAndInvalidate(tombstone.id, 'invite-resurrect', { onlyIfTombstone: true });
     }
 
-    const result = await db.transaction(async (tx) => {
+    // An invite for an email another tenant already holds answers exactly like
+    // an invite for an unused email.
+    //
+    // `tombstone` above already told us whether this email is visible to the
+    // CALLER's own tenant (the ambient RLS context hides a foreign row). If it
+    // is not visible there, resolve — under a narrowly scoped SYSTEM probe —
+    // whether the address is nonetheless claimed by a DIFFERENT tenant. Do
+    // this BEFORE the insert: `users.email` is globally UNIQUE, so attempting
+    // the insert for a foreign hit would 23505. Never insert for that case (no
+    // cross-tenant "invited" row is created), and answer with the exact same
+    // 201 success envelope a new invite returns, so the caller sees two
+    // outcomes: 201 unused-or-foreign / 409 in-tenant (which the caller can
+    // already see via their own tenant).
+    const emailClaimedElsewhere = !tombstone && await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, normalizedEmail))
+          .limit(1);
+        return !!row;
+      })
+    );
+
+    if (emailClaimedElsewhere) {
+      return c.json(
+        {
+          id: nanoid(24),
+          email: normalizedEmail,
+          name: data.name,
+          status: 'invited',
+          roleId: data.roleId,
+          inviteEmailSent: false,
+        },
+        201
+      );
+    }
+
+    const runInviteTransaction = () => db.transaction(async (tx) => {
       // The membership row is the authoritative live site ceiling. Lock and
       // re-read it inside the SAME transaction that creates the invitee link:
       // a request snapshot alone would let a concurrent scope reduction race
@@ -1534,6 +1607,30 @@ userRoutes.post(
 
       return { user, linkCreated: true, link, delegatedSiteIds };
     });
+
+    let result: Awaited<ReturnType<typeof runInviteTransaction>>;
+    try {
+      result = await runInviteTransaction();
+    } catch (err) {
+      // Belt to the pre-check above: a concurrent invite from a foreign
+      // tenant for the SAME email can still win the race between the probe
+      // and this INSERT. Map that 23505 to the identical no-signal 201
+      // envelope instead of letting it fall through to a distinguishing 500.
+      if (isPgUniqueViolation(err, 'users_email_unique')) {
+        return c.json(
+          {
+            id: nanoid(24),
+            email: normalizedEmail,
+            name: data.name,
+            status: 'invited',
+            roleId: data.roleId,
+            inviteEmailSent: false,
+          },
+          201
+        );
+      }
+      throw err;
+    }
 
     if (!result.linkCreated) {
       return jsonError(c, 409, ERROR_CODES.CONFLICT, 'User already exists in this scope');
@@ -1862,6 +1959,56 @@ async function removeMembershipForScope(
   });
 }
 
+/**
+ * Change a user's role on their membership in the caller's tenant, advance
+ * their auth epoch and durably revoke their refresh families — in one
+ * SYSTEM-scoped transaction, the same shape as removeMembershipForScope.
+ *
+ * Without the epoch bump a role change (including a downgrade meant to end
+ * privileged access) would leave any live MCP OAuth bearer minted under the
+ * prior role authenticatable — the epoch is what `assertLiveOAuthUser` checks
+ * at admission time.
+ *
+ * System scope is required because neither side-effect row is reachable from
+ * the caller's request context: the target's `users` row is hidden when their
+ * home org is another org, and `refresh_token_families` is visible only to
+ * its own user or to system scope. Tenant safety comes from the explicit
+ * membership WHERE clause, pinned to the caller's own partner/org, and the
+ * epoch/family writes only run when that membership update matched.
+ */
+async function assignMembershipRoleForScope(
+  scopeContext: ScopeContext,
+  userId: string,
+  roleId: string
+): Promise<{ updated: boolean }> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
+        const rows =
+          scopeContext.scope === 'partner'
+            ? await tx
+                .update(partnerUsers)
+                .set({ roleId })
+                .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+                .returning({ id: partnerUsers.id })
+            : await tx
+                .update(organizationUsers)
+                .set({ roleId })
+                .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+                .returning({ id: organizationUsers.id });
+
+        if (rows.length === 0) {
+          return { updated: false };
+        }
+
+        await advanceUserEpochs(tx, userId, { auth: true });
+        await revokeAllRefreshFamilies(tx, userId, 'role-changed');
+        return { updated: true };
+      })
+    )
+  );
+}
+
 userRoutes.delete(
   '/:id',
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
@@ -1870,6 +2017,22 @@ userRoutes.delete(
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const userId = c.req.param('id')!;
+
+    // Rank + scope check against the target's CURRENT membership, before any
+    // deletion side effect. Without this, a lower-ranked or site-restricted
+    // admin could remove a higher-ranked or out-of-reach admin.
+    const targetForDelete = await getScopedMembership(userId, scopeContext);
+    if (!targetForDelete) {
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
+    }
+    const deleteManageError = await assertCanManageTarget(c, auth, scopeContext, {
+      roleId: targetForDelete.roleId,
+      isSystem: targetForDelete.roleIsSystem,
+      siteIds: targetForDelete.siteIds,
+    });
+    if (deleteManageError) {
+      return c.json({ error: deleteManageError }, 403);
+    }
 
     if (scopeContext.scope === 'partner') {
       const { deleted } = await removeMembershipForScope(scopeContext, userId);
@@ -1954,6 +2117,17 @@ userRoutes.post(
       return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
+    // Rank + scope check: a lower-ranked or site-restricted admin must not be
+    // able to strip a higher-ranked or out-of-reach admin's second factor.
+    const mfaResetManageError = await assertCanManageTarget(c, auth, scopeContext, {
+      roleId: record.roleId,
+      isSystem: record.roleIsSystem,
+      siteIds: 'siteIds' in record ? record.siteIds : undefined,
+    });
+    if (mfaResetManageError) {
+      return c.json({ error: mfaResetManageError }, 403);
+    }
+
     // RMM-QA-166 (D6): the gate is the factor INVENTORY, not `users.mfa_enabled`.
     // userIsMfaProtected = mfa_enabled OR a live user_passkeys row — the same
     // predicate every enrollment gate uses. A passkey-only leftover (enabled
@@ -2025,6 +2199,24 @@ userRoutes.post(
       return c.json({ error: 'Self role assignment is not allowed' }, 403);
     }
 
+    // Rank + scope check against the target's CURRENT role, before checking
+    // whether the NEW role is one the caller may assign. Without this, a
+    // lower-ranked or site-restricted admin could promote/demote a
+    // higher-ranked or out-of-reach admin as long as the new role itself was
+    // within their own ceiling.
+    const targetForRoleAssign = await getScopedMembership(userId, scopeContext);
+    if (!targetForRoleAssign) {
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
+    }
+    const roleAssignManageError = await assertCanManageTarget(c, auth, scopeContext, {
+      roleId: targetForRoleAssign.roleId,
+      isSystem: targetForRoleAssign.roleIsSystem,
+      siteIds: targetForRoleAssign.siteIds,
+    });
+    if (roleAssignManageError) {
+      return c.json({ error: roleAssignManageError }, 403);
+    }
+
     const role = await getScopedRole(roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
@@ -2035,13 +2227,9 @@ userRoutes.post(
     }
 
     if (scopeContext.scope === 'partner') {
-      const updated = await db
-        .update(partnerUsers)
-        .set({ roleId })
-        .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
-        .returning({ id: partnerUsers.id });
+      const { updated } = await assignMembershipRoleForScope(scopeContext, userId, roleId);
 
-      if (updated.length === 0) {
+      if (!updated) {
         return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
       }
 
@@ -2054,19 +2242,18 @@ userRoutes.post(
           scope: 'partner'
         }
       });
-      await clearPermissionCache(userId);
+      // Post-commit cleanup: Redis token cutoff, permission-cache clear, and
+      // OAuth-artifact revocation (the bearer path the epoch bump alone does
+      // not reach out-of-band).
+      await runPostCommitCleanup(userId);
       await terminateRemoteSessionsAfterAccessChange(userId);
 
       return c.json({ success: true });
     }
 
-    const updated = await db
-      .update(organizationUsers)
-      .set({ roleId })
-      .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
-      .returning({ id: organizationUsers.id });
+    const { updated } = await assignMembershipRoleForScope(scopeContext, userId, roleId);
 
-    if (updated.length === 0) {
+    if (!updated) {
       return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
@@ -2079,7 +2266,7 @@ userRoutes.post(
         scope: 'organization'
       }
     });
-    await clearPermissionCache(userId);
+    await runPostCommitCleanup(userId);
     await terminateRemoteSessionsAfterAccessChange(userId);
 
     return c.json({ success: true });

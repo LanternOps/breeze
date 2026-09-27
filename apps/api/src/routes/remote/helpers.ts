@@ -18,6 +18,8 @@ import { canAccessSite, type UserPermissions } from '../../services/permissions'
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import type { AuthContext } from '../../middleware/auth';
 import { DESKTOP_CONSENT_TIMEOUT_MS } from './consentTiming';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
 
 // ============================================
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
@@ -112,6 +114,29 @@ export function envInt(name: string, defaultValue: number): number {
 
 export const MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG', 10);
 export const MAX_ACTIVE_REMOTE_SESSIONS_PER_USER = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_USER', 5);
+
+// `/remote/ice-servers`
+// can be called repeatedly for any session the caller owns. Each call mints a
+// fresh TURN credential whose username carries a random suffix, so coturn's
+// `user-quota` (keyed on username) never sees the same "user" twice and never
+// engages. Bound the mint rate per caller independently of coturn config,
+// which the API cannot see or control. Set to 0 to disable (e.g. hosted
+// deployments confirmed to run no TURN relay at all).
+export const TURN_CREDENTIAL_MINT_LIMIT = envInt('TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW', 30);
+export const TURN_CREDENTIAL_MINT_WINDOW_SECONDS = envInt('TURN_CREDENTIAL_MINT_WINDOW_SECONDS', 600);
+
+export async function checkTurnCredentialMintRateLimit(userId: string): Promise<{ allowed: boolean }> {
+  if (TURN_CREDENTIAL_MINT_LIMIT <= 0) return { allowed: true };
+
+  const redis = getRedis();
+  const result = await rateLimiter(
+    redis,
+    `remote:ice-servers:mint:${userId}`,
+    TURN_CREDENTIAL_MINT_LIMIT,
+    TURN_CREDENTIAL_MINT_WINDOW_SECONDS
+  );
+  return { allowed: result.allowed };
+}
 
 export function hasSessionOwnership(
   auth: { scope: string; user: { id: string } },
@@ -617,4 +642,23 @@ export async function buildRemoteSessionPromptPayload(
     notifyOnEnd: promptCfg.notifyOnEnd,
     showIndicator: promptCfg.showIndicator,
   };
+}
+
+/**
+ * The only consent/notification prompt protocol version this server speaks.
+ * An agent reporting exactly this value (`devices.consentPromptProtocolVersion`,
+ * from the heartbeat `securityCapabilities` handshake) parses the `prompt`
+ * block on a desktop-stream-start command and gates capture on it. Anything
+ * else — omitted, an old pre-consent-gate build, a downgrade, or a future
+ * version this server does not recognize — is capability 0: the agent
+ * silently drops the unfamiliar `prompt` key (Go's JSON unmarshal into a
+ * known struct drops unknown fields) and streams unconditionally, so a
+ * dispatch site that resolved a policy requiring consent or notification
+ * must refuse to start on such an agent rather than send a prompt block it
+ * will not honor.
+ */
+export const CONSENT_PROMPT_PROTOCOL_VERSION = 1;
+
+export function isConsentPromptCapable(consentPromptProtocolVersion: number): boolean {
+  return consentPromptProtocolVersion === CONSENT_PROMPT_PROTOCOL_VERSION;
 }

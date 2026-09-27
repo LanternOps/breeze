@@ -22,7 +22,10 @@ vi.mock('../db', () => {
   };
 });
 
-const callerPerms = { permissions: [] as Array<{ resource: string; action: string }> };
+const callerPerms = {
+  permissions: [] as Array<{ resource: string; action: string }>,
+  allowedSiteIds: undefined as string[] | undefined,
+};
 vi.mock('./permissions', () => ({
   getUserPermissions: vi.fn(async () => callerPerms),
   hasPermission: vi.fn((perms: typeof callerPerms, resource: string, action: string) =>
@@ -40,6 +43,7 @@ import {
   getProviderAxisRole,
   checkRolePermissionCeiling,
   validateAssignableRole,
+  assertCanManageTarget,
 } from './roleAssignment';
 import { getUserPermissions } from './permissions';
 import { db } from '../db';
@@ -48,7 +52,88 @@ beforeEach(() => {
   roleRowQueue.length = 0;
   permRowQueue.length = 0;
   callerPerms.permissions = [];
+  callerPerms.allowedSiteIds = undefined;
   vi.mocked(db.select).mockClear();
+  vi.mocked(getUserPermissions).mockClear();
+});
+
+// A trivial (no-context) Hono-shaped stub — getCallerPermissions falls
+// through to getUserPermissions when c.get('permissions') is absent.
+const noCtx = { get: () => undefined };
+const orgAuth = { user: { id: 'u1' }, scope: 'organization', partnerId: null, orgId: 'o1' };
+const partnerAuth = { user: { id: 'u1' }, scope: 'partner', partnerId: 'p1', orgId: null };
+
+describe('assertCanManageTarget', () => {
+  it('allows an unrestricted caller to manage a site-restricted target (rank passes, scope N/A)', async () => {
+    roleRowQueue.push([{ parentRoleId: null }]);
+    permRowQueue.push([{ resource: 'devices', action: 'read' }]);
+    callerPerms.permissions = [{ resource: 'devices', action: 'read' }];
+    callerPerms.allowedSiteIds = undefined; // unrestricted
+    const err = await assertCanManageTarget(noCtx, orgAuth, { scope: 'organization', orgId: 'o1' }, {
+      roleId: 'r1', isSystem: false, siteIds: ['s1'],
+    });
+    expect(err).toBeNull();
+  });
+
+  it('rejects a site-restricted caller acting on an UNRESTRICTED target, before any rank check', async () => {
+    callerPerms.allowedSiteIds = ['s1'];
+    const err = await assertCanManageTarget(noCtx, orgAuth, { scope: 'organization', orgId: 'o1' }, {
+      roleId: 'r1', isSystem: false, siteIds: null,
+    });
+    expect(err).toBe('Cannot manage a user outside your site access');
+    // Short-circuited before the role-ceiling walk — no role/permission select issued.
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a site-restricted caller acting on a target holding a site outside their allowlist', async () => {
+    callerPerms.allowedSiteIds = ['s1'];
+    const err = await assertCanManageTarget(noCtx, orgAuth, { scope: 'organization', orgId: 'o1' }, {
+      roleId: 'r1', isSystem: false, siteIds: ['s2'],
+    });
+    expect(err).toBe('Cannot manage a user outside your site access');
+  });
+
+  it('allows a site-restricted caller acting on a target whose sites are a subset of their own', async () => {
+    roleRowQueue.push([{ parentRoleId: null }]);
+    permRowQueue.push([{ resource: 'devices', action: 'read' }]);
+    callerPerms.permissions = [{ resource: 'devices', action: 'read' }];
+    callerPerms.allowedSiteIds = ['s1', 's2'];
+    const err = await assertCanManageTarget(noCtx, orgAuth, { scope: 'organization', orgId: 'o1' }, {
+      roleId: 'r1', isSystem: false, siteIds: ['s1'],
+    });
+    expect(err).toBeNull();
+  });
+
+  it('site check passes but rank check still applies: rejects a target whose CURRENT role outranks the caller', async () => {
+    roleRowQueue.push([{ parentRoleId: null }]);
+    permRowQueue.push([{ resource: 'users', action: 'delete' }]);
+    callerPerms.permissions = [{ resource: 'devices', action: 'read' }];
+    callerPerms.allowedSiteIds = ['s1'];
+    const err = await assertCanManageTarget(noCtx, orgAuth, { scope: 'organization', orgId: 'o1' }, {
+      roleId: 'r1', isSystem: false, siteIds: ['s1'],
+    });
+    expect(err).toBe('Cannot assign a role with permission not held by caller: users:delete');
+  });
+
+  it('has no site axis for partner scope — only rank is checked', async () => {
+    roleRowQueue.push([{ parentRoleId: null }]);
+    permRowQueue.push([{ resource: 'devices', action: 'read' }]);
+    callerPerms.permissions = [{ resource: 'devices', action: 'read' }];
+    const err = await assertCanManageTarget(noCtx, partnerAuth, { scope: 'partner', partnerId: 'p1' }, {
+      roleId: 'r1', isSystem: false,
+    });
+    expect(err).toBeNull();
+  });
+
+  it('rejects a lower-ranked partner-scope caller regardless of site fields', async () => {
+    roleRowQueue.push([{ parentRoleId: null }]);
+    permRowQueue.push([{ resource: 'users', action: 'write' }]);
+    callerPerms.permissions = [{ resource: 'devices', action: 'read' }];
+    const err = await assertCanManageTarget(noCtx, partnerAuth, { scope: 'partner', partnerId: 'p1' }, {
+      roleId: 'r1', isSystem: false,
+    });
+    expect(err).toBe('Cannot assign a role with permission not held by caller: users:write');
+  });
 });
 
 describe('getScopeContext', () => {

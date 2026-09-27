@@ -81,4 +81,13 @@ describe('POST /:id/uninstall-intent (#2764)', () => {
     expect(res.status).toBe(401);
     expect(updateMock).not.toHaveBeenCalled();
   });
+
+  it('returns 403 and never writes for a non-agent (watchdog/helper) credential', async () => {
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-1', agentId: 'agent-1', siteId: 'site-1', role: 'watchdog' });
+
+    const res = await app.request('/dev-1/uninstall-intent', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 });

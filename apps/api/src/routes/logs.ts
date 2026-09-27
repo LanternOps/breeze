@@ -33,6 +33,7 @@ import {
   resolveCurrentLogReadDeviceIds,
   revalidateLogReadAuthority,
 } from '../services/logReadAuthority';
+import { canReadSensitiveEventLogCategory, SensitiveEventLogAccessError } from '../services/eventLogSensitivity';
 
 const levelSchema = z.enum(['info', 'warning', 'error', 'critical']);
 const categorySchema = z.enum(['security', 'hardware', 'application', 'system']);
@@ -220,6 +221,7 @@ logsRoutes.post(
       filters.allowedSiteIds = auth.allowedSiteIds === undefined
         ? null
         : Array.from(new Set(auth.allowedSiteIds)).sort();
+      filters.canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
 
       const result = await searchFleetLogs(auth, filters);
 
@@ -229,6 +231,9 @@ logsRoutes.post(
 
       return c.json(result);
     } catch (error) {
+      if (error instanceof SensitiveEventLogAccessError) {
+        return c.json({ error: error.message }, 403);
+      }
       const message = error instanceof Error ? error.message : 'Failed to search logs';
       const normalized = message.toLowerCase();
       const status = normalized.includes('time range') || normalized.includes('invalid') || normalized.includes('cursor') ? 400 : 500;
@@ -306,6 +311,7 @@ logsRoutes.get(
       const allowedSiteIds = auth.allowedSiteIds === undefined
         ? null
         : Array.from(new Set(auth.allowedSiteIds)).sort();
+      const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
       const payload = await getLogAggregation(auth, {
         start: query.start,
         end: query.end,
@@ -319,10 +325,14 @@ logsRoutes.get(
         limit: query.limit,
         allowedDeviceIds,
         allowedSiteIds,
+        canReadSensitiveCategory,
       });
 
       return c.json(payload);
     } catch (error) {
+      if (error instanceof SensitiveEventLogAccessError) {
+        return c.json({ error: error.message }, 403);
+      }
       const message = error instanceof Error ? error.message : 'Failed to aggregate logs';
       const normalized = message.toLowerCase();
       const status = normalized.includes('time range') || normalized.startsWith('invalid') ? 400 : 500;
@@ -345,6 +355,7 @@ logsRoutes.get(
       const allowedSiteIds = auth.allowedSiteIds === undefined
         ? null
         : Array.from(new Set(auth.allowedSiteIds)).sort();
+      const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
       const payload = await getLogTrends(auth, {
         start: query.start,
         end: query.end,
@@ -355,10 +366,14 @@ logsRoutes.get(
         limit: query.limit,
         allowedDeviceIds,
         allowedSiteIds,
+        canReadSensitiveCategory,
       });
 
       return c.json(payload);
     } catch (error) {
+      if (error instanceof SensitiveEventLogAccessError) {
+        return c.json({ error: error.message }, 403);
+      }
       const message = error instanceof Error ? error.message : 'Failed to fetch trends';
       const normalized = message.toLowerCase();
       const status = normalized.includes('time range') || normalized.startsWith('invalid') ? 400 : 500;

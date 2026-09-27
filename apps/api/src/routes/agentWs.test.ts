@@ -445,6 +445,7 @@ import { applyBackupCommandResultToJob } from '../services/backupResultPersisten
 import { BACKUP_QUEUE_ACK_RESULT_STATUS } from '../services/commandResultAcceptance';
 import { enqueueBackupResults } from '../jobs/backupEnqueue';
 import { encryptSensitivePayloadFields } from '../services/sensitiveCommandPayload';
+import { resetAgentUpdateStatusCoalescerForTests } from '../services/agentUpdateStatusCoalescer';
 
 function wsMock() {
   return {
@@ -1388,6 +1389,13 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
   describe('update attempt record (#4073)', () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
 
+    // Every case sends update_status for the same agent and target version;
+    // the per-agent update_status coalescer would absorb the repeats as
+    // duplicates inside its dedupe window, so each case starts clean.
+    beforeEach(() => {
+      resetAgentUpdateStatusCoalescerForTests();
+    });
+
     async function sendUpdateStatus(targetVersion: unknown) {
       const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
       await handlers.onMessage({
@@ -2202,7 +2210,7 @@ describe('agent websocket command results', () => {
     vi.mocked(db.select).mockImplementation((() => ({
       from: (table: unknown) => {
         const rows = table === discoveryJobs
-          ? [{ id: jobId, orgId: 'org-123', siteId: 'site-1', agentId: 'agent-123' }]
+          ? [{ id: jobId, orgId: 'org-123', siteId: 'site-1', agentId: 'agent-123', status: 'running' }]
           : [];
         const tail: any = {
           where: () => tail, innerJoin: () => tail, leftJoin: () => tail, orderBy: () => tail,
@@ -2223,6 +2231,46 @@ describe('agent websocket command results', () => {
 
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(writeErr, undefined,
       { command_result_phase: 'discovery_mark_failed' });
+  });
+
+  // A replayed command_result for a job that already left 'running' (completed,
+  // failed or cancelled) must not be re-applied: no status write, no
+  // enqueueDiscoveryResults. Only the recorded probe agent is checked today —
+  // job status is not.
+  it('rejects an orphaned discovery result for a job that is no longer running', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const jobId = '77777777-7777-4777-8777-777777777777';
+
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: (table: unknown) => {
+        const rows = table === discoveryJobs
+          ? [{ id: jobId, orgId: 'org-123', siteId: 'site-1', agentId: 'agent-123', status: 'completed' }]
+          : [];
+        const tail: any = {
+          where: () => tail, innerJoin: () => tail, leftJoin: () => tail, orderBy: () => tail,
+          limit: () => Promise.resolve(rows),
+          then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej),
+        };
+        return tail;
+      },
+    })) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: {
+          jobId,
+          hosts: [{ ip: '10.0.0.1', assetType: 'server', methods: ['ping'] }]
+        }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
   });
 
   it('skips downstream processing when the command row was already completed by another result', async () => {
@@ -2505,6 +2553,106 @@ describe('agent websocket command results', () => {
   });
 
   // Task 18: 5 cross-tenant drops within 5 min auto-suspends the agent token.
+  // A session missing from THIS process's local map (never seen the mismatch
+  // getActiveTerminalSession mocks above exercise) is not, on its own,
+  // evidence of a probe — it's also what a just-closed session or an API
+  // restart looks like from here. These prove the discriminator: only a
+  // session that resolves (via DB) to a DIFFERENT device counts.
+  describe('terminal_output for a session absent from the local map', () => {
+    it('does NOT count the drop, and does NOT suspend, when the session resolves to the SENDER\'S OWN device', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-own', orgId: 'org-own', partnerId: 'partner-own' };
+      const handlers = createAgentWsHandlers('agent-absent-own', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue(undefined);
+      // The session's real device_id (as a DB lookup would report it) IS the
+      // sender's own device — a just-closed session or a fresh replica that
+      // never saw this session, not a probe.
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ deviceId: 'device-own' }]) as any);
+      const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      for (let i = 0; i < 10; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'ffffffff-ffff-4fff-8fff-fffffffffff1',
+            data: 'trailing output after close',
+          }),
+        } as any, ws as any);
+      }
+      await new Promise((r) => setImmediate(r));
+
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(vi.mocked(handleTerminalOutput)).not.toHaveBeenCalled();
+      const suspendLogs = warnSpy.mock.calls.filter(call =>
+        typeof call[0] === 'string' && call[0].includes('auto-suspending agent token'));
+      expect(suspendLogs.length).toBe(0);
+      warnSpy.mockRestore();
+    });
+
+    it('DOES count the drop, and DOES suspend after threshold, when the session resolves to a DIFFERENT device', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-mine', orgId: 'org-mine', partnerId: 'partner-mine' };
+      const handlers = createAgentWsHandlers('agent-absent-foreign', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue(undefined);
+      // DB says this session genuinely belongs to a DIFFERENT device — a real
+      // cross-tenant probe, indistinguishable from the benign case above by
+      // the local in-memory map alone.
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ deviceId: 'device-someone-elses' }]) as any);
+      const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      for (let i = 0; i < 5; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'ffffffff-ffff-4fff-8fff-fffffffffff2',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+      await new Promise((r) => setImmediate(r));
+
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ agentTokenSuspendedReason: 'cross-tenant-probe' });
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT count the drop when the session does not resolve in the DB at all (fail-safe on lookup failure/no row)', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-fs', orgId: 'org-fs', partnerId: 'partner-fs' };
+      const handlers = createAgentWsHandlers('agent-absent-norow', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue(undefined);
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any); // no such session in the DB
+      const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      for (let i = 0; i < 10; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'ffffffff-ffff-4fff-8fff-fffffffffff3',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+      await new Promise((r) => setImmediate(r));
+
+      expect(updateSet).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Task 18 — agent token auto-suspend on cross-tenant probe', () => {
     it('suspends the agent token after SUSPEND_THRESHOLD (5) cross-tenant drops', async () => {
       __resetCrossTenantDropsForTest();
@@ -5770,5 +5918,225 @@ describe('#6836 — onClose survives a markOffline context-prologue failure', ()
 
     // The failure is reported, not swallowed.
     expect(captureException).toHaveBeenCalledWith(markOfflineFailure);
+  });
+});
+
+// Message-rate budget: terminal-state (command_result/update_status) frames
+// get a SEPARATE, higher-ceiling budget than general traffic, and a drop on
+// that budget is never silent (#3001 — see agentWsMessageBudget.ts and the
+// onMessage wiring in agentWs.ts).
+describe('message-rate budget — terminal-state exemption and drop signalling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not drop a command_result merely because the GENERAL budget is exhausted', async () => {
+    const { checkAgentWsMessageBudget } = await import('../services/agentWsMessageBudget');
+    const preValidatedAgent = { deviceId: 'device-budget-1', orgId: 'org-budget-1', partnerId: 'partner-budget-1' };
+    const { handlers, ws } = await connectedAgent('agent-budget-1', preValidatedAgent);
+
+    const now = Date.now();
+    vi.setSystemTime(now);
+    // Drain the GENERAL bucket only (default capacity 300) on this exact socket.
+    for (let i = 0; i < 300; i += 1) {
+      checkAgentWsMessageBudget(ws as never, 'agent-budget-1', now);
+    }
+    expect(checkAgentWsMessageBudget(ws as never, 'agent-budget-1', now)).toBe('drop');
+
+    ws.send.mockClear();
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: 'cmd-budget-1', status: 'success' }),
+    } as never, ws as never);
+
+    // Not dropped: routed to its own separate budget, which is still fresh.
+    const errorFrames = vi.mocked(ws.send).mock.calls
+      .map((call) => JSON.parse(call[0] as string))
+      .filter((frame) => frame.type === 'error' && frame.code === 'MESSAGE_RATE_BUDGET_EXCEEDED');
+    expect(errorFrames).toHaveLength(0);
+  });
+
+  it('logs at error level and sends an error frame when the TERMINAL budget itself is exhausted', async () => {
+    const { checkAgentWsMessageBudget } = await import('../services/agentWsMessageBudget');
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const preValidatedAgent = { deviceId: 'device-budget-2', orgId: 'org-budget-2', partnerId: 'partner-budget-2' };
+    const { handlers, ws } = await connectedAgent('agent-budget-2', preValidatedAgent);
+
+    const now = Date.now();
+    vi.setSystemTime(now);
+    // Drain the command_result bucket (default capacity 600) on this exact socket.
+    for (let i = 0; i < 600; i += 1) {
+      checkAgentWsMessageBudget(ws as never, 'agent-budget-2', now, 'command_result');
+    }
+
+    ws.send.mockClear();
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: 'cmd-budget-2', status: 'success' }),
+    } as never, ws as never);
+
+    // Logged at ERROR (not warn), matching buildAgentMessageRejection's
+    // posture for a lost command_result, with the commandId extracted.
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('cmd-budget-2'),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/DROPPED command_result/),
+    );
+
+    // The agent gets an error frame back, unlike a plain silent general-budget drop.
+    const frames = vi.mocked(ws.send).mock.calls.map((call) => JSON.parse(call[0] as string));
+    expect(frames).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'MESSAGE_RATE_BUDGET_EXCEEDED',
+      messageType: 'command_result',
+      commandId: 'cmd-budget-2',
+    }));
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('closes the connection on sustained abuse dressed up as command_result frames, with an error-level trace', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const preValidatedAgent = { deviceId: 'device-budget-3', orgId: 'org-budget-3', partnerId: 'partner-budget-3' };
+    const { handlers, ws } = await connectedAgent('agent-budget-3', preValidatedAgent);
+
+    const now = Date.now();
+    vi.setSystemTime(now);
+    const flood = () => handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: 'cmd-budget-3', status: 'success' }),
+    } as never, ws as never);
+
+    // Drain the command_result lane, then keep sending past the sustained-
+    // abuse close threshold — a socket that floods exclusively with
+    // terminal-tagged frames must still be closable, same as the general lane.
+    for (let i = 0; i < 600; i += 1) await flood();
+    let closed = false;
+    for (let i = 0; i < 250 && !closed; i += 1) {
+      await flood();
+      closed = vi.mocked(ws.close).mock.calls.length > 0;
+    }
+    expect(closed).toBe(true);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringMatching(/command_result lane/));
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('a real update_status frame through onMessage is throttled at or before the general lane\'s own ceiling', async () => {
+    const preValidatedAgent = { deviceId: 'device-budget-4', orgId: 'org-budget-4', partnerId: 'partner-budget-4' };
+    const { handlers, ws } = await connectedAgent('agent-budget-4', preValidatedAgent);
+
+    const now = Date.now();
+    vi.setSystemTime(now);
+    const sendUpdateStatus = () => handlers.onMessage({
+      data: JSON.stringify({ type: 'update_status', targetVersion: '1.2.3' }),
+    } as never, ws as never);
+
+    // update_status (the most DB-serializing frame type) must never get MORE room
+    // than the general lane — drained here through the real onMessage path
+    // (sniff + budget together), not the budget module directly.
+    for (let i = 0; i < 300; i += 1) await sendUpdateStatus();
+    ws.send.mockClear();
+    await sendUpdateStatus();
+    const errorFrames = vi.mocked(ws.send).mock.calls
+      .map((call) => JSON.parse(call[0] as string))
+      .filter((frame) => frame.type === 'error' && frame.code === 'MESSAGE_RATE_BUDGET_EXCEEDED');
+    expect(errorFrames).toHaveLength(1);
+    expect(errorFrames[0].messageType).toBe('update_status');
+  });
+});
+
+// update_status is a one-shot "about to self-update" notice. Repeated frames
+// for the same device must coalesce instead of each opening its own DB
+// transaction against the same devices row.
+describe('update_status write coalescing', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const preValidatedAgent = { deviceId: 'device-upd', orgId: 'org-123', partnerId: 'partner-123' };
+
+  function rigUpdate(whereImpl: () => Promise<unknown> = async () => []) {
+    const whereMock = vi.fn(whereImpl);
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+    vi.mocked(withDbAccessContext).mockImplementation(((_ctx: any, fn: any) => fn()) as any);
+    return { whereMock, setMock };
+  }
+
+  const frame = (targetVersion: string) => ({
+    data: JSON.stringify({ type: 'update_status', targetVersion }),
+  }) as any;
+
+  it('a concurrent burst of identical frames performs a single devices write', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { setMock } = rigUpdate(async () => { await gate; return []; });
+
+    const handlers = createAgentWsHandlers('agent-upd-burst', preValidatedAgent);
+    const ws = wsMock();
+
+    const pending = Array.from({ length: 50 }, () => handlers.onMessage(frame('2.0.0'), ws as any));
+    await new Promise((r) => setImmediate(r));
+    release();
+    await Promise.all(pending);
+
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'updating' }));
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  it('sequential repeats of the same target version write once', async () => {
+    const { setMock } = rigUpdate();
+
+    const handlers = createAgentWsHandlers('agent-upd-seq', preValidatedAgent);
+    const ws = wsMock();
+    for (let i = 0; i < 10; i++) {
+      await handlers.onMessage(frame('2.0.0'), ws as any);
+    }
+
+    expect(setMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new target version is written again', async () => {
+    const { setMock } = rigUpdate();
+
+    const handlers = createAgentWsHandlers('agent-upd-change', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onMessage(frame('2.0.0'), ws as any);
+    await handlers.onMessage(frame('2.0.0'), ws as any);
+    await handlers.onMessage(frame('2.0.1'), ws as any);
+
+    expect(setMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed write does not suppress the next frame', async () => {
+    let calls = 0;
+    const { setMock } = rigUpdate(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('db unavailable');
+      return [];
+    });
+
+    const handlers = createAgentWsHandlers('agent-upd-retry', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onMessage(frame('2.0.0'), ws as any);
+    await handlers.onMessage(frame('2.0.0'), ws as any);
+    await handlers.onMessage(frame('2.0.0'), ws as any);
+
+    expect(setMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('different devices are coalesced independently', async () => {
+    const { setMock } = rigUpdate();
+
+    const a = createAgentWsHandlers('agent-upd-a', preValidatedAgent);
+    const b = createAgentWsHandlers('agent-upd-b', { ...preValidatedAgent, deviceId: 'device-upd-b' });
+    await a.onMessage(frame('2.0.0'), wsMock() as any);
+    await b.onMessage(frame('2.0.0'), wsMock() as any);
+
+    expect(setMock).toHaveBeenCalledTimes(2);
   });
 });

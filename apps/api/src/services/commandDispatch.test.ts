@@ -84,6 +84,7 @@ import {
   claimPendingCommandForDelivery,
   claimPendingCommandsForDevice,
   releaseClaimedCommandDelivery,
+  expireRefusedClaimedCommandDelivery,
 } from './commandDispatch';
 
 const DEVICE_ROW = { id: 'dev-1', orgId: 'org-1', status: 'online', partnerId: 'partner-1' };
@@ -284,6 +285,38 @@ describe('command dispatch helpers', () => {
       'deviceCommands.type',
       ['pam_apply_v2', 'pam_cleanup_v2'],
     );
+  });
+
+  it('expires a refused claim so no heartbeat claims it again and the reaper reports why', async () => {
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const claimedAt = new Date('2026-03-31T00:00:00Z');
+    const before = Date.now();
+
+    await expireRefusedClaimedCommandDelivery('cmd-1', claimedAt, 'destination no longer resolves');
+
+    const setArg = set.mock.calls[0]![0] as {
+      status: string;
+      executedAt: null;
+      deliverBy: Date;
+      result: Record<string, unknown>;
+    };
+    expect(setArg.status).toBe('pending');
+    expect(setArg.executedAt).toBeNull();
+    // A deadline at "now" is excluded by every claim query (deliver_by > now)
+    // and picked up by the reaper's delivery clock, which owns propagation to
+    // restore jobs and DR executions.
+    expect(setArg.deliverBy.getTime()).toBeGreaterThanOrEqual(before);
+    expect(setArg.deliverBy.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(setArg.result).toEqual({ deliveryRefusal: 'destination no longer resolves' });
+    // CAS on the observed claim, exactly like a release.
+    const { params } = new PgDialect().sqlToQuery(where.mock.calls[0]![0] as never);
+    expect(params).toEqual(expect.arrayContaining([
+      'deviceCommands.id', 'cmd-1',
+      'deviceCommands.status', 'sent',
+      'deviceCommands.executedAt',
+    ]));
   });
 
   it('releases a claimed command back to pending state', async () => {

@@ -304,12 +304,16 @@ describe('phone routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe('Your organization does not allow SMS MFA');
+      // Mirrors enforceTotpEnrollmentPolicy's convention (routes/auth/mfa.ts):
+      // enrollment is a tenant-disableable-method control gate, so an
+      // unreadable settings read must fail closed on both axes, not silently
+      // fall through to "allowed".
       expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
         scope: 'organization',
         userId: 'user-1',
         orgId: 'org-1',
         partnerId: null,
-      });
+      }, { failClosed: true, failClosedMethods: true });
       expect(db.update).not.toHaveBeenCalled();
     });
 

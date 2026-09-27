@@ -11,6 +11,7 @@ let userRow: { id: string; status: string; partnerId?: string | null } | undefin
 let joinRow:
   | {
       session: {
+        createdAt: Date;
         userId: string;
         status: string;
         deviceId: string;
@@ -29,6 +30,7 @@ let joinRow:
     }
   | undefined = {
   session: {
+    createdAt: new Date(),
     userId: 'user-1',
     status: 'active',
     deviceId: 'dev-1',
@@ -161,6 +163,16 @@ vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => 'redis-client'),
 }));
 
+// resolveRemoteWsLiveAuthority (services/remoteWsAuthorization.ts), which
+// every function under test here goes through, now also consults the
+// blanket credential-revocation marker. Default it to "not revoked" so
+// these tests keep exercising their own scenarios (policy, offline device,
+// etc.) rather than tripping this unrelated check.
+vi.mock('../services/tokenRevocation', () => ({
+  isUserTokenRevoked: vi.fn(async () => false),
+  isTimestampRevoked: vi.fn(async () => false),
+}));
+
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({
     allowed: true,
@@ -257,6 +269,7 @@ beforeEach(() => {
   setUserRow({ id: 'user-1', status: 'active', partnerId: null });
   setJoinRow({
     session: {
+      createdAt: new Date(),
       userId: 'user-1',
       status: 'active',
       deviceId: 'dev-1',
@@ -416,7 +429,7 @@ describe('revalidateTunnelSession', () => {
 
   it('revokes when the tunnel session no longer belongs to the user', async () => {
     setJoinRow({
-      session: { userId: 'someone-else', status: 'active', deviceId: 'dev-1' },
+      session: { userId: 'someone-else', status: 'active', deviceId: 'dev-1', createdAt: new Date() },
       device: { id: 'dev-1', status: 'online' },
     });
     const result = await revalidateTunnelSession('tunnel-1', liveConn);
@@ -426,7 +439,7 @@ describe('revalidateTunnelSession', () => {
 
   it('revokes when the session has been ended/disconnected elsewhere', async () => {
     setJoinRow({
-      session: { userId: 'user-1', status: 'disconnected', deviceId: 'dev-1' },
+      session: { userId: 'user-1', status: 'disconnected', deviceId: 'dev-1', createdAt: new Date() },
       device: { id: 'dev-1', status: 'online' },
     });
     const result = await revalidateTunnelSession('tunnel-1', liveConn);
@@ -435,7 +448,7 @@ describe('revalidateTunnelSession', () => {
 
   it('revokes when the device has gone offline/quarantined', async () => {
     setJoinRow({
-      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1' },
+      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1', createdAt: new Date() },
       device: { id: 'dev-1', status: 'offline' },
     });
     const result = await revalidateTunnelSession('tunnel-1', liveConn);
@@ -455,7 +468,7 @@ describe('revalidateTunnelSession', () => {
 
   it('checks the proxy capability for proxy tunnels', async () => {
     setJoinRow({
-      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1', orgId: 'org-1', type: 'proxy' },
+      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1', orgId: 'org-1', type: 'proxy', createdAt: new Date() },
       device: { id: 'dev-1', orgId: 'org-1', status: 'online', agentId: 'agent-1' },
     });
     vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: false, reason: 'Disabled by policy' });
@@ -593,7 +606,7 @@ describe('enforceTunnelRevocation', () => {
     // Redis flag clear, but revalidateTunnelSession returns not-ok.
     vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
     setJoinRow({
-      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1' },
+      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1', createdAt: new Date() },
       device: { id: 'dev-1', status: 'offline' },
     });
     const ws = makeFakeWs();

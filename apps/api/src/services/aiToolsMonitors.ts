@@ -28,6 +28,7 @@ import type { AiTool } from './aiTools';
 import { isMonitorAttachableToPolicy } from './monitors/monitorAttachability';
 import { monitorsLinkSettings, readMonitorsLink, shouldRemoveEmptiedLink } from './monitors/monitorAttachments';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { toolErrorResult } from './aiToolErrors';
 import { describeFirstZodIssue } from '../lib/zodIssues';
@@ -376,6 +377,17 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_monitor_definitions', async (input, auth) => {
       const action = input.action as string;
+
+      // Site-ceiling gate up front, before any branch: a monitor's responses
+      // compile verbatim into a managed automation that runs as SYSTEM on
+      // every device an attaching org-wide policy reaches, so every action
+      // here (create, update, enable, disable, delete, attach, detach) takes
+      // the same capability as every other org-wide governance write. This
+      // tool has no TOOL_TIERS entry yet (latent), so the gate must be in
+      // place before it ever gets one.
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'create') {
         const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});

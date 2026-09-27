@@ -51,6 +51,18 @@ async function getCommandQueue() {
 }
 
 /**
+ * This lane dispatches `list_services` / `list_processes` straight
+ * through commandQueue (not `aiDispatch`), so it runs the same per-device
+ * remote-tools policy check itself. A refused read is `inconclusive`, never a
+ * pass or a fail. Lazy for the same reason as `getCommandQueue`.
+ */
+async function remoteToolsRefusal(deviceId: string, type: string): Promise<string | null> {
+  const { checkAiRemoteToolsPolicy } = await import('../aiRemoteToolsPolicy');
+  const decision = await checkAiRemoteToolsPolicy(deviceId, type);
+  return decision.allowed ? null : decision.error;
+}
+
+/**
  * Reserved, within the SAME outer budget as the verification read (see
  * below), for `recordActVerifyFailureAlert`'s DB insert — it runs AFTER the
  * read resolves, still inside the same postToolUse call.
@@ -162,6 +174,8 @@ async function verifyServiceRunning(
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  const refused = await remoteToolsRefusal(run.deviceId, 'list_services');
+  if (refused) return { verification: 'inconclusive', detail: refused };
   const { executeCommandWithSystemPrecheck } = await getCommandQueue();
   // NO DB context held across this call (#4150): it is a device round-trip
   // bounded at VERIFY_READ_TIMEOUT_MS, and `executeCommandWithSystemPrecheck`
@@ -232,6 +246,8 @@ export async function verifyProcessAbsentByNameForTask(
    */
   aiOrigin?: AiOriginRef,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  const refused = await remoteToolsRefusal(device.deviceId, 'list_processes');
+  if (refused) return { verification: 'inconclusive', detail: refused };
   const { executeCommandWithSystemPrecheck } = await getCommandQueue();
   const result = await executeCommandWithSystemPrecheck(
     device.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
@@ -262,6 +278,8 @@ async function verifyProcessAbsent(
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  const refused = await remoteToolsRefusal(run.deviceId, 'list_processes');
+  if (refused) return { verification: 'inconclusive', detail: refused };
   const { executeCommandWithSystemPrecheck } = await getCommandQueue();
   // No DB context held across the round-trip — see `verifyServiceRunning`.
   const result = await executeCommandWithSystemPrecheck(

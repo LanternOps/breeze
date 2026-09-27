@@ -50,7 +50,7 @@ const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const KEY_ID = '33333333-3333-4333-8333-333333333333';
 const OTHER_KEY_ID = '44444444-4444-4444-8444-444444444444';
 
-function buildApp(): Hono {
+function buildApp(mfaOverride?: { mfa: boolean } | null): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -61,6 +61,8 @@ function buildApp(): Hono {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
+      token: mfaOverride === undefined ? { mfa: true } : mfaOverride,
+      principal: { kind: 'user' },
     } as any);
     await next();
   });
@@ -190,6 +192,16 @@ describe('recoveryKeysRoutes', () => {
     const auditArg = writeRouteAuditMock.mock.calls[0]![1] as any;
     expect(auditArg.action).toBe('device.recovery_key.reveal');
     expect(JSON.stringify(auditArg.details)).not.toContain(PLAINTEXT_KEY);
+  });
+
+  it('reveal refuses without a fresh MFA-satisfied session', async () => {
+    const app = buildApp({ mfa: false });
+
+    const res = await app.request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/${KEY_ID}/reveal`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('MFA_REQUIRED');
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('reveal returns 404 when key id not found for device', async () => {

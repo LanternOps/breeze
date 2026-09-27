@@ -256,6 +256,9 @@ importers:
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
+      re2-wasm:
+        specifier: ^1.0.2
+        version: 1.0.2
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -1278,6 +1281,9 @@ importers:
       mailparser:
         specifier: ^3.9.14
         version: 3.9.15
+      re2-wasm:
+        specifier: ^1.0.2
+        version: 1.0.2
       v9u-smb2:
         specifier: ^1.0.6
         version: 1.0.6
@@ -10405,6 +10411,10 @@ packages:
   raw-body@3.0.2:
     resolution: {integrity: sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA==}
     engines: {node: '>= 0.10'}
+
+  re2-wasm@1.0.2:
+    resolution: {integrity: sha512-VXUdgSiUrE/WZXn6gUIVVIsg0+Hp6VPZPOaHCay+OuFKy6u/8ktmeNEf+U5qSA8jzGGFsg8jrDNu1BeHpz2pJA==}
+    engines: {node: '>=10'}
 
   react-devtools-core@6.1.5:
     resolution: {integrity: sha512-ePrwPfxAnB+7hgnEr8vpKxL9cmnp7F322t8oqcPshbIQQhDKgFDW4tjhF2wjVbdXF9O/nyuy3sQWd9JGpiLPvA==}
@@ -22711,6 +22721,8 @@ snapshots:
       http-errors: 2.0.1
       iconv-lite: 0.7.3
       unpipe: 1.0.0
+
+  re2-wasm@1.0.2: {}
 
   react-devtools-core@6.1.5:
     dependencies:

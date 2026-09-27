@@ -93,6 +93,12 @@ vi.mock("../middleware/auth", () => ({
   requireScope: () => vi.fn((_c: any, next: any) => next()),
   requirePermission: () => vi.fn((_c: any, next: any) => next()),
   requireMfa: () => vi.fn((_c: any, next: any) => next()),
+  // Default to satisfied — most tests in this file exercise write routes
+  // (already gated by the mocked requirePermission/requireMfa above), not
+  // the read-route shortCode-visibility gate directly (see
+  // enrollmentKeys_list_create.test.ts / enrollmentKeys_get_rotate_delete.test.ts
+  // for that behavior's dedicated coverage).
+  hasSatisfiedMfa: vi.fn(() => true),
 }));
 
 vi.mock("../services/permissions", () => ({
@@ -100,6 +106,16 @@ vi.mock("../services/permissions", () => ({
     ORGS_READ: { resource: "orgs", action: "read" },
     ORGS_WRITE: { resource: "orgs", action: "write" },
   },
+  getUserPermissions: vi.fn(async () => ({
+    permissions: ["orgs:read", "orgs:write"],
+  })),
+  hasPermission: (
+    userPerms: { permissions: string[] },
+    resource: string,
+    action: string,
+  ) =>
+    userPerms.permissions.includes(`${resource}:${action}`) ||
+    userPerms.permissions.includes("*:*"),
 }));
 
 vi.mock("../services/auditService", () => ({
@@ -978,7 +994,7 @@ describe("GET /s/:code", () => {
     expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
   });
 
-  it("does not shorten the download child key's TTL when the partner cap is above the default (no-op clamp)", async () => {
+  it("still bounds the download child key's TTL to the 24h ceiling when the partner cap is generous (hard ceiling, not just the partner-cap clamp)", async () => {
     mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
     const shortLinkRow = makeKeyRow({
       shortCode: "generouscap",
@@ -1009,9 +1025,12 @@ describe("GET /s/:code", () => {
 
     expect(res.status).toBe(200);
     const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
-    // Unchanged: still the full 43200-minute (30-day) default.
-    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 43199 * 60 * 1000);
-    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 43201 * 60 * 1000);
+    // Bounded to the 24h PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES ceiling, NOT
+    // the 43200-minute (30-day) default a generous partner cap would
+    // otherwise let through — this download child is a short-lived
+    // transport container for one install, not a long-lived credential.
+    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 23 * 60 * 60 * 1000);
+    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
   });
 
   // #3038: the Windows bootstrap token minted on a short-link download must
@@ -1492,6 +1511,90 @@ describe("GET /s/:code", () => {
     // No atomic claim, no child key insert.
     expect(db.update).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // Fix round (#2776 lineage follow-up): a child key minted from a public
+  // /s/:code redemption must record which parent link row (and which of its
+  // rotation epochs) minted it, so rotating the parent can find and revoke
+  // this child. Before this, the child carried no back-link at all.
+  it("stamps the download child key with the parent link's id and credential generation", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "lineage12345",
+      installerPlatform: "macos",
+      credentialGeneration: 3,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([makeChildKeyRow({ installerPlatform: "macos" })]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request("/s/lineage12345");
+
+    expect(res.status).toBe(200);
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    const insertedRow = insertValues.mock.calls[0]![0] as {
+      sourceLinkKeyId: string;
+      sourceLinkKeyGeneration: number;
+    };
+    expect(insertedRow.sourceLinkKeyId).toBe(shortLinkRow.id);
+    expect(insertedRow.sourceLinkKeyGeneration).toBe(3);
+  });
+
+  // Bound the download child key's TTL independent of the (much longer,
+  // 30-day) general default: this key is a short-lived transport container
+  // for one anonymous install, not a long-lived credential, so a generous
+  // partner cap must not hand it the full 30-day lifetime.
+  it("bounds the download child key's TTL to a short ceiling even under a generous partner cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
+    const shortLinkRow = makeKeyRow({
+      shortCode: "boundedttl12",
+      installerPlatform: "macos",
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([makeChildKeyRow({ installerPlatform: "macos" })]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const before = Date.now();
+    const res = await app.request("/s/boundedttl12");
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
+    // 24h ceiling, not the 43200-minute (30-day) default the generous
+    // partner cap would otherwise allow through.
+    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
+    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 23 * 60 * 60 * 1000);
   });
 });
 

@@ -55,6 +55,12 @@ import {
 
 const { db } = dbModule;
 
+// Ticket subjects are untrusted free text (portal/inbound-email origin), only
+// length-validated. Every subject-header composition site must strip embedded
+// line breaks before the value can reach a mail header — the same treatment
+// already applied on the customer-facing path (renderPartnerEmail.ts).
+const stripHeaderBreaks = (value: string): string => value.replace(/[\r\n]+/g, ' ');
+
 // Mirror the alertWorker pattern: wrap in withSystemDbAccessContext if available.
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -296,7 +302,7 @@ async function collectAssigneeNotification(
   const emails: EmailPayload[] = assignee.email
     ? [{
         to: assignee.email,
-        subject: `[${label}] Assigned to you: ${ticket.subject}`,
+        subject: stripHeaderBreaks(`[${label}] Assigned to you: ${ticket.subject}`),
         html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
         bestEffort: true,
         purpose: 'ticket.staff_notification',
@@ -597,7 +603,7 @@ async function collectSlaBreachNotification(
       if (wrote && assignee.email) {
         emails.push({
           to: assignee.email,
-          subject: `SLA breached: ${label} — ${ticket.subject}`,
+          subject: stripHeaderBreaks(`SLA breached: ${label} — ${ticket.subject}`),
           html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
           bestEffort: true,
           purpose: 'ticket.staff_notification',

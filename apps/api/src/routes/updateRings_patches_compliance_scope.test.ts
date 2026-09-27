@@ -16,6 +16,8 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('./updateRingsHelpers', () => ({
   resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
   resolveRingDeviceIds: vi.fn().mockResolvedValue([]),
+  resolveRingDeviceCountsWithWarnings: vi.fn().mockResolvedValue(new Map()),
+  resolveRingDeviceIdsWithWarnings: vi.fn().mockResolvedValue({ deviceIds: [], warnings: [] }),
 }));
 
 vi.mock('../db', () => ({
@@ -113,7 +115,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { resolveRingDeviceIds } from './updateRingsHelpers';
+import { resolveRingDeviceIdsWithWarnings } from './updateRingsHelpers';
 
 function makeRing(overrides: Record<string, unknown> = {}) {
   return {
@@ -145,7 +147,7 @@ describe('updateRings routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(resolveRingDeviceIds).mockResolvedValue([]);
+    vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValue({ deviceIds: [], warnings: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
@@ -581,7 +583,7 @@ describe('updateRings routes', () => {
   describe('GET /update-rings/:id/compliance', () => {
     it('should return compliance data for a ring with assigned devices', async () => {
       // Ring has devices assigned via config-policy assignments
-      vi.mocked(resolveRingDeviceIds).mockResolvedValueOnce(['device-1', 'device-2']);
+      vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValueOnce({ deviceIds: ['device-1', 'device-2'], warnings: [] });
 
       vi.mocked(db.select)
         // ring lookup
@@ -621,11 +623,11 @@ describe('updateRings routes', () => {
       expect(body.data.summary).toBeDefined();
       expect(body.data.compliancePercent).toBeDefined();
       // Confirm device resolution used the helper, not a direct org-scoped query
-      expect(vi.mocked(resolveRingDeviceIds)).toHaveBeenCalledWith(RING_ID);
+      expect(vi.mocked(resolveRingDeviceIdsWithWarnings)).toHaveBeenCalledWith(RING_ID);
     });
 
     it('should return 100% compliance when no devices assigned to ring', async () => {
-      // resolveRingDeviceIds returns [] by default in beforeEach
+      // resolveRingDeviceIdsWithWarnings returns { deviceIds: [], warnings: [] } by default in beforeEach
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({

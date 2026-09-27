@@ -885,6 +885,26 @@ moveOrgRoutes.post(
           sql`DELETE FROM device_group_memberships WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // device_function_assessments.run_id anchors
+        // device_function_assessments_run_org_fk ((run_id, org_id) ->
+        // ai_agent_runs(id, org_id)), DEFERRABLE INITIALLY IMMEDIATE.
+        // ai_agent_runs stays with the SOURCE org on a device move (owner
+        // decision 2026-08-23, same rule as the ai_agent_runs statement
+        // below), so once the loop just below re-stamps
+        // device_function_assessments.org_id to the target org (it IS in
+        // getDeviceOrgDenormalizedTables()), the composite pair no longer
+        // resolves and that loop's own UPDATE 23503s before it can complete,
+        // aborting the whole move. Sever the pointer first — normally a no-op
+        // by the time this runs, since the devices UPDATE above already fired
+        // breeze_cascade_device_org_id(), which carries the identical
+        // statement; kept so the route stays correct on its own if the
+        // trigger is ever absent, same convergent-copy shape as the
+        // ai_agent_runs statement below.
+        await tx.execute(
+          sql`UPDATE device_function_assessments SET run_id = NULL
+              WHERE device_id = ${deviceId}::uuid AND run_id IS NOT NULL`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {

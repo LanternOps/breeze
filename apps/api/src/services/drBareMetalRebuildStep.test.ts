@@ -57,6 +57,39 @@ describe('drRestoreConfigSchema', () => {
   });
 });
 
+describe('drRestoreConfigSchema — no stored credentials', () => {
+  it.each([
+    ['a top-level storage destination', { commandType: 'hyperv_restore', providerConfig: { bucket: 'b' }, payload: {} }],
+    ['a payload storage destination', {
+      commandType: 'mssql_restore',
+      payload: { snapshotId: 'snap-1', provider: 's3', providerConfig: { accessKey: 'AKIA-SYNTHETIC', secretKey: 'synthetic' } },
+    }],
+    ['a sealed destination copied from a command', { commandType: 'hyperv_restore', payload: { providerConfigEnvelope: 'enc:v3:x' } }],
+    ['a password', { commandType: 'vm_restore_from_backup', payload: { snapshotId: 'snap-1', password: 'synthetic' } }],
+    ['a nested secret key', { commandType: 'vm_instant_boot', payload: { options: { secretAccessKey: 'synthetic' } } }],
+    ['a bearer recovery token', { commandType: 'bmr_recover', payload: { recoveryToken: 'synthetic', serverUrl: 'https://x.example' } }],
+    ['an api key', { commandType: 'vm_restore_from_backup', payload: { apiKey: 'synthetic' } }],
+  ])('rejects %s', (_label, cfg) => {
+    const result = drRestoreConfigSchema.safeParse(cfg);
+    expect(result.success).toBe(false);
+  });
+
+  it('still accepts ordinary step configuration and identifiers', () => {
+    const cfg = {
+      commandType: 'hyperv_restore',
+      payload: {
+        snapshotId: 'snap-1',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+        noRecovery: false,
+        tokenExpiresAt: '2026-10-01T00:00:00Z',
+        recoveryTokenId: '99999999-9999-4999-8999-999999999999',
+      },
+    };
+    expect(drRestoreConfigSchema.parse(cfg)).toEqual(cfg);
+  });
+});
+
 describe('isBareMetalRebuildConfig', () => {
   it.each([
     [{ commandType: 'BARE_METAL_REBUILD' }, true],

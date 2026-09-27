@@ -25,7 +25,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id' },
-  discoveryJobs: { id: 'discoveryJobs.id' },
+  discoveryJobs: { id: 'discoveryJobs.id', status: 'discoveryJobs.status' },
   discoveredAssets: {
     id: 'discoveredAssets.id',
     orgId: 'discoveredAssets.orgId',
@@ -909,6 +909,7 @@ describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => 
     siteId: 'site-1',
     agentId: 'agent-1',
   };
+  const JOB_ROW_SCHEDULED = { status: 'scheduled' };
   const PROFILE_ROW = { id: 'profile-1' };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
 
@@ -918,7 +919,7 @@ describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    selectQueue = [[PROFILE_ROW], [VALID_AGENT_ROW]];
+    selectQueue = [[JOB_ROW_SCHEDULED], [PROFILE_ROW], [VALID_AGENT_ROW]];
     selectCallIndex = 0;
     updateLog = [];
 
@@ -977,5 +978,21 @@ describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => 
       const message = (u.payload.errors as { message?: string } | undefined)?.message;
       return typeof message === 'string' && /dispatch outcome indeterminate/i.test(message);
     })).toBe(true);
+  });
+
+  // The cancel route can only best-effort remove the queued BullMQ dispatch;
+  // a job already picked up for processing when cancel ran still reaches
+  // here. The worker must not decrypt SNMP credentials, dispatch to the
+  // agent, or overwrite the operator's 'cancelled' status.
+  it('skips dispatch entirely when the job was cancelled before the worker picked it up', async () => {
+    selectQueue = [[{ status: 'cancelled' }]];
+    selectCallIndex = 0;
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: null, durationMs: expect.any(Number) });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
+    expect(updateLog).toEqual([]);
   });
 });

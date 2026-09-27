@@ -205,6 +205,70 @@ func testRunAgentGuardFailureStopsBeforeInitialization(t *testing.T, guardErr er
 // patched template MSI would pass a 512-char right-padded server URL to the
 // agent and url.Parse would reject it with "invalid character \" \" in host
 // name".
+func TestResolveEnrollmentKeyPrefersPositional(t *testing.T) {
+	t.Setenv("BREEZE_AGENT_ENROLLMENT_KEY", "brz_from_env")
+	got := resolveEnrollmentKey("brz_from_arg")
+	if got != "brz_from_arg" {
+		t.Fatalf("got %q, want the positional value to win", got)
+	}
+}
+
+// TestResolveEnrollmentKeyFallsBackToEnv proves the environment variable is
+// used when no positional key is given — the delivery path install.sh and
+// the other unattended installers use so the key never appears in this
+// process's own argv.
+func TestResolveEnrollmentKeyFallsBackToEnv(t *testing.T) {
+	t.Setenv("BREEZE_AGENT_ENROLLMENT_KEY", "brz_from_env")
+	got := resolveEnrollmentKey("")
+	if got != "brz_from_env" {
+		t.Fatalf("got %q, want the environment fallback", got)
+	}
+}
+
+func TestResolveEnrollmentKeyEmptyWhenNeitherSet(t *testing.T) {
+	t.Setenv("BREEZE_AGENT_ENROLLMENT_KEY", "")
+	got := resolveEnrollmentKey("")
+	if got != "" {
+		t.Fatalf("got %q, want empty string", got)
+	}
+}
+
+func TestVerifyOwnExecutableTrustedIfPrivilegedSkipsWhenNotPrivileged(t *testing.T) {
+	origEuid, origResolve, origVerify := geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn
+	t.Cleanup(func() { geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn = origEuid, origResolve, origVerify })
+
+	geteuidFn = func() int { return 501 }
+	verifyTrustedExecutableOwnerFn = func(string) error {
+		t.Fatal("verifyTrustedExecutableOwnerFn must not be called when not privileged")
+		return nil
+	}
+
+	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
+		t.Fatalf("got %v, want nil (check skipped for a non-root caller)", err)
+	}
+}
+
+func TestVerifyOwnExecutableTrustedIfPrivilegedChecksWhenRoot(t *testing.T) {
+	origEuid, origResolve, origVerify := geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn
+	t.Cleanup(func() { geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn = origEuid, origResolve, origVerify })
+
+	geteuidFn = func() int { return 0 }
+	osExecutableFn = func() (string, error) { return "/usr/local/bin/breeze-agent", nil }
+	var gotPath string
+	verifyTrustedExecutableOwnerFn = func(path string) error {
+		gotPath = path
+		return errors.New("not owned by root")
+	}
+
+	err := verifyOwnExecutableTrustedIfPrivileged()
+	if err == nil {
+		t.Fatal("expected the underlying ownership failure to propagate")
+	}
+	if gotPath != "/usr/local/bin/breeze-agent" {
+		t.Fatalf("got path %q, want the resolved executable path", gotPath)
+	}
+}
+
 func TestTrimEnrollInputs(t *testing.T) {
 	t.Parallel()
 

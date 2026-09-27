@@ -59,10 +59,23 @@ export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
     conditions.push(
       sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
     );
+    if (auth.partnerId) {
+      conditions.push(
+        sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+      );
+    }
+    return conditions;
   }
   if (auth.partnerId) {
+    // Partner-scope caller with no direct org: mirror
+    // routes/customFields.ts:238-249 (`partnerId = P OR orgId IN
+    // accessibleOrgIds`). `partnerId = P OR partnerId IS NULL` matches every
+    // org-owned definition system-wide, leaving RLS as the only gate.
+    const accessibleOrgIds = (auth.accessibleOrgIds ?? []).filter((id): id is string => Boolean(id));
     conditions.push(
-      sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+      accessibleOrgIds.length > 0
+        ? sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.orgId} IN ${accessibleOrgIds})`
+        : eq(customFieldDefinitions.partnerId, auth.partnerId)
     );
   }
   return conditions;

@@ -7,7 +7,8 @@ import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
-import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, requireDevicesExecute, SITE_ACCESS_DENIED } from './helpers';
+import { isAgentConfigPath } from './sensitiveTargets';
 import {
   isCommandFailure,
   mapCommandFailure,
@@ -124,6 +125,20 @@ fileBrowserRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    // Reading file content back off the device is a privileged operation —
+    // require devices:execute, matching the AI tool path (see
+    // requireDevicesExecute for the parity rationale).
+    if (!(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+
+    // Deny the agent's own config/secrets directory outright, regardless of
+    // the caller's permission — this is the file that holds the agent's
+    // bearer and mTLS credentials.
+    if (isAgentConfigPath(path)) {
+      return c.json({ error: 'Access to this path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     const result = await executeCommand(deviceId, CommandTypes.FILE_READ, {
       path,
       encoding: 'base64'
@@ -204,6 +219,12 @@ fileBrowserRoutes.post(
 
     const body = c.req.valid('json');
 
+    // Deny overwriting the agent's own config/secrets directory outright,
+    // regardless of the caller's permission.
+    if (isAgentConfigPath(body.path)) {
+      return c.json({ error: 'Access to this path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     // Large files (base64-encoded) need more time to transit DB → WS → agent → disk.
     const sizeBytes = Buffer.byteLength(body.content, 'utf8');
     const timeoutMs = sizeBytes > 1024 * 1024 ? 120000 : 30000;
@@ -279,6 +300,20 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const item of items) {
+      // Deny the agent's own config/secrets directory outright as either
+      // endpoint, regardless of the caller's permission — otherwise a copy
+      // to an ordinary-looking path is an easy way to route around the
+      // download route's deny on the literal requested path.
+      if (isAgentConfigPath(item.sourcePath) || isAgentConfigPath(item.destPath)) {
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: 'failure',
+          error: 'Access to this path is not permitted',
+          code: 'sensitive_path_denied',
+        });
+        continue;
+      }
       try {
         const result = await executeCommand(deviceId, CommandTypes.FILE_COPY, {
           sourcePath: item.sourcePath,
@@ -352,6 +387,18 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const item of items) {
+      // Deny the agent's own config/secrets directory outright as either
+      // endpoint, regardless of the caller's permission.
+      if (isAgentConfigPath(item.sourcePath) || isAgentConfigPath(item.destPath)) {
+        results.push({
+          sourcePath: item.sourcePath,
+          destPath: item.destPath,
+          status: 'failure',
+          error: 'Access to this path is not permitted',
+          code: 'sensitive_path_denied',
+        });
+        continue;
+      }
       try {
         const result = await executeCommand(deviceId, CommandTypes.FILE_RENAME, {
           oldPath: item.sourcePath,
@@ -425,6 +472,17 @@ fileBrowserRoutes.post(
 
     const results = [];
     for (const path of paths) {
+      // Deny deleting the agent's own config/secrets directory outright,
+      // regardless of the caller's permission.
+      if (isAgentConfigPath(path)) {
+        results.push({
+          path,
+          status: 'failure',
+          error: 'Access to this path is not permitted',
+          code: 'sensitive_path_denied',
+        });
+        continue;
+      }
       try {
         const result = await executeCommand(deviceId, CommandTypes.FILE_DELETE, {
           path,

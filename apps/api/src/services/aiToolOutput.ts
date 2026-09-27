@@ -1,5 +1,6 @@
 import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
+import { sanitizeUntrustedText } from './aiInputSanitizer';
 
 type CompactStats = {
   stringsTruncated: number;
@@ -887,6 +888,83 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
   return { artifact, compacted };
 }
 
+/**
+ * Registry of tools whose result carries raw, endpoint- or vendor-sourced
+ * text — content the model must treat as data, never as instructions.
+ * `aiToolOutput.ts` is the one chokepoint every `aiTools*.ts` result passes
+ * through on its way into chat/act-mode context (see the error-scrub comment
+ * above), so registering a tool's raw-text field names here is enough — the
+ * tool handler itself does not need its own `sanitizeUntrustedText` call.
+ *
+ * Field NAME match, not a full JSON path: these results are homogeneous
+ * arrays of rows (log lines, incidents) where the same raw-text key recurs
+ * at every row. Matching stays scoped to the tools listed here, so it can
+ * never reach an unrelated tool's identically-named field.
+ *
+ * Extend this list (rather than adding a per-file `wrapUntrustedData` call)
+ * whenever a new tool surfaces free text collected from an endpoint, agent,
+ * external vendor feed, or portal/email submission.
+ */
+export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Windows/syslog event text: writable by any local unprivileged process.
+  search_logs: new Set(['message']),
+  get_log_trends: new Set(['source']),
+  detect_log_correlations: new Set(['source']),
+  // Agent diagnostic-log text: same source class as search_logs above.
+  search_agent_logs: new Set(['message']),
+  // Huntress incident text: vendor-authored, but routinely echoes
+  // endpoint-chosen artifact names (filenames, process names, paths).
+  get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // Ticket subject/description can originate from an external requester
+  // (portal or inbound email), not only from a technician.
+  manage_tickets: new Set(['subject', 'description']),
+  // Alert title/message originate from a rule match against endpoint-
+  // reported data — the same field this tool's task-prompt sibling
+  // (runnerPrompt.ts) already sanitizes when it inlines them directly.
+  manage_alerts: new Set(['title', 'message']),
+  // A device's own hostname/display name are self-reported at enrollment,
+  // not admin-assigned.
+  query_devices: new Set(['hostname', 'displayName']),
+  get_device_details: new Set(['hostname', 'displayName']),
+  // get_device_context's CURRENT result is plain text (device memory —
+  // issues/quirks/follow-ups), never a JSON `hostname`/`displayName` field,
+  // and it already self-fences that text with its own inline
+  // `wrapUntrustedData('device_memory', …)` call in aiToolsDevice.ts. This
+  // entry is a forward guard in case a future revision adds a JSON device
+  // summary to the result — it is a no-op against today's shape, not an
+  // active defense; query_devices/get_device_details cover the real
+  // hostname/displayName exposure.
+  get_device_context: new Set(['hostname', 'displayName']),
+} as const;
+
+/**
+ * Recursively neutralizes injection-shaped text (control-char smuggling,
+ * role-impersonation, override phrases, chatml/XML instruction-boundary
+ * imitation) in every field named in `fieldNames`, wherever it appears in
+ * `value`. Values are replaced in place with `sanitizeUntrustedText`'s
+ * output; everything else — including sibling fields — is left untouched.
+ */
+function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => fenceRawTextFields(entry, fieldNames));
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      out[key] = fieldNames.has(key) && typeof v === 'string' && v.length > 0
+        ? sanitizeUntrustedText(v)
+        : fenceRawTextFields(v, fieldNames);
+    }
+    return out;
+  }
+  return value;
+}
+
+function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
+  const fieldNames = RAW_TEXT_FIELDS_BY_TOOL[toolName];
+  return fieldNames ? fenceRawTextFields(value, fieldNames) : value;
+}
+
 export function compactToolResultForChat(
   toolName: string,
   rawResult: string,
@@ -942,7 +1020,14 @@ export function compactToolResultForChat(
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
   const errorScrubbed = scrubErrorFieldsDeep(parsed);
 
-  const minimized = sanitizeToolPayloadValue(toolName, errorScrubbed, stats);
+  // Neutralize injection-shaped text in fields that carry raw, endpoint- or
+  // vendor-sourced content before it is measured/compacted. Same chokepoint
+  // rationale as the error scrub above: this runs once here instead of
+  // requiring every tool handler that returns one of these fields to
+  // remember to call `sanitizeUntrustedText` itself.
+  const untrustedFenced = fenceRegisteredRawTextFields(toolName, errorScrubbed);
+
+  const minimized = sanitizeToolPayloadValue(toolName, untrustedFenced, stats);
   const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 

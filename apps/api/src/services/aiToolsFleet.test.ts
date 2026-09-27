@@ -75,6 +75,14 @@ vi.mock('../db', () => ({
               limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) })),
             })),
             limit: vi.fn(() => Promise.resolve([])),
+            // Org-wide manage_patches:list groups by patch identity instead
+            // of selectDistinct (severity/category are now per-device
+            // derived, so distinct rows can no longer collapse on their own).
+            groupBy: vi.fn(() => ({
+              orderBy: vi.fn(() => ({
+                limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) })),
+              })),
+            })),
           })),
         })),
       })),

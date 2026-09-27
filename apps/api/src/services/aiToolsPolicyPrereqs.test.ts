@@ -601,6 +601,94 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.approvalGeneration).toBeDefined();
   });
+
+  // An endpoint-only (or bucket-only) update used to replace providerConfig
+  // wholesale, so any stored field the caller didn't mention was silently
+  // deleted — including accessKey/secretKey. These pin the merge-preserve fix.
+  it('preserves the stored access/secret key on an update that only changes the bucket', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'old-bucket', region: 'us-east-1', accessKey: 'stored-access-key', secretKey: 'stored-secret-key',
+      },
+    });
+    mockUpdate();
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { bucket: 'new-bucket', region: 'us-east-1' } },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.providerConfig.bucket).toBe('new-bucket');
+    expect(setArg.providerConfig.accessKey).toBe('stored-access-key');
+    expect(setArg.providerConfig.secretKey).toBe('stored-secret-key');
+  });
+
+  // Same origin-binding contract as credentialOriginBinding.ts, applied to the
+  // AI-tool write path: a stored key must not be carried forward across an S3
+  // endpoint change without being re-entered.
+  it('refuses an S3 endpoint change that would carry the stored access/secret key to the new endpoint', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups', region: 'us-east-1', accessKey: 'stored-access-key', secretKey: 'stored-secret-key',
+        endpoint: 'https://storage.example.com',
+      },
+    });
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        configId: BACKUP_CONFIG_ID,
+        providerConfig: { bucket: 'backups', region: 'us-east-1', endpoint: 'https://other-origin.example' },
+      },
+      makeOrgAuth()
+    );
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/re-entering the access key and secret key/i);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an S3 endpoint change when a fresh access/secret key is supplied', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups', region: 'us-east-1', accessKey: 'stored-access-key', secretKey: 'stored-secret-key',
+        endpoint: 'https://storage.example.com',
+      },
+    });
+    mockUpdate();
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        configId: BACKUP_CONFIG_ID,
+        providerConfig: {
+          bucket: 'backups', region: 'us-east-1', endpoint: 'https://other-origin.example',
+          accessKey: 'fresh-access-key', secretKey: 'fresh-secret-key',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.providerConfig.endpoint).toBe('https://other-origin.example/');
+    expect(setArg.providerConfig.accessKey).toBe('fresh-access-key');
+    expect(setArg.providerConfig.secretKey).toBe('fresh-secret-key');
+  });
 });
 
 /**

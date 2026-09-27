@@ -4,6 +4,8 @@ const {
   getEligibilityMock,
   advanceUserEpochsMock,
   setexMock,
+  setMock,
+  evalMock,
   sendPasswordResetMock,
   sendVerificationEmailMock,
   sendSignupAttemptMock,
@@ -17,6 +19,13 @@ const {
   getEligibilityMock: vi.fn(),
   advanceUserEpochsMock: vi.fn(),
   setexMock: vi.fn(async (_key: string, _ttl: number, _value: string) => 'OK'),
+  // ioredis-style: set(key, val, 'EX', ttl, 'NX') -> 'OK' | null. Defaults to
+  // claiming the cooldown successfully (matches the pre-existing tests, which
+  // exercise the always-first-request-in-window path).
+  setMock: vi.fn(async (..._args: unknown[]): Promise<string | null> => 'OK'),
+  // ioredis-style eval(script, numkeys, ...keys, ...argv) for the
+  // compare-and-delete release. Defaults to "released" (1).
+  evalMock: vi.fn(async (..._args: unknown[]): Promise<number> => 1),
   sendPasswordResetMock: vi.fn(async () => undefined),
   sendVerificationEmailMock: vi.fn(async (_p: { to: string; name?: string; verificationUrl: string }) => undefined),
   sendSignupAttemptMock: vi.fn(async (_p: { to: string; name?: string | null }) => undefined),
@@ -45,7 +54,10 @@ vi.mock('../db/schema', () => ({
   users: { id: 'users.id', name: 'users.name', email: 'users.email' },
 }));
 
-const redis = { setex: setexMock };
+// `eval` here is ioredis's client method for running a server-side Redis Lua
+// script (EVAL command) — not JavaScript's eval. It executes literal Lua
+// against Redis, no client-controlled code. Mocked only, never invoked.
+const redis = { setex: setexMock, set: setMock, eval: evalMock };
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => redis),
 }));
@@ -91,6 +103,10 @@ describe('handleAuthEmailJob — password-reset', () => {
     advanceUserEpochsMock.mockReset();
     setexMock.mockReset();
     setexMock.mockResolvedValue('OK');
+    setMock.mockReset();
+    setMock.mockResolvedValue('OK');
+    evalMock.mockReset();
+    evalMock.mockResolvedValue(1);
     sendPasswordResetMock.mockReset();
     sendPasswordResetMock.mockResolvedValue(undefined);
     recordFailedLoginMock.mockReset();
@@ -160,6 +176,80 @@ describe('handleAuthEmailJob — password-reset', () => {
     expect(createAuditLogMock).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'user.password.reset.requested', result: 'denied' }),
     );
+  });
+
+  it('claims a per-user cooldown before minting a new generation (keyed on userId, NX+EX)', async () => {
+    getEligibilityMock.mockResolvedValue({ allowed: true, userId: 'u1', email: 'admin@msp.com' });
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 7,
+    });
+    await handleAuthEmailJob({ kind: 'password-reset', email: 'admin@msp.com' });
+    expect(setMock).toHaveBeenCalledTimes(1);
+    const [key, value, ...rest] = setMock.mock.calls[0]!;
+    expect(key).toBe('reset-cooldown:u1');
+    // A unique per-attempt token, not a constant sentinel — the release path
+    // is a compare-and-delete keyed on this exact value (see the dedicated
+    // release tests below).
+    expect(typeof value).toBe('string');
+    expect((value as string).length).toBeGreaterThan(0);
+    expect(rest).toContain('NX');
+    expect(rest).toContain('EX');
+    // Nothing released a claim that was never contested.
+    expect(evalMock).not.toHaveBeenCalled();
+  });
+
+  it('a second accepted request for the SAME user inside the cooldown window: no epoch advance, no mail', async () => {
+    getEligibilityMock.mockResolvedValue({ allowed: true, userId: 'u1', email: 'admin@msp.com' });
+    setMock.mockResolvedValueOnce(null); // cooldown already held by a prior request
+    await expect(
+      handleAuthEmailJob({ kind: 'password-reset', email: 'admin@msp.com' }),
+    ).resolves.toBeUndefined();
+    expect(advanceUserEpochsMock).not.toHaveBeenCalled();
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(sendPasswordResetMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).not.toHaveBeenCalled();
+  });
+
+  it('a send failure releases the cooldown claim (compare-and-delete, this token only) and re-throws for BullMQ retry', async () => {
+    getEligibilityMock.mockResolvedValue({ allowed: true, userId: 'u1', email: 'admin@msp.com' });
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 7,
+    });
+    const sendError = new Error('smtp unavailable');
+    sendPasswordResetMock.mockRejectedValueOnce(sendError);
+
+    await expect(
+      handleAuthEmailJob({ kind: 'password-reset', email: 'admin@msp.com' }),
+    ).rejects.toThrow(sendError);
+
+    // Released using the SAME token this attempt claimed with — proves the
+    // release is a compare-and-delete, not a bare DEL.
+    const [claimKey, claimToken] = setMock.mock.calls[0]!;
+    expect(evalMock).toHaveBeenCalledTimes(1);
+    const [script, numKeys, evalKey, evalToken] = evalMock.mock.calls[0]!;
+    expect(script).toMatch(/DEL/);
+    expect(numKeys).toBe(1);
+    expect(evalKey).toBe(claimKey);
+    expect(evalToken).toBe(claimToken);
+  });
+
+  it('after a released claim, a retried job successfully claims the SAME key again and sends', async () => {
+    getEligibilityMock.mockResolvedValue({ allowed: true, userId: 'u1', email: 'admin@msp.com' });
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 7,
+    });
+    sendPasswordResetMock.mockRejectedValueOnce(new Error('smtp unavailable'));
+
+    await expect(
+      handleAuthEmailJob({ kind: 'password-reset', email: 'admin@msp.com' }),
+    ).rejects.toThrow();
+
+    // BullMQ's retry re-invokes the handler. setMock still resolves 'OK' by
+    // default (the key was released, not left claimed), so the retry can
+    // claim it again and this time the send succeeds.
+    await handleAuthEmailJob({ kind: 'password-reset', email: 'admin@msp.com' });
+    expect(sendPasswordResetMock).toHaveBeenCalledTimes(2);
+    expect(setMock).toHaveBeenCalledTimes(2);
   });
 
   it('fails CLOSED (throws for retry) when Redis is unavailable for an eligible user', async () => {

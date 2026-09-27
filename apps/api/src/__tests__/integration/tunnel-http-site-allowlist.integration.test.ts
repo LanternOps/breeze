@@ -116,7 +116,11 @@ describe('tunnel HTTP effective-site allowlist delivery (real PostgreSQL)', () =
     const cookie = (ticketResponse.headers.get('set-cookie') ?? '').match(/(bz_tunnel_[^=]+=[^;]+)/)?.[1];
     expect(cookie).toBeTruthy();
 
-    const response = await buildApp().request(base, { headers: { cookie: cookie! } });
+    // The ticket redirect lands on the per-user path-token base
+    // (/api/v1/tunnel-http/<id>/<pathToken>/); the bare tunnel root 404s.
+    const location = ticketResponse.headers.get('location');
+    expect(location).toMatch(new RegExp(`^${base}[^/]+/`));
+    const response = await buildApp().request(location!, { headers: { cookie: cookie! } });
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('ok');
     const command = sendCommandMock.mock.calls[0]?.[1];

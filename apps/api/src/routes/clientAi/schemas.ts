@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { dlpConfigSchema, DEFAULT_DLP_CONFIG } from '@breeze/shared/validators';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 import { CLIENT_HOSTS } from '../../services/clientAiHosts';
+import { compileRe2 } from '../../services/dlpRegexEngine';
 
 /**
  * Mirrors `DLP_MAX_TOTAL_CHARS` in services/clientAiDlp.ts — the engine's
@@ -47,6 +48,40 @@ export const putTenantMappingSchema = z.object({
     .regex(ENTRA_TENANT_GUID_REGEX, 'must be an Entra tenant GUID (Directory ID)'),
 });
 
+// ============================================
+// DLP config (spec §6) — THE cross-plan contract shape.
+// Plan 3 shipped the canonical schema in @breeze/shared/validators
+// (dlpConfigSchema, DEFAULT_DLP_CONFIG). That schema's pattern gate
+// (validateDlpPattern/validateRegexSafety) is a JS-only heuristic —
+// deliberately so, since it also runs in the browser-side policy editor's
+// live regex test box for instant feedback (see that module's header). It
+// cannot depend on `re2-wasm`.
+//
+// This layer adds the authoritative check on top, server-side only: every
+// custom rule pattern must also compile under RE2, the engine
+// services/clientAiDlp.ts actually scans messages with. RE2 rejects
+// backreferences and lookaround assertions — constructs the JS heuristic
+// doesn't ban — so a pattern using either is now surfaced as a validation
+// error at write time instead of silently being accepted and then skipped
+// (with a warning) the first time the scanner tries to use it.
+// ============================================
+export const clientAiDlpConfigSchema = dlpConfigSchema.superRefine((config, ctx) => {
+  config.customRules.forEach((rule, index) => {
+    const compiled = compileRe2(rule.pattern);
+    if (!compiled.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `unsafe or invalid pattern: ${compiled.reason}`,
+        path: ['customRules', index, 'pattern'],
+      });
+    }
+  });
+});
+export type ClientAiDlpConfig = z.infer<typeof clientAiDlpConfigSchema>;
+
+/** Spec §6 defaults: redact for financial/credential types; email/phone off. */
+export const CLIENT_AI_DLP_DEFAULT_BUILTINS = DEFAULT_DLP_CONFIG.builtins;
+
 export const putPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -57,8 +92,8 @@ export const putPolicySchema = z
     writeMode: z.enum(['readwrite', 'readonly']).optional(),
     /** Org gate for pane auto-apply (spec §7). 'ask' is the default-deny value. */
     writeApproval: z.enum(['ask', 'allow_auto']).optional(),
-    /** Validated + normalized (defaults filled) — see packages/shared/src/validators/clientAiDlp.ts. */
-    dlpConfig: dlpConfigSchema.optional(),
+    /** Validated + normalized (defaults filled), plus the RE2 compile gate above. */
+    dlpConfig: clientAiDlpConfigSchema.optional(),
     dailyBudgetCents: z.number().int().min(0).nullable().optional(),
     monthlyBudgetCents: z.number().int().min(0).nullable().optional(),
     perUserMessagesPerMinute: z.number().int().min(1).max(600).optional(),
@@ -67,21 +102,6 @@ export const putPolicySchema = z
     branding: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
-
-// ============================================
-// DLP config (spec §6) — THE cross-plan contract shape.
-// Plan 3 already shipped the canonical schema in @breeze/shared/validators
-// (dlpConfigSchema, DEFAULT_DLP_CONFIG). We re-export aliases so Plan-4
-// route tasks/tests have stable client-ai-namespaced names without
-// duplicating (and diverging from) the shared definition. putPolicySchema
-// above already consumes dlpConfigSchema directly.
-// ============================================
-
-export const clientAiDlpConfigSchema = dlpConfigSchema;
-export type ClientAiDlpConfig = z.infer<typeof clientAiDlpConfigSchema>;
-
-/** Spec §6 defaults: redact for financial/credential types; email/phone off. */
-export const CLIENT_AI_DLP_DEFAULT_BUILTINS = DEFAULT_DLP_CONFIG.builtins;
 
 // ============================================
 // Plan-4 admin query/body schemas

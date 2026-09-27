@@ -46,6 +46,10 @@ import {
   evaluateFilterWithPreview,
   deviceMatchesFilter,
   FilterQueryTimeoutError,
+  isAgentReportedFilterField,
+  getAgentReportedFieldsUsed,
+  isExecutionRefusedFilterField,
+  getExecutionRefusedFieldsUsed,
 } from './filterEngine';
 
 describe('filterEngine input hardening (#1044)', () => {
@@ -223,6 +227,87 @@ describe('filterEngine architecture normalization (#3166)', () => {
   it('still advertises the enum the projection targets', () => {
     const def = getFieldDefinition('architecture');
     expect(def?.enumValues).toEqual(['x64', 'x86', 'arm64']);
+  });
+});
+
+describe('filterEngine field provenance (server-controlled vs. agent-reported)', () => {
+  it('treats hierarchy and server-timestamp fields as server-controlled', () => {
+    for (const key of ['orgId', 'siteId', 'groupId', 'enrolledAt', 'lastSeenAt', 'quarantinedAt', 'daysSinceEnrolled', 'daysSinceLastSeen']) {
+      expect(isAgentReportedFilterField(key), key).toBe(false);
+    }
+  });
+
+  it('treats every agent-reported device attribute as agent-reported, default-deny', () => {
+    for (const key of ['hostname', 'displayName', 'agentVersion', 'helperVersion', 'tags', 'deviceRole', 'deviceFunction', 'lastUser', 'isHeadless', 'osType', 'osVersion', 'osBuild', 'architecture', 'hardware.model', 'network.ipAddress', 'metrics.cpuPercent', 'software.installed']) {
+      expect(isAgentReportedFilterField(key), key).toBe(true);
+    }
+  });
+
+  it('treats every custom field as agent-reported (default-deny for an unrecognized key too)', () => {
+    expect(isAgentReportedFilterField('custom.anything')).toBe(true);
+    expect(isAgentReportedFilterField('some.unrecognized.field')).toBe(true);
+  });
+
+  it('getAgentReportedFieldsUsed filters a mixed field list down to only the agent-reported ones', () => {
+    expect(getAgentReportedFieldsUsed(['orgId', 'hostname', 'siteId', 'custom.foo'])).toEqual(['hostname', 'custom.foo']);
+  });
+
+  it('getAgentReportedFieldsUsed returns an empty array when every field is server-controlled', () => {
+    expect(getAgentReportedFieldsUsed(['orgId', 'siteId'])).toEqual([]);
+  });
+});
+
+describe('filterEngine execution-target field tiering (denylist option)', () => {
+  it('refuses high-targeting-value agent-reported fields', () => {
+    for (const key of ['hostname', 'displayName', 'tags', 'deviceRole', 'lastUser', 'helperVersion', 'agentVersion']) {
+      expect(isExecutionRefusedFilterField(key), key).toBe(true);
+    }
+  });
+
+  it('refuses every custom.* key regardless of name', () => {
+    expect(isExecutionRefusedFilterField('custom.anything')).toBe(true);
+    expect(isExecutionRefusedFilterField('custom.approved_for_scripts')).toBe(true);
+  });
+
+  // software.installed/notInstalled is a self-reported
+  // inventory scan whose entries the device itself supplies (same shape as
+  // custom.*), unlike an OS/hardware fact the device cannot simply choose to
+  // misreport. Refused.
+  it('refuses software.installed/notInstalled — self-reported inventory, trivially fabricable', () => {
+    expect(isExecutionRefusedFilterField('software.installed')).toBe(true);
+    expect(isExecutionRefusedFilterField('software.notInstalled')).toBe(true);
+  });
+
+  it('allows low-targeting-value agent-reported OS/hardware/network/metrics facts', () => {
+    for (const key of [
+      'osType', 'osVersion', 'osBuild', 'architecture',
+      'hardware.model', 'hardware.manufacturer', 'hardware.serialNumber',
+      'network.ipAddress', 'network.macAddress',
+      'metrics.cpuPercent', 'metrics.diskPercent',
+      'status', 'watchdogStatus', 'isHeadless', 'uptimeSeconds', 'lastSeenIp',
+      'patches.pending', 'alerts.critical', 'system.rebootRequired',
+    ]) {
+      expect(isExecutionRefusedFilterField(key), key).toBe(false);
+    }
+  });
+
+  it('allows deviceFunction — verified as admin-apply-gated, not agent-set', () => {
+    expect(isExecutionRefusedFilterField('deviceFunction')).toBe(false);
+  });
+
+  it('allows server-controlled fields (never agent-reported at all)', () => {
+    for (const key of ['orgId', 'siteId', 'groupId', 'enrolledAt', 'lastSeenAt', 'quarantinedAt', 'daysSinceEnrolled', 'daysSinceLastSeen']) {
+      expect(isExecutionRefusedFilterField(key), key).toBe(false);
+    }
+  });
+
+  it('keeps the documented canonical example ("Windows Servers with >90% disk") usable as an execution target', () => {
+    expect(getExecutionRefusedFieldsUsed(['osType', 'metrics.diskPercent'])).toEqual([]);
+  });
+
+  it('getExecutionRefusedFieldsUsed filters a mixed field list down to only the refused ones', () => {
+    expect(getExecutionRefusedFieldsUsed(['orgId', 'hostname', 'osType', 'custom.foo', 'metrics.diskPercent', 'tags']))
+      .toEqual(['hostname', 'custom.foo', 'tags']);
   });
 });
 

@@ -81,6 +81,30 @@ function monitorReadCondition(auth: AuthContext): SQL | undefined {
   return orgCondition ? or(orgCondition, partnerWide) : partnerWide;
 }
 
+/**
+ * Display-safe projection for a partner-wide monitor viewed by an org-scope
+ * caller. `monitorReadCondition` deliberately admits partner-wide rows
+ * to any caller under that partner so an org technician can see what applies
+ * to their devices, but the MSP-authored action payloads (script/command text
+ * and parameters), delivery routing and the escalation/AI-agent wiring are
+ * administrative detail with no read-side justification for full exposure —
+ * `GET /automations/:compiledId` already withholds the equivalent compiled
+ * fields from org tokens. Only strips fields on rows the caller cannot write
+ * anyway (`assertCanWrite` refuses org scope on a partner-wide row), so this
+ * never removes something a caller could otherwise legitimately use.
+ */
+export function projectMonitorForCaller<T extends MonitorDefinitionRow>(row: T, auth: AuthContext): T {
+  if (row.orgId !== null || auth.scope !== 'organization') return row;
+  return {
+    ...row,
+    responses: [],
+    recurrenceActions: [],
+    deliveryChannelIds: [],
+    escalationPolicyId: null,
+    aiAgentId: null,
+  };
+}
+
 function assertCanWrite(auth: AuthContext, owner: MonitorOwner): void {
   if (owner.partnerId) {
     if (!canManagePartnerWidePolicies(auth)) {
@@ -248,11 +272,12 @@ export async function listMonitorDefinitions(
   auth: AuthContext,
   filters?: MonitorListFilters,
 ): Promise<MonitorDefinitionRow[]> {
-  return db
+  const rows = await db
     .select()
     .from(monitorDefinitions)
     .where(listConditions(auth, filters))
     .orderBy(asc(monitorDefinitions.name));
+  return rows.map((row) => projectMonitorForCaller(row, auth));
 }
 
 /**
@@ -295,7 +320,7 @@ export async function listMonitorDefinitionsPage(
     .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id));
 
   return {
-    rows: rows.flatMap((r) => (r.row ? [r.row] : [])),
+    rows: rows.flatMap((r) => (r.row ? [projectMonitorForCaller(r.row, auth)] : [])),
     total: Number(rows[0]?.total ?? 0),
   };
 }
@@ -311,7 +336,7 @@ export async function getMonitorDefinition(
     .from(monitorDefinitions)
     .where(read ? and(eq(monitorDefinitions.id, id), read) : eq(monitorDefinitions.id, id))
     .limit(1);
-  return row ?? null;
+  return row ? projectMonitorForCaller(row, auth) : null;
 }
 
 export async function createMonitorDefinition(
