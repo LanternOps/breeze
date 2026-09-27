@@ -23,6 +23,13 @@ wave_issue: LanternOps/breeze#7169
 
 1. **W01 is fully merged:** W01a (#7182, merged as `cf0fe4756`), W01b, W01c and W01d. W02 builds on the symbols listed in "W01 interface assumptions" below. W01b–d were **not** merged when this plan was written, so every symbol from them is an assumption until Task 0 re-verifies it.
 2. **Feature-lifecycle:** run `get_feature_status` for #7167, branch `feature/7167-xero/wave-7169-<suffix>`, then `start_wave` for #7169.
+3. **The reauth-rollback fix is merged.** Today `accountingTokens.ts` writes `markStatus(…, 'reauth_required')` inside a `db.transaction` and then throws `ReauthRequiredError` from inside the same callback (the expired-token branch of Transaction A ~L220 and `handleRefreshFailure` ~L141), so the status write **rolls back** and the row never shows "reconnect". That bug is being fixed separately, in its own issue and PR, **before** W02. W02 does not re-implement or work around it. W02 only relies on the fixed behaviour: a refresh `invalid_grant` on a row that still holds the attempted token **persists** `reauth_required`. Task 10 pins that persistence for Xero against real Postgres. Check:
+
+   ```bash
+   git log origin/main --oneline | grep -iE 'reauth.*(rollback|persist)|reauth_required.*roll' | head
+   ```
+
+   Expected: the fix commit is listed. If it is not, stop: W02b's Task 10 assertion will fail until it lands.
 
 ```bash
 git fetch origin main
@@ -1328,6 +1335,8 @@ describe('Xero rotation race (Review Focus 5)', () => {
     expect(mocks.updateTokens).not.toHaveBeenCalled();
   });
 
+  // Mock-level: asserts the CLASSIFICATION (Xero invalid_grant → reauth) and the label. That the status
+  // actually PERSISTS is the reauth-rollback fix's contract (precondition 3); Task 10 proves it on real Postgres.
   it('a genuine Xero invalid_grant (row still holds our token) marks reauth with a Xero-labelled message', async () => {
     const db = makeLockableDb(lockedRow());
     mocks.provider.refresh.mockRejectedValueOnce(xeroTokenError('Xero token refresh', 400, new Headers(), JSON.stringify({ error: 'invalid_grant' })));
@@ -1680,6 +1689,8 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
 ```
 
 - [ ] **Step 7: Label the token and settings-refresh messages by provider**
+
+This step changes **message text only**. Transaction structure and where `markStatus` runs belong to the reauth-rollback fix (precondition 3). Do not move, re-wrap or re-order any `markStatus` / `throw` in this step. Relabel the strings wherever the merged fix left them.
 
 `accountingTokens.ts`: import `accountingProviderDisplayName` from `./providerRegistry`. Replace each hard-coded string:
 
@@ -2208,10 +2219,17 @@ Run the full W02a gate (Global Constraints). Push and open the PR titled `feat(a
   ```ts
   // accountingTenantSelectionStore.ts (DB only, no HTTP)
   export async function loadPendingTenantRow(dbc: DbExecutor, partnerId: string, provider: AccountingProviderId): Promise<AccountingConnection | null>;
+  /** Identity of ONE pending grant: keyed HMAC of its original refresh token (pending rows are never refreshed, so it is stable until a new callback replaces the grant). */
+  export function pendingGrantFingerprint(refreshToken: string): string;
+  export type ClaimResult =
+    | { kind: 'claimed'; connection: AccountingConnection }
+    | { kind: 'not_pending' }        // cancelled, reaped, or already claimed
+    | { kind: 'grant_superseded' };  // a newer callback replaced the tokens on this row since the picker loaded
   export async function claimPendingTenant(dbc: DbExecutor, input: {
     connectionId: string; partnerId: string; provider: AccountingProviderId;
     realmId: string; providerConnectionRef: string; resetRealmFacts: boolean;
-  }): Promise<AccountingConnection | null>;                         // null = no longer pending; throws AccountingTenantHeldError
+    grantFingerprint: string;
+  }): Promise<ClaimResult>;                                         // throws AccountingTenantHeldError; MUST run inside a transaction
   export interface DeletedPendingRow { id: string; accessToken: string | null; refreshToken: string | null; accessTokenExpiresAt: Date | null }
   export async function deletePendingTenantRow(dbc: DbExecutor, input: {
     partnerId: string; provider: AccountingProviderId; connectionId?: string; olderThan?: Date;
@@ -2223,9 +2241,9 @@ Run the full W02a gate (Global Constraints). Push and open the PR titled `feat(a
   // accountingTenantSelection.ts (orchestration)
   export const PENDING_TENANT_TTL_MS = 60 * 60 * 1000;
   export const TENANT_PICK_TOKEN_MARGIN_MS = 60_000;
-  export type TenantSelectionErrorCode = 'no_pending_selection' | 'tenant_selection_expired' | 'tenant_not_in_grant' | 'selection_unsupported' | 'auth_event_missing';
+  export type TenantSelectionErrorCode = 'no_pending_selection' | 'tenant_selection_expired' | 'tenant_not_in_grant' | 'selection_unsupported' | 'auth_event_missing' | 'grant_superseded';
   export class AccountingTenantSelectionError extends Error { readonly code: TenantSelectionErrorCode; readonly status: 400 | 404 | 409 }
-  export interface PendingGrant { row: AccountingConnection; selection: ProviderTenantSelection; accessToken: string; authEventId: string; tenants: ProviderTenant[] }
+  export interface PendingGrant { row: AccountingConnection; selection: ProviderTenantSelection; accessToken: string; authEventId: string; tenants: ProviderTenant[]; grantFingerprint: string }
   export async function loadPendingGrant(partnerId: string, provider: AccountingProviderId, runInDbContext: DbContextRunner): Promise<PendingGrant>;
   export function connectableTenants(grant: Pick<PendingGrant, 'selection' | 'tenants'>): ProviderTenant[];
   export async function releaseUnchosenTenants(input: {
@@ -2252,6 +2270,7 @@ const m = vi.hoisted(() => ({
     deletePendingTenantRow: vi.fn(),
     listHeldTenantKeys: vi.fn(),
     listStalePendingTenantConnections: vi.fn(),
+    pendingGrantFingerprint: vi.fn((rt: string) => `fp:${rt}`),
   },
   selection: {
     connectableTenantType: 'ORGANISATION',
@@ -2337,11 +2356,14 @@ describe('loadPendingGrant', () => {
     expect(m.selection.authEventIdOf).toHaveBeenCalledWith('ORIGINAL-at');
     expect(m.selection.listGrantTenants).toHaveBeenCalledWith('ORIGINAL-at', 'evt-1');
     expect(grant.tenants).toHaveLength(2);
+    // Captured BEFORE the HTTP lookup, from the row's own refresh token — the claim compares it.
+    expect(grant.grantFingerprint).toBe('fp:rt');
   });
 
   it.each([
     ['no pending row', () => m.store.loadPendingTenantRow.mockResolvedValue(null), 'no_pending_selection', 404],
     ['token inside the 60s margin', () => m.store.loadPendingTenantRow.mockResolvedValue(pendingRow({ accessTokenExpiresAt: new Date(Date.now() + 30_000) })), 'tenant_selection_expired', 409],
+    ['no refresh token (no grant identity)', () => m.store.loadPendingTenantRow.mockResolvedValue(pendingRow({ refreshToken: null })), 'tenant_selection_expired', 409],
     ['claim missing', () => { m.store.loadPendingTenantRow.mockResolvedValue(pendingRow()); m.selection.authEventIdOf.mockReturnValue(null); }, 'auth_event_missing', 409],
   ])('%s → %s', async (_label, arrange, code, status) => {
     arrange();
@@ -2438,17 +2460,54 @@ export async function loadPendingTenantRow(dbc: DbExecutor, partnerId: string, p
   return row ? mapConnection(row) : null;
 }
 
+function decryptOrNull(value: string | null): string | null {
+  if (!value) return null;
+  try { return decryptSecret(value); } catch { return null; }
+}
+
 /**
- * The picker's commit. A conditional UPDATE (status must still be pending), so a
- * select racing a cancel / the reaper / a second select has exactly one winner;
- * the loser gets null. A tenant another partner holds trips the global
- * (provider, realm_id_fingerprint) unique index → AccountingTenantHeldError, and
- * the row stays pending so the user can pick again (Review Focus 1).
+ * Identity of one pending grant. A second callback for the same partner (the
+ * user started another connect in a new tab) REUSES the row id and overwrites
+ * the tokens (upsertConnection conflicts on partner_id). Without this, a pick
+ * made from grant A's picker could commit A's tenant onto grant B's
+ * credentials. Pending rows are never refreshed, so the ORIGINAL refresh token
+ * is stable for exactly one grant. Keyed HMAC, never the raw token.
+ */
+export function pendingGrantFingerprint(refreshToken: string): string {
+  return hmacFingerprint(`pending-grant:${refreshToken}`);
+}
+
+export type ClaimResult =
+  | { kind: 'claimed'; connection: AccountingConnection }
+  | { kind: 'not_pending' }
+  | { kind: 'grant_superseded' };
+
+/**
+ * The picker's commit. MUST run inside a transaction (every runner does): it
+ * locks the row, re-checks status AND grant identity under the lock, then
+ * updates. So a select racing a cancel / the reaper / a second select has
+ * exactly one winner, and a select racing a NEWER callback on the same row
+ * loses with grant_superseded instead of mixing grants. A tenant another
+ * partner holds trips the global (provider, realm_id_fingerprint) unique index
+ * → AccountingTenantHeldError, and the row stays pending (Review Focus 1).
  */
 export async function claimPendingTenant(dbc: DbExecutor, input: {
   connectionId: string; partnerId: string; provider: AccountingProviderId;
   realmId: string; providerConnectionRef: string; resetRealmFacts: boolean;
-}): Promise<AccountingConnection | null> {
+  grantFingerprint: string;
+}): Promise<ClaimResult> {
+  const [locked] = await dbc.select({
+    status: accountingConnections.status,
+    refreshTokenEncrypted: accountingConnections.refreshTokenEncrypted,
+  }).from(accountingConnections).where(and(
+    eq(accountingConnections.id, input.connectionId),
+    eq(accountingConnections.partnerId, input.partnerId),
+  )).limit(1).for('update');
+  if (!locked || locked.status !== PENDING_TENANT_STATUS) return { kind: 'not_pending' };
+  const currentRefresh = decryptOrNull(locked.refreshTokenEncrypted);
+  if (!currentRefresh || pendingGrantFingerprint(currentRefresh) !== input.grantFingerprint) {
+    return { kind: 'grant_superseded' };
+  }
   try {
     const [row] = await dbc.update(accountingConnections).set({
       realmIdEncrypted: encryptSecret(input.realmId),
@@ -2465,7 +2524,8 @@ export async function claimPendingTenant(dbc: DbExecutor, input: {
       eq(accountingConnections.partnerId, input.partnerId),
       eq(accountingConnections.status, PENDING_TENANT_STATUS),
     )).returning();
-    return row ? mapConnection(row) : null;
+    // The row is locked and was pending a moment ago, so a miss here is not expected; treat it as lost.
+    return row ? { kind: 'claimed', connection: mapConnection(row) } : { kind: 'not_pending' };
   } catch (err) {
     if (isPgUniqueViolation(err, REALM_FINGERPRINT_UNIQUE_INDEX)) throw new AccountingTenantHeldError(input.provider);
     throw err;
@@ -2477,11 +2537,6 @@ export interface DeletedPendingRow {
   accessToken: string | null;
   refreshToken: string | null;
   accessTokenExpiresAt: Date | null;
-}
-
-function decryptOrNull(value: string | null): string | null {
-  if (!value) return null;
-  try { return decryptSecret(value); } catch { return null; }
 }
 
 /** Deletes the partner's pending row (optionally only if older than `olderThan`) and hands back its tokens for remote cleanup. */
@@ -2571,7 +2626,7 @@ import { captureException } from '../sentry';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { findAccountingProvider, getAccountingProvider } from './providerRegistry';
 import {
-  deletePendingTenantRow, listHeldTenantKeys, listStalePendingTenantConnections, loadPendingTenantRow,
+  deletePendingTenantRow, listHeldTenantKeys, listStalePendingTenantConnections, loadPendingTenantRow, pendingGrantFingerprint,
 } from './accountingTenantSelectionStore';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { AccountingProviderId, ProviderTenant, ProviderTenantSelection } from './types';
@@ -2580,7 +2635,8 @@ export const PENDING_TENANT_TTL_MS = 60 * 60 * 1000;
 export const TENANT_PICK_TOKEN_MARGIN_MS = 60_000;
 
 export type TenantSelectionErrorCode =
-  | 'no_pending_selection' | 'tenant_selection_expired' | 'tenant_not_in_grant' | 'selection_unsupported' | 'auth_event_missing';
+  | 'no_pending_selection' | 'tenant_selection_expired' | 'tenant_not_in_grant' | 'selection_unsupported' | 'auth_event_missing'
+  | 'grant_superseded';
 
 export class AccountingTenantSelectionError extends Error {
   constructor(readonly code: TenantSelectionErrorCode, readonly status: 400 | 404 | 409, message: string) {
@@ -2595,6 +2651,8 @@ export interface PendingGrant {
   accessToken: string;
   authEventId: string;
   tenants: ProviderTenant[];
+  /** Captured with the credentials, BEFORE any HTTP; the claim refuses if the row's grant changed since. */
+  grantFingerprint: string;
 }
 
 function selectionFor(provider: AccountingProviderId): ProviderTenantSelection {
@@ -2616,15 +2674,17 @@ export async function loadPendingGrant(partnerId: string, provider: AccountingPr
   const row = await runInDbContext(() => loadPendingTenantRow(db, partnerId, provider));
   if (!row) throw new AccountingTenantSelectionError('no_pending_selection', 404, `There is no ${label} connection waiting for an organisation`);
   const expiresAt = row.accessTokenExpiresAt?.getTime() ?? 0;
-  if (!row.accessToken || expiresAt <= Date.now() + TENANT_PICK_TOKEN_MARGIN_MS) {
+  if (!row.accessToken || !row.refreshToken || expiresAt <= Date.now() + TENANT_PICK_TOKEN_MARGIN_MS) {
     throw new AccountingTenantSelectionError('tenant_selection_expired', 409, `This ${label} sign-in has expired. Cancel and connect again.`);
   }
+  // Grant identity is taken from the SAME read as the credentials, before the HTTP lookup below.
+  const grantFingerprint = pendingGrantFingerprint(row.refreshToken);
   const authEventId = selection.authEventIdOf(row.accessToken);
   if (!authEventId) {
     throw new AccountingTenantSelectionError('auth_event_missing', 409, `${label} did not identify this sign-in. Cancel and connect again.`);
   }
   const tenants = await selection.listGrantTenants(row.accessToken, authEventId);
-  return { row, selection, accessToken: row.accessToken, authEventId, tenants };
+  return { row, selection, accessToken: row.accessToken, authEventId, tenants, grantFingerprint };
 }
 
 export async function releaseUnchosenTenants(input: {
@@ -3518,7 +3578,7 @@ function app() {
 const t = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: 'evt-1' });
 const grant = () => ({
   row: { id: 'row-1', realmId: null }, selection: { connectableTenantType: 'ORGANISATION' },
-  accessToken: 'at', authEventId: 'evt-1', tenants: [t('A'), t('B'), t('P', 'PRACTICEMANAGER')],
+  accessToken: 'at', authEventId: 'evt-1', tenants: [t('A'), t('B'), t('P', 'PRACTICEMANAGER')], grantFingerprint: 'fp-A',
 });
 const post = (path: string, body?: unknown) => app().request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 
@@ -3546,10 +3606,12 @@ describe('GET /:provider/tenants', () => {
 describe('POST /:provider/tenants/select', () => {
   it('claims the chosen tenant, then releases the rest of THIS auth event\'s links keeping the chosen one', async () => {
     m.finalize.mockImplementation(async (_c: unknown, i: { persist: () => Promise<unknown> }) => ({ ok: true, connection: await i.persist() }));
-    m.claim.mockResolvedValue({ id: 'row-1' });
+    m.claim.mockResolvedValue({ kind: 'claimed', connection: { id: 'row-1' } });
     const res = await post('/xero/tenants/select', { tenantId: 'ten-B' });
     expect(res.status).toBe(200);
-    expect(m.claim).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ connectionId: 'row-1', realmId: 'ten-B', providerConnectionRef: 'conn-B', resetRealmFacts: true }));
+    expect(m.claim).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      connectionId: 'row-1', realmId: 'ten-B', providerConnectionRef: 'conn-B', resetRealmFacts: true, grantFingerprint: 'fp-A',
+    }));
     expect(m.release).toHaveBeenCalledWith(expect.objectContaining({ keepConnectionRef: 'conn-B', context: 'select' }));
     expect(m.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'accounting.connection.tenant_selected' }));
   });
@@ -3570,10 +3632,20 @@ describe('POST /:provider/tenants/select', () => {
 
   it('a claim that lost the race (row no longer pending) → 409 no_pending_selection', async () => {
     m.finalize.mockImplementation(async (_c: unknown, i: { persist: () => Promise<unknown> }) => ({ ok: true, connection: await i.persist() }));
-    m.claim.mockResolvedValue(null);
+    m.claim.mockResolvedValue({ kind: 'not_pending' });
     const res = await post('/xero/tenants/select', { tenantId: 'ten-A' });
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('no_pending_selection');
+  });
+
+  it('a newer callback replaced the grant between load and claim → 409 grant_superseded, nothing released', async () => {
+    m.finalize.mockImplementation(async (_c: unknown, i: { persist: () => Promise<unknown> }) => ({ ok: true, connection: await i.persist() }));
+    m.claim.mockResolvedValue({ kind: 'grant_superseded' });
+    const res = await post('/xero/tenants/select', { tenantId: 'ten-A' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('grant_superseded');
+    // Grant A's token must not be used to delete links once B owns the row.
+    expect(m.release).not.toHaveBeenCalled();
   });
 });
 
@@ -3828,13 +3900,19 @@ export function registerConnectionSetupRoutes(router: Hono, deps: ConnectionSetu
       const result = await finalizeConnection(c as never, {
         provider, partnerId: s.partnerId, realmId: chosen.tenantId, prior,
         persist: async () => {
-          const row = await s.runInDb(() => claimPendingTenant(db, {
+          const claim = await s.runInDb(() => claimPendingTenant(db, {
             connectionId: grant.row.id, partnerId: s.partnerId, provider,
             realmId: chosen.tenantId, providerConnectionRef: chosen.connectionRef,
             resetRealmFacts: prior.realmId !== chosen.tenantId,
+            grantFingerprint: grant.grantFingerprint,
           }));
-          if (!row) throw new AccountingTenantSelectionError('no_pending_selection', 409, 'This connection is no longer waiting for an organisation');
-          return row;
+          if (claim.kind === 'grant_superseded') {
+            throw new AccountingTenantSelectionError('grant_superseded', 409, 'A newer sign-in replaced this one. Choose the organisation again.');
+          }
+          if (claim.kind === 'not_pending') {
+            throw new AccountingTenantSelectionError('no_pending_selection', 409, 'This connection is no longer waiting for an organisation');
+          }
+          return claim.connection;
         },
       });
       if (!result.ok) {
@@ -4099,9 +4177,10 @@ import {
   AccountingTenantHeldError, upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import {
-  claimPendingTenant, listHeldTenantKeys, listStalePendingTenantConnections,
+  claimPendingTenant, listHeldTenantKeys, listStalePendingTenantConnections, loadPendingTenantRow, pendingGrantFingerprint,
 } from '../../services/accounting/accountingTenantSelectionStore';
 import { reapStalePendingTenants } from '../../services/accounting/accountingTenantSelection';
+import { getValidAccessToken, ReauthRequiredError } from '../../services/accounting/accountingTokens';
 
 const RUN = !!process.env.DATABASE_URL;
 const tenant = (id: string) => ({ tenantId: id, connectionRef: `conn-${id}`, name: id, tenantType: 'ORGANISATION', authEventId: 'evt' });
@@ -4124,18 +4203,40 @@ describe.skipIf(!RUN)('Xero W02 connection races (real DB)', () => {
     const pending = await withSystemDbAccessContext(() => upsertConnection(db, picker.id, 'xero', { accessToken: 'a', refreshToken: 'r', status: 'pending_tenant' }));
     await expect(withSystemDbAccessContext(() => claimPendingTenant(db, {
       connectionId: pending.id, partnerId: picker.id, provider: 'xero', realmId: 'held-tenant-1', providerConnectionRef: 'conn-x', resetRealmFacts: true,
+      grantFingerprint: pendingGrantFingerprint('r'),
     }))).rejects.toBeInstanceOf(AccountingTenantHeldError);
     const [row] = await withSystemDbAccessContext(() => db.select().from(accountingConnections).where(eq(accountingConnections.id, pending.id)));
     expect(row!.status).toBe('pending_tenant');
   });
 
-  it('two concurrent claims of one pending row — exactly one succeeds, the other gets null', async () => {
+  it('two concurrent claims of one pending row — exactly one succeeds, the other is not_pending', async () => {
     const partner = await createPartner();
     const pending = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'xero', { accessToken: 'a', refreshToken: 'r', status: 'pending_tenant' }));
-    const claims = await Promise.all(['claim-t-A', 'claim-t-B'].map((t) => withSystemDbAccessContext(() => claimPendingTenant(db, {
+    const claims = await Promise.all([`claim-t-A-${partner.id}`, `claim-t-B-${partner.id}`].map((t) => withSystemDbAccessContext(() => claimPendingTenant(db, {
       connectionId: pending.id, partnerId: partner.id, provider: 'xero', realmId: t, providerConnectionRef: `conn-${t}`, resetRealmFacts: true,
+      grantFingerprint: pendingGrantFingerprint('r'),
     }))));
-    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(claims.map((c) => c.kind).sort()).toEqual(['claimed', 'not_pending']);
+  });
+
+  it('a second pending callback landing between load and claim → grant_superseded; grant B\'s credentials are untouched', async () => {
+    const partner = await createPartner();
+    // Grant A parks the row; the picker loads it (captures A's fingerprint).
+    const pendingA = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'xero', { accessToken: 'at-A', refreshToken: 'rt-A', status: 'pending_tenant' }));
+    const loaded = await withSystemDbAccessContext(() => loadPendingTenantRow(db, partner.id, 'xero'));
+    const fingerprintA = pendingGrantFingerprint(loaded!.refreshToken!);
+    // Grant B's callback lands on the SAME row id (upsert conflicts on partner_id).
+    const pendingB = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'xero', { accessToken: 'at-B', refreshToken: 'rt-B', status: 'pending_tenant' }));
+    expect(pendingB.id).toBe(pendingA.id);
+    const claim = await withSystemDbAccessContext(() => claimPendingTenant(db, {
+      connectionId: pendingA.id, partnerId: partner.id, provider: 'xero', realmId: `ten-from-A-${partner.id}`,
+      providerConnectionRef: 'conn-from-A', resetRealmFacts: true, grantFingerprint: fingerprintA,
+    }));
+    expect(claim).toEqual({ kind: 'grant_superseded' });
+    const after = await withSystemDbAccessContext(() => loadPendingTenantRow(db, partner.id, 'xero'));
+    expect(after?.status).toBe('pending_tenant');
+    expect(after?.realmId).toBeNull();
+    expect(after?.refreshToken).toBe('rt-B');
   });
 
   it('Review Focus 2: the held check sees ANOTHER partner\'s row only because it runs in system scope', async () => {
@@ -4165,6 +4266,21 @@ describe.skipIf(!RUN)('Xero W02 connection races (real DB)', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     const qbo = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'quickbooks', { realmId: `qbo-after-reap-${partner.id}` }));
     expect(qbo.provider).toBe('quickbooks');
+  });
+
+  it('Task 4 + precondition 3: a Xero revoked-grant refresh PERSISTS reauth_required (not rolled back)', async () => {
+    const partner = await createPartner();
+    const conn = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'xero', {
+      realmId: `revoked-${partner.id}`, accessToken: 'stale-at', refreshToken: 'revoked-rt',
+      accessTokenExpiresAt: new Date(Date.now() - 1_000), refreshTokenExpiresAt: new Date(Date.now() + 86_400_000),
+      status: 'connected', environment: 'production',
+    }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }));
+    // No ambient context: getValidAccessToken opens its own short transactions.
+    await expect(getValidAccessToken(db, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
+    const [row] = await withSystemDbAccessContext(() => db.select().from(accountingConnections).where(eq(accountingConnections.id, conn.id)));
+    expect(row!.status).toBe('reauth_required');
+    expect(row!.lastError).toBe('Xero refresh token is invalid or expired');
   });
 
   it('a FRESH pending row is not reaped', async () => {
@@ -4279,7 +4395,8 @@ Open the PR titled `feat(accounting): Xero W02b — OAuth connect, organisation 
   "cancelFailed": "Couldn't cancel the connection.",
   "connected": "{{provider}} organisation connected",
   "cancelled": "{{provider}} connection cancelled",
-  "chooseFirst": "Choose an organisation first"
+  "chooseFirst": "Choose an organisation first",
+  "grantSuperseded": "A newer {{provider}} sign-in replaced this one. Choose the organisation again."
 },
 "connectErrors": {
   "generic": "The {{provider}} connection failed. Please try again.",
@@ -4427,6 +4544,21 @@ describe('Xero W02 panel behaviour', () => {
     expect(screen.queryByTestId('xero-connect')).toBeNull();
   });
 
+  it('survives loading → loaded without a hook-order error (new state declared before the early returns)', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveStatus!: (r: Response) => void;
+    fetchWithAuthMock.mockImplementation((url: string) => url === '/accounting/xero'
+      ? new Promise<Response>((r) => { resolveStatus = r; })
+      : Promise.resolve(new Response(JSON.stringify({}), { status: 200 })));
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(screen.getByTestId('xero-loading')).toBeTruthy();          // first render takes the early return
+    resolveStatus(new Response(JSON.stringify(xeroStatus()), { status: 200 }));
+    fireEvent.click(await screen.findByTestId('xero-disconnect'));   // second render reaches the full hook list
+    expect(await screen.findByTestId('xero-disconnect-confirm')).toBeTruthy();
+    expect(errors.mock.calls.flat().join(' ')).not.toMatch(/Rendered more hooks|change in the order of Hooks/);
+    errors.mockRestore();
+  });
+
   it('Xero disconnect asks for confirmation; QuickBooks does not', async () => {
     mockStatus('/accounting/xero', xeroStatus());
     render(<AccountingConnectionPanel provider="xero" />);
@@ -4550,6 +4682,7 @@ export default function AccountingTenantPicker({ provider, onUnauthorized, onDon
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [chosen, setChosen] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -4567,11 +4700,13 @@ export default function AccountingTenantPicker({ provider, onUnauthorized, onDon
       }
     })();
     return () => { live = false; };
-  }, [provider, onUnauthorized]);
+  }, [provider, onUnauthorized, reloadKey]);
 
-  const friendly = useCallback((code: string) => (code === "accounting_tenant_held"
-    ? t("accountingConnection.connectErrors.tenantHeld", { provider: providerName })
-    : undefined), [t, providerName]);
+  const friendly = useCallback((code: string) => {
+    if (code === "accounting_tenant_held") return t("accountingConnection.connectErrors.tenantHeld", { provider: providerName });
+    if (code === "grant_superseded") return t("accountingConnection.tenantPicker.grantSuperseded", { provider: providerName });
+    return undefined;
+  }, [t, providerName]);
 
   const handleSelect = useCallback(async () => {
     if (!chosen) return;
@@ -4589,6 +4724,9 @@ export default function AccountingTenantPicker({ provider, onUnauthorized, onDon
       onDone();
     } catch (err) {
       if (!(err instanceof ActionError)) handleActionError(err, t("accountingConnection.tenantPicker.selectFailed"));
+      // The grant may have changed (grant_superseded) or a choice may be gone: re-read the list.
+      setChosen(null);
+      setReloadKey((k) => k + 1);
     } finally {
       setBusy(false);
     }
@@ -4677,13 +4815,17 @@ export default function AccountingTenantPicker({ provider, onUnauthorized, onDon
    - `features?: { tenantSelection: boolean; settingsOptions: boolean }`
    - `defaultExemptTaxCodeRef?: string | null`
    - `defaultPaymentAccountRef?: string | null`
-2. After `status` is loaded:
+2. **Hook placement (rules of hooks).** The panel has early returns: `if (isOrgScoped) return …` and `if (loading) return …`, about L470–L490 of the pre-W01d file. A `useState` declared after them runs only on later renders, and React throws "Rendered more hooks than during the previous render". Declare the new state **with the other unconditional `useState` calls at the top of the component** (next to `const [disconnecting, setDisconnecting] = useState(false);`), before any early return:
+   ```tsx
+   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+   ```
+   The derived values are plain expressions, not hooks, so they can sit just above the main `return`:
    ```tsx
    const caps = status?.capabilities ?? ALL_CAPABILITIES;
    const isPending = status?.status === "pending_tenant";
    const ui = ACCOUNTING_PROVIDER_UI[provider];
-   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
    ```
+   Grep the whole diff afterwards: `git diff -U0 -- apps/web/src/components/integrations/AccountingConnectionPanel.tsx | grep -n "use[A-Z][a-zA-Z]*("`. Every added hook call must come before the first `return` in the component body.
 3. Wrap each capability-gated element in `{condition && (…)}`, keeping the element itself unchanged:
    - push-mode block (`` `${provider}-pushmode` ``): `caps.invoicePush`
    - pull-payments switch: `caps.paymentPull`
@@ -5151,7 +5293,7 @@ After merge, run `complete_wave` for #7169.
 
 **Type consistency:** `ProviderTenant` (Task 4) is used unchanged in Tasks 5–8. `AccountingTenantHeldError`, `getPartnerConnectionRef`, `PENDING_TENANT_STATUS` and `REALM_FINGERPRINT_UNIQUE_INDEX` (Task 2) are used in Tasks 6–8. `finalizeConnection` / `ConnectOutcome` / `connectRedirectPath` (Task 7) are used in Task 8. `DeletedPendingRow` (Task 6) is used only in Task 6. `SettingsValues` (Task 12) matches the PATCH body fields (Task 8).
 
-**Review Focus → tests:** 1 → Task 10 "two partners racing", Task 8 "select 409", Task 7 "tenant held". 2 → Task 6 "keeps a tenant another partner holds", Task 10 "held check … system scope". 3 → Task 2 unit + integration, Task 9, Task 10 "stale pending row is reaped". 4 → Task 4 `decodeXeroAuthEventId`, Task 7 "missing auth-event claim". 5 → Task 4 "Xero rotation race".
+**Review Focus → tests:** 1 → Task 10 "two partners racing", Task 8 "select 409", Task 7 "tenant held"; the same-row race between two callbacks → Task 10 "second pending callback … grant_superseded", Task 8 "409 grant_superseded". 2 → Task 6 "keeps a tenant another partner holds", Task 10 "held check … system scope". 3 → Task 2 unit + integration, Task 9, Task 10 "stale pending row is reaped". 4 → Task 4 `decodeXeroAuthEventId`, Task 7 "missing auth-event claim". 5 → Task 4 "Xero rotation race"; persistence of `reauth_required` → Task 10 "revoked-grant refresh PERSISTS" (depends on precondition 3).
 
 **Deliberately not in W02:**
 - contact/item upsert, import, workbench (W03);
