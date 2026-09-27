@@ -150,13 +150,17 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 		staleModTime   bool
 	}{
 		{"file growth only, stale modification time", 0, true},
-		{"callback on every chunk", 6, false},
+		{"callback on every chunk", 12, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer setDownloadTimeoutFloorForTest(window)()
+			// Chunks land a third of a window apart: ~1.2 s in total, four
+			// windows. At window*8/10 the gap left 60 ms of slack, and a
+			// loaded -race CI runner descheduled the writer past it (a queue
+			// run failed both cases with "no data received for 300ms").
 			p := &chunkedStallProvider{
-				chunks:         6,
-				interval:       window * 8 / 10, // ~1.2 s in total, four windows
+				chunks:         12,
+				interval:       window / 3,
 				growFile:       true,
 				callbackChunks: tc.callbackChunks,
 				staleModTime:   tc.staleModTime,
