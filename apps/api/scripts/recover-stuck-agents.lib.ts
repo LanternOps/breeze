@@ -102,7 +102,7 @@ export function planRecovery(devs: DeviceRow[], binaries: AgentVersionRow[]): {
     if (BROKEN_AGENT_VERSIONS.includes(binary.version as typeof BROKEN_AGENT_VERSIONS[number])) {
       skipped.push({
         device: d,
-        reason: `latest binary is still ${binary.version} (broken). Bump BREEZE_VERSION on this server first.`,
+        reason: `latest binary is still ${binary.version} (broken). Deploy a server release whose binariesVersion (see /health) is newer first.`,
       });
       continue;
     }

@@ -284,7 +284,7 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
         // build IS the requested one), but say so: if the agent then reports a
         // checksum failure, this line is what tells an operator why.
         console.warn(
-          `[${config.logTag}] serving ${filename} for a requested version without being able to verify it: set BINARY_VERSION or BREEZE_VERSION so this server knows which build it holds`,
+          `[${config.logTag}] serving ${filename} for a requested version without being able to verify it: set BREEZE_VERSION (or BINARY_VERSION) so this server knows which build it holds — on a server-only release image the baked BREEZE_BINARIES_VERSION does this`,
           { requestedVersion },
         );
       }
