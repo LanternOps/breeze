@@ -1949,8 +1949,6 @@
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
-      "provider": "{{provider}}",
-      "viaProvider": "{{provider}} aracılığıyla",
       "inProvider": "{{provider}}'ta",
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",

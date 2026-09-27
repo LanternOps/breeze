@@ -193,11 +193,12 @@ export default function AccountingSyncCard({ provider, invoiceId, sync, invoiceS
   // affordance has to go, or the operator double-submits the very push they
   // are waiting on.
   const pushable = canPush && provider !== null && statusPushable && !voided && !remoteDeleted && !watching;
-  // Display name for the {{provider}} interpolation below. `provider` is null
-  // only when the caller doesn't yet know which connection a push would go
-  // to (which only hides the push button) — the mapping row itself always
-  // names its provider, so `sync.provider` is always available here.
-  const providerName = ACCOUNTING_PROVIDER_NAMES[provider ?? sync.provider];
+  // Display name for the {{provider}} interpolation below. Always read off
+  // the synced record's OWN provider (`sync.provider`), never the caller's
+  // `provider` prop — that prop can be null (or, in principle, a different
+  // provider than an existing mapping row) and only gates the push button;
+  // the status text must describe what the mapping row actually is.
+  const providerName = ACCOUNTING_PROVIDER_NAMES[sync.provider];
   const statusLabel = watching
     ? t('invoiceDetail.accountingSync.syncing')
     : t(/* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`);

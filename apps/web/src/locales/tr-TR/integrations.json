@@ -1061,7 +1061,7 @@
     "invoicePush": "Fatura aktarma",
     "controlWhenIssuedInvoicesAreSentToProvider": "Düzenlenen faturaların {{provider}}'a ne zaman gönderileceğini kontrol edin. ",
     "disconnect": "Bağlantıyı kes ",
-    "providerOnline": "{{provider}} Çevrimiçi",
+    "heading": "{{provider}}",
     "syncCustomersInvoicesAndPaymentsToYourBooks": "Müşterileri, faturaları ve ödemeleri kitaplarınızla senkronize edin.",
     "failedToLoadProviderStatus": "{{provider}} durumu yüklenemedi.",
     "failedToLoadStatusCode": "{{provider}} durumu yüklenemedi ({{status}})",

@@ -1949,8 +1949,6 @@
       "title": "Pagos",
       "viaStripe": "vía Stripe",
       "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta factura en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación.",
-      "provider": "{{provider}}",
-      "viaProvider": "vía {{provider}}",
       "inProvider": "En {{provider}}",
       "syncingToProvider": "Sincronizando…",
       "providerSyncFailed": "Error de sincronización con {{provider}}",

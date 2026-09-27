@@ -45,6 +45,19 @@ const lines: InvoiceDetailData['lines'] = [
   },
 ];
 
+// The one active-connection response shared by every test whose payment-row
+// sync badge names a provider (e.g. "In QuickBooks") but doesn't otherwise
+// give the invoice its own `accountingSync` — the real app resolves this
+// through GET /accounting/providers, and the badge must not guess a brand
+// when that call hasn't been mocked (R10/finding 4).
+const activeQuickbooksProviders = {
+  data: [{
+    id: 'quickbooks', displayName: 'QuickBooks', configured: true,
+    capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true },
+  }],
+  activeConnection: { provider: 'quickbooks', status: 'connected' },
+};
+
 const issued: InvoiceDetailData = {
   invoice: {
     id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
@@ -429,6 +442,7 @@ describe('InvoiceDetail', () => {
   // above, where a Breeze-side reverse would never touch the books).
   it('badges a synced Breeze-origin payment and STILL offers the void button', async () => {
     fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/accounting/providers') return json(activeQuickbooksProviders);
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p4', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-13', note: null, createdAt: '', source: 'manual', accountingSync: { status: 'synced', lastError: null } },
       ] });
@@ -456,6 +470,7 @@ describe('InvoiceDetail', () => {
 
   it('surfaces the sync error text and reason on a failed push', async () => {
     fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/accounting/providers') return json(activeQuickbooksProviders);
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p6', invoiceId: 'inv-1', amount: '120.00', method: 'card', reference: 'pi_y', receivedAt: '2026-06-15', note: null, createdAt: '', source: 'stripe', accountingSync: { status: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' } },
       ] });

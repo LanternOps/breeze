@@ -1949,8 +1949,6 @@
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação.",
-      "provider": "{{provider}}",
-      "viaProvider": "via {{provider}}",
       "inProvider": "No {{provider}}",
       "syncingToProvider": "Sincronizando…",
       "providerSyncFailed": "Falha na sincronização com o {{provider}}",

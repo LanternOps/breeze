@@ -1949,8 +1949,6 @@
       "title": "Payments",
       "viaStripe": "via Stripe",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check.",
-      "provider": "{{provider}}",
-      "viaProvider": "via {{provider}}",
       "inProvider": "In {{provider}}",
       "syncingToProvider": "Syncing…",
       "providerSyncFailed": "{{provider}} sync failed",

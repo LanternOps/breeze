@@ -1061,7 +1061,7 @@
     "invoicePush": "Rechnungs-Push",
     "controlWhenIssuedInvoicesAreSentToProvider": "Kontrollieren Sie, wann ausgestellte Rechnungen an {{provider}} gesendet werden.",
     "disconnect": "Trennen",
-    "providerOnline": "{{provider}}",
+    "heading": "{{provider}}",
     "syncCustomersInvoicesAndPaymentsToYourBooks": "Synchronisieren Sie Kunden, Rechnungen und Zahlungen mit Ihren Büchern.",
     "failedToLoadProviderStatus": "Der {{provider}}-Status konnte nicht geladen werden.",
     "failedToLoadStatusCode": "{{provider}}-Status konnte nicht geladen werden ({{status}})",

@@ -1061,7 +1061,7 @@
     "invoicePush": "Push fatture",
     "controlWhenIssuedInvoicesAreSentToProvider": "Controlla quando le fatture emesse vengono inviate a {{provider}}. ",
     "disconnect": "Disconnetti ",
-    "providerOnline": "{{provider}}",
+    "heading": "{{provider}}",
     "syncCustomersInvoicesAndPaymentsToYourBooks": "Sincronizza clienti, fatture e pagamenti nella tua contabilità.",
     "failedToLoadProviderStatus": "Impossibile caricare lo stato {{provider}}.",
     "failedToLoadStatusCode": "Impossibile caricare lo stato {{provider}} ({{status}})",

@@ -751,4 +751,41 @@ describe("owed QuickBooks operations", () => {
     expect(container.textContent).toContain("Xero");
     expect(container.textContent).not.toContain("{{provider}}");
   });
+
+  // R10: the heading must render the full product name for QuickBooks
+  // ("QuickBooks Online", not "QuickBooks") and the plain brand name for a
+  // provider with no separate product name (Xero) — getByRole pins this to
+  // exactly the <h1>, not any other on-page mention of the brand.
+  it("renders the QuickBooks heading as exactly \"QuickBooks Online\"", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/quickbooks" ? jsonResponse(disconnected) : jsonResponse({ count: 0, data: [] }));
+
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("QuickBooks Online");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("QuickBooks Online");
+  });
+
+  it("renders the Xero heading as exactly \"Xero\"", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/xero" ? jsonResponse(disconnected) : jsonResponse({ count: 0, data: [] }));
+
+    render(<AccountingConnectionPanel provider="xero" />);
+
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Xero");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Xero");
+  });
+
+  it("renders the QuickBooks connect description with the full product name", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/quickbooks" ? jsonResponse(disconnected) : jsonResponse({ count: 0, data: [] }));
+
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+
+    expect(
+      await screen.findByText(
+        "Connect your QuickBooks Online company to sync customers, invoices, and payments. Breeze stays your system of record.",
+      ),
+    ).toBeTruthy();
+  });
 });

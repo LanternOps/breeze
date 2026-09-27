@@ -1061,7 +1061,7 @@
     "invoicePush": "Invoice push",
     "controlWhenIssuedInvoicesAreSentToProvider": "Control when issued invoices are sent to {{provider}}. ",
     "disconnect": "Disconnect ",
-    "providerOnline": "{{provider}}",
+    "heading": "{{provider}}",
     "syncCustomersInvoicesAndPaymentsToYourBooks": "Sync customers, invoices, and payments to your books.",
     "failedToLoadProviderStatus": "Failed to load {{provider}} status.",
     "failedToLoadStatusCode": "Failed to load {{provider}} status ({{status}})",

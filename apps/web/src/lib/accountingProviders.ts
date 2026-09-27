@@ -13,6 +13,16 @@ export type AccountingCapability = 'connect' | 'mapping' | 'customerImport' | 'i
 /** Brand names — never translated. */
 export const ACCOUNTING_PROVIDER_NAMES: Record<AccountingProviderId, string> = { quickbooks: 'QuickBooks', xero: 'Xero' };
 
+/**
+ * Full product names — never translated. Distinct from `ACCOUNTING_PROVIDER_NAMES`
+ * only for QuickBooks, whose product is branded "QuickBooks Online"; used
+ * ONLY where the English copy has always said the full product name (the
+ * connection panel's heading and its "Connect your ... company" description)
+ * so those two strings keep rendering "QuickBooks Online", not "QuickBooks"
+ * (Xero W01 fix round 1, R10).
+ */
+export const ACCOUNTING_PROVIDER_PRODUCT_NAMES: Record<AccountingProviderId, string> = { quickbooks: 'QuickBooks Online', xero: 'Xero' };
+
 export function isAccountingProviderId(v: string): v is AccountingProviderId {
   return (ACCOUNTING_PROVIDER_IDS as readonly string[]).includes(v);
 }
