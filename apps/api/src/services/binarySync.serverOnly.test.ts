@@ -179,8 +179,8 @@ function stubReleases(
           r.withAgent ? `${createHash("sha256").update(AGENT_BYTES).digest("hex")}  ${AGENT}\n` : "",
         );
       }
-      if (url === `${DL}/${tag}/release-artifact-manifest.json`) return new Response(r.signed.manifest);
-      if (url === `${DL}/${tag}/release-artifact-manifest.json.ed25519`) return new Response(r.signed.signature);
+      if (url === `${DL}/${tag}/release-artifact-manifest.json`) return new Response(new Uint8Array(r.signed.manifest));
+      if (url === `${DL}/${tag}/release-artifact-manifest.json.ed25519`) return new Response(new Uint8Array(r.signed.signature));
     }
     return new Response("not found", { status: 404 });
   });
@@ -409,7 +409,7 @@ describe("server-only releases", () => {
         String(c[0]).includes("server-only pairing"),
       );
       expect(pairingLines).toHaveLength(1);
-      expect(String(pairingLines[0][0])).toMatch(
+      expect(String(pairingLines[0]?.[0])).toMatch(
         /server 0\.118\.2 pairs with binaries 0\.118\.0, already registered — skipping agent_versions registration/,
       );
     });

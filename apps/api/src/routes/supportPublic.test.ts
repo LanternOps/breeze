@@ -883,7 +883,7 @@ describe('GET /download/:platform', () => {
       const res = await download();
 
       expect(res.status).toBe(200);
-      const proxied = String(fetchMock.mock.calls[0]?.[0]);
+      const proxied = String((fetchMock.mock.calls[0] as unknown[] | undefined)?.[0]);
       expect(proxied).toContain('/releases/download/v0.118.0/breeze-agent-windows-amd64.exe');
     } finally {
       process.env = saved;
