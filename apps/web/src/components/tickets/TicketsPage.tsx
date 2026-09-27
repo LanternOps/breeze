@@ -8,6 +8,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
+import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
 import { loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
@@ -538,63 +539,42 @@ export default function TicketsPage() {
         </a>
       </div>
 
-      <div className="mb-3 flex items-center gap-1 border-b">
-        {TABS.map((tabItem) => (
-          <button
-            key={tabItem.id}
-            type="button"
-            onClick={() => setTab(tabItem.id)}
-            data-testid={`tickets-tab-${tabItem.id}`}
-            className={cn(
-              'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
-              tab === tabItem.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`)}
-            {tabCount(tabItem.id) !== null && <span className="ml-1.5 text-xs text-muted-foreground">{tabCount(tabItem.id)}</span>}
-          </button>
-        ))}
-        {reviewAvailable && (
-          <button
-            type="button"
-            onClick={() => setTab('review')}
-            data-testid="tickets-tab-review"
-            className={cn(
-              'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
-              tab === 'review' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {t('ticketsPage.reviewQueue')}
-            {tabCount('review') !== null && (
-              <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 text-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200" data-testid="tickets-tab-review-badge">
-                {tabCount('review')}
-              </span>
-            )}
-          </button>
-        )}
-        {canManage && (
-          // Soft-deleted queue. tickets:manage only (server re-enforces via
-          // deleted=only → 403 for non-managers), so the tab stays hidden otherwise.
-          <button
-            type="button"
-            onClick={() => setTab('archived')}
-            data-testid="tickets-tab-archived"
-            className={cn(
-              'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
-              tab === 'archived' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {t('ticketsPage.archived')}
-          </button>
-        )}
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('ticketsPage.searchPlaceholder')}
-          data-testid="tickets-search-input"
-          className="ml-auto mb-1 w-56 rounded-md border bg-background px-2.5 py-1.5 text-sm"
+      <div className="mb-3 space-y-2">
+        <OverflowTabs
+          tabs={[
+            ...TABS.map((tabItem): OverflowTab => ({
+              id: tabItem.id,
+              label: t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`),
+              icon: null,
+              count: tabCount(tabItem.id) ?? undefined,
+            })),
+            ...(reviewAvailable
+              ? [{ id: 'review', label: t('ticketsPage.reviewQueue'), icon: null, count: tabCount('review') ?? undefined } satisfies OverflowTab]
+              : []),
+            // Soft-deleted queue. tickets:manage only (server re-enforces via
+            // deleted=only → 403 for non-managers), so the tab stays hidden otherwise.
+            ...(canManage
+              ? [{ id: 'archived', label: t('ticketsPage.archived'), icon: null } satisfies OverflowTab]
+              : []),
+          ]}
+          activeTab={tab}
+          onTabChange={(id) => setTab(id as Tab)}
+          testIdPrefix="tickets-tab-"
         />
+        {/* Below `lg` this drops to its own line under the tabs (#7148 —
+            a fixed w-56 box in the same row as the tabs overflowed by 94px
+            at 1024px); at `lg` and up it sits at the end of its own row,
+            right-aligned. */}
+        <div className="flex lg:justify-end">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('ticketsPage.searchPlaceholder')}
+            data-testid="tickets-search-input"
+            className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm lg:w-56"
+          />
+        </div>
       </div>
 
       {tab !== 'review' && (
