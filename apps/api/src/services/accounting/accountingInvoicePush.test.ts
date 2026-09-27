@@ -102,7 +102,10 @@ vi.mock('./providerRegistry', () => ({
     pushInvoice: pushInvoiceMock,
     voidInvoice: voidInvoiceMock,
   }),
-  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
+  // An unknown id returns a sentinel, never 'QuickBooks', so a caller that
+  // passes the wrong value (a display name, undefined) cannot pass by default.
+  accountingProviderDisplayName: (id: string) =>
+    ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? `UNKNOWN_PROVIDER:${String(id)}`,
 }));
 
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
@@ -949,6 +952,7 @@ describe('pushInvoiceToAccounting', () => {
       expect(row?.remoteEntityId ?? null).toBeNull();
       expect(row?.lastError).toContain('150.00');
       expect(row?.lastError).toContain('100.00');
+      expect(row?.lastError).toContain('sent to QuickBooks would total 150.00');
     });
 
     it('refuses with invoice_totals_mismatch on an existing synced mapping without touching its remote link', async () => {
@@ -1076,6 +1080,23 @@ describe('pushInvoiceToAccounting', () => {
     const errorUpdate = updatedPatches.find((u) => u.patch.syncStatus === 'error');
     expect(errorUpdate?.patch.lastError).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
     expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('on provider failure, tags the Sentry event with the QBO fault code (qbo_fault_code) beside the core keys', async () => {
+    pushInvoiceMock.mockRejectedValue(qboErrorToProviderError(Object.assign(new Error('QuickBooks invoice push failed with 400'), {
+      status: 400,
+      qboFaultCode: '6240',
+      qboFaultMessage: 'Duplicate Name Exists Error',
+    }), 'QuickBooks invoice push'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error' });
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      qbo_fault_code: '6240',
+      service: 'accountingInvoicePush',
+      invoice_id: INVOICE,
+    });
   });
 
   it('on a zero-row persist after a successful remote push, throws record_failed 502 embedding the remote id and never retries', async () => {
@@ -1492,6 +1513,34 @@ describe('voidInvoiceInAccounting', () => {
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
     expect(mapping.syncStatus).toBe('error');
     expect(mapping.lastError).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
+  });
+
+  it('on provider void failure, tags the Sentry event with the QBO fault code (qbo_fault_code) beside the core keys', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockRejectedValue(qboErrorToProviderError(Object.assign(new Error('QuickBooks invoice void failed with 400'), {
+      status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+    }), 'QuickBooks invoice void'));
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error' });
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      qbo_fault_code: '6000',
+      service: 'accountingInvoicePush',
+      accounting_mapping_id: 'map-inv-1',
+      invoice_id: INVOICE,
+    });
   });
 });
 

@@ -95,7 +95,7 @@ export type AccountingMappingErrorCode =
   | 'not_connected'
   | 'reauth_required'
   | 'provider_error'
-  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
+  // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error'
   | 'record_failed'
   | 'sync_in_progress'

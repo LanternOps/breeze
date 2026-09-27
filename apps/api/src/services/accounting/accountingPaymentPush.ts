@@ -240,7 +240,7 @@ export type AccountingPaymentPushErrorCode =
   | 'customer_not_mapped'
   | 'home_currency_unknown' | 'currency_mismatch'
   | 'provider_error'
-  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
+  // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error'
   | 'record_failed';
 
@@ -1697,10 +1697,11 @@ export async function pushPaymentToAccounting(
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('createPayment', mappingId, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      // Provider tags FIRST so a provider can never overwrite a core key.
+      ...providerTelemetryTags(err),
       service: 'accountingPaymentPush',
       accounting_mapping_id: mappingId,
       invoice_payment_id: prep.payload.invoicePaymentId,
-      ...providerTelemetryTags(err),
     });
     // Own short context so the marker COMMITS before the throw. `pending_op` is
     // KEPT: the work is still owed and the sweep must retry it.
@@ -2065,10 +2066,11 @@ export async function deletePaymentInAccounting(
     );
     if (attempts === null || attempts <= 1 || attempts % PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS === 0) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        // Provider tags FIRST so a provider can never overwrite a core key.
+        ...providerTelemetryTags(err),
         service: 'accountingPaymentPush',
         accounting_mapping_id: mappingId,
         remote_entity_id: prep.remotePaymentId,
-        ...providerTelemetryTags(err),
         // Sentry tags are strings; `unknown` means the stamp itself could not be
         // written, so the event is raised rather than suppressed.
         sync_attempts: attempts === null ? 'unknown' : String(attempts),

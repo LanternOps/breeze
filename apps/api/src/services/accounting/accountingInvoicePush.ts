@@ -310,14 +310,15 @@ async function persistInvoicePreflightErrorInOwnContext(
  * `syncMappedEntity` can raise `AccountingMappingError` for reasons this
  * coordinator did not itself pre-check: `not_connected`/`reauth_required`
  * (the token expired between the outer resolve and this nested call),
- * `provider_error` (a genuine QuickBooks/network failure, retryable), or one
+ * `provider_error` (a genuine provider/network failure, retryable), or one
  * of several PERMANENT pre-flight 409s (`income_account_required`,
  * `item_price_required`, a create-time `currency_mismatch` on the org/item
  * itself, `mapping_conflict`, `mapping_not_ready`, `entity_not_found`) —
  * config problems on the dependency mapping that no amount of retrying the
  * QuickBooks call will fix. The first two are re-typed to their exact
- * counterparts (mirrors `translateMappingError`); `provider_error` (or the legacy `quickbooks_error`) passes
- * through unchanged, and concurrent mapping sync contention stays retryable;
+ * counterparts (mirrors `translateMappingError`); `provider_error`, the
+ * legacy `quickbooks_error` and concurrent mapping sync contention
+ * (`sync_in_progress`) are all re-coded to a retryable `provider_error`/502;
  * everything else collapses to `dependency_not_ready` so
  * it is never mistaken for a retryable `provider_error`/502. Every message
  * here is already sanitized/user-safe — never a raw provider body.
@@ -809,10 +810,11 @@ export async function pushInvoiceToAccounting(
     const message = sanitizeInvoiceSyncErrorMessage(err, label);
     logProviderFault('pushInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      // Provider tags FIRST so a provider can never overwrite a core key.
+      ...providerTelemetryTags(err),
       service: 'accountingInvoicePush',
       accounting_mapping_id: mappingRow.id,
       invoice_id: inv.id,
-      ...providerTelemetryTags(err),
     });
     // Phase 2 (failure) — own short context so the marker COMMITS before the throw.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
@@ -1004,10 +1006,11 @@ export async function voidInvoiceInAccounting(
       : sanitizeInvoiceSyncErrorMessage(err, label);
     logProviderFault('voidInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      // Provider tags FIRST so a provider can never overwrite a core key.
+      ...providerTelemetryTags(err),
       service: 'accountingInvoicePush',
       accounting_mapping_id: mappingRow.id,
       invoice_id: invoiceId,
-      ...providerTelemetryTags(err),
     });
     // Own short context so the marker COMMITS before the throw below.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);

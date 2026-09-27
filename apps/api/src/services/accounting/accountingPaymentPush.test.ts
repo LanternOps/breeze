@@ -98,7 +98,10 @@ vi.mock('./providerRegistry', () => ({
   }),
   providerSupports: (id: string) => id === 'quickbooks',
   LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
-  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
+  // An unknown id returns a sentinel, never 'QuickBooks', so a caller that
+  // passes the wrong value (a display name, undefined) cannot pass by default.
+  accountingProviderDisplayName: (id: string) =>
+    ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? `UNKNOWN_PROVIDER:${String(id)}`,
 }));
 // Xero W01: a payment mapping's audit names ITS connection's provider. Resolved
 // against the same stateful fake below: the mapping row -> its integration_id's
@@ -1858,6 +1861,27 @@ describe('deletePaymentInAccounting', () => {
       pendingOp: 'delete',
       claimedAt: null,
       lastError: 'QuickBooks rejected the payment sync (HTTP 500)',
+    });
+  });
+
+  it('tags a delete failure\'s Sentry event with the QBO fault code (qbo_fault_code) beside the core keys', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    deletePaymentMock.mockRejectedValueOnce(qboErrorToProviderError(Object.assign(new Error('boom'), {
+      status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+    }), 'QuickBooks payment delete'));
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      qbo_fault_code: '6000',
+      service: 'accountingPaymentPush',
+      accounting_mapping_id: MAPPING,
+      remote_entity_id: '181',
+      sync_attempts: '1',
     });
   });
 

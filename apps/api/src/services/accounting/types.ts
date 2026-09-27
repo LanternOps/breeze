@@ -234,8 +234,10 @@ export interface AccountingDeletePaymentPayload {
   remoteVersion: string | null;
 }
 
-/** `already_absent` = QuickBooks reports the Payment does not exist. That is
- *  SUCCESS for a delete: the desired end state is already true. */
+/** `already_absent` = the provider reports the payment does not exist
+ *  (QuickBooks: fault 610 / "Object Not Found"). That is SUCCESS for a
+ *  delete: the desired end state is already true. The provider returns it —
+ *  it never throws a `not_found` error for this. */
 export type PaymentDeleteResult = 'deleted' | 'already_absent';
 
 /** Breeze's `payment_method` enum — what a provider maps its own rail names onto. */
@@ -281,10 +283,12 @@ export interface ChangeSetPaymentLine {
   /** PaymentRefNum (cheque number etc.); null when absent. */
   paymentRefNum: string | null;
   /**
-   * The Breeze `invoice_payments.id` this QuickBooks Payment claims to be,
-   * parsed from `PrivateNote` by `parseBreezePaymentMarker` — null unless the
-   * WHOLE note matches. Set on a Payment Breeze itself created; the pull uses
-   * it to ADOPT a create whose response was lost (spec decision 3).
+   * The Breeze `invoice_payments.id` this remote payment claims to be,
+   * recovered by the provider's `paymentMarker.extract` from wherever its
+   * `embed` placed the marker (QuickBooks: `PrivateNote`, parsed by
+   * `parseBreezePaymentMarker` — null unless the WHOLE note matches). Set on a
+   * payment Breeze itself created; the pull uses it to ADOPT a create whose
+   * response was lost (spec decision 3).
    */
   breezePaymentId: string | null;
 }
@@ -329,6 +333,35 @@ export interface ChangeSet {
   overflowed: boolean;
 }
 
+/**
+ * One accounting system (QuickBooks, Xero). The core coordinators are
+ * provider-neutral; every provider MUST honour these obligations, because the
+ * core cannot detect a violation — it just misbehaves:
+ *
+ * 1. ERRORS. Every public async method throws ONLY `AccountingProviderError`
+ *    (accountingProviderError.ts), translated at the provider's own boundary.
+ *    The core branches on `kind` alone and treats any other thrown value as
+ *    `transient` — so an untranslated `invalid_grant` would retry forever and
+ *    never mark the connection `reauth`.
+ * 2. ABSORBED CONDITIONS. Some outcomes are the provider's to handle, never
+ *    to throw:
+ *    - `deletePayment`: the remote payment not existing is SUCCESS — return
+ *      `'already_absent'`, never a `not_found` error.
+ *    - every write (`upsertCustomer`, `upsertItem`, `pushInvoice`,
+ *      `voidInvoice`, `deletePayment`): a stale remote version is handled
+ *      internally by re-reading the live version and retrying (QuickBooks:
+ *      once; a second stale fault may escape as `stale_version`).
+ *    - `pushInvoice`: a duplicate document number is handled internally
+ *      (QuickBooks retries once without DocNumber).
+ * 3. `paymentMarker`: `extract(embed(ref, marker))` must recover the marker's
+ *    Breeze payment id for ANY `ref` (including null and a max-length one),
+ *    and the provider must set `ChangeSetPaymentLine.breezePaymentId` from
+ *    that same `extract` on every pulled payment — it is how a create whose
+ *    response was lost gets adopted instead of duplicated.
+ * 4. `limits.paymentRefMax` caps the RAW reference the coordinator passes in
+ *    (`AccountingPaymentPayload.reference`), before `embed` runs.
+ * 5. `connectEnvironment()` is only valid once `configError()` returns null.
+ */
 export interface AccountingProvider {
   readonly provider: AccountingProviderId;
   /** Brand name used in operator-visible text ("QuickBooks", "Xero"). Never translated. */
@@ -402,10 +435,17 @@ export interface AccountingProvider {
  * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so they can
  * never collide with the `PAYMENT_PULL_ERROR_PREFIX` bucket.
  *
- * The persisted text is provider-labelled (`Deleted in QuickBooks` stays
- * byte-identical to what production rows already hold; Xero writes
- * `Deleted in Xero`). `accounting_entity_mappings` has no machine-code column,
- * so every reader compares against this CLOSED set — via
+ * The persisted text is provider-labelled and keyed by provider ID, never by
+ * the free-form display name: `Deleted in QuickBooks` stays byte-identical to
+ * what production rows already hold, and Xero's is `Deleted in Xero`. The
+ * `satisfies Record<AccountingProviderId, string>` makes adding a provider id
+ * without a marker a compile error, so the writer (`invoiceRemoteDeletedMarker`)
+ * and the readers (`INVOICE_REMOTE_DELETED_MARKERS`) cannot drift apart — a
+ * marker a reader did not recognise would let the push re-create an invoice
+ * the provider deleted (a duplicate invoice).
+ *
+ * `accounting_entity_mappings` has no machine-code column, so every reader
+ * compares against the full set derived from this map — via
  * `isInvoiceRemoteDeletedMarker` in code and `notInArray(...)` in SQL — never
  * against a single provider's string.
  *
@@ -413,11 +453,17 @@ export interface AccountingProvider {
  * imports invoiceService, which needs this too) or invoiceService.ts (imported
  * by accountingPaymentPull.ts), either of which would create a cycle.
  */
-export const INVOICE_REMOTE_DELETED_MARKERS: readonly string[] = ['Deleted in QuickBooks', 'Deleted in Xero'];
+export const INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER = {
+  quickbooks: 'Deleted in QuickBooks',
+  xero: 'Deleted in Xero',
+} as const satisfies Record<AccountingProviderId, string>;
 
-/** The remote-deleted sentinel for a provider, from its display name. */
-export function invoiceRemoteDeletedMarker(displayName: string): string {
-  return `Deleted in ${displayName}`;
+/** Every provider's remote-deleted sentinel — the set every reader matches against. */
+export const INVOICE_REMOTE_DELETED_MARKERS: readonly string[] = Object.values(INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER);
+
+/** The remote-deleted sentinel a provider's reconcile writes. */
+export function invoiceRemoteDeletedMarker(provider: AccountingProviderId): string {
+  return INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER[provider];
 }
 
 /** True when `lastError` is exactly one of the remote-deleted sentinels. */

@@ -26,6 +26,7 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 import * as invoiceService from '../../services/invoiceService';
 import { recordStripePayment } from '../../services/stripeReconcile';
 import { ingestStripeFinancialEvent, processPendingStripeFinancialEvents } from '../../services/stripeReversalState';
+import { partialRefundDivergenceMessage } from '../../services/accounting/accountingPaymentMarker';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -362,7 +363,8 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
     const [flagged] = await withSystemDbAccessContext(() => db.select().from(accountingEntityMappings)
       .where(eq(accountingEntityMappings.id, mappingId)));
     expect(flagged).toMatchObject({ syncStatus: 'error' });
-    expect(flagged!.lastError).toMatch(/Refunded in Stripe, total 40\.00/);
+    // Exact: the whole operator text, provider label included, not just a prefix.
+    expect(flagged!.lastError).toBe(partialRefundDivergenceMessage('40.00', 'QuickBooks'));
   });
 
   runDb('skips the divergence flag, without throwing, when the partner has no accounting connection (Xero W01, Task 6)', async () => {

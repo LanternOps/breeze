@@ -11,7 +11,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
-import { quickbooksProvider } from './quickbooksProvider';
+import { QuickbooksProvider, quickbooksProvider } from './quickbooksProvider';
 import { AccountingProviderError } from './accountingProviderError';
 import type { AccountingConnection } from './accountingConnectionService';
 
@@ -91,5 +91,87 @@ describe('QuickbooksProvider error boundary', () => {
     expect(err.kind).toBe('transient');
     expect(err.message).toBe('QuickBooks invoice push failed with 500');
     expect(err.status).toBe(500);
+  });
+});
+
+/**
+ * EVERY public async method must be wrapped (review finding, Xero W01). The
+ * three tests above pin three methods' kinds; this pins the wrapper itself on
+ * all of them, so a new or edited method that forgets `boundary()` leaks a raw
+ * QBO error the core would treat as `transient` (an `invalid_grant` would never
+ * mark reauth).
+ */
+describe('QuickbooksProvider boundary covers every public async method', () => {
+  const qboFault = () => new Response(
+    JSON.stringify({ Fault: { Error: [{ code: '6000', Message: 'Business Validation Error', Detail: 'rejected' }] } }),
+    { status: 400 },
+  );
+
+  const invoicePayload = {
+    invoiceId: 'inv-1', docNumber: 'INV-1', txnDate: '2026-09-01', dueDate: '2026-09-15',
+    customerRef: { id: '55' }, currencyCode: 'USD',
+    subtotal: '100.00', taxTotal: '7.00', total: '107.00',
+    lines: [{
+      invoiceLineId: 'l1', description: 'Onsite support',
+      quantity: '2.00', unitPrice: '50.00', lineTotal: '100.00', taxable: true,
+    }],
+    mapping: null,
+  };
+
+  /** Minimal-but-valid calls: each one reaches `fetch` and then meets the 400 fault. */
+  const CALLS: Record<string, (p: QuickbooksProvider) => Promise<unknown>> = {
+    exchangeCode: (p) => p.exchangeCode('code', 'realm123'),
+    refresh: (p) => p.refresh('rt'),
+    listRemoteCustomers: (p) => p.listRemoteCustomers(conn()),
+    listRemoteItems: (p) => p.listRemoteItems(conn()),
+    fetchRealmSettings: (p) => p.fetchRealmSettings(conn()),
+    listRemoteIncomeAccounts: (p) => p.listRemoteIncomeAccounts(conn()),
+    upsertCustomer: (p) => p.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, null),
+    upsertItem: (p) => p.upsertItem(conn(), {
+      catalogItemId: 'item-1', name: 'Support', description: null, type: 'Service',
+      unitPrice: '50.00', currencyCode: 'USD', taxable: true, active: true, incomeAccountRef: '79',
+    }, null),
+    pushInvoice: (p) => p.pushInvoice(conn(), invoicePayload, []),
+    voidInvoice: (p) => p.voidInvoice(
+      conn(),
+      { invoiceId: 'inv-1', docNumber: 'INV-1', currencyCode: 'USD' },
+      { remoteEntityId: '310', remoteSyncToken: '4' },
+    ),
+    createPayment: (p) => p.createPayment(conn(), {
+      invoicePaymentId: '11111111-1111-1111-1111-111111111111', remoteCustomerId: '55', remoteInvoiceId: '310',
+      amount: '10.00', currencyCode: 'USD', txnDate: '2026-09-01', reference: null,
+      marker: 'Breeze payment 11111111-1111-1111-1111-111111111111', pushGeneration: 0,
+    }),
+    deletePayment: (p) => p.deletePayment(conn(), { remotePaymentId: '900', remoteVersion: '0' }),
+    reconcileChanges: (p) => p.reconcileChanges(conn(), null),
+  };
+
+  /** Private async helpers the wrappers call — never reachable from the core. */
+  const PRIVATE_ASYNC_HELPERS = new Set([
+    'boundary', 'upsertEntity', 'readEntitySyncToken', 'readInvoiceSyncToken', 'readPaymentSyncToken',
+    'postPaymentDelete', 'fetchCdcWindow', 'backfillOverflowedEntity', 'qboRequest', 'requestTokens',
+  ]);
+
+  it('the wrapped-method list is exactly the class\'s public async methods (a new one must be added here)', () => {
+    const reflected = Object.getOwnPropertyNames(QuickbooksProvider.prototype).filter((name) => {
+      if (name === 'constructor' || name.endsWith('Raw') || PRIVATE_ASYNC_HELPERS.has(name)) return false;
+      const fn = (QuickbooksProvider.prototype as unknown as Record<string, unknown>)[name];
+      return typeof fn === 'function' && fn.constructor.name === 'AsyncFunction';
+    });
+    expect(reflected.sort()).toEqual(Object.keys(CALLS).sort());
+    expect(Object.keys(CALLS)).toHaveLength(13);
+  });
+
+  it.each(Object.keys(CALLS))('%s(): a 400 QBO fault rejects as an AccountingProviderError', async (method) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => qboFault());
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const err = await rejectionOf(CALLS[method]!(new QuickbooksProvider()));
+
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err.provider).toBe('quickbooks');
   });
 });

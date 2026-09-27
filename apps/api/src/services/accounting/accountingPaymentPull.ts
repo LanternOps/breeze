@@ -1485,7 +1485,7 @@ export async function markInvoiceDeletedRemotely(
     // A remote-deleted sentinel (`INVOICE_REMOTE_DELETED_MARKERS`) is what
     // `invoiceService` / `accountingInvoicePush` match on to refuse a re-push
     // (#4544). QuickBooks writes the byte-identical `Deleted in QuickBooks`.
-    await markInvoiceMappingError(conn, mapping.id, invoiceRemoteDeletedMarker(accountingProviderDisplayName(conn.provider)));
+    await markInvoiceMappingError(conn, mapping.id, invoiceRemoteDeletedMarker(conn.provider));
     return 'marked';
   });
 }

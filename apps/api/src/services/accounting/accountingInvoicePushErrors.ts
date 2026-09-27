@@ -47,7 +47,7 @@ export type AccountingInvoicePushErrorCode =
   // same way, so it is terminal in the worker.
   | 'invoice_totals_mismatch'
   | 'provider_error' | 'record_failed' // 502s; record_failed = remote ok, local persist failed (never retry)
-  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
+  // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error';
 
 export class AccountingInvoicePushError extends Error {

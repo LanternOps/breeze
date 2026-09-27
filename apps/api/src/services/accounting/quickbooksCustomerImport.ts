@@ -35,7 +35,7 @@ const PROVIDER = 'quickbooks' as const;
 
 export type QbImportErrorCode =
   | 'not_connected' | 'reauth_required' | 'provider_error'
-  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
+  // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error';
 type QbImportErrorStatus = 400 | 404 | 409 | 502;
 

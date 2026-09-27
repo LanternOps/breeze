@@ -7,7 +7,9 @@
  * never a provider `Detail`, which carries customer names and amounts.
  * `logBody` is for the SERVER LOG only (it is never placed on a mapping card
  * or a Sentry tag). `telemetryTags` are chosen by the provider and must be id- and PII-free
- * (QuickBooks keeps its historical `qbo_fault_code` tag this way).
+ * (QuickBooks keeps its historical `qbo_fault_code` tag this way). Sentry
+ * DROPS any tag key not in `ALLOWED_TAG_NAMES` (services/sentry.ts), so a
+ * provider that adds a tag must allowlist it there or it never arrives.
  */
 import type { AccountingProviderId } from './types';
 
@@ -77,7 +79,8 @@ function statusOf(err: unknown): number | undefined {
   return typeof s === 'number' ? s : undefined;
 }
 
-/** ` (HTTP 400: Business Validation Error)` — identical output to the old qboFaultSuffix. */
+/** ` (HTTP 400: Business Validation Error)` — byte-identical to the old
+ *  qboFaultSuffix for a translated QuickBooks error. */
 export function providerFaultSuffix(err: unknown): string {
   const status = statusOf(err);
   const message = isAccountingProviderError(err) ? err.providerMessage ?? null : null;

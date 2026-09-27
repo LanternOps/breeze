@@ -191,7 +191,7 @@ function classifyQbo(err: unknown, status: number | undefined, fault: QboFault):
  * THE QuickBooks boundary (Xero W01): every public QuickbooksProvider method
  * rethrows through this. Message and status are preserved verbatim, and the
  * QBO-specific fields are carried along for QBO-aware readers. The core reads
- * `kind` and the neutral fields only (enforced by neutralCore.guard.test.ts).
+ * `kind` and the neutral fields only (to be enforced by neutralCore.guard.test.ts in W01d).
  */
 export function qboErrorToProviderError(err: unknown, operation: string): AccountingProviderError {
   if (err instanceof AccountingProviderError) return err;
