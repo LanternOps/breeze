@@ -35,6 +35,10 @@ func (h *Heartbeat) refreshBrokerAfterHelperInstall(binaryPath string) error {
 // logged, not returned: the install itself succeeded, and the broker's on-miss
 // refresh may still admit the helper when it connects.
 func (h *Heartbeat) onHelperInstalled(binaryPath string) {
+	if h.sessionBroker == nil {
+		log.Debug("breeze helper installed; no session broker, allowlist refresh skipped", "path", binaryPath)
+		return
+	}
 	if err := h.refreshBrokerAfterHelperInstall(binaryPath); err != nil {
 		log.Warn("breeze helper installed but the session broker may reject it",
 			"path", binaryPath,
@@ -42,7 +46,5 @@ func (h *Heartbeat) onHelperInstalled(binaryPath string) {
 		)
 		return
 	}
-	if h.sessionBroker != nil {
-		log.Info("session broker allowlist refreshed after breeze helper install", "path", binaryPath)
-	}
+	log.Info("session broker allowlist refreshed after breeze helper install", "path", binaryPath)
 }

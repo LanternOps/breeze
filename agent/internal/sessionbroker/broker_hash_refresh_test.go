@@ -117,10 +117,14 @@ func TestVerifyPeerBinaryHash_NonAllowlistedPathDoesNotRefresh(t *testing.T) {
 	if ok {
 		t.Fatal("non-allowlisted peer was accepted")
 	}
-	// helperPaths is consulted once to establish the peer is not allowlisted;
-	// a refresh would consult it again.
-	if n := f.pathCalls.Load(); n > 1 {
-		t.Fatalf("helperPaths consulted %d times; a non-allowlisted peer must not trigger a refresh", n)
+	f.b.hashRefreshMu.Lock()
+	refreshed := !f.b.lastHashMissRefresh.IsZero()
+	f.b.hashRefreshMu.Unlock()
+	if refreshed {
+		t.Fatal("a non-allowlisted peer triggered an allowlist rehash")
+	}
+	if got := f.b.allowedHashCount(); got != 1 {
+		t.Fatalf("allowlist has %d hashes, want the untouched startup snapshot (1)", got)
 	}
 }
 

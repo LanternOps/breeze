@@ -3040,7 +3040,7 @@ func (b *Broker) refreshAllowedHashesOnMiss(peerPath, peerHash string) bool {
 	}
 	now := b.now()
 	if !b.lastHashMissRefresh.IsZero() && now.Sub(b.lastHashMissRefresh) < hashMissRefreshInterval {
-		log.Debug("helper hash miss at allowlisted path; allowlist refresh rate-limited",
+		log.Info("helper hash miss at allowlisted path; allowlist refresh rate-limited, rejecting until the next window",
 			"path", peerPath,
 			"lastRefresh", b.lastHashMissRefresh,
 		)

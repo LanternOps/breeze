@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -128,5 +129,35 @@ func TestOnInstalledRunsBeforeUpdatedHelperIsSpawned(t *testing.T) {
 	}
 	if refreshes != 1 {
 		t.Fatalf("onInstalled called %d times for one update, want 1", refreshes)
+	}
+}
+
+// When the updated helper will not start, the rollback puts the previous build
+// back on disk. The broker was just refreshed to the new build's hash, so it
+// must be refreshed again before the restored helper is respawned, or that
+// helper is rejected until the broker's rate-limited backstop re-hashes.
+func TestOnInstalledRefreshesAgainAfterStartFailureRollback(t *testing.T) {
+	h := newRollbackHarness(t, "1")
+	h.failNext = func(int) bool {
+		return strings.TrimSpace(h.binaryContent(t)) == "0.114.0"
+	}
+	var order []string
+	spawn := h.mgr.spawnFunc
+	h.mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		order = append(order, "spawn:"+strings.TrimSpace(h.binaryContent(t)))
+		return spawn(sessionKey, binaryPath, args...)
+	}
+	WithOnInstalled(func(string) {
+		order = append(order, "refresh:"+strings.TrimSpace(h.binaryContent(t)))
+	})(h.mgr)
+
+	h.mgr.CheckUpdate("0.114.0")
+	h.mgr.mu.Lock()
+	h.mgr.applyPendingUpdate()
+	h.mgr.mu.Unlock()
+
+	want := []string{"refresh:0.114.0", "spawn:0.114.0", "refresh:0.108.0", "spawn:0.108.0"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("call order = %v, want %v", order, want)
 	}
 }
