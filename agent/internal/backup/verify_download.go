@@ -210,6 +210,11 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 				// A reporting provider's bytes were stamped by the callback
 				// when they landed; crediting growth again now would extend
 				// the deadline by up to a window past the last byte (#6952).
+				// received never resets within a download. That relies on
+				// every provider reporting its whole body to the progress
+				// callback (DownloadProgressWriter, or Azure's SDK progress
+				// hook), so once one byte is reported, later bytes (including
+				// a fallback candidate's) are reported too.
 				if received.Load() == 0 {
 					advanceProgress(&lastProgress, now.UnixNano())
 				}
