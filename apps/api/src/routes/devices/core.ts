@@ -1104,7 +1104,18 @@ coreRoutes.get(
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
-        helperLifecycleMode: devices.helperLifecycleMode
+        helperLifecycleMode: devices.helperLifecycleMode,
+        // #6449 — why the server is withholding update offers from this
+        // device; drives the "update withheld" list badge.
+        updateOfferWithheldReason: devices.updateOfferWithheldReason,
+        // #4073 — the agent self-update currently being attempted; drives
+        // the "update stuck" list badge (#7068).
+        updateAttemptTargetVersion: devices.updateAttemptTargetVersion,
+        updateAttemptStartedAt: devices.updateAttemptStartedAt,
+        updateAttemptLastAt: devices.updateAttemptLastAt,
+        // #6925 — agent-reported Breeze Assist install problem; drives the
+        // "Assist enabled but not installed" list badge (#7023).
+        helperInstallIssue: devices.helperInstallIssue
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -1306,6 +1317,15 @@ coreRoutes.get(
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
+        // Selected above but historically the mapper is where list fields
+        // get silently dropped (#800/#1273/#2138/#5701) — the #7068 stuck-
+        // update and #7023 Assist-install-issue list badges hit the same
+        // failure mode.
+        updateOfferWithheldReason: d.updateOfferWithheldReason ?? null,
+        updateAttemptTargetVersion: d.updateAttemptTargetVersion ?? null,
+        updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
+        updateAttemptLastAt: d.updateAttemptLastAt ?? null,
+        helperInstallIssue: d.helperInstallIssue ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,
