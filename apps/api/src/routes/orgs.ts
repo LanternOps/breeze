@@ -60,9 +60,10 @@ import {
   SettingsSecretInputError,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
-  settingsSecretWouldFollowNewOrigin,
   withMaskedSettings,
 } from '../services/settingsSecretMasking';
+import { settingsSecretWouldFollowNewOrigin } from '../services/credentialOriginBinding';
+import { isMaskedIntegrationSecret } from '../services/notificationChannelSecrets';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
@@ -437,7 +438,7 @@ function resolveIncomingSettingsSecrets(
   incoming: unknown,
   stored: unknown,
 ): { ok: true; settings: unknown } | { ok: false; error: string } {
-  if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS)) {
+  if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
     return { ok: false, error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE };
   }
   try {

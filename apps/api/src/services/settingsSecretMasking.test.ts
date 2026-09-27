@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  LOG_FORWARDING_SECRET_DESTINATIONS,
   MASKED_SETTINGS_SECRET,
   SettingsSecretInputError,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
-  settingsSecretWouldFollowNewOrigin,
   withMaskedSettings,
 } from './settingsSecretMasking';
 
@@ -181,63 +179,5 @@ describe('restoreMaskedSettingsSecrets', () => {
   it('leaves a literal asterisk string under a non-secret key alone', () => {
     expect(restoreMaskedSettingsSecrets({ branding: { tagline: '****' } }, {}))
       .toEqual({ branding: { tagline: '****' } });
-  });
-});
-
-describe('settingsSecretWouldFollowNewOrigin', () => {
-  const stored = {
-    eventLogs: { elasticsearchUrl: 'https://es.trusted.example', elasticsearchApiKey: STORED_KEY },
-    logForwarding: { elasticsearchUrl: 'https://logs.trusted.example', elasticsearchPassword: STORED_PASSWORD },
-  };
-  const check = (incoming: unknown) =>
-    settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS);
-
-  it('is true when the URL origin changes and the secret is kept by the masked marker', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: MASKED_SETTINGS_SECRET } })).toBe(true);
-  });
-
-  it('is true when the URL origin changes and the secret is kept by omission', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example' } })).toBe(true);
-  });
-
-  it('is true when the URL origin changes and the stored ciphertext is echoed', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: STORED_KEY } })).toBe(true);
-  });
-
-  it('covers the logForwarding destination the same way', () => {
-    expect(check({ logForwarding: { elasticsearchUrl: 'https://logs.other.example', elasticsearchPassword: MASKED_SETTINGS_SECRET } })).toBe(true);
-  });
-
-  it('is false when a fresh secret is typed alongside the new URL', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: 'typed-key' } })).toBe(false);
-  });
-
-  it('is false when the secret is cleared alongside the new URL', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: '' } })).toBe(false);
-  });
-
-  it('is false when only the path changes within the same origin', () => {
-    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.trusted.example/new-path', elasticsearchApiKey: MASKED_SETTINGS_SECRET } })).toBe(false);
-  });
-
-  it('is false when the category or the URL is absent from the request', () => {
-    expect(check({ branding: {} })).toBe(false);
-    expect(check({ eventLogs: { enabled: false, elasticsearchApiKey: MASKED_SETTINGS_SECRET } })).toBe(false);
-  });
-
-  it('fails closed when a secret is stored but no destination URL was recorded for it', () => {
-    expect(settingsSecretWouldFollowNewOrigin(
-      { eventLogs: { elasticsearchUrl: 'https://es.new.example', elasticsearchApiKey: MASKED_SETTINGS_SECRET } },
-      { eventLogs: { elasticsearchApiKey: STORED_KEY } },
-      LOG_FORWARDING_SECRET_DESTINATIONS,
-    )).toBe(true);
-  });
-
-  it('is false when nothing is stored to carry', () => {
-    expect(settingsSecretWouldFollowNewOrigin(
-      { eventLogs: { elasticsearchUrl: 'https://es.new.example' } },
-      {},
-      LOG_FORWARDING_SECRET_DESTINATIONS,
-    )).toBe(false);
   });
 });

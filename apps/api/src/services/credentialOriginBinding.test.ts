@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   destinationSetGainedMembers,
+  settingsSecretWouldFollowNewOrigin,
   urlOriginChanged,
   webhookOriginChangeWouldRetainAuthorization,
 } from './credentialOriginBinding';
+import { isMaskedIntegrationSecret } from './notificationChannelSecrets';
+import { LOG_FORWARDING_SECRET_DESTINATIONS } from './settingsSecretMasking';
 
 describe('destinationSetGainedMembers', () => {
   it('is false when the set is unchanged', () => {
@@ -122,5 +125,65 @@ describe('webhookOriginChangeWouldRetainAuthorization', () => {
       { url: '********', authToken: '********' },
       isMasked,
     )).toBe(true);
+  });
+});
+
+describe('settingsSecretWouldFollowNewOrigin', () => {
+  const stored = {
+    eventLogs: { elasticsearchUrl: 'https://es.trusted.example', elasticsearchApiKey: 'enc:v1:stored-api-key-ciphertext' },
+    logForwarding: { elasticsearchUrl: 'https://logs.trusted.example', elasticsearchPassword: 'enc:v1:stored-password-ciphertext' },
+  };
+  const check = (incoming: unknown) =>
+    settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS, isMaskedIntegrationSecret);
+
+  it('is true when the URL origin changes and the secret is kept by the masked marker', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: '********' } })).toBe(true);
+  });
+
+  it('is true when the URL origin changes and the secret is kept by omission', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example' } })).toBe(true);
+  });
+
+  it('is true when the URL origin changes and the stored ciphertext is echoed', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: 'enc:v1:stored-api-key-ciphertext' } })).toBe(true);
+  });
+
+  it('covers the logForwarding destination the same way', () => {
+    expect(check({ logForwarding: { elasticsearchUrl: 'https://logs.other.example', elasticsearchPassword: '********' } })).toBe(true);
+  });
+
+  it('is false when a fresh secret is typed alongside the new URL', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: 'typed-key' } })).toBe(false);
+  });
+
+  it('is false when the secret is cleared alongside the new URL', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.other.example', elasticsearchApiKey: '' } })).toBe(false);
+  });
+
+  it('is false when only the path changes within the same origin', () => {
+    expect(check({ eventLogs: { elasticsearchUrl: 'https://es.trusted.example/new-path', elasticsearchApiKey: '********' } })).toBe(false);
+  });
+
+  it('is false when the category or the URL is absent from the request', () => {
+    expect(check({ branding: {} })).toBe(false);
+    expect(check({ eventLogs: { enabled: false, elasticsearchApiKey: '********' } })).toBe(false);
+  });
+
+  it('fails closed when a secret is stored but no destination URL was recorded for it', () => {
+    expect(settingsSecretWouldFollowNewOrigin(
+      { eventLogs: { elasticsearchUrl: 'https://es.new.example', elasticsearchApiKey: '********' } },
+      { eventLogs: { elasticsearchApiKey: 'enc:v1:stored-api-key-ciphertext' } },
+      LOG_FORWARDING_SECRET_DESTINATIONS,
+      isMaskedIntegrationSecret,
+    )).toBe(true);
+  });
+
+  it('is false when nothing is stored to carry', () => {
+    expect(settingsSecretWouldFollowNewOrigin(
+      { eventLogs: { elasticsearchUrl: 'https://es.new.example' } },
+      {},
+      LOG_FORWARDING_SECRET_DESTINATIONS,
+      isMaskedIntegrationSecret,
+    )).toBe(false);
   });
 });

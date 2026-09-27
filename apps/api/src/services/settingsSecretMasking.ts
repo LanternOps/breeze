@@ -1,5 +1,5 @@
+import type { SettingsSecretDestination } from './credentialOriginBinding';
 import { isSecretJsonKey } from './encryptedColumnRegistry';
-import { urlOriginChanged } from './credentialOriginBinding';
 import { INTEGRATION_MASKED_SECRET } from './integrationSettingsSecrets';
 import { isMaskedIntegrationSecret } from './notificationChannelSecrets';
 import { isEncryptedSecret } from './secretCrypto';
@@ -139,64 +139,11 @@ export function restoreMaskedSettingsSecrets(incoming: unknown, stored: unknown)
   return restoreValue(incoming, stored, undefined, '');
 }
 
-export interface SettingsSecretDestination {
-  /** Path of the object holding the destination URL and its credentials. */
-  path: readonly string[];
-  urlKey: string;
-  secretKeys: readonly string[];
-}
-
 /** Log-forwarding credentials and the endpoint they are sent to. */
 export const LOG_FORWARDING_SECRET_DESTINATIONS: readonly SettingsSecretDestination[] = [
   { path: ['eventLogs'], urlKey: 'elasticsearchUrl', secretKeys: ['elasticsearchApiKey', 'elasticsearchPassword'] },
   { path: ['logForwarding'], urlKey: 'elasticsearchUrl', secretKeys: ['elasticsearchApiKey', 'elasticsearchPassword'] },
 ];
-
-function valueAt(value: unknown, path: readonly string[]): unknown {
-  let current = value;
-  for (const part of path) {
-    if (!isRecord(current)) return undefined;
-    current = current[part];
-  }
-  return current;
-}
-
-/**
- * Same origin-binding contract as credentialOriginBinding.ts: true when the
- * incoming settings point a destination at a different origin while a stored
- * credential for it would be kept (masked marker, omitted key, or the sealed
- * value echoed back) rather than entered again. A stored credential with no
- * recorded destination fails closed. Evaluate on the raw request, before
- * `restoreMaskedSettingsSecrets`.
- */
-export function settingsSecretWouldFollowNewOrigin(
-  incoming: unknown,
-  stored: unknown,
-  destinations: readonly SettingsSecretDestination[],
-): boolean {
-  for (const destination of destinations) {
-    const next = valueAt(incoming, destination.path);
-    if (!isRecord(next)) continue;
-    const nextUrl = next[destination.urlKey];
-    if (typeof nextUrl !== 'string' || nextUrl.trim().length === 0) continue;
-
-    const current = valueAt(stored, destination.path);
-    const currentRecord = isRecord(current) ? current : {};
-    const currentUrl = currentRecord[destination.urlKey];
-
-    const carriesStoredSecret = destination.secretKeys.some((secretKey) => {
-      const storedSecret = currentRecord[secretKey];
-      if (typeof storedSecret !== 'string' || storedSecret.length === 0) return false;
-      if (!(secretKey in next) || next[secretKey] === undefined || next[secretKey] === null) return true;
-      const value = next[secretKey];
-      return isMaskedMarker(value) || (typeof value === 'string' && isEncryptedSecret(value));
-    });
-    if (!carriesStoredSecret) continue;
-
-    if (typeof currentUrl !== 'string' || urlOriginChanged(currentUrl, nextUrl)) return true;
-  }
-  return false;
-}
 
 export const LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE =
   'Changing the log-forwarding destination requires re-entering the API key or password';

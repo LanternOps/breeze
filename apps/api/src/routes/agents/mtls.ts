@@ -31,8 +31,8 @@ import {
   LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
   LOG_FORWARDING_SECRET_DESTINATIONS,
   MASKED_SETTINGS_SECRET,
-  settingsSecretWouldFollowNewOrigin,
 } from '../../services/settingsSecretMasking';
+import { settingsSecretWouldFollowNewOrigin } from '../../services/credentialOriginBinding';
 import { isPrivateIp } from '../../services/urlSafety';
 import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../../services/ipRanges';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
@@ -1984,6 +1984,7 @@ mtlsRoutes.patch(
       },
       { logForwarding: existingForwarding },
       LOG_FORWARDING_SECRET_DESTINATIONS,
+      isMaskedIntegrationSecret,
     )) {
       return c.json({ error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE }, 400);
     }
