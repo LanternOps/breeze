@@ -177,6 +177,11 @@ describe('GET /devices — response shape', () => {
         possibleReplacementOfDeviceId: '55555555-5555-4555-8555-555555555555',
         purchaseDate: '2025-03-01',
         purchaseDateSource: 'vendor',
+        updateOfferWithheldReason: 'edition_unconfirmed',
+        updateAttemptTargetVersion: 'v0.68.0',
+        updateAttemptStartedAt: new Date('2026-05-26T19:20:00.000Z'),
+        updateAttemptLastAt: new Date('2026-05-26T19:24:00.000Z'),
+        helperInstallIssue: 'awaiting_server_offer',
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
@@ -230,6 +235,21 @@ describe('GET /devices — response shape', () => {
     // so the Device Settings modal showed a blank field after save/reload.
     expect(row).toHaveProperty('purchaseDate', '2025-03-01');
     expect(row).toHaveProperty('purchaseDateSource', 'vendor');
+    // #7068/#7023 — stuck-self-update and Assist-install-issue list badges
+    // read these fields off the list row directly (DeviceList.tsx); the
+    // detail route already returns them via projectPublicDevice, but the
+    // list select/mapper in core.ts was never extended to match.
+    expect(row).toHaveProperty('updateOfferWithheldReason', 'edition_unconfirmed');
+    expect(row).toHaveProperty('updateAttemptTargetVersion', 'v0.68.0');
+    expect(row).toHaveProperty(
+      'updateAttemptStartedAt',
+      new Date('2026-05-26T19:20:00.000Z').toISOString(),
+    );
+    expect(row).toHaveProperty(
+      'updateAttemptLastAt',
+      new Date('2026-05-26T19:24:00.000Z').toISOString(),
+    );
+    expect(row).toHaveProperty('helperInstallIssue', 'awaiting_server_offer');
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -275,6 +295,11 @@ describe('GET /devices — response shape', () => {
         helperLifecycleMode: null,
         purchaseDate: null,
         purchaseDateSource: null,
+        updateOfferWithheldReason: null,
+        updateAttemptTargetVersion: null,
+        updateAttemptStartedAt: null,
+        updateAttemptLastAt: null,
+        helperInstallIssue: null,
       },
     ]);
 
@@ -349,6 +374,19 @@ describe('GET /devices — response shape', () => {
     expect(Object.prototype.hasOwnProperty.call(row, 'purchaseDateSource')).toBe(true);
     expect(row.purchaseDate).toBeNull();
     expect(row.purchaseDateSource).toBeNull();
+
+    // #7068/#7023 — keys present (null) for a healthy device with no stuck
+    // update / withheld offer / Assist install issue.
+    expect(Object.prototype.hasOwnProperty.call(row, 'updateOfferWithheldReason')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'updateAttemptTargetVersion')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'updateAttemptStartedAt')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'updateAttemptLastAt')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'helperInstallIssue')).toBe(true);
+    expect(row.updateOfferWithheldReason).toBeNull();
+    expect(row.updateAttemptTargetVersion).toBeNull();
+    expect(row.updateAttemptStartedAt).toBeNull();
+    expect(row.updateAttemptLastAt).toBeNull();
+    expect(row.helperInstallIssue).toBeNull();
   });
 
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {

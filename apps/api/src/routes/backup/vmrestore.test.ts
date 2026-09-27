@@ -159,7 +159,7 @@ describe('vm restore routes', () => {
     });
     app = new Hono();
     app.use('*', authMiddleware);
-    app.route('/', vmRestoreRoutes);
+    app.route('/backup', vmRestoreRoutes);
   });
 
   it('denies cross-site VM restore before loading snapshot metadata or creating a job', async () => {
@@ -477,7 +477,7 @@ describe('vm restore routes — rebuild engine', () => {
     });
     app = new Hono();
     app.use('*', authMiddleware);
-    app.route('/', vmRestoreRoutes);
+    app.route('/backup', vmRestoreRoutes);
   });
 
   it('rejects an identity field on the rebuild variant (server forces identity: new)', async () => {

@@ -979,11 +979,13 @@
         "notConverted": "Non converti"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} vérifications réseau sont à examiner.",
+        "pending_one": "{{count}} vérification réseau est à examiner.",
+        "pending_other": "{{count}} vérifications réseau sont à examiner.",
         "review": "Examiner la conversion",
         "title": "Conversion des vérifications réseau",
         "convert": "Convertir {{count}}",
-        "converted": "{{count}} vérifications réseau converties",
+        "converted_one": "{{count}} vérification réseau convertie",
+        "converted_other": "{{count}} vérifications réseau converties",
         "failed": "Impossible de convertir les vérifications réseau",
         "outcome": {
           "convertible": "Convertible",

@@ -5505,7 +5505,9 @@
       "inviteSent": "Invitation envoyée à {{email}}",
       "copied": "Copié !",
       "copyLink": "Copier le lien",
-      "mfaReset": "MFA réinitialisée pour {{email}}"
+      "mfaReset": "MFA réinitialisée pour {{email}}",
+      "roleUpdated": "Rôle mis à jour",
+      "orgAccessUpdated": "Accès aux organisations mis à jour"
     },
     "resetMfa": {
       "title": "Réinitialiser la MFA ?",

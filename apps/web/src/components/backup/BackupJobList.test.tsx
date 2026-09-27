@@ -1014,6 +1014,75 @@ describe('BackupJobList', () => {
     expect(block.textContent).toContain('21');
   });
 
+  it('shows the error summary in the Errors column for a failed job even when errorCount is 0', async () => {
+    // The error is carried in errorLog, not errorCount, for a job that failed
+    // outright (e.g. dispatch failure before any file was even attempted).
+    // The Errors cell used to gate on `errorCount > 0` alone and showed "-",
+    // hiding the one piece of information that explains the failure.
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            partialJob({
+              status: 'failed',
+              errorCount: 0,
+              errorLog: 'dispatch failed: queue unavailable',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    expect(within(row).getByTestId('backup-job-error-summary').textContent).toContain(
+      'dispatch failed: queue unavailable'
+    );
+    expect(within(row).queryByText('-')).toBeNull();
+  });
+
+  it('strips the internal reaper tag prefix from the displayed error summary', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            partialJob({
+              status: 'failed',
+              errorCount: 0,
+              errorLog: '[stale-backup-reaper] snapshot lease expired, job requeued',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    const summary = within(row).getByTestId('backup-job-error-summary').textContent ?? '';
+    expect(summary).toContain('snapshot lease expired, job requeued');
+    expect(summary).not.toContain('[stale-backup-reaper]');
+  });
+
+  it('shows "-" in the Errors column for a job with no error info', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [partialJob({ status: 'completed', errorCount: 0, errorLog: null })],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+  });
+
   it('labels the running-job action button "Stop"', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {

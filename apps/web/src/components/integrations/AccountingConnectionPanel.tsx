@@ -578,22 +578,46 @@ export default function AccountingConnectionPanel({ provider }: Props) {
               {status.lastError}
             </p>
           )}
-          <button
-            type="button"
-            onClick={() => void handleConnect()}
-            disabled={connecting || !canManageAccounting}
-            className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            data-testid={`${provider}-connect`}
-          >
-            {connecting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Plug className="h-4 w-4" />
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleConnect()}
+              disabled={connecting || !canManageAccounting}
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              data-testid={`${provider}-connect`}
+            >
+              {connecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plug className="h-4 w-4" />
+              )}
+              {needsReauth
+                ? t("accountingConnection.reconnectProvider", { provider: providerName })
+                : t("accountingConnection.connectToProvider", { provider: providerName })}
+            </button>
+            {/* A reauth-required connection can't always be repaired by
+                Reconnect — the provider may no longer be configured on this
+                instance, in which case Reconnect fails and the partner would
+                otherwise be stuck. Disconnect (the same handler and confirm
+                flow the connected state uses below) lets them clear the
+                connection and switch providers instead. */}
+            {needsReauth && (
+              <button
+                type="button"
+                onClick={() => void handleDisconnect()}
+                disabled={disconnecting || !canManageAccounting}
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-red-200 px-4 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                data-testid={`${provider}-disconnect`}
+              >
+                {disconnecting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Unplug className="h-4 w-4" />
+                )}
+                {t("accountingConnection.disconnect", { provider: providerName })}
+              </button>
             )}
-            {needsReauth
-              ? t("accountingConnection.reconnectProvider", { provider: providerName })
-              : t("accountingConnection.connectToProvider", { provider: providerName })}
-          </button>
+          </div>
         </div>
       )}
 

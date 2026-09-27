@@ -5558,7 +5558,9 @@
       "inviteSent": "Convite enviado para {{email}}",
       "copied": "Copiado!",
       "copyLink": "Copiar link",
-      "mfaReset": "MFA redefinida para {{email}}"
+      "mfaReset": "MFA redefinida para {{email}}",
+      "roleUpdated": "Função atualizada",
+      "orgAccessUpdated": "Acesso às organizações atualizado"
     },
     "resetMfa": {
       "title": "Redefinir MFA?",

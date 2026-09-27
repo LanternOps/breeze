@@ -780,8 +780,10 @@
   "accountingProviders": {
     "connected": "Verbunden",
     "notConnected": "Nicht verbunden",
+    "reconnectRequired": "Erneute Verbindung erforderlich",
     "disconnectOtherFirst": "Trennen Sie zuerst {{provider}}",
-    "loadFailed": "Die Buchhaltungsanbieter konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+    "loadFailed": "Die Buchhaltungsanbieter konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "noProviderConfigured": "Auf dieser Instanz ist kein Buchhaltungsanbieter konfiguriert."
   },
   "securityIntegration": {
     "notConfigured": "Nicht konfiguriert",

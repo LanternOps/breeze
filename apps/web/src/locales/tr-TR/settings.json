@@ -5558,7 +5558,9 @@
       "inviteSent": "Davetiye {{email}} adresine gönderildi",
       "copied": "Kopyalandı!",
       "copyLink": "Bağlantıyı kopyala",
-      "mfaReset": "{{email}} için MFA sıfırlandı"
+      "mfaReset": "{{email}} için MFA sıfırlandı",
+      "roleUpdated": "Rol güncellendi",
+      "orgAccessUpdated": "Kuruluş erişimi güncellendi"
     },
     "resetMfa": {
       "title": "MFA sıfırlansın mı?",

@@ -780,8 +780,10 @@
   "accountingProviders": {
     "connected": "Conectado",
     "notConnected": "No conectado",
+    "reconnectRequired": "Se requiere reconexión",
     "disconnectOtherFirst": "Desconecte {{provider}} primero",
-    "loadFailed": "No se pudieron cargar los proveedores de contabilidad. Actualice la página para intentarlo de nuevo."
+    "loadFailed": "No se pudieron cargar los proveedores de contabilidad. Actualice la página para intentarlo de nuevo.",
+    "noProviderConfigured": "No hay ningún proveedor de contabilidad configurado en esta instancia."
   },
   "securityIntegration": {
     "notConfigured": "No configurado",

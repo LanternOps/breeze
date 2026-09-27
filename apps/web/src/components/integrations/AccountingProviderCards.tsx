@@ -53,13 +53,27 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
   const activeName = active
     ? state.data.find((p) => p.id === active.provider)?.displayName ?? active.provider
     : null;
+  const visible = state.data.filter((p) => isAccountingProviderVisible(p, active));
+  if (visible.length === 0) {
+    return (
+      <p
+        className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
+        data-testid="accounting-provider-cards-empty"
+      >
+        {t('accountingProviders.noProviderConfigured')}
+      </p>
+    );
+  }
   return (
     <div className="grid gap-3 sm:grid-cols-2" data-testid="accounting-provider-cards">
-      {state.data
-        .filter((p) => isAccountingProviderVisible(p, active))
-        .map((p) => {
+      {visible.map((p) => {
           const blocked = !!active && active.provider !== p.id;
           const isSelected = selected === p.id;
+          // A reauth-required connection still "has" a provider — it just
+          // can't push/pull anything until reconnected — so the card must
+          // not claim "Connected" (finding: it read that way even when the
+          // connection needed reauth).
+          const needsReauth = active?.provider === p.id && active.status === 'reauth_required';
           return (
             <button
               key={p.id}
@@ -77,9 +91,11 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
               <div className="text-sm text-muted-foreground">
                 {blocked
                   ? t('accountingProviders.disconnectOtherFirst', { provider: activeName })
-                  : active?.provider === p.id
-                    ? t('accountingProviders.connected')
-                    : t('accountingProviders.notConnected')}
+                  : needsReauth
+                    ? t('accountingProviders.reconnectRequired')
+                    : active?.provider === p.id
+                      ? t('accountingProviders.connected')
+                      : t('accountingProviders.notConnected')}
               </div>
             </button>
           );

@@ -979,11 +979,13 @@
         "notConverted": "Nicht konvertiert"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} Netzwerkprüfungen erfordern eine Prüfung.",
+        "pending_one": "{{count}} Netzwerkprüfung erfordert eine Prüfung.",
+        "pending_other": "{{count}} Netzwerkprüfungen erfordern eine Prüfung.",
         "review": "Konvertierung prüfen",
         "title": "Netzwerkprüfungen konvertieren",
         "convert": "{{count}} konvertieren",
-        "converted": "{{count}} Netzwerkprüfungen konvertiert",
+        "converted_one": "{{count}} Netzwerkprüfung konvertiert",
+        "converted_other": "{{count}} Netzwerkprüfungen konvertiert",
         "failed": "Netzwerkprüfungen konnten nicht konvertiert werden",
         "outcome": {
           "convertible": "Konvertierbar",

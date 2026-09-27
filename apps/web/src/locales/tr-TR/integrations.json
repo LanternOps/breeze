@@ -780,8 +780,10 @@
   "accountingProviders": {
     "connected": "Bağlı",
     "notConnected": "Bağlı değil",
+    "reconnectRequired": "Yeniden bağlantı gerekli",
     "disconnectOtherFirst": "Önce {{provider}} bağlantısını kesin",
-    "loadFailed": "Muhasebe sağlayıcıları yüklenemedi. Tekrar denemek için sayfayı yenileyin."
+    "loadFailed": "Muhasebe sağlayıcıları yüklenemedi. Tekrar denemek için sayfayı yenileyin.",
+    "noProviderConfigured": "Bu örnekte yapılandırılmış bir muhasebe sağlayıcısı yok."
   },
   "securityIntegration": {
     "notConfigured": "Yapılandırılmadı ",
