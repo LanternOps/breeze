@@ -570,6 +570,6 @@ describe('importQuickbooksCustomers — connection/QBO error mapping', () => {
     getValidAccessTokenMock.mockResolvedValue('tok');
     listRemoteCustomersMock.mockRejectedValue(new Error('QuickBooks customer query failed with 429'));
     await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
   });
 });

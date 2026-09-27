@@ -94,6 +94,7 @@ vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ createPayment: createPaymentMock, deletePayment: deletePaymentMock }),
   providerSupports: (id: string) => id === 'quickbooks',
   LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
+  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
 // Xero W01: a payment mapping's audit names ITS connection's provider. Resolved
 // against the same stateful fake below: the mapping row -> its integration_id's
@@ -122,6 +123,7 @@ vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { qboErrorToProviderError } from './quickbooksFault';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import { db } from '../../db';
 import {
@@ -1425,7 +1427,7 @@ describe('pushPaymentToAccounting', () => {
     }));
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       syncStatus: 'error',
       lastError: 'QuickBooks rejected the payment sync (HTTP 400)',
@@ -1444,12 +1446,13 @@ describe('pushPaymentToAccounting', () => {
     // or Sentry, only the server log.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      createPaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), {
+      // The fixture models what the provider throws: a QBO fault translated at its boundary.
+      createPaymentMock.mockRejectedValueOnce(qboErrorToProviderError(Object.assign(new Error('boom'), {
         status: 400,
         body: '{"Fault":{"Error":[{"code":"6000","Message":"Business Validation Error","Detail":"Customer Acme owes 4200.00"}]}}',
         qboFaultCode: '6000',
         qboFaultMessage: 'Business Validation Error',
-      }));
+      }), 'QuickBooks payment create'));
 
       await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
 
@@ -1653,7 +1656,7 @@ describe('pushPaymentToAccounting', () => {
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       pendingOp: 'push', // still owed, so the sweep retries it
       terminalReason: null,
@@ -1846,7 +1849,7 @@ describe('deletePaymentInAccounting', () => {
     deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       pendingOp: 'delete',
       claimedAt: null,
@@ -1893,7 +1896,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     failCreate();
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       syncAttempts: 4,
@@ -1924,7 +1927,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     failCreate();
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS,
@@ -1948,7 +1951,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       pendingOp: 'delete',
@@ -2432,9 +2435,9 @@ describe('connection targets and audit providers (Xero W01)', () => {
 
 describe('AccountingPaymentPushError', () => {
   it('carries a typed code and status', () => {
-    const err = new AccountingPaymentPushError('quickbooks_error', 502, 'nope');
+    const err = new AccountingPaymentPushError('provider_error', 502, 'nope');
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('AccountingPaymentPushError');
-    expect({ code: err.code, status: err.status }).toEqual({ code: 'quickbooks_error', status: 502 });
+    expect({ code: err.code, status: err.status }).toEqual({ code: 'provider_error', status: 502 });
   });
 });

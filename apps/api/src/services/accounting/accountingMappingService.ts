@@ -94,6 +94,8 @@ export interface ListMappingProposalsInput {
 export type AccountingMappingErrorCode =
   | 'not_connected'
   | 'reauth_required'
+  | 'provider_error'
+  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
   | 'quickbooks_error'
   | 'record_failed'
   | 'sync_in_progress'
@@ -296,7 +298,7 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
     return await action();
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)));
-    throw new AccountingMappingError('quickbooks_error', 502, errorMessage);
+    throw new AccountingMappingError('provider_error', 502, errorMessage);
   }
 }
 
@@ -1363,7 +1365,7 @@ async function syncMappedEntityUnderLease(
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
     }
-    throw new AccountingMappingError('quickbooks_error', 502, message);
+    throw new AccountingMappingError('provider_error', 502, message);
   }
 
   let addressImported = false;

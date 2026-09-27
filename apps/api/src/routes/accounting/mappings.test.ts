@@ -254,7 +254,7 @@ describe('GET /accounting/:provider/mappings', () => {
   });
 
   it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
-    listMappingProposalsMock.mockRejectedValue(new AccountingMappingError('quickbooks_error', 502, 'QuickBooks returned an error while listing customers'));
+    listMappingProposalsMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks returned an error while listing customers'));
     const res = await app().request('/accounting/quickbooks/mappings?entityType=org');
     expect(res.status).toBe(502);
     const text = JSON.stringify(await res.json());
@@ -521,7 +521,7 @@ describe('PUT /accounting/:provider/mappings', () => {
   });
 
   it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
-    saveMappingDecisionMock.mockRejectedValue(new AccountingMappingError('quickbooks_error', 502, 'QuickBooks returned an error while listing customers'));
+    saveMappingDecisionMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks returned an error while listing customers'));
     const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'confirmed', remoteEntityId: 'qb-1' });
     expect(res.status).toBe(502);
     const text = JSON.stringify(await res.json());
@@ -634,7 +634,7 @@ describe('POST /accounting/:provider/mappings/sync', () => {
   });
 
   it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
-    syncMappedEntityMock.mockRejectedValue(new AccountingMappingError('quickbooks_error', 502, 'QuickBooks rejected the customer sync'));
+    syncMappedEntityMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks rejected the customer sync'));
     const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
     expect(res.status).toBe(502);
     const text = JSON.stringify(await res.json());

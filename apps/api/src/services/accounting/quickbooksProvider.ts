@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
-import { parseQboFault, qboFaultOf } from './quickbooksFault';
+import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
 import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -463,18 +463,92 @@ export class QuickbooksProvider implements AccountingProvider {
     return url.toString();
   }
 
+  // ---------------------------------------------------------------------------
+  // THE BOUNDARY (Xero W01). Every public async method below is a one-line
+  // wrapper that rethrows through `qboErrorToProviderError`, so callers only
+  // ever see the provider-neutral `AccountingProviderError`. The `*Raw` bodies
+  // are unchanged: their internal retries (5010 SyncToken re-read, 610
+  // already-absent, Duplicate-DocNumber fallback) still run on RAW QBO errors
+  // first. A method that needs another public method's behaviour internally
+  // must call its `*Raw` variant, never the wrapped one.
+  //
+  // `fetchRealmSettings` keeps `'fetchRealmSettings'` as its operation: that is
+  // the name its sanitized `preferencesError` has always carried on `operation`.
+  // ---------------------------------------------------------------------------
+
+  /** Translate at the boundary; internal retries (5010 re-read, DocNumber fallback) run on raw errors first. */
+  private async boundary<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw qboErrorToProviderError(err, operation);
+    }
+  }
+
   async exchangeCode(code: string, realmId: string): Promise<ConnectionTokens> {
-    return this.requestTokens('authorization_code', { code, realmId });
+    return this.boundary('QuickBooks token exchange', () => this.exchangeCodeRaw(code, realmId));
   }
 
   async refresh(refreshToken: string): Promise<ConnectionTokens> {
+    return this.boundary('QuickBooks token refresh', () => this.refreshRaw(refreshToken));
+  }
+
+  async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
+    return this.boundary('QuickBooks customer query', () => this.listRemoteCustomersRaw(conn));
+  }
+
+  async listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]> {
+    return this.boundary('QuickBooks item query', () => this.listRemoteItemsRaw(conn, query));
+  }
+
+  async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
+    return this.boundary('fetchRealmSettings', () => this.fetchRealmSettingsRaw(conn));
+  }
+
+  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+    return this.boundary('QuickBooks income account query', () => this.listRemoteIncomeAccountsRaw(conn));
+  }
+
+  async upsertCustomer(conn: AccountingConnection, customer: AccountingCustomerPayload, mapping: AccountingEntityMapping | null): Promise<RemoteRef> {
+    return this.boundary('QuickBooks customer upsert', () => this.upsertCustomerRaw(conn, customer, mapping));
+  }
+
+  async upsertItem(conn: AccountingConnection, item: AccountingItemPayload, mapping: AccountingEntityMapping | null): Promise<RemoteRef> {
+    return this.boundary('QuickBooks item upsert', () => this.upsertItemRaw(conn, item, mapping));
+  }
+
+  async pushInvoice(conn: AccountingConnection, invoice: AccountingInvoicePayload, lineMappings: readonly AccountingInvoiceLineMapping[]): Promise<InvoicePushResult> {
+    return this.boundary('QuickBooks invoice push', () => this.pushInvoiceRaw(conn, invoice, lineMappings));
+  }
+
+  async voidInvoice(conn: AccountingConnection, invoice: AccountingVoidInvoicePayload, mapping: AccountingEntityMapping): Promise<InvoiceVoidResult> {
+    return this.boundary('QuickBooks invoice void', () => this.voidInvoiceRaw(conn, invoice, mapping));
+  }
+
+  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+    return this.boundary('QuickBooks payment create', () => this.createPaymentRaw(conn, payment));
+  }
+
+  async deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> {
+    return this.boundary('QuickBooks payment delete', () => this.deletePaymentRaw(conn, payment));
+  }
+
+  async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
+    return this.boundary('QuickBooks change data capture', () => this.reconcileChangesRaw(conn, sinceCursor));
+  }
+
+  private async exchangeCodeRaw(code: string, realmId: string): Promise<ConnectionTokens> {
+    return this.requestTokens('authorization_code', { code, realmId });
+  }
+
+  private async refreshRaw(refreshToken: string): Promise<ConnectionTokens> {
     return this.requestTokens('refresh_token', { refreshToken, realmId: '' });
   }
 
   // NOTE: assumes `conn.accessToken` is already a VALID token. Callers must
   // resolve it via getValidAccessToken(db, conn) first (which refreshes +
   // persists rotation) — this method stays pure HTTP and issues no DB queries.
-  async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
+  private async listRemoteCustomersRaw(conn: AccountingConnection): Promise<RemoteCustomer[]> {
     const customers: RemoteCustomer[] = [];
     let startPosition = 1;
 
@@ -495,7 +569,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return customers;
   }
 
-  async listRemoteItems(conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> {
+  private async listRemoteItemsRaw(conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> {
     const items: RemoteItem[] = [];
     let startPosition = 1;
     for (;;) {
@@ -516,7 +590,7 @@ export class QuickbooksProvider implements AccountingProvider {
   // NOTE: like listRemoteCustomers, this assumes `conn.accessToken` is already
   // valid and issues no DB queries. The fetch runs OUTSIDE any DB context so a
   // QBO round-trip never holds a pooled connection (#1105 class).
-  async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
+  private async fetchRealmSettingsRaw(conn: AccountingConnection): Promise<RealmSettings> {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
@@ -567,7 +641,7 @@ export class QuickbooksProvider implements AccountingProvider {
     };
   }
 
-  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+  private async listRemoteIncomeAccountsRaw(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
     const accounts: RemoteIncomeAccount[] = [];
     let startPosition = 1;
     for (;;) {
@@ -585,7 +659,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return accounts;
   }
 
-  async upsertCustomer(
+  private async upsertCustomerRaw(
     conn: AccountingConnection,
     customer: AccountingCustomerPayload,
     mapping: AccountingEntityMapping | null,
@@ -630,7 +704,7 @@ export class QuickbooksProvider implements AccountingProvider {
     };
   }
 
-  async upsertItem(
+  private async upsertItemRaw(
     conn: AccountingConnection,
     item: AccountingItemPayload,
     mapping: AccountingEntityMapping | null,
@@ -730,7 +804,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return token;
   }
 
-  async pushInvoice(
+  private async pushInvoiceRaw(
     conn: AccountingConnection,
     invoice: AccountingInvoicePayload,
     lineMappings: readonly AccountingInvoiceLineMapping[],
@@ -896,16 +970,17 @@ export class QuickbooksProvider implements AccountingProvider {
    * live revision". Production disproved that on 2026-09-06: with a live
    * revision QuickBooks still refused, because the invoice was settled by a
    * QuickBooks Payment. That refusal is a business RULE, so it is classified
-   * terminal by the coordinator (`isQboPaymentLinkedRefusal`) rather than
-   * retried; this method deliberately does not translate it, so the fault
-   * fields reach `voidInvoiceInAccounting` intact.
+   * terminal by the coordinator rather than retried. This body deliberately
+   * does not handle it: the public wrapper's boundary classifies it
+   * `payment_linked` (`isQboPaymentLinkedRefusal`, in `qboErrorToProviderError`)
+   * and `voidInvoiceInAccounting` branches on that kind.
    *
    * A NULL stored token is likewise not a refusal any more. An adopted or
    * re-owned invoice mapping can legitimately carry none, and throwing left an
    * operator with no route to a QuickBooks void but doing it by hand; the live
    * revision is simply read first.
    */
-  async voidInvoice(
+  private async voidInvoiceRaw(
     conn: AccountingConnection,
     _invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
@@ -931,7 +1006,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
   }
 
-  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+  private async createPaymentRaw(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
     // Idempotency key, exactly as pushInvoice's create path uses (`:663-678`):
     // QBO recognizes the same `requestid` for a rolling 24h window and returns
     // the ORIGINAL response rather than creating again, so a retry after a lost
@@ -984,7 +1059,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return { id: parsed.Payment.Id, syncToken: parsed.Payment.SyncToken };
   }
 
-  async deletePayment(
+  private async deletePaymentRaw(
     conn: AccountingConnection,
     payment: AccountingDeletePaymentPayload,
   ): Promise<PaymentDeleteResult> {
@@ -1063,7 +1138,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
   }
 
-  async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
+  private async reconcileChangesRaw(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
     const now = new Date();
     const epoch = new Date(0);
     const lookbackFloor = new Date(now.getTime() - QBO_CDC_LOOKBACK_DAYS * 24 * 3600_000);

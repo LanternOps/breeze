@@ -995,7 +995,7 @@ describe('QuickBooks payment push — real Postgres', () => {
 
     for (let attempt = 1; attempt <= PAYMENT_PUSH_MAX_ATTEMPTS; attempt++) {
       await expect(pushPaymentToAccounting(mappingId, fx.partnerId, systemRunner))
-        .rejects.toMatchObject({ code: 'quickbooks_error' });
+        .rejects.toMatchObject({ code: 'provider_error' });
       const row = await loadOnePaymentMapping(fx);
       expect(row.syncAttempts).toBe(attempt);
       // The lease is released every time, which is what lets the NEXT attempt

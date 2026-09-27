@@ -113,6 +113,7 @@ import {
   voidInvoiceInAccounting,
   AccountingInvoicePushError,
 } from './accountingInvoicePush';
+import { qboErrorToProviderError } from './quickbooksFault';
 
 const PARTNER = 'p1';
 const ORG = 'org-a';
@@ -434,7 +435,7 @@ describe('DB access context contract', () => {
       throw Object.assign(new Error('boom'), { status: 500 });
     });
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error' });
 
     expect(depthAtProviderCall).toBe(0);
     // Phase 1, Phase 1b, then the provider call with nothing held, then the
@@ -1069,7 +1070,7 @@ describe('pushInvoiceToAccounting', () => {
       caught = err as AccountingInvoicePushError;
     }
 
-    expect(caught?.code).toBe('quickbooks_error');
+    expect(caught?.code).toBe('provider_error');
     expect(caught?.status).toBe(502);
     expect(caught?.message).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
     const errorUpdate = updatedPatches.find((u) => u.patch.syncStatus === 'error');
@@ -1192,7 +1193,7 @@ describe('pushInvoiceToAccounting', () => {
     stubInsertWithViolation();
     insertUniqueViolation = 'accounting_entity_mappings_breeze_uniq';
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
@@ -1251,7 +1252,7 @@ describe('pushInvoiceToAccounting', () => {
         mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
       });
       syncMappedEntityMock.mockRejectedValueOnce(
-        new AccountingMappingError('quickbooks_error', 502, 'QuickBooks rejected the customer sync (HTTP 500)'),
+        new AccountingMappingError('provider_error', 502, 'QuickBooks rejected the customer sync (HTTP 500)'),
       );
 
       let caught: AccountingInvoicePushError | undefined;
@@ -1261,7 +1262,7 @@ describe('pushInvoiceToAccounting', () => {
         caught = err as AccountingInvoicePushError;
       }
 
-      expect(caught?.code).toBe('quickbooks_error');
+      expect(caught?.code).toBe('provider_error');
       expect(caught?.status).toBe(502);
       expect(pushInvoiceMock).not.toHaveBeenCalled();
     });
@@ -1269,7 +1270,7 @@ describe('pushInvoiceToAccounting', () => {
     it('keeps concurrent mapping sync contention retryable for invoice jobs', async () => {
       setup({ mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, syncStatus: 'pending' })] });
       syncMappedEntityMock.mockRejectedValueOnce(new AccountingMappingError('sync_in_progress', 409, 'Mapping sync is already in progress'));
-      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
       expect(pushInvoiceMock).not.toHaveBeenCalled();
     });
 
@@ -1436,12 +1437,13 @@ describe('voidInvoiceInAccounting', () => {
         },
       ],
     });
-    voidInvoiceMock.mockRejectedValue(Object.assign(new Error('QuickBooks invoice void failed with 400'), {
+    // The fixture models what the provider throws: a QBO fault translated at its boundary.
+    voidInvoiceMock.mockRejectedValue(qboErrorToProviderError(Object.assign(new Error('QuickBooks invoice void failed with 400'), {
       status: 400,
       qboFaultCode: '6000',
       qboFaultMessage: 'Business Validation Error',
       qboPaymentLinked: true,
-    }));
+    }), 'QuickBooks invoice void'));
 
     let caught: AccountingInvoicePushError | undefined;
     try {
@@ -1484,7 +1486,7 @@ describe('voidInvoiceInAccounting', () => {
       caught = err as AccountingInvoicePushError;
     }
 
-    expect(caught?.code).toBe('quickbooks_error');
+    expect(caught?.code).toBe('provider_error');
     expect(caught?.status).toBe(502);
     expect(caught?.message).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
@@ -1573,7 +1575,7 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
   it('does not fan out when the push itself failed', async () => {
     pushInvoiceMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error' });
 
     expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();

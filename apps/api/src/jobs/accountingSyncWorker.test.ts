@@ -212,12 +212,21 @@ describe('processAccountingSyncJob', () => {
 
   it('rethrows quickbooks_error (502) so BullMQ retries', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());
-    const err = new AccountingInvoicePushError('quickbooks_error', 502, 'upstream QuickBooks failure');
+    const err = new AccountingInvoicePushError('provider_error', 502, 'upstream QuickBooks failure');
     pushInvoiceMock.mockRejectedValue(err);
 
     await expect(
       processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
     ).rejects.toBe(err);
+  });
+
+  it('treats the legacy quickbooks_error code as retryable (dead alias, Xero W01)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('quickbooks_error', 502, 'x'));
+
+    await expect(
+      processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).rejects.toThrow('x');
   });
 
   it('rethrows an unexpected non-typed error so BullMQ retries', async () => {
@@ -437,7 +446,7 @@ describe('payment jobs', () => {
   });
 
   it('rethrows a delete-payment RETRYABLE code (quickbooks_error) so BullMQ retries', async () => {
-    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('quickbooks_error', 502, 'upstream'));
+    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('provider_error', 502, 'upstream'));
     await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
       .rejects.toThrow('upstream');
   });
@@ -458,7 +467,7 @@ describe('payment jobs', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
-  it.each<AccountingPaymentPushErrorCode>(['quickbooks_error', 'sync_in_progress', 'invoice_not_synced'])(
+  it.each<AccountingPaymentPushErrorCode>(['provider_error', 'sync_in_progress', 'invoice_not_synced'])(
     'rethrows %s so BullMQ retries', async (code) => {
       pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 502, 'later'));
       await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
@@ -522,7 +531,7 @@ describe('mapping jobs and recovery sweep', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
   it('rethrows provider errors for the existing retry policy', async () => {
-    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('quickbooks_error', 502, 'retry'));
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('provider_error', 502, 'retry'));
     await expect(processAccountingSyncJob(mappingJob)).rejects.toThrow('retry');
   });
   it('retries when an explicit client sync holds the mapping lease', async () => {

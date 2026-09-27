@@ -278,7 +278,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
   });
 
   it('502 pass-through for a genuine QuickBooks failure', async () => {
-    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('quickbooks_error', 502, 'QuickBooks returned an error'));
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('provider_error', 502, 'QuickBooks returned an error'));
     const res = await pushInvoice();
     expect(res.status).toBe(502);
   });

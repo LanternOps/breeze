@@ -33,7 +33,10 @@ import type { RemoteCustomer } from './types';
 
 const PROVIDER = 'quickbooks' as const;
 
-export type QbImportErrorCode = 'not_connected' | 'reauth_required' | 'quickbooks_error';
+export type QbImportErrorCode =
+  | 'not_connected' | 'reauth_required' | 'provider_error'
+  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
+  | 'quickbooks_error';
 type QbImportErrorStatus = 400 | 404 | 409 | 502;
 
 // Typed failures the route translates straight to an HTTP status. Narrowing
@@ -115,7 +118,7 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
     // QBO API failures (401/403/429/5xx, unparseable body) are upstream, not a
     // Breeze bug — map to a typed 502 so the route doesn't 500 + Sentry-spam.
     captureException(err instanceof Error ? err : new Error(String(err)));
-    throw new QbImportError('QuickBooks returned an error while listing customers', 'quickbooks_error', 502);
+    throw new QbImportError('QuickBooks returned an error while listing customers', 'provider_error', 502);
   }
 }
 

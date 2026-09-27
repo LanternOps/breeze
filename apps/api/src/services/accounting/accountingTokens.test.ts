@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encryptSecret } from '../secretCrypto';
+import { qboErrorToProviderError } from './quickbooksFault';
 
 const { mocks, ctx } = vi.hoisted(() => ({
   mocks: {
@@ -405,7 +406,7 @@ describe('accountingTokens', () => {
   it('marks reauth_required when refresh returns an explicit invalid_grant AND the row still holds the token we tried (genuine revocation)', async () => {
     const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
     const { db } = makeLockableDb(lockedRow()); // row's refreshTokenEncrypted stays 'OLD-rt' throughout
-    mocks.provider.refresh.mockRejectedValueOnce({ status: 400, qboError: 'invalid_grant', message: 'invalid_grant' });
+    mocks.provider.refresh.mockRejectedValueOnce(qboErrorToProviderError({ status: 400, qboError: 'invalid_grant', message: 'invalid_grant' }, 'QuickBooks token refresh'));
 
     const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
 
@@ -431,7 +432,7 @@ describe('accountingTokens', () => {
         accessTokenExpiresAt: new Date(Date.now() + 3600_000),
         updatedAt: new Date('2026-09-01T00:05:00.000Z'),
       };
-      throw Object.assign(new Error('invalid_grant'), { status: 400, qboError: 'invalid_grant' });
+      throw qboErrorToProviderError(Object.assign(new Error('invalid_grant'), { status: 400, qboError: 'invalid_grant' }), 'QuickBooks token refresh');
     });
 
     const { getValidAccessToken } = await import('./accountingTokens');

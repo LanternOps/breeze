@@ -660,7 +660,7 @@ describe('listMappingProposals — connection/token error mapping', () => {
     const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
       .catch((e: unknown) => e);
 
-    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect(err).toMatchObject({ code: 'provider_error', status: 502 });
     expect((err as Error).message).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
     expect(captureExceptionMock).toHaveBeenCalledWith(qboErr);
   });
@@ -692,7 +692,7 @@ describe('listRemoteIncomeAccountsForPartner', () => {
   it('maps a QBO failure to a typed 502', async () => {
     listRemoteIncomeAccountsMock.mockRejectedValue(new Error('boom'));
     await expect(listRemoteIncomeAccountsForPartner({ partnerId: PARTNER, provider: 'quickbooks' }, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
   });
 });
 
@@ -1291,7 +1291,7 @@ describe('syncMappedEntity', () => {
 
     const err: unknown = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e);
 
-    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect(err).toMatchObject({ code: 'provider_error', status: 502 });
     expect((err as Error).message).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
     expect(captureExceptionMock).toHaveBeenCalled();
     const persisted = currentMappingRows.find((r) => r.id === 'm1');
@@ -1323,7 +1323,7 @@ describe('syncMappedEntity', () => {
       throw Object.assign(new Error('boom'), { status: 500 });
     });
 
-    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({ code: 'provider_error' });
 
     // The whole point: nothing was held across the QuickBooks call, and the
     // error marker ran in a context OPENED AFTER it — so it is a real
