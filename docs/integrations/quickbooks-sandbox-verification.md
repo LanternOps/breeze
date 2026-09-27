@@ -43,8 +43,8 @@ cd apps/api && npx vitest run src/services/accounting/ src/routes/accounting/ \
 
 ```bash
 cd apps/web && npx vitest run \
-  src/components/integrations/QuickbooksMappingWorkbench.test.tsx \
-  src/components/integrations/QuickbooksCustomerImport.test.tsx \
+  src/components/integrations/AccountingMappingWorkbench.test.tsx \
+  src/components/integrations/AccountingCustomerImport.test.tsx \
   src/lib/i18n/localeParity.test.ts \
   src/lib/i18n/translationCoverage.test.ts \
   src/lib/__tests__/no-silent-mutations.test.ts

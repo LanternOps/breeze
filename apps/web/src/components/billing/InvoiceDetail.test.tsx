@@ -390,6 +390,20 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-online-p2')).not.toBeInTheDocument();
   });
 
+  it('badges a payment pulled from any accounting provider with that provider\'s brand name', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p9', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'XR-1', receivedAt: '2026-06-11', note: null, createdAt: '', source: 'xero' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p9')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-xero-p9')).toHaveTextContent('Xero');
+    expect(screen.queryByTestId('invoice-payment-quickbooks-p9')).not.toBeInTheDocument();
+  });
+
   it('keeps the void affordance and adds no badge on operator-recorded payments', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [

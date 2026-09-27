@@ -30,7 +30,7 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope, orgId: null, partnerId: "partner-1" }),
 }));
 
-import QuickbooksIntegration from "./QuickbooksIntegration";
+import AccountingConnectionPanel from "./AccountingConnectionPanel";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 
 const jsonResponse = (payload: unknown, status = 200): Response =>
@@ -60,7 +60,7 @@ const connected = {
   lastReconcileAt: null,
 };
 
-describe("QuickbooksIntegration", () => {
+describe("AccountingConnectionPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";
@@ -74,7 +74,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(
       await screen.findByTestId("quickbooks-status-disconnected"),
@@ -89,7 +89,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(
       await screen.findByTestId("quickbooks-status-connected"),
@@ -113,7 +113,7 @@ describe("QuickbooksIntegration", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-pushmode-manual"));
 
     await waitFor(() =>
@@ -138,7 +138,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-connect"));
 
     await waitFor(() =>
@@ -162,7 +162,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(await screen.findByTestId("quickbooks-status-reauth")).toBeTruthy();
     expect(screen.getByTestId("quickbooks-last-error")).toHaveTextContent(
@@ -177,7 +177,7 @@ describe("QuickbooksIntegration", () => {
   it("shows a partner-scope-only message for org-scope users and never calls the API", async () => {
     scope = "organization";
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(await screen.findByTestId("quickbooks-org-scope")).toBeTruthy();
     expect(fetchWithAuth).not.toHaveBeenCalled();
@@ -190,7 +190,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(await screen.findByTestId("quickbooks-home-currency")).toHaveTextContent("USD");
     // GET /accounting/quickbooks does not carry the realm flag — it is only
@@ -208,7 +208,7 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-settings-refresh"));
 
     await waitFor(() =>
@@ -235,17 +235,84 @@ describe("QuickbooksIntegration", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-settings-refresh"));
 
     await waitFor(() =>
       expect(screen.getByTestId("quickbooks-multi-currency")).toHaveTextContent("No"),
     );
   });
+
+  it("calls the provider-scoped API for its provider prop", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith("/accounting/quickbooks"));
+  });
+
+  it("toasts success on the OAuth return for its own provider and strips the params", async () => {
+    window.history.replaceState({}, "", "/integrations?accounting=quickbooks&connected=1#accounting");
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/quickbooks" ? connected : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({ type: "success", message: "QuickBooks connected." }),
+    );
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("#accounting");
+  });
+
+  // Ruling R5: the callback reports a one-provider-per-partner conflict as
+  // `error=provider_conflict`; the panel names it instead of the generic
+  // "connection failed", which would send the operator to retry a connect
+  // that can only fail again.
+  it("toasts the specific provider-conflict error on the OAuth return", async () => {
+    window.history.replaceState({}, "", "/integrations?accounting=quickbooks&error=provider_conflict#accounting");
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        message:
+          "Another accounting system is already connected for this partner. Disconnect it before connecting QuickBooks.",
+      }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: "QuickBooks connection failed. Please try again." }),
+    );
+    expect(window.location.search).toBe("");
+  });
+
+  it.each(["exchange_failed", "persist_failed"])(
+    "keeps the generic connection-failed toast for error=%s",
+    async (error) => {
+      window.history.replaceState({}, "", `/integrations?accounting=quickbooks&error=${error}#accounting`);
+      fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] }));
+      render(<AccountingConnectionPanel provider="quickbooks" />);
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith({
+          type: "error",
+          message: "QuickBooks connection failed. Please try again.",
+        }),
+      );
+    },
+  );
+
+  it("ignores an OAuth return addressed to a different provider", async () => {
+    window.history.replaceState({}, "", "/integrations?accounting=xero&error=provider_conflict#accounting");
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await screen.findByTestId("quickbooks-connect");
+    expect(showToast).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("?accounting=xero&error=provider_conflict");
+  });
 });
 
 // ─── Phase D: payment pull-back controls ────────────────────────────────────
-describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
+describe("AccountingConnectionPanel — payment pull-back (Phase D)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";
@@ -267,7 +334,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     const toggle = await screen.findByTestId("quickbooks-pullpayments");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -306,7 +373,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-pullpayments"));
 
     await waitFor(() =>
@@ -330,7 +397,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(
       await screen.findByTestId("quickbooks-last-reconcile"),
@@ -348,7 +415,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     const line = await screen.findByTestId("quickbooks-last-reconcile");
     expect(line).toHaveTextContent(formatDateTime("2026-09-01T10:00:00Z"));
@@ -371,7 +438,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       return jsonResponse({}, 404);
     });
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(
       await screen.findByTestId("quickbooks-reconcile-last-error"),
@@ -392,7 +459,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
 
     await waitFor(() =>
@@ -424,7 +491,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
 
     await waitFor(() =>
@@ -455,7 +522,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
 
     await waitFor(() =>
@@ -481,7 +548,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       url === "/accounting/quickbooks" ? jsonResponse(connected) : jsonResponse({}, 404),
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     // The panel still renders — this is a control-level gate, not a page gate.
     expect(await screen.findByTestId("quickbooks-environment")).toBeTruthy();
@@ -498,7 +565,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
       url === "/accounting/quickbooks" ? jsonResponse(connected) : jsonResponse({}, 404),
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(await screen.findByTestId("quickbooks-pullpayments")).toBeTruthy();
     expect(screen.getByTestId("quickbooks-pushmode")).toBeTruthy();
@@ -508,7 +575,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
   it("renders none of the pull-back controls for an org-scoped user", async () => {
     scope = "organization";
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     expect(await screen.findByTestId("quickbooks-org-scope")).toBeTruthy();
     expect(screen.queryByTestId("quickbooks-pullpayments")).toBeNull();
@@ -518,7 +585,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
   });
 });
 
-describe("QuickbooksIntegration — payment push (Phase D2)", () => {
+describe("AccountingConnectionPanel — payment push (Phase D2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";
@@ -541,7 +608,7 @@ describe("QuickbooksIntegration — payment push (Phase D2)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     const toggle = await screen.findByTestId("quickbooks-pushpayments");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -581,7 +648,7 @@ describe("QuickbooksIntegration — payment push (Phase D2)", () => {
       },
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     const toggle = await screen.findByTestId("quickbooks-pushpayments");
     fireEvent.click(toggle);
 
@@ -608,7 +675,7 @@ describe("QuickbooksIntegration — payment push (Phase D2)", () => {
         : jsonResponse({}, 404),
     );
 
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
 
     await screen.findByTestId("quickbooks-environment");
     expect(screen.queryByTestId("quickbooks-pushpayments")).toBeNull();
@@ -632,7 +699,7 @@ describe("owed QuickBooks operations", () => {
       ] });
       return jsonResponse({}, 404);
     });
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     const panel = await screen.findByTestId("quickbooks-owed-operations");
     await waitFor(() => expect(panel.textContent).toContain("QuickBooks refused deletion"));
     expect(panel.textContent).toContain("Pending operations: 2");
@@ -648,14 +715,14 @@ describe("owed QuickBooks operations", () => {
     fetchWithAuth.mockImplementation(async (url: string) => jsonResponse(
       url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] },
     ));
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     await waitFor(() => expect(screen.getByTestId("quickbooks-owed-operations").textContent).toContain("No owed operations"));
   });
 
   it("shows a load failure instead of reporting no debt", async () => {
     fetchWithAuth.mockImplementation(async (url: string) => url === "/accounting/quickbooks"
       ? jsonResponse(connected) : jsonResponse({}, 500));
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     expect(await screen.findByTestId("quickbooks-owed-error")).toBeTruthy();
     expect(screen.getByTestId("quickbooks-owed-operations").textContent).not.toContain("No owed operations");
   });
@@ -663,7 +730,7 @@ describe("owed QuickBooks operations", () => {
   it("redirects when the owed operations read is unauthorized", async () => {
     fetchWithAuth.mockImplementation(async (url: string) => url === "/accounting/quickbooks"
       ? jsonResponse(disconnected) : jsonResponse({}, 401));
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith("/login?next=/integrations"));
   });
 });

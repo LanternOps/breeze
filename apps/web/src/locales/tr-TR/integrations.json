@@ -832,6 +832,12 @@
     "failedToSearchCandidates": "QuickBooks'ta arama yapılamadı.",
     "syncedWithTaxVariance": "Vergi farkıyla eşitlendi"
   },
+  "accountingProviders": {
+    "connected": "Bağlı",
+    "notConnected": "Bağlı değil",
+    "disconnectOtherFirst": "Önce {{provider}} bağlantısını kesin",
+    "loadFailed": "Muhasebe sağlayıcıları yüklenemedi. Tekrar denemek için sayfayı yenileyin."
+  },
   "quickbooksIntegration": {
     "owedTitle": "Bekleyen QuickBooks işlemleri",
     "owedLoadError": "Bekleyen işlemler yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
@@ -844,6 +850,7 @@
     "owedAge": "Bekleme süresi: {{minutes}} dk",
     "quickbooksConnected": "QuickBooks bağlandı.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks bağlantısı başarısız oldu. Lütfen tekrar deneyin.",
+    "providerConflict": "Bu iş ortağı için başka bir muhasebe sistemi zaten bağlı. {{provider}} bağlantısı kurmadan önce onun bağlantısını kesin.",
     "failedToStartTheQuickBooksConnection": "QuickBooks bağlantısı başlatılamadı.",
     "failedToDisconnectQuickBooks": "QuickBooks'un bağlantısı kesilemedi.",
     "quickbooksDisconnected": "QuickBooks'un bağlantısı kesildi",

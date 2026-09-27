@@ -7,10 +7,14 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { AccountingSyncSummary, InvoiceStatus } from './invoiceTypes';
+import { accountingPath, type AccountingProviderId } from '../../lib/accountingProviders';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
+  /** The provider the push goes to: the mapping row's own provider when one
+   *  exists, else the partner's active invoice-push-capable connection. */
+  provider: AccountingProviderId;
   invoiceId: string;
   /**
    * The API's `accountingSync` field. `null`/`undefined` means "no QuickBooks
@@ -64,7 +68,7 @@ function isPushable(status: AccountingSyncSummary['syncStatus']): boolean {
 }
 
 /** The QuickBooks push is asynchronous: `/invoices/:id/issue` (auto push mode)
- *  and `/accounting/quickbooks/invoices/:id/push` both return as soon as the
+ *  and `/accounting/:provider/invoices/:id/push` both return as soon as the
  *  job is enqueued, and the worker lands a beat later. Anything below is a
  *  settled outcome — the watch stops the moment the refetched mapping row
  *  reads one of them. */
@@ -109,7 +113,7 @@ function shouldWatchOnMount(
   return age < MOUNT_WATCH_MAX_AGE_MS;
 }
 
-export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, invoiceTouchedAt, canPush, onChanged }: Props) {
+export default function AccountingSyncCard({ provider, invoiceId, sync, invoiceStatus, invoiceTouchedAt, canPush, onChanged }: Props) {
   const { t } = useTranslation('billing');
   const [pushing, setPushing] = useState(false);
   // The push is in flight somewhere server-side; poll the invoice until the
@@ -212,7 +216,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
     try {
       await runAction({
         request: () =>
-          fetchWithAuth(`/accounting/quickbooks/invoices/${invoiceId}/push`, { method: 'POST' }),
+          fetchWithAuth(accountingPath(provider, `/invoices/${invoiceId}/push`), { method: 'POST' }),
         errorFallback: t('invoiceDetail.accountingSync.pushFailed'),
         successMessage: t('invoiceDetail.accountingSync.pushed'),
         onUnauthorized: UNAUTHORIZED,

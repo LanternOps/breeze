@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import QuickbooksCustomerImport from "./QuickbooksCustomerImport";
+import AccountingCustomerImport from "./AccountingCustomerImport";
 
 const fetchWithAuthMock = vi.fn();
 vi.mock("../../stores/auth", () => ({
@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("QuickbooksCustomerImport", () => {
+describe("AccountingCustomerImport", () => {
   it("loads customers and disables already-imported rows", async () => {
     fetchWithAuthMock.mockReturnValueOnce(
       jsonResponse({
@@ -48,7 +48,7 @@ describe("QuickbooksCustomerImport", () => {
       }),
     );
 
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
 
     await waitFor(() =>
@@ -96,7 +96,7 @@ describe("QuickbooksCustomerImport", () => {
         }),
       );
 
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
     await waitFor(() =>
       expect(
@@ -124,7 +124,7 @@ describe("QuickbooksCustomerImport", () => {
     fetchWithAuthMock.mockReturnValueOnce(
       jsonResponse({ error: "not connected" }, 404),
     );
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
     await waitFor(() =>
       expect(showToastMock).toHaveBeenCalledWith(
@@ -169,7 +169,7 @@ describe("QuickbooksCustomerImport", () => {
         }),
       );
 
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
     await waitFor(() =>
       expect(
@@ -227,7 +227,7 @@ describe("QuickbooksCustomerImport", () => {
       )
       .mockReturnValueOnce(jsonResponse({ data: [] }));
 
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
     await waitFor(() =>
       expect(
@@ -264,7 +264,7 @@ describe("QuickbooksCustomerImport", () => {
       }),
     );
 
-    render(<QuickbooksCustomerImport />);
+    render(<AccountingCustomerImport provider="quickbooks" />);
     fireEvent.click(screen.getByTestId("quickbooks-import-load"));
     await waitFor(() =>
       expect(

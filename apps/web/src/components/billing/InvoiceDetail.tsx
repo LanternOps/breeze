@@ -33,6 +33,11 @@ import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 import InvoiceLineDevices from './InvoiceLineDevices';
 import { useStableT } from '@/lib/i18n/useStableT';
+import {
+  ACCOUNTING_PROVIDER_NAMES,
+  isAccountingProviderId,
+  useActivePushProvider,
+} from '../../lib/accountingProviders';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -52,6 +57,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const { invoice, lines } = detail;
+  const canPushInvoices = can('invoices', 'write');
+  // Where a push from the sync card goes when the invoice has no mapping row
+  // yet: the partner's active connection, iff it can push invoices.
+  const pushProvider = useActivePushProvider(canPushInvoices);
+  const syncProvider = detail.accountingSync?.provider ?? pushProvider;
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -582,18 +592,21 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
-          {/* QuickBooks push status (Phase C). Renders only when the API
+          {/* Accounting push status (Phase C). Renders only when the API
               returned a mapping row — no connection, or an org-scoped read that
               RLS-hides the partner-axis row, both come back null and the card
               stays off the rail rather than implying "not synced". */}
-          <AccountingSyncCard
-            invoiceId={invoice.id}
-            sync={detail.accountingSync}
-            invoiceStatus={invoice.status}
-            invoiceTouchedAt={invoice.updatedAt}
-            canPush={can('invoices', 'write')}
-            onChanged={onChanged}
-          />
+          {syncProvider && (
+            <AccountingSyncCard
+              provider={syncProvider}
+              invoiceId={invoice.id}
+              sync={detail.accountingSync}
+              invoiceStatus={invoice.status}
+              invoiceTouchedAt={invoice.updatedAt}
+              canPush={canPushInvoices}
+              onChanged={onChanged}
+            />
+          )}
 
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
@@ -669,12 +682,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           {t('invoiceDetail.payments.online')}
                         </span>
                       )}
-                      {p.source === 'quickbooks' && (
+                      {p.source && isAccountingProviderId(p.source) && (
                         <span
                           className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-                          data-testid={`invoice-payment-quickbooks-${p.id}`}
+                          data-testid={`invoice-payment-${p.source}-${p.id}`}
                         >
-                          {t('invoiceDetail.payments.quickbooks')}
+                          {ACCOUNTING_PROVIDER_NAMES[p.source]}
                         </span>
                       )}
                       {p.accountingSync && (

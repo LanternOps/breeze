@@ -1791,7 +1791,7 @@
       ]
     },
     {
-      "pattern": "apps/web/src/components/integrations/QuickbooksCustomerImport.tsx",
+      "pattern": "apps/web/src/components/integrations/AccountingCustomerImport.tsx",
       "docs": [
         "features/integrations.mdx"
       ]

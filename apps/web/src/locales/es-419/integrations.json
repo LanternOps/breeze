@@ -832,6 +832,12 @@
     "failedToSearchCandidates": "No se pudo buscar en QuickBooks.",
     "syncedWithTaxVariance": "Sincronizado con diferencia de impuestos"
   },
+  "accountingProviders": {
+    "connected": "Conectado",
+    "notConnected": "No conectado",
+    "disconnectOtherFirst": "Desconecte {{provider}} primero",
+    "loadFailed": "No se pudieron cargar los proveedores de contabilidad. Actualice la página para intentarlo de nuevo."
+  },
   "quickbooksIntegration": {
     "owedTitle": "Operaciones pendientes de QuickBooks",
     "owedLoadError": "No se pudieron cargar las operaciones pendientes. Recarga la página para volver a intentarlo.",
@@ -844,6 +850,7 @@
     "owedAge": "Tiempo pendiente: {{minutes}} min",
     "quickbooksConnected": "QuickBooks conectado.",
     "quickbooksConnectionFailedPleaseTryAgain": "Error en la conexión QuickBooks. Inténtelo de nuevo.",
+    "providerConflict": "Ya hay otro sistema de contabilidad conectado para este socio. Desconéctelo antes de conectar {{provider}}.",
     "failedToStartTheQuickBooksConnection": "No se pudo iniciar la conexión QuickBooks.",
     "failedToDisconnectQuickBooks": "No se pudo desconectar QuickBooks.",
     "quickbooksDisconnected": "QuickBooks desconectado",

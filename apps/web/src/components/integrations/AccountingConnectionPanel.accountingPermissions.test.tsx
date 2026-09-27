@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * panel but cannot operate connect, disconnect, refresh-settings, push mode,
  * payment sync or reconcile.
  *
- * The sibling QuickbooksIntegration.test.tsx grants everything except
+ * The sibling AccountingConnectionPanel.test.tsx grants everything except
  * `invoices:write`; this suite covers the accounting:manage branch.
  */
 const fetchWithAuth = vi.fn();
@@ -33,7 +33,7 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope: "partner", orgId: null, partnerId: "partner-1" }),
 }));
 
-import QuickbooksIntegration from "./QuickbooksIntegration";
+import AccountingConnectionPanel from "./AccountingConnectionPanel";
 
 const jsonResponse = (payload: unknown, status = 200): Response =>
   ({
@@ -72,10 +72,10 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/integrations");
 });
 
-describe("QuickbooksIntegration accounting:manage gate", () => {
+describe("AccountingConnectionPanel accounting:manage gate", () => {
   it("disables Connect without accounting:manage", async () => {
     serve(disconnected);
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     const connect = await screen.findByTestId("quickbooks-connect");
     expect((connect as HTMLButtonElement).disabled).toBe(true);
   });
@@ -83,14 +83,14 @@ describe("QuickbooksIntegration accounting:manage gate", () => {
   it("enables Connect once accounting:manage is granted", async () => {
     state.canManage = true;
     serve(disconnected);
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     const connect = await screen.findByTestId("quickbooks-connect");
     expect((connect as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("disables disconnect / refresh-settings and hides push-mode + reconcile without accounting:manage", async () => {
     serve(connected);
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     await screen.findByTestId("quickbooks-status-connected");
 
     expect((screen.getByTestId("quickbooks-disconnect") as HTMLButtonElement).disabled).toBe(true);
@@ -103,7 +103,7 @@ describe("QuickbooksIntegration accounting:manage gate", () => {
   it("restores every control once accounting:manage is granted", async () => {
     state.canManage = true;
     serve(connected);
-    render(<QuickbooksIntegration />);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
     await screen.findByTestId("quickbooks-status-connected");
 
     expect((screen.getByTestId("quickbooks-disconnect") as HTMLButtonElement).disabled).toBe(false);

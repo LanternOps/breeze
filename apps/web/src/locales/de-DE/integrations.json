@@ -832,6 +832,12 @@
     "failedToSearchCandidates": "Die QuickBooks-Suche ist fehlgeschlagen.",
     "syncedWithTaxVariance": "Synchronisiert mit Steuerabweichung"
   },
+  "accountingProviders": {
+    "connected": "Verbunden",
+    "notConnected": "Nicht verbunden",
+    "disconnectOtherFirst": "Trennen Sie zuerst {{provider}}",
+    "loadFailed": "Die Buchhaltungsanbieter konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+  },
   "quickbooksIntegration": {
     "owedTitle": "Ausstehende QuickBooks-Vorgänge",
     "owedLoadError": "Ausstehende Vorgänge konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -844,6 +850,7 @@
     "owedAge": "Wartezeit: {{minutes}} Min.",
     "quickbooksConnected": "QuickBooks verbunden.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks-Verbindung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "providerConflict": "Für diesen Partner ist bereits ein anderes Buchhaltungssystem verbunden. Trennen Sie es, bevor Sie {{provider}} verbinden.",
     "failedToStartTheQuickBooksConnection": "Die QuickBooks-Verbindung konnte nicht gestartet werden.",
     "failedToDisconnectQuickBooks": "QuickBooks konnte nicht getrennt werden.",
     "quickbooksDisconnected": "QuickBooks-Verbindung getrennt",

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { usePermissions } from "../../lib/permissions";
@@ -8,6 +8,11 @@ import { useHashTab } from "@/lib/useHashState";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useStableT } from '@/lib/i18n/useStableT';
+import {
+  ACCOUNTING_PROVIDER_NAMES,
+  accountingPath,
+  type AccountingProviderId,
+} from "../../lib/accountingProviders";
 
 type MappingEntityType = "org" | "catalog_item";
 type MappingConfidence =
@@ -68,7 +73,7 @@ interface RemoteIncomeAccount {
   accountSubType?: string;
 }
 
-/** A QuickBooks record returned by GET /accounting/quickbooks/remote-candidates. */
+/** A provider record returned by GET /accounting/:provider/remote-candidates. */
 interface RemoteCandidate {
   id: string;
   displayName: string;
@@ -84,15 +89,16 @@ const SEARCH_DEBOUNCE_MS = 300;
 const MIN_SEARCH_LENGTH = 2;
 
 // This workbench is nested two levels down (Integrations → Accounting →
-// QuickBooks), and IntegrationsPage owns the single URL hash. Its tab ids are
-// therefore namespaced with the `quickbooks` accounting sub-tab id they live
-// under, which is the prefix IntegrationsPage.parseHash routes on to keep the
-// page on Accounting/QuickBooks. Renaming these away from the `quickbooks-`
-// prefix would send the page back to its fallback tab on every tab click.
-const TABS = ["quickbooks-customers", "quickbooks-items"] as const;
-type WorkbenchTab = (typeof TABS)[number];
+// <provider>), and IntegrationsPage owns the single URL hash. Its tab ids are
+// therefore namespaced with the provider's accounting sub-tab id they live
+// under (`quickbooks-customers`, `xero-items`, …), which is the prefix
+// IntegrationsPage.parseHash routes on to keep the page on Accounting/<provider>.
+// Renaming these away from the `<provider>-` prefix would send the page back to
+// its fallback tab on every tab click.
+type WorkbenchTab = `${AccountingProviderId}-customers` | `${AccountingProviderId}-items`;
 
 interface Props {
+  provider: AccountingProviderId;
   onUnauthorized?: () => void;
   /** Current saved income account (from the parent's connection status), or
    *  null if none is set yet. Item creation/sync in QuickBooks requires one. */
@@ -102,12 +108,17 @@ interface Props {
   onSettingsChanged?: (settings: { defaultIncomeAccountRef: string | null }) => void;
 }
 
-export default function QuickbooksMappingWorkbench({
+export default function AccountingMappingWorkbench({
+  provider,
   onUnauthorized,
   defaultIncomeAccountRef,
   onSettingsChanged,
 }: Props) {
   const { t } = useTranslation("integrations");
+  const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
+  const customersTab: WorkbenchTab = `${provider}-customers`;
+  const itemsTab: WorkbenchTab = `${provider}-items`;
+  const tabs = useMemo<readonly WorkbenchTab[]>(() => [customersTab, itemsTab], [customersTab, itemsTab]);
 
   /**
    * SEC-2026-09-05-057 (PR review finding): every mutating control in this
@@ -119,8 +130,8 @@ export default function QuickbooksMappingWorkbench({
    * re-checks server-side.
    */
   const canManageAccounting = usePermissions().can("accounting", "manage");
-  const [tab, setTab] = useHashTab<WorkbenchTab>(TABS, "quickbooks-customers");
-  const entityType: MappingEntityType = tab === "quickbooks-items" ? "catalog_item" : "org";
+  const [tab, setTab] = useHashTab<WorkbenchTab>(tabs, customersTab);
+  const entityType: MappingEntityType = tab === itemsTab ? "catalog_item" : "org";
 
   const [proposals, setProposals] = useState<MappingProposal[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -168,21 +179,21 @@ export default function QuickbooksMappingWorkbench({
       if (entityType === "catalog_item" && incomeAccounts === null) {
         try {
           const accountsRes = await runAction<{ data: RemoteIncomeAccount[] }>({
-            request: () => fetchWithAuth("/accounting/quickbooks/income-accounts"),
-            errorFallback: t("quickbooksMapping.failedToLoadIncomeAccounts"),
+            request: () => fetchWithAuth(accountingPath(provider, "/income-accounts")),
+            errorFallback: t("quickbooksMapping.failedToLoadIncomeAccounts", { provider: providerName }),
             onUnauthorized,
           });
           setIncomeAccounts(accountsRes.data);
         } catch (err) {
           if (err instanceof ActionError && err.status === 401) throw err;
           if (!(err instanceof ActionError)) {
-            handleActionError(err, t("quickbooksMapping.failedToLoadIncomeAccounts"));
+            handleActionError(err, t("quickbooksMapping.failedToLoadIncomeAccounts", { provider: providerName }));
           }
         }
       }
       const mappingsRes = await runAction<{ data: MappingProposal[] }>({
-        request: () => fetchWithAuth(`/accounting/quickbooks/mappings?entityType=${entityType}`),
-        errorFallback: t("quickbooksMapping.failedToLoadMappings"),
+        request: () => fetchWithAuth(accountingPath(provider, `/mappings?entityType=${entityType}`)),
+        errorFallback: t("quickbooksMapping.failedToLoadMappings", { provider: providerName }),
         onUnauthorized,
       });
       setProposals(mappingsRes.data);
@@ -192,7 +203,7 @@ export default function QuickbooksMappingWorkbench({
         return next;
       });
     } catch (err) {
-      handleActionError(err, t("quickbooksMapping.failedToLoadMappings"));
+      handleActionError(err, t("quickbooksMapping.failedToLoadMappings", { provider: providerName }));
     } finally {
       setLoading(false);
     }
@@ -283,7 +294,7 @@ export default function QuickbooksMappingWorkbench({
     if (err instanceof ActionError && err.status !== 401) {
       setRowError((prev) => ({ ...prev, [id]: err.message }));
     } else {
-      handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
+      handleActionError(err, t("quickbooksMapping.failedToSyncEntity", { provider: providerName }));
     }
   }
 
@@ -292,15 +303,15 @@ export default function QuickbooksMappingWorkbench({
   async function requestSync(p: MappingProposal) {
     const res = await runAction<{ data: CuratedMapping }>({
       request: () =>
-        fetchWithAuth("/accounting/quickbooks/mappings/sync", {
+        fetchWithAuth(accountingPath(provider, "/mappings/sync"), {
           method: "POST",
           body: JSON.stringify({
             breezeEntityType: p.breezeEntityType,
             breezeEntityId: p.breezeEntityId,
           }),
         }),
-      errorFallback: t("quickbooksMapping.failedToSyncEntity"),
-      successMessage: t("quickbooksMapping.entitySynced"),
+      errorFallback: t("quickbooksMapping.failedToSyncEntity", { provider: providerName }),
+      successMessage: t("quickbooksMapping.entitySynced", { provider: providerName }),
       onUnauthorized,
     });
     applyMapping(res.data);
@@ -318,7 +329,7 @@ export default function QuickbooksMappingWorkbench({
     try {
       const res = await runAction<{ data: CuratedMapping }>({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/mappings", {
+          fetchWithAuth(accountingPath(provider, "/mappings"), {
             method: "PUT",
             body: JSON.stringify({
               breezeEntityType: p.breezeEntityType,
@@ -327,11 +338,11 @@ export default function QuickbooksMappingWorkbench({
               ...(remoteEntityId ? { remoteEntityId } : {}),
             }),
           }),
-        errorFallback: t("quickbooksMapping.failedToSaveMapping"),
+        errorFallback: t("quickbooksMapping.failedToSaveMapping", { provider: providerName }),
         // One click, one outcome. When the push follows, the sync's own toast
         // is the result the operator cares about; a "Mapping saved" toast in
         // front of it just doubles the noise.
-        ...(autoSyncs ? {} : { successMessage: t("quickbooksMapping.mappingSaved") }),
+        ...(autoSyncs ? {} : { successMessage: t("quickbooksMapping.mappingSaved", { provider: providerName }) }),
         onUnauthorized,
       });
       applyMapping(res.data);
@@ -339,7 +350,7 @@ export default function QuickbooksMappingWorkbench({
         // The saved row, not the button that produced it, decides whether the
         // push is allowed — the same gate "Sync now" applies.
         if (syncGatedForMapping(res.data)) {
-          showToast({ message: t("quickbooksMapping.mappingSaved"), type: "success" });
+          showToast({ message: t("quickbooksMapping.mappingSaved", { provider: providerName }), type: "success" });
         } else {
           try {
             await requestSync(p);
@@ -352,7 +363,7 @@ export default function QuickbooksMappingWorkbench({
       if (err instanceof ActionError && err.status !== 401) {
         setRowError((prev) => ({ ...prev, [id]: err.message }));
       } else {
-        handleActionError(err, t("quickbooksMapping.failedToSaveMapping"));
+        handleActionError(err, t("quickbooksMapping.failedToSaveMapping", { provider: providerName }));
       }
     } finally {
       setRowBusy((prev) => ({ ...prev, [id]: false }));
@@ -377,19 +388,19 @@ export default function QuickbooksMappingWorkbench({
     try {
       await runAction({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/settings", {
+          fetchWithAuth(accountingPath(provider, "/settings"), {
             method: "PATCH",
             body: JSON.stringify({ defaultIncomeAccountRef: incomeAccountRef || null }),
           }),
-        errorFallback: t("quickbooksMapping.failedToSaveIncomeAccount"),
-        successMessage: t("quickbooksMapping.incomeAccountSaved"),
+        errorFallback: t("quickbooksMapping.failedToSaveIncomeAccount", { provider: providerName }),
+        successMessage: t("quickbooksMapping.incomeAccountSaved", { provider: providerName }),
         onUnauthorized,
       });
       const saved = incomeAccountRef || null;
       setSavedIncomeAccountRef(saved);
       onSettingsChanged?.({ defaultIncomeAccountRef: saved });
     } catch (err) {
-      handleActionError(err, t("quickbooksMapping.failedToSaveIncomeAccount"));
+      handleActionError(err, t("quickbooksMapping.failedToSaveIncomeAccount", { provider: providerName }));
     } finally {
       setSavingIncomeAccount(false);
     }
@@ -417,32 +428,32 @@ export default function QuickbooksMappingWorkbench({
   }
 
   return (
-    <div data-testid="quickbooks-mapping-workbench" className="space-y-4 rounded-lg border bg-card p-5">
+    <div data-testid={`${provider}-mapping-workbench`} className="space-y-4 rounded-lg border bg-card p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">{t("quickbooksMapping.mappingTitle")}</h2>
+        <h2 className="text-lg font-semibold">{t("quickbooksMapping.mappingTitle", { provider: providerName })}</h2>
         <button
           type="button"
-          data-testid="quickbooks-mapping-load"
+          data-testid={`${provider}-mapping-load`}
           onClick={() => void load()}
           disabled={loading}
           className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
           {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-          {proposals ? t("quickbooksMapping.refreshMappings") : t("quickbooksMapping.loadMappings")}
+          {proposals ? t("quickbooksMapping.refreshMappings", { provider: providerName }) : t("quickbooksMapping.loadMappings", { provider: providerName })}
         </button>
       </div>
 
       <div role="tablist" className="inline-flex overflow-hidden rounded-md border">
-        {TABS.map((id) => {
+        {tabs.map((id) => {
           const active = tab === id;
-          const label = id === "quickbooks-customers" ? t("quickbooksMapping.customers") : t("quickbooksMapping.items");
+          const label = id === customersTab ? t("quickbooksMapping.customers", { provider: providerName }) : t("quickbooksMapping.items", { provider: providerName });
           return (
             <button
               key={id}
               type="button"
               role="tab"
               aria-selected={active}
-              data-testid={`quickbooks-mapping-tab-${id === "quickbooks-customers" ? "customers" : "items"}`}
+              data-testid={`${provider}-mapping-tab-${id === customersTab ? "customers" : "items"}`}
               onClick={() => switchTab(id)}
               className={`px-3 py-1.5 text-sm transition ${
                 active ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"
@@ -457,12 +468,12 @@ export default function QuickbooksMappingWorkbench({
       {entityType === "catalog_item" && (
         <div className="rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="quickbooks-income-account-select" className="font-medium">
-              {t("quickbooksMapping.incomeAccount")}
+            <label htmlFor={`${provider}-income-account-select`} className="font-medium">
+              {t("quickbooksMapping.incomeAccount", { provider: providerName })}
             </label>
             <select
-              id="quickbooks-income-account-select"
-              data-testid="quickbooks-income-account-select"
+              id={`${provider}-income-account-select`}
+              data-testid={`${provider}-income-account-select`}
               value={incomeAccountRef}
               onChange={(e) => setIncomeAccountRef(e.target.value)}
               className="rounded-md border px-2 py-1"
@@ -485,39 +496,39 @@ export default function QuickbooksMappingWorkbench({
             </select>
             <button
               type="button"
-              data-testid="quickbooks-income-account-save"
+              data-testid={`${provider}-income-account-save`}
               onClick={() => void saveIncomeAccount()}
               disabled={savingIncomeAccount || !incomeAccountRef || !canManageAccounting}
               className="inline-flex h-8 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
-              {t("quickbooksMapping.saveIncomeAccount")}
+              {t("quickbooksMapping.saveIncomeAccount", { provider: providerName })}
             </button>
           </div>
           {!savedIncomeAccountRef && (
             <p
-              data-testid="quickbooks-income-account-required"
+              data-testid={`${provider}-income-account-required`}
               className="mt-2 text-amber-700"
             >
-              {t("quickbooksMapping.incomeAccountRequired")}
+              {t("quickbooksMapping.incomeAccountRequired", { provider: providerName })}
             </p>
           )}
         </div>
       )}
 
       {proposals && proposals.length === 0 && (
-        <p data-testid="quickbooks-mapping-empty" className="text-sm text-muted-foreground">
-          {t("quickbooksMapping.noProposals")}
+        <p data-testid={`${provider}-mapping-empty`} className="text-sm text-muted-foreground">
+          {t("quickbooksMapping.noProposals", { provider: providerName })}
         </p>
       )}
 
       {proposals && proposals.length > 0 && (
-        <table className="w-full text-sm" data-testid="quickbooks-mapping-table">
+        <table className="w-full text-sm" data-testid={`${provider}-mapping-table`}>
           <thead>
             <tr className="text-left text-muted-foreground">
               <th>{t("common:labels.name")}</th>
-              <th>{t("quickbooksMapping.suggestedMatch")}</th>
+              <th>{t("quickbooksMapping.suggestedMatch", { provider: providerName })}</th>
               <th />
-              <th>{t("quickbooksMapping.incomeAccount")}</th>
+              <th>{t("quickbooksMapping.incomeAccount", { provider: providerName })}</th>
             </tr>
           </thead>
           <tbody>
@@ -531,40 +542,40 @@ export default function QuickbooksMappingWorkbench({
               // (confidenceForMapping, accountingMappingService.ts).
               const confidenceLabel =
                 p.confidence === "ambiguous"
-                  ? t("quickbooksMapping.ambiguousMatch")
+                  ? t("quickbooksMapping.ambiguousMatch", { provider: providerName })
                   : p.confidence === "none"
-                    ? t("quickbooksMapping.noMatch")
+                    ? t("quickbooksMapping.noMatch", { provider: providerName })
                     : p.confidence === "existing_link"
-                      ? t("quickbooksMapping.linkedMatch")
-                      : t("quickbooksMapping.suggestedMatch");
+                      ? t("quickbooksMapping.linkedMatch", { provider: providerName })
+                      : t("quickbooksMapping.suggestedMatch", { provider: providerName });
               // "Pending" read as "Breeze is working on it"; it actually means
               // the decision never left Breeze. Name the three states after
               // where the record IS, and explain the unsynced one in a tooltip.
               const statusLabel =
                 p.syncStatus === "synced"
-                  ? t("quickbooksMapping.inQuickbooks")
+                  ? t("quickbooksMapping.inQuickbooks", { provider: providerName })
                   : p.syncStatus === "synced_with_tax_variance"
-                    ? t("quickbooksMapping.syncedWithTaxVariance")
+                    ? t("quickbooksMapping.syncedWithTaxVariance", { provider: providerName })
                     : p.syncStatus === "error"
-                      ? t("quickbooksMapping.syncFailed")
-                      : t("quickbooksMapping.notSynced");
+                      ? t("quickbooksMapping.syncFailed", { provider: providerName })
+                      : t("quickbooksMapping.notSynced", { provider: providerName });
               // The hint explains a decision the operator made; a row they
               // never touched is unsynced simply because nothing was decided.
               const statusTitle =
                 p.syncStatus === "pending" &&
                 (p.linkStatus === "confirmed" || p.linkStatus === "create_new")
-                  ? t("quickbooksMapping.notSyncedHint")
+                  ? t("quickbooksMapping.notSyncedHint", { provider: providerName })
                   : undefined;
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
               const syncGated = syncGatedFor(p);
               const error = rowError[id];
 
               return (
-                <tr key={id} data-testid={`quickbooks-mapping-row-${id}`} className="border-t align-top">
+                <tr key={id} data-testid={`${provider}-mapping-row-${id}`} className="border-t align-top">
                   <td className="py-2 pr-2">
                     <div className="font-medium">{p.breezeDisplayName}</div>
                     <div
-                      data-testid={`quickbooks-mapping-status-${id}`}
+                      data-testid={`${provider}-mapping-status-${id}`}
                       title={statusTitle}
                       className={
                         p.syncStatus === "error"
@@ -576,21 +587,22 @@ export default function QuickbooksMappingWorkbench({
                     >
                       {statusLabel}
                     </div>
-                    <div data-testid={`quickbooks-mapping-linkstatus-${id}`} className="text-xs text-muted-foreground">
+                    <div data-testid={`${provider}-mapping-linkstatus-${id}`} className="text-xs text-muted-foreground">
                       {p.linkStatus === "confirmed"
-                        ? t("quickbooksMapping.confirmed")
+                        ? t("quickbooksMapping.confirmed", { provider: providerName })
                         : p.linkStatus === "create_new"
-                          ? t("quickbooksMapping.createNew")
+                          ? t("quickbooksMapping.createNew", { provider: providerName })
                           : p.linkStatus === "unlinked"
-                            ? t("quickbooksMapping.unlink")
+                            ? t("quickbooksMapping.unlink", { provider: providerName })
                             : null}
                     </div>
                   </td>
                   <td className="py-2 pr-2">
-                    <span data-testid={`quickbooks-mapping-confidence-${id}`}>{confidenceLabel}</span>
+                    <span data-testid={`${provider}-mapping-confidence-${id}`}>{confidenceLabel}</span>
                   </td>
                   <td className="py-2 pr-2">
                     <RemoteCandidatePicker
+                      provider={provider}
                       rowId={id}
                       entityType={entityType}
                       disabled={busy}
@@ -609,43 +621,43 @@ export default function QuickbooksMappingWorkbench({
                   <td className="space-x-1 py-2">
                     <button
                       type="button"
-                      data-testid={`quickbooks-mapping-confirm-${id}`}
+                      data-testid={`${provider}-mapping-confirm-${id}`}
                       disabled={busy || !remoteIdFor(id, p) || !canManageAccounting}
                       onClick={() => void decide(p, "confirmed", remoteIdFor(id, p))}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.confirmMatch")}
+                      {t("quickbooksMapping.confirmMatch", { provider: providerName })}
                     </button>
                     <button
                       type="button"
-                      data-testid={`quickbooks-mapping-create-${id}`}
+                      data-testid={`${provider}-mapping-create-${id}`}
                       disabled={busy || createGated || !canManageAccounting}
                       onClick={() => void decide(p, "create_new")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.createNew")}
+                      {t("quickbooksMapping.createNew", { provider: providerName })}
                     </button>
                     <button
                       type="button"
-                      data-testid={`quickbooks-mapping-unlink-${id}`}
+                      data-testid={`${provider}-mapping-unlink-${id}`}
                       disabled={busy || p.linkStatus === "unlinked" || !canManageAccounting}
                       onClick={() => void decide(p, "unlinked")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.unlink")}
+                      {t("quickbooksMapping.unlink", { provider: providerName })}
                     </button>
                     <button
                       type="button"
-                      data-testid={`quickbooks-mapping-sync-${id}`}
+                      data-testid={`${provider}-mapping-sync-${id}`}
                       disabled={busy || syncGated || !canManageAccounting}
                       onClick={() => void sync(p)}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.syncNow")}
+                      {t("quickbooksMapping.syncNow", { provider: providerName })}
                     </button>
                     {error && (
                       <p
-                        data-testid={`quickbooks-mapping-error-${id}`}
+                        data-testid={`${provider}-mapping-error-${id}`}
                         className="mt-1 text-xs text-red-700"
                       >
                         {error}
@@ -663,6 +675,7 @@ export default function QuickbooksMappingWorkbench({
 }
 
 interface PickerProps {
+  provider: AccountingProviderId;
   rowId: string;
   entityType: MappingEntityType;
   disabled: boolean;
@@ -682,6 +695,7 @@ interface PickerProps {
  * search can't write back.
  */
 function RemoteCandidatePicker({
+  provider,
   rowId,
   entityType,
   disabled,
@@ -691,6 +705,7 @@ function RemoteCandidatePicker({
   onUnauthorized,
 }: PickerProps) {
   const { t } = useTranslation("integrations");
+  const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [term, setTerm] = useState("");
   const [candidates, setCandidates] = useState<RemoteCandidate[] | null>(null);
@@ -711,9 +726,9 @@ function RemoteCandidatePicker({
           const res = await runAction<{ data: RemoteCandidate[] }>({
             request: () =>
               fetchWithAuth(
-                `/accounting/quickbooks/remote-candidates?entityType=${entityType}&q=${encodeURIComponent(q)}`,
+                accountingPath(provider, `/remote-candidates?entityType=${entityType}&q=${encodeURIComponent(q)}`),
               ),
-            errorFallback: stableT("quickbooksMapping.failedToSearchCandidates"),
+            errorFallback: stableT("quickbooksMapping.failedToSearchCandidates", { provider: providerName }),
             onUnauthorized,
           });
           if (!cancelled) setCandidates(res.data);
@@ -722,7 +737,7 @@ function RemoteCandidatePicker({
           // usable (the suggested option is still selectable) instead of
           // wedging it behind a permanent spinner.
           if (!cancelled) setCandidates([]);
-          handleActionError(err, stableT("quickbooksMapping.failedToSearchCandidates"));
+          handleActionError(err, stableT("quickbooksMapping.failedToSearchCandidates", { provider: providerName }));
         } finally {
           if (!cancelled) setSearching(false);
         }
@@ -732,7 +747,7 @@ function RemoteCandidatePicker({
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [term, entityType, onUnauthorized, stableT]);
+  }, [term, entityType, onUnauthorized, stableT, provider, providerName]);
 
   // Suggested match first, then search hits, de-duplicated by remote id. The
   // currently selected id is always present as an option even when it is in
@@ -756,16 +771,16 @@ function RemoteCandidatePicker({
     <div className="space-y-1">
       <input
         type="search"
-        data-testid={`quickbooks-mapping-search-${rowId}`}
+        data-testid={`${provider}-mapping-search-${rowId}`}
         value={term}
         disabled={disabled}
         onChange={(e) => setTerm(e.target.value)}
-        placeholder={t("quickbooksMapping.searchPlaceholder")}
-        aria-label={t("quickbooksMapping.searchPlaceholder")}
+        placeholder={t("quickbooksMapping.searchPlaceholder", { provider: providerName })}
+        aria-label={t("quickbooksMapping.searchPlaceholder", { provider: providerName })}
         className="w-48 rounded-md border px-2 py-1"
       />
       <select
-        data-testid={`quickbooks-mapping-remote-${rowId}`}
+        data-testid={`${provider}-mapping-remote-${rowId}`}
         value={value}
         disabled={disabled}
         onChange={(e) => onSelect(e.target.value)}
@@ -780,18 +795,18 @@ function RemoteCandidatePicker({
       </select>
       {searching && (
         <p
-          data-testid={`quickbooks-mapping-searching-${rowId}`}
+          data-testid={`${provider}-mapping-searching-${rowId}`}
           className="text-xs text-muted-foreground"
         >
-          {t("quickbooksMapping.searching")}
+          {t("quickbooksMapping.searching", { provider: providerName })}
         </p>
       )}
       {!searching && candidates?.length === 0 && (
         <p
-          data-testid={`quickbooks-mapping-no-candidates-${rowId}`}
+          data-testid={`${provider}-mapping-no-candidates-${rowId}`}
           className="text-xs text-muted-foreground"
         >
-          {t("quickbooksMapping.noCandidates")}
+          {t("quickbooksMapping.noCandidates", { provider: providerName })}
         </p>
       )}
     </div>

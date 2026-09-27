@@ -36,6 +36,7 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
 // below and re-exported so existing './invoiceTypes' consumers are unaffected.
 import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType, StripeCurrencyWarning } from '@breeze/shared';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
+import type { AccountingProviderId } from '../../lib/accountingProviders';
 export type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType };
 
 export interface InvoiceSummary {
@@ -162,14 +163,14 @@ export interface InvoiceBranding {
 }
 
 /**
- * QuickBooks push status for this invoice (Phase C, Task 5). Read-only: the
- * web never calls QuickBooks and never derives this itself — it mirrors
+ * Accounting-provider push status for this invoice (Phase C, Task 5). Read-only: the
+ * web never calls the provider and never derives this itself — it mirrors
  * `accounting_entity_mappings` via a partner-scoped read, so it is `null`
  * whenever there is no connection/mapping yet OR the caller's ambient RLS
  * context can't see the (partner-axis) mapping row.
  */
 export interface AccountingSyncSummary {
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   syncStatus: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
   lastSyncedAt: string | null;
   lastError: string | null;
@@ -235,11 +236,12 @@ export interface InvoicePayment {
   createdAt: string;
   /** Origin of the payment: 'stripe' = collected via online checkout (refund
    *  through Stripe, no manual void), 'manual' = recorded by an operator,
-   *  'quickbooks' = pulled back from QuickBooks by the accounting-reconcile
-   *  worker (Phase D). QuickBooks is the system of record for those, so they
+   *  an accounting provider id ('quickbooks', 'xero') = pulled back from that
+   *  provider by the accounting-reconcile worker (Phase D). The provider is the
+   *  system of record for those, so they
    *  are not hand-voidable either — a Breeze-side reverse would not touch the
    *  books and the next reconcile would pull the payment straight back in. */
-  source?: 'stripe' | 'manual' | 'quickbooks';
+  source?: 'stripe' | 'manual' | AccountingProviderId;
   /** QuickBooks push state for a BREEZE-ORIGIN payment (Phase D2). Null when the
    *  payment has no QuickBooks mapping, and always null for `source: 'quickbooks'`
    *  (that badge already says QuickBooks owns the row). */

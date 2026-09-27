@@ -24,7 +24,7 @@ vi.mock("../../stores/auth", () => ({
 }));
 vi.mock("../shared/Toast", () => ({ showToast: vi.fn() }));
 
-import QuickbooksMappingWorkbench from "./QuickbooksMappingWorkbench";
+import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 
 const ORG_ID = "11111111-1111-1111-1111-111111111111";
 
@@ -55,7 +55,7 @@ async function renderLoaded() {
     jsonResponse({ data: [suggestedOrgProposal] }),
   );
   render(
-    <QuickbooksMappingWorkbench
+    <AccountingMappingWorkbench provider="quickbooks"
       onUnauthorized={vi.fn()}
       defaultIncomeAccountRef="income-1"
     />,
@@ -74,7 +74,7 @@ beforeEach(() => {
   window.location.hash = "";
 });
 
-describe("QuickbooksMappingWorkbench accounting:manage gate", () => {
+describe("AccountingMappingWorkbench accounting:manage gate", () => {
   it("disables Confirm/Create/Unlink and Sync now without accounting:manage", async () => {
     await renderLoaded();
 
@@ -114,7 +114,7 @@ describe("QuickbooksMappingWorkbench accounting:manage gate", () => {
         .mockResolvedValueOnce(jsonResponse({ data: [{ id: "income-1", displayName: "Sales" }] }))
         .mockResolvedValueOnce(jsonResponse({ data: [] }));
       render(
-        <QuickbooksMappingWorkbench
+        <AccountingMappingWorkbench provider="quickbooks"
           onUnauthorized={vi.fn()}
           defaultIncomeAccountRef="income-1"
         />,

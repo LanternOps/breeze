@@ -832,6 +832,12 @@
     "failedToSearchCandidates": "Failed to search QuickBooks.",
     "syncedWithTaxVariance": "Synced with tax difference"
   },
+  "accountingProviders": {
+    "connected": "Connected",
+    "notConnected": "Not connected",
+    "disconnectOtherFirst": "Disconnect {{provider}} first",
+    "loadFailed": "Could not load the accounting providers. Refresh the page to try again."
+  },
   "quickbooksIntegration": {
     "owedTitle": "Owed QuickBooks operations",
     "owedLoadError": "Could not load owed operations. Reload the page to try again.",
@@ -844,6 +850,7 @@
     "owedAge": "Age: {{minutes}} min",
     "quickbooksConnected": "QuickBooks connected.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks connection failed. Please try again.",
+    "providerConflict": "Another accounting system is already connected for this partner. Disconnect it before connecting {{provider}}.",
     "failedToStartTheQuickBooksConnection": "Failed to start the QuickBooks connection.",
     "failedToDisconnectQuickBooks": "Failed to disconnect QuickBooks.",
     "quickbooksDisconnected": "QuickBooks disconnected",
