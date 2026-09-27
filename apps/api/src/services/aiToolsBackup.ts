@@ -32,6 +32,7 @@ import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } f
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
+import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
 import { inArray } from 'drizzle-orm';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -685,6 +686,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const selectedPaths = Array.isArray(input.selectedPaths) ? input.selectedPaths as string[] : undefined;
       const restoreType = selectedPaths && selectedPaths.length > 0 ? 'selective' : 'full';
 
+      let resolvedSelectedPaths: string[] = [];
       if (restoreType === 'selective') {
         const snapshotFiles = await db
           .select({ sourcePath: backupSnapshotFiles.sourcePath })
@@ -695,11 +697,16 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }
 
-        const availablePaths = new Set(snapshotFiles.map((row) => row.sourcePath));
-        const invalidPath = selectedPaths?.find((path) => !availablePaths.has(path));
-        if (invalidPath) {
-          return JSON.stringify({ error: `Selected path is not available in this snapshot: ${invalidPath}` });
+        // Map each selection (possibly in the browse tree's forward-slash
+        // form) back to the stored original the agent matches against.
+        const resolution = resolveSelectedSnapshotPaths(
+          selectedPaths ?? [],
+          snapshotFiles.map((row) => row.sourcePath)
+        );
+        if (!resolution.ok) {
+          return JSON.stringify({ error: selectedSnapshotPathError(resolution) });
         }
+        resolvedSelectedPaths = resolution.paths;
       }
 
       const deviceOrgCond = orgWhere(auth, devices.orgId);
@@ -735,7 +742,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         deviceId,
         restoreType,
         targetPath: (input.targetPath as string) ?? null,
-        selectedPaths: selectedPaths ?? [],
+        selectedPaths: resolvedSelectedPaths,
         status: 'pending',
         initiatedBy: auth.user?.id ?? null,
         createdAt: new Date(),
@@ -754,7 +761,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
             restoreJobId: restoreJob.id,
             snapshotId: snapshot.providerSnapshotId,
             targetPath: restoreJob.targetPath ?? '',
-            selectedPaths: restoreType === 'selective' ? (selectedPaths ?? []) : [],
+            selectedPaths: resolvedSelectedPaths,
             // A reference only: resolved when the command is delivered.
             ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
           },
