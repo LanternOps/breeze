@@ -302,6 +302,9 @@
     "username": "Username (basic auth)",
     "password": "Password (basic auth)",
     "notSet": "Not set — orgs configure individually",
+    "savedSecretPlaceholder": "Saved — leave blank to keep",
+    "secretRemovedPlaceholder": "Will be removed when you save",
+    "removeSecret": "Remove",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "When enabled, all child organizations will ship event logs to the configured endpoint. Works with any Elasticsearch/OpenSearch-compatible <bulk>_bulk</bulk> store (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service). Leave disabled to let each organization configure individually."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastic",
       "password": "Password",
       "passwordPlaceholder": "Enter password",
+      "savedSecretPlaceholder": "Saved — leave blank to keep",
       "credentialsDescription": "Credentials are stored encrypted. Existing credentials are masked when loaded."
     },
     "collection": {

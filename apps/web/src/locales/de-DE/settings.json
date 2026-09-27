@@ -302,6 +302,9 @@
     "username": "Benutzername (Basisauthentifizierung)",
     "password": "Passwort (Basisauthentifizierung)",
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
+    "savedSecretPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
+    "secretRemovedPlaceholder": "Wird beim Speichern entfernt",
+    "removeSecret": "Entfernen",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Wenn diese Option aktiviert ist, senden alle untergeordneten Organisationen Ereignisprotokolle an den konfigurierten Endpunkt. Funktioniert mit jedem Elasticsearch/OpenSearch-kompatiblen <bulk>_bulk</bulk> Store (Elasticsearch, OpenSearch, Wazuh Indexer, AWS OpenSearch Service). Lassen Sie die Option deaktiviert, damit jede Organisation individuell konfiguriert werden kann."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastisch",
       "password": "Passwort",
       "passwordPlaceholder": "Passwort eingeben",
+      "savedSecretPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
       "credentialsDescription": "Anmeldeinformationen werden verschlüsselt gespeichert. Vorhandene Anmeldeinformationen werden beim Laden maskiert."
     },
     "collection": {

@@ -54,8 +54,15 @@ import { resolvePartnerOrgReach } from '../services/partnerOrgSelection';
 import { stripOrgLifecycleInternalSettings } from '../services/orgSettingsInternalKeys';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
-import { isEncryptedSecret } from '../services/secretCrypto';
-import { urlOriginChanged } from '../services/credentialOriginBinding';
+import {
+  LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
+  LOG_FORWARDING_SECRET_DESTINATIONS,
+  SettingsSecretInputError,
+  maskSettingsSecrets,
+  restoreMaskedSettingsSecrets,
+  settingsSecretWouldFollowNewOrigin,
+  withMaskedSettings,
+} from '../services/settingsSecretMasking';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
@@ -419,6 +426,28 @@ async function ensureOrgAccess(
 }
 
 
+/**
+ * Resolve an incoming `settings` value (organization, partner or site) against
+ * the stored one before it is sealed and written: masked markers and omitted
+ * secret keys keep the stored secret, and a log-forwarding destination may not
+ * move to a new origin while a stored credential is kept rather than
+ * re-entered. `stored` is undefined on create, where there is nothing to keep.
+ */
+function resolveIncomingSettingsSecrets(
+  incoming: unknown,
+  stored: unknown,
+): { ok: true; settings: unknown } | { ok: false; error: string } {
+  if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS)) {
+    return { ok: false, error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE };
+  }
+  try {
+    return { ok: true, settings: restoreMaskedSettingsSecrets(incoming, stored) };
+  } catch (err) {
+    if (err instanceof SettingsSecretInputError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
 orgRoutes.use('*', authMiddleware);
 
 // GET / - List organizations accessible to the current user
@@ -446,7 +475,7 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
     .where(and(...conditions))
     .orderBy(organizations.name);
 
-  return c.json({ data });
+  return c.json({ data: data.map(withMaskedSettings) });
 });
 
 // --- Partners (system admins) ---
@@ -531,7 +560,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
     .orderBy(partners.createdAt, partners.id);
 
   return c.json({
-    data,
+    data: data.map(withMaskedSettings),
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -549,6 +578,10 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   // otherwise it mints `{}`-settings partners that the inbound readers' legacy
   // absent-means-enabled fallback treats as opted IN (the #3608 regression).
   data.settings = applyNewPartnerDefaultSettings(data.settings);
+  const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
+  if (!createSecrets.ok) {
+    return c.json({ error: createSecrets.error }, 400);
+  }
 
   const clash = await db
     .select({ id: partners.id })
@@ -570,7 +603,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         slug: data.slug,
         type: data.type,
         maxOrganizations: data.maxOrganizations,
-        settings: data.settings,
+        settings: encryptColumnValueForWrite('partners', 'settings', createSecrets.settings),
         billingEmail: data.billingEmail
       })
       .returning(partnerPublicColumns());
@@ -599,7 +632,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
     }
   });
 
-  return c.json(partner, 201);
+  return c.json(withMaskedSettings(partner), 201);
 });
 
 // --- Partner Self-Service (partner-scoped users) ---
@@ -935,7 +968,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  return c.json(partner);
+  return c.json(withMaskedSettings(partner));
 });
 
 orgRoutes.get('/partners/me/ip-allowlist/status', requireScope('partner'), requirePartner, requireOrgRead, async (c) => {
@@ -1003,6 +1036,13 @@ orgRoutes.patch(
 
   // Merge settings (top-level shallow merge, except `security` and `ticketing` below)
   const currentSettings = (current.settings as Record<string, unknown>) || {};
+  if (body.settings) {
+    const resolvedSecrets = resolveIncomingSettingsSecrets(body.settings, currentSettings);
+    if (!resolvedSecrets.ok) {
+      return c.json({ error: resolvedSecrets.error }, 400);
+    }
+    body.settings = resolvedSecrets.settings as typeof body.settings;
+  }
   const newSettings: Record<string, unknown> = body.settings
     ? { ...currentSettings, ...body.settings }
     : { ...currentSettings };
@@ -1256,9 +1296,9 @@ orgRoutes.patch(
   });
 
   if (emailTemplateWarnings.length > 0) {
-    return c.json({ ...partner, warnings: emailTemplateWarnings });
+    return c.json({ ...withMaskedSettings(partner), warnings: emailTemplateWarnings });
   }
-  return c.json(partner);
+  return c.json(withMaskedSettings(partner));
 });
 
 // --- Individual partner management (system-scoped) ---
@@ -1276,7 +1316,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  return c.json(partner);
+  return c.json(withMaskedSettings(partner));
 });
 
 orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
@@ -1324,6 +1364,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         .from(partners)
         .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
         .limit(1);
+      const resolvedSecrets = resolveIncomingSettingsSecrets(updates.settings, currentPartner?.settings);
+      if (!resolvedSecrets.ok) {
+        return c.json({ error: resolvedSecrets.error }, 400);
+      }
+      updates.settings = resolvedSecrets.settings;
       if (currentPartner) {
         updates.settings = preserveIpAllowlistOnOmit(
           currentPartner.settings,
@@ -1433,7 +1478,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     }
   });
 
-  return c.json(partner);
+  return c.json(withMaskedSettings(partner));
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -1756,7 +1801,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     : null;
 
   return c.json({
-    data: [...liveRows, ...(archived?.orgs ?? [])],
+    data: [...liveRows, ...(archived?.orgs ?? [])].map(withMaskedSettings),
     pagination: { page, limit, total: Number(count) },
     // Present only on the page that actually carries the archived block, so it
     // is never a claim about a page that didn't look. Archived orgs are capped
@@ -1879,6 +1924,10 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const data = c.req.valid('json');
   // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
+  if (!createSecrets.ok) {
+    return c.json({ error: createSecrets.error }, 400);
+  }
 
   let targetPartnerId: string | null = null;
 
@@ -1937,7 +1986,11 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     status: data.status,
     // The lifecycle engine owns some keys in this blob (prior status, purge
     // warning markers, the purge-retry counter). Never let a client seed them.
-    settings: stripOrgLifecycleInternalSettings(data.settings),
+    settings: encryptColumnValueForWrite(
+      'organizations',
+      'settings',
+      stripOrgLifecycleInternalSettings(createSecrets.settings)
+    ),
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
     contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
     billingContact: data.billingContact
@@ -2011,7 +2064,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     details: { partnerId: organization?.partnerId, status: organization?.status, type: organization?.type }
   });
 
-  return c.json(organization, 201);
+  return c.json(withMaskedSettings(organization), 201);
 });
 
 // --- Bulk org/site import (#3242) ---
@@ -2111,7 +2164,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     const archived = archivedScope
       ? await loadArchivedOrg({ orgId: id, scope: archivedScope })
       : null;
-    if (archived) return c.json(archived);
+    if (archived) return c.json(withMaskedSettings(archived));
     return c.json({ error: 'Organization not found' }, 404);
   }
 
@@ -2149,10 +2202,10 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   const partnerDefaultInvoiceTermsDays = partnerRow?.invoiceTermsDays ?? null;
 
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...organization, archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
   }
 
-  return c.json({ ...organization, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',
@@ -2176,7 +2229,7 @@ orgRoutes.get('/organizations/:id/effective-settings',
     // { minutes, source, inheritedMinutes, inheritedSource } for the org UI's
     // "Inherit (…)" label.
     const aiApprovalTimeout = await getAiApprovalTimeout(id);
-    return c.json({ ...result, aiApprovalTimeout });
+    return c.json({ ...result, effective: maskSettingsSecrets(result.effective), aiApprovalTimeout });
   }
 );
 
@@ -2497,48 +2550,33 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
     if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
 
-    // Same origin-binding contract as credentialOriginBinding.ts:
-    // this write replaces `settings` WHOLESALE, and the settings editor
-    // round-trips the stored `eventLogs.elasticsearchApiKey`/`Password`
-    // ciphertext unchanged whenever the operator saves the category without
-    // retyping the credential — including a save that only edits
-    // `elasticsearchUrl`. Refuse a request that carries the stored
-    // ciphertext forward to a new destination origin; require the
-    // credential to be re-entered instead.
-    const incomingEventLogs = isPlainRecord(data.settings) ? data.settings.eventLogs : undefined;
-    if (isPlainRecord(incomingEventLogs) && typeof incomingEventLogs.elasticsearchUrl === 'string') {
-      const [currentOrg] = await db
-        .select({ settings: organizations.settings })
-        .from(organizations)
-        .where(eq(organizations.id, id))
-        .limit(1);
-      const storedEventLogs = isPlainRecord(currentOrg?.settings) ? currentOrg.settings.eventLogs : undefined;
-      const storedUrl = isPlainRecord(storedEventLogs) ? storedEventLogs.elasticsearchUrl : undefined;
-
-      if (typeof storedUrl === 'string' && urlOriginChanged(storedUrl, incomingEventLogs.elasticsearchUrl)) {
-        const carriesStoredSecret = ['elasticsearchApiKey', 'elasticsearchPassword'].some((field) => {
-          const value = incomingEventLogs[field];
-          return typeof value === 'string' && isEncryptedSecret(value);
-        });
-        if (carriesStoredSecret) {
-          return c.json({
-            error: 'Changing the log-forwarding destination requires re-entering the API key or password',
-          }, 400);
-        }
-      }
+    // This write replaces `settings` WHOLESALE, and the settings editor
+    // re-posts the whole blob as it was read — secrets included, as the
+    // masked marker. Resolve those against the stored settings so the write
+    // keeps them, and refuse a log-forwarding destination moved to a new
+    // origin while a stored credential would follow it instead of being
+    // re-entered (same contract as credentialOriginBinding.ts).
+    const [currentOrg] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, id))
+      .limit(1);
+    const resolvedSecrets = resolveIncomingSettingsSecrets(data.settings, currentOrg?.settings);
+    if (!resolvedSecrets.ok) {
+      return c.json({ error: resolvedSecrets.error }, 400);
     }
 
-    // This write replaces `settings` WHOLESALE, so a client payload naming a
-    // lifecycle-internal key would become that key's stored value. Strip them
-    // first: a preseeded `purgingRecoveryAttempts` would neuter the purge-retry
-    // ceiling, and a preseeded `archivePriorStatus`/`mergePriorStatus` would
-    // choose what a later restore/unfence reactivates the tenant AS.
+    // A client payload naming a lifecycle-internal key would become that
+    // key's stored value. Strip them first: a preseeded
+    // `purgingRecoveryAttempts` would neuter the purge-retry ceiling, and a
+    // preseeded `archivePriorStatus`/`mergePriorStatus` would choose what a
+    // later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
     updates.settings = encryptColumnValueForWrite(
       'organizations',
       'settings',
-      stripOrgLifecycleInternalSettings(data.settings)
+      stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
     );
   }
   // The blob write stays in THIS update rather than going through
@@ -2713,7 +2751,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     }
   });
 
-  return c.json(organization);
+  return c.json(withMaskedSettings(organization));
 }] as const;
 
 orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
@@ -2889,7 +2927,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   }
 
   const dataWithCounts = data.map((site) => ({
-    ...site,
+    ...withMaskedSettings(site),
     deviceCount: deviceCountBySite.get(site.id) ?? 0
   }));
 
@@ -2955,6 +2993,11 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
 
+  const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
+  if (!createSecrets.ok) {
+    return c.json({ error: createSecrets.error }, 400);
+  }
+
   const [site] = await db
     .insert(sites)
     .values({
@@ -2963,7 +3006,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
       address: data.address,
       timezone: data.timezone,
       contact: data.contact,
-      settings: data.settings
+      settings: encryptColumnValueForWrite('sites', 'settings', createSecrets.settings)
     })
     .returning();
 
@@ -2982,7 +3025,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
     resourceName: site?.name
   });
 
-  return c.json(site, 201);
+  return c.json(withMaskedSettings(site), 201);
 });
 
 orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteRead, async (c) => {
@@ -3009,7 +3052,7 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
-  return c.json(site);
+  return c.json(withMaskedSettings(site));
 });
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', updateSiteSchema), async (c) => {
@@ -3045,7 +3088,11 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   // matches the registry walker so UI edits don't regress to plaintext.
   const writeData: Record<string, unknown> = { ...data, updatedAt: new Date() };
   if (writeData.settings !== undefined) {
-    writeData.settings = encryptColumnValueForWrite('sites', 'settings', writeData.settings);
+    const resolvedSecrets = resolveIncomingSettingsSecrets(writeData.settings, site.settings);
+    if (!resolvedSecrets.ok) {
+      return c.json({ error: resolvedSecrets.error }, 400);
+    }
+    writeData.settings = encryptColumnValueForWrite('sites', 'settings', resolvedSecrets.settings);
   }
 
   const [updated] = await db
@@ -3078,7 +3125,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     details: { changedFields: Object.keys(data) }
   });
 
-  return c.json(updated);
+  return c.json(withMaskedSettings(updated));
 });
 
 orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), async (c) => {

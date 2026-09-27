@@ -158,6 +158,16 @@ const SECRET_JSON_KEYS = new Set([
   'privPassword',
 ]);
 
+/**
+ * Whether a key inside a registered JSON column names a secret. The single
+ * definition shared by the at-rest sealing above and response masking
+ * (services/settingsSecretMasking.ts), so a key that is sealed on write is
+ * always masked on read.
+ */
+export function isSecretJsonKey(key: string): boolean {
+  return SECRET_JSON_KEYS.has(key);
+}
+
 function rowsFromResult(result: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(result)) return result as Array<Record<string, unknown>>;
   if (result && typeof result === 'object' && Array.isArray((result as { rows?: unknown }).rows)) {

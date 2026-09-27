@@ -302,6 +302,9 @@
     "username": "Nome utente (basic auth)",
     "password": "Password (autenticazione di base)",
     "notSet": "Non impostato - le organizzazioni configurano singolarmente",
+    "savedSecretPlaceholder": "Salvato: lascia vuoto per mantenerlo",
+    "secretRemovedPlaceholder": "Verrà rimosso al salvataggio",
+    "removeSecret": "Rimuovi",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Quando abilitato, tutte le organizzazioni figlie invieranno i log eventi all'endpoint configurato. Funziona con qualsiasi archivio compatibile con <bulk>_bulk</bulk> Elasticsearch/OpenSearch (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service). Lascia disabilitato per consentire a ogni organizzazione di configurarlo singolarmente."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastic",
       "password": "Password",
       "passwordPlaceholder": "Inserisci password",
+      "savedSecretPlaceholder": "Salvato: lascia vuoto per mantenerlo",
       "credentialsDescription": "Le credenziali sono archiviate cifrate. Le credenziali esistenti vengono mascherate al caricamento."
     },
     "collection": {
