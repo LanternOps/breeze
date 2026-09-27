@@ -31,7 +31,7 @@ scripts/guided-setup.sh
 selfhost-signing-template/**
 
 # Install/deploy templates fetched by operators and guided setup.
-# The root .env.example is deliberately NOT listed (owner decision): a server
+# The root .env.example is deliberately NOT listed (by design): a server
 # fix that documents a new server env var may still ship server-only.
 # deploy/.env.example stays protected through deploy/**.
 docker-compose*.yml
