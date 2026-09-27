@@ -54,4 +54,14 @@ describe('loadProposalGuardrailContext', () => {
       proposalDenyReason: 'proposal_review_failed',
     });
   });
+
+  it('reports proposal_not_found (never review_failed) for a proposal superseded before it was ever scanned or reviewed', async () => {
+    // supersedeProposal can move 'proposed'/'scan_rejected'/'review_failed' straight
+    // to 'superseded' without ever setting riskTier — calling that a "review
+    // failure" would be a false diagnosis, since no scan/review verdict happened.
+    stored = { id: 'p1', orgId: 'org-1', status: 'superseded', riskTier: null, strictHits: [] };
+    await expect(loadProposalGuardrailContext({ proposalId: 'p1' }, 'org-1')).resolves.toEqual({
+      proposalDenyReason: 'proposal_not_found',
+    });
+  });
 });

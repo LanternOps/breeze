@@ -24,8 +24,16 @@ import type { GuardrailContext } from '../aiGuardrails';
  *   `get_script_proposal` and retries instead of giving up.
  * - a same-org row that finished negatively (`scan_rejected` / `review_failed`,
  *   also no `riskTier`) — `proposal_review_failed`; a new proposal is needed.
- * A later terminal status (`approved`/`rejected`/`expired`/`superseded`/…) has
- * already had a `riskTier` written at `reviewed` and is instead diagnosed by
+ * - anything else with no `riskTier` — falls back to `proposal_not_found`. In
+ *   practice this is a row `superseded` (proposals.ts's `supersedeProposal`)
+ *   BEFORE it was ever scanned or reviewed: it never had a chance to earn a
+ *   `proposal_review_failed`-shaped verdict, so calling it that would be a
+ *   false diagnosis ("scan rejection or a technical review failure" when
+ *   neither happened). `proposal_not_found` reads correctly either way — this
+ *   id is not currently runnable and there is nothing to poll or wait on.
+ * A later terminal status reached AFTER `reviewed` (`approved`/`rejected`/
+ * `expired`/`superseded`-post-review/…) has already had a `riskTier` written
+ * at the `reviewed` transition and is instead diagnosed by
  * `assertProposalRunnable` (scriptProposals/runnable.ts) once past this gate.
  */
 export async function loadProposalGuardrailContext(
@@ -48,5 +56,11 @@ export async function loadProposalGuardrailContext(
 
   if (!row || row.orgId !== orgId) return { proposalDenyReason: 'proposal_not_found' };
   if (row.riskTier) return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [] } };
-  return { proposalDenyReason: row.status === 'proposed' ? 'proposal_review_pending' : 'proposal_review_failed' };
+  if (row.status === 'proposed') return { proposalDenyReason: 'proposal_review_pending' };
+  if (row.status === 'scan_rejected' || row.status === 'review_failed') {
+    return { proposalDenyReason: 'proposal_review_failed' };
+  }
+  // Any other pre-review status with no riskTier (e.g. superseded before ever
+  // being scanned/reviewed) is not a review failure — see the doc comment.
+  return { proposalDenyReason: 'proposal_not_found' };
 }
