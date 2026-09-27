@@ -64,6 +64,17 @@ export async function completeTenantSelectingCallback(c: RouteCtx, input: {
     return fail('tenant_lookup_failed');
   }
 
+  // Fail CLOSED on an unreadable prior row (review I1). Unlike QuickBooks, where
+  // the provider dictates the realm, here Breeze picks the tenant: without the
+  // prior realm we can neither find the partner's own tenant (refinement 2) nor
+  // detect a realm change, so a one-org grant could silently switch organisation
+  // and keep the old organisation's mappings and CDC cursor.
+  if (!prior.known) {
+    console.error(`[accounting] ${label} prior connection unreadable; refusing to choose an organisation`, { partnerId, provider });
+    await release(grant, null);
+    return fail('tenant_lookup_failed');
+  }
+
   // Reconnect (plan refinement 2): the partner's own tenant keeps the link it was
   // first authorised under, so it is absent from this auth event's list. Look up
   // THAT tenant id only — the unfiltered list never supplies any other tenant.

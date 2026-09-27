@@ -155,6 +155,24 @@ describe('completeTenantSelectingCallback', () => {
     expect(m.captureException).toHaveBeenCalledTimes(1);
   });
 
+  it('review I1: an UNKNOWN prior realm fails closed — a single-org grant is never connected (it could be a silent org switch with no realm-change reset)', async () => {
+    m.readPriorRealm.mockResolvedValue({ known: false, realmId: null });
+    m.selection.listGrantTenants.mockResolvedValue([t('NEW')]);
+    await expect(completeTenantSelectingCallback(c, input)).resolves.toEqual({ kind: 'error', error: 'tenant_lookup_failed' });
+    expect(m.upsertConnection).not.toHaveBeenCalled();
+    expect(m.finalizeConnection).not.toHaveBeenCalled();
+    expect(m.selection.listAllTenants).not.toHaveBeenCalled();
+    // This flow's links are released, held-checked (keep=null), like every other failure path.
+    expect(m.releaseUnchosenTenants).toHaveBeenCalledWith(expect.objectContaining({ keepConnectionRef: null, tenants: [t('NEW')] }));
+  });
+
+  it('review I1: an unknown prior realm never parks a pending row either', async () => {
+    m.readPriorRealm.mockResolvedValue({ known: false, realmId: null });
+    m.selection.listGrantTenants.mockResolvedValue([t('A'), t('B')]);
+    await expect(completeTenantSelectingCallback(c, input)).resolves.toEqual({ kind: 'error', error: 'tenant_lookup_failed' });
+    expect(m.upsertConnection).not.toHaveBeenCalled();
+  });
+
   it('a release that throws never changes a successful connect (best-effort, reported)', async () => {
     m.selection.listGrantTenants.mockResolvedValue([t('A'), t('P', 'PRACTICEMANAGER')]);
     m.releaseUnchosenTenants.mockRejectedValueOnce(new Error('ambient context'));
