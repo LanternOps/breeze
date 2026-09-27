@@ -231,7 +231,7 @@ import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
-import { API_VERSION } from './version';
+import { buildHealthPayload } from './services/versionInfo';
 import {
   setWorkerReadinessTransitionHandler,
   workerReadinessRegistry,
@@ -487,12 +487,9 @@ const startedAt = Date.now();
 // instead — see routes/agents/download.ts #1470 — so this payload is no longer
 // coupled to the installer.)
 app.get('/health', (c) => {
-  const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
-  return c.json({
-    status: 'ok',
-    version: API_VERSION,
-    uptime: uptimeSeconds
-  });
+  // binariesVersion differs from version only on a server-only release image
+  // (see services/binarySource.ts getPairedBinariesVersion).
+  return c.json(buildHealthPayload(startedAt));
 });
 
 // Kubernetes liveness probe — minimal 200 OK
