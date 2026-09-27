@@ -1720,7 +1720,7 @@ export default function ReportBuilder({
             <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportDetails.description')}</p>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="space-y-2 min-w-0">
               <label htmlFor="report-name" className="text-sm font-medium">
                 {t('reports.reportBuilder.fieldsShared.reportName')}
@@ -1778,7 +1778,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {reportTypeOptions.map(type => {
               const isSelected = builderType === type.value;
               return (
@@ -1811,7 +1811,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {dataSourceFields.map(field => (
               <div key={field.id} className="space-y-2 min-w-0">
                 <label className="text-xs font-medium text-muted-foreground">{getDataSourceFieldLabel(field.id)}</label>
@@ -1862,7 +1862,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="min-w-0 space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.availableFields')}</p>
               <div className="flex flex-wrap gap-2">
@@ -2073,7 +2073,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.groupBy')}</label>
               <select
@@ -2140,7 +2140,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-1 xl:grid-cols-4">
             {chartTypeOptions.map(option => {
               const isSelected = chartType === option.value;
               return (
@@ -2154,7 +2154,7 @@ export default function ReportBuilder({
                   )}
                 >
                   <option.icon className={cn('h-4 w-4', isSelected ? 'text-primary' : 'text-muted-foreground')} />
-                  <span className="truncate">{getChartTypeLabel(option.value)}</span>
+                  <span className="w-full truncate text-center">{getChartTypeLabel(option.value)}</span>
                 </button>
               );
             })}
@@ -2193,7 +2193,7 @@ export default function ReportBuilder({
                 ))}
               </div>
 
-              <div className="grid gap-3 xl:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
                   <input
@@ -2240,7 +2240,7 @@ export default function ReportBuilder({
 
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.exportFormatsTitle')}</p>
-              <div className="grid gap-3 xl:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 {exportFormatOptions.map(format => {
                   const isSelected = exportFormats.includes(format.value);
                   return (
@@ -2253,7 +2253,7 @@ export default function ReportBuilder({
                         isSelected ? 'border-primary bg-primary/10 text-foreground' : 'hover:bg-muted'
                       )}
                     >
-                      <span className="truncate font-medium">{getExportFormatLabel(format.value)}</span>
+                      <span className="w-full truncate font-medium">{getExportFormatLabel(format.value)}</span>
                       <span className="w-full truncate text-muted-foreground">{getExportFormatDescription(format.value)}</span>
                     </button>
                   );
@@ -2278,7 +2278,7 @@ export default function ReportBuilder({
                 <p className="text-xs font-medium text-muted-foreground">
                   {t('reports.reportBuilder.recipients.contacts')}
                 </p>
-                <div className="grid gap-2 xl:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                   {contacts.map(contact => (
                     <label
                       key={contact.id}
