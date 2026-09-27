@@ -95,6 +95,13 @@ parent of `AGENT_BINARY_DIR` and verify with
 merely signs whatever bytes happen to be on the volume is not a source-authenticity
 substitute.
 
+Breeze Assist (Helper) installers are verified the same way, but always against
+the public release's manifest entry (`edition: "self-host"`, whatever
+`BINARY_EDITION` is): the API looks for the manifest pair in `HELPER_BINARY_DIR`
+first, then, on a self-host deployment, at its parent. A deployment with
+`BINARY_EDITION=hosted` must stage the public release's manifest pair inside
+`HELPER_BINARY_DIR`; it never falls back to the manifest at the volume root.
+
 On startup, the API:
 1. Scans `AGENT_BINARY_DIR` for agent binaries
 2. Computes SHA-256 checksums and registers each binary in the `agent_versions` table

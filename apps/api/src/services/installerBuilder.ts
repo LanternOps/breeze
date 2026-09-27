@@ -336,15 +336,43 @@ export interface VerifiedMacosPackage {
   artifact: VerifiedReleaseArtifact;
 }
 
-function localReleaseManifestPaths(binaryDir: string): {
+interface LocalManifestPairPaths {
   manifestPath: string;
   signaturePath: string;
-} {
-  const root = dirname(resolve(binaryDir));
+}
+
+function manifestPairPathsIn(dir: string): LocalManifestPairPaths {
   return {
-    manifestPath: join(root, 'release-artifact-manifest.json'),
-    signaturePath: join(root, 'release-artifact-manifest.json.ed25519'),
+    manifestPath: join(dir, 'release-artifact-manifest.json'),
+    signaturePath: join(dir, 'release-artifact-manifest.json.ed25519'),
   };
+}
+
+function localReleaseManifestPaths(binaryDir: string): LocalManifestPairPaths {
+  return manifestPairPathsIn(dirname(resolve(binaryDir)));
+}
+
+// The Breeze Assist (Helper) installers are built only by the public release
+// and are byte-identical for both editions: the public release manifest lists
+// them with `edition: "self-host"`, and no hosted build ever re-signs or
+// re-lists them. They are therefore verified against the public release's own
+// manifest pair and edition, never against BINARY_EDITION.
+const HELPER_INSTALLER_EDITION = 'self-host';
+
+// Where the Helper's signed manifest pair may live, in lookup order:
+//   1. HELPER_BINARY_DIR itself — the hosted binaries image stages the public
+//      release's manifest pair here, because its volume ROOT carries the
+//      hosted build's own manifest (agent family only, edition "hosted").
+//   2. The parent of HELPER_BINARY_DIR — the documented self-host layout,
+//      where the one staged manifest at the root is the public release's.
+// A hosted deployment gets (1) only: its root manifest is the hosted build's,
+// which does not vouch for the Helper, so falling back to it would at best
+// fail as "absent" and at worst trust a hosted-signed entry for a
+// public-release asset.
+function helperInstallerManifestCandidates(helperBinaryDir: string): LocalManifestPairPaths[] {
+  const own = manifestPairPathsIn(resolve(helperBinaryDir));
+  if (getBinaryEdition() === 'hosted') return [own];
+  return [own, localReleaseManifestPaths(helperBinaryDir)];
 }
 
 async function readBoundedStream(
@@ -371,23 +399,36 @@ async function readBoundedStream(
   return Buffer.concat(chunks, size);
 }
 
-async function loadLocalManifestPair(binaryDir: string): Promise<{
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
+// Returns the first candidate whose manifest is present. A candidate whose
+// manifest is present but whose signature is missing is a half-staged pair —
+// refuse rather than skip past it to a lower-priority candidate.
+async function loadLocalManifestPair(candidates: LocalManifestPairPaths[]): Promise<{
   manifestBytes: Buffer;
   signatureBytes: Buffer;
 }> {
-  const paths = localReleaseManifestPaths(binaryDir);
-  try {
-    const [manifestBytes, signatureBytes] = await Promise.all([
-      readFile(paths.manifestPath),
-      readFile(paths.signaturePath),
-    ]);
-    return { manifestBytes, signatureBytes };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('Signed release manifest pair is not staged for local installers');
+  for (const paths of candidates) {
+    let manifestBytes: Buffer;
+    try {
+      manifestBytes = await readFile(paths.manifestPath);
+    } catch (err) {
+      if (isEnoent(err)) continue;
+      throw err;
     }
-    throw err;
+    try {
+      const signatureBytes = await readFile(paths.signaturePath);
+      return { manifestBytes, signatureBytes };
+    } catch (err) {
+      if (isEnoent(err)) {
+        throw new Error('Signed release manifest pair is incomplete: the signature is not staged');
+      }
+      throw err;
+    }
   }
+  throw new Error('Signed release manifest pair is not staged for local installers');
 }
 
 async function fetchVerifiedLocalArtifact(args: {
@@ -396,6 +437,13 @@ async function fetchVerifiedLocalArtifact(args: {
   s3Key?: string;
   expectedPlatformTrust: string;
   requireMacosPublisher: boolean;
+  /**
+   * Where to find the signed manifest pair, in lookup order. Defaults to the
+   * parent of the asset's directory (the binaries volume root).
+   */
+  manifestPairCandidates?: LocalManifestPairPaths[];
+  /** Required manifest edition. Defaults to BINARY_EDITION. */
+  expectedEdition?: string;
 }): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
   // The signed manifest pair is staged next to the asset it verifies — derive
   // the lookup directory from the caller's own resolved `diskPath` rather
@@ -404,7 +452,9 @@ async function fetchVerifiedLocalArtifact(args: {
   // AGENT_BINARY_DIR broke self-hosters who point HELPER_BINARY_DIR somewhere
   // else, since the Helper's asset and manifest pair both live there.
   const binaryDir = dirname(args.diskPath);
-  const { manifestBytes, signatureBytes } = await loadLocalManifestPair(binaryDir);
+  const { manifestBytes, signatureBytes } = await loadLocalManifestPair(
+    args.manifestPairCandidates ?? [localReleaseManifestPaths(binaryDir)],
+  );
   // Local-source trust contract (same as binarySync's local manifest
   // registration): the manifest's Ed25519 signature against the configured
   // RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS is the trust anchor, then the asset
@@ -413,7 +463,7 @@ async function fetchVerifiedLocalArtifact(args: {
   // install's binaries volume carries the hosted build's manifest, whose
   // repository is not the public GitHub repository, so pinning it here
   // refused every locally staged installer on hosted.
-  const expectedEdition = getBinaryEdition();
+  const expectedEdition = args.expectedEdition ?? getBinaryEdition();
   const selected = await verifyReleaseArtifactManifestAsset({
     assetName: args.assetName,
     manifestBytes,
@@ -553,7 +603,7 @@ async function fetchVerifiedHelperInstallerUncached(os: string): Promise<Verifie
       signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
       expectedRepository: getGithubReleaseRepository(),
       expectedRelease: getGithubExpectedReleaseTag(),
-      expectedEdition: getBinaryEdition(),
+      expectedEdition: HELPER_INSTALLER_EDITION,
       maxAssetBytes: MAX_HELPER_INSTALLER_BYTES,
     });
     assertGithubFetchableEdition({ assetName, edition: result.verified.edition });
@@ -567,6 +617,8 @@ async function fetchVerifiedHelperInstallerUncached(os: string): Promise<Verifie
     s3Key: `helper/${assetName}`,
     expectedPlatformTrust: '',
     requireMacosPublisher: false,
+    manifestPairCandidates: helperInstallerManifestCandidates(binaryDir),
+    expectedEdition: HELPER_INSTALLER_EDITION,
   });
   return { buffer: result.buffer, artifact: result.verified };
 }
