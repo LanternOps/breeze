@@ -16,8 +16,8 @@
  * inserted but not yet committed. A page therefore stops before the earlier of
  * (a) PAM_AUDIT_EXPORT_SETTLE_SECONDS before the database clock and (b) the
  * start of the oldest still-open transaction that holds a write lock
- * (RowExclusiveLock) on elevation_audit, from pg_locks joined to
- * pg_stat_activity. A transaction's start precedes every created_at it
+ * (RowExclusiveLock) on elevation_audit in this database, from pg_locks
+ * joined to pg_stat_activity. A transaction's start precedes every created_at it
  * writes, so (b) is a conservative bound; an insert holds that lock until its
  * transaction ends, and writes to other tables do not count. (b) sees every
  * writer running as the API's database role, which is every writer in this
@@ -261,6 +261,7 @@ export async function fetchElevationAuditExportPage(
              FROM pg_locks l
              JOIN pg_stat_activity a ON a.pid = l.pid
             WHERE l.locktype = 'relation'
+              AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
               AND l.relation = 'public.elevation_audit'::regclass
               AND l.mode = 'RowExclusiveLock'
               AND l.granted

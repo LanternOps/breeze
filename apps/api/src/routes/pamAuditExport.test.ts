@@ -88,6 +88,18 @@ describe('GET /pam/elevation-audit/export (#4910)', () => {
     expect(mocks.fetchPage.mock.calls[1]![0].filters.orgId).toBe(ORG);
   });
 
+  it('400s an eventType that is not an elevation_audit event type', async () => {
+    const res = await app().request(`/pam/elevation-audit/export?${Q}&eventType=aproved`);
+    expect(res.status).toBe(400);
+    expect(mocks.fetchPage).not.toHaveBeenCalled();
+  });
+
+  it('passes a valid eventType through to the query', async () => {
+    const res = await app().request(`/pam/elevation-audit/export?${Q}&eventType=session_started`);
+    expect(res.status).toBe(200);
+    expect(mocks.fetchPage.mock.calls[0]![0].filters.eventType).toBe('session_started');
+  });
+
   it('400s a malformed cursor', async () => {
     const res = await app().request(`/pam/elevation-audit/export?${Q}&cursor=not-a-cursor`);
     expect(res.status).toBe(400);

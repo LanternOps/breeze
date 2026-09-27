@@ -20,6 +20,9 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { elevationAudit } from '../db/schema';
+// Imported from the table's own module: route tests that mock '../db/schema'
+// (pam.test.ts, pam.siteScope.test.ts) load this file through routes/pam.ts.
+import { elevationAuditEventTypeEnum } from '../db/schema/elevations';
 import { requireMfa, requirePermission } from '../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
@@ -45,7 +48,8 @@ export const exportQuerySchema = z
     siteId: z.string().guid().optional(),
     deviceId: z.string().guid().optional(),
     elevationRequestId: z.string().guid().optional(),
-    eventType: z.string().max(64).optional(),
+    // A misspelled type is a 400, not a silently empty export.
+    eventType: z.enum(elevationAuditEventTypeEnum.enumValues).optional(),
     limit: z.coerce
       .number()
       .int()
