@@ -139,7 +139,7 @@ async function exportAll(
 }
 
 describe('fetchElevationAuditExportPage (real Postgres, #4910)', () => {
-  it('walks every event exactly once in (occurred_at, id) order, across exact ties and microsecond gaps', async () => {
+  it('walks every event exactly once in (created_at, id) order, across exact ties and microsecond gaps', async () => {
     const f = await fixture();
     const tie = '2026-09-10 12:00:00.000001+00';
     const expected = [
