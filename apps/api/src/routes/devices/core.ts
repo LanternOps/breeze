@@ -266,7 +266,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * reasoning to ai_agent_fix_watches: an attempt's proof belongs to the org it
  * ran in, and its (org_id, partner_id) composite FK would 23503 on a
  * cross-partner move. It is excluded from breeze_device_child_orgid_tables()
- * by 2026-11-03-100000-fix-memory-tables.sql and listed in
+ * by 2026-11-06-100000-fix-memory-tables.sql and listed in
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. The outcome sweeper
  * cancels in-flight rows whose device left the org.
  *
