@@ -90,7 +90,7 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   AccountingConnectionError: AccountingError,
   // Xero W01: bulk push resolves the partner's ONE connection first (its id
   // rides on every job). A connected QuickBooks row keeps the route on its path.
-  resolveActiveConnection: vi.fn(async (_db: unknown, partnerId: string) => ({
+  resolveActiveConnectionRef: vi.fn(async (_db: unknown, partnerId: string) => ({
     id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
   })),
 }));

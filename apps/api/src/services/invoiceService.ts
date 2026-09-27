@@ -28,6 +28,7 @@ import {
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
 import { resolveActiveConnectionFor } from './accounting/accountingConnectionService';
+import { captureException } from './sentry';
 import type { DbContextRunner } from './accounting/dbContextGuard';
 import { INVOICE_REMOTE_DELETED_ERROR, type AccountingProviderId } from './accounting/types';
 import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
@@ -1624,7 +1625,8 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     const conn = await resolveActiveConnectionFor(inv.partnerId, 'invoicePush');
     if (conn) await enqueueAccountingInvoicePush(invoiceId, inv.partnerId, conn.id);
   } catch (err) {
-    console.error('[invoiceService] enqueueAccountingInvoicePush failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    console.error('[invoiceService] accounting auto-push failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
   return getOwnedInvoiceOr404(invoiceId);
 }
@@ -2403,7 +2405,8 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     const conn = await resolveActiveConnectionFor(voidedPartnerId, 'invoicePush');
     if (conn) await enqueueAccountingInvoiceVoid(invoiceId, voidedPartnerId, conn.id);
   } catch (err) {
-    console.error('[invoiceService] enqueueAccountingInvoiceVoid failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    console.error('[invoiceService] accounting void sync failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   if (opts.reissue && draftId) {

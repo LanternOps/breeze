@@ -191,8 +191,14 @@ export async function resolveActiveConnection(
  * only `id` + `provider` — never the encrypted columns `mapConnection`
  * decrypts. Any future filter added to `resolveActiveConnection` (W02's
  * pending_tenant exclusion) must be mirrored here too.
+ *
+ * Exported as the public id+provider read for callers that never need tokens
+ * (e.g. a route that only stamps `.id`/`.provider` on a response, or a
+ * conflict check that only compares providers) — using it instead of
+ * `resolveActiveConnection` means a rotated/retired encryption key can never
+ * abort a path that was going to ignore the decrypted columns anyway.
  */
-async function resolveActiveConnectionRef(
+export async function resolveActiveConnectionRef(
   dbc: DbExecutor,
   partnerId: string,
 ): Promise<{ id: string; provider: AccountingProviderId } | null> {
@@ -424,7 +430,10 @@ export async function upsertConnection(
     .returning();
 
   if (!row) {
-    const existing = await resolveActiveConnection(db, partnerId);
+    // Non-decrypting read (Task 5 minor): this branch only compares providers,
+    // so a decrypt failure (rotated/retired encryption key) in
+    // `resolveActiveConnection` must never mask the real 409 conflict here.
+    const existing = await resolveActiveConnectionRef(db, partnerId);
     if (existing && existing.provider !== provider) {
       throw new AccountingProviderConflictError(existing.provider, provider);
     }

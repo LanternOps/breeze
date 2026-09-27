@@ -108,6 +108,17 @@ describe('resolveJobConnection (Xero W01 drop rules)', () => {
     await expect(resolveJobConnection({ partnerId: 'p1', mappingId: 'm1' }, 'paymentPush', {} as any))
       .resolves.toEqual({ kind: 'drop', reason: 'capability_unavailable' });
   });
+
+  it('rejects a ref carrying both connectionId and mappingId at the type level', async () => {
+    const { resolveJobConnection } = await import('./accountingJobConnection');
+    // JobConnectionRef is a discriminated union (mappingId XOR connectionId XOR
+    // neither) precisely so this does not compile — admitting both used to
+    // silently prefer mappingId. Never actually invoked; this line only needs
+    // to fail `tsc`.
+    // @ts-expect-error — connectionId and mappingId are mutually exclusive on JobConnectionRef
+    void resolveJobConnection({ partnerId: 'p1', connectionId: 'c1', mappingId: 'm1' }, 'invoicePush', {} as any);
+    expect(true).toBe(true);
+  });
 });
 
 describe('logJobDrop', () => {

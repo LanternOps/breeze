@@ -96,13 +96,13 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 // Xero W01: push-bulk resolves the partner's ONE connection before enqueueing
 // (each job carries its id). Defaults to a connected QuickBooks row so the
 // existing bulk tests drive exactly the path they always did.
-const { resolveActiveConnectionMock, providerSupportsMock } = vi.hoisted(() => ({
-  resolveActiveConnectionMock: vi.fn(),
+const { resolveActiveConnectionRefMock, providerSupportsMock } = vi.hoisted(() => ({
+  resolveActiveConnectionRefMock: vi.fn(),
   providerSupportsMock: vi.fn((id: string, _cap: string) => id === 'quickbooks'),
 }));
 vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>()),
-  resolveActiveConnection: resolveActiveConnectionMock,
+  resolveActiveConnectionRef: resolveActiveConnectionRefMock,
 }));
 
 // Not exercised by these tests, but imported transitively by routes/accounting/index.ts.
@@ -214,7 +214,7 @@ function pushOutcome(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveActiveConnectionMock.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks', status: 'connected' });
+  resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks', status: 'connected' });
   authState.scope = 'partner';
   authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
@@ -432,13 +432,13 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     });
     const res = await pushBulk([INVOICE_ID, INVOICE_ID_2]);
     expect(res.status).toBe(200);
-    expect(resolveActiveConnectionMock).toHaveBeenCalledTimes(1);
-    expect(resolveActiveConnectionMock).toHaveBeenCalledWith(expect.anything(), 'p1');
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledTimes(1);
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledWith(expect.anything(), 'p1');
     expect(enqueueAccountingInvoicePushMock.mock.calls.map((call) => call[2])).toEqual(['c1', 'c1']);
   });
 
   it('409 capability_unavailable when the connected provider is not the one in the URL', async () => {
-    resolveActiveConnectionMock.mockResolvedValue({ id: 'c-x', partnerId: 'p1', provider: 'xero', status: 'connected' });
+    resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c-x', partnerId: 'p1', provider: 'xero', status: 'connected' });
     selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }) });
     const res = await pushBulk([INVOICE_ID]);
     expect(res.status).toBe(409);
@@ -457,7 +457,7 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
   });
 
   it('with NO connection at all keeps the 200 response shape and enqueues nothing (every owned id is skipped)', async () => {
-    resolveActiveConnectionMock.mockResolvedValue(null);
+    resolveActiveConnectionRefMock.mockResolvedValue(null);
     selectMock.mockReturnValue({
       from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
     });

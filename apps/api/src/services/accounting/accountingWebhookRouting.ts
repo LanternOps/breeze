@@ -10,6 +10,7 @@ import { findConnectionByRealmFingerprint } from './accountingConnectionService'
 import { providerSupports } from './providerRegistry';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import type { AccountingProviderId } from './types';
+import { assertNoAmbientDbContext } from './dbContextGuard';
 
 export type WebhookRouteOutcome = 'enqueued' | 'enqueue_failed' | 'no_connection' | 'capability_unavailable';
 
@@ -18,6 +19,7 @@ export async function routeWebhookToConnection(
   provider: AccountingProviderId,
   realmFingerprint: string,
 ): Promise<WebhookRouteOutcome> {
+  assertNoAmbientDbContext('routeWebhookToConnection');
   const conn = await withSystemDbAccessContext(
     () => findConnectionByRealmFingerprint(db, provider, realmFingerprint),
   );

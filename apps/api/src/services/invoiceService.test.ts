@@ -134,6 +134,9 @@ vi.mock('./accounting/accountingPaymentPush', () => ({
   fanOutOwedPayments: vi.fn().mockResolvedValue([]),
 }));
 
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
+
 import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
@@ -1053,6 +1056,7 @@ describe('issueInvoice document_locale stamp', () => {
     resolveActiveConnectionForMock.mockRejectedValueOnce(new Error('db blip'));
     await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
     expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('does not let a failed accounting-push enqueue fail the (already-committed) issuance', async () => {
@@ -2874,6 +2878,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
     resolveActiveConnectionForMock.mockRejectedValueOnce(new Error('db blip'));
     await expect(svc.voidInvoice('i1', 'duplicate', {}, actor)).resolves.toBeDefined();
     expect(enqueueAccountingInvoiceVoidMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {

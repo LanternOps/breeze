@@ -59,7 +59,7 @@ import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import { LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
 import type { AccountingCapability, AccountingProviderId } from '../services/accounting/types';
-import { logJobDrop, resolveJobConnection } from './accountingJobConnection';
+import { logJobDrop, resolveJobConnection, type JobConnectionRef } from './accountingJobConnection';
 import {
   pushInvoiceToAccounting,
   voidInvoiceInAccounting,
@@ -220,11 +220,15 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
     const capability: AccountingCapability = data.type === 'push-payment' || data.type === 'delete-payment'
       ? 'paymentPush' : data.type === 'sync-mapping' ? 'mapping' : 'invoicePush';
     const jobConnectionId = 'connectionId' in data ? data.connectionId : undefined;
-    const resolution = await runInDbContext(() => resolveJobConnection(
-      { partnerId: data.partnerId,
-        connectionId: jobConnectionId,
-        mappingId: 'mappingId' in data ? data.mappingId : undefined },
-      capability, db));
+    // Exclusive by construction (accountingJobConnection.ts's JobConnectionRef):
+    // payment jobs bind through their mapping row, everything else through
+    // connectionId (or neither, for a legacy pre-W01 job) — never both.
+    const jobConnectionRef: JobConnectionRef = 'mappingId' in data
+      ? { partnerId: data.partnerId, mappingId: data.mappingId }
+      : jobConnectionId !== undefined
+        ? { partnerId: data.partnerId, connectionId: jobConnectionId }
+        : { partnerId: data.partnerId };
+    const resolution = await runInDbContext(() => resolveJobConnection(jobConnectionRef, capability, db));
     if (resolution.kind === 'drop') {
       logJobDrop('AccountingSyncWorker', data.type, { partnerId: data.partnerId, connectionId: jobConnectionId }, resolution.reason);
       return;

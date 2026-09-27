@@ -24,8 +24,19 @@ export type JobConnectionResolution =
   | { kind: 'absent'; conn: AccountingConnection | null }
   | { kind: 'drop'; reason: JobDropReason };
 
+// Exclusive on purpose: a job resolves against EITHER its mapping row OR its
+// connectionId OR neither (legacy, pre-W01) — never both. Admitting both at
+// once let the function silently prefer mappingId, masking a caller bug.
+export type JobConnectionRef =
+  & { partnerId: string }
+  & (
+    | { mappingId: string; connectionId?: never }
+    | { connectionId: string; mappingId?: never }
+    | { connectionId?: undefined; mappingId?: undefined }
+  );
+
 export async function resolveJobConnection(
-  job: { partnerId: string; connectionId?: string; mappingId?: string },
+  job: JobConnectionRef,
   capability: AccountingCapability,
   dbc: DbExecutor,
 ): Promise<JobConnectionResolution> {

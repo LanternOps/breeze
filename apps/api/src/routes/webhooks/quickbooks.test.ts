@@ -43,6 +43,7 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({ findCo
 vi.mock('../../jobs/accountingReconcileWorker', () => ({ enqueueAccountingReconcile }));
 vi.mock('../../db', () => ({
   db: {},
+  hasDbAccessContext: () => false,
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));

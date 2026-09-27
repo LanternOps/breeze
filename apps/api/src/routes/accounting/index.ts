@@ -22,7 +22,7 @@ import {
   updateMultiCurrencyEnabled,
   upsertConnection,
   resetConnectionForRealmChange,
-  resolveActiveConnection,
+  resolveActiveConnectionRef,
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
@@ -1247,7 +1247,7 @@ accountingRoutes.post(
     const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
     const { invoiceIds } = c.req.valid('json');
-    const conn = await resolveActiveConnection(db, partner.partnerId);
+    const conn = await resolveActiveConnectionRef(db, partner.partnerId); // non-decrypting: only .id/.provider used below
     if (conn && (conn.provider !== provider || !providerSupports(conn.provider, 'invoicePush'))) {
       return c.json({ error: 'Invoice push is not available for this accounting connection', code: 'capability_unavailable' }, 409);
     }

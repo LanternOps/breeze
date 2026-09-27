@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const m = vi.hoisted(() => ({ find: vi.fn(), enqueue: vi.fn(), supports: vi.fn(() => true) }));
-vi.mock('../../db', () => ({ db: {}, withSystemDbAccessContext: (fn: () => unknown) => fn(), runOutsideDbContext: (fn: () => unknown) => fn() }));
+const m = vi.hoisted(() => ({ find: vi.fn(), enqueue: vi.fn(), supports: vi.fn(() => true), ambientContext: false }));
+// dbContextGuard.assertNoAmbientDbContext is left UNMOCKED (real logic); only
+// its `hasDbAccessContext` dependency is controlled here, same pattern as
+// accountingConnectionService.test.ts.
+vi.mock('../../db', () => ({
+  db: {},
+  hasDbAccessContext: () => m.ambientContext,
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+}));
 vi.mock('./accountingConnectionService', () => ({ findConnectionByRealmFingerprint: m.find }));
 vi.mock('./providerRegistry', () => ({ providerSupports: m.supports }));
 vi.mock('../../jobs/accountingReconcileWorker', () => ({ enqueueAccountingReconcile: m.enqueue }));
@@ -13,6 +21,13 @@ describe('routeWebhookToConnection', () => {
     // "capability_unavailable" test's m.supports.mockReturnValue(false) leaks
     // into later tests since `m` is shared across the whole describe block.
     m.supports.mockReturnValue(true);
+    m.ambientContext = false;
+  });
+  it('refuses to run with an ambient DB access context already open', async () => {
+    m.ambientContext = true;
+    const { routeWebhookToConnection } = await import('./accountingWebhookRouting');
+    await expect(routeWebhookToConnection('quickbooks', 'fp')).rejects.toThrow(/NO ambient DB access context/);
+    expect(m.find).not.toHaveBeenCalled();
   });
   it('enqueues a webhook-triggered reconcile for the matching connection', async () => {
     m.find.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks' });
