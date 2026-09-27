@@ -561,6 +561,7 @@
     },
     "fields": {
       "name": "Policy name",
+      "ruleType": "Rule type",
       "targetType": "Target Type",
       "softwareName": "Software Name",
       "versionCheck": "Version Check",

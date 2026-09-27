@@ -360,8 +360,11 @@ export default function PolicyForm({
         {targetSectionExpanded && (
           <div className="mt-4 space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('policyForm.fields.targetType')}</label>
+              <label htmlFor="policy-target-type" className="text-sm font-medium">
+                {t('policyForm.fields.targetType')}
+              </label>
               <select
+                id="policy-target-type"
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('targetType')}
               >
@@ -447,7 +450,11 @@ export default function PolicyForm({
                   <GripVertical className="h-5 w-5 text-muted-foreground mt-2 cursor-move" />
                   <div className="flex-1 space-y-3">
                     <div className="flex items-center gap-3">
+                      <label htmlFor={`rule-${index}-type`} className="sr-only">
+                        {t('policyForm.fields.ruleType')}
+                      </label>
                       <select
+                        id={`rule-${index}-type`}
                         className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`rules.${index}.type`)}
                       >
@@ -471,8 +478,14 @@ export default function PolicyForm({
                           />
                         </div>
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">{t('policyForm.fields.versionCheck')}</label>
+                          <label
+                            htmlFor={`rule-${index}-version-operator`}
+                            className="text-xs font-medium text-muted-foreground"
+                          >
+                            {t('policyForm.fields.versionCheck')}
+                          </label>
                           <select
+                            id={`rule-${index}-version-operator`}
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.versionOperator`)}
                           >
@@ -537,8 +550,11 @@ export default function PolicyForm({
                     {watchRules?.[index]?.type === 'os_version' && (
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">{t('policyForm.fields.operatingSystem')}</label>
+                          <label htmlFor={`rule-${index}-os-type`} className="text-xs font-medium text-muted-foreground">
+                            {t('policyForm.fields.operatingSystem')}
+                          </label>
                           <select
+                            id={`rule-${index}-os-type`}
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.osType`)}
                           >
@@ -696,8 +712,11 @@ export default function PolicyForm({
               {t('policyForm.remediation.description')}
             </p>
             <div className="mt-3 space-y-2">
-              <label className="text-sm font-medium">{t('policyForm.fields.remediationScript')}</label>
+              <label htmlFor="policy-remediation-script" className="text-sm font-medium">
+                {t('policyForm.fields.remediationScript')}
+              </label>
               <select
+                id="policy-remediation-script"
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('remediationScriptId')}
               >
