@@ -93,7 +93,8 @@ import {
   isPartialRefundDivergenceMessage,
 } from './accountingPaymentMarker';
 import type { AccountingConnection } from './accountingConnectionService';
-import { INVOICE_REMOTE_DELETED_ERROR, type ChangeSetPaymentLine } from './types';
+import { invoiceRemoteDeletedMarker, type ChangeSetPaymentLine } from './types';
+import { accountingProviderDisplayName } from './providerRegistry';
 import { recomputeInvoiceStatus } from '../invoiceService';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -165,7 +166,6 @@ export interface PaymentPullResult {
   invoicePaymentId: string | null;
 }
 
-type PaymentMethod = typeof invoicePayments.$inferInsert['method'];
 type MappingRow = AccountingEntityMappingRow;
 type InvoiceRow = typeof invoices.$inferSelect;
 type PaymentRow = typeof invoicePayments.$inferSelect;
@@ -215,39 +215,23 @@ export const PAYMENT_PULL_ERROR_PREFIX = 'Payment pull: ';
 /**
  * Not prefixed with `PAYMENT_PULL_ERROR_PREFIX`: these land on the PAYMENT
  * mapping row, which has exactly one owner, not on the shared invoice mapping.
+ * Labelled with the provider's display name; the QuickBooks text is
+ * byte-identical to what production rows already hold.
  */
-export const BREEZE_ORIGIN_DIVERGED_MESSAGE = 'Edited in QuickBooks; Breeze remains the source of truth for this payment';
-export const BREEZE_ORIGIN_REMOVED_MESSAGE = 'Deleted in QuickBooks';
-
-/**
- * QuickBooks PaymentMethod name -> Breeze `payment_method` enum.
- *
- * Only the names QuickBooks ships as realm defaults are mapped. Everything else
- * — including plausible-looking rails like "ACH", "Wire" or "Direct Debit" — is
- * `other` ON PURPOSE: `bank_transfer` is never INFERRED from a free-text name a
- * QBO admin can rename at will, because mis-labelling the rail on a money row is
- * worse than an honest `other`.
- */
-const QBO_PAYMENT_METHOD_NAMES: Record<string, PaymentMethod> = {
-  cash: 'cash',
-  check: 'check',
-  cheque: 'check',
-  'credit card': 'card',
-  card: 'card',
-  'debit card': 'card',
-  visa: 'card',
-  mastercard: 'card',
-  'master card': 'card',
-  amex: 'card',
-  'american express': 'card',
-  discover: 'card',
-  'diners club': 'card',
-};
-
-export function mapQboPaymentMethod(name: string | null): PaymentMethod {
-  if (typeof name !== 'string') return 'other';
-  return QBO_PAYMENT_METHOD_NAMES[name.trim().toLowerCase()] ?? 'other';
+export function breezeOriginDivergedMessage(label: string): string {
+  return `Edited in ${label}; Breeze remains the source of truth for this payment`;
 }
+export function breezeOriginRemovedMessage(label: string): string {
+  return `Deleted in ${label}`;
+}
+/** @deprecated pre-W01 QuickBooks text; use `breezeOriginDivergedMessage(label)`. Kept for existing test imports. */
+export const BREEZE_ORIGIN_DIVERGED_MESSAGE = breezeOriginDivergedMessage('QuickBooks');
+/** @deprecated pre-W01 QuickBooks text; use `breezeOriginRemovedMessage(label)`. Kept for existing test imports. */
+export const BREEZE_ORIGIN_REMOVED_MESSAGE = breezeOriginRemovedMessage('QuickBooks');
+
+// Payment-method mapping lives in each provider (Xero W01): the provider
+// delivers `line.method` already mapped onto Breeze's enum, so this applier
+// never reads a provider's own rail names.
 
 function result(
   outcome: PaymentPullOutcome,
@@ -553,7 +537,7 @@ async function applyInsideTransaction(
     return noAudit(result('currency_mismatch', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
 
-  const method = mapQboPaymentMethod(line.paymentMethodName);
+  const method = line.method;
   const reference = line.paymentRefNum ?? line.remotePaymentId;
 
   if (existing) {
@@ -571,7 +555,7 @@ async function applyInsideTransaction(
     // (e) Same token -> the line has already been applied verbatim. No write, no
     // recompute, no audit: a replay must be indistinguishable from never having
     // been delivered.
-    if (existing.remoteSyncToken === line.remotePaymentSyncToken) {
+    if (existing.remoteSyncToken === line.remotePaymentVersion) {
       return noAudit(result(
         'replayed', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
       ));
@@ -598,7 +582,7 @@ async function applyInsideTransaction(
     const updatedMappings = await db
       .update(accountingEntityMappings)
       .set({
-        remoteSyncToken: line.remotePaymentSyncToken,
+        remoteSyncToken: line.remotePaymentVersion,
         syncStatus: 'synced',
         lastError: null,
         lastSyncedAt: new Date(),
@@ -681,7 +665,7 @@ async function applyInsideTransaction(
       breezeEntityId: paymentId,
       remoteEntityType: 'Payment',
       remoteEntityId: paymentMappingRemoteId(line.remotePaymentId, line.remoteInvoiceId),
-      remoteSyncToken: line.remotePaymentSyncToken,
+      remoteSyncToken: line.remotePaymentVersion,
       linkStatus: 'confirmed',
       syncStatus: 'synced',
       lastSyncedAt: new Date(),
@@ -734,7 +718,7 @@ async function applyBreezeOriginEcho(
 ): Promise<ApplyOutcome> {
   const noAudit = (r: PaymentPullResult): ApplyOutcome => ({ result: r, audit: null });
 
-  if (existing.remoteSyncToken === line.remotePaymentSyncToken) {
+  if (existing.remoteSyncToken === line.remotePaymentVersion) {
     return noAudit(result(
       'replayed', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
     ));
@@ -748,7 +732,7 @@ async function applyBreezeOriginEcho(
 
   const stored = await db
     .update(accountingEntityMappings)
-    .set({ remoteSyncToken: line.remotePaymentSyncToken, updatedAt: new Date() })
+    .set({ remoteSyncToken: line.remotePaymentVersion, updatedAt: new Date() })
     .where(and(
       eq(accountingEntityMappings.id, existing.id),
       eq(accountingEntityMappings.partnerId, conn.partnerId),
@@ -797,7 +781,7 @@ async function applyBreezeOriginEcho(
     ));
   }
 
-  await markPaymentMappingDiverged(conn, existing.id, BREEZE_ORIGIN_DIVERGED_MESSAGE);
+  await markPaymentMappingDiverged(conn, existing.id, breezeOriginDivergedMessage(accountingProviderDisplayName(conn.provider)));
   return {
     result: result(
       'breeze_origin_diverged', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
@@ -847,7 +831,7 @@ async function adoptBreezeOriginPayment(
     // QuickBooks moved (or copied) this Payment's allocation to a different
     // invoice. Breeze cannot follow that without rewriting its own ledger, so
     // record it for a human.
-    await markPaymentMappingDiverged(conn, owned.id, BREEZE_ORIGIN_DIVERGED_MESSAGE);
+    await markPaymentMappingDiverged(conn, owned.id, breezeOriginDivergedMessage(accountingProviderDisplayName(conn.provider)));
     return {
       result: result(
         'breeze_origin_diverged', line.remotePaymentId, line.remoteInvoiceId, inv.id, owned.breezeEntityId,
@@ -899,7 +883,7 @@ async function adoptBreezeOriginPayment(
     .update(accountingEntityMappings)
     .set({
       remoteEntityId: remoteMappingId,
-      remoteSyncToken: line.remotePaymentSyncToken,
+      remoteSyncToken: line.remotePaymentVersion,
       linkStatus: 'confirmed',
       syncStatus: adoptingDelete ? 'pending' : 'synced',
       pendingOp: adoptingDelete ? 'delete' : null,
@@ -1356,7 +1340,7 @@ async function breezeOriginRemoval(
     // That is an edit, not a removal — and the remote id and token must SURVIVE
     // it, because a later Breeze void still has to delete that Payment and needs
     // both to do it.
-    await markPaymentMappingDiverged(conn, mapping.id, BREEZE_ORIGIN_DIVERGED_MESSAGE);
+    await markPaymentMappingDiverged(conn, mapping.id, breezeOriginDivergedMessage(accountingProviderDisplayName(conn.provider)));
     return {
       result: result(
         'breeze_origin_diverged', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
@@ -1415,7 +1399,7 @@ async function breezeOriginRemoval(
       // `removed_remotely` is what keeps it RE-OWNABLE, which is the whole point
       // of clearing the ids below.
       terminalReason: 'removed_remotely',
-      lastError: BREEZE_ORIGIN_REMOVED_MESSAGE,
+      lastError: breezeOriginRemovedMessage(accountingProviderDisplayName(conn.provider)),
       remoteEntityId: null,
       remoteSyncToken: null,
       updatedAt: new Date(),
@@ -1498,9 +1482,10 @@ export async function markInvoiceDeletedRemotely(
       .limit(1);
     if ((rows as Array<{ status: string }>)[0]?.status === 'void') return 'invoice_void';
 
-    // `INVOICE_REMOTE_DELETED_ERROR` is the sentinel `invoiceService` /
-    // `accountingInvoicePush` match on to refuse a re-push (#4544).
-    await markInvoiceMappingError(conn, mapping.id, INVOICE_REMOTE_DELETED_ERROR);
+    // A remote-deleted sentinel (`INVOICE_REMOTE_DELETED_MARKERS`) is what
+    // `invoiceService` / `accountingInvoicePush` match on to refuse a re-push
+    // (#4544). QuickBooks writes the byte-identical `Deleted in QuickBooks`.
+    await markInvoiceMappingError(conn, mapping.id, invoiceRemoteDeletedMarker(conn.provider));
     return 'marked';
   });
 }

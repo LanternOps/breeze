@@ -6,6 +6,7 @@ import { decryptSecret } from '../secretCrypto';
 import type { AccountingConnection, DbExecutor, DbTransactor } from './accountingConnectionService';
 import { markStatus, updateTokens } from './accountingConnectionService';
 import { getAccountingProvider } from './providerRegistry';
+import { providerErrorKindOf } from './accountingProviderError';
 
 // Refresh proactively while the access token still has >5 min of life, so an
 // in-flight QBO call can't lose a race against the expiry boundary. Do not
@@ -19,15 +20,12 @@ export class ReauthRequiredError extends Error {
   }
 }
 
-// Only treat an explicit OAuth `invalid_grant` (the refresh token was revoked or
-// expired server-side) as permanent reauth. A transient error whose text merely
-// contains "invalid_grant" must NOT force-disconnect the partner — it should
-// propagate and be retried. So we require either the structured `qboError` field
-// or a 400 status carrying it, never a bare message substring.
+// Only an explicit, provider-classified OAuth refusal is permanent reauth. The
+// provider decides what that means (QBO: invalid_grant) — the core never parses it.
+// A transient error whose text merely mentions a refusal must NOT force-disconnect
+// the partner: it is not `kind: 'reauth'`, so it propagates and is retried.
 function isInvalidGrant(err: unknown): boolean {
-  const e = err as { status?: number; qboError?: string; message?: string };
-  return e.qboError === 'invalid_grant'
-    || (e.status === 400 && /invalid_grant/i.test(e.message ?? ''));
+  return providerErrorKindOf(err) === 'reauth';
 }
 
 // A minimal shape of the raw `accounting_connections` row this module reads

@@ -84,8 +84,10 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // 2-decimal exponent misstates a JPY or KWD total (multi-currency §11).
 // `@breeze/shared` is a leaf package, so this closes no cycle.
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
-import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
-import { getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from './providerRegistry';
+import { providerFaultSuffix, providerLogFields, providerTelemetryTags } from './accountingProviderError';
+import {
+  accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
+} from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
 import { getConnectionProviderForMapping, type AccountingConnection } from './accountingConnectionService';
@@ -94,7 +96,11 @@ import type { AccountingPaymentPayload, AccountingProviderId, PaymentDeleteResul
 /** A row must be at least this stale before the sweep re-enqueues it, so the
  *  sweep never races the immediate enqueue the caller just made. */
 export const PAYMENT_SWEEP_MIN_AGE_MS = 2 * 60 * 1000;
-/** QuickBooks caps PaymentRefNum at 21 characters and REJECTS a longer one. */
+/**
+ * @deprecated QuickBooks' PaymentRefNum cap, kept for existing test imports.
+ * The coordinator reads `provider.limits.paymentRefMax` instead (Xero W01);
+ * nothing in the core reads this constant.
+ */
 export const PAYMENT_REF_MAX_LENGTH = 21;
 /**
  * How long a delete-pending mapping with NO remote id is allowed to wait for
@@ -137,7 +143,7 @@ export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
  * signal is a `last_error` that keeps being rewritten with the same text.
  *
  * THE UNIT IS AN ATTEMPT, NOT A SWEEP, and one sweep is worth FIVE of them:
- * `quickbooks_error` is retryable, so the worker rethrows and BullMQ burns its
+ * `provider_error` is retryable, so the worker rethrows and BullMQ burns its
  * whole `attempts: 5` budget (5 s exponential backoff) inside a single enqueue
  * before the job is finally failed. The 15-minute sweep then supplies the next
  * enqueue. So 100 attempts is ~20 sweeps is ~5 hours: long enough to ride out a
@@ -233,6 +239,8 @@ export type AccountingPaymentPushErrorCode =
   | 'invoice_void'
   | 'customer_not_mapped'
   | 'home_currency_unknown' | 'currency_mismatch'
+  | 'provider_error'
+  // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error'
   | 'record_failed';
 
@@ -274,24 +282,17 @@ type PaymentRow = typeof invoicePayments.$inferSelect;
 
 const SYNCED_INVOICE_STATUSES = new Set(['synced', 'synced_with_tax_variance']);
 
-function providerStatusOf(err: unknown): number | undefined {
-  return err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
-    ? (err as { status: number }).status
-    : undefined;
-}
-
 /**
  * What the operator sees on the mapping card.
  *
- * Carries Intuit's fault CLASS ("Business Validation Error", "Stale Object
- * Error") beside the status: the status alone said only that something was
- * rejected, which is not enough to act on. It never carries `Detail` — that is
- * where Intuit puts the offending customer names and amounts, and this string is
- * persisted and rendered.
+ * Carries the provider's fault CLASS ("Business Validation Error", "Stale
+ * Object Error") beside the status: the status alone said only that something
+ * was rejected, which is not enough to act on. It never carries `Detail` — that
+ * is where a provider puts the offending customer names and amounts, and this
+ * string is persisted and rendered. `label` is the provider's display name.
  */
-function sanitizePaymentSyncErrorMessage(err: unknown): string {
-  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
-  return `QuickBooks rejected the payment sync${suffix}`;
+function sanitizePaymentSyncErrorMessage(err: unknown, label: string): string {
+  return `${label} rejected the payment sync${providerFaultSuffix(err)}`;
 }
 
 /**
@@ -302,15 +303,13 @@ function sanitizePaymentSyncErrorMessage(err: unknown): string {
  * what turns "QuickBooks rejected it" into something an engineer can diagnose.
  */
 function logProviderFault(operation: string, mappingId: string, err: unknown): void {
-  const body = err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
-    ? (err as { body: string }).body
-    : '';
+  const f = providerLogFields(err);
   console.error(
     `[accountingPaymentPush] ${operation} failed`,
     `mappingId=${mappingId}`,
-    `status=${providerStatusOf(err) ?? 'none'}`,
-    `faultCode=${qboFaultOf(err).code ?? 'none'}`,
-    `body=${body}`,
+    `status=${f.status}`,
+    `faultCode=${f.faultCode}`,
+    `body=${f.body}`,
   );
 }
 
@@ -338,7 +337,7 @@ function translateMappingError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingPaymentPushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingPaymentPushError('reauth_required', 409, err.message);
-    throw new AccountingPaymentPushError('quickbooks_error', err.status, err.message);
+    throw new AccountingPaymentPushError('provider_error', err.status, err.message);
   }
   throw err;
 }
@@ -1668,11 +1667,14 @@ export async function pushPaymentToAccounting(
         amount: payment.amount,
         currencyCode: invoice.currencyCode,
         txnDate: payment.receivedAt,
-        // QuickBooks REJECTS a PaymentRefNum over 21 chars, and a Stripe
-        // payment_intent id is 27. Truncation is safe because this field is
-        // human reference only — ownership lives in PrivateNote (decision 3).
-        reference: payment.reference ? payment.reference.slice(0, PAYMENT_REF_MAX_LENGTH) : null,
-        privateNote: buildPaymentPrivateNote(payment.id),
+        // Providers cap the reference (QuickBooks REJECTS a PaymentRefNum over
+        // 21 chars, and a Stripe payment_intent id is 27). Truncation is safe
+        // because this field is human reference only — ownership lives in the
+        // payment marker (decision 3).
+        reference: payment.reference
+          ? payment.reference.slice(0, getAccountingProvider(conn.provider).limits.paymentRefMax)
+          : null,
+        marker: buildPaymentPrivateNote(payment.id),
         // Read off the row this job LEASED, so every BullMQ retry of this
         // ownership sends the same requestid and QuickBooks' replay cache keeps
         // doing its job; only a fan-out re-own moves it.
@@ -1692,18 +1694,19 @@ export async function pushPaymentToAccounting(
   try {
     ref = await runOutsideDbContext(() => provider.createPayment(liveConn, prep.payload));
   } catch (err) {
-    const message = sanitizePaymentSyncErrorMessage(err);
+    const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('createPayment', mappingId, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      // Provider tags FIRST so a provider can never overwrite a core key.
+      ...providerTelemetryTags(err),
       service: 'accountingPaymentPush',
       accounting_mapping_id: mappingId,
       invoice_payment_id: prep.payload.invoicePaymentId,
-      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Own short context so the marker COMMITS before the throw. `pending_op` is
     // KEPT: the work is still owed and the sweep must retry it.
     await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: false });
-    throw new AccountingPaymentPushError('quickbooks_error', 502, message);
+    throw new AccountingPaymentPushError('provider_error', 502, message);
   }
 
   // ---- Phase 2: invoice FOR UPDATE first, then re-read everything ----
@@ -1761,7 +1764,7 @@ export async function pushPaymentToAccounting(
       // helper itself always flips the row first, which is the whole reason it
       // exists — so this branch is the backstop, not the common path.
       if (mapping.pendingOp === 'delete' || !payment) {
-        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
           syncStatus: 'pending', linkStatus: 'confirmed', pendingOp: 'delete', lastError: null,
           // A delete debt begins HERE when the payment vanished mid-flight, so
           // its grace window starts here too — the same rule `convertToDelete`
@@ -1793,14 +1796,14 @@ export async function pushPaymentToAccounting(
           toMinorUnits(prep.amount, currency) - toMinorUnits(payment.amount, currency),
           currency,
         );
-        const message = partialRefundDivergenceMessage(totalRefunded);
-        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+        const message = partialRefundDivergenceMessage(totalRefunded, accountingProviderDisplayName(prep.conn.provider));
+        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
           syncStatus: 'error', linkStatus: 'confirmed', pendingOp: null, lastError: message,
         });
         return { outcome: 'diverged' as const, audit: null };
       }
 
-      await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+      await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
         syncStatus: 'synced', linkStatus: 'confirmed', pendingOp: null, lastError: null, stampSyncedAt: true,
       });
       return {
@@ -1833,7 +1836,7 @@ export async function pushPaymentToAccounting(
       await markPaymentMappingErrorInOwnContext(
         runInDbContext, mappingId, partnerId, retryMessage, { clearPendingOp: false },
       );
-      throw new AccountingPaymentPushError('quickbooks_error', 502, retryMessage);
+      throw new AccountingPaymentPushError('provider_error', 502, retryMessage);
     }
     const message = paymentRecordFailedRetryMessage(ref.id);
     // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
@@ -1998,7 +2001,7 @@ export async function deletePaymentInAccounting(
       conn,
       remotePaymentId,
       remoteInvoiceId,
-      syncToken: claimed.remoteSyncToken ?? null,
+      remoteVersion: claimed.remoteSyncToken ?? null,
       invoicePaymentId: claimed.breezeEntityId,
       orgId,
       invoiceId,
@@ -2046,10 +2049,10 @@ export async function deletePaymentInAccounting(
   try {
     result = await runOutsideDbContext(() => provider.deletePayment(liveConn, {
       remotePaymentId: prep.remotePaymentId,
-      syncToken: prep.syncToken,
+      remoteVersion: prep.remoteVersion,
     }));
   } catch (err) {
-    const message = sanitizePaymentSyncErrorMessage(err);
+    const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('deletePayment', mappingId, err);
     // `pending_op` KEPT and NEVER capped: the mapping is never cleared until
     // QuickBooks confirms, which is what makes a delete survive Redis failure
@@ -2063,16 +2066,17 @@ export async function deletePaymentInAccounting(
     );
     if (attempts === null || attempts <= 1 || attempts % PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS === 0) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        // Provider tags FIRST so a provider can never overwrite a core key.
+        ...providerTelemetryTags(err),
         service: 'accountingPaymentPush',
         accounting_mapping_id: mappingId,
         remote_entity_id: prep.remotePaymentId,
-        qbo_fault_code: qboFaultOf(err).code ?? 'none',
         // Sentry tags are strings; `unknown` means the stamp itself could not be
         // written, so the event is raised rather than suppressed.
         sync_attempts: attempts === null ? 'unknown' : String(attempts),
       });
     }
-    throw new AccountingPaymentPushError('quickbooks_error', 502, message);
+    throw new AccountingPaymentPushError('provider_error', 502, message);
   }
 
   try {

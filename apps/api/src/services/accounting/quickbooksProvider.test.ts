@@ -99,7 +99,7 @@ describe('mapQboCustomer', () => {
     });
     expect(c).toMatchObject({
       id: '42', displayName: 'Acme Co', companyName: 'Acme Inc',
-      syncToken: '3',
+      remoteVersion: '3',
       email: 'ap@acme.test', phone: '555-1212', contactName: 'Jane Doe',
       active: true,
       billAddr: { line1: '1 Bill St', city: 'Austin' },
@@ -145,9 +145,9 @@ describe('listRemoteItems', () => {
     expect(result).toHaveLength(1001);
     expect(result[0]).toEqual({
       id: '0', displayName: 'Item 0', sku: 'SKU-0', description: undefined,
-      type: 'Service', unitPrice: 25, active: true, syncToken: '0',
+      type: 'Service', unitPrice: 25, active: true, remoteVersion: '0',
     });
-    expect(result[1000]).toMatchObject({ id: '1000', type: 'NonInventory', syncToken: '4' });
+    expect(result[1000]).toMatchObject({ id: '1000', type: 'NonInventory', remoteVersion: '4' });
     expect(String(fetchMock.mock.calls[1]![0])).toContain('STARTPOSITION%201001');
   });
 });
@@ -203,7 +203,7 @@ describe('upsertCustomer', () => {
       currencyCode: 'USD',
     }, null);
 
-    expect(ref).toEqual({ id: '12', syncToken: '0' });
+    expect(ref).toEqual({ id: '12', remoteVersion: '0' });
     const request = fetchMock.mock.calls[0]![1] as RequestInit;
     expect(request.method).toBe('POST');
     expect(JSON.parse(String(request.body))).toEqual({
@@ -229,7 +229,7 @@ describe('upsertCustomer', () => {
       billingEmail: null, taxId: null, currencyCode: 'CAD',
     }, null);
 
-    expect(ref).toEqual({ id: '12', syncToken: '0', currencyCode: 'CAD' });
+    expect(ref).toEqual({ id: '12', remoteVersion: '0', currencyCode: 'CAD' });
   });
 
   it('sparse-updates a Customer with its current Id and SyncToken', async () => {
@@ -263,7 +263,7 @@ describe('upsertCustomer', () => {
     expect((fetchMock.mock.calls[0]![1] as RequestInit | undefined)?.method ?? 'GET').toBe('GET');
     expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)))
       .toMatchObject({ sparse: true, Id: '12', SyncToken: '3' });
-    expect(ref.syncToken).toBe('4');
+    expect(ref.remoteVersion).toBe('4');
   });
 
   it('re-reads the live SyncToken and retries the sparse update once on a 5010 Stale Object fault', async () => {
@@ -283,7 +283,7 @@ describe('upsertCustomer', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
       .toMatchObject({ sparse: true, Id: '12', SyncToken: '9' });
-    expect(ref.syncToken).toBe('10');
+    expect(ref.remoteVersion).toBe('10');
   });
 
   it('does not loop: a second 5010 after the re-read propagates', async () => {
@@ -327,7 +327,7 @@ describe('upsertItem', () => {
       Item: { Id: '9', SyncToken: '0' },
     }), { status: 200 }));
 
-    await expect(quickbooksProvider.upsertItem(conn(), input, null)).resolves.toEqual({ id: '9', syncToken: '0' });
+    await expect(quickbooksProvider.upsertItem(conn(), input, null)).resolves.toEqual({ id: '9', remoteVersion: '0' });
     expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body))).toEqual({
       Name: 'Managed Service', Sku: 'MS-1', Description: 'Monthly management',
       Type: 'Service', UnitPrice: 125.5, Taxable: true, Active: true,
@@ -362,7 +362,7 @@ describe('upsertItem', () => {
     expect(String(fetchMock.mock.calls[0]![0])).toContain('/item/9?');
     expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)))
       .toMatchObject({ sparse: true, Id: '9', SyncToken: '2' });
-    expect(ref.syncToken).toBe('3');
+    expect(ref.remoteVersion).toBe('3');
   });
 
   it('re-reads the live SyncToken and retries an Item sparse update once on a 5010 Stale Object fault', async () => {
@@ -377,7 +377,7 @@ describe('upsertItem', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
       .toMatchObject({ sparse: true, Id: '9', SyncToken: '5' });
-    expect(ref.syncToken).toBe('6');
+    expect(ref.remoteVersion).toBe('6');
   });
 
   it('refuses creation without an income account before any HTTP call', async () => {
@@ -410,7 +410,7 @@ describe('pushInvoice', () => {
       SalesItemLineDetail: { ItemRef: { value: '77' }, Qty: 2, UnitPrice: 50, TaxCodeRef: { value: 'TAX' } },
     });
     expect(body.TxnTaxDetail).toEqual({ TxnTaxCodeRef: { value: taxConn.defaultTaxCodeRef }, TotalTax: 7 });
-    expect(result).toEqual({ id: '310', syncToken: '0', docNumber: 'INV-2026-0042', remoteTaxTotal: '7', remoteTotal: '107' });
+    expect(result).toEqual({ id: '310', remoteVersion: '0', docNumber: 'INV-2026-0042', remoteTaxTotal: '7', remoteTotal: '107' });
   });
 
   it('omits ItemRef for an unmapped line and sets TaxCodeRef NON when not taxable', async () => {
@@ -488,7 +488,7 @@ describe('pushInvoice', () => {
     expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
       .toMatchObject({ sparse: true, Id: '310', SyncToken: '4' });
     // And the caller gets the token QuickBooks returned, to persist.
-    expect(result.syncToken).toBe('5');
+    expect(result.remoteVersion).toBe('5');
   });
 
   it('does not loop on a stale fault: a second 5010 after the re-read propagates', async () => {
@@ -614,7 +614,7 @@ describe('voidInvoice', () => {
     mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '5', status: 'Voided' } });
 
     await expect(quickbooksProvider.voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' }))
-      .resolves.toEqual({ syncToken: '5' });
+      .resolves.toEqual({ remoteVersion: '5' });
   });
 
   // Walk item 37 / prod v0.110.0: QuickBooks bumps an Invoice's SyncToken every
@@ -643,7 +643,7 @@ describe('voidInvoice', () => {
     // Retry carries the LIVE token.
     expect(String(fetchMock.mock.calls[2]![0])).toContain('invoice?operation=void');
     expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body))).toEqual({ Id: '310', SyncToken: '7' });
-    expect(result).toEqual({ syncToken: '8' });
+    expect(result).toEqual({ remoteVersion: '8' });
   });
 
   it('does not loop on a stale fault: a second 5010 after the re-read propagates', async () => {
@@ -719,7 +719,7 @@ describe('voidInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0]![0])).toContain('/invoice/310');
     expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body))).toEqual({ Id: '310', SyncToken: '7' });
-    expect(result).toEqual({ syncToken: '8' });
+    expect(result).toEqual({ remoteVersion: '8' });
   });
 });
 
@@ -1012,7 +1012,7 @@ describe('reconcileChanges (CDC)', () => {
     const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
     expect(cs.payments).toEqual([{
       remoteInvoiceId: '145', remotePaymentId: '180', amountMinor: 15000, currency: 'USD',
-      txnDate: '2026-09-02', remotePaymentSyncToken: '0', paymentMethodName: 'Check', paymentRefNum: '10441',
+      txnDate: '2026-09-02', remotePaymentVersion: '0', paymentMethodName: 'Check', method: 'check', paymentRefNum: '10441',
       breezePaymentId: null,
     }]);
   });
@@ -1352,7 +1352,7 @@ function paymentPayload(overrides: Partial<AccountingPaymentPayload> = {}): Acco
     invoicePaymentId: '0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b',
     remoteCustomerId: '55', remoteInvoiceId: '145',
     amount: '107.00', currencyCode: 'USD', txnDate: '2026-09-02',
-    reference: 'ch_123', privateNote: 'Breeze payment 0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b',
+    reference: 'ch_123', marker: 'Breeze payment 0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b',
     pushGeneration: 0,
     ...overrides,
   };
@@ -1388,7 +1388,7 @@ describe('createPayment', () => {
 
     const ref = await quickbooksProvider.createPayment(conn(), paymentPayload());
 
-    expect(ref).toEqual({ id: '181', syncToken: '0' });
+    expect(ref).toEqual({ id: '181', remoteVersion: '0' });
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect((init as RequestInit).method).toBe('POST');
     expect(String(url)).toContain('/v3/company/realm123/payment?minorversion=70');
@@ -1450,7 +1450,7 @@ describe('deletePayment', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
 
-    const result = await quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' });
+    const result = await quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' });
 
     expect(result).toBe('deleted');
     expect(String(fetchSpy.mock.calls[0]![0])).toContain('payment?operation=delete&minorversion=70');
@@ -1474,7 +1474,7 @@ describe('deletePayment', () => {
     // that is an OR: BOTH signals have to be absent before Breeze believes it.
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(body));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .rejects.toThrow(/did not confirm deletion/);
   });
 
@@ -1482,7 +1482,7 @@ describe('deletePayment', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('deleted');
   });
 
@@ -1491,7 +1491,7 @@ describe('deletePayment', () => {
       JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }),
       { status: 400 },
     ));
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('already_absent');
   });
 
@@ -1510,7 +1510,7 @@ describe('deletePayment', () => {
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('deleted');
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
@@ -1519,7 +1519,7 @@ describe('deletePayment', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       JSON.stringify({ Fault: { Error: [{ code: '610' }] } }), { status: 400 },
     ));
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('already_absent');
   });
 
@@ -1527,7 +1527,7 @@ describe('deletePayment', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       JSON.stringify({ Fault: { Error: [{ Message: 'Object Not Found' }] } }), { status: 400 },
     ));
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('already_absent');
   });
 
@@ -1539,7 +1539,7 @@ describe('deletePayment', () => {
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('deleted');
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
@@ -1553,7 +1553,7 @@ describe('deletePayment', () => {
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('deleted');
 
     expect(fetchSpy).toHaveBeenCalledTimes(3);
@@ -1571,7 +1571,7 @@ describe('deletePayment', () => {
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ Fault: { Error: [{ code: '5010' }] } }), { status: 400 }));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .rejects.toMatchObject({ status: 400 });
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
@@ -1580,7 +1580,7 @@ describe('deletePayment', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '2' } }))
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: null }))
       .resolves.toBe('deleted');
     expect(String(fetchSpy.mock.calls[0]![0])).toContain('payment/181?minorversion=70');
     // The delete must carry the token the READ returned. Sending anything else
@@ -1595,7 +1595,7 @@ describe('deletePayment', () => {
       JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
     ));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: null }))
       .resolves.toBe('already_absent');
     // Exactly one call: the read answered, so no delete was ever attempted.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -1610,7 +1610,7 @@ describe('deletePayment', () => {
         JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
       ));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('already_absent');
     // Delete, re-read — and NO third call: somebody removed it between the two.
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -1626,7 +1626,7 @@ describe('deletePayment', () => {
         JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
       ));
 
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .resolves.toBe('already_absent');
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
@@ -1634,7 +1634,7 @@ describe('deletePayment', () => {
   it('throws — rather than reporting already_absent — when a 2xx read carries no SyncToken (no held token)', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181' } })); // no SyncToken
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: null }))
       .rejects.toThrow(/no SyncToken/);
     // The malformed read must never be treated as "go ahead and delete" —
     // no second (delete) request should have been issued.
@@ -1648,7 +1648,7 @@ describe('deletePayment', () => {
         { status: 400 },
       ))
       .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181' } })); // no SyncToken
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .rejects.toThrow(/no SyncToken/);
     // Malformed read after the stale fault must not trigger a second delete attempt.
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -1659,7 +1659,7 @@ describe('deletePayment', () => {
       JSON.stringify({ Fault: { Error: [{ code: '6240', Message: 'Invalid Reference Id' }] } }),
       { status: 400 },
     ));
-    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }))
       .rejects.toMatchObject({ status: 400 });
   });
 });

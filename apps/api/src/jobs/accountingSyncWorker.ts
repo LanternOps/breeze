@@ -31,8 +31,9 @@
  *     retrying would create a duplicate invoice in QuickBooks, not fix
  *     anything). Retrying any of these can never succeed: the mapping row
  *     already carries the error for an operator/route to see and act on.
- *   - RETRYABLE (rethrown so BullMQ's attempts/backoff fires): `quickbooks_error`
- *     (502 — a genuine QuickBooks/network failure), `sync_in_progress` (409 —
+ *   - RETRYABLE (rethrown so BullMQ's attempts/backoff fires): `provider_error`
+ *     (502 — a genuine provider/network failure; the never-thrown pre-W01
+ *     alias `quickbooks_error` is treated the same), `sync_in_progress` (409 —
  *     a void raced a push that has not recorded its remote id yet), and any
  *     error that is not a typed `AccountingInvoicePushError` at all. The provider sends a
  *     deterministic QBO `requestid` on invoice CREATE (Task 3), so a retried
@@ -43,8 +44,9 @@
  * separate `PAYMENT_TERMINAL_CODES` set below: `push_disabled`,
  * `customer_not_mapped`, `home_currency_unknown`, `currency_mismatch`,
  * `invoice_void`, `record_failed`, `not_connected` and `reauth_required` are
- * terminal; `quickbooks_error`, `sync_in_progress` and `invoice_not_synced`
- * (plus any non-typed error) are retryable. Unlike invoice jobs, the
+ * terminal; `provider_error` (and its legacy alias `quickbooks_error`),
+ * `sync_in_progress` and `invoice_not_synced` (plus any non-typed error) are
+ * retryable. Unlike invoice jobs, the
  * `pushMode` gate does NOT apply to payment jobs — see the handler below.
  */
 
@@ -122,9 +124,9 @@ export type AccountingSyncJobData =
 // retrying cannot fix a permanent mapping/currency problem (most carry status
 // 404 or 409; `invoice_not_pushable` alone can be either, depending which
 // precondition failed), plus `record_failed` — a 502 that is NEVER retry-safe
-// because the QuickBooks write already succeeded. `quickbooks_error` is the
-// one 502 code deliberately absent from this set: it is the only retryable
-// typed outcome.
+// because the QuickBooks write already succeeded. `provider_error` (with its
+// never-thrown pre-W01 alias `quickbooks_error`) is the 502 code deliberately
+// absent from this set: it is the only retryable typed outcome.
 const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'invoice_not_pushable',
   'customer_not_mapped',
@@ -144,8 +146,9 @@ const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
  * never fix a permanent configuration problem, and the mapping row already
  * carries the reason for an operator. `record_failed` is terminal for the
  * stronger reason: the QuickBooks Payment already exists, so a retry would
- * create a SECOND one for money that moved once. `quickbooks_error`,
- * `sync_in_progress` and `invoice_not_synced` are the retryable trio.
+ * create a SECOND one for money that moved once. `provider_error` (or its
+ * legacy alias `quickbooks_error`), `sync_in_progress` and
+ * `invoice_not_synced` are the retryable trio.
  */
 const PAYMENT_TERMINAL_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new Set([
   'push_disabled',
@@ -313,8 +316,9 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
         });
         return;
       }
-      // quickbooks_error (502), sync_in_progress (409 — a push is mid-flight,
-      // retry once it lands) or an unexpected/non-typed error: rethrow so
+      // provider_error or its legacy alias quickbooks_error (502),
+      // sync_in_progress (409 — a push is mid-flight, retry once it lands)
+      // or an unexpected/non-typed error: rethrow so
       // BullMQ's attempts/backoff (set at enqueue time) retries it.
       throw err;
     }

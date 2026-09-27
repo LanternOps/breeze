@@ -1,4 +1,5 @@
-import type { AccountingConnection } from './accountingConnectionService';
+import type { PaymentMethod } from '@breeze/shared';
+import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 
 export const ACCOUNTING_PROVIDER_IDS = ['quickbooks', 'xero'] as const;
 export type AccountingProviderId = typeof ACCOUNTING_PROVIDER_IDS[number];
@@ -45,7 +46,8 @@ export interface RemoteCustomer extends RemoteEntity {
   billAddr?: RemoteAddress;
   shipAddr?: RemoteAddress;
   active?: boolean;
-  syncToken?: string;
+  /** Opaque provider revision (QBO: SyncToken). Persisted as `remote_sync_token`. */
+  remoteVersion?: string;
   /** QBO CurrencyRef.value, surfaced from listing/create responses (multi-currency §11). */
   currencyCode?: string;
 }
@@ -56,7 +58,8 @@ export interface RemoteItem extends RemoteEntity {
   type?: 'Service' | 'NonInventory' | 'Inventory' | 'Category' | string;
   unitPrice?: number;
   active?: boolean;
-  syncToken?: string;
+  /** Opaque provider revision (QBO: SyncToken). Persisted as `remote_sync_token`. */
+  remoteVersion?: string;
 }
 
 export interface RemoteIncomeAccount extends RemoteEntity {
@@ -69,7 +72,12 @@ export interface RemoteRef {
   billAddr?: RemoteAddress;
   shipAddr?: RemoteAddress;
   id: string;
-  syncToken?: string;
+  /**
+   * Opaque provider revision of the remote record (QBO: SyncToken). The core
+   * never interprets it; it is persisted as `remote_sync_token` and handed back
+   * on the next update/delete.
+   */
+  remoteVersion?: string;
   docNumber?: string;
   /**
    * QBO CurrencyRef.value, surfaced on a CREATE response so callers get the
@@ -155,7 +163,7 @@ export interface AccountingInvoicePayload {
 
 /**
  * What a void tells Breeze. A void BUMPS the Invoice's revision, so the stored
- * SyncToken is stale the moment it returns — persisting the new one is what
+ * remote version (QBO: SyncToken) is stale the moment it returns — persisting the new one is what
  * stops the next write starting with a guaranteed 5010. `null` when the
  * provider's response carried no token; the caller then keeps what it had.
  *
@@ -163,7 +171,7 @@ export interface AccountingInvoicePayload {
  * documents `AccountingVoidInvoicePayload`, not this type; it has moved there.)
  */
 export interface InvoiceVoidResult {
-  syncToken: string | null;
+  remoteVersion: string | null;
 }
 
 /**
@@ -194,7 +202,7 @@ export interface InvoicePushResult extends RemoteRef {
  * money row is worse than no rail at all (spec "Out of scope").
  */
 export interface AccountingPaymentPayload {
-  /** Breeze `invoice_payments.id` — the QBO `requestid` AND the PrivateNote marker. */
+  /** Breeze `invoice_payments.id` — the QBO `requestid` AND the payment marker. */
   invoicePaymentId: string;
   remoteCustomerId: string;
   remoteInvoiceId: string;
@@ -205,12 +213,14 @@ export interface AccountingPaymentPayload {
   currencyCode: string;
   /** ISO date (YYYY-MM-DD) from `invoice_payments.received_at`. */
   txnDate: string;
-  /** `PaymentRefNum` — cheque number, Stripe `pi_…`. Already truncated to QBO's
-   *  21-char cap by the coordinator. NEVER an ownership key. */
+  /** Payment reference (QBO: `PaymentRefNum`) — cheque number, Stripe `pi_…`.
+   *  Already truncated to the provider's `limits.paymentRefMax` by the
+   *  coordinator. NEVER an ownership key. */
   reference: string | null;
-  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker.
+  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker;
+   *  the provider places it via `paymentMarker.embed` (QBO: `PrivateNote`).
    *  Deliberately NOT generation-tagged — the pull adopts on this exact string. */
-  privateNote: string;
+  marker: string;
   /** `accounting_entity_mappings.push_generation`: how many times this mapping
    *  has been re-owned for a fresh create. 0 for a first push. The provider
    *  folds it into the idempotency `requestid` so a re-push after a hand
@@ -220,13 +230,29 @@ export interface AccountingPaymentPayload {
 
 export interface AccountingDeletePaymentPayload {
   remotePaymentId: string;
-  /** The SyncToken Breeze last saw. Null forces the provider to read a fresh one. */
-  syncToken: string | null;
+  /** The remote version Breeze last saw. Null forces the provider to read a fresh one. */
+  remoteVersion: string | null;
 }
 
-/** `already_absent` = QuickBooks reports the Payment does not exist. That is
- *  SUCCESS for a delete: the desired end state is already true. */
+/** `already_absent` = the provider reports the payment does not exist
+ *  (QuickBooks: fault 610 / "Object Not Found"). That is SUCCESS for a
+ *  delete: the desired end state is already true. The provider returns it —
+ *  it never throws a `not_found` error for this. */
 export type PaymentDeleteResult = 'deleted' | 'already_absent';
+
+/** Breeze's `payment_method` enum — what a provider maps its own rail names onto. */
+export type AccountingPaymentMethod = PaymentMethod;
+
+/**
+ * A provider's published request throttles. Declared per provider so the core
+ * limiter never hard-codes one vendor's numbers.
+ */
+export interface RateLimitSpec {
+  perConnection: { limit: number; windowSeconds: number };
+  maxConcurrentPerConnection: number | null;
+  appWide: { limit: number; windowSeconds: number } | null;
+  dailyPerConnection: { limit: () => number } | null;
+}
 
 export interface RealmSettings {
   homeCurrency: string | null;
@@ -245,23 +271,30 @@ export interface ChangeSetPaymentLine {
   currency: string;
   /** ISO date (YYYY-MM-DD) from Payment.TxnDate. */
   txnDate: string;
-  /** QBO Payment SyncToken at CDC read time — the applier's "QBO edited it" signal. */
-  remotePaymentSyncToken: string | null;
-  /** PaymentMethodRef.name; null when the realm did not expand the ref. */
+  /** Opaque payment revision at read time (QBO: SyncToken) — the applier's
+   *  "the provider edited it" signal. */
+  remotePaymentVersion: string | null;
+  /** The provider's payment-method name (QBO: PaymentMethodRef.name), for
+   *  display and logging; null when the realm did not expand the ref. */
   paymentMethodName: string | null;
+  /** Breeze's rail for this payment, mapped by the provider (QBO:
+   *  `mapQboPaymentMethod`). Unknown names are `other`, never inferred. */
+  method: AccountingPaymentMethod;
   /** PaymentRefNum (cheque number etc.); null when absent. */
   paymentRefNum: string | null;
   /**
-   * The Breeze `invoice_payments.id` this QuickBooks Payment claims to be,
-   * parsed from `PrivateNote` by `parseBreezePaymentMarker` — null unless the
-   * WHOLE note matches. Set on a Payment Breeze itself created; the pull uses
-   * it to ADOPT a create whose response was lost (spec decision 3).
+   * The Breeze `invoice_payments.id` this remote payment claims to be,
+   * recovered by the provider's `paymentMarker.extract` from wherever its
+   * `embed` placed the marker (QuickBooks: `PrivateNote`, parsed by
+   * `parseBreezePaymentMarker` — null unless the WHOLE note matches). Set on a
+   * payment Breeze itself created; the pull uses it to ADOPT a create whose
+   * response was lost (spec decision 3).
    */
   breezePaymentId: string | null;
 }
 
 export interface ChangeSet {
-  /** The instant the CDC window ends. Becomes the connection's next cdc_cursor. */
+  /** The provider's change cursor (changes since `sinceCursor`). Becomes the connection's next cdc_cursor. */
   cursor: Date;
   payments: ChangeSetPaymentLine[];
   /**
@@ -300,6 +333,35 @@ export interface ChangeSet {
   overflowed: boolean;
 }
 
+/**
+ * One accounting system (QuickBooks, Xero). The core coordinators are
+ * provider-neutral; every provider MUST honour these obligations, because the
+ * core cannot detect a violation — it just misbehaves:
+ *
+ * 1. ERRORS. Every public async method throws ONLY `AccountingProviderError`
+ *    (accountingProviderError.ts), translated at the provider's own boundary.
+ *    The core branches on `kind` alone and treats any other thrown value as
+ *    `transient` — so an untranslated `invalid_grant` would retry forever and
+ *    never mark the connection `reauth`.
+ * 2. ABSORBED CONDITIONS. Some outcomes are the provider's to handle, never
+ *    to throw:
+ *    - `deletePayment`: the remote payment not existing is SUCCESS — return
+ *      `'already_absent'`, never a `not_found` error.
+ *    - every write (`upsertCustomer`, `upsertItem`, `pushInvoice`,
+ *      `voidInvoice`, `deletePayment`): a stale remote version is handled
+ *      internally by re-reading the live version and retrying (QuickBooks:
+ *      once; a second stale fault may escape as `stale_version`).
+ *    - `pushInvoice`: a duplicate document number is handled internally
+ *      (QuickBooks retries once without DocNumber).
+ * 3. `paymentMarker`: `extract(embed(ref, marker))` must recover the marker's
+ *    Breeze payment id for ANY `ref` (including null and a max-length one),
+ *    and the provider must set `ChangeSetPaymentLine.breezePaymentId` from
+ *    that same `extract` on every pulled payment — it is how a create whose
+ *    response was lost gets adopted instead of duplicated.
+ * 4. `limits.paymentRefMax` caps the RAW reference the coordinator passes in
+ *    (`AccountingPaymentPayload.reference`), before `embed` runs.
+ * 5. `connectEnvironment()` is only valid once `configError()` returns null.
+ */
 export interface AccountingProvider {
   readonly provider: AccountingProviderId;
   /** Brand name used in operator-visible text ("QuickBooks", "Xero"). Never translated. */
@@ -349,20 +411,65 @@ export interface AccountingProvider {
   deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
+  /** Provider-published limits: the payment-reference length cap and the request throttles. */
+  readonly limits: { readonly paymentRefMax: number; readonly rate: RateLimitSpec };
+  /**
+   * Where the Breeze adoption marker lives on a remote payment. `embed` builds
+   * the text the provider stores; `extract` recovers the Breeze payment id from
+   * that text (null unless it is a Breeze marker).
+   */
+  readonly paymentMarker: {
+    embed(reference: string | null, marker: string): string;
+    extract(text: string | null | undefined): string | null;
+  };
+  /** The environment a fresh connection records (QBO: QBO_ENVIRONMENT; Xero: 'production'). */
+  connectEnvironment(): AccountingEnvironment;
+  /** Null when the instance is configured for this provider; otherwise an operator-facing reason. */
+  configError(): string | null;
 }
 
 /**
- * The exact `accounting_entity_mappings.last_error` sentinel
+ * The exact `accounting_entity_mappings.last_error` sentinels
  * `markInvoiceDeletedRemotely` (accountingPaymentPull.ts) writes when the
- * reconcile worker sees QuickBooks deleted/voided an invoice Breeze pushed
- * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so it can
+ * reconcile worker sees the provider deleted/voided an invoice Breeze pushed
+ * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so they can
  * never collide with the `PAYMENT_PULL_ERROR_PREFIX` bucket.
  *
- * Kept here — a leaf module with no other imports — rather than in
- * accountingPaymentPull.ts (which imports invoiceService, which would need
- * this constant too) or invoiceService.ts (imported by accountingPaymentPull.ts),
- * either of which would create a cycle. Both the writer and every reader
- * (accountingInvoicePush.ts's push guard, invoiceService.ts's summary) import
- * this single constant instead of duplicating or string-matching the literal.
+ * The persisted text is provider-labelled and keyed by provider ID, never by
+ * the free-form display name: `Deleted in QuickBooks` stays byte-identical to
+ * what production rows already hold, and Xero's is `Deleted in Xero`. The
+ * `satisfies Record<AccountingProviderId, string>` makes adding a provider id
+ * without a marker a compile error, so the writer (`invoiceRemoteDeletedMarker`)
+ * and the readers (`INVOICE_REMOTE_DELETED_MARKERS`) cannot drift apart — a
+ * marker a reader did not recognise would let the push re-create an invoice
+ * the provider deleted (a duplicate invoice).
+ *
+ * `accounting_entity_mappings` has no machine-code column, so every reader
+ * compares against the full set derived from this map — via
+ * `isInvoiceRemoteDeletedMarker` in code and `notInArray(...)` in SQL — never
+ * against a single provider's string.
+ *
+ * Kept here — a leaf module — rather than in accountingPaymentPull.ts (which
+ * imports invoiceService, which needs this too) or invoiceService.ts (imported
+ * by accountingPaymentPull.ts), either of which would create a cycle.
  */
+export const INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER = {
+  quickbooks: 'Deleted in QuickBooks',
+  xero: 'Deleted in Xero',
+} as const satisfies Record<AccountingProviderId, string>;
+
+/** Every provider's remote-deleted sentinel — the set every reader matches against. */
+export const INVOICE_REMOTE_DELETED_MARKERS: readonly string[] = Object.values(INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER);
+
+/** The remote-deleted sentinel a provider's reconcile writes. */
+export function invoiceRemoteDeletedMarker(provider: AccountingProviderId): string {
+  return INVOICE_REMOTE_DELETED_MARKER_BY_PROVIDER[provider];
+}
+
+/** True when `lastError` is exactly one of the remote-deleted sentinels. */
+export function isInvoiceRemoteDeletedMarker(lastError: string | null | undefined): boolean {
+  return typeof lastError === 'string' && INVOICE_REMOTE_DELETED_MARKERS.includes(lastError);
+}
+
+/** @deprecated pre-W01 name for the QuickBooks marker; kept for existing test imports. */
 export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';

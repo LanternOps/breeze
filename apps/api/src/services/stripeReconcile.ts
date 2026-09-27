@@ -9,7 +9,8 @@ import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
-import { resolveActiveConnectionId } from './accounting/accountingConnectionService';
+import { resolveActiveConnectionRef } from './accounting/accountingConnectionService';
+import { accountingProviderDisplayName } from './accounting/providerRegistry';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
 import { markSiblingRevocationIntentInTx, markSessionChargedRepair } from './stripeSessionRevocation';
@@ -418,18 +419,19 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // mapping. One connection per partner and ON DELETE CASCADE already make a
       // cross-connection match impossible; this makes it impossible by predicate
       // too, instead of by schema accident. Fix round 1: use the non-decrypting
-      // id lookup — this runs inside the money transaction, and a rotated/
-      // retired encryption key must never abort a Stripe refund reconcile.
-      const activeConnId = await resolveActiveConnectionId(db, partnerId);
-      if (activeConnId) {
+      // id+provider lookup — this runs inside the money transaction, and a
+      // rotated/retired encryption key must never abort a Stripe refund
+      // reconcile. The provider labels the instruction (Xero W01 Task 9).
+      const activeConn = await resolveActiveConnectionRef(db, partnerId);
+      if (activeConn) {
         await db.update(accountingEntityMappings)
           .set({
             syncStatus: 'error',
-            lastError: partialRefundDivergenceMessage(refunded),
+            lastError: partialRefundDivergenceMessage(refunded, accountingProviderDisplayName(activeConn.provider)),
             updatedAt: new Date(),
           })
           .where(and(
-            eq(accountingEntityMappings.integrationId, activeConnId),
+            eq(accountingEntityMappings.integrationId, activeConn.id),
             eq(accountingEntityMappings.partnerId, partnerId),
             eq(accountingEntityMappings.breezeEntityType, 'payment'),
             eq(accountingEntityMappings.breezeEntityId, paymentId),

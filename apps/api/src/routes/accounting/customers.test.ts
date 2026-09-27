@@ -102,11 +102,11 @@ describe('GET /accounting/:provider/customers', () => {
     expect(await res.json()).toMatchObject({ code: 'reauth_required' });
   });
 
-  it('maps QbImportError(quickbooks_error) to 502', async () => {
-    listAnnotatedMock.mockRejectedValue(new QbImportError('upstream', 'quickbooks_error', 502));
+  it('maps QbImportError(provider_error) to 502', async () => {
+    listAnnotatedMock.mockRejectedValue(new QbImportError('upstream', 'provider_error', 502));
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ code: 'quickbooks_error' });
+    expect(await res.json()).toMatchObject({ code: 'provider_error' });
   });
 
   it('denies a partner-scoped caller targeting a different partnerId (403)', async () => {

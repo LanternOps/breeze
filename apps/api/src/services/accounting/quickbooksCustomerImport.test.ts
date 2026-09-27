@@ -566,10 +566,10 @@ describe('importQuickbooksCustomers — connection/QBO error mapping', () => {
       .rejects.toMatchObject({ code: 'reauth_required', status: 409 });
   });
 
-  it('maps a QBO API failure to QbImportError(quickbooks_error, 502)', async () => {
+  it('maps a QBO API failure to QbImportError(provider_error, 502)', async () => {
     getValidAccessTokenMock.mockResolvedValue('tok');
     listRemoteCustomersMock.mockRejectedValue(new Error('QuickBooks customer query failed with 429'));
     await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
   });
 });
