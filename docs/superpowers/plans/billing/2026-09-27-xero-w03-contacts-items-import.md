@@ -294,12 +294,12 @@ describe('single-record lookups and supplierOnly (Xero W03)', () => {
 });
 ```
 
-(Import `RemoteItem` in `types.test.ts` if it is not imported yet.)
+(`types.test.ts` imports neither `RemoteCustomer` nor `RemoteItem` today — add both to its `./types` import.)
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd apps/api && npx vitest run src/services/accounting/accountingProviderError.test.ts src/services/accounting/types.test.ts`
-Expected: FAIL — `refusalCodeOf` is not exported; the type assertions fail to compile.
+Run: `cd apps/api && npx vitest run src/services/accounting/accountingProviderError.test.ts && npx tsc --noEmit -p .`
+Expected: FAIL — vitest: `refusalCodeOf` is not exported; tsc: the new `expectTypeOf` assertions in `types.test.ts` fail. (Vitest does not typecheck `expectTypeOf` at runtime, so tsc is the red for the type pins.)
 
 - [ ] **Step 3: Implement**
 
@@ -375,9 +375,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 Append to `xeroHttp.test.ts` (reuse the file's `slotMock`, `noteMock`, `SPEC`, `json` helpers and its `beforeEach`/`afterEach`):
 
 ```ts
-import {
-  classifyXeroValidation, parseXeroDate, xeroApiGet, xeroApiWrite, xeroIdempotencyKey, xeroQuery,
-} from './xeroHttp';
+// Add these names to the file's EXISTING `import { … } from './xeroHttp'` at the top (it already
+// imports xeroApiGet — a second import of it is a duplicate declaration and the file will not compile):
+//   classifyXeroValidation, parseXeroDate, xeroApiWrite, xeroIdempotencyKey, xeroQuery
 
 describe('xeroQuery (Xero W03)', () => {
   it('encodes values and drops undefined', () => {
@@ -1865,7 +1865,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `apps/api/src/jobs/accountingSyncWorker.ts` (`MAPPING_TERMINAL_CODES`)
 - Create: `apps/api/src/routes/accounting/errorResponses.ts`, `errorResponses.test.ts`
 - Modify: `apps/api/src/routes/accounting/index.ts` (import the moved helpers; `archived` on remote candidates)
-- Test: `accountingMappingService.test.ts`, `jobs/accountingSyncWorker.test.ts`, `routes/accounting/mappings.test.ts`
+- Test: `accountingMappingService.test.ts`, `jobs/accountingSyncWorker.test.ts`, `routes/accounting/invoicePush.test.ts` (its remote-candidates block, `:506`)
 
 **Interfaces:**
 - Consumes: Task 1 (`refusalCodeOf`, `getRemoteCustomer?`, `getRemoteItem?`), M4–M7, M9, B2.
@@ -1889,7 +1889,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 In `accountingMappingService.test.ts`:
 
-1. Make the mocked provider extensible. Add `providerExtras` to the `vi.hoisted` block (`providerExtras: {} as Record<string, unknown>`), change the registry mock to `getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock, …existing…, ...providerExtras })`, and in the file's top-level `beforeEach` add `for (const k of Object.keys(providerExtras)) delete providerExtras[k];`. Import `AccountingProviderError` from `./accountingProviderError`.
+1. Make the mocked provider extensible. Add `providerExtras` to the `vi.hoisted` block (`providerExtras: {} as Record<string, unknown>`), change the registry mock to `getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock, …existing…, ...providerExtras })`, and in the file's top-level `beforeEach` add `for (const k of Object.keys(providerExtras)) delete providerExtras[k];`. (`AccountingProviderError` is already imported at `:107` — do not import it again.)
 
 2. Append:
 
@@ -2091,7 +2091,7 @@ describe('handleImportError', () => {
 
 (The two `handleImportError` tests need Task 6's `AccountingImportError` changes; write them now, they go green in Task 6.)
 
-In `routes/accounting/mappings.test.ts`, add to the remote-candidates block (use the file's own request helper and provider mock names — find them with `grep -n "remote-candidates" src/routes/accounting/mappings.test.ts`):
+The remote-candidates route is tested in `routes/accounting/invoicePush.test.ts` (its `describe` at `:506`), not `mappings.test.ts`. Adding `archived` changes the row shape, so first update the two existing exact assertions there — `:518` becomes `{ id, displayName, email, currencyCode, archived: false }` and `:531` becomes `{ id, displayName, sku, archived: false }` (QuickBooks lists active rows only, so `archived` is always `false` for it) — then add, inside that `describe`, using its own request helper and provider mock:
 
 ```ts
 it('marks archived remote candidates (Xero W03)', async () => {
@@ -2104,11 +2104,11 @@ it('marks archived remote candidates (Xero W03)', async () => {
 });
 ```
 
-Write the body with the file's real helper; the assertion is exactly the commented `toEqual`.
+Write the body with the file's real helper; the assertion is exactly the commented `toEqual`. Record the two edited assertions in the PR body next to the declared `archived` change.
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd apps/api && npx vitest run src/services/accounting/accountingMappingService.test.ts src/jobs/accountingSyncWorker.test.ts src/routes/accounting/errorResponses.test.ts src/routes/accounting/mappings.test.ts`
+Run: `cd apps/api && npx vitest run src/services/accounting/accountingMappingService.test.ts src/jobs/accountingSyncWorker.test.ts src/routes/accounting/errorResponses.test.ts src/routes/accounting/invoicePush.test.ts`
 Expected: FAIL — unknown codes, `details` absent, `errorResponses` missing, messages still say QuickBooks, confirm lists every customer.
 
 - [ ] **Step 3: Implement the service changes**
@@ -2296,7 +2296,7 @@ Expected: all pass except the two `handleImportError` tests (they need Task 6); 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/services/accounting/accountingProviderError.ts apps/api/src/services/accounting/accountingMappingService.ts apps/api/src/services/accounting/accountingMappingService.test.ts apps/api/src/jobs/accountingSyncWorker.ts apps/api/src/jobs/accountingSyncWorker.test.ts apps/api/src/routes/accounting/errorResponses.ts apps/api/src/routes/accounting/errorResponses.test.ts apps/api/src/routes/accounting/index.ts apps/api/src/routes/accounting/mappings.test.ts
+git add apps/api/src/services/accounting/accountingProviderError.ts apps/api/src/services/accounting/accountingMappingService.ts apps/api/src/services/accounting/accountingMappingService.test.ts apps/api/src/jobs/accountingSyncWorker.ts apps/api/src/jobs/accountingSyncWorker.test.ts apps/api/src/routes/accounting/errorResponses.ts apps/api/src/routes/accounting/errorResponses.test.ts apps/api/src/routes/accounting/index.ts apps/api/src/routes/accounting/invoicePush.test.ts
 git commit -m "feat(accounting): user-resolvable provider refusals, single-record confirm, provider-labelled mapping messages (Xero W03)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2376,7 +2376,7 @@ describe('import throttling, permissions and budget (Xero W03)', () => {
 
 Write the last test's body with the file's existing seam-failure helper; the assertion is the commented `expect`.
 
-In `routes/accounting/customers.test.ts`, add: a service rejection `new AccountingImportError('slow', 'rate_limited', 429, { retryAfterMs: 2000 })` from the mocked `listAccountingCustomersAnnotated` → `GET /accounting/quickbooks/customers` answers 429 with `Retry-After: 2` and `{ error: 'slow', code: 'rate_limited' }`.
+In `routes/accounting/customers.test.ts`, first widen the file's stand-in `AccountingImportError` (`:8`, a 3-argument class) to `constructor(m, c, s, opts?: { retryAfterMs?: number })` assigning `this.retryAfterMs = opts?.retryAfterMs` — otherwise the fourth argument is dropped and no `Retry-After` can appear. Then add: a service rejection `new AccountingImportError('slow', 'rate_limited', 429, { retryAfterMs: 2000 })` from the mocked `listAccountingCustomersAnnotated` → `GET /accounting/quickbooks/customers` answers 429 with `Retry-After: 2` and `{ error: 'slow', code: 'rate_limited' }`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2690,6 +2690,10 @@ Keep `onSelect` **out** of the search effect's dependencies: the parent passes a
 ```tsx
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  // `value` is read through a ref too: the preselect changes it, and as a dependency it
+  // would re-run the search (a second request, and a refetch on every QuickBooks pick).
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const appliedSeed = useRef<string | null>(null);
 ```
 
@@ -2700,11 +2704,11 @@ and after `setCandidates(res.data)` in the search effect:
             appliedSeed.current = seedTerm;
             const wanted = normalizeName(seedTerm);
             const exact = res.data.filter((c) => normalizeName(c.displayName) === wanted);
-            if (exact.length === 1 && exact[0]!.id !== value) onSelectRef.current(exact[0]!.id);
+            if (exact.length === 1 && exact[0]!.id !== valueRef.current) onSelectRef.current(exact[0]!.id);
           }
 ```
 
-with a module-level `const normalizeName = (s: string) => s.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");` (the same normalisation the API's `normalizeMatchValue` uses). Add only `seedTerm` (and `value`, read for the no-op guard) to the effect's dependency list — never `onSelect`; the existing dependency list is otherwise unchanged. Import `useRef` if the file does not already.
+with a module-level `const normalizeName = (s: string) => s.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");` (the same normalisation the API's `normalizeMatchValue` uses). Add only `seedTerm` to the effect's dependency list — never `onSelect` or `value`; the existing dependency list is otherwise unchanged. Import `useRef` if the file does not already.
 
 7. Options: build the candidate list with live rows first, archived after, and label archived ones:
 
@@ -2935,7 +2939,9 @@ import { importAccountingCustomers } from '../../services/accounting/accountingC
 import { listMappingProposals, saveMappingDecision, syncMappedEntity } from '../../services/accounting/accountingMappingService';
 // Seeding: reuse W02b's helpers from accountingXeroConnection.integration.test.ts (or the shared
 // integration fixtures it imports). They must give: a partner id, a connected Xero connection id with
-// realm (tenant) 'ten-A', an access token valid for > 5 minutes, and a partner-scoped DbContextRunner.
+// realm (tenant) 'ten-A', homeCurrency 'GBP', an access token valid for > 5 minutes, and a
+// partner-scoped DbContextRunner. homeCurrency matters: create_new runs assertCreateCurrencyMatchesRealm
+// (accountingMappingService.ts:1139-1160) and refuses with currency_mismatch before any fetch otherwise.
 import { seedPartner, seedXeroConnection, partnerRunner } from './accountingXeroFixtures';
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -2951,7 +2957,7 @@ let connectionId: string;
 beforeEach(async () => {
   vi.restoreAllMocks();
   partnerId = await seedPartner();
-  connectionId = await seedXeroConnection(partnerId, { tenantId: 'ten-A' });
+  connectionId = await seedXeroConnection(partnerId, { tenantId: 'ten-A', homeCurrency: 'GBP' });
 });
 
 async function importOne(contactId: string, name: string) {
@@ -2981,7 +2987,7 @@ describe('Xero mapping and import against real Postgres (Xero W03)', () => {
 
   it('create-new sync adopts an existing breeze: ContactNumber instead of creating (no PUT)', async () => {
     const [org] = await withSystemDbAccessContext(() => db.insert(organizations)
-      .values({ partnerId, name: 'Adopt Me', slug: `adopt-me-${Date.now()}` }).returning());
+      .values({ partnerId, name: 'Adopt Me', slug: `adopt-me-${Date.now()}`, currencyCode: 'GBP' }).returning());
     await saveMappingDecision({ partnerId, provider: 'xero', breezeEntityType: 'org', breezeEntityId: org!.id, decision: 'create_new' }, partnerRunner(partnerId));
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(json({ Contacts: [contact('xc-adopt', 'Adopt Me', { ContactNumber: `breeze:${org!.id}` })] }))
@@ -3143,13 +3149,15 @@ Fable draft, then an independent Codex review (`codex exec -s read-only -c model
 | 15 | Two test snippets do not compile (readonly tuple spread; undefined `PARTNER`) | **Adopted.** Typed `it.each` tuple; the import suite's `'p1'` partner (Tasks 2, 6) |
 | 16 | *(drafter)* Xero caches and replays an internal error under the same key; the job's 5 attempts (≈75 s) all fall inside one 6-minute window | **Accepted limitation, documented** (refinement 9); the row reads `error` and the next **Sync now** after 6 minutes succeeds. Lab X23 records Xero's actual behaviour |
 
+**PR review round (PR #7236, one focused plan-vs-code review, Opus):** 4 important + 3 minor findings, all verified and fixed in the plan: the remote-candidates tests live in `invoicePush.test.ts` (and two exact assertions there gain `archived: false`); the picker reads `value` through a ref (as a dependency it re-fetched after the preselect); Task 2's appended import duplicated `xeroApiGet`; `customers.test.ts`'s stand-in `AccountingImportError` needed the 4th argument; Task 1's type-pin red is `tsc`, not vitest; Task 10's fixture needs `homeCurrency` to pass the create-time currency guard; a duplicate `AccountingProviderError` import instruction was dropped.
+
 ---
 
 ## Self-review (done while writing; kept for the executor)
 
 **Spec coverage (§W03):** `listRemoteCustomers` honours `query` via `searchTerm`, pages at 1000, returns archived contacts flagged (Task 3; the badge and "not suggested" in Tasks 5, 8, 9 — the service already drops `active === false` from suggestions). Idempotent create via `ContactNumber = breeze:<orgId>` with lookup-before-create (Task 3). Duplicate-name → `validation` + `duplicate_name` → "link it?" in the workbench, never auto-retried (Tasks 2, 3, 5, 8; worker terminal in Task 5). Addresses/phones POBOX/STREET, DEFAULT/MOBILE (Task 3 — in `xeroContacts.ts`, not `addressMapping.ts`, whose only export maps RemoteAddress → site and is still what the importer uses). Update sends `ContactID`; `UpdatedDateUTC` is the remote version (Tasks 2, 3). Item `Code`: the spec's "SKU if it fits, else slug + 6-char hash" is **replaced** by `prefix-<10-hex hash of the catalog item id>` with suffix adoption (refinement 6, quorum findings 2–3) — the spec's intent (idempotent create, never duplicate, adopt only what is ours) is kept; the SKU stays visible as the code's prefix. `Name` ≤50, `IsSold=true`, never tracked inventory, `SalesDetails` with `UnitPrice`/`AccountCode`/`TaxType` (Task 4). Lookup-by-Code first (Task 4). Import via `accountingCustomerImport.ts` with `system = 'xero'` (unchanged seam; proven against Postgres in Task 10). Supplier-only hidden by default with a toggle (Tasks 1, 3, 9). Cross-wave: adoption after uncertain outcomes (Tasks 3, 4); provider-owned keys and byte-identical QuickBooks (Global Constraints, Task 7 Step 1); capabilities gate routes/producers/workers/UI (unchanged gates; flip in Task 10); no new tables (refinement 18). Rate limiting: import paging defers below 20% (Task 6); the mapping sweep already defers (Task 10 note). W01d deferrals taken: `[qb-import]` (Task 6), `#quickbooks-items` / workbench provider-awareness (Task 8), remaining QuickBooks wording in mapping/import (Task 5g), `orgReadiness` Xero link (Task 9).
 
-**Placeholder scan:** no TBD or "similar to". Four test bodies are given as exact assertions plus the instruction to use the existing file's real helper names (`AccountingMappingWorkbench.test.tsx`, `AccountingCustomerImport.test.tsx`, `mappings.test.ts`, the import seam-failure test) — the same convention the W02 plan used for helpers it could not see. Task 10's fixtures module name is an assumption on W02b and is flagged there.
+**Placeholder scan:** no TBD or "similar to". Four test bodies are given as exact assertions plus the instruction to use the existing file's real helper names (`AccountingMappingWorkbench.test.tsx`, `AccountingCustomerImport.test.tsx`, `invoicePush.test.ts`, the import seam-failure test) — the same convention the W02 plan used for helpers it could not see. Task 10's fixtures module name is an assumption on W02b and is flagged there.
 
 **Type consistency:** `AccountingRefusalCode` / `refusalCodeOf` (Task 1; kinds `validation` and `not_found`) are used by Tasks 2–6; `remote_missing` flows provider (Tasks 3–4) → `providerRefusal` (Task 5) → worker `MAPPING_USER_RESOLVABLE_CODES` (Task 5). `xeroApiWrite`, `xeroQuery`, `parseXeroDate`, `requireXeroBody`, `xeroArray` (Task 2) are used by Tasks 3–4. `getRemoteCustomer` / `getRemoteItem` (Task 1) are implemented in Tasks 3–4 and consumed in Task 5. `providerPermissionMessage` (Task 5) is used by Task 6. `AccountingMappingError.details` (Task 5) is read by `handleMappingError` (Task 5) and the workbench (Task 8, via `ActionError.body.details`). `AccountingImportError.retryAfterMs` (Task 6) is read by `handleImportError` (Task 5). `incomeAccountHome` (Task 8) is set by the panel from B3's `features.settingsOptions`.
 
