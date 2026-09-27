@@ -21,7 +21,7 @@ vi.mock('../../db', () => {
 });
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
-import { recordExecutionOutcome } from './outcomeRecorder';
+import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote } from './outcomeRecorder';
 import { captureException } from '../sentry';
 
 // ONE top-level reset of ALL shared mock state. Every describe in this file
@@ -96,5 +96,42 @@ describe('recordExecutionOutcome', () => {
     await expect(recordExecutionOutcome({ suggestion, deviceId: 'd-1', scriptExecutionId: 'e-1' })).resolves.toBeNull();
     expect(h.values).toHaveBeenCalled();
     expect(captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe('votes and Done', () => {
+  it('a vote requests a recount and replaces any earlier vote', async () => {
+    h.rows.push([{ state: 'verified', stateReason: 'held_with_fresh_telemetry', humanVote: 'down' }]);
+    await expect(recordOutcomeVote({ suggestionId: 'sg-1', orgId: 'org-1', vote: 'down', userId: 'u-1' }))
+      .resolves.toEqual({ state: 'verified', stateReason: 'held_with_fresh_telemetry', humanVote: 'down' });
+  });
+
+  it('a vote on a suggestion with no recorded attempt returns null', async () => {
+    h.rows.push([]);
+    await expect(recordOutcomeVote({ suggestionId: 'sg-x', orgId: 'org-1', vote: 'up', userId: 'u-1' })).resolves.toBeNull();
+  });
+
+  it('Done starts a manual-steps attempt in awaiting_recovery with no aggregatable identity', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    h.insertResult = [{ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null }];
+    await expect(createManualStepsOutcome({ suggestion: { id: 'sg-2', orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1' }, deviceId: 'd-1' }))
+      .resolves.toEqual({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({
+      fixKind: 'manual_steps', fixIdentity: null, state: 'awaiting_recovery', stateReason: 'manual_steps_done',
+    }));
+  });
+
+  it('a second Done is reported as already recorded (null), not a new attempt', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    h.insertResult = [];
+    await expect(createManualStepsOutcome({ suggestion: { id: 'sg-2', orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1' }, deviceId: 'd-1' }))
+      .resolves.toBeNull();
+  });
+
+  it('summaries are keyed by suggestion id', async () => {
+    h.rows.push([{ suggestionId: 'sg-1', state: 'holding', stateReason: 'condition_cleared', humanVote: null }]);
+    const map = await loadOutcomeSummaries(['sg-1', 'sg-2']);
+    expect(map.get('sg-1')).toEqual({ state: 'holding', stateReason: 'condition_cleared', humanVote: null });
+    expect(map.has('sg-2')).toBe(false);
   });
 });

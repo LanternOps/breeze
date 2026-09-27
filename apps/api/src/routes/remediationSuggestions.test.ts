@@ -10,6 +10,9 @@ const dbMocks = vi.hoisted(() => ({
   emitFeedbackMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
   recordOutcomeMock: vi.fn(async () => ({ state: 'pending', stateReason: null, humanVote: null })),
+  recordVoteMock: vi.fn(),
+  createDoneMock: vi.fn(),
+  loadSummariesMock: vi.fn(async () => new Map()),
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns; `depth` says whether a DB call ran inside one.
   dbContextState: { depth: 0, events: [] as string[] },
@@ -112,6 +115,9 @@ vi.mock('../services/scriptExecution', () => ({
 
 vi.mock('../services/fixMemory/outcomeRecorder', () => ({
   recordExecutionOutcome: dbMocks.recordOutcomeMock,
+  recordOutcomeVote: dbMocks.recordVoteMock,
+  createManualStepsOutcome: dbMocks.createDoneMock,
+  loadOutcomeSummaries: dbMocks.loadSummariesMock,
 }));
 
 import { remediationSuggestionRoutes, resolvePatchedRiskTier } from './remediationSuggestions';
@@ -1098,5 +1104,62 @@ describe('remediation suggestion routes', () => {
     expect(body.status.accepted).toBe(1);
     expect(body.rates.acceptRate).toBe(1);
     expect(body.feedback.accepted).toBe(1);
+  });
+
+  const json = (body: unknown) => ({ method: 'POST', headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('records a 👎 on an executed suggestion and audits it', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'executed', scriptExecutionId: '66666666-6666-4666-8666-666666666666' });
+    dbMocks.recordVoteMock.mockResolvedValueOnce({ state: 'verified', stateReason: 'held_with_fresh_telemetry', humanVote: 'down' });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/vote`, json({ vote: 'down' }));
+    expect(res.status).toBe(200);
+    expect(dbMocks.recordVoteMock).toHaveBeenCalledWith({ suggestionId: baseSuggestion.id, orgId: baseSuggestion.orgId, vote: 'down', userId: 'user-1' });
+    expect((await res.json()).data.outcome.humanVote).toBe('down');
+    expect(dbMocks.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'ml.remediation_suggestion.vote' }));
+  });
+
+  it('409 when no attempt was recorded for the suggestion', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    dbMocks.recordVoteMock.mockResolvedValueOnce(null);
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/vote`, json({ vote: 'up' }));
+    expect(res.status).toBe(409);
+  });
+
+  it('400 on an invalid vote and 404 on an invisible suggestion', async () => {
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/vote`, json({ vote: 'meh' }))).status).toBe(400);
+    mockSelectOnce([]);
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/vote`, json({ vote: 'up' }))).status).toBe(404);
+    expect(dbMocks.recordVoteMock).not.toHaveBeenCalled();
+  });
+
+  it('403 for a site-restricted user outside the device site', async () => {
+    currentPermissions = { allowedSiteIds: ['88888888-8888-4888-8888-888888888888'] };
+    mockSuggestionLoad({ ...baseSuggestion, status: 'executed' });
+    mockDeviceLoad();
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/vote`, json({ vote: 'up' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.recordVoteMock).not.toHaveBeenCalled();
+  });
+
+  it('Done records manual steps once and rejects non-manual targets', async () => {
+    const manual = { ...baseSuggestion, targetType: 'manual_steps', scriptId: null, status: 'accepted' };
+    mockSuggestionLoad(manual);
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({}))).status).toBe(201);
+
+    mockSuggestionLoad(manual);
+    dbMocks.createDoneMock.mockResolvedValueOnce(null);
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({}))).status).toBe(409);
+
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({}))).status).toBe(400);
+  });
+
+  it('lists suggestions with origin and their outcome', async () => {
+    mockSelectOnce([{ ...baseSuggestion, origin: 'memory' }]);
+    dbMocks.loadSummariesMock.mockResolvedValueOnce(new Map([[baseSuggestion.id, { state: 'holding', stateReason: 'condition_cleared', humanVote: null }]]));
+    const res = await app.request('/remediation-suggestions?sourceType=alert&sourceId=a-1', { headers: { Authorization: 'Bearer token' } });
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ origin: 'memory', outcome: { state: 'holding' } });
   });
 });

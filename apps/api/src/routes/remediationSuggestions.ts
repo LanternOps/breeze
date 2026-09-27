@@ -11,7 +11,7 @@ import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitter
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
-import { recordExecutionOutcome, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
+import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -57,6 +57,8 @@ const updateBodySchema = z.object({
   playbookExecutionId: z.string().uuid().nullable().optional(),
   failureMessage: z.string().max(5000).nullable().optional(),
 });
+
+const voteBodySchema = z.object({ vote: z.enum(['up', 'down']) });
 
 type UpdateRemediationSuggestionInput = z.infer<typeof updateBodySchema>;
 
@@ -442,7 +444,8 @@ remediationSuggestionRoutes.get(
       .limit(query.limit);
 
     const visible = await filterSiteAllowedSuggestions(rows, perms);
-    return c.json({ data: visible.map((row) => serializeSuggestion(row)) });
+    const outcomes = await loadOutcomeSummaries(visible.map((row) => row.id));
+    return c.json({ data: visible.map((row) => serializeSuggestion(row, outcomes.get(row.id) ?? null)) });
   }
 );
 
@@ -1004,6 +1007,76 @@ remediationSuggestionRoutes.post(
       data: serializeSuggestion(updated, outcome),
       execution: execution.admission,
     }, 201);
+  }
+);
+
+remediationSuggestionRoutes.post(
+  '/:id/vote',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  zValidator('json', voteBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id') ?? '';
+    const { vote } = c.req.valid('json');
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+    const [existing] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Suggestion not found' }, 404);
+    if (!(await siteAllowedForSuggestion(existing, perms))) {
+      return c.json({ error: 'Suggestion not found or access denied' }, 403);
+    }
+    const outcome = await recordOutcomeVote({ suggestionId: existing.id, orgId: existing.orgId, vote, userId: auth.user.id });
+    if (!outcome) return c.json({ error: 'No recorded fix attempt for this suggestion' }, 409);
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'ml.remediation_suggestion.vote',
+      resourceType: 'remediation_suggestion',
+      resourceId: existing.id,
+      resourceName: existing.title,
+      details: { vote, outcomeState: outcome.state },
+    });
+    return c.json({ data: { outcome } });
+  }
+);
+
+remediationSuggestionRoutes.post(
+  '/:id/done',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const id = c.req.param('id') ?? '';
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+    const [existing] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Suggestion not found' }, 404);
+    if (!(await siteAllowedForSuggestion(existing, perms))) {
+      return c.json({ error: 'Suggestion not found or access denied' }, 403);
+    }
+    if (existing.targetType !== 'manual_steps') {
+      return c.json({ error: 'Only manual-step suggestions can be marked done' }, 400);
+    }
+    if (existing.status !== 'accepted' && existing.status !== 'edited') {
+      return c.json({ error: 'Suggestion must be accepted or edited before it can be marked done' }, 400);
+    }
+    const deviceId = singleTargetDeviceId(existing);
+    if (!deviceId) return c.json({ error: 'Marking manual steps done requires exactly one target device' }, 400);
+    const outcome = await createManualStepsOutcome({ suggestion: existing, deviceId });
+    if (!outcome) return c.json({ error: 'This suggestion was already marked done' }, 409);
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'ml.remediation_suggestion.done',
+      resourceType: 'remediation_suggestion',
+      resourceId: existing.id,
+      resourceName: existing.title,
+      details: { sourceType: existing.sourceType, sourceId: existing.sourceId },
+    });
+    return c.json({ data: { outcome } }, 201);
   }
 );
 

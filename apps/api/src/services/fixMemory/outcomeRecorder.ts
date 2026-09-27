@@ -4,7 +4,7 @@
  * Recording an attempt sits in its own SAVEPOINT (withDbTransaction) and never
  * throws: it must never undo or block a dispatched script.
  */
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS, type FixOutcomeState, type FixVote } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { fixOutcomes, organizations, remediationSuggestions, scriptExecutions, scripts } from '../../db/schema';
@@ -74,4 +74,61 @@ export async function recordExecutionOutcome(input: {
     captureException(err, undefined, { component: 'fixMemory.outcomeRecorder' });
     return null;
   }
+}
+
+/**
+ * A re-vote replaces the earlier one (spec). recount_requested_at asks the
+ * sweeper to recompute; if a recount of this row is in flight, this UPDATE
+ * waits on its row lock (store.recomputeForOutcome) and re-requests after it.
+ */
+export async function recordOutcomeVote(input: { suggestionId: string; orgId: string; vote: FixVote; userId: string }): Promise<OutcomeSummary | null> {
+  const now = new Date();
+  const [row] = await db.update(fixOutcomes).set({
+    humanVote: input.vote, votedBy: input.userId, votedAt: now, recountRequestedAt: now, updatedAt: now,
+  }).where(and(eq(fixOutcomes.suggestionId, input.suggestionId), eq(fixOutcomes.orgId, input.orgId)))
+    .returning(summaryColumns);
+  return toSummary(row);
+}
+
+/**
+ * Done on manual steps: the attempt starts at awaiting_recovery (spec). W1 has
+ * no reviewed-instructions library, so fix_identity is NULL: the attempt is
+ * watched and votable but never aggregated into shareable memory.
+ */
+export async function createManualStepsOutcome(input: {
+  suggestion: Pick<typeof remediationSuggestions.$inferSelect, 'id' | 'orgId' | 'sourceType' | 'sourceId' | 'alertId'>;
+  deviceId: string;
+}): Promise<OutcomeSummary | null> {
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, input.suggestion.orgId)).limit(1);
+  if (!org) return null;
+  const now = new Date();
+  const [row] = await db.insert(fixOutcomes).values({
+    orgId: input.suggestion.orgId,
+    partnerId: org.partnerId,
+    deviceId: input.deviceId,
+    suggestionId: input.suggestion.id,
+    sourceType: input.suggestion.sourceType as SourceType,
+    sourceId: input.suggestion.sourceId,
+    alertId: input.suggestion.alertId,
+    fixKind: 'manual_steps',
+    fixIdentity: null,
+    state: 'awaiting_recovery',
+    stateReason: 'manual_steps_done',
+    deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),
+  }).onConflictDoNothing({ target: fixOutcomes.suggestionId, where: sql`suggestion_id IS NOT NULL` })
+    .returning(summaryColumns);
+  return toSummary(row);
+}
+
+export async function loadOutcomeSummaries(suggestionIds: readonly string[]): Promise<Map<string, OutcomeSummary>> {
+  const map = new Map<string, OutcomeSummary>();
+  if (suggestionIds.length === 0) return map;
+  const rows = await db.select({ suggestionId: fixOutcomes.suggestionId, ...summaryColumns }).from(fixOutcomes)
+    .where(inArray(fixOutcomes.suggestionId, [...suggestionIds]));
+  for (const r of rows) {
+    const summary = toSummary(r);
+    if (r.suggestionId && summary) map.set(r.suggestionId, summary);
+  }
+  return map;
 }
