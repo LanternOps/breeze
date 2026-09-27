@@ -74,4 +74,28 @@ describe('LineItemsTable', () => {
     renderTable([]);
     expect(screen.getByTestId('lines-empty')).toHaveTextContent('No lines');
   });
+
+  it('passes rowClassName and descriptionCellClassName through to the row and description cell (sub-line indentation)', () => {
+    render(
+      <LineItemsTable<Row>
+        rows={rows}
+        columns={[{ key: 'total', header: 'Total', align: 'right', cell: (r) => r.total }]}
+        renderDescription={(r) => <span>{r.description}</span>}
+        descriptionHeader="Description"
+        keyFor={(r) => r.id}
+        rowTestId={(r) => `line-${r.id}`}
+        tableTestId="lines-table"
+        scrollAriaLabel="Lines"
+        emptyMessage="No lines"
+        rowClassName={(r) => (r.id === 'l2' ? 'bg-muted/20 text-xs text-muted-foreground' : '')}
+        descriptionCellClassName={(r) => (r.id === 'l2' ? 'pl-8' : '')}
+      />,
+    );
+    const subRow = screen.getByTestId('line-l2');
+    expect(subRow.className).toContain('bg-muted/20');
+    const descriptionCell = subRow.querySelector('td');
+    expect(descriptionCell?.className).toContain('pl-8');
+    // Sibling row without the override stays unaffected.
+    expect(screen.getByTestId('line-l1').className).not.toContain('bg-muted/20');
+  });
 });
