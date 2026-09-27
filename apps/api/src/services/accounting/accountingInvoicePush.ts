@@ -78,61 +78,10 @@ import {
   type InvoicePushResult,
   type InvoiceVoidResult,
 } from './types';
+import { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
+import { assertPushedLinesMatchSubtotal, computeRemoteVariance, pushedLineAmounts } from './accountingInvoiceTotals';
 
-export type AccountingInvoicePushErrorCode =
-  | 'not_connected' | 'reauth_required' | 'invoice_not_pushable' // draft or unknown invoice
-  // The invoice's mapping row is the `markInvoiceDeletedRemotely` marker (#4544):
-  // the reconcile worker saw QuickBooks delete/void the previously-pushed
-  // invoice. Deliberately never auto-resurrected (Phase D decision 2) — a push
-  // must not silently clear the marker and re-create a second QuickBooks
-  // invoice for a document the operator (or QuickBooks user) removed there.
-  | 'remote_deleted'
-  | 'customer_not_mapped' // org mapping absent / not confirmed|create_new
-  | 'home_currency_unknown' | 'currency_mismatch' // realm-level (from assert)
-  | 'customer_currency_mismatch' // mapping.remoteCurrencyCode ≠ invoice.currencyCode
-  // A nested org/catalog-item sync (syncMappedEntity) hit a permanent
-  // pre-flight 409 on the DEPENDENCY entity — no income account selected, no
-  // item price in the partner currency, a create-time currency mismatch on
-  // the org/item itself, or a mapping-conflict race. None of these are a
-  // QuickBooks/network failure (nothing was even sent to QuickBooks), so they
-  // must NOT be reported as `provider_error`: that code is paired with 502
-  // and read by callers as "safe to retry the QuickBooks call" — retrying a
-  // call that never ran, against a mapping that is still broken, would just
-  // loop. Fix the dependency's mapping, then retry the invoice push.
-  | 'dependency_not_ready'
-  // A void found the invoice's mapping row `pending` with no remoteEntityId —
-  // a push is mid-flight. Deliberately NOT in the worker's TERMINAL_CODES:
-  // BullMQ must retry with backoff until the push records its remote id.
-  | 'sync_in_progress'
-  // QuickBooks refused the void because a Payment is applied to the invoice
-  // THERE (#5180). A business rule, not an outage: every retry gets the same
-  // answer, so this must not be reported as `provider_error` — that code is
-  // paired with 502 and read as "safe to retry", and the five-attempt ladder
-  // burned five Sentry alerts on it in production. Terminal in the worker; the
-  // mapping row carries a message naming the fix (unapply the payment in
-  // QuickBooks, then void again).
-  | 'void_blocked_by_payments'
-  // #7161: the lines about to be pushed do not sum to the invoice's own
-  // subtotal, so QuickBooks would record a different amount than the customer
-  // was billed. Refused BEFORE any dependency sync, token refresh or provider
-  // call, and persisted on the invoice's mapping row like `currency_mismatch`.
-  // A Breeze-side data problem, not an outage: every retry would refuse the
-  // same way, so it is terminal in the worker.
-  | 'invoice_totals_mismatch'
-  | 'provider_error' | 'record_failed' // 502s; record_failed = remote ok, local persist failed (never retry)
-  // 'quickbooks_error': pre-W01 alias, never thrown any more; kept so an in-flight comparison still compiles
-  | 'quickbooks_error';
-
-export class AccountingInvoicePushError extends Error {
-  constructor(
-    public readonly code: AccountingInvoicePushErrorCode,
-    public readonly status: 404 | 409 | 502,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'AccountingInvoicePushError';
-  }
-}
+export { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 
 export interface InvoicePushOutcome {
   mappingId: string;
@@ -596,83 +545,6 @@ async function persistInvoiceRemoteRef(params: {
   return row;
 }
 
-/** DB `numeric(12,2)` decimal strings — exact, no binary float rounding. */
-function centsFromDecimalString(value: string): number {
-  return Math.round(Number(value) * 100);
-}
-
-/** >1¢ absolute difference is a variance; 1¢ or less (or no remote figure) is within tolerance. */
-function varianceCents(remoteAmount: string | null, breezeAmount: string): number | null {
-  if (remoteAmount === null) return null;
-  const diffCents = Math.abs(centsFromDecimalString(remoteAmount) - centsFromDecimalString(breezeAmount));
-  return diffCents > 1 ? diffCents : null;
-}
-
-/**
- * Post-push drift check. Tax (QuickBooks computes its own) and, since #7161,
- * the invoice TotalAmt are compared against Breeze with the same 1¢ tolerance.
- * Either one drifting marks the mapping `synced_with_tax_variance` — the one
- * drifted-but-synced state the mapping row has — never plain `synced`.
- */
-function computeRemoteVariance(
-  result: Pick<InvoicePushResult, 'remoteTaxTotal' | 'remoteTotal'>,
-  inv: Pick<InvoiceRow, 'taxTotal' | 'total'>,
-): { syncStatus: 'synced' | 'synced_with_tax_variance'; taxVarianceCents: number | null; totalVarianceCents: number | null } {
-  const taxVarianceCents = varianceCents(result.remoteTaxTotal, inv.taxTotal);
-  const totalVarianceCents = varianceCents(result.remoteTotal, inv.total);
-  const drifted = taxVarianceCents !== null || totalVarianceCents !== null;
-  return { syncStatus: drifted ? 'synced_with_tax_variance' : 'synced', taxVarianceCents, totalVarianceCents };
-}
-
-/**
- * Exact integer cents from a `numeric(12,2)` decimal string by parsing the
- * digits — no binary float anywhere, so a sum of many lines cannot drift.
- * Returns null for anything that is not a plain decimal with at most two
- * fraction digits; the caller treats that as a mismatch (fail closed).
- */
-function exactCents(value: string): number | null {
-  const m = /^(-)?(\d+)(?:\.(\d{1,2}))?$/.exec(value.trim());
-  if (!m) return null;
-  const cents = Number(m[2]) * 100 + Number((m[3] ?? '').padEnd(2, '0'));
-  if (!Number.isSafeInteger(cents)) return null;
-  return m[1] ? -cents : cents;
-}
-
-function formatCents(cents: number): string {
-  const sign = cents < 0 ? '-' : '';
-  const abs = Math.abs(cents);
-  return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
-}
-
-/**
- * #7161 pre-flight: the line amounts QuickBooks will receive must sum to
- * Breeze's own subtotal, or QuickBooks would record a different amount than
- * the customer was billed. Runs on the exact payload lines that get pushed.
- */
-function assertPushedLinesMatchSubtotal(
-  inv: Pick<InvoiceRow, 'subtotal'>,
-  linePayloads: readonly AccountingInvoiceLinePayload[],
-): void {
-  let sumCents = 0;
-  let parseable = true;
-  for (const l of linePayloads) {
-    const c = exactCents(l.lineTotal);
-    if (c === null) { parseable = false; break; }
-    sumCents += c;
-  }
-  const subtotalCents = exactCents(inv.subtotal);
-  if (parseable && subtotalCents !== null && sumCents === subtotalCents) return;
-
-  const pushed = parseable ? formatCents(sumCents) : 'an unreadable amount';
-  throw new AccountingInvoicePushError(
-    'invoice_totals_mismatch',
-    409,
-    `The invoice lines sent to QuickBooks would total ${pushed}, but this invoice's subtotal is ${inv.subtotal}. `
-      + 'Breeze refused the push so QuickBooks does not record a different amount than the customer was billed. '
-      + 'Review the invoice lines and totals, then push again.',
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Payload construction
 // ---------------------------------------------------------------------------
@@ -698,19 +570,15 @@ function buildLinePayload(line: InvoiceLineRow): AccountingInvoiceLinePayload {
   // Legacy-line fallback mirrors invoiceService/invoicePdf's own
   // name-then-description title resolution.
   const title = line.name ?? line.description ?? '';
-  // #7161: a hidden line (customer_visible = false) is excluded from Breeze's
-  // subtotal (`computeInvoiceTotals`), so it must carry no money in the
-  // accounting copy either — pushed at its stored price it inflated the
-  // QuickBooks invoice over what the customer was billed. The line itself is
-  // KEPT (the accounting view is meant to expose every line), with its
-  // description and quantity; only the price and amount are zeroed.
-  const hidden = !line.customerVisible;
+  // #7161: a hidden line is KEPT with its description and quantity but pushed
+  // at zero — see pushedLineAmounts (accountingInvoiceTotals.ts).
+  const { unitPrice, lineTotal } = pushedLineAmounts(line);
   return {
     invoiceLineId: line.id,
     description: `${title}${accountingLineNote(line)}`,
     quantity: line.quantity,
-    unitPrice: hidden ? '0.00' : line.unitPrice,
-    lineTotal: hidden ? '0.00' : line.lineTotal,
+    unitPrice,
+    lineTotal,
     taxable: line.taxable,
   };
 }
@@ -819,7 +687,7 @@ export async function pushInvoiceToAccounting(
       // before any org/item sync, token refresh or provider call. Asserted on
       // the exact line payloads that get pushed below, not a re-derivation.
       const linePayloads = lines.map(buildLinePayload);
-      assertPushedLinesMatchSubtotal(inv, linePayloads);
+      assertPushedLinesMatchSubtotal(inv, linePayloads, accountingProviderDisplayName(conn.provider));
 
       const orgMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'org');
       const orgMapping = orgMappingRows.find((m) => m.breezeEntityId === inv.orgId) ?? null;
