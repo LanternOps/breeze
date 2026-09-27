@@ -156,4 +156,16 @@ describe('Decline on behalf', () => {
     expect(showToast).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
   });
+
+  // #7176: Decline sat right next to Accept with identical classes, so a
+  // consequential, customer-facing decision looked no different from the
+  // positive one. Give it the same destructive treatment already used for
+  // other destructive actions in billing (e.g. quote-delete-open).
+  it('styles the button as destructive, distinct from Accept on behalf', () => {
+    render(<QuoteActions detail={detail()} variant="header" onChanged={vi.fn()} />);
+    const decline = screen.getByTestId('quote-decline-on-behalf');
+    const accept = screen.getByTestId('quote-accept-on-behalf');
+    expect(decline.className).toContain('text-destructive');
+    expect(decline.className).not.toEqual(accept.className);
+  });
 });

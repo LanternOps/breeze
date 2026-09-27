@@ -1043,12 +1043,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {t('quotes.actions.acceptOnBehalf.button')}
           </button>
         )}
+        {/* Declining on behalf is a consequential, customer-facing decision —
+            give it the same destructive treatment as other destructive
+            actions in billing (e.g. quote-delete-open below) so it never
+            reads as a twin of Accept on behalf beside it. */}
         {canDeclineOnBehalf && (
           <button
             type="button"
             onClick={() => setDeclineOpen(true)}
             data-testid="quote-decline-on-behalf"
-            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+            className={`${btnBase} border border-destructive/40 text-destructive hover:bg-destructive/10`}
           >
             {t('quotes.actions.declineOnBehalf.button')}
           </button>
