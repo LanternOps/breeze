@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "Windows çalıştırılmadan önce size soracak",
     "body": "Dosyayı açtığınızda, Windows, çalışmasına izin vermek isteyip istemediğinizi soran bir istem gösterir. Dosya dijital olarak imzalanmıştır, dolayısıyla bilgi istemi bir yayıncının adını verir: {{publisher}} şeklinde olmalıdır. Yayıncının bilinmediğini söylüyorsa veya beklemediğiniz birinin adını veriyorsa, istemi kapatın ve devam etmek yerine size yardım eden kişiyi arayın.",
+    "bodyUnsigned": "Dosyayı açtığınızda, Windows çalışmasına izin vermek isteyip istemediğinizi soran bir istem gösterir. Yayıncının bilinmediğini söyleyebilir; bu, bu program için normaldir ve bir sorun belirtisi değildir. Yalnızca bu oturumu size yardım eden kişiyle başlattıysanız devam edin. Başlatmadıysanız istemi kapatın ve dosyayı çalıştırmayın.",
     "publisher": "Breeze yayıncısı"
   },
   "trust": {

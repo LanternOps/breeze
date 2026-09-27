@@ -99,6 +99,16 @@ const { getBinarySource, getGithubAgentUrl, isS3Configured, getPresignedUrl, isS
 vi.mock('../services/binarySource', () => ({ getBinarySource, getGithubAgentUrl }));
 vi.mock('../services/s3Storage', () => ({ isS3Configured, getPresignedUrl, isS3NotFound }));
 
+// The Windows-signing check is exercised for real in windowsAgentSigning.test.ts
+// (PE-header parsing) — here it's stubbed so /check tests aren't coupled to
+// that byte-level detail. Default false: most of this file's fixtures assert
+// on `signed` too, and "no fixture bothered to opt in" should read the same
+// as the real fail-closed default.
+const { isWindowsAgentSigned } = vi.hoisted(() => ({
+  isWindowsAgentSigned: vi.fn(() => Promise.resolve(false)),
+}));
+vi.mock('../services/windowsAgentSigning', () => ({ isWindowsAgentSigned }));
+
 vi.mock('../services/enrollmentKeySecurity', async () => {
   const { createHash } = await import('node:crypto');
   return {
@@ -257,6 +267,7 @@ beforeEach(() => {
   evaluateCapability.mockResolvedValue({ allow: true });
   getGithubAgentUrl.mockImplementation((os: string, arch: string) => `https://gh.test/breeze-agent-${os}-${arch}.exe`);
   isS3Configured.mockReturnValue(false);
+  isWindowsAgentSigned.mockResolvedValue(false);
   fetchMock.mockResolvedValue(new Response(new Uint8Array([0x4d, 0x5a, 0x90]), {
     status: 200,
     headers: { 'content-length': '3' },
@@ -287,7 +298,20 @@ describe('GET /check/:code', () => {
   it('reports a pending unexpired code as valid', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
-    expect(body).toEqual({ valid: true, branding: null });
+    expect(body).toEqual({ valid: true, branding: null, signed: false });
+  });
+
+  it('reports signed:true when the served Windows agent carries an Authenticode signature (#7185)', async () => {
+    isWindowsAgentSigned.mockResolvedValue(true);
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body).toEqual({ valid: true, branding: null, signed: true });
+  });
+
+  it('never computes the signing check for an invalid code', async () => {
+    selectResults.push([{ status: 'claimed', codeExpiresAt: FUTURE }]);
+    await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(isWindowsAgentSigned).not.toHaveBeenCalled();
   });
 
   it('returns the partner branding for a valid code', async () => {
@@ -301,6 +325,7 @@ describe('GET /check/:code', () => {
         accentColor: '#1B4F9C',
         headline: 'Support you can call',
       },
+      signed: false,
     });
   });
 
@@ -310,6 +335,7 @@ describe('GET /check/:code', () => {
     expect(body).toEqual({
       valid: true,
       branding: { partnerName: 'Northwind IT', logoUrl: null, accentColor: null, headline: null },
+      signed: false,
     });
   });
 
@@ -361,13 +387,13 @@ describe('GET /check/:code', () => {
   it('accepts the human-formatted code', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     expect(await (await supportPublicRoutes.request('/check/234-567-892')).json())
-      .toEqual({ valid: true, branding: null });
+      .toEqual({ valid: true, branding: null, signed: false });
   });
 
   it('still accepts a legacy letters+digits code minted before the alphabet switch', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     expect(await (await supportPublicRoutes.request(`/check/${LEGACY_CODE}`)).json())
-      .toEqual({ valid: true, branding: null });
+      .toEqual({ valid: true, branding: null, signed: false });
   });
 
   it('truncates an over-long partner name and headline rather than dropping branding', async () => {
@@ -401,7 +427,7 @@ describe('GET /check/:code', () => {
   it('omits the branding block when the partner name is blank', async () => {
     selectResults.push([brandedRow({ partnerName: '   ' })]);
     const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
-    expect(body).toEqual({ valid: true, branding: null });
+    expect(body).toEqual({ valid: true, branding: null, signed: false });
   });
 
   it('sets no-store, private on valid, invalid, malformed and 429 responses', async () => {
@@ -549,7 +575,7 @@ describe('two-tier miss budget', () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const other = await supportPublicRoutes.request(`/check/${CODE}`);
     expect(other.status).toBe(200);
-    expect(await other.json()).toEqual({ valid: true, branding: null });
+    expect(await other.json()).toEqual({ valid: true, branding: null, signed: false });
   });
 
   it('shares one sub-budget across a /64 but keeps different /64s independent', async () => {
@@ -619,7 +645,7 @@ describe('two-tier miss budget', () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const res = await supportPublicRoutes.request(`/check/${CODE}`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ valid: true, branding: null });
+    expect(await res.json()).toEqual({ valid: true, branding: null, signed: false });
   });
 });
 

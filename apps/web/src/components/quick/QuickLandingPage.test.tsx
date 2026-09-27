@@ -252,8 +252,8 @@ describe('QuickLandingPage', () => {
     expect(macRow.querySelector('a')).toBeNull();
   });
 
-  it('sets an honest Windows publisher expectation without naming a company', async () => {
-    mockFetch(() => jsonResponse({ valid: true }));
+  it('describes the Windows run prompt (copy variant is covered by the publisher-trust prompt tests below)', async () => {
+    mockFetch(() => jsonResponse({ valid: true, signed: true }));
     window.history.replaceState({}, '', '/quick?code=234-567-892');
 
     render(<QuickLandingPage />);
@@ -262,7 +262,6 @@ describe('QuickLandingPage', () => {
     expect(
       screen.getByText(/Windows shows a prompt asking whether you want to allow it to run/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/close the prompt and call the person helping you/)).toBeInTheDocument();
   });
 
   describe('partner branding', () => {
@@ -432,6 +431,43 @@ describe('QuickLandingPage', () => {
       );
       // Detection is advisory — the download stays reachable.
       expect(screen.getByTestId('quick-download-windows')).toBeInTheDocument();
+    });
+  });
+
+  describe('Windows publisher-trust prompt (#7185)', () => {
+    it('names the publisher and keeps the stop-on-unknown warning when the served binary is signed', async () => {
+      stubUserAgent(UA.windowsChrome);
+      mockFetch(() => jsonResponse({ valid: true, signed: true }));
+      window.history.replaceState({}, '', '/quick?code=234-567-892');
+
+      render(<QuickLandingPage />);
+
+      const body = await screen.findByTestId('quick-windows-prompt-body');
+      expect(body).toHaveTextContent('the publisher of Breeze');
+      expect(body).toHaveTextContent('close the prompt and call the person helping you');
+    });
+
+    it('gives the honest unsigned-copy explanation when the served binary is unsigned', async () => {
+      stubUserAgent(UA.windowsChrome);
+      mockFetch(() => jsonResponse({ valid: true, signed: false }));
+      window.history.replaceState({}, '', '/quick?code=234-567-892');
+
+      render(<QuickLandingPage />);
+
+      const body = await screen.findByTestId('quick-windows-prompt-body');
+      expect(body).toHaveTextContent('may say the publisher is unknown');
+      expect(body).not.toHaveTextContent('the publisher of Breeze');
+    });
+
+    it('defaults to the unsigned copy when the API omits the signed field', async () => {
+      stubUserAgent(UA.windowsChrome);
+      mockFetch(() => jsonResponse({ valid: true }));
+      window.history.replaceState({}, '', '/quick?code=234-567-892');
+
+      render(<QuickLandingPage />);
+
+      const body = await screen.findByTestId('quick-windows-prompt-body');
+      expect(body).toHaveTextContent('may say the publisher is unknown');
     });
   });
 });
