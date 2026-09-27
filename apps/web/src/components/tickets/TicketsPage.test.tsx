@@ -839,6 +839,43 @@ describe('TicketsPage', () => {
       // The search box's row is not the tablist's row.
       expect(search.closest('[role="tablist"]')).toBeNull();
     });
+
+    // Code review (#7233): OverflowTabs' `count` prop renders via CountBadge,
+    // which (a) hides on a falsy count and (b) always uses the amber
+    // "needs attention" token — right for the Review queue's pending count,
+    // wrong for these five plain informational counts (which used to render
+    // as muted text, including "0", before this fix). Confirm the plain
+    // counts still show via the label text, not the alert-styled badge.
+    it('shows plain informational tab counts (including zero) as label text, not an alert badge', async () => {
+      mockListApi([healthy], { stats: { data: { open: 3, unassigned: 1, mine: 0, breached: 1 } } });
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tickets-tab-mine')).toHaveTextContent('0');
+      });
+      expect(screen.getByTestId('tickets-tab-mine').querySelector('[class*="warning"]')).toBeNull();
+
+      openMore();
+      expect(screen.getByTestId('tickets-tab-open')).toHaveTextContent('3');
+      expect(screen.getByTestId('tickets-tab-open').querySelector('[class*="warning"]')).toBeNull();
+    });
+
+    // #7233 review: with the active tab collapsed behind "More" (jsdom always
+    // measures 0-width, so only the first tab — 'mine' — stays visible), the
+    // trigger must relabel to the active tab, matching the pattern already
+    // asserted for billing settings (PartnerBillingSettingsPage.test.tsx).
+    it('relabels the "More" trigger to the active tab when it is collapsed', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      // Default active tab is 'open', which starts collapsed behind "More".
+      expect(screen.getByTestId('tickets-tab-more')).toHaveTextContent('All open');
+
+      await selectTicketsTab('unassigned');
+      expect(screen.getByTestId('tickets-tab-more')).toHaveTextContent('Unassigned');
+    });
   });
 
   describe('inbound review queue tab', () => {

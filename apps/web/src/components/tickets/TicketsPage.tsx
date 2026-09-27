@@ -542,12 +542,18 @@ export default function TicketsPage() {
       <div className="mb-3 space-y-2">
         <OverflowTabs
           tabs={[
-            ...TABS.map((tabItem): OverflowTab => ({
-              id: tabItem.id,
-              label: t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`),
-              icon: null,
-              count: tabCount(tabItem.id) ?? undefined,
-            })),
+            // These five are plain informational counts (rendered as muted
+            // text, including "0", before this fix) — not the "needs
+            // attention" signal `OverflowTab.count`/`CountBadge` renders
+            // (amber pill, and it hides on a falsy count). Appending the
+            // number onto the label keeps that plain-text meaning instead of
+            // relabeling every count as an alert. Only Review queue (below)
+            // is a genuine "needs attention" count and uses the real prop.
+            ...TABS.map((tabItem): OverflowTab => {
+              const label = t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`);
+              const count = tabCount(tabItem.id);
+              return { id: tabItem.id, label: count !== null ? `${label} ${count}` : label, icon: null };
+            }),
             ...(reviewAvailable
               ? [{ id: 'review', label: t('ticketsPage.reviewQueue'), icon: null, count: tabCount('review') ?? undefined } satisfies OverflowTab]
               : []),
