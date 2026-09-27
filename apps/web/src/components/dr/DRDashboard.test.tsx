@@ -74,6 +74,20 @@ describe('DRDashboard', () => {
     await screen.findByText('No DR executions have been launched yet.');
   });
 
+  it('wraps the plans and executions tables in a horizontally scrollable container so mobile content stays inside the card (#7155)', async () => {
+    render(<DRDashboard />);
+
+    const plansTable = await screen.findByText(/No recovery plans yet/i);
+    const plansWrapper = plansTable.closest('table')!.parentElement!;
+    expect(plansWrapper.className).toContain('overflow-x-auto');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Executions' }));
+
+    const executionsMessage = await screen.findByText('No DR executions have been launched yet.');
+    const executionsWrapper = executionsMessage.closest('table')!.parentElement!;
+    expect(executionsWrapper.className).toContain('overflow-x-auto');
+  });
+
   it('renders plan rows when data exists', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

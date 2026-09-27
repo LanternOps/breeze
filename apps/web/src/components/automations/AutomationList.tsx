@@ -244,6 +244,15 @@ export default function AutomationList({
         </div>
       </div>
 
+      {paginatedAutomations.length === 0 ? (
+        // Rendered as a plain block outside the table (not a colSpan cell)
+        // deliberately: a colSpan td matches the table's full (often
+        // wider-than-viewport) width, so centered text inside it gets cut off
+        // by the visible edge of the scroll container instead of wrapping (#7155).
+        <div className="mt-6 rounded-md border px-4 py-6 text-center text-sm text-muted-foreground">
+          {t('automationList.empty')}
+        </div>
+      ) : (
       <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
@@ -257,14 +266,7 @@ export default function AutomationList({
             </tr>
           </thead>
           <tbody className="divide-y">
-            {paginatedAutomations.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  {t('automationList.empty')}
-                </td>
-              </tr>
-            ) : (
-              paginatedAutomations.map(automation => {
+            {paginatedAutomations.map(automation => {
                 const TriggerIcon = triggerConfig[automation.triggerType].icon;
                 const lastStatus = (automation.lastRunStatus ?? 'idle') as StatusKey;
                 const StatusIcon = statusConfig[lastStatus].icon;
@@ -431,11 +433,11 @@ export default function AutomationList({
                     </td>
                   </tr>
                 );
-              })
-            )}
+              })}
           </tbody>
         </table>
       </div>
+      )}
 
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
