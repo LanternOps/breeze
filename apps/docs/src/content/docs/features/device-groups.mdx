@@ -153,6 +153,23 @@ Each member record includes:
 | `addedAt` | Timestamp when the device joined the group |
 | `addedBy` | How the device was added: `manual`, `dynamic_rule`, or `policy` |
 
+### Dynamic groups as execution targets
+
+**v0.118.0+.** A dynamic group whose rules match on a field the device reports about itself is not used to decide where something **runs**. Because the device sets these values itself, Breeze skips the group as an execution target. These fields are:
+
+- hostname and display name;
+- tags and device role;
+- last user;
+- agent version and Helper version;
+- installed software (installed or not installed);
+- any custom field.
+
+Such a group is skipped as a target of scripts, automations, software policies and update rings. It is also skipped by the automation, software, remote-access, PAM, maintenance, OneDrive and Assist policy features. Patch and backup assignments still resolve through it, and so does every non-execution use: listing members, filters, views and reports.
+
+Each skip is recorded in the audit log with the fields that caused it. Where you target a group interactively, for example from an update ring or a deployment, the response also shows a warning naming the group.
+
+To target these devices, build the group on fields Breeze accepts for targeting, such as organization, site, OS, hardware, network facts or metrics. Or use a static group.
+
 ## Dynamic group rules
 
 Dynamic groups use a `filterConditions` object that follows a recursive AND/OR structure. Each condition targets a specific device field with an operator and value.

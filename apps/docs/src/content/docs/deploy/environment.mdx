@@ -259,6 +259,8 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `TURN_SECRET` | — | Only with the `turn` profile | Shared secret for TURN credential generation. Generate: `openssl rand -hex 32`. Not needed to bring the stack up: the bundled Compose file only starts coturn under the `turn` profile, and when it is enabled coturn refuses to start on an empty secret rather than running as an open relay. The value is mounted as a file rather than passed on the command line. |
 | `TURN_REALM` | `breeze.local` | | TURN authentication realm |
 
+From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it with `TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW` and `TURN_CREDENTIAL_MINT_WINDOW_SECONDS` (see [Agent traffic and ingest budgets](#agent-traffic-and-ingest-budgets)).
+
 <Aside type="tip">
   In the dev Docker Compose overlay, `TURN_SECRET` defaults to `dev-turn-secret` and `TURN_HOST` defaults to `127.0.0.1`, so no configuration is needed for local development.
 </Aside>
@@ -512,6 +514,70 @@ Most per-endpoint rate limits (MFA, dashboard usage) are fixed in code and not c
   Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.
 </Aside>
 
+## Agent traffic and ingest budgets
+
+**v0.118.0+.** These limits keep one device, or one organization's fleet, from using more than its share of the API. The defaults sit well above normal fleet traffic, so you do not need to set any of them. None is mapped in the stock Compose files: to change one, add it to `.env` **and** to the `api` service `environment:` block (and the `worker` block if you run the [worker split](/deploy/worker-split/)).
+
+**Agent WebSocket messages.** Each agent connection has a message budget: a burst capacity plus a steady refill rate. Messages over budget are dropped. A connection that keeps sending after this many dropped messages in a row is closed. Command results and update-status messages have their own budgets.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_WS_MESSAGE_BUDGET_CAPACITY` | `300` | Burst capacity, in messages, for general agent WebSocket traffic. |
+| `AGENT_WS_MESSAGE_BUDGET_REFILL_PER_SECOND` | `60` | Messages per second added back to the general budget. |
+| `AGENT_WS_MESSAGE_BUDGET_CLOSE_THRESHOLD` | `200` | Dropped messages in a row, on any budget, before the connection is closed. |
+| `AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_CAPACITY` | `600` | Burst capacity for command-result messages. |
+| `AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_REFILL_PER_SECOND` | `120` | Refill rate for command-result messages. |
+| `AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_CAPACITY` | general capacity | Burst capacity for update-status messages. |
+| `AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_REFILL_PER_SECOND` | general refill rate | Refill rate for update-status messages. |
+
+**Daily ingest budgets.** Agent log, event-log and change-log uploads are counted per device and per organization per day. An upload over budget is refused with `429`.
+
+| Variable | Default |
+|---|---|
+| `AGENT_LOG_MAX_ROWS_PER_DEVICE_PER_DAY` | `2000000` |
+| `AGENT_LOG_MAX_BYTES_PER_DEVICE_PER_DAY` | `524288000` (500 MiB) |
+| `AGENT_LOG_MAX_ROWS_PER_ORG_PER_DAY` | `20000000` |
+| `AGENT_LOG_MAX_BYTES_PER_ORG_PER_DAY` | `5368709120` (5 GiB) |
+| `AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY` | `2147483648` (2 GiB) |
+| `AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY` | `2000000` |
+| `AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY` | `10737418240` (10 GiB) |
+| `AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY` | `500000` |
+| `AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY` | `209715200` (200 MiB) |
+| `AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY` | `5000000` |
+| `AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY` | `2147483648` (2 GiB) |
+
+Event-log rows per device are already limited by the event-log policy's hourly rate, so there is no per-device row budget for event logs.
+
+**Other limits.**
+
+| Variable | Default | Description |
+|---|---|---|
+| `HELPER_SCREENSHOT_RATE_LIMIT` | `12` | Screenshot uploads per device from Breeze Helper per window. |
+| `HELPER_SCREENSHOT_RATE_WINDOW_SECONDS` | `60` | Window for `HELPER_SCREENSHOT_RATE_LIMIT`. |
+| `SCREENSHOT_MAX_BYTES` | `1600000` | Largest single screenshot stored. |
+| `SCREENSHOT_MAX_PER_DEVICE` | `20` | Stored (unexpired) screenshots per device. |
+| `SCREENSHOT_MAX_BYTES_PER_DEVICE` | count × size above | Total stored screenshot bytes per device. |
+| `LOG_FORWARDING_MAX_JOB_BYTES` | `1048576` | Largest batch of events one log-forwarding job may carry. |
+| `LOG_FORWARDING_MAX_PENDING_PER_ORG` | `2000` | Log-forwarding jobs one organization may have queued at once. A slow destination for one organization no longer holds up the others. |
+| `LOG_FORWARDING_MAX_WAITING_GLOBAL` | `10000` | Instance-wide ceiling on waiting log-forwarding jobs. |
+| `TENANT_TOOL_MAX_IN_FLIGHT_PER_ORG` | `8` | Concurrent calls one organization (or partner, for partner-owned tools) may have in flight across all its connected tool sources. |
+| `TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW` | `30` | TURN credentials one user may request per window. Over the limit, the request returns `429`. `0` turns the limit off. |
+| `TURN_CREDENTIAL_MINT_WINDOW_SECONDS` | `600` | Window for `TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW`. |
+| `PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES` | `1440` (24 h) | Longest lifetime of the short-lived download key an installer link hands out. |
+
+## Upgrade and rollout controls
+
+**v0.118.0+.** All optional and not mapped in the stock Compose files; add any you set to the `api` service `environment:` block as well as `.env`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BREEZE_LEGACY_ALERTING_SWEEP` | on | Set to `false` to skip converting and retiring leftover legacy alert rules and service/process watches at boot. The API still counts and logs what is left. See the [v0.118.0 upgrade notes](/deploy/upgrades/#v01180--legacy-alerting-retired-network-checks-become-monitors). |
+| `AGENT_ROLLBACK_DENYLISTED_VERSIONS` | unset | Comma-separated agent versions that an agent rollback may never target. Unset means no restriction. |
+| `AGENT_ROLLBACK_MIN_VERSION` | unset | Lowest agent version a rollback may target. An invalid version is ignored. Unset means no restriction. |
+| `EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST` | unset | Comma-separated sending domains that may be adopted when they already exist at the email provider without the `_breeze-verify.<domain>` TXT record. Only needed for a migration. See [Custom Sender Addresses](/deploy/custom-sender-addresses/). |
+
+The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job that read them was retired with legacy alerting, so you can delete them from `.env`.
+
 ## Database
 
 | Variable | Default | Description |
@@ -650,6 +716,11 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 |---|---|---|
 | `AGENT_BACKUP_SERVER_URL` | — | Instance-level backup control-plane URL, pushed to every agent through its config, enrollment response, and heartbeat reply. Lets you point the [enterprise backup](/deploy/binaries/#backup-binary) subsystem (Hyper-V, MSSQL, system image) at a separate backup control plane instead of the main API. Must be `https://` in production; `http://` is accepted only for `localhost`/`127.0.0.1`. Leave unset to keep backups pointed at the main API. |
 | `RECOVERY_MEDIA_WORK_DIR` | `/data/recovery-work` (Compose) | Scratch directory for building [bare-metal recovery](/backup/bare-metal-recovery/) bundles and ISOs (a 45–65 MB helper binary plus a tarball or ISO per build). The `api` and `worker` containers mount `/tmp` as a 64 MB tmpfs, so building under the OS temp directory fails with `ENOSPC`; the shipped Compose files default this to a directory on the persistent `api_data` volume. Override only to move it elsewhere on durable storage, and map it in the `api` service `environment:` block. |
+| `RECOVERY_SIGNING_PRIVATE_KEY` | — | minisign secret key (the key file contents; create it without a password, `minisign -G -W`) used to sign recovery bundles and their helper binary. **From v0.118.0 a bundle built without signing configured refuses to run**, because its launch script has no key to verify the helper with. Set it together with `RECOVERY_SIGNING_PUBLIC_KEY`. See [Recovery bundle signing](/backup/bare-metal-recovery/#recovery-bundle-signing). |
+| `RECOVERY_SIGNING_PUBLIC_KEY` | — | The matching minisign public key. It is written into each bundle when the bundle is built. |
+| `RECOVERY_SIGNING_KEY_ID` | derived from the public key | Optional identifier for the signing key. |
+| `RECOVERY_SIGNING_KEYS_JSON` | — | Optional JSON array of additional published verification keys (`keyId`, `publicKey`), for rotating keys. |
+| `RECOVERY_MINISIGN_BIN` | `minisign` | Path to the `minisign` binary the API runs to sign bundles. It must be available to the API process. |
 | `DEV_PUSH_WORK_DIR` | `/data/dev-push` (derived from `PATCH_REPORT_STORAGE_PATH`) | Staging directory for dev-push agent binary uploads (non-production, or when `DEV_PUSH_ENABLED=true`). Never the container's small `/tmp` tmpfs. Uploads larger than the free space here are rejected with HTTP 507 naming this directory. |
 | `BACKUP_GC_GRACE_MS` | `172800000` (48 h) | How long an expired snapshot's storage objects are kept before the retention sweep deletes them. **Lab/test knob only.** In production the API enforces a floor of one hour and logs when a lower value is ignored. Leave unset. |
 | `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` | `777600000` (9 d) | **v0.113.0+, lab/test only.** How long an upload that never finished, or whose record could not be reconciled, sits idle before the storage sweep reclaims its prefix. Production floor: 7 days. Re-read on every sweep, no restart needed. |

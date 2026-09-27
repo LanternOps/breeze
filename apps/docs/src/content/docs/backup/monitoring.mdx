@@ -103,6 +103,8 @@ Backup and restore jobs move through these statuses:
 
 Jobs are triggered either **automatically** by a policy schedule, **manually** via the Run Backup button, or as part of a **restore** operation.
 
+**Completed with errors** is new in v0.118.0; earlier releases reported these runs as **Completed**. API consumers see the status value `completed_with_errors`. It counts as a successful backup for "no successful backup" checks and is not a failure for "consecutive failures" checks. To be alerted on it, add a **Backup continuity** [monitor](/features/monitors/) with the **Completed with file errors** check, which fires when a device's latest backup ended in that state.
+
 <Aside type="caution">
   Only jobs in the **Running** or **Queued** status can be canceled. Canceling a running job stops the operation, but data already transferred to the storage target remains.
 </Aside>

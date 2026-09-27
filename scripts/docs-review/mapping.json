@@ -4299,6 +4299,102 @@
       "docs": [
         "features/ml-insights.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupStorageSessions.ts",
+      "docs": [
+        "backup/restoring.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/storageSessions.ts",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/storagesession/**",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/executionTargetGating.ts",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/recoverySigning.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/recoveryMediaService.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/pamAuditExport.ts",
+      "docs": [
+        "reference/pam-api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pamAuditExport.ts",
+      "docs": [
+        "reference/pam-api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/agentWsMessageBudget.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/monitors/conversion/retirementSweep.ts",
+      "docs": [
+        "features/monitors.mdx",
+        "deploy/environment.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/drStoredCredentialKeys.ts",
+      "docs": [
+        "backup/disaster-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupProviders/mapping.ts",
+      "docs": [
+        "backup/backup-providers.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/securefs/trusteddir.go",
+      "docs": [
+        "agents/macos-permissions.mdx",
+        "deploy/antivirus-exceptions.mdx",
+        "deploy/code-signing.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/config/programdata_trust*.go",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/emailDomains/dnsOwnershipProof.ts",
+      "docs": [
+        "deploy/custom-sender-addresses.mdx"
+      ]
     }
   ]
 }
