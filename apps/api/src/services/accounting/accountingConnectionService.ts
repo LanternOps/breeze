@@ -177,6 +177,11 @@ export function mapConnection(row: AccountingConnectionRow): AccountingConnectio
   };
 }
 
+/**
+ * Returns the partner's row for that provider in ANY status, `pending_tenant`
+ * included — check `.status` before treating it as active. Use
+ * `resolveActiveConnection*` for the active connection.
+ */
 export async function getConnection(
   db: DbExecutor,
   partnerId: string,

@@ -106,7 +106,19 @@ describe('fetchRealmSettings', () => {
   });
 
   it('refuses a connection with no tenant', async () => {
-    await expect(xeroProvider.fetchRealmSettings(conn({ realmId: null }))).rejects.toThrow('Xero connection is missing a tenant id');
+    await expect(xeroProvider.fetchRealmSettings(conn({ realmId: null })))
+      .rejects.toThrow('Xero connection is missing a tenant id');
+    await expect(xeroProvider.fetchRealmSettings(conn({ realmId: null }))).rejects.toBeInstanceOf(AccountingProviderError);
+    await expect(xeroProvider.fetchRealmSettings(conn({ realmId: null })))
+      .rejects.toMatchObject({ kind: 'validation', provider: 'xero' });
+  });
+
+  it('refuses a connection with no access token', async () => {
+    await expect(xeroProvider.fetchRealmSettings(conn({ accessToken: null })))
+      .rejects.toThrow('Xero connection is missing an access token');
+    await expect(xeroProvider.fetchRealmSettings(conn({ accessToken: null }))).rejects.toBeInstanceOf(AccountingProviderError);
+    await expect(xeroProvider.fetchRealmSettings(conn({ accessToken: null })))
+      .rejects.toMatchObject({ kind: 'validation', provider: 'xero' });
   });
 
   it('a null JSON body becomes a transient AccountingProviderError, not a TypeError', async () => {
@@ -239,6 +251,11 @@ describe('releaseConnection (disconnect)', () => {
   it('does nothing without a stored ref', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await xeroProvider.releaseConnection!(conn({ providerConnectionRef: null }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('does nothing without an access token, even with a stored ref', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    await expect(xeroProvider.releaseConnection!(conn({ accessToken: null }))).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

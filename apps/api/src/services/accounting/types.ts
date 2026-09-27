@@ -480,6 +480,9 @@ export interface AccountingProvider {
    * (Xero: DELETE /connections/{provider_connection_ref}). NEVER token
    * revocation — that removes every link the authorising user has to the app,
    * which can include another Breeze partner's connection (spec quorum finding 3).
+   * The caller must pass a connection whose access token was obtained via
+   * `getValidAccessToken` — a stale token 401s at the provider and is
+   * indistinguishable from a transient failure.
    */
   releaseConnection?(conn: AccountingConnection): Promise<void>;
 }

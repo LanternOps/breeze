@@ -374,7 +374,8 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
   const remaining = remainingHeader === null || remainingHeader.trim() === '' ? NaN : Number(remainingHeader);
   if (Number.isFinite(remaining)) {
     // Best-effort: the local daily counter is the primary budget; this only refines it.
-    await noteDailyRemaining('xero', ctx.connectionId, remaining).catch(() => {});
+    // noteDailyRemaining never rejects (it catches and logs internally).
+    await noteDailyRemaining('xero', ctx.connectionId, remaining);
   }
 
   if (!response.ok) {

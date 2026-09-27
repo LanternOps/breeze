@@ -79,8 +79,16 @@ function asArray<T>(value: unknown): T[] {
 }
 
 function callContext(conn: AccountingConnection, timeoutMs?: number): XeroCallContext {
-  if (!conn.realmId) throw new Error('Xero connection is missing a tenant id');
-  if (!conn.accessToken) throw new Error('Xero connection is missing an access token');
+  if (!conn.realmId) {
+    throw new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'call context', message: 'Xero connection is missing a tenant id',
+    });
+  }
+  if (!conn.accessToken) {
+    throw new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'call context', message: 'Xero connection is missing an access token',
+    });
+  }
   return { connectionId: conn.id, tenantId: conn.realmId, accessToken: conn.accessToken, rate: XERO_RATE_LIMIT, timeoutMs };
 }
 
