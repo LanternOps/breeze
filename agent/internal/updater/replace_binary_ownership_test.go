@@ -5,7 +5,6 @@ package updater
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -34,17 +33,18 @@ func TestReplaceBinary_PreservesRootOwnershipWhenPrivileged(t *testing.T) {
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "breeze-agent")
 	newBinaryPath := filepath.Join(tmpDir, "new-binary")
-	os.WriteFile(binaryPath, []byte("old"), 0755)
-	os.WriteFile(newBinaryPath, []byte("new version"), 0644)
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newBinaryPath, []byte("new version"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	u := New(&Config{BinaryPath: binaryPath})
 	if err := u.replaceBinary(newBinaryPath); err != nil {
 		t.Fatalf("replaceBinary() error = %v, want nil", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		return
-	}
 	if !chownCalled {
 		t.Fatal("replaceBinary() did not call chownBinaryFn while running privileged (geteuidFn == 0)")
 	}
@@ -74,8 +74,12 @@ func TestReplaceBinary_SkipsChownWhenUnprivileged(t *testing.T) {
 	tmpDir := t.TempDir()
 	binaryPath := filepath.Join(tmpDir, "breeze-agent")
 	newBinaryPath := filepath.Join(tmpDir, "new-binary")
-	os.WriteFile(binaryPath, []byte("old"), 0755)
-	os.WriteFile(newBinaryPath, []byte("new version"), 0644)
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newBinaryPath, []byte("new version"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	u := New(&Config{BinaryPath: binaryPath})
 	if err := u.replaceBinary(newBinaryPath); err != nil {

@@ -359,7 +359,7 @@ func TestHardenProgramDataAclReplacesPreexistingLinks(t *testing.T) {
 			t.Errorf("%s: expected a reparse-point query, rmdir, mkdir, /setowner and /grant:r, got query=%d rmdir=%d mkdir=%d setowner=%d grant=%d", dirToken, query, remove, mkdir, setOwner, grant)
 			continue
 		}
-		if !(query < remove && remove < mkdir && mkdir < setOwner && setOwner < grant) {
+		if query >= remove || remove >= mkdir || mkdir >= setOwner || setOwner >= grant {
 			t.Errorf("%s: order must be query -> rmdir -> mkdir -> /setowner -> /grant:r, got %d %d %d %d %d", dirToken, query, remove, mkdir, setOwner, grant)
 		}
 		if query < prevGrant {

@@ -63,13 +63,6 @@ type InstantBootSyncProgress struct {
 	Failed int `json:"failed"`
 }
 
-// vmRestoreManifest matches the snapshot manifest shape for deserialization.
-type vmRestoreManifest struct {
-	ID    string               `json:"id"`
-	Files []vmRestoreManifFile `json:"files"`
-	Size  int64                `json:"size"`
-}
-
 type vmRestoreManifFile struct {
 	SourcePath   string `json:"sourcePath"`
 	OriginalPath string `json:"originalPath,omitempty"`
@@ -397,7 +390,7 @@ func verifyRestoredFile(target string, file vmRestoreManifFile) (msg string, ok 
 	if err != nil {
 		return fmt.Sprintf("open restored file: %v", err), false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return fmt.Sprintf("hash restored file: %v", err), false

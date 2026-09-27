@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -49,7 +50,7 @@ func TestVerifyOwnExecutableTrustedIfPrivilegedChecksWhenRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the underlying ownership failure to propagate")
 	}
-	if gotPath != "/usr/local/bin/breeze-watchdog" {
+	if want := filepath.Clean("/usr/local/bin/breeze-watchdog"); gotPath != want {
 		t.Fatalf("got path %q, want the resolved executable path", gotPath)
 	}
 }

@@ -93,7 +93,7 @@ func TestEnforceProgramDataTree_ReappliesOnDrift(t *testing.T) {
 		func(p string) error { reapplied = append(reapplied, p); return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if len(detected) != 2 {
 		t.Errorf("expected drift check on both dirs, got %v", detected)
@@ -117,7 +117,7 @@ func TestEnforceProgramDataTree_SkipsWhenClean(t *testing.T) {
 		func(string) error { reapplyCalled = true; return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if reapplyCalled {
 		t.Error("clean dir must not be re-hardened (would lose the drift signal)")
@@ -142,7 +142,7 @@ func TestEnforceProgramDataTree_MissingDirIsCreatedHardenedThenTrusted(t *testin
 		return os.Mkdir(p, 0o700)
 	})
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if len(order) != 2 || order[0] != "create" || order[1] != "detect" {
 		t.Fatalf("missing dir must be created hardened and then verified, got %v", order)
@@ -163,7 +163,7 @@ func TestEnforceProgramDataTree_CreatedDirStillVerified(t *testing.T) {
 	)
 	swapCreateSeam(t, func(p string) error { return os.Mkdir(p, 0o700) })
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if ProgramDataDirTrusted(missing) {
 		t.Error("a created directory that then fails the drift check and its repair must stay untrusted")
@@ -187,7 +187,7 @@ func TestEnforceProgramDataTree_CreateRaceFallsBackToCheck(t *testing.T) {
 		return os.ErrExist
 	})
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if len(reapplied) != 1 {
 		t.Fatalf("a directory someone else created must go through the drift repair, got reapplied=%v", reapplied)
@@ -207,7 +207,7 @@ func TestEnforceProgramDataTree_CreateFailureLeavesUntrusted(t *testing.T) {
 	)
 	swapCreateSeam(t, func(string) error { return errors.New("access denied") })
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if detectCalled {
 		t.Error("a directory that could not be created must not be checked")
@@ -227,7 +227,7 @@ func TestEnforceProgramDataTree_SkipsMissingDirWhereCreateUnsupported(t *testing
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if detectCalled {
 		t.Error("missing dir must be skipped before the ACL check when it cannot be created hardened here")
@@ -251,7 +251,7 @@ func TestEnforceProgramDataTree_RootNotCreatedWhenMissing(t *testing.T) {
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if createCalled {
 		t.Error("the ProgramData root has its own descriptor and must not be created by the logs/data path")
@@ -276,7 +276,7 @@ func TestEnforceProgramDataTree_RootCheckedBeforeChildren(t *testing.T) {
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if len(order) != 2 || order[0] != "root" || order[1] != "child" {
 		t.Errorf("root owner check must run before the logs/data checks, got %v", order)
@@ -297,7 +297,7 @@ func TestEnforceProgramDataTree_DetectErrorDoesNotReapply(t *testing.T) {
 		func(string) error { reapplyCalled = true; return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if reapplyCalled {
 		t.Error("a drift-check error must not trigger a blind re-harden")
@@ -315,7 +315,7 @@ func TestEnforceProgramDataTree_RepairsRootOwnerDrift(t *testing.T) {
 		func(p string) error { reapplied = append(reapplied, p); return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if len(detected) != 1 || detected[0] != root {
 		t.Errorf("expected the root owner check to run on %s, got %v", root, detected)
@@ -343,7 +343,7 @@ func TestEnforceProgramDataTree_RootDoesNotUseStrictACLCheck(t *testing.T) {
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if strictCalled {
 		t.Error("the root must not be checked with the strict logs/data ACL detector")
@@ -372,7 +372,7 @@ func TestProgramDataDirTrusted_TrueWhenCleanOrRepaired(t *testing.T) {
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if !ProgramDataDirTrusted(clean) {
 		t.Error("a directory found clean must be trusted")
@@ -394,7 +394,7 @@ func TestProgramDataDirTrusted_FalseWhenRepairFails(t *testing.T) {
 		func(string) error { return errors.New("repair failed") },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if ProgramDataDirTrusted(broken) {
 		t.Error("a directory whose repair failed must remain untrusted — code-loading paths must fail closed, not assume the repair worked")
@@ -413,7 +413,7 @@ func TestProgramDataDirTrusted_FalseWhenDetectErrors(t *testing.T) {
 		func(string) error { return nil },
 	)
 
-	EnforceProgramDataTreePermissions()
+	_, _ = EnforceProgramDataTreePermissions()
 
 	if ProgramDataDirTrusted(unreadable) {
 		t.Error("a directory whose drift check errored must remain untrusted")

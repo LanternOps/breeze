@@ -18,6 +18,13 @@ func TestVerifyTrustedExecutableOwnerAcceptsARootOwnedSystemBinary(t *testing.T)
 		if _, err := os.Stat(c); err != nil {
 			continue
 		}
+		// On merged-/usr systems /bin is a symlink to usr/bin; the check
+		// refuses symlinked directories, so test the resolved location.
+		resolved, err := filepath.EvalSymlinks(c)
+		if err != nil {
+			continue
+		}
+		c = resolved
 		tried++
 		if err := VerifyTrustedExecutableOwner(c); err != nil {
 			t.Fatalf("VerifyTrustedExecutableOwner(%q) = %v, want nil", c, err)

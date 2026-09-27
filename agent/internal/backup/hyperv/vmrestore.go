@@ -232,6 +232,13 @@ func RestoreAsVM(
 	return result, nil
 }
 
+// vmRestoreManifest matches the snapshot manifest shape for deserialization.
+type vmRestoreManifest struct {
+	ID    string               `json:"id"`
+	Files []vmRestoreManifFile `json:"files"`
+	Size  int64                `json:"size"`
+}
+
 // downloadVMRestoreManifest fetches and parses a snapshot manifest from the provider.
 func downloadVMRestoreManifest(snapshotID string, provider providers.BackupProvider) (*vmRestoreManifest, error) {
 	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")

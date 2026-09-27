@@ -622,7 +622,7 @@ func (p *Provider) resolve(ctx context.Context, keys []string) (map[string]*reso
 			switch {
 			case status == http.StatusOK:
 				objects, denied, perr := p.parseResolve(resp.Body, keys)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return objects, denied, perr
 			case status == http.StatusTooManyRequests:
 				wait = httputil.ParseRetryAfter(resp.Header, time.Now())
@@ -1005,7 +1005,7 @@ func (p *Provider) fetchOnce(ctx context.Context, obj *resolvedObject, localPath
 		progress()
 		current = target
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		statusErr := &storageStatusError{status: resp.StatusCode, retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now())}
