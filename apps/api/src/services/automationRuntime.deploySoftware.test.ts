@@ -1,10 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { createDeploymentMock, latestMapMock, isCurrentMock, recordDispatchMock } = vi.hoisted(() => ({
+const {
+  createDeploymentMock,
+  latestMapMock,
+  isCurrentMock,
+  recordDispatchMock,
+  claimActionDispatchesMock,
+  stampClaimedActionOutcomeMock,
+  readActionStateMock,
+  reconcileRunMock,
+} = vi.hoisted(() => ({
   createDeploymentMock: vi.fn(),
   latestMapMock: vi.fn(),
   isCurrentMock: vi.fn(),
   recordDispatchMock: vi.fn(),
+  claimActionDispatchesMock: vi.fn(),
+  stampClaimedActionOutcomeMock: vi.fn(),
+  readActionStateMock: vi.fn(),
+  reconcileRunMock: vi.fn(),
 }));
 vi.mock('./softwareDeployment', () => ({ createSoftwareDeployment: createDeploymentMock }));
 vi.mock('./softwareCurrency', () => ({
@@ -21,6 +34,10 @@ vi.mock('./softwareCurrency', () => ({
 }));
 vi.mock('./automationActionResults', () => ({
   recordAutomationActionDispatch: recordDispatchMock,
+  claimAutomationActionDispatches: claimActionDispatchesMock,
+  stampClaimedAutomationActionOutcome: stampClaimedActionOutcomeMock,
+  readAutomationActionState: readActionStateMock,
+  reconcileAutomationRun: reconcileRunMock,
 }));
 
 // Mock all transitive dependencies that automationRuntime.ts loads
@@ -87,6 +104,14 @@ beforeEach(() => {
     }],
   });
   recordDispatchMock.mockReset().mockResolvedValue(true);
+  claimActionDispatchesMock.mockReset().mockImplementation(async (input: { deviceIds: readonly string[] }) => ({
+    runCancelled: false,
+    claimed: [...new Set(input.deviceIds)].sort(),
+    alreadyClaimed: new Map(),
+  }));
+  stampClaimedActionOutcomeMock.mockReset().mockResolvedValue(true);
+  readActionStateMock.mockReset().mockResolvedValue(null);
+  reconcileRunMock.mockReset().mockResolvedValue(undefined);
   isCurrentMock.mockReset().mockResolvedValue(false);
   latestMapMock.mockReset().mockResolvedValue(new Map([['cat-1', {
     version: { id: 'ver-1', catalogId: 'cat-1', version: '126.0.0', supportedOs: ['windows'] },
@@ -156,7 +181,7 @@ describe('executeDeploySoftwareActions', () => {
     expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(['d-win']);
     expect(res.deployedDeviceIds.has('d-win')).toBe(true);
     expect(res.failed).toBe(false);
-    expect(recordDispatchMock).toHaveBeenCalledWith({
+    expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith({
       runId: 'run-1',
       deviceId: 'd-win',
       actionIndex: 0,
@@ -174,7 +199,7 @@ describe('executeDeploySoftwareActions', () => {
       devices: [WIN], createdBy: null, runId: 'run-1',
     });
 
-    expect(recordDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'd-win',
       actionIndex: 1,
       deploymentResultId: 'result-win',
@@ -201,10 +226,10 @@ describe('executeDeploySoftwareActions', () => {
       devices: [WIN, MAC], createdBy: null, runId: 'run-1',
     });
 
-    expect(recordDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'd-win', status: 'delivered', deploymentResultId: 'result-win',
     }));
-    expect(recordDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'd-mac', status: 'failed', deploymentResultId: 'result-mac', message: 'policy denied',
     }));
   });
@@ -223,6 +248,18 @@ describe('executeDeploySoftwareActions', () => {
       version: { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0', supportedOs: null },
       catalogName: 'SomeCrossplatformTool',
     }]]));
+    // #3189 — every claimed device must be stamped an outcome; the fixture's
+    // shared default only accounts for 'd-win', so a real 2-device deployment
+    // response needs both devices represented as dispatched.
+    createDeploymentMock.mockResolvedValueOnce({
+      deploymentId: 'dep-1',
+      status: 'pending',
+      dispatchedDeviceIds: ['d-win', 'd-mac'],
+      deviceResults: [
+        { deviceId: 'd-win', deploymentResultId: 'result-win', status: 'delivered', deviceCommandId: null },
+        { deviceId: 'd-mac', deploymentResultId: 'result-mac', status: 'delivered', deviceCommandId: null },
+      ],
+    });
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
       devices: [WIN, MAC], createdBy: null, runId: 'run-1',
@@ -239,6 +276,15 @@ describe('executeDeploySoftwareActions', () => {
       version: { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0', supportedOs: [] },
       catalogName: 'CrossplatformTool',
     }]]));
+    createDeploymentMock.mockResolvedValueOnce({
+      deploymentId: 'dep-1',
+      status: 'pending',
+      dispatchedDeviceIds: ['d-win', 'd-mac'],
+      deviceResults: [
+        { deviceId: 'd-win', deploymentResultId: 'result-win', status: 'delivered', deviceCommandId: null },
+        { deviceId: 'd-mac', deploymentResultId: 'result-mac', status: 'delivered', deviceCommandId: null },
+      ],
+    });
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
       devices: [WIN, MAC], createdBy: null, runId: 'run-1',
@@ -298,6 +344,19 @@ describe('executeDeploySoftwareActions', () => {
       catalogName: 'CrossOrgTool',
     }]]));
     const winOrg2 = { id: 'd-win-2', osType: 'windows' as const, orgId: 'org-2' };
+    // #3189 — every claimed device needs a stamped outcome, so each per-org
+    // deployment call must report its own device as dispatched.
+    createDeploymentMock.mockResolvedValueOnce({
+      deploymentId: 'dep-1',
+      status: 'pending',
+      dispatchedDeviceIds: ['d-win'],
+      deviceResults: [{ deviceId: 'd-win', deploymentResultId: 'result-win', status: 'delivered', deviceCommandId: null }],
+    }).mockResolvedValueOnce({
+      deploymentId: 'dep-2',
+      status: 'pending',
+      dispatchedDeviceIds: ['d-win-2'],
+      deviceResults: [{ deviceId: 'd-win-2', deploymentResultId: 'result-win-2', status: 'delivered', deviceCommandId: null }],
+    });
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
       devices: [WIN, winOrg2], createdBy: null, runId: 'run-1',

@@ -7,6 +7,10 @@ const {
   reconcileRunMock,
   createSoftwareDeploymentMock,
   isDeviceSoftwareCurrentMock,
+  claimActionDispatchMock,
+  claimActionDispatchesMock,
+  stampClaimedActionOutcomeMock,
+  readActionStateMock,
 } = vi.hoisted(() => ({
   resolveOwnedAutomationReferencesMock: vi.fn(),
   seedActionResultsMock: vi.fn(),
@@ -14,12 +18,20 @@ const {
   reconcileRunMock: vi.fn(),
   createSoftwareDeploymentMock: vi.fn(),
   isDeviceSoftwareCurrentMock: vi.fn(),
+  claimActionDispatchMock: vi.fn(),
+  claimActionDispatchesMock: vi.fn(),
+  stampClaimedActionOutcomeMock: vi.fn(),
+  readActionStateMock: vi.fn(),
 }));
 
 vi.mock('./automationActionResults', () => ({
   seedAutomationActionResults: seedActionResultsMock,
   recordAutomationActionDispatch: recordActionDispatchMock,
   reconcileAutomationRun: reconcileRunMock,
+  claimAutomationActionDispatch: claimActionDispatchMock,
+  claimAutomationActionDispatches: claimActionDispatchesMock,
+  stampClaimedAutomationActionOutcome: stampClaimedActionOutcomeMock,
+  readAutomationActionState: readActionStateMock,
 }));
 
 vi.mock('./automationReferenceAuthorization', () => ({
@@ -36,6 +48,11 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
+    selectDistinct: vi.fn(() => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })),
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
@@ -48,6 +65,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
+  automationActionResults: { runId: 'runId', deviceId: 'deviceId', status: 'status', actionIndex: 'actionIndex', actionType: 'actionType', id: 'id' },
   automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
   configPolicyEffectiveFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
@@ -238,6 +256,18 @@ function mockSelectChain(result: unknown[]) {
 //   db.select({ configPolicyId }).from(configPolicyEffectiveFeatureLinks).where(...).limit(1)
 // Mock that lookup so the inserted configPolicyId is the resolved policy id, not
 // the feature-link id (issue #1855).
+/** #3189 — default claim/stamp behaviour: this attempt wins every claim. */
+function installClaimDefaults() {
+  claimActionDispatchMock.mockResolvedValue({ kind: 'claimed' });
+  claimActionDispatchesMock.mockImplementation(async (input: { deviceIds: readonly string[] }) => ({
+    runCancelled: false,
+    claimed: [...new Set(input.deviceIds)].sort(),
+    alreadyClaimed: new Map(),
+  }));
+  stampClaimedActionOutcomeMock.mockResolvedValue(true);
+  readActionStateMock.mockResolvedValue(null);
+}
+
 function mockResolveConfigPolicyId(configPolicyId: string | null) {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
@@ -262,6 +292,7 @@ describe('createConfigPolicyAutomationRun', () => {
     seedActionResultsMock.mockResolvedValue(undefined);
     recordActionDispatchMock.mockResolvedValue(true);
     reconcileRunMock.mockResolvedValue(undefined);
+    installClaimDefaults();
     isDeviceSoftwareCurrentMock.mockResolvedValue(false);
     createSoftwareDeploymentMock.mockResolvedValue({
       deploymentId: 'deployment-1',
@@ -457,6 +488,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     seedActionResultsMock.mockResolvedValue(undefined);
     recordActionDispatchMock.mockResolvedValue(true);
     reconcileRunMock.mockResolvedValue(undefined);
+    installClaimDefaults();
     // Default fence read: no row, i.e. "not cancelled".
     vi.mocked(db.execute).mockResolvedValue([] as any);
   });
@@ -842,7 +874,9 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     expect(result.status).toBe('failed');
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
-    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+    // #3189 — the deploy_software outcome is now stamped inside the claim
+    // transaction, not written post-hoc via recordAutomationActionDispatch.
+    expect(stampClaimedActionOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'failed',
       deploymentResultId: 'result-1',
     }));
@@ -1225,8 +1259,11 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     } as any);
-    // The FOR SHARE fence read sees the cancelled run.
-    vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
+    // #3189 — `terminalRunOutcome` now short-circuits on the admitted run's own
+    // `status` column before the FOR SHARE fence is ever read, so this run
+    // (already 'cancelled' per the insert-returning row above) never reaches
+    // `assertRunNotCancelledInRuntime`. A queued `db.execute` value here would
+    // go unconsumed and leak into the next test's first fence read instead.
 
     const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
@@ -1310,6 +1347,7 @@ describe('executeAutomationRun durable dispatch', () => {
     seedActionResultsMock.mockResolvedValue(undefined);
     recordActionDispatchMock.mockResolvedValue(true);
     reconcileRunMock.mockResolvedValue(undefined);
+    installClaimDefaults();
   });
 
   it('seeds ordinary-run actions and leaves accepted raw dispatch nonterminal', async () => {
