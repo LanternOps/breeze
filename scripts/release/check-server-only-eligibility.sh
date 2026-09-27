@@ -114,10 +114,21 @@ done
 # 5. Globally highest stable version. promote-signed-release-images moves
 #    :latest/:X.Y/:X unconditionally, so an older-line server-only release
 #    would move them backwards.
-STABLE_TAGS=$(g tag -l 'v*' | grep -E "$STABLE_TAG_RE" || true)
-HIGHEST_OTHER=$(printf '%s\n' "$STABLE_TAGS" | grep -vxF "$TAG" | grep -v '^$' | node "$SEMVER_TOOL" --sort-desc | head -n 1 || true)
+# Sorting never runs behind `head` or `|| true`: a sorter failure must refuse,
+# not silently yield an empty "highest" and skip the check.
+sort_desc() {
+  node "$SEMVER_TOOL" --sort-desc || fail "cannot order release tags"
+}
+first_line() {
+  printf '%s\n' "$1" | sed -n '1p'
+}
+ALL_TAGS=$(g tag -l 'v*') || fail "cannot list release tags"
+OTHER_STABLE=$(printf '%s\n' "$ALL_TAGS" | { grep -E "$STABLE_TAG_RE" || true; } | { grep -vxF "$TAG" || true; })
+SORTED_OTHERS=$(printf '%s' "$OTHER_STABLE" | sort_desc)
+HIGHEST_OTHER=$(first_line "$SORTED_OTHERS")
 if [ -n "$HIGHEST_OTHER" ]; then
-  TOP=$(printf '%s\n%s\n' "$HIGHEST_OTHER" "$TAG" | node "$SEMVER_TOOL" --sort-desc | head -n 1)
+  SORTED_WITH_TAG=$(printf '%s\n%s\n' "$HIGHEST_OTHER" "$TAG" | sort_desc)
+  TOP=$(first_line "$SORTED_WITH_TAG")
   [ "$TOP" = "$TAG" ] || fail "'$TAG' is not the globally highest stable version ($HIGHEST_OTHER exists); server-only releases are only possible on the newest line"
 fi
 
@@ -133,14 +144,15 @@ fi
 g rev-parse --verify --quiet "refs/tags/$DECLARED_BASE" >/dev/null || fail "base tag '$DECLARED_BASE' does not exist"
 BASE_SHA=$(g rev-parse "refs/tags/$DECLARED_BASE^{commit}")
 g merge-base --is-ancestor "$BASE_SHA" "$COMMIT" || fail "base '$DECLARED_BASE' is not an ancestor of $COMMIT"
-COMPUTED_BASE=$(
-  g tag --merged "$COMMIT" -l 'v*' \
-    | grep -E "$STABLE_TAG_RE" \
-    | grep -vxF "$TAG" \
-    | { if [ -n "$LEDGER_TAGS" ]; then grep -vxF -f <(printf '%s\n' "$LEDGER_TAGS"); else cat; fi; } \
-    | node "$SEMVER_TOOL" --sort-desc \
-    | head -n 1 || true
+MERGED_TAGS=$(g tag --merged "$COMMIT" -l 'v*') || fail "cannot list tags merged into $COMMIT"
+CANDIDATE_BASES=$(
+  printf '%s\n' "$MERGED_TAGS" \
+    | { grep -E "$STABLE_TAG_RE" || true; } \
+    | { grep -vxF "$TAG" || true; } \
+    | { if [ -n "$LEDGER_TAGS" ]; then grep -vxF -f <(printf '%s\n' "$LEDGER_TAGS") || true; else cat; fi; }
 )
+SORTED_BASES=$(printf '%s' "$CANDIDATE_BASES" | sort_desc)
+COMPUTED_BASE=$(first_line "$SORTED_BASES")
 [ -n "$COMPUTED_BASE" ] || fail "no full release is an ancestor of $COMMIT"
 [ "$COMPUTED_BASE" = "$DECLARED_BASE" ] || fail "declared base '$DECLARED_BASE' is not the last full release before $COMMIT (computed '$COMPUTED_BASE')"
 
