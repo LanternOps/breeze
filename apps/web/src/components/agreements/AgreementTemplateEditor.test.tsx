@@ -247,4 +247,19 @@ describe('AgreementTemplateEditor', () => {
     // The warning half of the sentence must survive the fallback.
     expect(dialog).toHaveTextContent(/keep working/i);
   });
+
+  // #7151: the header (back link, title, status, usage, and version/archive/
+  // upload buttons) must wrap on mobile instead of squeezing the title into
+  // a one-word column and clipping "New version" off-screen.
+  it('lets the header row stack and its buttons wrap below sm', async () => {
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    const addVersionBtn = await screen.findByTestId('template-add-version-btn');
+
+    const headerRow = addVersionBtn.closest('[class*="flex-col"]');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.className).toMatch(/sm:flex-row/);
+
+    const actionsContainer = addVersionBtn.closest('[class*="flex-wrap"]');
+    expect(actionsContainer).not.toBeNull();
+  });
 });

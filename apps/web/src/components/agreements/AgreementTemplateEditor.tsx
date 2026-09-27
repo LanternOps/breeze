@@ -268,12 +268,12 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
 
   return (
     <div className="space-y-4" data-testid="agreement-template-editor">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <a
             href="/agreements/templates"
             data-testid="agreement-template-editor-back"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+            className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:underline"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             {t('agreements.templateEditor.backToTemplates')}
@@ -290,7 +290,7 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
           )}
         </div>
         {!archived && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={startNewVersion}

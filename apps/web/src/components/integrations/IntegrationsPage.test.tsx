@@ -854,3 +854,22 @@ describe("IntegrationsPage — accounting provider cards (Xero W01)", () => {
     expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
   });
 });
+
+describe("IntegrationsPage header (#7151)", () => {
+  beforeEach(() => {
+    scope = "partner";
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("stacks the title and the docs button below md via the shared PageHeader", () => {
+    render(<IntegrationsPage />);
+
+    const docsButton = screen.getByTestId("integrations-docs-link");
+    const headerRow = docsButton.closest('[class*="flex-col"]');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.className).toContain("md:flex-row");
+    // The docs button must be able to wrap/shrink instead of a bare
+    // `shrink-0` that runs it off-screen on mobile.
+    expect(docsButton.className).not.toContain("shrink-0");
+  });
+});
