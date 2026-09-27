@@ -65,7 +65,7 @@ import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import {
   providerErrorKindOf, providerFaultSuffix, providerLogFields, providerRateLimitedMessage,
-  providerRateLimitedRetryLaterMessage, providerTelemetryTags, rateLimitRetryAfterMs,
+  providerRateLimitedRetryLaterMessage, providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf,
 } from './accountingProviderError';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -108,8 +108,10 @@ const PUSHABLE_STATUSES = new Set(['sent', 'partially_paid', 'overdue', 'paid'])
 
 /**
  * `resolveConnectionAndToken` throws `AccountingMappingError` (a different
- * error hierarchy — Task 4's entity-mapping workbench). Only the two codes it
- * can actually raise are re-typed here; anything else is a bug and propagates
+ * error hierarchy — Task 4's entity-mapping workbench). The three codes it can
+ * actually raise (`not_connected`, `reauth_required`, and `rate_limited` from a
+ * throttled token refresh) are re-typed here; any other AccountingMappingError
+ * becomes a generic upstream failure, and a non-mapping error propagates
  * unchanged rather than being silently swallowed into a generic bucket.
  */
 function translateMappingError(err: unknown): never {
@@ -118,7 +120,9 @@ function translateMappingError(err: unknown): never {
     if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
     // A throttled token refresh (Xero W01) stays a typed, delayable rate limit.
     if (err.code === 'rate_limited') {
-      throw new AccountingInvoicePushError('rate_limited', 429, err.message, { retryAfterMs: err.retryAfterMs });
+      throw new AccountingInvoicePushError('rate_limited', 429, err.message, {
+        retryAfterMs: err.retryAfterMs, throttleSource: rateLimitSourceOf(err) ?? undefined, cause: err,
+      });
     }
     // Any other AccountingMappingError code reaching here is unexpected at this
     // call site (resolveConnectionAndToken only ever raises the three above) —
@@ -334,7 +338,9 @@ function translateNestedSyncError(err: unknown): never {
     if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
     // A throttled dependency sync is a delay, not a provider failure (Xero W01).
     if (err.code === 'rate_limited') {
-      throw new AccountingInvoicePushError('rate_limited', 429, err.message, { retryAfterMs: err.retryAfterMs });
+      throw new AccountingInvoicePushError('rate_limited', 429, err.message, {
+        retryAfterMs: err.retryAfterMs, throttleSource: rateLimitSourceOf(err) ?? undefined, cause: err,
+      });
     }
     if (err.code === 'provider_error' || err.code === 'quickbooks_error' || err.code === 'sync_in_progress') {
       throw new AccountingInvoicePushError('provider_error', 502, err.message);
@@ -442,10 +448,13 @@ async function markInvoiceRateLimitedAndThrow(
   partnerId: string,
   provider: AccountingConnection['provider'],
   retryAfterMs: number,
+  throttle: unknown,
 ): Promise<never> {
-  const message = providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(provider), 'push');
+  // Worded by WHO throttled (F1); the provider wording is unchanged.
+  const throttleSource = rateLimitSourceOf(throttle) ?? 'provider';
+  const message = providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(provider), 'push', throttleSource);
   await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message);
-  throw new AccountingInvoicePushError('rate_limited', 429, message, { retryAfterMs });
+  throw new AccountingInvoicePushError('rate_limited', 429, message, { retryAfterMs, throttleSource, cause: throttle });
 }
 
 /**
@@ -831,7 +840,7 @@ export async function pushInvoiceToAccounting(
   const liveConn = await resolveLiveConnection(conn).catch(async (err: unknown) => {
     const retryAfterMs = rateLimitRetryAfterMs(err);
     if (retryAfterMs !== null) {
-      return markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, retryAfterMs);
+      return markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, retryAfterMs, err);
     }
     return translateMappingError(err);
   });
@@ -845,7 +854,7 @@ export async function pushInvoiceToAccounting(
   } catch (err) {
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
-      await markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, throttleMs);
+      await markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, throttleMs, err);
     }
     const label = accountingProviderDisplayName(conn.provider);
     const message = sanitizeInvoiceSyncErrorMessage(err, label);
@@ -1042,8 +1051,10 @@ export async function voidInvoiceInAccounting(
     // message is never persisted; the worker (the only caller) delays the job.
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
+      const throttleSource = rateLimitSourceOf(err) ?? 'provider';
       throw new AccountingInvoicePushError(
-        'rate_limited', 429, providerRateLimitedMessage(accountingProviderDisplayName(conn.provider)), { retryAfterMs: throttleMs },
+        'rate_limited', 429, providerRateLimitedMessage(accountingProviderDisplayName(conn.provider), throttleSource),
+        { retryAfterMs: throttleMs, throttleSource, cause: err },
       );
     }
     // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will

@@ -51,9 +51,12 @@
  *
  * RATE LIMITS (Xero W01) are a third lane, checked FIRST in every catch: a
  * `rate_limited` error (any coordinator's, or a raw provider one) moves the job
- * back to `delayed` at Retry-After via `delayJobForRateLimit` — no attempt
- * consumed, no Sentry event, no error log, nothing marked failed. It is in none
- * of the terminal sets.
+ * back to `delayed` at Retry-After via `delayJobForRateLimit` — for the BullMQ
+ * JOB: no attempt consumed, no Sentry event, no error log, and the job is never
+ * marked failed. The coordinator may still have written a throttle marker to
+ * the mapping ROW (`last_error`; invoice/mapping rows read `error`, payment rows
+ * stay owed with no attempt counted) before re-raising. It is in none of the
+ * terminal sets.
  */
 
 import { Queue, Worker, Job } from 'bullmq';

@@ -595,4 +595,18 @@ describe('rate limiting answers 429 with Retry-After (Xero W01)', () => {
     expect(res.headers.get('Retry-After')).toBe('5');
     expect(await res.json()).toEqual({ error: 'QuickBooks is rate limiting requests; try again shortly', code: 'rate_limited' });
   });
+
+  it.each([
+    ['local', 'Breeze is pacing requests to QuickBooks; try again shortly'],
+    ['limiter_unavailable', 'Breeze could not reach its rate limiter; try again shortly'],
+  ] as const)('a RAW %s throttle on remote-candidates is worded as Breeze\'s, never the provider\'s (F1)', async (throttleSource, error) => {
+    resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
+    listRemoteCustomersMock.mockRejectedValue(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 5_000, throttleSource,
+    }));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org&q=Acme');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual({ error, code: 'rate_limited' });
+  });
 });

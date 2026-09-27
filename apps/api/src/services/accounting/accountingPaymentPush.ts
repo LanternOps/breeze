@@ -86,6 +86,7 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import {
   providerFaultSuffix, providerLogFields, providerRateLimitedMessage, providerTelemetryTags, rateLimitRetryAfterMs,
+  rateLimitSourceOf, type AccountingThrottleSource,
 } from './accountingProviderError';
 import {
   accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
@@ -253,15 +254,18 @@ export type AccountingPaymentPushErrorCode =
 export class AccountingPaymentPushError extends Error {
   /** Set on `rate_limited` only: how long to wait before retrying. */
   readonly retryAfterMs?: number;
+  /** Set on `rate_limited` only: who throttled (provider 429, Breeze's limiter, or its store). */
+  readonly throttleSource?: AccountingThrottleSource;
   constructor(
     public readonly code: AccountingPaymentPushErrorCode,
     public readonly status: 404 | 409 | 429 | 502,
     message: string,
-    opts: { retryAfterMs?: number } = {},
+    opts: { retryAfterMs?: number; throttleSource?: AccountingThrottleSource; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.name = 'AccountingPaymentPushError';
     this.retryAfterMs = opts.retryAfterMs;
+    this.throttleSource = opts.throttleSource;
   }
 }
 
@@ -342,13 +346,17 @@ function isRetryablePgError(err: unknown): boolean {
 }
 
 /** `resolveConnection`/`resolveLiveConnection` throw the mapping-service error
- *  hierarchy; only the two codes they can actually raise are re-typed. */
+ *  hierarchy; the three codes they can actually raise (`not_connected`,
+ *  `reauth_required`, and `rate_limited` from a throttled token refresh) are
+ *  re-typed, the throttle keeping its source and the original as `cause`. */
 function translateMappingError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingPaymentPushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingPaymentPushError('reauth_required', 409, err.message);
     if (err.code === 'rate_limited') {
-      throw new AccountingPaymentPushError('rate_limited', 429, err.message, { retryAfterMs: err.retryAfterMs });
+      throw new AccountingPaymentPushError('rate_limited', 429, err.message, {
+        retryAfterMs: err.retryAfterMs, throttleSource: rateLimitSourceOf(err) ?? undefined, cause: err,
+      });
     }
     throw new AccountingPaymentPushError('provider_error', err.status === 429 ? 502 : err.status, err.message);
   }
@@ -1118,12 +1126,16 @@ async function markPaymentRateLimitedAndThrow(
   partnerId: string,
   provider: AccountingConnection['provider'],
   retryAfterMs: number,
+  throttle: unknown,
 ): Promise<never> {
-  const message = providerRateLimitedMessage(accountingProviderDisplayName(provider));
+  // Worded by WHO throttled (F1): a Breeze pacing refusal or limiter outage
+  // is never blamed on the provider. The provider wording is unchanged.
+  const throttleSource = rateLimitSourceOf(throttle) ?? 'provider';
+  const message = providerRateLimitedMessage(accountingProviderDisplayName(provider), throttleSource);
   await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, {
     clearPendingOp: false, countAttempt: 'never',
   });
-  throw new AccountingPaymentPushError('rate_limited', 429, message, { retryAfterMs });
+  throw new AccountingPaymentPushError('rate_limited', 429, message, { retryAfterMs, throttleSource, cause: throttle });
 }
 
 /** A throttled token refresh, after the lease was claimed, releases it too. */
@@ -1136,7 +1148,7 @@ function resolveLiveConnectionForLease(
   return resolveLiveConnection(conn).catch(async (err: unknown) => {
     const retryAfterMs = rateLimitRetryAfterMs(err);
     if (retryAfterMs !== null) {
-      return markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, conn.provider, retryAfterMs);
+      return markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, conn.provider, retryAfterMs, err);
     }
     return translateMappingError(err);
   });
@@ -1746,7 +1758,7 @@ export async function pushPaymentToAccounting(
   } catch (err) {
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
-      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs);
+      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs, err);
     }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('createPayment', mappingId, err);
@@ -2108,7 +2120,7 @@ export async function deletePaymentInAccounting(
   } catch (err) {
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
-      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs);
+      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs, err);
     }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('deletePayment', mappingId, err);

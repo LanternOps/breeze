@@ -46,7 +46,7 @@ import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker
 import { writeRouteAudit } from '../../services/auditEvents';
 import { accountingProviderDisplayName, getAccountingProvider, providerSupports } from '../../services/accounting/providerRegistry';
 import {
-  isAccountingProviderError, providerRateLimitedTryAgainMessage, rateLimitRetryAfterMs,
+  isAccountingProviderError, providerRateLimitedTryAgainMessage, rateLimitRetryAfterMs, rateLimitSourceOf,
 } from '../../services/accounting/accountingProviderError';
 import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
@@ -228,7 +228,8 @@ function handleMappingError(c: Context, err: unknown): Response {
   }
   // A raw provider throttle (remote-candidates calls the provider directly).
   if (isAccountingProviderError(err) && setRetryAfter(c, err) !== null) {
-    return c.json({ error: providerRateLimitedTryAgainMessage(accountingProviderDisplayName(err.provider)), code: 'rate_limited' }, 429);
+    const label = accountingProviderDisplayName(err.provider);
+    return c.json({ error: providerRateLimitedTryAgainMessage(label, rateLimitSourceOf(err) ?? undefined), code: 'rate_limited' }, 429);
   }
   throw err;
 }
@@ -672,8 +673,13 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
       });
       console.warn('[accounting] QuickBooks home currency capture lost the compare-and-set', { partnerId: state.partnerId, provider });
     } else {
-      captureException(err instanceof Error ? err : new Error(String(err)), c);
-      console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+      // A throttled capture is not an incident (F7): a provider/local throttle
+      // never reaches Sentry, and a limiter-store outage is reported once,
+      // centrally, by the limiter itself — capturing it here would double it.
+      if (rateLimitRetryAfterMs(err) === null) captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.warn('[accounting] QuickBooks home currency capture failed', {
+        partnerId: state.partnerId, provider, throttleSource: rateLimitSourceOf(err) ?? undefined,
+      });
     }
   }
 

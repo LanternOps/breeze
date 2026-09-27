@@ -201,8 +201,9 @@ export function qboErrorToProviderError(err: unknown, operation: string): Accoun
   const e = (err && typeof err === 'object' ? err : {}) as Record<string, unknown>;
   const status = typeof e.status === 'number' ? e.status : undefined;
   const fault = qboFaultOf(err);
+  const kind = classifyQbo(err, status, fault);
   const translated = new AccountingProviderError({
-    kind: classifyQbo(err, status, fault),
+    kind,
     provider: 'quickbooks',
     operation,
     message: err instanceof Error ? err.message : String(err),
@@ -210,6 +211,10 @@ export function qboErrorToProviderError(err: unknown, operation: string): Accoun
     // `qboRequest` attaches the parsed `Retry-After` to a 429; 60s (Intuit's
     // throttle window) covers a 429 that reached here without one.
     retryAfterMs: typeof e.retryAfterMs === 'number' ? e.retryAfterMs : (status === 429 ? 60_000 : undefined),
+    // Only a 429 classifies rate_limited here, so it is always Intuit's own
+    // throttle. Breeze's limiter refusals never reach this line: they are
+    // already an AccountingProviderError and return unchanged above.
+    throttleSource: kind === 'rate_limited' ? 'provider' : undefined,
     providerCode: fault.code ?? undefined,
     providerMessage: fault.message ?? undefined,
     logBody: typeof e.body === 'string' ? e.body : undefined,

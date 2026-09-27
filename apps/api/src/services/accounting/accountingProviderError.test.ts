@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AccountingProviderError, providerErrorKindOf, providerFaultSuffix, providerTelemetryTags,
+  AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS, providerErrorKindOf, providerFaultSuffix,
+  providerRateLimitedMessage, providerRateLimitedRetryLaterMessage, providerRateLimitedTryAgainMessage,
+  providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf,
 } from './accountingProviderError';
 import { qboErrorToProviderError } from './quickbooksFault';
 
@@ -68,8 +70,63 @@ describe('qboErrorToProviderError (QBO boundary)', () => {
     expect(qboErrorToProviderError(raw({ status: 429, qboError: 'invalid_grant' }), 'op').kind).toBe('reauth');
   });
 
+  it('a 429 is a PROVIDER throttle (F1); a non-throttle carries no source', () => {
+    expect(qboErrorToProviderError(raw({ status: 429 }), 'op').throttleSource).toBe('provider');
+    expect(qboErrorToProviderError(raw({ status: 500 }), 'op').throttleSource).toBeUndefined();
+  });
+
   it('is idempotent on an already-translated error', () => {
     const t = qboErrorToProviderError(raw({ status: 500 }), 'op');
     expect(qboErrorToProviderError(t, 'other')).toBe(t);
+  });
+});
+
+describe('throttle source (F1)', () => {
+  const ape = (throttleSource?: 'provider' | 'local' | 'limiter_unavailable') => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'op', retryAfterMs: 1_000, throttleSource,
+  });
+
+  it('reads the source off a provider error, a coordinator error, or the coordinator error\'s cause', () => {
+    expect(rateLimitSourceOf(ape('local'))).toBe('local');
+    expect(rateLimitSourceOf(ape('limiter_unavailable'))).toBe('limiter_unavailable');
+    expect(rateLimitSourceOf(Object.assign(new Error('x'), { code: 'rate_limited', throttleSource: 'local' }))).toBe('local');
+    expect(rateLimitSourceOf(new Error('x', { cause: ape('limiter_unavailable') }) as Error & { code?: string })).toBeNull();
+    expect(rateLimitSourceOf(Object.assign(new Error('x', { cause: ape('limiter_unavailable') }), { code: 'rate_limited' })))
+      .toBe('limiter_unavailable');
+  });
+
+  it('an unlabelled throttle is the provider\'s (the historical meaning); a non-throttle has no source', () => {
+    expect(rateLimitSourceOf(ape())).toBe('provider');
+    expect(rateLimitSourceOf(Object.assign(new Error('x'), { code: 'rate_limited' }))).toBe('provider');
+    expect(rateLimitSourceOf(new AccountingProviderError({ kind: 'transient', provider: 'quickbooks', operation: 'op' }))).toBeNull();
+    expect(rateLimitSourceOf(new Error('x'))).toBeNull();
+  });
+
+  it('the provider wording is byte-identical to before; local and limiter wording never blames the provider', () => {
+    expect(providerRateLimitedMessage('QuickBooks')).toBe('QuickBooks is rate limiting requests; retrying automatically');
+    expect(providerRateLimitedMessage('QuickBooks', 'provider')).toBe('QuickBooks is rate limiting requests; retrying automatically');
+    expect(providerRateLimitedMessage('QuickBooks', 'local')).toBe('Breeze is pacing requests to QuickBooks; retrying automatically');
+    expect(providerRateLimitedMessage('QuickBooks', 'limiter_unavailable'))
+      .toBe('Breeze could not reach its rate limiter; retrying automatically');
+    expect(providerRateLimitedRetryLaterMessage('QuickBooks', 'push'))
+      .toBe('QuickBooks is rate limiting requests; push again if this does not clear shortly');
+    expect(providerRateLimitedRetryLaterMessage('QuickBooks', 'sync', 'local'))
+      .toBe('Breeze is pacing requests to QuickBooks; sync again if this does not clear shortly');
+    expect(providerRateLimitedRetryLaterMessage('QuickBooks', 'push', 'limiter_unavailable'))
+      .toBe('Breeze could not reach its rate limiter; push again if this does not clear shortly');
+    expect(providerRateLimitedTryAgainMessage('QuickBooks')).toBe('QuickBooks is rate limiting requests; try again shortly');
+    expect(providerRateLimitedTryAgainMessage('QuickBooks', 'local')).toBe('Breeze is pacing requests to QuickBooks; try again shortly');
+    expect(providerRateLimitedTryAgainMessage('QuickBooks', 'limiter_unavailable'))
+      .toBe('Breeze could not reach its rate limiter; try again shortly');
+  });
+});
+
+describe('rateLimitRetryAfterMs guards (F4)', () => {
+  it('a non-finite retryAfterMs falls back to the default (NaN would be an immediate, attempt-free retry loop)', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(rateLimitRetryAfterMs(new AccountingProviderError({ kind: 'rate_limited', provider: 'quickbooks', operation: 'op', retryAfterMs: bad })))
+        .toBe(DEFAULT_RATE_LIMIT_DELAY_MS);
+      expect(rateLimitRetryAfterMs(Object.assign(new Error('x'), { code: 'rate_limited', retryAfterMs: bad }))).toBe(DEFAULT_RATE_LIMIT_DELAY_MS);
+    }
   });
 });

@@ -1564,6 +1564,55 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
+  // ---- F1/F2 (PR #7197 review): source carried + truthful wording + cause ----
+  const sourced = (throttleSource: 'local' | 'limiter_unavailable') => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', retryAfterMs: 5_000, throttleSource,
+  });
+
+  it('a LOCAL throttle on a provider list call is worded as Breeze pacing, with source and cause', async () => {
+    const original = sourced('local');
+    listRemoteCustomersMock.mockRejectedValue(original);
+
+    const err = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e) as AccountingMappingError;
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', status: 429, throttleSource: 'local', message: 'Breeze is pacing requests to QuickBooks; try again shortly',
+    });
+    expect(err.cause).toBe(original);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a limiter_unavailable throttle on the token refresh is worded as Breeze\'s, with source and cause', async () => {
+    const original = sourced('limiter_unavailable');
+    getValidAccessTokenMock.mockRejectedValue(original);
+
+    const err = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e) as AccountingMappingError;
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', throttleSource: 'limiter_unavailable', message: 'Breeze could not reach its rate limiter; try again shortly',
+    });
+    expect(err.cause).toBe(original);
+  });
+
+  it('a LOCAL throttle on upsert persists the Breeze-pacing marker and throws with source and cause', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    const original = sourced('local');
+    upsertCustomerMock.mockRejectedValueOnce(original);
+
+    const err = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e) as AccountingMappingError;
+
+    const message = 'Breeze is pacing requests to QuickBooks; sync again if this does not clear shortly';
+    expect(err).toMatchObject({ code: 'rate_limited', throttleSource: 'local', message });
+    expect(err.cause).toBe(original);
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
   it('AccountingMappingError carries retryAfterMs only when given', () => {
     expect(new AccountingMappingError('rate_limited', 429, 'x', { retryAfterMs: 1_000 }).retryAfterMs).toBe(1_000);
     expect(new AccountingMappingError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();

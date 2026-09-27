@@ -41,18 +41,20 @@ const {
   captureExceptionMock,
   AccountingMappingError,
 } = vi.hoisted(() => {
-  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs / throttleSource / cause).
   class AccountingMappingError extends Error {
     readonly retryAfterMs?: number;
+    readonly throttleSource?: string;
     constructor(
       public readonly code: string,
       public readonly status: 404 | 409 | 429 | 502,
       message: string,
-      opts: { retryAfterMs?: number } = {},
+      opts: { retryAfterMs?: number; throttleSource?: string; cause?: unknown } = {},
     ) {
-      super(message);
+      super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
       this.name = 'AccountingMappingError';
       this.retryAfterMs = opts.retryAfterMs;
+      this.throttleSource = opts.throttleSource;
     }
   }
   return {
@@ -2581,5 +2583,73 @@ describe('AccountingPaymentPushError rate_limited shape', () => {
     expect({ code: err.code, status: err.status, retryAfterMs: err.retryAfterMs })
       .toEqual({ code: 'rate_limited', status: 429, retryAfterMs: 5_000 });
     expect(new AccountingPaymentPushError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
+  });
+
+  it('carries the throttle source and cause only when given (F1/F2)', () => {
+    const err = new AccountingPaymentPushError('rate_limited', 429, 'x', { retryAfterMs: 1_000, throttleSource: 'local', cause: 'c' });
+    expect(err).toMatchObject({ throttleSource: 'local', cause: 'c' });
+    const plain = new AccountingPaymentPushError('provider_error', 502, 'x');
+    expect(plain.throttleSource).toBeUndefined();
+    expect(plain.cause).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1/F2 (PR #7197 review): a throttle's SOURCE is carried and worded truthfully
+// (a Breeze pacing refusal or a limiter-store failure is never blamed on the
+// provider), and the provider error rides along as `cause` for the logs.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting — throttle source and cause (F1/F2)', () => {
+  const throttle = (throttleSource: 'provider' | 'local' | 'limiter_unavailable') => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks payment create', retryAfterMs: 5_000, throttleSource,
+  });
+
+  it.each([
+    ['provider', 'QuickBooks is rate limiting requests; retrying automatically'],
+    ['local', 'Breeze is pacing requests to QuickBooks; retrying automatically'],
+    ['limiter_unavailable', 'Breeze could not reach its rate limiter; retrying automatically'],
+  ] as const)('a %s throttle on payment create persists %j, carries the source and the cause', async (source, message) => {
+    const original = throttle(source);
+    createPaymentMock.mockRejectedValueOnce(original);
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingPaymentPushError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 5_000, throttleSource: source, message });
+    expect(err.cause).toBe(original);
+    expect(mapping()).toMatchObject({ pendingOp: 'push', claimedAt: null, syncAttempts: before, lastError: message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a local throttle on the TOKEN refresh keeps its source through the mapping service error', async () => {
+    const mappingErr = new AccountingMappingError(
+      'rate_limited', 429, 'Breeze is pacing requests to QuickBooks; try again shortly', { retryAfterMs: 4_000, throttleSource: 'local' },
+    );
+    resolveLiveConnectionMock.mockRejectedValueOnce(mappingErr);
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', throttleSource: 'local', message: 'Breeze is pacing requests to QuickBooks; retrying automatically',
+    });
+    expect(err.cause).toBe(mappingErr);
+    expect(mapping()!.lastError).toBe('Breeze is pacing requests to QuickBooks; retrying automatically');
+  });
+
+  it('a limiter_unavailable throttle on payment DELETE is worded as Breeze\'s and keeps the delete owed', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 0,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(throttle('limiter_unavailable'));
+
+    const err = await deletePaymentInAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', throttleSource: 'limiter_unavailable' });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', claimedAt: null, syncAttempts: 0, lastError: 'Breeze could not reach its rate limiter; retrying automatically',
+    });
   });
 });

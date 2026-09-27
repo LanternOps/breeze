@@ -62,6 +62,8 @@ import {
   providerRateLimitedRetryLaterMessage,
   providerRateLimitedTryAgainMessage,
   rateLimitRetryAfterMs,
+  rateLimitSourceOf,
+  type AccountingThrottleSource,
 } from './accountingProviderError';
 // Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
 // which dynamically imports `routes/agentWs.ts` — several callers of this
@@ -133,15 +135,18 @@ export type AccountingMappingErrorCode =
 export class AccountingMappingError extends Error {
   /** Set on `rate_limited` only: how long to wait before retrying. */
   readonly retryAfterMs?: number;
+  /** Set on `rate_limited` only: who throttled (provider 429, Breeze's limiter, or its store). */
+  readonly throttleSource?: AccountingThrottleSource;
   constructor(
     public readonly code: AccountingMappingErrorCode,
     public readonly status: 404 | 409 | 429 | 502,
     message: string,
-    opts: { retryAfterMs?: number } = {},
+    opts: { retryAfterMs?: number; throttleSource?: AccountingThrottleSource; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.name = 'AccountingMappingError';
     this.retryAfterMs = opts.retryAfterMs;
+    this.throttleSource = opts.throttleSource;
   }
 }
 
@@ -272,8 +277,10 @@ export async function resolveLiveConnection(conn: AccountingConnection): Promise
     // workers delay the job instead of treating it as an unexpected failure.
     const retryAfterMs = rateLimitRetryAfterMs(err);
     if (retryAfterMs !== null) {
+      const throttleSource = rateLimitSourceOf(err) ?? 'provider';
       throw new AccountingMappingError(
-        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(conn.provider)), { retryAfterMs },
+        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(conn.provider), throttleSource),
+        { retryAfterMs, throttleSource, cause: err },
       );
     }
     throw err;
@@ -328,8 +335,10 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
     // from the error, for the same no-leak reason as the 502 below.
     const retryAfterMs = rateLimitRetryAfterMs(err);
     if (retryAfterMs !== null && isAccountingProviderError(err)) {
+      const throttleSource = rateLimitSourceOf(err) ?? 'provider';
       throw new AccountingMappingError(
-        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(err.provider)), { retryAfterMs },
+        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(err.provider), throttleSource),
+        { retryAfterMs, throttleSource, cause: err },
       );
     }
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -1387,8 +1396,9 @@ async function syncMappedEntityUnderLease(
     // event, and a typed 429 the worker delays on and the route answers with
     // Retry-After.
     const retryAfterMs = rateLimitRetryAfterMs(err);
+    const throttleSource = rateLimitSourceOf(err) ?? undefined;
     const message = retryAfterMs !== null
-      ? providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(conn.provider), 'sync')
+      ? providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(conn.provider), 'sync', throttleSource)
       : sanitizeSyncErrorMessage(err, breezeEntityType);
     if (retryAfterMs === null) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
@@ -1404,12 +1414,16 @@ async function syncMappedEntityUnderLease(
     } catch (markErr) {
       // Still best-effort: markMappingError swallows a failed UPDATE, but
       // OPENING the context can fail too, and that must not replace the typed
-      // 502 below with a raw error. Sentry already has the original.
+      // 502/429 below with a raw error. On the failure path Sentry already has
+      // the original; on the throttle path it does not (a throttle is never
+      // reported), so this marker failure is the only event for it.
       captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), undefined, {
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
     }
-    if (retryAfterMs !== null) throw new AccountingMappingError('rate_limited', 429, message, { retryAfterMs });
+    if (retryAfterMs !== null) {
+      throw new AccountingMappingError('rate_limited', 429, message, { retryAfterMs, throttleSource, cause: err });
+    }
     throw new AccountingMappingError('provider_error', 502, message);
   }
 

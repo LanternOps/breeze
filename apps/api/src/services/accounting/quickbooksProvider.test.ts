@@ -1691,15 +1691,28 @@ describe('mapQboCdcPayment PrivateNote marker', () => {
 
 describe('rate limiting (Xero W01)', () => {
   it('every API call goes through the connection\'s call slot with the QBO limits', async () => {
+    // Cleared first: a call recorded by an earlier test must not satisfy this one.
+    slotMock.mockClear();
     mockFetchJsonOnce({ QueryResponse: { Customer: [] } });
     await quickbooksProvider.listRemoteCustomers(conn());
+    expect(slotMock).toHaveBeenCalledTimes(1);
     expect(slotMock).toHaveBeenCalledWith('quickbooks', quickbooksProvider.limits.rate, 'c1', expect.any(Function));
   });
 
-  it('a 429 is rate_limited with Retry-After honoured', async () => {
+  it('a 429 is rate_limited with Retry-After honoured, and is the PROVIDER\'s throttle (F1)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }));
     const err = await quickbooksProvider.listRemoteCustomers(conn()).catch((e) => e);
-    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 30_000, status: 429 });
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 30_000, status: 429, throttleSource: 'provider' });
+  });
+
+  it('a limiter refusal passes through the boundary with its LOCAL source intact (F1)', async () => {
+    const local = new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 2_000, throttleSource: 'local',
+    });
+    slotMock.mockImplementationOnce(async () => { throw local; });
+    const err = await quickbooksProvider.listRemoteCustomers(conn()).catch((e) => e);
+    expect(err).toBe(local);
+    expect(err.throttleSource).toBe('local');
   });
 
   it('a 429 without Retry-After waits 60s', async () => {

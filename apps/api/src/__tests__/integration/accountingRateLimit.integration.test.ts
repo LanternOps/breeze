@@ -24,7 +24,14 @@ describe.skipIf(!RUN)('accountingRateLimit against real Redis', () => {
     const gate = new Promise<void>((r) => { release = r; });
     const a = withProviderCallSlot('xero', spec, conn, () => gate);
     const b = withProviderCallSlot('xero', spec, conn, () => gate);
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait until both leases are actually held, rather than a fixed sleep that a
+    // slow host can outrun.
+    const inflightKey = `acct-rl:xero:inflight:${conn}`;
+    const deadline = Date.now() + 5_000;
+    while (await getRedis()!.zcard(inflightKey) < 2) {
+      if (Date.now() > deadline) throw new Error('both leases were never acquired');
+      await new Promise((r) => setTimeout(r, 10));
+    }
     await expect(withProviderCallSlot('xero', spec, conn, async () => 'third')).rejects.toMatchObject({ kind: 'rate_limited' });
     release();
     await Promise.all([a, b]);
@@ -49,7 +56,13 @@ describe.skipIf(!RUN)('accountingRateLimit against real Redis', () => {
     const liveKey = `acct-rl:xero:inflight:${conn}-live`;
     const future = Date.now() + 60_000;
     await redis.zadd(liveKey, future, 'live-a', future, 'live-b');
-    await expect(withProviderCallSlot('xero', spec, `${conn}-live`, async () => 'x')).rejects.toMatchObject({ kind: 'rate_limited' });
+    await redis.pexpire(liveKey, 60_000); // never outlive the test run
+    try {
+      await expect(withProviderCallSlot('xero', spec, `${conn}-live`, async () => 'x'))
+        .rejects.toMatchObject({ kind: 'rate_limited', throttleSource: 'local' });
+    } finally {
+      await redis.del(liveKey);
+    }
 
     await expect(withProviderCallSlot('xero', spec, conn, async () => 'reclaimed')).resolves.toBe('reclaimed');
     // The expired members were dropped, and this call's own lease was released.
