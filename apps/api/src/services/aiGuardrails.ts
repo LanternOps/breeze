@@ -1012,6 +1012,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // GET orgContacts.ts /organizations/:id/contacts: PERMISSIONS.ORGS_READ.
   // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ.
   list_remediation_suggestions: { resource: 'devices', action: 'read' },
+  // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ — proven fixes are
+  // the same class of read as the suggestions list they feed.
+  find_proven_fixes: { resource: 'devices', action: 'read' },
   list_incidents: { resource: 'alerts', action: 'read' },
   list_ai_agents: { resource: 'ai_agents', action: 'read' },
   list_ai_agent_runs: { resource: 'ai_agents', action: 'read' },

@@ -238,6 +238,10 @@ const BINDINGS: readonly Binding[] = [
     tool: 'list_remediation_suggestions', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
     toolOnly: { extra: [], reason: 'Explicit orgId requires organization access; exact-device scope also narrows device rows; empty site access returns no rows, including device-less suggestions.' },
   },
+  {
+    tool: 'find_proven_fixes', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Source alert/episode is resolved through the caller org condition, exact-device scope and site scope before any memory read; memory output is counts only.' },
+  },
   // Exact-device scope additionally limits these reads to linked assets.
   { tool: 'list_network_assets', routeFile: 'discovery.ts', method: 'get', path: '/assets', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
   { tool: 'get_network_asset', routeFile: 'discovery.ts', method: 'get', path: '/assets/:id', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },

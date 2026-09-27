@@ -378,6 +378,7 @@ export const TOOL_TIERS = {
   manage_monitor_definitions: 3,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
+  find_proven_fixes: 1,
   list_incidents: 1,
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
@@ -3186,6 +3187,17 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('list_remediation_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'find_proven_fixes',
+      registryDescription('find_proven_fixes'),
+      {
+        alertId: z.string().guid().optional(),
+        anomalyEpisodeId: z.string().guid().optional(),
+        limit: z.number().int().min(1).max(20).optional(),
+      },
+      makeHandler('find_proven_fixes', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

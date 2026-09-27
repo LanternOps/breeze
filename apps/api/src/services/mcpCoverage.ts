@@ -502,7 +502,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotes/quotes.ts': { tools: ['list_quotes', 'get_quote', 'manage_quotes'] },
   'quotesPublic.ts': { exempt: 'portal' },
   'reliability.ts': { gap: '#6777' },
-  'remediationSuggestions.ts': { tools: ['list_remediation_suggestions'] },
+  'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
   'remote/supportSessions.ts': { gap: '#6783' },
