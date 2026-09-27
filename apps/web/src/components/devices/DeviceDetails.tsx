@@ -814,8 +814,11 @@ export default function DeviceDetails({
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
                 an equal-width grid) with non-wrapping labels and values so e.g.
-                "14d 13h 24m" and "Logged-in User" stay on one line; only the
-                username (arbitrary length) is allowed to truncate. */}
+                "14d 13h 24m" stays on one line; the username (arbitrary
+                length) truncates first, and the "Logged-in User" label
+                itself is also allowed to truncate as a last resort under
+                extreme width constraints (#7153) — both blocks get min-w-0
+                so the Health block can't starve the Activity block. */}
             <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6">
               <div className="flex min-w-0 flex-1 gap-x-6">
                 <div className="shrink-0">
