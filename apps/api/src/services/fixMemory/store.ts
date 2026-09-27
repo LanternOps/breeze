@@ -525,7 +525,7 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
     isNotNull(fixMemory.scriptId),
     sql`EXISTS (SELECT 1 FROM scripts s WHERE s.id = fix_memory.script_id AND NOT (
           (fix_memory.org_id IS NULL AND (s.is_system OR (s.org_id IS NULL AND s.partner_id = fix_memory.partner_id)))
-          OR (fix_memory.org_id IS NOT NULL AND NOT s.is_system AND s.org_id = fix_memory.org_id)))`,
+          OR (fix_memory.org_id IS NOT NULL AND NOT s.is_system AND s.org_id IS NOT DISTINCT FROM fix_memory.org_id)))`,
   )!;
   const targets = await db.select({
     id: fixMemory.id,
