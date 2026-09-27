@@ -1,0 +1,50 @@
+# Paths whose change since the last full release forces a FULL release.
+#
+# Read by check-server-only-eligibility.sh FROM THE BASE RELEASE'S TREE, so a
+# candidate cannot weaken it. Gitignore-style, repo-root anchored: `**` matches
+# any depth, `*` matches within one path segment, a leading `!` re-includes a
+# path, and the last matching rule wins. `#` starts a comment.
+#
+# The guarantee this list backs: a server-only release never changes any
+# code-signed, notarized or binaries-image artifact, and never changes the
+# release/verification machinery. Server-emitted scripts, command delivery and
+# binary-selection logic are server code; they are listed for required human
+# review in agent-facing-paths.txt instead.
+
+# Binary sources and build inputs
+agent/**                        # Go agent family, installer/, recovery-media/, build-edition.sh, go.mod/go.sum
+apps/agent/**                   # stray Go tree; defensive
+apps/viewer/**                  # Tauri Viewer incl. src-tauri/Cargo.lock
+apps/helper/**                  # Tauri Helper
+docker/Dockerfile.binaries
+
+# Release and verification machinery
+scripts/release/**
+scripts/security/check-agent-binary-signatures.sh
+scripts/guided-setup.sh
+.github/workflows/release*.yml  # release.yml, release-promotion.yml, release-build-check.yml
+.github/workflows/promote-*.yml
+.github/scripts/**              # Windows signing/convergence scripts + everything release.yml may call
+.github/actions/**
+.github/release-provenance/**
+!.github/release-provenance/server-only-tags.tsv   # read from origin/main only; appended between releases
+selfhost-signing-template/**
+
+# Install/deploy templates fetched by operators and guided setup.
+# The root .env.example is deliberately NOT listed (owner decision): a server
+# fix that documents a new server env var may still ship server-only.
+# deploy/.env.example stays protected through deploy/**.
+docker-compose*.yml
+docker-compose.override.yml.*
+deploy/**
+
+# Lockfile / package-manager / toolchain / workspace manifests — any change forces a full release
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.npmrc
+.node-version
+.nvmrc
+patches/**
+turbo.json
+tsconfig.json

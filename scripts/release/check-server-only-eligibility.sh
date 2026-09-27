@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# Server-only release eligibility guard.
+#
+# NEVER run this file from the candidate's tree. run-server-only-guard.sh
+# extracts it from the BASE (last full) release and executes that copy, so
+# the policy files and helpers below are always the base release's: a
+# candidate cannot weaken its own guard.
+#
+# Exit 0 = eligible, 1 = refused (fail closed), 2 = usage.
+
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+POLICY="$SCRIPT_DIR/binary-affecting-paths.txt"
+AGENT_FACING="$SCRIPT_DIR/agent-facing-paths.txt"
+SEMVER_TOOL="$SCRIPT_DIR/sort-semver-tags.mjs"
+LEDGER_TOOL="$SCRIPT_DIR/server-only-ledger.mjs"
+PATH_TOOL="$SCRIPT_DIR/release-path-policy.mjs"
+MANIFEST_TOOL="$SCRIPT_DIR/release-image-manifest.mjs"
+CANDIDATE_LEDGER=".github/release-provenance/candidate-tags.tsv"
+SIDE_BRANCH_LEDGER=".github/release-provenance/side-branch-tags.tsv"
+STABLE_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+usage() {
+  cat >&2 <<'EOF'
+usage: check-server-only-eligibility.sh --repo DIR --tag vX.Y.Z --commit SHA --declared-base vA.B.C
+         --main-ref REF --ledger-ref REF [--online --expected-repository OWNER/REPO] [--report FILE]
+EOF
+  exit 2
+}
+
+fail() {
+  echo "server-only-guard: REFUSED: $*" >&2
+  exit 1
+}
+
+REPO=""
+TAG=""
+COMMIT=""
+DECLARED_BASE=""
+MAIN_REF=""
+LEDGER_REF=""
+ONLINE=false
+EXPECTED_REPOSITORY=""
+REPORT=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo|--tag|--commit|--declared-base|--main-ref|--ledger-ref|--expected-repository|--report)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+      case "$1" in
+        --repo) REPO="$2" ;;
+        --tag) TAG="$2" ;;
+        --commit) COMMIT="$2" ;;
+        --declared-base) DECLARED_BASE="$2" ;;
+        --main-ref) MAIN_REF="$2" ;;
+        --ledger-ref) LEDGER_REF="$2" ;;
+        --expected-repository) EXPECTED_REPOSITORY="$2" ;;
+        --report) REPORT="$2" ;;
+      esac
+      shift 2
+      ;;
+    --online) ONLINE=true; shift ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$REPO" ] && [ -n "$TAG" ] && [ -n "$COMMIT" ] && [ -n "$DECLARED_BASE" ] || usage
+[ -n "$MAIN_REF" ] && [ -n "$LEDGER_REF" ] || usage
+if [ "$ONLINE" = true ] && [ -z "$EXPECTED_REPOSITORY" ]; then usage; fi
+for helper in "$POLICY" "$AGENT_FACING" "$SEMVER_TOOL" "$LEDGER_TOOL" "$PATH_TOOL" "$MANIFEST_TOOL"; do
+  [ -f "$helper" ] || fail "guard installation is incomplete: missing $helper"
+done
+
+g() { git -C "$REPO" "$@"; }
+in_repo() { (cd "$REPO" && "$@"); }
+
+# 1. Full history, well-formed identifiers.
+SHALLOW=$(g rev-parse --is-shallow-repository 2>/dev/null) || fail "'$REPO' is not a Git repository"
+[ "$SHALLOW" != "true" ] || fail "shallow repository cannot prove release ancestry; fetch full history and tags"
+[[ "$TAG" =~ $STABLE_TAG_RE ]] || fail "'$TAG' is not a stable release tag; only vMAJOR.MINOR.PATCH may be server-only"
+[[ "$DECLARED_BASE" =~ $STABLE_TAG_RE ]] || fail "declared base '$DECLARED_BASE' is not a stable release tag"
+[ "$DECLARED_BASE" != "$TAG" ] || fail "base must differ from the tag"
+COMMIT=$(g rev-parse --verify --quiet "$COMMIT^{commit}") || fail "cannot resolve commit '$COMMIT'"
+g rev-parse --verify --quiet "$MAIN_REF^{commit}" >/dev/null || fail "cannot resolve main ref '$MAIN_REF'"
+g rev-parse --verify --quiet "$LEDGER_REF^{commit}" >/dev/null || fail "cannot resolve ledger ref '$LEDGER_REF'"
+
+# 2. The row, read from the ledger ref (never the candidate tree).
+in_repo node "$LEDGER_TOOL" validate --ref "$LEDGER_REF" >/dev/null || fail "server-only ledger at '$LEDGER_REF' is invalid"
+set +e
+ROW=$(in_repo node "$LEDGER_TOOL" row --ref "$LEDGER_REF" --tag "$TAG")
+ROW_STATUS=$?
+set -e
+[ "$ROW_STATUS" -eq 0 ] || fail "'$TAG' is not listed in the server-only ledger at '$LEDGER_REF'"
+IFS=$'\t' read -r _ ROW_COMMIT ROW_BASE _ <<< "$ROW"
+[ "$ROW_COMMIT" = "$COMMIT" ] || fail "ledger row for '$TAG' names commit $ROW_COMMIT, not $COMMIT"
+[ "$ROW_BASE" = "$DECLARED_BASE" ] || fail "ledger row for '$TAG' names base $ROW_BASE, not $DECLARED_BASE"
+
+# 3. An existing tag must peel to exactly the row's commit.
+if g rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+  TAG_SHA=$(g rev-parse "refs/tags/$TAG^{commit}")
+  [ "$TAG_SHA" = "$COMMIT" ] || fail "tag '$TAG' points at $TAG_SHA, but the ledger row names $COMMIT"
+fi
+
+# 4. A server-only tag may not also be a candidate or side-branch release.
+for other in "$CANDIDATE_LEDGER" "$SIDE_BRANCH_LEDGER"; do
+  if g cat-file -e "$LEDGER_REF:$other" 2>/dev/null; then
+    if g show "$LEDGER_REF:$other" | awk -F '\t' -v t="$TAG" '$1 == t { found = 1 } END { exit found ? 0 : 1 }'; then
+      fail "'$TAG' is also listed in $other; a tag belongs to exactly one provenance ledger"
+    fi
+  fi
+done
+
+# 5. Globally highest stable version. promote-signed-release-images moves
+#    :latest/:X.Y/:X unconditionally, so an older-line server-only release
+#    would move them backwards.
+STABLE_TAGS=$(g tag -l 'v*' | grep -E "$STABLE_TAG_RE" || true)
+HIGHEST_OTHER=$(printf '%s\n' "$STABLE_TAGS" | grep -vxF "$TAG" | grep -v '^$' | node "$SEMVER_TOOL" --sort-desc | head -n 1 || true)
+if [ -n "$HIGHEST_OTHER" ]; then
+  TOP=$(printf '%s\n%s\n' "$HIGHEST_OTHER" "$TAG" | node "$SEMVER_TOOL" --sort-desc | head -n 1)
+  [ "$TOP" = "$TAG" ] || fail "'$TAG' is not the globally highest stable version ($HIGHEST_OTHER exists); server-only releases are only possible on the newest line"
+fi
+
+# 6. Mainline.
+g merge-base --is-ancestor "$COMMIT" "$MAIN_REF" || fail "commit $COMMIT is not reachable from '$MAIN_REF'"
+
+# 7. The base is the highest stable ancestor tag that is not itself server-only.
+LEDGER_TAGS=$(in_repo node "$LEDGER_TOOL" tags --ref "$LEDGER_REF") || \
+  fail "cannot read server-only ledger tags at '$LEDGER_REF'"
+if printf '%s\n' "$LEDGER_TAGS" | grep -qxF "$DECLARED_BASE"; then
+  fail "declared base '$DECLARED_BASE' is itself a server-only release; chained hotfixes must name the last FULL release"
+fi
+g rev-parse --verify --quiet "refs/tags/$DECLARED_BASE" >/dev/null || fail "base tag '$DECLARED_BASE' does not exist"
+BASE_SHA=$(g rev-parse "refs/tags/$DECLARED_BASE^{commit}")
+g merge-base --is-ancestor "$BASE_SHA" "$COMMIT" || fail "base '$DECLARED_BASE' is not an ancestor of $COMMIT"
+COMPUTED_BASE=$(
+  g tag --merged "$COMMIT" -l 'v*' \
+    | grep -E "$STABLE_TAG_RE" \
+    | grep -vxF "$TAG" \
+    | { if [ -n "$LEDGER_TAGS" ]; then grep -vxF -f <(printf '%s\n' "$LEDGER_TAGS"); else cat; fi; } \
+    | node "$SEMVER_TOOL" --sort-desc \
+    | head -n 1 || true
+)
+[ -n "$COMPUTED_BASE" ] || fail "no full release is an ancestor of $COMMIT"
+[ "$COMPUTED_BASE" = "$DECLARED_BASE" ] || fail "declared base '$DECLARED_BASE' is not the last full release before $COMMIT (computed '$COMPUTED_BASE')"
+
+# 8. Nothing binary-affecting changed since the base. --no-renames reports a
+#    move out of a protected directory as a deletion there.
+CHANGED=$(mktemp)
+AGENT_HITS=$(mktemp)
+OFFENDING=$(mktemp)
+trap 'rm -f "$CHANGED" "$AGENT_HITS" "$OFFENDING"' EXIT
+g -c core.quotePath=false diff --no-renames --name-only -z "$BASE_SHA" "$COMMIT" > "$CHANGED"
+node "$PATH_TOOL" match --policy "$POLICY" < "$CHANGED" > "$OFFENDING"
+if [ -s "$OFFENDING" ]; then
+  echo "server-only-guard: binary-affecting paths changed since $DECLARED_BASE:" >&2
+  sed 's/^/  /' "$OFFENDING" >&2
+  fail "cut a full release; ${TAG} cannot be server-only"
+fi
+node "$PATH_TOOL" match --policy "$AGENT_FACING" < "$CHANGED" > "$AGENT_HITS"
+CHANGED_COUNT=$(tr -cd '\0' < "$CHANGED" | wc -c | tr -d ' ')
+
+# 9. --online: the base must be a published, stable, signed FULL release built
+#    from exactly BASE_SHA.
+if [ "$ONLINE" = true ]; then
+  command -v gh >/dev/null 2>&1 || fail "--online requires the gh CLI"
+  RELEASE_JSON=$(gh release view "$DECLARED_BASE" --repo "$EXPECTED_REPOSITORY" --json isDraft,isPrerelease) || \
+    fail "cannot read GitHub Release '$DECLARED_BASE'"
+  RELEASE_STATE=$(node -e 'const r = JSON.parse(process.argv[1]); console.log(`${r.isDraft} ${r.isPrerelease}`)' "$RELEASE_JSON") || \
+    fail "cannot parse GitHub Release '$DECLARED_BASE'"
+  [ "$RELEASE_STATE" = "false false" ] || fail "base release '$DECLARED_BASE' must be published and stable (isDraft isPrerelease = $RELEASE_STATE)"
+  MANIFEST_DIR=$(mktemp -d)
+  trap 'rm -f "$CHANGED" "$AGENT_HITS" "$OFFENDING"; rm -rf "$MANIFEST_DIR"' EXIT
+  gh release download "$DECLARED_BASE" --repo "$EXPECTED_REPOSITORY" --dir "$MANIFEST_DIR" \
+    --pattern release-artifact-manifest.json --pattern release-artifact-manifest.json.ed25519 \
+    || fail "cannot download the signed manifest of '$DECLARED_BASE'"
+  node "$MANIFEST_TOOL" verify \
+    --manifest "$MANIFEST_DIR/release-artifact-manifest.json" \
+    --signature "$MANIFEST_DIR/release-artifact-manifest.json.ed25519" \
+    --expected-repository "$EXPECTED_REPOSITORY" \
+    --expected-release "$DECLARED_BASE" \
+    --require-kind full \
+    --output "$MANIFEST_DIR/identity.json" >/dev/null \
+    || fail "the signed manifest of '$DECLARED_BASE' does not verify as a full release"
+  MANIFEST_SOURCE=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).sourceCommit)' "$MANIFEST_DIR/identity.json")
+  [ "$MANIFEST_SOURCE" = "$BASE_SHA" ] || fail "the signed manifest of '$DECLARED_BASE' names sourceCommit $MANIFEST_SOURCE, but the tag peels to $BASE_SHA"
+fi
+
+BINARIES_VERSION="${DECLARED_BASE#v}"
+if [ -n "$REPORT" ]; then
+  node - "$REPORT" "$AGENT_HITS" "$TAG" "$COMMIT" "$DECLARED_BASE" "$BASE_SHA" "$BINARIES_VERSION" "$CHANGED_COUNT" "$ONLINE" <<'NODE'
+const { readFileSync, writeFileSync } = require('node:fs');
+const [reportPath, hitsPath, tag, commit, base, baseSha, binariesVersion, changed, online] = process.argv.slice(2);
+const agentFacing = readFileSync(hitsPath, 'utf8').split('\n').filter(Boolean);
+writeFileSync(reportPath, `${JSON.stringify({
+  tag,
+  commit,
+  base,
+  baseSha,
+  binariesVersion,
+  changedPathCount: Number(changed),
+  online: online === 'true',
+  agentFacing,
+}, null, 2)}\n`);
+NODE
+fi
+
+echo "server-only-guard: ELIGIBLE: $TAG ($COMMIT) is server-only against $DECLARED_BASE ($BASE_SHA); $CHANGED_COUNT path(s) changed"
+if [ -s "$AGENT_HITS" ]; then
+  echo "server-only-guard: agent-facing server changes (required review — must stay compatible with $DECLARED_BASE agents):"
+  sed 's/^/  /' "$AGENT_HITS"
+else
+  echo "server-only-guard: agent-facing server changes: none"
+fi
