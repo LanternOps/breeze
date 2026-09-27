@@ -3,6 +3,7 @@ package monitoring
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewReturnsNonNilMonitor(t *testing.T) {
@@ -382,5 +383,81 @@ func TestRunChecksTracksConsecutiveFailures(t *testing.T) {
 
 	if failures != 3 {
 		t.Errorf("consecutiveFailures = %d, want 3", failures)
+	}
+}
+
+// A check pass that is still running when Stop and an emptying ApplyConfig
+// land must not re-create the removed watch states or report stale results.
+// The hook stops the monitor from inside the pass, after the first watch's
+// check and before its state is written. Before the fix the pass wrote a
+// state for every watch it had copied, which is why
+// TestWireEmptyConfigClearsRunningMonitor failed intermittently with
+// "watch states not cleared".
+func TestInFlightPassAfterStopWritesNoStateAndSendsNothing(t *testing.T) {
+	sent := 0
+	m := New(func(results []CheckResult) { sent += len(results) })
+
+	// A running monitor with two watches, driven by a pass we call directly
+	// so the test controls exactly when Stop lands.
+	stopCh := make(chan struct{})
+	m.mu.Lock()
+	m.config = MonitorConfig{
+		CheckIntervalSeconds: 300,
+		Watches: []WatchConfig{
+			{WatchType: "unknown_type", Name: "stale-a"},
+			{WatchType: "unknown_type", Name: "stale-b"},
+		},
+	}
+	m.states["unknown_type:stale-a"] = &watchState{}
+	m.states["unknown_type:stale-b"] = &watchState{}
+	m.stopCh = stopCh
+	m.ticker = time.NewTicker(time.Hour)
+	m.running = true
+	m.mu.Unlock()
+
+	// After the first watch is checked, the real Stop + emptying ApplyConfig
+	// lands, exactly as the heartbeat applies an empty monitoring_settings.
+	hooked := 0
+	m.afterCheck = func() {
+		hooked++
+		if hooked == 1 {
+			m.ApplyConfig(MonitorConfig{CheckIntervalSeconds: 60})
+		}
+	}
+
+	m.runChecksUntil(stopCh)
+
+	if hooked != 1 {
+		t.Fatalf("pass checked %d watch(es) after Stop, want it to stop after the first", hooked)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.running {
+		t.Fatal("monitor still running after the emptying ApplyConfig")
+	}
+	if len(m.states) != 0 {
+		t.Fatalf("in-flight pass re-created %d watch state(s) after Stop", len(m.states))
+	}
+	if sent != 0 {
+		t.Fatalf("in-flight pass sent %d stale result(s) after Stop", sent)
+	}
+}
+
+// Once stopped, the auto-restart decision touches no state and is abandoned.
+func TestAutoRestartDecisionAfterStopIsAbandoned(t *testing.T) {
+	m := New(func([]CheckResult) {})
+	stopCh := make(chan struct{})
+	close(stopCh)
+
+	w := WatchConfig{WatchType: WatchTypeProcess, Name: "__breeze_test_stopped__", AutoRestart: true, MaxRestartAttempts: 3}
+	result := CheckResult{Status: StatusStopped}
+	attempted, _, abandoned := m.maybeAutoRestartUntil(stopCh, w, &result)
+	if attempted || !abandoned {
+		t.Fatalf("attempted=%v abandoned=%v, want false/true", attempted, abandoned)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.states) != 0 {
+		t.Fatalf("stopped auto-restart decision created %d state(s)", len(m.states))
 	}
 }
