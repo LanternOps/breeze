@@ -33,6 +33,18 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+describe('ReportBuilder filter/grouping selects accessible name (#7156)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+  });
+
+  it('gives the group-by select a real accessible name', async () => {
+    render(<ReportBuilder mode="builder" />);
+    expect(await screen.findByRole('combobox', { name: 'Group by' })).toBeInTheDocument();
+  });
+});
+
 describe('ReportBuilder live preview', () => {
   beforeEach(() => {
     vi.clearAllMocks();
