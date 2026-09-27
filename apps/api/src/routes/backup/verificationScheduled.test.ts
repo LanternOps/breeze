@@ -27,7 +27,8 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'completed_with_errors', 'partial'],
+  DEGRADED_BACKUP_JOB_STATUSES: ['completed_with_errors', 'partial'],
   backupJobs: {
     orgId: 'backup_jobs.org_id',
     deviceId: 'backup_jobs.device_id',

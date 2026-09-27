@@ -88,7 +88,8 @@ vi.mock('../db/schema', () => ({
     updatedAt: 'portalUsers.updatedAt'
   },
   recoveryReadiness: {},
-  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'completed_with_errors', 'partial'],
+  DEGRADED_BACKUP_JOB_STATUSES: ['completed_with_errors', 'partial'],
   ticketComments: {},
   tickets: {}
 }));

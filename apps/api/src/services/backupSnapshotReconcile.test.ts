@@ -552,6 +552,17 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].source).toBe('reconcile');
   });
 
+  it('adopts a half-written completed_with_errors job the same way (#5396)', async () => {
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(baseSelects([claimingJob({ status: 'completed_with_errors' })]));
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].source).toBe('reconcile');
+  });
+
   it('does not adopt onto a device outside a site-restricted caller\u2019s sites', async () => {
     listBackupObjectsUnderPrefixMock.mockResolvedValue([
       { key: 'snapshots/snap-1/manifest.json', lastModified: new Date('2026-08-01T10:20:00Z') },

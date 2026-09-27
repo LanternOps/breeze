@@ -147,6 +147,7 @@ describe('mapBackupJobStatus', () => {
   it.each([
     ['completed', 'completed'],
     ['partial', 'completed_with_errors'],
+    ['completed_with_errors', 'completed_with_errors'],
     ['failed', 'failed'],
     ['running', 'in_progress'],
     ['pending', 'in_progress'],

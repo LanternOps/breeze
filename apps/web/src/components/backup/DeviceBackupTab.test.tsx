@@ -483,6 +483,71 @@ describe('DeviceBackupTab', () => {
     expect(within(jobHistoryTable as HTMLTableElement).queryByText('Pending')).toBeNull();
   });
 
+  it('labels a completed_with_errors job "Completed with errors", never "Pending" or "Completed", and surfaces the failed-file summary (#5396)', async () => {
+    // completed_with_errors contains "complete", so a naive `.includes('complete')`
+    // check (or the `?? jobStatusConfig.pending` fallback) would launder it into
+    // a clean green "Completed" or an unlabelled "Pending".
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastJob: {
+              id: 'job-cwe',
+              deviceId: 'device-1',
+              type: 'file',
+              status: 'completed_with_errors',
+              startedAt: '2026-03-30T00:00:00Z',
+              completedAt: '2026-03-30T00:10:00Z',
+              totalSize: 1024,
+              errorCount: 3,
+              errorLog: "3 file(s) could not be read during collection: C:\\x: permission denied",
+            },
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-cwe',
+              deviceId: 'device-1',
+              type: 'file',
+              status: 'completed_with_errors',
+              startedAt: '2026-03-30T00:00:00Z',
+              completedAt: '2026-03-30T00:10:00Z',
+              totalSize: 1024,
+              errorCount: 3,
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const jobHistoryTable = (await screen.findByText('Job History')).parentElement?.querySelector('table');
+    expect(jobHistoryTable).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('Completed with errors')).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).queryByText('Pending')).toBeNull();
+    expect(within(jobHistoryTable as HTMLTableElement).queryByText('Completed')).toBeNull();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('3')).toBeTruthy();
+
+    const diagnostic = await screen.findByTestId('backup-last-job-diagnostic');
+    expect(diagnostic.textContent).toContain('Last backup completed with errors');
+    expect(diagnostic.textContent).toContain('permission denied');
+  });
+
   describe('VSS status panel (#3027)', () => {
     function mockStatusWithVss(vssMetadata: unknown, lastJobExtra: Record<string, unknown> = {}) {
       fetchMock.mockImplementation(async (input, init) => {

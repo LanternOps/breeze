@@ -7,8 +7,11 @@
  * depend on another worker's schedule rather than on the raw job history.
  *
  * `backup_status` (pgEnum) is 'pending' | 'running' | 'completed' | 'failed' |
- * 'cancelled' | 'partial'. Success is 'completed' ONLY — 'partial' is treated
- * as a non-success here (it is NOT counted as a "successful backup" for the
+ * 'cancelled' | 'partial' | 'completed_with_errors'. Success is 'completed' or
+ * 'completed_with_errors' (#5396: a restore point that had file failures under
+ * the partial threshold — it has its own `completed_with_errors` check so an
+ * operator can choose to page on it). 'partial' is treated as a non-success
+ * here (it is NOT counted as a "successful backup" for the
  * no_successful_backup check, and it is also NOT counted as a "failure" for
  * consecutive_failures; see below).
  */
@@ -20,12 +23,19 @@ import type { ConditionResult } from '../types';
 
 export interface BackupContinuityCondition {
   type: 'backup_continuity';
-  check: 'no_successful_backup' | 'consecutive_failures';
+  check: 'no_successful_backup' | 'consecutive_failures' | 'completed_with_errors';
   maxAgeHours?: number;
   failureCount?: number;
 }
 
 const MS_PER_HOUR = 60 * 60 * 1000;
+
+const BACKUP_CONTINUITY_CHECKS = ['no_successful_backup', 'consecutive_failures', 'completed_with_errors'] as const;
+
+// Statuses that count as "a backup succeeded" for the age and streak checks.
+// completed_with_errors (#5396) produced a restore point; its file failures are
+// surfaced by its own check, not by pretending no backup happened.
+const SUCCESS_STATUSES: ReadonlySet<string> = new Set(['completed', 'completed_with_errors']);
 
 // How many of the newest jobs to pull per evaluation. Both checks only ever
 // need to walk back through a handful of recent jobs (consecutive_failures
@@ -66,7 +76,7 @@ export const backupContinuityHandler: ConditionHandler = {
 
     if (cond.check === 'no_successful_backup') {
       const maxAgeHours = cond.maxAgeHours ?? 24;
-      const lastSuccess = jobs.find((j) => j.status === 'completed');
+      const lastSuccess = jobs.find((j) => SUCCESS_STATUSES.has(j.status));
 
       if (!lastSuccess) {
         // Jobs exist but none succeeded — distinct from "never backed up".
@@ -91,6 +101,22 @@ export const backupContinuityHandler: ConditionHandler = {
           ? `Last successful backup was ${ageHours}h ago (threshold: ${maxAgeHours}h)`
           : `Last successful backup was ${ageHours}h ago`,
         actualValue: ageHours,
+      };
+    }
+
+    if (cond.check === 'completed_with_errors') {
+      // Judged on the newest TERMINAL run only: an in-flight retry has no
+      // outcome yet, and a cancelled run is a deliberate stop, not evidence
+      // either way. Failed/partial newest runs are owned by the other checks.
+      const latest = jobs.find(
+        (j) => j.status !== 'running' && j.status !== 'pending' && j.status !== 'cancelled'
+      );
+      const passed = latest?.status === 'completed_with_errors';
+      return {
+        passed,
+        description: passed
+          ? 'Latest backup completed with file errors (one or more files were not backed up)'
+          : `Latest backup status: ${latest?.status ?? 'none'}`,
       };
     }
 
@@ -121,7 +147,7 @@ export const backupContinuityHandler: ConditionHandler = {
         if (consecutive >= failureCount) break;
         continue;
       }
-      // 'completed' — a success breaks the streak.
+      // 'completed' / 'completed_with_errors' — a success breaks the streak.
       break;
     }
 
@@ -139,7 +165,7 @@ export const backupContinuityHandler: ConditionHandler = {
     const errors: string[] = [];
     const c = condition as Record<string, unknown>;
 
-    if (!['no_successful_backup', 'consecutive_failures'].includes(c.check as string)) {
+    if (!(BACKUP_CONTINUITY_CHECKS as readonly string[]).includes(c.check as string)) {
       errors.push(`${path}.check: Invalid check`);
     }
     if (c.check === 'no_successful_backup' && (typeof c.maxAgeHours !== 'number' || c.maxAgeHours <= 0)) {

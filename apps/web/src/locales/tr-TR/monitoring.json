@@ -297,7 +297,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Başarılı yedekleme yok",
-    "consecutive_failures": "Ardışık hatalar"
+    "consecutive_failures": "Ardışık hatalar",
+    "completed_with_errors": "Dosya hatalarıyla tamamlandı"
   },
   "checkTypes": {
     "icmp_ping": "ICMP ping testi",

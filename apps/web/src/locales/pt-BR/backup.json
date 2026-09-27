@@ -19,6 +19,7 @@
     "running": "Em execução",
     "failed": "Falhou",
     "completed": "Concluído",
+    "completedWithErrors": "Concluído com erros",
     "partial": "Parcial",
     "queued": "Na fila",
     "cancelled": "Cancelado",
@@ -52,7 +53,9 @@
     "errorCount_other": "{{count}} erros",
     "failedCount_one": "{{count}} com falha",
     "failedCount_other": "{{count}} com falha",
-    "failedFilesTooltip": "Arquivos que falharam durante este backup"
+    "failedFilesTooltip": "Arquivos que falharam durante este backup",
+    "filesNotBackedUp_one": "{{count}} arquivo não copiado",
+    "filesNotBackedUp_other": "{{count}} arquivos não copiados"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Nenhuma linha do tempo de provedor disponível ainda.",
@@ -175,6 +178,7 @@
     "vssUnprotectedVolumes": "Lido do volume ativo, não de uma cópia de sombra VSS: {{volumes}}. Arquivos em uso nesses volumes podem ter sido ignorados ou capturados em um estado inconsistente.",
     "lastBackupFailed": "O último backup falhou",
     "lastBackupCompletedWithWarnings": "O último backup foi concluído com avisos",
+    "lastBackupCompletedWithErrors": "O último backup foi concluído com erros",
     "writer": "Gravador",
     "state": "Estado",
     "noVssWriterDetailsWereReportedForThe": "Nenhum detalhe de VSS writer foi relatado para o backup mais recente.",
