@@ -27,6 +27,7 @@ function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnecti
     refreshTokenExpiresAt: new Date(Date.now() + 86_400_000),
     environment: 'sandbox', homeCurrency: 'USD', multiCurrencyEnabled: null,
     defaultIncomeAccountRef: null, defaultTaxCodeRef: null,
+    defaultExemptTaxCodeRef: null, defaultPaymentAccountRef: null, providerConnectionRef: null,
     pushMode: 'auto', status: 'connected',
     createdAt: null, updatedAt: null, lastError: null,
     realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,

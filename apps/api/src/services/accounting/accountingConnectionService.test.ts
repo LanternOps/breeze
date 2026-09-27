@@ -1241,3 +1241,48 @@ describe('resolveActiveConnectionFor (Xero W01 producer gate)', () => {
     expect(partnerAxis.withSystem).not.toHaveBeenCalled();
   });
 });
+
+describe('Xero W02 columns', () => {
+  it('maps the three new columns, defaulting absent values to null', async () => {
+    const { mapConnection } = await import('./accountingConnectionService');
+
+    const mapped = mapConnection(ambientConnectionRow({
+      defaultExemptTaxCodeRef: 'EXEMPTOUTPUT',
+      defaultPaymentAccountRef: '13918178-849a-4823-9a31-57b7eac713d7',
+      providerConnectionRef: 'e1eede29-f875-4a5d-8470-17f6a29a88b1',
+    }) as any);
+    expect(mapped.defaultExemptTaxCodeRef).toBe('EXEMPTOUTPUT');
+    expect(mapped.defaultPaymentAccountRef).toBe('13918178-849a-4823-9a31-57b7eac713d7');
+    expect(mapped.providerConnectionRef).toBe('e1eede29-f875-4a5d-8470-17f6a29a88b1');
+
+    const bare = mapConnection(ambientConnectionRow({
+      defaultExemptTaxCodeRef: undefined,
+      defaultPaymentAccountRef: undefined,
+      providerConnectionRef: undefined,
+    }) as any);
+    expect([bare.defaultExemptTaxCodeRef, bare.defaultPaymentAccountRef, bare.providerConnectionRef]).toEqual([null, null, null]);
+  });
+
+  it('upsertConnection writes providerConnectionRef on insert AND on a same-provider reconnect', async () => {
+    const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+    const db = makeMockDb(captured);
+    const { upsertConnection } = await import('./accountingConnectionService');
+
+    await upsertConnection(db, 'p1', 'xero', { realmId: 't1', providerConnectionRef: 'conn-1' });
+
+    expect(captured.insertValues).toMatchObject({ providerConnectionRef: 'conn-1' });
+    expect(captured.updateSet).toMatchObject({ providerConnectionRef: 'conn-1' });
+  });
+
+  it('a token-only reconnect (field omitted) leaves providerConnectionRef untouched', async () => {
+    const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+    const db = makeMockDb(captured);
+    const { upsertConnection } = await import('./accountingConnectionService');
+
+    await upsertConnection(db, 'p1', 'xero', { accessToken: 'a' });
+
+    expect(captured.updateSet).not.toHaveProperty('providerConnectionRef');
+    expect(captured.updateSet).not.toHaveProperty('defaultExemptTaxCodeRef');
+    expect(captured.updateSet).not.toHaveProperty('defaultPaymentAccountRef');
+  });
+});

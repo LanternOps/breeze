@@ -29,6 +29,10 @@ export interface AccountingConnection {
   multiCurrencyEnabled: boolean | null;
   defaultIncomeAccountRef: string | null;
   defaultTaxCodeRef: string | null;
+  defaultExemptTaxCodeRef: string | null;
+  defaultPaymentAccountRef: string | null;
+  /** Xero connection id (targeted DELETE /connections/{id}); null for QuickBooks and pending_tenant rows. */
+  providerConnectionRef: string | null;
   pushMode: AccountingPushMode;
   status: AccountingConnectionStatus;
   createdAt: Date | null;
@@ -56,6 +60,9 @@ export interface UpsertConnectionFields {
   homeCurrency?: string | null;
   defaultIncomeAccountRef?: string | null;
   defaultTaxCodeRef?: string | null;
+  defaultExemptTaxCodeRef?: string | null;
+  defaultPaymentAccountRef?: string | null;
+  providerConnectionRef?: string | null;
   pushMode?: AccountingPushMode;
   webhookVerifierToken?: string | null;
   status?: AccountingConnectionStatus;
@@ -122,7 +129,7 @@ function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T>
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }
 
-function mapConnection(row: AccountingConnectionRow): AccountingConnection {
+export function mapConnection(row: AccountingConnectionRow): AccountingConnection {
   return {
     id: row.id,
     partnerId: row.partnerId,
@@ -137,6 +144,9 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     multiCurrencyEnabled: row.multiCurrencyEnabled ?? null,
     defaultIncomeAccountRef: row.defaultIncomeAccountRef ?? null,
     defaultTaxCodeRef: row.defaultTaxCodeRef ?? null,
+    defaultExemptTaxCodeRef: row.defaultExemptTaxCodeRef ?? null,
+    defaultPaymentAccountRef: row.defaultPaymentAccountRef ?? null,
+    providerConnectionRef: row.providerConnectionRef ?? null,
     pushMode: row.pushMode as AccountingPushMode,
     status: row.status as AccountingConnectionStatus,
     createdAt: row.createdAt ?? null,
@@ -366,6 +376,9 @@ export async function upsertConnection(
     homeCurrency: fields.homeCurrency,
     defaultIncomeAccountRef: fields.defaultIncomeAccountRef,
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
+    defaultExemptTaxCodeRef: fields.defaultExemptTaxCodeRef,
+    defaultPaymentAccountRef: fields.defaultPaymentAccountRef,
+    providerConnectionRef: fields.providerConnectionRef,
     pushMode: fields.pushMode ?? 'auto',
     webhookVerifierTokenEncrypted: encryptedField(fields.webhookVerifierToken),
     realmIdFingerprint: fingerprintField(fields.realmId),
@@ -402,6 +415,9 @@ export async function upsertConnection(
     homeCurrency: fields.homeCurrency,
     defaultIncomeAccountRef: fields.defaultIncomeAccountRef,
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
+    defaultExemptTaxCodeRef: fields.defaultExemptTaxCodeRef,
+    defaultPaymentAccountRef: fields.defaultPaymentAccountRef,
+    providerConnectionRef: fields.providerConnectionRef,
     pushMode: fields.pushMode,
     webhookVerifierTokenEncrypted: values.webhookVerifierTokenEncrypted,
     realmIdFingerprint: values.realmIdFingerprint,
