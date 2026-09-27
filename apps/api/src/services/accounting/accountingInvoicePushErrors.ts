@@ -46,17 +46,26 @@ export type AccountingInvoicePushErrorCode =
   // A Breeze-side data problem, not an outage: every retry would refuse the
   // same way, so it is terminal in the worker.
   | 'invoice_totals_mismatch'
+  // The provider (or Breeze's own limiter) is throttling: nothing was accepted
+  // remotely. 429 with `retryAfterMs`; the worker DELAYS the job without
+  // consuming an attempt (jobs/accountingJobDelay.ts), the route answers 429 +
+  // Retry-After. Deliberately NOT in the worker's TERMINAL_CODES.
+  | 'rate_limited'
   | 'provider_error' | 'record_failed' // 502s; record_failed = remote ok, local persist failed (never retry)
   // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error';
 
 export class AccountingInvoicePushError extends Error {
+  /** Set on `rate_limited` only: how long to wait before retrying. */
+  readonly retryAfterMs?: number;
   constructor(
     public readonly code: AccountingInvoicePushErrorCode,
-    public readonly status: 404 | 409 | 502,
+    public readonly status: 404 | 409 | 429 | 502,
     message: string,
+    opts: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = 'AccountingInvoicePushError';
+    this.retryAfterMs = opts.retryAfterMs;
   }
 }

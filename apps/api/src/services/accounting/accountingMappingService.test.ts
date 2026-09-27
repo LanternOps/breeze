@@ -105,7 +105,9 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   organizations, sites, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
 } from '../../db/schema';
+import { AccountingProviderError } from './accountingProviderError';
 import {
+  AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
   normalizeMatchValue,
@@ -1490,5 +1492,61 @@ describe('resolveConnection targets (Xero W01)', () => {
     resolveActiveConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks', status: 'reauth_required' }));
     const { resolveConnection } = await import('./accountingMappingService');
     await expect(resolveConnection('p1')).rejects.toMatchObject({ code: 'reauth_required', message: 'QuickBooks needs to be reconnected' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14): a provider throttle is `rate_limited`/429
+// with retryAfterMs — never the generic provider_error/502, never a Sentry
+// event — so routes answer 429 + Retry-After and workers delay the job.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting (Xero W01 Task 14)', () => {
+  const throttle = (retryAfterMs?: number) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', httpStatus: 429, retryAfterMs,
+    logBody: 'SUPER-SECRET-UPSTREAM-BODY',
+  });
+
+  it('a throttled provider list call is rate_limited 429 with retryAfterMs, not provider_error, and raises no Sentry event', async () => {
+    listRemoteCustomersMock.mockRejectedValue(throttle(30_000));
+
+    const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AccountingMappingError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000 });
+    expect((err as Error).message).toBe('QuickBooks is rate limiting requests; try again shortly');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh is re-typed rate_limited 429 (default 60s when no Retry-After)', async () => {
+    getValidAccessTokenMock.mockRejectedValue(throttle());
+
+    await expect(listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 60_000 });
+  });
+
+  it('a throttled upsert follows the transient persistence path (row marked error) minus Sentry, and throws rate_limited', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(throttle(12_000));
+
+    const err: unknown = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 12_000 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    const persisted = currentMappingRows.find((r) => r.id === 'm1');
+    expect(persisted).toMatchObject({
+      syncStatus: 'error', remoteEntityId: 'qb-1', lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+    });
+    // The Redis sync lease is released, so the delayed retry is not refused sync_in_progress.
+    expect(redisMock.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('del'"), 1, expect.any(String), expect.any(String));
+  });
+
+  it('AccountingMappingError carries retryAfterMs only when given', () => {
+    expect(new AccountingMappingError('rate_limited', 429, 'x', { retryAfterMs: 1_000 }).retryAfterMs).toBe(1_000);
+    expect(new AccountingMappingError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
   });
 });

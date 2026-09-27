@@ -100,3 +100,38 @@ export function providerLogFields(err: unknown): { status: string; faultCode: st
     body: isAccountingProviderError(err) ? err.logBody ?? '' : '',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 "Rate limiting"): a throttle is a DELAY, not a
+// failure. Coordinators re-raise it as their own `rate_limited` error (status
+// 429) carrying `retryAfterMs`; workers delay the job without consuming an
+// attempt (jobs/accountingJobDelay.ts) and routes answer 429 + Retry-After.
+// ---------------------------------------------------------------------------
+
+/** Used when a throttle carries no Retry-After. */
+export const DEFAULT_RATE_LIMIT_DELAY_MS = 60_000;
+
+/**
+ * The Retry-After of a rate limit, or null when `err` is not one. Recognises a
+ * provider's `AccountingProviderError{kind:'rate_limited'}` and any coordinator
+ * error with `code: 'rate_limited'` (invoice push, payment push, mapping), so a
+ * worker or route can branch on "throttled" without knowing which layer raised it.
+ */
+export function rateLimitRetryAfterMs(err: unknown): number | null {
+  if (isAccountingProviderError(err)) {
+    return err.kind === 'rate_limited' ? err.retryAfterMs ?? DEFAULT_RATE_LIMIT_DELAY_MS : null;
+  }
+  const e = err && typeof err === 'object' ? err as { code?: unknown; retryAfterMs?: unknown } : null;
+  if (e?.code !== 'rate_limited') return null;
+  return typeof e.retryAfterMs === 'number' ? e.retryAfterMs : DEFAULT_RATE_LIMIT_DELAY_MS;
+}
+
+/** `last_error` / message for a throttled sync that a queued retry will pick up. */
+export function providerRateLimitedMessage(label: string): string {
+  return `${label} is rate limiting requests; retrying automatically`;
+}
+
+/** Message for a throttled interactive read, which nothing retries on its own. */
+export function providerRateLimitedTryAgainMessage(label: string): string {
+  return `${label} is rate limiting requests; try again shortly`;
+}

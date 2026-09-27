@@ -57,6 +57,12 @@ import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
+import {
+  isAccountingProviderError,
+  providerRateLimitedMessage,
+  providerRateLimitedTryAgainMessage,
+  rateLimitRetryAfterMs,
+} from './accountingProviderError';
 // Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
 // which dynamically imports `routes/agentWs.ts` — several callers of this
 // module (quoteSendWorker, stripeReconcileSweep, invoiceWorker, contractWorker,
@@ -115,19 +121,27 @@ export type AccountingMappingErrorCode =
   // a catalog item syncs once per partner), so the price book can genuinely
   // lack a row in the resolved target currency. Surfaced the same way
   // income_account_required is: a pre-flight 409 before any provider call.
-  | 'item_price_required';
+  | 'item_price_required'
+  // Throttled by the provider or Breeze's own limiter (429, `retryAfterMs`).
+  // Routes answer 429 + Retry-After; the sync worker delays the job without
+  // consuming an attempt. Deliberately NOT in MAPPING_TERMINAL_CODES.
+  | 'rate_limited';
 
 // Typed failure the route translates straight to an HTTP status (mirrors
 // QbImportError in quickbooksCustomerImport.ts). Narrowing `code`/`status` to
 // literals lets a route drop its `as`-cast.
 export class AccountingMappingError extends Error {
+  /** Set on `rate_limited` only: how long to wait before retrying. */
+  readonly retryAfterMs?: number;
   constructor(
     public readonly code: AccountingMappingErrorCode,
-    public readonly status: 404 | 409 | 502,
+    public readonly status: 404 | 409 | 429 | 502,
     message: string,
+    opts: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = 'AccountingMappingError';
+    this.retryAfterMs = opts.retryAfterMs;
   }
 }
 
@@ -254,6 +268,14 @@ export async function resolveLiveConnection(conn: AccountingConnection): Promise
     if (err instanceof ReauthRequiredError) {
       throw new AccountingMappingError('reauth_required', 409, `${accountingProviderDisplayName(conn.provider)} needs to be reconnected`);
     }
+    // A throttled token endpoint (Xero W01): typed, so routes answer 429 and
+    // workers delay the job instead of treating it as an unexpected failure.
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null) {
+      throw new AccountingMappingError(
+        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(conn.provider)), { retryAfterMs },
+      );
+    }
     throw err;
   }
   return { ...conn, accessToken };
@@ -297,6 +319,15 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
   try {
     return await action();
   } catch (err) {
+    // A throttle is not an upstream failure (Xero W01): 429 + retryAfterMs, no
+    // Sentry event. The message is built from the provider label only, never
+    // from the error, for the same no-leak reason as the 502 below.
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null && isAccountingProviderError(err)) {
+      throw new AccountingMappingError(
+        'rate_limited', 429, providerRateLimitedTryAgainMessage(accountingProviderDisplayName(err.provider)), { retryAfterMs },
+      );
+    }
     captureException(err instanceof Error ? err : new Error(String(err)));
     throw new AccountingMappingError('provider_error', 502, errorMessage);
   }
@@ -1347,10 +1378,19 @@ async function syncMappedEntityUnderLease(
     // record and marking sync_status='error' would misreport the mapping.
     if (err instanceof AccountingMappingError) throw err;
 
-    const message = sanitizeSyncErrorMessage(err, breezeEntityType);
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingMappingService', accounting_mapping_id: mapping.id, breeze_entity_type: breezeEntityType,
-    });
+    // Throttled (Xero W01): the same persistence as a transient failure — the
+    // row is marked `error` so it never reads as silently stuck — but no Sentry
+    // event, and a typed 429 the worker delays on and the route answers with
+    // Retry-After.
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    const message = retryAfterMs !== null
+      ? providerRateLimitedMessage(accountingProviderDisplayName(conn.provider))
+      : sanitizeSyncErrorMessage(err, breezeEntityType);
+    if (retryAfterMs === null) {
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingMappingService', accounting_mapping_id: mapping.id, breeze_entity_type: breezeEntityType,
+      });
+    }
     // Phase 2 (failure) — its OWN short context, so the error marker COMMITS
     // before the throw below. Written inside the caller's transaction it was a
     // savepoint that rolled straight back with the throw: the operator saw a
@@ -1365,6 +1405,7 @@ async function syncMappedEntityUnderLease(
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
     }
+    if (retryAfterMs !== null) throw new AccountingMappingError('rate_limited', 429, message, { retryAfterMs });
     throw new AccountingMappingError('provider_error', 502, message);
   }
 

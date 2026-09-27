@@ -84,7 +84,9 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // 2-decimal exponent misstates a JPY or KWD total (multi-currency §11).
 // `@breeze/shared` is a leaf package, so this closes no cycle.
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
-import { providerFaultSuffix, providerLogFields, providerTelemetryTags } from './accountingProviderError';
+import {
+  providerFaultSuffix, providerLogFields, providerRateLimitedMessage, providerTelemetryTags, rateLimitRetryAfterMs,
+} from './accountingProviderError';
 import {
   accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
 } from './providerRegistry';
@@ -239,19 +241,27 @@ export type AccountingPaymentPushErrorCode =
   | 'invoice_void'
   | 'customer_not_mapped'
   | 'home_currency_unknown' | 'currency_mismatch'
+  // Throttled (429, `retryAfterMs`): the push/delete stays owed, the lease is
+  // released and NO attempt is counted (Review Focus 5); the worker delays the
+  // job. Deliberately NOT in PAYMENT_TERMINAL_CODES.
+  | 'rate_limited'
   | 'provider_error'
   // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error'
   | 'record_failed';
 
 export class AccountingPaymentPushError extends Error {
+  /** Set on `rate_limited` only: how long to wait before retrying. */
+  readonly retryAfterMs?: number;
   constructor(
     public readonly code: AccountingPaymentPushErrorCode,
-    public readonly status: 404 | 409 | 502,
+    public readonly status: 404 | 409 | 429 | 502,
     message: string,
+    opts: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = 'AccountingPaymentPushError';
+    this.retryAfterMs = opts.retryAfterMs;
   }
 }
 
@@ -337,7 +347,10 @@ function translateMappingError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingPaymentPushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingPaymentPushError('reauth_required', 409, err.message);
-    throw new AccountingPaymentPushError('provider_error', err.status, err.message);
+    if (err.code === 'rate_limited') {
+      throw new AccountingPaymentPushError('rate_limited', 429, err.message, { retryAfterMs: err.retryAfterMs });
+    }
+    throw new AccountingPaymentPushError('provider_error', err.status === 429 ? 502 : err.status, err.message);
   }
   throw err;
 }
@@ -1080,7 +1093,7 @@ async function markPaymentMappingErrorInOwnContext(
   mappingId: string,
   partnerId: string,
   message: string,
-  opts: { clearPendingOp: boolean },
+  opts: { clearPendingOp: boolean; countAttempt?: 'always' | 'never' },
 ): Promise<number | null> {
   try {
     return await runInDbContext(() => markPaymentMappingError(mappingId, partnerId, message, opts));
@@ -1090,6 +1103,43 @@ async function markPaymentMappingErrorInOwnContext(
     });
     return null;
   }
+}
+
+/**
+ * A throttle after the lease was claimed (Review Focus 5): keep `pending_op`,
+ * RELEASE the lease (a held 10-minute lease would block the delayed retry), and
+ * do NOT count toward PAYMENT_PUSH_MAX_ATTEMPTS — throttling must never retire a
+ * real push, nor advance a delete's Sentry cadence. No Sentry event: a throttle
+ * is not an incident. The worker delays the job (jobs/accountingJobDelay.ts).
+ */
+async function markPaymentRateLimitedAndThrow(
+  runInDbContext: DbContextRunner,
+  mappingId: string,
+  partnerId: string,
+  provider: AccountingConnection['provider'],
+  retryAfterMs: number,
+): Promise<never> {
+  const message = providerRateLimitedMessage(accountingProviderDisplayName(provider));
+  await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, {
+    clearPendingOp: false, countAttempt: 'never',
+  });
+  throw new AccountingPaymentPushError('rate_limited', 429, message, { retryAfterMs });
+}
+
+/** A throttled token refresh, after the lease was claimed, releases it too. */
+function resolveLiveConnectionForLease(
+  runInDbContext: DbContextRunner,
+  mappingId: string,
+  partnerId: string,
+  conn: AccountingConnection,
+): Promise<AccountingConnection> {
+  return resolveLiveConnection(conn).catch(async (err: unknown) => {
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null) {
+      return markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, conn.provider, retryAfterMs);
+    }
+    return translateMappingError(err);
+  });
 }
 
 /**
@@ -1687,13 +1737,17 @@ export async function pushPaymentToAccounting(
   if (prep.kind === 'refused') throw prep.error;
 
   // ---- Token refresh, then QuickBooks, with NOTHING held ----
-  const liveConn = await resolveLiveConnection(prep.conn).catch(translateMappingError);
+  const liveConn = await resolveLiveConnectionForLease(runInDbContext, mappingId, partnerId, prep.conn);
   const provider = getAccountingProvider(prep.conn.provider);
 
   let ref: RemoteRef;
   try {
     ref = await runOutsideDbContext(() => provider.createPayment(liveConn, prep.payload));
   } catch (err) {
+    const throttleMs = rateLimitRetryAfterMs(err);
+    if (throttleMs !== null) {
+      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs);
+    }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('createPayment', mappingId, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
@@ -2042,7 +2096,7 @@ export async function deletePaymentInAccounting(
   }
   if (prep.kind === 'refused') throw prep.error;
 
-  const liveConn = await resolveLiveConnection(prep.conn).catch(translateMappingError);
+  const liveConn = await resolveLiveConnectionForLease(runInDbContext, mappingId, partnerId, prep.conn);
   const provider = getAccountingProvider(prep.conn.provider);
 
   let result: PaymentDeleteResult;
@@ -2052,6 +2106,10 @@ export async function deletePaymentInAccounting(
       remoteVersion: prep.remoteVersion,
     }));
   } catch (err) {
+    const throttleMs = rateLimitRetryAfterMs(err);
+    if (throttleMs !== null) {
+      await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs);
+    }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('deletePayment', mappingId, err);
     // `pending_op` KEPT and NEVER capped: the mapping is never cleared until

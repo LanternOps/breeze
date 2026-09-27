@@ -117,6 +117,7 @@ import {
   AccountingInvoicePushError,
 } from './accountingInvoicePush';
 import { qboErrorToProviderError } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
 
 const PARTNER = 'p1';
 const ORG = 'org-a';
@@ -1665,5 +1666,110 @@ describe('connection target threading (Xero W01)', () => {
     const target = { connectionId: CONN_ID };
     await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx, target);
     expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14, ruling P6): a throttle leaves the invoice
+// mapping in the same retryable `error` state a transient failure leaves, with
+// NO Sentry event, and raises `rate_limited` (429) carrying retryAfterMs so the
+// worker can delay the job without consuming an attempt.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting (ruling P6)', () => {
+  const RATE_LIMITED_MESSAGE = 'QuickBooks is rate limiting requests; retrying automatically';
+  const throttle = (retryAfterMs?: number) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks invoice push', httpStatus: 429, retryAfterMs,
+  });
+  const pushedInvoiceMapping = (): MappingRow => ({
+    id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+    remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+    remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+  });
+
+  it('a 429 on push marks the claimed mapping error (never stranded pending), raises no Sentry event, throws rate_limited 429', async () => {
+    pushInvoiceMock.mockRejectedValueOnce(throttle(30_000));
+
+    const err = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingInvoicePushError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000, message: RATE_LIMITED_MESSAGE });
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice')!;
+    expect(row).toMatchObject({ syncStatus: 'error', lastError: RATE_LIMITED_MESSAGE });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a 429 with no Retry-After defaults to 60s', async () => {
+    pushInvoiceMock.mockRejectedValueOnce(throttle());
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', retryAfterMs: 60_000 });
+  });
+
+  it('the delayed retry RE-CLAIMS the errored row (no duplicate insert) and lands the push', async () => {
+    pushInvoiceMock.mockRejectedValueOnce(throttle(30_000));
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(outcome).toMatchObject({ remoteEntityId: 'qb-inv-1', syncStatus: 'synced' });
+    expect(insertedValues.filter((v) => v.breezeEntityType === 'invoice')).toHaveLength(1);
+    const reclaim = updatedPatches.filter((u) => u.patch.syncStatus === 'pending');
+    expect(reclaim).toHaveLength(1);
+    expect(reclaim[0]!.patch.lastError).toBeNull();
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice')!;
+    expect(row).toMatchObject({ syncStatus: 'synced', lastError: null, remoteEntityId: 'qb-inv-1' });
+  });
+
+  it('a throttled TOKEN refresh after the row was claimed marks it error too, never leaving it pending', async () => {
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 15_000 }),
+    );
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 15_000, message: RATE_LIMITED_MESSAGE });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice')!;
+    expect(row).toMatchObject({ syncStatus: 'error', lastError: RATE_LIMITED_MESSAGE });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled dependency sync is re-typed rate_limited 429 (not provider_error), retryAfterMs carried', async () => {
+    setup({ mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })] });
+    syncMappedEntityMock.mockRejectedValueOnce(
+      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, RATE_LIMITED_MESSAGE), { retryAfterMs: 20_000 }),
+    );
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 20_000, message: RATE_LIMITED_MESSAGE });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('a 429 on void follows the transient path (row marked error) minus Sentry, and throws rate_limited 429', async () => {
+    setup({ mappings: [orgMappingRow(), pushedInvoiceMapping()] });
+    voidInvoiceMock.mockRejectedValueOnce(throttle(45_000));
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 45_000, message: RATE_LIMITED_MESSAGE });
+    const row = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(row).toMatchObject({ syncStatus: 'error', lastError: RATE_LIMITED_MESSAGE, remoteEntityId: 'qb-inv-1' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh on void throws rate_limited without touching the mapping', async () => {
+    setup({ mappings: [orgMappingRow(), pushedInvoiceMapping()] });
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'throttled'), { retryAfterMs: 8_000 }),
+    );
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 8_000 });
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+    expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({ syncStatus: 'synced', lastError: null });
+  });
+
+  it('AccountingInvoicePushError carries retryAfterMs only when given', () => {
+    expect(new AccountingInvoicePushError('rate_limited', 429, 'x', { retryAfterMs: 1_000 }).retryAfterMs).toBe(1_000);
+    expect(new AccountingInvoicePushError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
   });
 });

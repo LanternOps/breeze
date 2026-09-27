@@ -131,6 +131,7 @@ vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { qboErrorToProviderError } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import { db } from '../../db';
 import {
@@ -2467,5 +2468,114 @@ describe('AccountingPaymentPushError', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('AccountingPaymentPushError');
     expect({ code: err.code, status: err.status }).toEqual({ code: 'provider_error', status: 502 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14, Review Focus 5): a throttle is a DELAY, not
+// a failure. The push stays owed, the lease is released so the delayed retry
+// can claim it, and nothing is counted toward PAYMENT_PUSH_MAX_ATTEMPTS.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting (Review Focus 5)', () => {
+  const throttle = (retryAfterMs = 30_000) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks payment create', httpStatus: 429, retryAfterMs,
+  });
+
+  it('a 429 during payment create keeps the push owed, releases the lease, and does NOT count an attempt', async () => {
+    createPaymentMock.mockRejectedValueOnce(throttle());
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000 });
+    expect(mapping()!.pendingOp).toBe('push');
+    expect(mapping()!.claimedAt).toBeNull();
+    expect(mapping()!.syncAttempts).toBe(before);
+    expect(mapping()!.terminalReason ?? null).toBeNull();
+    expect(mapping()!.lastError).toBe('QuickBooks is rate limiting requests; retrying automatically');
+    // A throttle is not an incident: no Sentry event for it.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('sustained throttling never retires a push: a row one short of the ceiling is NOT given up', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1 })];
+    createPaymentMock.mockRejectedValueOnce(throttle());
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', claimedAt: null, syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1, terminalReason: null,
+    });
+  });
+
+  it('a throttled TOKEN refresh after the lease was claimed releases the lease too (no 10-minute block)', async () => {
+    // resolveLiveConnection re-types a token-endpoint 429 as the mapping
+    // service's rate_limited error; the lease was already claimed in phase 1.
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 12_000 }),
+    );
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingPaymentPushError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 12_000 });
+    expect(createPaymentMock).not.toHaveBeenCalled();
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', claimedAt: null, syncAttempts: before,
+      lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a 429 during payment DELETE keeps the delete owed, releases the lease, counts nothing, raises nothing', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 0,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(throttle(45_000));
+
+    const err = await deletePaymentInAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 45_000 });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', claimedAt: null, syncAttempts: 0,
+      lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+    });
+    // attempts <= 1 would otherwise raise the delete path's first Sentry event.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh on the DELETE path releases the lease as well', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 2,
+    })];
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'throttled'), { retryAfterMs: 9_000 }),
+    );
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 9_000 });
+    expect(deletePaymentMock).not.toHaveBeenCalled();
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', claimedAt: null, syncAttempts: 2 });
+  });
+
+  it('the delayed retry re-claims the released lease and completes the push', async () => {
+    createPaymentMock.mockRejectedValueOnce(throttle());
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
+    expect(mapping()).toMatchObject({ pendingOp: null, remoteEntityId: '181/145', syncStatus: 'synced' });
+  });
+});
+
+describe('AccountingPaymentPushError rate_limited shape', () => {
+  it('carries retryAfterMs and status 429', () => {
+    const err = new AccountingPaymentPushError('rate_limited', 429, 'throttled', { retryAfterMs: 5_000 });
+    expect({ code: err.code, status: err.status, retryAfterMs: err.retryAfterMs })
+      .toEqual({ code: 'rate_limited', status: 429, retryAfterMs: 5_000 });
+    expect(new AccountingPaymentPushError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
   });
 });
