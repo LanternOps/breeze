@@ -5553,7 +5553,9 @@
       "inviteSent": "Invitation sent to {{email}}",
       "copied": "Copied!",
       "copyLink": "Copy link",
-      "mfaReset": "MFA reset for {{email}}"
+      "mfaReset": "MFA reset for {{email}}",
+      "roleUpdated": "Role updated",
+      "orgAccessUpdated": "Organization access updated"
     },
     "resetMfa": {
       "title": "Reset MFA?",
