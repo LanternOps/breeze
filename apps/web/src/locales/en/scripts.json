@@ -1427,6 +1427,7 @@
   },
   "testRunner": {
     "title": "Test run",
+    "deviceSelectLabel": "Test device",
     "devicePlaceholder": "Select a test device…",
     "noDevices": "No compatible devices",
     "devicesLoadFailed": "Couldn't load devices",
