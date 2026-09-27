@@ -1,0 +1,197 @@
+{
+  "_comment": "Job needs/if of .github/workflows/release.yml at 16b3ab2283, before the server-only lane. release-workflow-server-only.test.mjs simulates this graph and the current one and requires identical job results for every full-release scenario. Update ONLY for an intentional change to the full-release job graph.",
+  "jobs": {
+    "build-api": {
+      "needs": [],
+      "if": null
+    },
+    "build-web": {
+      "needs": [],
+      "if": null
+    },
+    "build-agent": {
+      "needs": [],
+      "if": null
+    },
+    "build-recovery-media": {
+      "needs": [
+        "build-agent"
+      ],
+      "if": null
+    },
+    "build-windows-unsigned": {
+      "needs": [
+        "build-agent"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "build-macos-agent": {
+      "needs": [
+        "build-agent",
+        "validate-release-lineage"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "build-macos-installer-app": {
+      "needs": [
+        "build-macos-agent"
+      ],
+      "if": "vars.ENABLE_MACOS_SIGNING == 'true' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "build-viewer": {
+      "needs": [
+        "validate-release-lineage"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "build-helper": {
+      "needs": [],
+      "if": null
+    },
+    "build-viewer-macos": {
+      "needs": [
+        "validate-release-lineage"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "build-helper-macos": {
+      "needs": [
+        "validate-release-lineage"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "resolve-windows-signing-provider": {
+      "needs": [],
+      "if": "vars.ENABLE_WINDOWS_SIGNING == 'true' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "sign-windows-tauri-azure": {
+      "needs": [
+        "build-viewer",
+        "build-helper",
+        "resolve-windows-signing-provider"
+      ],
+      "if": "needs.resolve-windows-signing-provider.outputs.provider == 'azure' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "sign-windows-tauri-sslcom": {
+      "needs": [
+        "build-viewer",
+        "build-helper",
+        "resolve-windows-signing-provider"
+      ],
+      "if": "needs.resolve-windows-signing-provider.outputs.provider == 'sslcom' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "sign-windows-tauri": {
+      "needs": [
+        "resolve-windows-signing-provider",
+        "sign-windows-tauri-azure",
+        "sign-windows-tauri-sslcom"
+      ],
+      "if": "${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}"
+    },
+    "package-windows-updater": {
+      "needs": [
+        "sign-windows-tauri"
+      ],
+      "if": "!cancelled() && needs.sign-windows-tauri.result == 'success' && vars.ENABLE_WINDOWS_SIGNING == 'true' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')"
+    },
+    "merge-viewer-update-manifest": {
+      "needs": [
+        "build-viewer",
+        "build-viewer-macos",
+        "package-windows-updater"
+      ],
+      "if": "!cancelled() && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped') && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped') && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')"
+    },
+    "validate-release-lineage": {
+      "needs": [],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)"
+    },
+    "release-integrity-gate": {
+      "needs": [
+        "build-windows-unsigned",
+        "build-macos-agent",
+        "build-macos-installer-app",
+        "sign-windows-tauri",
+        "build-viewer-macos",
+        "build-helper-macos",
+        "package-windows-updater",
+        "merge-viewer-update-manifest"
+      ],
+      "if": "${{ always() && !cancelled() }}"
+    },
+    "create-release": {
+      "needs": [
+        "build-api",
+        "build-web",
+        "build-agent",
+        "build-recovery-media",
+        "build-windows-unsigned",
+        "build-macos-agent",
+        "build-macos-installer-app",
+        "sign-windows-tauri",
+        "build-viewer",
+        "build-helper",
+        "build-viewer-macos",
+        "build-helper-macos",
+        "merge-viewer-update-manifest",
+        "package-windows-updater",
+        "release-integrity-gate",
+        "validate-release-lineage",
+        "build-binaries-image",
+        "build-docker-api",
+        "build-docker-web",
+        "build-docker-portal",
+        "build-docker-m365-graph-read-executor",
+        "build-docker-m365-graph-actions-executor",
+        "build-docker-m365-communications-executor"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.validate-release-lineage.result == 'success' && needs.build-api.result == 'success' && needs.build-web.result == 'success' && needs.build-agent.result == 'success' && needs.build-recovery-media.result == 'success' && needs.release-integrity-gate.result == 'success' && needs.build-windows-unsigned.result == 'success' && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped') && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped') && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped') && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped') && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped') && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped') && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped') && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped') && (needs.merge-viewer-update-manifest.result == 'success' || needs.merge-viewer-update-manifest.result == 'skipped') && needs.build-binaries-image.result == 'success' && needs.build-docker-api.result == 'success' && needs.build-docker-web.result == 'success' && needs.build-docker-portal.result == 'success' && needs.build-docker-m365-graph-read-executor.result == 'success' && needs.build-docker-m365-graph-actions-executor.result == 'success' && needs.build-docker-m365-communications-executor.result == 'success' && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)"
+    },
+    "build-binaries-image": {
+      "needs": [
+        "build-agent",
+        "build-macos-agent",
+        "sign-windows-tauri",
+        "build-viewer",
+        "build-helper",
+        "build-viewer-macos",
+        "build-helper-macos"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.build-agent.result == 'success' && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped') && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped') && needs.build-viewer.result == 'success' && needs.build-helper.result == 'success' && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped') && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')"
+    },
+    "build-docker-api": {
+      "needs": [
+        "build-api"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.build-api.result == 'success'"
+    },
+    "build-docker-m365-graph-read-executor": {
+      "needs": [],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled()"
+    },
+    "build-docker-m365-graph-actions-executor": {
+      "needs": [],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled()"
+    },
+    "build-docker-m365-communications-executor": {
+      "needs": [],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled()"
+    },
+    "build-docker-web": {
+      "needs": [
+        "build-web"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.build-web.result == 'success'"
+    },
+    "build-docker-portal": {
+      "needs": [],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled()"
+    },
+    "promote-signed-release-images": {
+      "needs": [
+        "create-release"
+      ],
+      "if": "github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.create-release.result == 'success'"
+    }
+  }
+}

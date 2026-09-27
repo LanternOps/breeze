@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 POLICY="$SCRIPT_DIR/binary-affecting-paths.txt"
 AGENT_FACING="$SCRIPT_DIR/agent-facing-paths.txt"
 SEMVER_TOOL="$SCRIPT_DIR/sort-semver-tags.mjs"

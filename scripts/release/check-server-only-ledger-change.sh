@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
   echo "usage: check-server-only-ledger-change.sh --base-ref REF --head-ref REF --main-ref REF" >&2

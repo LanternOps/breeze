@@ -120,6 +120,11 @@ jobs:
 
   build-agent:
     name: Build Agent
+    # Server-only releases (classify-release) build no agent binaries. The
+    # explicit !cancelled() keeps this running on build-only dispatches, where
+    # validate-release-lineage is skipped.
+    needs: [classify-release]
+    if: ${{ !cancelled() && needs.classify-release.outputs.release_kind == 'full' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -279,7 +284,11 @@ jobs:
   # promotes it to required). See agent/recovery-media/.
   build-recovery-media:
     name: Build recovery media (${{ matrix.arch }})
-    needs: [build-agent]
+    needs: [build-agent, classify-release]
+    if: >-
+      !cancelled()
+      && needs.build-agent.result == 'success'
+      && needs.classify-release.outputs.release_kind == 'full'
     # Each leg builds on a runner of its own architecture. live-build's
     # bootstrap stage refuses a foreign-architecture target unless it is
     # configured for qemu-emulated debootstrap, so the arm64 leg on an
@@ -350,8 +359,11 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && needs.build-agent.result == 'success'
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: windows-latest
-    needs: [build-agent]
+    needs: [build-agent, classify-release]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -641,11 +653,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: macos-latest
     # validate-release-lineage: this job codesigns/notarizes with the Apple
     # secrets — it must not run against a tag whose lineage hasn't been
     # validated yet.
-    needs: [build-agent, validate-release-lineage]
+    needs: [build-agent, validate-release-lineage, classify-release]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1017,12 +1030,13 @@ jobs:
 
   build-macos-installer-app:
     name: Build macOS Installer App
-    needs: [build-macos-agent]
+    needs: [build-macos-agent, classify-release]
     runs-on: macos-latest
     if: >-
       vars.ENABLE_MACOS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1117,12 +1131,13 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     # validate-release-lineage: this job signs the Tauri updater bundle with
     # TAURI_SIGNING_PRIVATE_KEY — it must not run against a tag whose
     # lineage hasn't been validated yet. sign-windows-tauri-{azure,sslcom}
     # (which Authenticode-sign the MSI this job produces) already depend on
     # build-viewer, so they inherit this transitively.
-    needs: [validate-release-lineage]
+    needs: [validate-release-lineage, classify-release]
     strategy:
       fail-fast: false
       matrix:
@@ -1281,6 +1296,8 @@ jobs:
 
   build-helper:
     name: Build Helper
+    needs: [classify-release]
+    if: ${{ !cancelled() && needs.classify-release.outputs.release_kind == 'full' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1404,11 +1421,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: macos-latest
     # validate-release-lineage: this job codesigns (TAURI_SIGNING_PRIVATE_KEY
     # + Apple signing identity) and notarizes the DMG — it must not run
     # against a tag whose lineage hasn't been validated yet.
-    needs: [validate-release-lineage]
+    needs: [validate-release-lineage, classify-release]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1545,11 +1563,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: macos-latest
     # validate-release-lineage: this job codesigns (Apple signing identity)
     # and notarizes the DMG — it must not run against a tag whose lineage
     # hasn't been validated yet.
-    needs: [validate-release-lineage]
+    needs: [validate-release-lineage, classify-release]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1647,10 +1666,13 @@ jobs:
 
   resolve-windows-signing-provider:
     name: Resolve Windows signing provider
+    needs: [classify-release]
     if: >-
       vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1673,11 +1695,12 @@ jobs:
 
   sign-windows-tauri-azure:
     name: Sign Windows Tauri artifacts (Azure)
-    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider, classify-release]
     if: >-
       needs.resolve-windows-signing-provider.outputs.provider == 'azure'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -1813,11 +1836,12 @@ jobs:
 
   sign-windows-tauri-sslcom:
     name: Sign Windows Tauri artifacts (SSL.com)
-    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider, classify-release]
     if: >-
       needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -2007,8 +2031,8 @@ jobs:
 
   sign-windows-tauri:
     name: Windows Tauri signing convergence gate
-    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
-    if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
+    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom, classify-release]
+    if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' && needs.classify-release.outputs.release_kind == 'full' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -2046,8 +2070,9 @@ jobs:
       && vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+      && needs.classify-release.outputs.release_kind == 'full'
     runs-on: ubuntu-latest
-    needs: [sign-windows-tauri]
+    needs: [sign-windows-tauri, classify-release]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2112,12 +2137,16 @@ jobs:
   merge-viewer-update-manifest:
     name: Generate Viewer Update Manifest
     runs-on: ubuntu-latest
-    needs: [build-viewer, build-viewer-macos, package-windows-updater]
+    needs: [build-viewer, build-viewer-macos, package-windows-updater, classify-release]
+    # Explicitly gated on the release kind: this job accepts `skipped` parents,
+    # so a server-only release (every parent skipped) would otherwise RUN it and
+    # fail on an empty platform set. carry-forward-binaries supplies latest.json.
     if: >-
       !cancelled()
       && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
       && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
       && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
+      && needs.classify-release.outputs.release_kind == 'full'
     steps:
       - name: Download viewer updater bundles
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2246,10 +2275,259 @@ jobs:
             --main-ref origin/main \
             --candidate-registry-ref origin/main
 
+  # Server-only releases (.github/release-provenance/server-only-tags.tsv):
+  # a tag listed in the ledger ON MAIN is checked by the eligibility guard
+  # executed from the base (last full) release's tree. Eligible => every
+  # binary/signing/notarization job below is skipped and the base release's
+  # binaries image and Viewer latest.json are carried forward. A listed tag the
+  # guard refuses FAILS here — it never silently falls back to a full release.
+  # Build-only runs and unlisted tags are `full`, exactly as before this job.
+  classify-release:
+    name: Classify Release Kind
+    runs-on: ubuntu-latest
+    needs: [validate-release-lineage]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    outputs:
+      release_kind: ${{ steps.classify.outputs.release_kind }}
+      binaries_tag: ${{ steps.classify.outputs.binaries_tag }}
+      binaries_sha: ${{ steps.classify.outputs.binaries_sha }}
+      binaries_version: ${{ steps.classify.outputs.binaries_version }}
+    steps:
+      - name: Checkout full release history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Classify release kind
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_RELEASE: ${{ inputs.skip_release || false }}
+          LINEAGE_RESULT: ${{ needs.validate-release-lineage.result }}
+          LINEAGE_CHANNEL: ${{ needs.validate-release-lineage.outputs.channel }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/server-only-classification.json"
+          if [[ "$REF_TYPE" != "tag" || "$REF" != refs/tags/v* ]] \
+             || [[ "$EVENT_NAME" == "workflow_dispatch" && "$SKIP_RELEASE" == "true" ]]; then
+            echo "Build-only run: classified as a full release."
+            echo "release_kind=full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$LINEAGE_RESULT" != "success" ]]; then
+            echo "::error::release lineage must be validated before classification (validate-release-lineage: '$LINEAGE_RESULT')"
+            exit 1
+          fi
+          git rev-parse --verify 'origin/main^{commit}' >/dev/null
+          set +e
+          bash scripts/release/run-server-only-guard.sh \
+            --tag "$REF_NAME" \
+            --commit "$(git rev-parse 'HEAD^{commit}')" \
+            --ledger-ref origin/main \
+            --main-ref origin/main \
+            --online \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --report "$report"
+          status=$?
+          set -e
+          case "$status" in
+            3)
+              echo "$REF_NAME is not listed in the server-only ledger on main: full release."
+              echo "release_kind=full" >> "$GITHUB_OUTPUT"
+              ;;
+            0)
+              if [[ "$LINEAGE_CHANNEL" != "mainline" ]]; then
+                echo "::error::a server-only release requires mainline release lineage (got '$LINEAGE_CHANNEL')"
+                exit 1
+              fi
+              node - "$report" "$REF_NAME" "$GITHUB_OUTPUT" <<'NODE'
+          const { readFileSync, appendFileSync } = require('node:fs');
+          const [reportPath, tag, output] = process.argv.slice(2);
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          const stable = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
+          if (report.tag !== tag) throw new Error(`classification report is for ${report.tag}, not ${tag}`);
+          if (!stable.test(report.base ?? '') || report.base === tag) throw new Error(`invalid base ${report.base}`);
+          if (!/^[0-9a-f]{40}$/u.test(report.baseSha ?? '')) throw new Error('invalid base commit');
+          if (report.binariesVersion !== report.base.slice(1)) throw new Error('binariesVersion does not match the base tag');
+          appendFileSync(output, [
+            'release_kind=server-only',
+            `binaries_tag=${report.base}`,
+            `binaries_sha=${report.baseSha}`,
+            `binaries_version=${report.binariesVersion}`,
+            '',
+          ].join('\n'));
+          console.log(`${tag} is a server-only release; binaries carried from ${report.base} (${report.baseSha}).`);
+          NODE
+              ;;
+            *)
+              echo "::error::$REF_NAME is listed in the server-only ledger but the eligibility guard refused it; refusing to fall back to a full release. Fix or remove the ledger row and push a new tag."
+              exit 1
+              ;;
+          esac
+
+      - name: Upload server-only classification report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: server-only-classification
+          path: ${{ runner.temp }}/server-only-classification.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # Server-only only: carries the base release's binaries image (by its signed
+  # digest) and Viewer latest.json (byte-identical) into this release. Verifies
+  # the base's signed manifest first; never builds, signs or retags anything.
+  carry-forward-binaries:
+    name: Carry Forward Binaries (server-only)
+    runs-on: ubuntu-latest
+    needs: [classify-release]
+    if: >-
+      !cancelled()
+      && needs.classify-release.result == 'success'
+      && needs.classify-release.outputs.release_kind == 'server-only'
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BINARIES_TAG: ${{ needs.classify-release.outputs.binaries_tag }}
+      BINARIES_SHA: ${{ needs.classify-release.outputs.binaries_sha }}
+      BINARIES_VERSION: ${{ needs.classify-release.outputs.binaries_version }}
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify the base release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          base_dir="$RUNNER_TEMP/base-release"
+          mkdir -p "$base_dir"
+          gh release download "$BINARIES_TAG" --repo "$GITHUB_REPOSITORY" --dir "$base_dir" \
+            --pattern release-artifact-manifest.json \
+            --pattern release-artifact-manifest.json.ed25519
+          node scripts/release/release-image-manifest.mjs verify \
+            --manifest "$base_dir/release-artifact-manifest.json" \
+            --signature "$base_dir/release-artifact-manifest.json.ed25519" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-release "$BINARIES_TAG" \
+            --require-kind full \
+            --output "$base_dir/identity.json"
+          node - "$base_dir/identity.json" "$BINARIES_SHA" "$GITHUB_ENV" <<'NODE'
+          const { readFileSync, appendFileSync } = require('node:fs');
+          const [identityPath, expectedSourceCommit, githubEnv] = process.argv.slice(2);
+          const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
+          if (identity.sourceCommit !== expectedSourceCommit) {
+            throw new Error(`base manifest sourceCommit ${identity.sourceCommit} != base tag commit ${expectedSourceCommit}`);
+          }
+          const binaries = identity.images.find((image) => image.name === 'binaries');
+          if (!binaries) throw new Error('base manifest lists no binaries image');
+          const latest = identity.assets.filter((asset) => asset.name === 'latest.json');
+          if (latest.length > 1) throw new Error('base manifest lists latest.json more than once');
+          const lines = [`CARRIED_REPOSITORY=${binaries.repository}`, `CARRIED_DIGEST=${binaries.digest}`];
+          if (latest.length === 1) {
+            const [entry] = latest;
+            if (!/^[0-9a-f]{64}$/u.test(entry.sha256 ?? '') || !Number.isInteger(entry.size)) {
+              throw new Error('base manifest latest.json entry is malformed');
+            }
+            lines.push(`BASE_LATEST_SHA256=${entry.sha256}`, `BASE_LATEST_SIZE=${entry.size}`);
+          }
+          appendFileSync(githubEnv, `${lines.join('\n')}\n`);
+          NODE
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Confirm the carried binaries image
+        run: |
+          set -euo pipefail
+          ref="${CARRIED_REPOSITORY}@${CARRIED_DIGEST}"
+          docker buildx imagetools inspect "$ref" >/dev/null
+          docker pull --quiet "$ref" >/dev/null
+          container=$(docker create "$ref")
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp "$container:/binaries/VERSION" "$RUNNER_TEMP/carried-VERSION"
+          actual=$(tr -d '[:space:]' < "$RUNNER_TEMP/carried-VERSION")
+          if [[ "$actual" != "$BINARIES_VERSION" ]]; then
+            echo "::error::carried binaries image $ref has VERSION '$actual', expected '$BINARIES_VERSION'"
+            exit 1
+          fi
+          echo "Carrying $ref (VERSION $actual) from $BINARIES_TAG"
+
+      - name: Record carried signed-manifest input
+        run: |
+          node scripts/release/release-image-manifest.mjs record \
+            --name binaries --repository "$CARRIED_REPOSITORY" \
+            --digest "$CARRIED_DIGEST" --source-commit "$BINARIES_SHA" \
+            --carried-from-release "$BINARIES_TAG" \
+            --carried-from-source-commit "$BINARIES_SHA" \
+            --output binaries.json
+
+      - name: Upload carried binaries image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-binaries
+          path: binaries.json
+          retention-days: 90
+
+      - name: Carry the Viewer update manifest byte-identical
+        if: env.BASE_LATEST_SHA256 != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p carried-latest
+          gh release download "$BINARIES_TAG" --repo "$GITHUB_REPOSITORY" --dir carried-latest --pattern latest.json
+          actual_sha256=$(sha256sum carried-latest/latest.json | cut -d ' ' -f 1)
+          actual_size=$(wc -c < carried-latest/latest.json | tr -d ' ')
+          if [[ "$actual_sha256" != "$BASE_LATEST_SHA256" || "$actual_size" != "$BASE_LATEST_SIZE" ]]; then
+            echo "::error::latest.json of $BINARIES_TAG does not match its signed manifest entry (sha256 $actual_sha256, size $actual_size)"
+            exit 1
+          fi
+          # Every platform must still point at the base release, so Viewer
+          # clients see no update and download nothing from this release.
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${BINARIES_TAG}/"
+          node - carried-latest/latest.json "$prefix" <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const [path, prefix] = process.argv.slice(2);
+          const latest = JSON.parse(readFileSync(path, 'utf8'));
+          const platforms = Object.entries(latest.platforms ?? {});
+          if (platforms.length === 0) throw new Error('carried latest.json lists no platforms');
+          for (const [platform, entry] of platforms) {
+            if (typeof entry?.url !== 'string' || !entry.url.startsWith(prefix)) {
+              throw new Error(`${platform} url ${entry?.url} is not under ${prefix}`);
+            }
+          }
+          NODE
+
+      - name: Upload carried Viewer update manifest
+        if: env.BASE_LATEST_SHA256 != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: viewer-latest-json
+          path: carried-latest/latest.json
+          retention-days: 30
+
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
-    needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
+    needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest, classify-release, carry-forward-binaries, build-agent, build-recovery-media, build-viewer, build-helper, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom, build-binaries-image]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Fail closed when release signing was skipped
@@ -2258,6 +2536,17 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
           SKIP_RELEASE: ${{ inputs.skip_release || false }}
+          RELEASE_KIND: ${{ needs.classify-release.outputs.release_kind }}
+          CLASSIFY_RELEASE_RESULT: ${{ needs.classify-release.result }}
+          CARRY_FORWARD_BINARIES_RESULT: ${{ needs.carry-forward-binaries.result }}
+          BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
+          BUILD_RECOVERY_MEDIA_RESULT: ${{ needs.build-recovery-media.result }}
+          BUILD_VIEWER_RESULT: ${{ needs.build-viewer.result }}
+          BUILD_HELPER_RESULT: ${{ needs.build-helper.result }}
+          RESOLVE_WINDOWS_SIGNING_PROVIDER_RESULT: ${{ needs.resolve-windows-signing-provider.result }}
+          SIGN_WINDOWS_TAURI_AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
+          SIGN_WINDOWS_TAURI_SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
+          BUILD_BINARIES_IMAGE_RESULT: ${{ needs.build-binaries-image.result }}
           BUILD_WINDOWS_UNSIGNED_RESULT: ${{ needs.build-windows-unsigned.result }}
           BUILD_MACOS_AGENT_RESULT: ${{ needs.build-macos-agent.result }}
           BUILD_MACOS_INSTALLER_APP_RESULT: ${{ needs.build-macos-installer-app.result }}
@@ -2282,45 +2571,79 @@ jobs:
             fi
           }
 
-          require_success "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
-          require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
-          require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
-          require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
-          require_success "build-viewer-macos" "$BUILD_VIEWER_MACOS_RESULT"
-          require_success "build-helper-macos" "$BUILD_HELPER_MACOS_RESULT"
-          require_success "package-windows-updater" "$PACKAGE_WINDOWS_UPDATER_RESULT"
-          require_success "merge-viewer-update-manifest" "$MERGE_VIEWER_UPDATE_MANIFEST_RESULT"
+          # Server-only: proof that no signing quota, notarization or binary
+          # build ran — every one of these jobs must have been skipped.
+          require_skipped() {
+            local name="$1"
+            local result="$2"
+            if [[ "$result" != "skipped" ]]; then
+              echo "::error::$name must be skipped for server-only release $REF_NAME; got '$result'."
+              failed=1
+            fi
+          }
+
+          case "$RELEASE_KIND" in
+            full)
+              require_success "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
+              require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
+              require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
+              require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
+              require_success "build-viewer-macos" "$BUILD_VIEWER_MACOS_RESULT"
+              require_success "build-helper-macos" "$BUILD_HELPER_MACOS_RESULT"
+              require_success "package-windows-updater" "$PACKAGE_WINDOWS_UPDATER_RESULT"
+              require_success "merge-viewer-update-manifest" "$MERGE_VIEWER_UPDATE_MANIFEST_RESULT"
+              ;;
+            server-only)
+              require_success "classify-release" "$CLASSIFY_RELEASE_RESULT"
+              require_success "carry-forward-binaries" "$CARRY_FORWARD_BINARIES_RESULT"
+              require_skipped "build-agent" "$BUILD_AGENT_RESULT"
+              require_skipped "build-recovery-media" "$BUILD_RECOVERY_MEDIA_RESULT"
+              require_skipped "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
+              require_skipped "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
+              require_skipped "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
+              require_skipped "build-viewer" "$BUILD_VIEWER_RESULT"
+              require_skipped "build-helper" "$BUILD_HELPER_RESULT"
+              require_skipped "build-viewer-macos" "$BUILD_VIEWER_MACOS_RESULT"
+              require_skipped "build-helper-macos" "$BUILD_HELPER_MACOS_RESULT"
+              require_skipped "resolve-windows-signing-provider" "$RESOLVE_WINDOWS_SIGNING_PROVIDER_RESULT"
+              require_skipped "sign-windows-tauri-azure" "$SIGN_WINDOWS_TAURI_AZURE_RESULT"
+              require_skipped "sign-windows-tauri-sslcom" "$SIGN_WINDOWS_TAURI_SSLCOM_RESULT"
+              require_skipped "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
+              require_skipped "package-windows-updater" "$PACKAGE_WINDOWS_UPDATER_RESULT"
+              require_skipped "merge-viewer-update-manifest" "$MERGE_VIEWER_UPDATE_MANIFEST_RESULT"
+              require_skipped "build-binaries-image" "$BUILD_BINARIES_IMAGE_RESULT"
+              ;;
+            *)
+              echo "::error::release kind '$RELEASE_KIND' is neither full nor server-only for tag release $REF_NAME (classify-release: '$CLASSIFY_RELEASE_RESULT')."
+              failed=1
+              ;;
+          esac
 
           if [[ "$failed" -ne 0 ]]; then
             exit 1
           fi
-          echo "All required signing/notarization jobs succeeded for tag release $REF_NAME."
+          if [[ "$RELEASE_KIND" == "server-only" ]]; then
+            echo "Server-only release $REF_NAME: every binary/signing/notarization job was skipped and the base binaries were carried forward."
+          else
+            echo "All required signing/notarization jobs succeeded for tag release $REF_NAME."
+          fi
 
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor]
+    needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor, classify-release, carry-forward-binaries, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    # The last conjunct is the release-kind split. The full branch is exactly
+    # the pre-server-only condition; the server-only branch requires the
+    # carried binaries and every binary/signing job to have been SKIPPED.
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
       && needs.validate-release-lineage.result == 'success'
+      && needs.classify-release.result == 'success'
       && needs.build-api.result == 'success'
       && needs.build-web.result == 'success'
-      && needs.build-agent.result == 'success'
-      && needs.build-recovery-media.result == 'success'
       && needs.release-integrity-gate.result == 'success'
-      && needs.build-windows-unsigned.result == 'success'
-      && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
-      && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
-      && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
-      && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
-      && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
-      && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
-      && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
-      && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
-      && (needs.merge-viewer-update-manifest.result == 'success' || needs.merge-viewer-update-manifest.result == 'skipped')
-      && needs.build-binaries-image.result == 'success'
       && needs.build-docker-api.result == 'success'
       && needs.build-docker-web.result == 'success'
       && needs.build-docker-portal.result == 'success'
@@ -2328,8 +2651,46 @@ jobs:
       && needs.build-docker-m365-graph-actions-executor.result == 'success'
       && needs.build-docker-m365-communications-executor.result == 'success'
       && !(github.event_name == 'workflow_dispatch' && inputs.skip_release)
+      && (
+        (needs.classify-release.outputs.release_kind == 'full'
+          && needs.build-agent.result == 'success'
+          && needs.build-recovery-media.result == 'success'
+          && needs.build-windows-unsigned.result == 'success'
+          && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
+          && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
+          && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
+          && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
+          && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
+          && (needs.build-helper.result == 'success' || needs.build-helper.result == 'skipped')
+          && (needs.build-viewer-macos.result == 'success' || needs.build-viewer-macos.result == 'skipped')
+          && (needs.build-helper-macos.result == 'success' || needs.build-helper-macos.result == 'skipped')
+          && (needs.merge-viewer-update-manifest.result == 'success' || needs.merge-viewer-update-manifest.result == 'skipped')
+          && needs.build-binaries-image.result == 'success')
+        || (needs.classify-release.outputs.release_kind == 'server-only'
+          && needs.carry-forward-binaries.result == 'success'
+          && needs.build-agent.result == 'skipped'
+          && needs.build-recovery-media.result == 'skipped'
+          && needs.build-windows-unsigned.result == 'skipped'
+          && needs.build-macos-agent.result == 'skipped'
+          && needs.build-macos-installer-app.result == 'skipped'
+          && needs.build-viewer.result == 'skipped'
+          && needs.build-helper.result == 'skipped'
+          && needs.build-viewer-macos.result == 'skipped'
+          && needs.build-helper-macos.result == 'skipped'
+          && needs.resolve-windows-signing-provider.result == 'skipped'
+          && needs.sign-windows-tauri-azure.result == 'skipped'
+          && needs.sign-windows-tauri-sslcom.result == 'skipped'
+          && needs.sign-windows-tauri.result == 'skipped'
+          && needs.package-windows-updater.result == 'skipped'
+          && needs.merge-viewer-update-manifest.result == 'skipped'
+          && needs.build-binaries-image.result == 'skipped')
+      )
     permissions:
       contents: write
+    env:
+      RELEASE_KIND: ${{ needs.classify-release.outputs.release_kind }}
+      BINARIES_TAG: ${{ needs.classify-release.outputs.binaries_tag }}
+      BINARIES_SHA: ${{ needs.classify-release.outputs.binaries_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2350,14 +2711,42 @@ jobs:
           pattern: 'release-image-*'
           merge-multiple: true
 
+      - name: Download server-only classification report
+        if: env.RELEASE_KIND == 'server-only'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: server-only-classification
+          path: server-only-classification
+
       - name: Validate complete release image set
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
-          node scripts/release/release-image-manifest.mjs collect \
-            --directory release-image-metadata \
-            --source-commit "$SOURCE_COMMIT" \
-            --output release-images.json
+          case "$RELEASE_KIND" in
+            full)
+              node scripts/release/release-image-manifest.mjs collect \
+                --directory release-image-metadata \
+                --source-commit "$SOURCE_COMMIT" \
+                --release-kind full \
+                --output release-images.json
+              ;;
+            server-only)
+              # Only the carried binaries record may name the base commit;
+              # its provenance is written to carried-images.json for the
+              # signed manifest (collect would otherwise drop it).
+              node scripts/release/release-image-manifest.mjs collect \
+                --directory release-image-metadata \
+                --source-commit "$SOURCE_COMMIT" \
+                --release-kind server-only \
+                --carried-source-commit "$BINARIES_SHA" \
+                --carried-output carried-images.json \
+                --output release-images.json
+              ;;
+            *)
+              echo "::error::unknown release kind '$RELEASE_KIND'"
+              exit 1
+              ;;
+          esac
 
       - name: Prepare release assets
         env:
@@ -2365,6 +2754,10 @@ jobs:
           # omits the field rather than asserting a provider that never ran.
           WINDOWS_SIGNING_PROVIDER_USED: ${{ needs.sign-windows-tauri.outputs.provider }}
         run: |
+          case "$RELEASE_KIND" in
+            full|server-only) ;;
+            *) echo "::error::unknown release kind '$RELEASE_KIND'" >&2; exit 1 ;;
+          esac
           mkdir -p release-assets
 
           # Copy agent binaries
@@ -2418,7 +2811,9 @@ jobs:
               cp "$dir"/* release-assets/
             fi
           done
-          if [ ! -f release-assets/breeze-recovery-linux-amd64.iso ]; then
+          # A server-only release ships no recovery media (the base release's
+          # ISO stays current); a full release must.
+          if [ "$RELEASE_KIND" = "full" ] && [ ! -f release-assets/breeze-recovery-linux-amd64.iso ]; then
             echo "missing required release asset: breeze-recovery-linux-amd64.iso" >&2
             exit 1
           fi
@@ -2530,13 +2925,24 @@ jobs:
                   f"unexpected Windows signing provider: {windows_signing_provider!r}"
               )
 
+          release_kind = os.environ["RELEASE_KIND"]
+          if release_kind not in ("full", "server-only"):
+              raise SystemExit(f"unknown release kind: {release_kind!r}")
+
           pkg_attestation_path = Path("artifacts/macos-pkg-attestation/macos-pkg.tsv")
-          if not pkg_attestation_path.is_file():
+          # A server-only release builds no macOS package, so it has no
+          # attestation; any .pkg that still appeared fails below for lack of one.
+          if release_kind == "full" and not pkg_attestation_path.is_file():
               raise SystemExit(
                   "macOS package publisher attestation is missing — refusing to describe packages as trusted"
               )
           pkg_publishers = {}
-          for line in pkg_attestation_path.read_text(encoding="utf8").splitlines():
+          pkg_attestation_lines = (
+              pkg_attestation_path.read_text(encoding="utf8").splitlines()
+              if release_kind == "full"
+              else []
+          )
+          for line in pkg_attestation_lines:
               fields = line.split("\t")
               if len(fields) != 4:
                   raise SystemExit(f"malformed macOS package publisher attestation: {line!r}")
@@ -2602,9 +3008,21 @@ jobs:
               "repository": os.environ["GITHUB_REPOSITORY"],
               "release": os.environ["GITHUB_REF_NAME"],
               "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "releaseKind": release_kind,
               "assets": assets,
               "images": images,
           }
+          # Server-only: flat top-level keys only. verify-release-images.sh
+          # requires exactly one top-level "sourceCommit" line and parses
+          # images[] by fixed indentation, so nothing is added inside images[].
+          if release_kind == "server-only":
+              with open("carried-images.json") as carried_fh:
+                  carried_images = json.load(carried_fh)
+              if not isinstance(carried_images, list) or not carried_images:
+                  raise SystemExit("server-only release has no carried images")
+              manifest["binariesRelease"] = os.environ["BINARIES_TAG"]
+              manifest["binariesSourceCommit"] = os.environ["BINARIES_SHA"]
+              manifest["carriedImages"] = carried_images
           (release_dir / "release-artifact-manifest.json").write_text(
               json.dumps(manifest, indent=2, sort_keys=True) + "\n"
           )
@@ -2615,7 +3033,7 @@ jobs:
       # signed set's platform-trust classification must be unchanged. Runs
       # before the manifest is signed so a violation blocks the release.
       - name: Verify signing-input manifest entries
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_KIND == 'full'
         run: |
           set -euo pipefail
           SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
@@ -2718,6 +3136,103 @@ jobs:
           assert by_name["breeze-agent-linux-amd64"]["platformTrust"] == "release-workflow-produced"
           assert by_name["breeze-viewer-windows.msi"]["platformTrust"] == "windows-authenticode-required"
           print(f"OK: {len(EXPECTED_UNSIGNED)} signing-input assets + {len(AGENT_FAMILY_WINDOWS_UNSIGNED)} unsigned agent-family Windows assets verified; sourceCommit={source_commit}")
+          PY
+
+      # Server-only counterpart of the check above: the base manifest is
+      # re-downloaded and verified here rather than trusted from an artifact.
+      - name: Verify base release manifest
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_KIND == 'server-only'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          base_dir="$RUNNER_TEMP/server-only-base"
+          mkdir -p "$base_dir"
+          gh release download "$BINARIES_TAG" --repo "$GITHUB_REPOSITORY" --dir "$base_dir" \
+            --pattern release-artifact-manifest.json \
+            --pattern release-artifact-manifest.json.ed25519
+          node scripts/release/release-image-manifest.mjs verify \
+            --manifest "$base_dir/release-artifact-manifest.json" \
+            --signature "$base_dir/release-artifact-manifest.json.ed25519" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-release "$BINARIES_TAG" \
+            --require-kind full \
+            --output "$base_dir/identity.json"
+
+      # Asset allowlist for a server-only release. Runs before signing, so a
+      # binary artifact that slipped in blocks the release instead of shipping.
+      - name: Verify server-only release assets
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASE_KIND == 'server-only'
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          export SOURCE_COMMIT
+          BASE_IDENTITY="$RUNNER_TEMP/server-only-base/identity.json"
+          export BASE_IDENTITY
+          python3 <<'PY'
+          import json
+          import os
+          import re
+
+          with open("release-assets/release-artifact-manifest.json") as fh:
+              manifest = json.load(fh)
+          with open(os.environ["BASE_IDENTITY"]) as fh:
+              base = json.load(fh)
+
+          assert manifest.get("sourceCommit") == os.environ["SOURCE_COMMIT"], \
+              f"sourceCommit {manifest.get('sourceCommit')!r} != checked-out commit"
+          assert manifest.get("releaseKind") == "server-only", \
+              f"releaseKind {manifest.get('releaseKind')!r} != 'server-only'"
+          assert manifest.get("binariesRelease") == os.environ["BINARIES_TAG"], \
+              f"binariesRelease {manifest.get('binariesRelease')!r} != {os.environ['BINARIES_TAG']!r}"
+          assert manifest.get("binariesSourceCommit") == os.environ["BINARIES_SHA"], \
+              "binariesSourceCommit does not match the base release commit"
+
+          ALLOWED = {"breeze-api.tar.gz", "breeze-web.tar.gz", "latest.json"}
+          REQUIRED = {"breeze-api.tar.gz", "breeze-web.tar.gz"}
+          BINARY_NAME_RE = re.compile(
+              r"-unsigned"
+              r"|^breeze-(agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)"
+              r"|\.(msi|pkg|dmg|iso|exe|AppImage)$"
+              r"|installer"
+          )
+          by_name = {a["name"]: a for a in manifest["assets"]}
+          assert len(by_name) == len(manifest["assets"]), "duplicate asset names"
+          for name, entry in by_name.items():
+              assert not BINARY_NAME_RE.search(name), f"binary asset {name} in a server-only release"
+              assert name in ALLOWED, f"unexpected asset {name} in a server-only release"
+              assert entry.get("platformTrust") == "release-workflow-produced", \
+                  f"{name}: platformTrust {entry.get('platformTrust')!r}"
+              assert "intendedUse" not in entry, f"{name}: server-only assets are never signing inputs"
+          missing = REQUIRED - set(by_name)
+          assert not missing, f"missing server assets: {sorted(missing)}"
+
+          # latest.json must be the base release's file, byte for byte, so
+          # Viewer clients see no update and still download from the base.
+          base_latest = [a for a in base.get("assets", []) if a.get("name") == "latest.json"]
+          if "latest.json" in by_name or base_latest:
+              assert len(base_latest) == 1 and "latest.json" in by_name, \
+                  "latest.json must be carried exactly when the base release has one"
+              ours = by_name["latest.json"]
+              assert ours["sha256"] == base_latest[0]["sha256"] and ours["size"] == base_latest[0]["size"], \
+                  "latest.json is not byte-identical to the base release's"
+
+          images = {(i["name"], i["repository"], i["digest"]) for i in manifest["images"]}
+          carried = manifest.get("carriedImages")
+          assert isinstance(carried, list) and [c.get("name") for c in carried] == ["binaries"], \
+              "carriedImages must list exactly the binaries image"
+          for entry in carried:
+              assert (entry["name"], entry["repository"], entry["digest"]) in images, \
+                  f"carried {entry['name']} does not match images[]"
+              assert entry.get("fromRelease") == manifest["binariesRelease"], "carried fromRelease mismatch"
+              assert entry.get("fromSourceCommit") == manifest["binariesSourceCommit"], "carried fromSourceCommit mismatch"
+          base_binaries = [i for i in base.get("images", []) if i.get("name") == "binaries"]
+          assert len(base_binaries) == 1 and (
+              base_binaries[0]["repository"], base_binaries[0]["digest"]
+          ) == (carried[0]["repository"], carried[0]["digest"]), \
+              "the carried binaries digest is not the base release's signed binaries digest"
+          print(f"OK: server-only release; {sorted(by_name)}; binaries carried from {manifest['binariesRelease']}")
           PY
 
       - name: Sign release artifact manifest
@@ -2885,11 +3400,39 @@ jobs:
           fi
           echo "Verified $asset_count release assets against checksums.txt"
 
+      - name: Write server-only release banner
+        if: env.RELEASE_KIND == 'server-only'
+        run: |
+          set -euo pipefail
+          node - server-only-classification/server-only-classification.json release-banner.md <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const [reportPath, bannerPath] = process.argv.slice(2);
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          const { BINARIES_TAG: base, GITHUB_REPOSITORY: repository, GITHUB_SERVER_URL: server, GITHUB_REF_NAME: tag } = process.env;
+          if (report.tag !== tag || report.base !== base) throw new Error('classification report does not match this release');
+          const baseUrl = `${server}/${repository}/releases/tag/${base}`;
+          const agentFacing = report.agentFacing.length
+            ? report.agentFacing.map((path) => `- \`${path}\``).join('\n')
+            : 'none';
+          writeFileSync(bannerPath, [
+            `> **Server-only release.** Server code only (API, web, portal, M365 executors). Agent, Viewer, Helper, installers and recovery media are unchanged from **${base}** — download them from [${base}](${baseUrl}).`,
+            '> No agent update; no fleet change.',
+            '',
+            `**Agent-facing server changes** (reviewed for compatibility with ${base} agents):`,
+            '',
+            agentFacing,
+            '',
+          ].join('\n'));
+          NODE
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: release-assets/*
           generate_release_notes: true
+          # Server-only releases prepend a banner naming the base release; full
+          # releases pass no body, exactly as before.
+          body_path: ${{ env.RELEASE_KIND == 'server-only' && 'release-banner.md' || '' }}
           # RELEASE_DRAFT_FIRST (repo variable, normally unset): when 'true',
           # the release is created as a DRAFT so downstream consumers (self-host
           # servers syncing published releases) see nothing until it is
@@ -2897,7 +3440,9 @@ jobs:
           # coordinated with out-of-band deployment steps before going live.
           # Publish only through the guarded release-promotion.yml workflow;
           # see docs/runbooks/2026-08-29-release-lineage-promotion.md.
-          draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' }}
+          # Server-only releases are always drafts: release-promotion.yml
+          # revalidates the ledger row before publishing them.
+          draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' || needs.classify-release.outputs.release_kind == 'server-only' }}
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2905,11 +3450,12 @@ jobs:
   build-binaries-image:
     name: Build & Push Binaries Init Image
     runs-on: ubuntu-latest
-    needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos]
+    needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, classify-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
+      && needs.classify-release.outputs.release_kind == 'full'
       && needs.build-agent.result == 'success'
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
@@ -3015,7 +3561,7 @@ jobs:
   build-docker-api:
     name: Build & Push API Docker Image
     runs-on: ubuntu-latest
-    needs: [build-api]
+    needs: [build-api, classify-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -3073,8 +3619,13 @@ jobs:
           build-contexts: |
             release-dist=${{ runner.temp }}/release-dist
           outputs: type=image,name=${{ env.IMAGE_BASE }}/api,push-by-digest=true,name-canonical=true,push=true
+          # A server-only image pairs with its base release's binaries
+          # (binarySource.getPairedBinariesVersion). Full releases pass no
+          # BREEZE_BINARIES_VERSION build-arg at all, so their image is
+          # unchanged. Never set it through compose.
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
+            ${{ needs.classify-release.outputs.release_kind == 'server-only' && format('BREEZE_BINARIES_VERSION={0}', needs.classify-release.outputs.binaries_version) || '' }}
           cache-from: |
             type=gha,scope=server-api-build
             type=gha,scope=server-api

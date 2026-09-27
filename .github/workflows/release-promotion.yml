@@ -42,6 +42,65 @@ jobs:
             --candidate-registry-ref origin/main \
             --require-mainline
 
+      # Server-only releases (.github/release-provenance/server-only-tags.tsv):
+      # re-run the base-executed eligibility guard against main as it is NOW,
+      # and require the draft's signed release kind to agree with the ledger.
+      # Catches a row removed after the build, a newer stable tag published in
+      # the meantime (no longer globally highest), and a full-built draft for a
+      # listed tag (or the reverse).
+      - name: Revalidate server-only ledger row
+        env:
+          EXPECTED_TAG_SHA: ${{ steps.lineage.outputs.tag_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          draft_dir="$RUNNER_TEMP/draft-manifest"
+          mkdir -p "$draft_dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" \
+            --pattern release-artifact-manifest.json \
+            --pattern release-artifact-manifest.json.ed25519
+          node scripts/release/release-image-manifest.mjs verify \
+            --manifest "$draft_dir/release-artifact-manifest.json" \
+            --signature "$draft_dir/release-artifact-manifest.json.ed25519" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-release "$TAG" \
+            --output "$draft_dir/identity.json"
+          kind=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).releaseKind)' "$draft_dir/identity.json")
+
+          set +e
+          bash scripts/release/run-server-only-guard.sh \
+            --tag "$TAG" \
+            --commit "$EXPECTED_TAG_SHA" \
+            --ledger-ref origin/main \
+            --main-ref origin/main \
+            --online \
+            --expected-repository "$GITHUB_REPOSITORY"
+          status=$?
+          set -e
+
+          case "$status:$kind" in
+            3:full)
+              echo "$TAG is a full release (not listed in the server-only ledger; signed kind full)."
+              ;;
+            0:server-only)
+              echo "$TAG is a server-only release; ledger row and eligibility revalidated against main."
+              ;;
+            3:server-only)
+              echo "::error::the draft of $TAG is signed as a server-only release, but $TAG is not listed in the server-only ledger on main; refusing to publish."
+              exit 1
+              ;;
+            0:full)
+              echo "::error::$TAG is listed in the server-only ledger on main, but its draft was built as a full release; refusing to publish."
+              exit 1
+              ;;
+            *)
+              echo "::error::server-only eligibility for $TAG no longer holds (guard exit $status, signed kind '$kind'); refusing to publish."
+              exit 1
+              ;;
+          esac
+
       - name: Verify exact draft and publish
         env:
           EXPECTED_TAG_SHA: ${{ steps.lineage.outputs.tag_sha }}
