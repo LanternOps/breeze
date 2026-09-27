@@ -11,6 +11,7 @@ import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitter
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
+import { recordExecutionOutcome, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -244,7 +245,7 @@ function validateSuggestionLifecycleUpdate(input: UpdateRemediationSuggestionInp
   return null;
 }
 
-function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect) {
+function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect, outcome: OutcomeSummary | null = null) {
   return {
     id: row.id,
     orgId: row.orgId,
@@ -278,6 +279,8 @@ function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect) {
     acceptedAt: row.acceptedAt?.toISOString() ?? null,
     rejectedAt: row.rejectedAt?.toISOString() ?? null,
     executedAt: row.executedAt?.toISOString() ?? null,
+    origin: row.origin,
+    outcome,
   };
 }
 
@@ -439,7 +442,7 @@ remediationSuggestionRoutes.get(
       .limit(query.limit);
 
     const visible = await filterSiteAllowedSuggestions(rows, perms);
-    return c.json({ data: visible.map(serializeSuggestion) });
+    return c.json({ data: visible.map((row) => serializeSuggestion(row)) });
   }
 );
 
@@ -669,7 +672,7 @@ remediationSuggestionRoutes.post(
 
     return c.json({
       skipped: result.skipped,
-      data: visible.map(serializeSuggestion),
+      data: visible.map((row) => serializeSuggestion(row)),
     }, result.skipped ? 200 : 201);
   }
 );
@@ -984,8 +987,21 @@ remediationSuggestionRoutes.post(
       },
     });
 
+    // AI Suggested Fixes W1 — the attempt the outcome watcher follows. #7109
+    // means no request context is held this far down (it closed with
+    // `updated` above), so recordExecutionOutcome needs its own short-lived
+    // one to satisfy withDbTransaction's assertInTransaction — the brief's
+    // bare call assumed an ambient request tx that this route no longer has.
+    // Own savepoint inside that context; never throws: a recording failure
+    // must not undo a dispatch that already committed and was sent.
+    const outcome = await withAuthDbAccessContext(auth, () => recordExecutionOutcome({
+      suggestion: updated,
+      deviceId,
+      scriptExecutionId,
+    }));
+
     return c.json({
-      data: serializeSuggestion(updated),
+      data: serializeSuggestion(updated, outcome),
       execution: execution.admission,
     }, 201);
   }

@@ -9,6 +9,7 @@ const dbMocks = vi.hoisted(() => ({
   generateMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  recordOutcomeMock: vi.fn(async () => ({ state: 'pending', stateReason: null, humanVote: null })),
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns; `depth` says whether a DB call ran inside one.
   dbContextState: { depth: 0, events: [] as string[] },
@@ -107,6 +108,10 @@ vi.mock('../services/mlFeedbackEmitters', () => ({
 
 vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: dbMocks.executeScriptOnDevicesMock,
+}));
+
+vi.mock('../services/fixMemory/outcomeRecorder', () => ({
+  recordExecutionOutcome: dbMocks.recordOutcomeMock,
 }));
 
 import { remediationSuggestionRoutes, resolvePatchedRiskTier } from './remediationSuggestions';
@@ -632,6 +637,13 @@ describe('remediation suggestion routes', () => {
     expect(body.data.status).toBe('executed');
     expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
     expect(body.execution.targets[0].executionId).toBe(scriptExecutionId);
+    expect(dbMocks.recordOutcomeMock).toHaveBeenCalledWith({
+      suggestion: expect.objectContaining({ id: baseSuggestion.id, orgId: baseSuggestion.orgId }),
+      deviceId: baseSuggestion.deviceId,
+      scriptExecutionId,
+    });
+    // The panel swaps its row for this response, so the outcome must be on it.
+    expect(body.data.outcome).toEqual({ state: 'pending', stateReason: null, humanVote: null });
   });
 
   // #7109 — the route is registered in selfManagedDbContextRoutes.ts, so no
@@ -811,6 +823,7 @@ describe('remediation suggestion routes', () => {
     expect(dbMocks.updateMock).not.toHaveBeenCalled();
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
     expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalled();
+    expect(dbMocks.recordOutcomeMock).not.toHaveBeenCalled();
   });
 
   it('blocks high-risk server-side execution without an approved elevation request', async () => {
