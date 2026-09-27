@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { useHashTab } from '@/lib/useHashState';
 import { Network, Plug, ListChecks, ScrollText } from 'lucide-react';
+import { OverflowTabs, type OverflowTab } from '@/components/shared/OverflowTabs';
 import DnsSecurityIntegrationsTab from './DnsSecurityIntegrationsTab';
 import DnsSecurityPoliciesTab from './DnsSecurityPoliciesTab';
 import DnsSecurityEventsTab from './DnsSecurityEventsTab';
@@ -35,20 +36,16 @@ export default function DnsSecurityPage() {
         </div>
       </header>
 
-      <nav className="flex gap-1 border-b">
-        <TabButton active={activeTab === 'overview'} onClick={() => switchTab('overview')} icon={<Network className="h-4 w-4" />}>
-          {t('dnsSecurityDnsSecurityPage.tabs.overview')}
-        </TabButton>
-        <TabButton active={activeTab === 'integrations'} onClick={() => switchTab('integrations')} icon={<Plug className="h-4 w-4" />}>
-          {t('dnsSecurityDnsSecurityPage.tabs.integrations')}
-        </TabButton>
-        <TabButton active={activeTab === 'policies'} onClick={() => switchTab('policies')} icon={<ListChecks className="h-4 w-4" />}>
-          {t('dnsSecurityDnsSecurityPage.tabs.policies')}
-        </TabButton>
-        <TabButton active={activeTab === 'events'} onClick={() => switchTab('events')} icon={<ScrollText className="h-4 w-4" />}>
-          {t('dnsSecurityDnsSecurityPage.tabs.events')}
-        </TabButton>
-      </nav>
+      <OverflowTabs
+        tabs={TABS.map((tab): OverflowTab => ({
+          id: tab.id,
+          label: t(/* i18n-dynamic */ `dnsSecurityDnsSecurityPage.tabs.${tab.id}`),
+          icon: tab.icon,
+        }))}
+        activeTab={activeTab}
+        onTabChange={(id) => switchTab(id as Tab)}
+        testIdPrefix="dns-security-tab-"
+      />
 
       <div role="tabpanel">
         {activeTab === 'overview' && <DnsSecurityOverviewTab />}
@@ -60,31 +57,9 @@ export default function DnsSecurityPage() {
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-        active
-          ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {icon}
-      {children}
-    </button>
-  );
-}
+const TABS: Array<{ id: Tab; icon: React.ReactNode }> = [
+  { id: 'overview', icon: <Network className="h-4 w-4" /> },
+  { id: 'integrations', icon: <Plug className="h-4 w-4" /> },
+  { id: 'policies', icon: <ListChecks className="h-4 w-4" /> },
+  { id: 'events', icon: <ScrollText className="h-4 w-4" /> },
+];
