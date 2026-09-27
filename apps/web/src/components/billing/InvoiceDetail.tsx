@@ -27,6 +27,7 @@ import {
   computeInvoiceProfit,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
+import { LineItemsTable } from './shared/LineItemsTable';
 import InvoiceActions from './InvoiceActions';
 import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
@@ -413,89 +414,79 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               )}
             </div>
           ) : (
-          <div className="rounded-lg border bg-card shadow-xs">
-            {/* #3205 W07: invoice-level provenance, rendered once. */}
-            {invoice.evidenceVersion === null && (
+          <LineItemsTable<InvoiceLine>
+            header={invoice.evidenceVersion === null ? (
+              // #3205 W07: invoice-level provenance, rendered once.
               <p className="mb-2 px-3 pt-2 text-xs text-muted-foreground" data-testid="invoice-devices-not-recorded">
                 {t('invoiceDetail.devices.notRecorded')}
               </p>
-            )}
-            {/* Labeled, keyboard-reachable scroll region: the internal view runs
-                to 7 columns, well past a phone viewport — scroll inside the card
-                instead of bleeding past its rounded edge (QuoteDetail pattern). */}
-            <div className="overflow-x-auto" role="region" aria-label={t('invoiceDetail.linesScrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[32rem] text-sm" data-testid="invoice-detail-lines">
-              <thead>
-                <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">{t('invoiceDetail.lines.description')}</th>
-                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.qty')}</th>
-                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.price')}</th>
-                  {internalView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.cost')}</th>}
-                  {internalView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.margin')}</th>}
-                  {showTax && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.tax')}</th>}
-                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.total')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleLines.length === 0 ? (
-                  // Lines exist but every one is internal-only and the internal
-                  // view is off — say so instead of rendering a bare header.
-                  <tr>
-                    <td colSpan={4 + (showTax ? 1 : 0)} className="px-3 py-6 text-center text-sm text-muted-foreground" data-testid="invoice-detail-all-hidden">
-                      {t('invoiceDetail.lines.allHidden')}
-                    </td>
-                  </tr>
-                ) : (
-                visibleLines.map((l) => {
-                  const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate) : null;
-                  const workedVsBilledNote = lineWorkedVsBilledNote(l, t);
-                  return (
-                  <tr
-                    key={l.id}
-                    data-testid={`invoice-detail-line-${l.id}`}
-                    className={`border-t ${l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : ''}`}
-                  >
-                    <td className={`px-3 py-2 ${l.parentLineId ? 'pl-8' : ''}`}>
-                      {/* sweep F9: Preview/PDF/portal already show the frozen
-                          `ticketLabel` (#6940) via this same `ticketNumber`
-                          API field — the default view was the one surface
-                          still silent about it. */}
-                      {l.ticketNumber && (
-                        <div className="mb-1 text-xs">
-                          <span
-                            data-testid={`invoice-detail-line-ticket-${l.id}`}
-                            className="inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary"
-                          >
-                            {t('invoiceDocument.ticketHeader', { number: l.ticketNumber })}
-                          </span>
-                        </div>
-                      )}
-                      <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
-                        {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
+            ) : undefined}
+            rows={visibleLines}
+            keyFor={(l) => l.id}
+            rowTestId={(l) => `invoice-detail-line-${l.id}`}
+            tableTestId="invoice-detail-lines"
+            scrollAriaLabel={t('invoiceDetail.linesScrollAria')}
+            descriptionHeader={t('invoiceDetail.lines.description')}
+            // Lines exist but every one is internal-only and the internal view
+            // is off — say so instead of rendering a bare header.
+            emptyMessage={t('invoiceDetail.lines.allHidden')}
+            emptyTestId="invoice-detail-all-hidden"
+            rowClassName={(l) => (l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : '')}
+            descriptionCellClassName={(l) => (l.parentLineId ? 'pl-8' : '')}
+            renderDescription={(l) => {
+              const workedVsBilledNote = lineWorkedVsBilledNote(l, t);
+              return (
+                <>
+                  {/* sweep F9: Preview/PDF/portal already show the frozen
+                      `ticketLabel` (#6940) via this same `ticketNumber`
+                      API field — the default view was the one surface
+                      still silent about it. */}
+                  {l.ticketNumber && (
+                    <div className="mb-1 text-xs">
+                      <span
+                        data-testid={`invoice-detail-line-ticket-${l.id}`}
+                        className="inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary"
+                      >
+                        {t('invoiceDocument.ticketHeader', { number: l.ticketNumber })}
                       </span>
-                      {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
-                      {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-                      {workedVsBilledNote && (
-                        <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
-                          {workedVsBilledNote}
-                        </div>
-                      )}
-                      <InvoiceLineDevices invoiceId={invoice.id} line={l} />
-                    </td>
-                    <td className="px-3 py-2 text-right">{l.quantity}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
-                    {internalView && <td className="px-3 py-2 text-right">{l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)}</td>}
-                    {internalView && <td className="px-3 py-2 text-right">{lineMargin(l)}</td>}
-                    {showTax && <td className="px-3 py-2 text-right text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>}
-                    <td className="px-3 py-2 text-right">{formatMoney(l.lineTotal, currency)}</td>
-                  </tr>
-                  );
-                })
-                )}
-              </tbody>
-            </table>
-            </div>
-          </div>
+                    </div>
+                  )}
+                  <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
+                    {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
+                  </span>
+                  {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
+                  {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                  {workedVsBilledNote && (
+                    <div className="text-xs text-muted-foreground" data-testid={`invoice-detail-line-worked-vs-billed-${l.id}`}>
+                      {workedVsBilledNote}
+                    </div>
+                  )}
+                  <InvoiceLineDevices invoiceId={invoice.id} line={l} />
+                </>
+              );
+            }}
+            columns={[
+              { key: 'qty', header: t('invoiceDetail.lines.qty'), align: 'right' as const, cell: (l: InvoiceLine) => l.quantity },
+              { key: 'price', header: t('invoiceDetail.lines.price'), align: 'right' as const, cell: (l: InvoiceLine) => formatMoney(l.unitPrice, currency) },
+              ...(internalView ? [
+                { key: 'cost', header: t('invoiceDetail.lines.cost'), align: 'right' as const, cell: (l: InvoiceLine) => (l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)) },
+                { key: 'margin', header: t('invoiceDetail.lines.margin'), align: 'right' as const, cell: (l: InvoiceLine) => lineMargin(l) },
+              ] : []),
+              ...(showTax ? [
+                {
+                  key: 'tax',
+                  header: t('invoiceDetail.lines.tax'),
+                  align: 'right' as const,
+                  cellClassName: 'text-muted-foreground',
+                  cell: (l: InvoiceLine) => {
+                    const tax = lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate);
+                    return tax === null ? '—' : formatMoney(tax, currency);
+                  },
+                },
+              ] : []),
+              { key: 'total', header: t('invoiceDetail.lines.total'), align: 'right' as const, cell: (l: InvoiceLine) => formatMoney(l.lineTotal, currency) },
+            ]}
+          />
           )}
         </div>
 

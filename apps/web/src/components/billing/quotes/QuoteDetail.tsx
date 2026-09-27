@@ -34,6 +34,7 @@ import {
   sellerLines,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
+import { LineItemsTable, type LineItemColumn } from '../shared/LineItemsTable';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -615,57 +616,50 @@ function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteB
 
 function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines: QuoteLine[]; currency: string; label: string; testId: string; taxRate: string | null; showTax: boolean }) {
   const { t } = useTranslation('billing');
-  const colSpan = showTax ? 6 : 5;
+  const columns: LineItemColumn<QuoteLine>[] = [
+    { key: 'qty', header: t('quotes.detail.table.qty'), align: 'right', cell: (l) => <span className="tabular-nums">{formatQuantity(l.quantity)}</span> },
+    { key: 'unitPrice', header: t('quotes.detail.table.unitPrice'), align: 'right', cell: (l) => <span className="tabular-nums">{formatMoney(l.unitPrice, currency)}</span> },
+    {
+      key: 'recurrence',
+      header: t('quotes.detail.table.recurrence'),
+      cell: (l) => (
+        <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
+          {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
+        </span>
+      ),
+    },
+    ...(showTax ? [{
+      key: 'tax',
+      header: t('quotes.detail.table.tax'),
+      align: 'right' as const,
+      cellClassName: 'text-muted-foreground',
+      cell: (l: QuoteLine) => {
+        const tax = lineTaxAmount(l.lineTotal, l.taxable, taxRate);
+        return <span className="tabular-nums">{tax === null ? '—' : formatMoney(tax, currency)}</span>;
+      },
+    }] : []),
+    { key: 'total', header: t('quotes.detail.table.total'), align: 'right', cell: (l) => <span className="tabular-nums">{formatMoney(l.lineTotal, currency)}</span> },
+  ];
   return (
-    <div className="rounded-lg border bg-card shadow-xs">
-      {label && (
+    <LineItemsTable<QuoteLine>
+      header={label ? (
         <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
+      ) : undefined}
+      rows={lines}
+      keyFor={(l) => l.id}
+      rowTestId={(l) => `quote-detail-line-${l.id}`}
+      tableTestId={testId}
+      scrollAriaLabel={t('quotes.detail.tableScrollAria', { label: label || t('quotes.detail.pricing') })}
+      descriptionHeader={t('quotes.detail.table.item')}
+      emptyMessage={t('quotes.detail.table.noLines')}
+      renderDescription={(l) => (
+        <>
+          <div className="font-medium text-foreground">{lineTitle(l)}</div>
+          {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+        </>
       )}
-      <div className="overflow-x-auto" role="region" aria-label={t('quotes.detail.tableScrollAria', { label: label || t('quotes.detail.pricing') })} tabIndex={0}>
-      <table className="w-full min-w-[30rem] text-sm" data-testid={testId}>
-        <thead>
-          <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th className="px-3 py-2 font-medium">{t('quotes.detail.table.item')}</th>
-            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.qty')}</th>
-            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.unitPrice')}</th>
-            <th className="px-3 py-2 font-medium">{t('quotes.detail.table.recurrence')}</th>
-            {showTax && <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.tax')}</th>}
-            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.total')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lines.length === 0 ? (
-            <tr>
-              <td colSpan={colSpan} className="px-3 py-6 text-center text-sm text-muted-foreground">{t('quotes.detail.table.noLines')}</td>
-            </tr>
-          ) : (
-            lines.map((l) => {
-              const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
-              return (
-                <tr key={l.id} className="border-t" data-testid={`quote-detail-line-${l.id}`}>
-                  <td className="px-3 py-2">
-                    <div className="font-medium text-foreground">{lineTitle(l)}</div>
-                    {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(l.quantity)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
-                  <td className="px-3 py-2">
-                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
-                      {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
-                    </span>
-                  </td>
-                  {showTax && (
-                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>
-                  )}
-                  <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
-      </div>
-    </div>
+      columns={columns}
+    />
   );
 }
 
