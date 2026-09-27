@@ -171,7 +171,43 @@ describe("AccountingConnectionPanel", () => {
     expect(screen.getByTestId("quickbooks-connect")).toHaveTextContent(
       "Reconnect",
     );
-    expect(screen.queryByTestId("quickbooks-disconnect")).toBeNull();
+    // The instance may no longer have this provider configured, in which
+    // case Reconnect can never succeed — Disconnect must stay available so
+    // the partner can switch providers instead of getting stuck (#7183-ish).
+    expect(screen.getByTestId("quickbooks-disconnect")).toBeTruthy();
+  });
+
+  it("reauth-required Disconnect calls the disconnect endpoint", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (url === "/accounting/quickbooks" && init?.method !== "POST") {
+          return jsonResponse({
+            status: "reauth_required",
+            environment: "production",
+            pushMode: "auto",
+            connectedAt: "2026-06-23T00:00:00Z",
+            lastError: "refresh token expired",
+          });
+        }
+        if (
+          url === "/accounting/quickbooks/disconnect" &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse({});
+        }
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    fireEvent.click(await screen.findByTestId("quickbooks-disconnect"));
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/accounting/quickbooks/disconnect",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
   });
 
   it("shows a partner-scope-only message for org-scope users and never calls the API", async () => {
