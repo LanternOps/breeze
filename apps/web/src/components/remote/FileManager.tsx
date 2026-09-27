@@ -47,6 +47,7 @@ import FileActivityPanel from './FileActivityPanel';
 import type { FileActivity } from './FileActivityPanel';
 import { useTranslation } from 'react-i18next';
 import { AGENT_MAX_FILE_READ_BYTES } from '@breeze/shared';
+import { i18n } from '@/lib/i18n';
 import '@/lib/i18n';
 
 export type FileEntry = {
@@ -194,7 +195,15 @@ export default function FileManager({
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
       if (!response.ok) {
         const json = await response.json().catch(() => ({ error: t('fileManager.errors.loadDirectory') }));
-        throw new Error(json.error || t('fileManager.errors.loadDirectory'));
+        // The API rides a stable `code` (e.g. DEVICE_OFFLINE, DEVICE_UNREACHABLE
+        // — shared ERROR_CODES, #6317) alongside an English `error` string.
+        // Prefer the localized copy for the code when one exists; fall back to
+        // the server's English string, then the generic fallback.
+        const code: unknown = json?.code;
+        const translated = typeof code === 'string' && i18n.exists(`errors:${code}`)
+          ? i18n.t(/* i18n-dynamic */ `errors:${code}`)
+          : undefined;
+        throw new Error(translated || json.error || t('fileManager.errors.loadDirectory'));
       }
       const json = await response.json();
       const entriesData = Array.isArray(json.data) ? json.data : [];
