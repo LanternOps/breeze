@@ -830,7 +830,7 @@ function narrativeContext(
       pendingPatches: 140, devicesPending: 12, installed7d: 320,
     },
     backups: {
-      available: true, ok: 40, failed: 3, partial: 1, terminal: 44, successRatePct: 90.9, devicesFailed: 2,
+      available: true, ok: 40, withErrors: 2, failed: 3, partial: 1, terminal: 46, successRatePct: 90.9, devicesFailed: 2,
     },
     fleet: {
       available: true,
@@ -918,6 +918,8 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
     expect(text).toContain('patch compliance this week (%): 93');
     expect(text).toContain('patch compliance previous week (%): 88');
     expect(text).toContain('backup success rate (%): 90.9');
+    // #5396: restore points that missed files are named, not folded into "succeeded".
+    expect(text).toContain('backup jobs completed with file errors: 2');
     expect(text).toContain('devices online: 50');
     expect(text).toContain('average 7-day uptime (%): 99.2');
     // Closed-enum histograms are rendered key by key — a bucket that is
@@ -943,7 +945,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
   it('(d) renders a whole block as "(not measured)" when its loader failed — never as zero', () => {
     const failed = narrativeContext();
     failed.backups = {
-      available: false, ok: 0, failed: 0, partial: 0, terminal: 0, successRatePct: null, devicesFailed: 0,
+      available: false, ok: 0, withErrors: 0, failed: 0, partial: 0, terminal: 0, successRatePct: null, devicesFailed: 0,
     };
     failed.tickets = { available: false, opened: 0, closed: 0, openedHigh: 0, byCategory: [], byCategoryTruncated: false };
     failed.unavailable = [...failed.unavailable, 'backups', 'tickets'];

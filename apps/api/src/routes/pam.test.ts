@@ -592,6 +592,31 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(set.denialReason).toBe('nope');
   });
 
+  it('surfaces a refused decision intent (unverifiable target hash) as denied, not a stale "approved"', async () => {
+    rigTransaction({ row: activeRow, casWins: true });
+    lifecycleMocks.createPamDecisionIntent.mockResolvedValueOnce({
+      actuationId: '',
+      elevationRequestId: REQ_ID,
+      requestRevision: 1,
+      generation: 0,
+      desiredState: 'cleanup',
+      refusalReason: 'Target identity could not be verified on the device; re-request elevation.',
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.status).toBe('denied');
+    expect(body.enforcementStatus).toBe('refused');
+    expect(body.reason).toBe('Target identity could not be verified on the device; re-request elevation.');
+  });
+
   it('returns 403 step_up_required when an enforcing policy rejects the approve (Phase 4)', async () => {
     const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
     vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new StepUpRequiredError(3, 1));

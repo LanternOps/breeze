@@ -208,6 +208,61 @@ describe('api keys routes', () => {
     expect(body.warning).toBeDefined();
   });
 
+  it('snapshots the creator live auth/mfa epoch from the request token onto a newly minted key', async () => {
+    let insertedValues: Record<string, unknown> | undefined;
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedValues = values;
+        return {
+          returning: vi.fn().mockResolvedValue([{
+            id: KEY_ID,
+            orgId: ORG_ID,
+            name: 'Primary Key',
+            keyPrefix: 'brz_abc12345',
+            scopes: ['read'],
+            expiresAt: null,
+            rateLimit: 1000,
+            createdBy: 'user-123',
+            createdAt: new Date(),
+            status: 'active'
+          }])
+        };
+      })
+    } as any);
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        partnerId: null,
+        orgId: ORG_ID,
+        token: { aep: 5, mep: 2 },
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization'
+      });
+      return next();
+    });
+
+    const res = await app.request('/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID,
+        name: 'Primary Key',
+        scopes: [],
+        rateLimit: 1000
+      })
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertedValues).toMatchObject({ creatorAuthEpoch: 5, creatorMfaEpoch: 2 });
+  });
+
   it('rejects wildcard scopes on API key creation', async () => {
     const res = await app.request('/api-keys', {
       method: 'POST',

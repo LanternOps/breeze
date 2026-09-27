@@ -286,6 +286,27 @@ describe('PUT /script-policy', () => {
     expect((await putReq({ proposingEnabled: true })).status).toBe(403);
   });
 
+  it('403s MFA_REQUIRED when the MFA claim is false, even for a non-widening save', async () => {
+    currentAuth = orgAuth({ token: { mfa: false, sid: 'sid-1' } });
+    const res = await putReq({ proposingEnabled: true });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+  });
+
+  it('403s a site-restricted caller with SITE_CEILING_WRITE_DENIED_MESSAGE', async () => {
+    currentAuth = orgAuth({ allowedSiteIds: ['site-1'] });
+    const res = await putReq({ proposingEnabled: true });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+  });
+
+  it('403s an exact-device-ceiled caller (allowedDeviceIds set, no allowedSiteIds)', async () => {
+    currentAuth = orgAuth({ allowedDeviceIds: [] });
+    const res = await putReq({ proposingEnabled: true });
+    expect(res.status).toBe(403);
+  });
+
   it('400s on an invalid body (strict schema rejects an unknown key)', async () => {
     const res = await putReq({ notARealField: true });
     expect(res.status).toBe(400);
@@ -366,7 +387,23 @@ describe('PUT /script-policy', () => {
     const [grantId, binding] = consumeStepUpGrant.mock.calls[0] as [string, { operation: string; resourceDigest: string }];
     expect(grantId).toBe('grant-1');
     expect(binding.operation).toBe('ai_script_lane_grant');
-    expect(binding.resourceDigest).toBe(scriptLanePolicyResourceDigest({ orgId: ORG_A, unattendedEnabled: true }));
+    // The enable-branch digest binds the FULL effective grant being saved in
+    // this request, not just the boolean — a request that also raises the
+    // tier/classes/rate/reviewerModel in the same call must have those
+    // values bound in, so a grant minted only for "turn the lane on" cannot
+    // be replayed against a wider save.
+    expect(binding.resourceDigest).toBe(scriptLanePolicyResourceDigest({
+      orgId: ORG_A,
+      unattendedEnabled: true,
+      widening: {
+        maxUnattendedRiskTier: 'low',
+        unattendedAllowedClasses: [],
+        maxUnattendedPerHour: 0,
+        protectedResourcesEmptied: true,
+        reviewerModel: null,
+        proposingEnabled: true,
+      },
+    }));
 
     expect(writes).toHaveLength(1);
     expect(writes[0]!.values).toMatchObject({ unattendedEnabled: true, unattendedEnabledBy: USER_ID });
@@ -374,6 +411,22 @@ describe('PUT /script-policy', () => {
 
     expect(auditLog).toHaveLength(1);
     expect(auditLog[0]!.action).toBe('ai.script_lane.enabled');
+  });
+
+  it('a step-up grant minted for a narrow "turn on" cannot be replayed to enable at a wider tier in the same call', async () => {
+    // Mint a grant bound to the digest for a BARE enable (no widening — what
+    // an operator's MFA ceremony would have shown for "just turn this on").
+    // Redeeming it against a PUT that simultaneously sets the tier to
+    // 'medium' must fail: the digest this route computes for that PUT now
+    // includes the tier, so it will not match a grant bound to the narrow
+    // digest.
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
+    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { resourceDigest: string }) =>
+      binding.resourceDigest === scriptLanePolicyResourceDigest({ orgId: ORG_A, unattendedEnabled: true }));
+    const res = await putReq({ unattendedEnabled: true, maxUnattendedRiskTier: 'medium', stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+    expect(writes).toHaveLength(0);
   });
 
   it('200s disabling without approvals:decide or a step-up grant, and audits ai.script_policy.updated', async () => {
@@ -391,6 +444,59 @@ describe('PUT /script-policy', () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]!.values).not.toHaveProperty('stepUpGrant');
     expect(writes[0]!.set).not.toHaveProperty('stepUpGrant');
+  });
+
+  it('requires a step-up grant to WIDEN an already-enabled lane (raise the risk tier)', async () => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
+    selectQueue = [[policyRow({ unattendedEnabled: true, maxUnattendedRiskTier: 'low' })]];
+    const res = await putReq({ maxUnattendedRiskTier: 'medium' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('200s WIDENING an already-enabled lane with a consumed step-up grant bound to the wider values', async () => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
+    selectQueue = [[policyRow({ unattendedEnabled: true, maxUnattendedRiskTier: 'low', unattendedAllowedClasses: ['services'], maxUnattendedPerHour: 5 })]];
+    const res = await putReq({ maxUnattendedRiskTier: 'medium', stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(200);
+
+    const [, binding] = consumeStepUpGrant.mock.calls[0] as [string, { resourceDigest: string }];
+    expect(binding.resourceDigest).toBe(scriptLanePolicyResourceDigest({
+      orgId: ORG_A,
+      unattendedEnabled: true,
+      widening: {
+        maxUnattendedRiskTier: 'medium',
+        unattendedAllowedClasses: ['services'],
+        maxUnattendedPerHour: 5,
+        protectedResourcesEmptied: false,
+        reviewerModel: null,
+        proposingEnabled: true,
+      },
+    }));
+  });
+
+  it('requires a step-up grant to WIDEN by emptying a previously non-empty protectedResources', async () => {
+    selectQueue = [[policyRow({ unattendedEnabled: true, protectedResources: { services: ['spooler'], paths: [], registryKeys: [], deviceTags: [] } })]];
+    const res = await putReq({ protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+  });
+
+  it('does not require a step-up grant when an already-enabled lane is only tightened', async () => {
+    selectQueue = [[policyRow({ unattendedEnabled: true, maxUnattendedRiskTier: 'medium', maxUnattendedPerHour: 10 })]];
+    const res = await putReq({ maxUnattendedPerHour: 3 });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('does not require a step-up grant to disable an enabled lane even if other fields also change', async () => {
+    currentPerms = makePerms([PERMISSIONS.AI_AGENTS_WRITE]);
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
+    selectQueue = [[policyRow({ unattendedEnabled: true, maxUnattendedRiskTier: 'low' })]];
+    const res = await putReq({ unattendedEnabled: false, maxUnattendedRiskTier: 'medium' });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 });
 

@@ -26,11 +26,16 @@ import {
   resolveBackupDestinationError,
 } from '../../services/backupProviderConfig';
 import {
+  backupReadCredentialPayload,
+  backupWriteCredentialPayload,
+} from '../../services/backupCommandCredentials';
+import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
 import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
 import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 
 export const mssqlRoutes = new Hono();
 
@@ -322,6 +327,10 @@ mssqlRoutes.post(
         status: 'pending',
         type: 'manual',
         backupType: 'database',
+        // Stamped at creation, as the backup worker does at dispatch: the snapshot
+        // persisted from this job copies it, and restores of that snapshot are
+        // only served through a storage session when it is present.
+        storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig),
         createdAt: new Date(),
         updatedAt: new Date(),
       })
@@ -341,9 +350,9 @@ mssqlRoutes.post(
         // frame after a queue-admission ack — back to this backup_jobs row.
         jobId: backupJob.id,
         configId: resolvedConfig.configId,
-        provider: destination.provider,
-        providerConfig: destination.providerConfig,
-        storageEncryption: destination.storageEncryption,
+        // Provider + encryption plan + a reference: the destination itself is
+        // resolved when the command is delivered, never stored on the row.
+        ...backupWriteCredentialPayload(resolvedConfig.configId, orgId, destination),
         instance: payload.instance,
         database: payload.database,
         backupType: payload.backupType,
@@ -565,8 +574,7 @@ mssqlRoutes.post(
         backupFileName,
         targetDatabase: payload.targetDatabase,
         noRecovery: payload.noRecovery,
-        provider: backupProviderConfig.provider,
-        providerConfig: backupProviderConfig.providerConfig,
+        ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
       }),
     });
 
@@ -672,8 +680,7 @@ mssqlRoutes.post(
         instance,
         snapshotId: snapshot.providerSnapshotId,
         backupFileName,
-        provider: backupProviderConfig.provider,
-        providerConfig: backupProviderConfig.providerConfig,
+        ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
       },
       { userId: auth?.user?.id, timeoutMs: 120000 }
     );

@@ -6,7 +6,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, gt, isNull } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   backupSnapshots,
@@ -19,7 +19,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeAuditEvent } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
-import { authorizeRouteResilienceResources } from './resilienceAuthorization';
+import { authorizeRouteResilienceResources, resolveRouteAuthorizedDeviceIds } from './resilienceAuthorization';
 import {
   canTransition,
   generateRecoveryNonce,
@@ -48,7 +48,7 @@ import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabiliti
 import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
-import { enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
+import { BMR_PROGRESS_IP_LIMIT, enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
 import {
   bmrExchangeSchema,
   bmrProgressSchema,
@@ -167,7 +167,7 @@ async function loadAuthorizedRecovery(
   c: Parameters<typeof authorizeRouteResilienceResources>[0],
   orgId: string,
   id: string,
-  operation: 'revoke' | 'token',
+  operation: 'read' | 'revoke' | 'token',
 ): Promise<{ ok: true; row: BareMetalRecoveryRow } | { ok: false; response: Response }> {
   const [row] = await db
     .select()
@@ -267,6 +267,19 @@ bmrRecoveryRoutes.get(
     }
     const query = c.req.valid('query');
 
+    // Site ceiling: mirrors the pattern in snapshots.ts's GET /snapshots —
+    // a site-restricted caller must not see recoveries for devices outside
+    // their allowed sites, even though the query below is already org-scoped.
+    const allowedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (allowedDeviceIds) {
+      if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+        return c.json({ error: 'site_access_denied' }, 403);
+      }
+      if (allowedDeviceIds.length === 0) {
+        return c.json({ data: [] });
+      }
+    }
+
     // W09 (#6464): the web panel shows "preparing file index" while the
     // token snapshot's server-side index is not yet complete, so each
     // summary carries the snapshot's file_index_status (null once the
@@ -278,7 +291,8 @@ bmrRecoveryRoutes.get(
       .where(
         and(
           eq(bareMetalRecoveries.orgId, orgId),
-          query.deviceId ? eq(bareMetalRecoveries.deviceId, query.deviceId) : undefined
+          query.deviceId ? eq(bareMetalRecoveries.deviceId, query.deviceId) : undefined,
+          allowedDeviceIds ? inArray(bareMetalRecoveries.deviceId, allowedDeviceIds) : undefined
         )
       )
       .orderBy(desc(bareMetalRecoveries.createdAt))
@@ -302,16 +316,13 @@ bmrRecoveryRoutes.get(
     }
     const { id } = c.req.valid('param');
 
-    const [row] = await db
-      .select()
-      .from(bareMetalRecoveries)
-      .where(and(eq(bareMetalRecoveries.id, id), eq(bareMetalRecoveries.orgId, orgId)))
-      .limit(1);
-    if (!row) {
-      return c.json({ error: 'Recovery not found' }, 404);
-    }
+    // Site ceiling: reuses the same device-lineage check the cancel/reissue
+    // mutations already apply, so a site-restricted caller can't read a
+    // hidden-site recovery's plan/target/result summary via this route.
+    const loaded = await loadAuthorizedRecovery(c, orgId, id, 'read');
+    if (!loaded.ok) return loaded.response;
 
-    return c.json(toRecoverySummary(row));
+    return c.json(toRecoverySummary(loaded.row));
   }
 );
 
@@ -664,6 +675,14 @@ bmrRecoveryPublicRoutes.post(
   zValidator('json', bmrProgressSchema),
   async (c) => {
     const { token, status: requestedStatus, target, plan, result, reason, warnings } = c.req.valid('json');
+
+    // Per-IP backstop, checked FIRST — before token-format validation or the
+    // per-token limiter below, neither of which engages for a request
+    // carrying no token, a malformed token, or a random guess (same shape as
+    // the per-IP/per-token pairing on the public download route in bmr.ts).
+    const ipLimited = await enforcePublicRateLimit(c, 'progress', BMR_PROGRESS_IP_LIMIT);
+    if (ipLimited) return ipLimited;
+
     if (!isValidRecoveryTokenFormat(token)) {
       return c.json({ error: 'invalid_token' }, 400);
     }

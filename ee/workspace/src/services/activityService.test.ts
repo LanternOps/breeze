@@ -202,7 +202,10 @@ describe('activityService', () => {
 
     it('restricts rows to visible sources and the caller-visible partition', async () => {
       const { db, executed } = makeDb([[]]);
-      await createActivityService(db).departmentRecent(ORG_ID, DEVICE_ID);
+      // An ownerUsername exercises the local-profile branch (device-bound);
+      // with none claimed, that branch fails closed and never binds the
+      // device id at all — see the owner-scoping describe block below.
+      await createActivityService(db).departmentRecent(ORG_ID, DEVICE_ID, undefined, [], 'dana');
       const text = sqlText(executed[0]);
       expect(text).toContain("'[]'::jsonb");
       expect(text).toContain("'active'");
@@ -221,6 +224,78 @@ describe('activityService', () => {
       expect(boundValues(executed[0])).toContain(1);
       expect(boundValues(executed[1])).toContain(50);
       expect(boundValues(executed[2])).toContain(20);
+    });
+  });
+
+  // A caller-claimed OS username narrows local-profile visibility the same
+  // way fileQueryService.ownedByUsername does: a relPath prefix match, and no
+  // claim excludes local-profile rows entirely rather than showing every
+  // profile on the device.
+  describe('owner-username scoping (local-profile partition)', () => {
+    describe('record', () => {
+      it('binds an owner-prefix match against the claimed helperUser', async () => {
+        const { db, executed } = makeDb([[{ id: FILE_ID }]]);
+        await createActivityService(db).record(ORG_ID, {
+          fileIndexId: FILE_ID, deviceId: DEVICE_ID, helperUser: 'dana', action: 'open',
+        });
+        const text = sqlText(executed[0]);
+        expect(text).toContain('ilike');
+        const values = boundValues(executed[0]);
+        expect(values).toContain('dana/%');
+      });
+
+      it('excludes local-profile rows entirely (fails closed) when no helperUser is claimed', async () => {
+        const { db, executed } = makeDb([[]]);
+        await createActivityService(db).record(ORG_ID, {
+          fileIndexId: FILE_ID, deviceId: DEVICE_ID, helperUser: null, action: 'open',
+        });
+        const text = sqlText(executed[0]);
+        expect(text).not.toContain('ilike');
+        expect(text).toMatch(/local_profile.*false|false.*local_profile/s);
+      });
+
+      it('escapes LIKE wildcards in the claimed helperUser and names the escape character', async () => {
+        const { db, executed } = makeDb([[{ id: FILE_ID }]]);
+        await createActivityService(db).record(ORG_ID, {
+          fileIndexId: FILE_ID, deviceId: DEVICE_ID, helperUser: '%a_b\\', action: 'open',
+        });
+        expect(sqlText(executed[0])).toMatch(/ilike \S+ escape '\\'/i);
+        const values = boundValues(executed[0]);
+        expect(values).toContain('\\%a\\_b\\\\/%');
+        expect(values).not.toContain('%a_b\\/%');
+      });
+    });
+
+    describe('recents', () => {
+      it('binds an owner-prefix match against the claimed helperUser', async () => {
+        const { db, executed } = makeDb([[]]);
+        await createActivityService(db).recents(ORG_ID, DEVICE_ID, 'dana');
+        const text = sqlText(executed[0]);
+        expect(text).toContain('ilike');
+        expect(boundValues(executed[0])).toContain('dana/%');
+      });
+
+      it('excludes local-profile rows entirely (fails closed) when helperUser is null', async () => {
+        const { db, executed } = makeDb([[]]);
+        await createActivityService(db).recents(ORG_ID, DEVICE_ID, null);
+        expect(sqlText(executed[0])).not.toContain('ilike');
+      });
+    });
+
+    describe('departmentRecent', () => {
+      it('binds an owner-prefix match when an ownerUsername is passed', async () => {
+        const { db, executed } = makeDb([[]]);
+        await createActivityService(db).departmentRecent(ORG_ID, DEVICE_ID, undefined, [], 'dana');
+        const text = sqlText(executed[0]);
+        expect(text).toContain('ilike');
+        expect(boundValues(executed[0])).toContain('dana/%');
+      });
+
+      it('excludes local-profile rows entirely (fails closed) with no ownerUsername', async () => {
+        const { db, executed } = makeDb([[]]);
+        await createActivityService(db).departmentRecent(ORG_ID, DEVICE_ID);
+        expect(sqlText(executed[0])).not.toContain('ilike');
+      });
     });
   });
 });

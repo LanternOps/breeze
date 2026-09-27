@@ -256,11 +256,10 @@ export async function fetchCveDevices(cveId: string): Promise<CveDevicesPayload>
  * Mirrors the server's `deviceVulnerabilityIds` cap (`routes/vulnerabilities.ts`,
  * `.max(200)` on remediate / bulk accept-risk / bulk mitigate / tickets).
  *
- * The cap is a request-size bound, not a product limit: `remediateVulnerabilities`
- * loops per finding doing ~5 queries plus a command enqueue inside ONE synchronous
- * request. Raising it server-side would just move the timeout. So the client
- * batches instead — a 576-finding selection becomes three sequential requests
- * rather than one guaranteed `Too big: expected array to have <=200 items`.
+ * The cap is a request-size bound, not a product limit: a 576-finding selection
+ * becomes three sequential requests rather than one guaranteed `Too big: expected
+ * array to have <=200 items`. `remediateVulnerabilities` batches its reads per
+ * request and queues one install per (device, patch) (#7071).
  */
 const BULK_ID_LIMIT = 200;
 
@@ -300,15 +299,15 @@ interface ChunkedSpec<T> {
  *
  * 1. The merged total is a CONFIRMED LOWER BOUND, not the applied total. The
  *    failing batch can still have done work before it failed —
- *    `remediateVulnerabilities` queues each command before the awaited event
+ *    `remediateVulnerabilities` queues each install before the awaited event
  *    publication, so a throw there leaves commands queued that no response ever
  *    reported. A lost HTTP response is ambiguous the same way.
- * 2. Retrying the same selection is NOT safe for remediation. Every call creates
- *    a fresh `install_patches` command via `queueCommandForExecution` with no
- *    finding/action idempotency key, so re-sending ids that already succeeded
- *    queues a SECOND install on those devices. Accept/mitigate are state-writes
- *    and tolerate a retry; remediation does not. The copy therefore tells the
- *    operator to reload first rather than inviting a blind retry.
+ * 2. Retrying the same selection is not guaranteed safe for remediation. The
+ *    server reuses an install of the same (device, patch) that is still pending
+ *    or sent (#7071), but once that command has completed or failed a re-send
+ *    queues a fresh one. Accept/mitigate are state-writes and tolerate a retry;
+ *    the copy therefore still tells the operator to reload first rather than
+ *    inviting a blind retry.
  */
 async function runChunked<T>(ids: string[], spec: ChunkedSpec<T>): Promise<T> {
   const batches = chunkIds(ids);

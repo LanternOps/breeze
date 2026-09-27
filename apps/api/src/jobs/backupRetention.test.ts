@@ -649,11 +649,27 @@ describe('sweepUnreferencedBackupObjects', () => {
 
   // Convenience: pushes the 3 run-level reads (unattributedRows, destinations,
   // identityUsage) that precede every per-identity loop iteration.
-  function pushRunLevel(dests: unknown[], unattributed: unknown[] = []) {
+  // Two more run-level reads follow the identity-usage
+  // one, ONLY when there is at least one identity -- the cross-org snapshot
+  // ownership map (UNION of live backup_snapshots + not-yet-swept
+  // backup_snapshot_retirements, across every org, for every identity in
+  // play this run). `owners.live`/`owners.retired` default to `[]`, which
+  // makes every pre-existing single-org test's ownership map empty --
+  // `foreignOwnedSnapshotIds` is then always empty and behavior is
+  // byte-for-byte identical to before this fix.
+  function pushRunLevel(
+    dests: unknown[],
+    unattributed: unknown[] = [],
+    owners: { live?: unknown[]; retired?: unknown[] } = {},
+  ) {
     selectQueue.push(unattributed);
     selectQueue.push(dests);
     const usage = dests.map((d: any) => ({ storageIdentity: identityKeyFor(d), count: 1 }));
     selectQueue.push(usage);
+    if (dests.length > 0) {
+      selectQueue.push(owners.live ?? []);
+      selectQueue.push(owners.retired ?? []);
+    }
   }
 
   // Convenience: pushes the 4 per-identity reads, in the finalized order
@@ -1670,6 +1686,80 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
       expect(result.deleted).toBe(0);
+    });
+
+    // Two DIFFERENT orgs (not two configs of the SAME
+    // org, unlike the test above) sharing one physical bucket. Each gets its
+    // own independent GC unit of work now, scoped by orgId at every read
+    // (`loadIdentityGcState`, `identityHasLegacyHelper`) -- this proves two
+    // things the mocked call-shape CAN prove (the SQL predicate itself needs
+    // a real-Postgres proof, see the sibling integration test):
+    //   1. a legacy-helper-triggering job that belongs to org B never defers
+    //      org A's OWN identity group -- org A's own long-expired orphan
+    //      manifest (no row anywhere) is reclaimed normally this run, which
+    //      would NOT happen if B's device were counted in A's deferral check.
+    //   2. org A's sweep never touches org B's live snapshot, even though
+    //      both are listed in the SAME bucket -- proven via the ownership
+    //      map (`foreignOwnedSnapshotIds`) excluding it from org A's group
+    //      entirely, rather than any age/retained-set coincidence.
+    it('a legacy-helper device on one org never defers another org\'s reclamation, and neither org\'s sweep ever deletes the other\'s live snapshot, on a shared bucket', async () => {
+      const configA = { id: 'cfg-a', orgId: 'org-a', provider: 's3', providerConfig: { bucket: 'shared-bucket-2', region: 'us-east-1' } };
+      const configB = { id: 'cfg-b', orgId: 'org-b', provider: 's3', providerConfig: { bucket: 'shared-bucket-2', region: 'us-east-1' } };
+      const key = normalizeStorageIdentity('s3', configA.providerConfig);
+
+      pushRunLevel([configA, configB], [], {
+        live: [{ storageIdentity: key, snapshotId: 'b-live', orgId: 'org-b' }],
+      });
+      // org A's group: nothing retained/retired of its own, no legacy helper.
+      pushIdentity();
+      // org B's group: a legacy-helper device/job defers B's OWN identity only.
+      pushIdentity({ capability: [{ deviceId: 'dev-b', backupVersion: '0.1.0' }] });
+
+      const old = new Date(Date.now() - 30 * DAY_MS); // well past every grace/orphan window
+      rootListingMock.mockResolvedValue([
+        { key: 'snapshots/a-orphan/manifest.json', lastModified: old },
+        { key: 'snapshots/b-live/manifest.json', lastModified: old },
+      ]);
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/a-orphan/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/b-live/manifest.json') return manifestJson([]);
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      // org A's own old orphan is reclaimed -- proves org B's legacy-helper
+      // device never deferred org A's identity.
+      const deletedKeys = deleteBackupObjectKeysMock.mock.calls.flatMap((call) => (call[0] as { keys: string[] }).keys);
+      expect(deletedKeys).toContain('snapshots/a-orphan/manifest.json');
+      // org B's live snapshot is never a candidate on EITHER org's sweep.
+      expect(deletedKeys).not.toContain('snapshots/b-live/manifest.json');
+      expect(result.deferredIdentities).toBe(1); // only org B's group defers
+      // The bucket is listed ONCE for this run, not once per org sharing it.
+      expect(rootListingMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A partner routinely points every one of its orgs' configs at one
+    // shared bucket -- grouping GC work per (identity, org) must never turn
+    // into one full bucket listing per org sharing it (2026-09-23 production
+    // OOM/long-GC-run incident root cause). This is the listing-count
+    // contract on its own, isolated from the cross-org deletion-safety
+    // assertions above.
+    it('lists a bucket shared by N orgs exactly ONCE per run, not once per org', async () => {
+      const configs = ['org-1', 'org-2', 'org-3'].map((orgId, i) => ({
+        id: `cfg-${i}`, orgId, provider: 's3', providerConfig: { bucket: 'shared-bucket-3', region: 'us-east-1' },
+      }));
+
+      pushRunLevel(configs);
+      for (let i = 0; i < configs.length; i++) pushIdentity();
+
+      rootListingMock.mockResolvedValue([]);
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(rootListingMock).toHaveBeenCalledTimes(1);
     });
 
     it('blocks the entire run when any backup_snapshots row has a null config_id (cannot be attributed to a bucket)', async () => {

@@ -74,12 +74,16 @@ import type { ChangeSetPaymentLine } from './types';
 import { PAYMENT_CLAIM_LEASE_MS, partialRefundDivergenceMessage } from './accountingPaymentMarker';
 import {
   applyAccountingPayment,
-  mapQboPaymentMethod,
+  BREEZE_ORIGIN_DIVERGED_MESSAGE,
+  BREEZE_ORIGIN_REMOVED_MESSAGE,
+  breezeOriginDivergedMessage,
+  breezeOriginRemovedMessage,
   markInvoiceDeletedRemotely,
   paymentMappingRemoteId,
   reverseAccountingPayment,
   reverseStaleAllocations,
 } from './accountingPaymentPull';
+import { mapQboPaymentMethod } from './quickbooksProvider';
 
 const PARTNER = 'partner-1';
 const ORG = 'org-1';
@@ -95,8 +99,9 @@ const LINE: ChangeSetPaymentLine = {
   amountMinor: 15000,
   currency: 'USD',
   txnDate: '2026-09-02',
-  remotePaymentSyncToken: '0',
+  remotePaymentVersion: '0',
   paymentMethodName: 'Check',
+  method: 'check',
   paymentRefNum: '10441',
   breezePaymentId: null,
 };
@@ -579,6 +584,14 @@ describe('applyAccountingPayment', () => {
     expect(paramsOf(lock.where)).toEqual([INVOICE_ID, PARTNER]);
   });
 
+  it('labels a pulled payment\'s note with the connection\'s provider, not a hard-coded QuickBooks (Xero W01)', async () => {
+    const result = await applyAccountingPayment(conn({ provider: 'xero' }), LINE, runCtx, REALM_FP);
+
+    expect(result.outcome).toBe('applied');
+    const paymentInsert = stmts.find((s) => s.kind === 'insert' && s.table === 'invoice_payments')!;
+    expect(paymentInsert.values).toMatchObject({ note: 'Pulled from Xero' });
+  });
+
   it('applies a new payment: inserts the payment row, claims the mapping, recomputes and audits', async () => {
     const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
@@ -669,7 +682,7 @@ describe('applyAccountingPayment', () => {
     currentPayments = [paymentRow({ amount: '10.00', receivedAt: '2026-08-01' })];
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
-    const result = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '1' }, runCtx, REALM_FP);
+    const result = await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '1' }, runCtx, REALM_FP);
 
     expect(result).toMatchObject({ outcome: 'updated', invoiceId: INVOICE_ID, invoicePaymentId: 'pay-qbo-1' });
 
@@ -743,6 +756,18 @@ describe('applyAccountingPayment', () => {
       service: 'accountingPaymentPull',
       remote_entity_id: QBO_PAYMENT_ID,
       invoice_id: INVOICE_ID,
+    });
+  });
+
+  it('labels the voided-invoice refusal with the connection\'s provider, not a hard-coded QuickBooks (Xero W01)', async () => {
+    currentInvoices = [invoiceRow({ status: 'void' })];
+
+    const result = await applyAccountingPayment(conn({ provider: 'xero' }), LINE, runCtx, REALM_FP);
+
+    expect(result.outcome).toBe('invoice_void');
+    const mappingUpdate = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
+    expect(mappingUpdate.set).toMatchObject({
+      lastError: 'Payment pull: Payment received in Xero against a voided invoice',
     });
   });
 
@@ -948,7 +973,7 @@ describe('payment-originated error markers (finding G)', () => {
     ];
 
     const outcome = await applyAccountingPayment(
-      conn(), { ...LINE, remotePaymentSyncToken: '1' }, runCtx, REALM_FP,
+      conn(), { ...LINE, remotePaymentVersion: '1' }, runCtx, REALM_FP,
     );
 
     expect(outcome.outcome).toBe('updated');
@@ -1349,7 +1374,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
-    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '0' }, runCtx, REALM_FP);
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '0' }, runCtx, REALM_FP);
 
     expect(r.outcome).toBe('replayed');
     expect(recomputeMock).not.toHaveBeenCalled();
@@ -1361,7 +1386,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
-    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '3' }, runCtx, REALM_FP);
 
     expect(r.outcome).toBe('replayed');
     // Stored anyway so a later corrective delete has the right SyncToken.
@@ -1376,7 +1401,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
     const r = await applyAccountingPayment(
-      conn(), { ...LINE, remotePaymentSyncToken: '3', amountMinor: 4000 }, runCtx, REALM_FP,
+      conn(), { ...LINE, remotePaymentVersion: '3', amountMinor: 4000 }, runCtx, REALM_FP,
     );
 
     expect(r.outcome).toBe('breeze_origin_diverged');
@@ -1406,18 +1431,18 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentPayments = [breezePaymentRow({ amount: '83.00' })]; // 150.00 less a 67.00 refund
     currentMappings = [invoiceMappingRow(), breezeOriginMapping({
       syncStatus: 'error',
-      lastError: partialRefundDivergenceMessage('67.00'),
+      lastError: partialRefundDivergenceMessage('67.00', 'QuickBooks'),
     })];
 
     const r = await applyAccountingPayment(
-      conn(), { ...LINE, remotePaymentSyncToken: '3', amountMinor: 15000 }, runCtx, REALM_FP,
+      conn(), { ...LINE, remotePaymentVersion: '3', amountMinor: 15000 }, runCtx, REALM_FP,
     );
 
     expect(r.outcome).toBe('skipped_breeze_origin');
     expect(currentMappings[1]).toMatchObject({
       remoteSyncToken: '3', // the token is still stored — a later delete needs it
       syncStatus: 'error',
-      lastError: partialRefundDivergenceMessage('67.00'),
+      lastError: partialRefundDivergenceMessage('67.00', 'QuickBooks'),
     });
     expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
@@ -1436,7 +1461,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
       pendingOp: 'delete', syncStatus: 'pending', claimedAt: new Date('2026-09-02T19:00:00.000Z'),
     })];
 
-    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '3' }, runCtx, REALM_FP);
 
     expect(r.outcome).toBe('skipped_breeze_origin');
     expect(currentMappings[1]).toMatchObject({
@@ -1456,7 +1481,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentPayments = [];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
-    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '3' }, runCtx, REALM_FP);
 
     expect(r.outcome).toBe('skipped_breeze_origin');
     expect(currentMappings[1]).toMatchObject({ remoteSyncToken: '3', syncStatus: 'synced' });
@@ -1467,7 +1492,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
-    await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3', paymentRefNum: 'CHANGED' }, runCtx, REALM_FP);
+    await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: '3', paymentRefNum: 'CHANGED' }, runCtx, REALM_FP);
 
     expect(currentPayments[0]).toMatchObject({ reference: '10441', method: 'check', receivedAt: '2026-09-02' });
   });
@@ -1538,7 +1563,7 @@ describe('pull disabled (spec decision 6, #4543)', () => {
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
     await expect(applyAccountingPayment(
-      conn({ pullPayments: false }), { ...LINE, remotePaymentSyncToken: '9', amountMinor: 9900 }, runCtx, REALM_FP,
+      conn({ pullPayments: false }), { ...LINE, remotePaymentVersion: '9', amountMinor: 9900 }, runCtx, REALM_FP,
     )).resolves.toMatchObject({ outcome: 'skipped_pull_disabled' });
     // The money row and the stored token are both untouched.
     expect(currentPayments[0]).toMatchObject({ amount: paymentRow().amount });
@@ -1848,5 +1873,17 @@ describe('markInvoiceDeletedRemotely self-void guard (spec decision 11)', () => 
     currentMappings = [invoiceMappingRow()];
 
     await expect(markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)).resolves.toBe('marked');
+  });
+});
+
+describe('Breeze-origin messages are provider-labelled (Xero W01)', () => {
+  it('keeps the QuickBooks text byte-identical (deprecated aliases included) and labels other providers', () => {
+    expect(breezeOriginDivergedMessage('QuickBooks'))
+      .toBe('Edited in QuickBooks; Breeze remains the source of truth for this payment');
+    expect(breezeOriginRemovedMessage('QuickBooks')).toBe('Deleted in QuickBooks');
+    expect(BREEZE_ORIGIN_DIVERGED_MESSAGE).toBe(breezeOriginDivergedMessage('QuickBooks'));
+    expect(BREEZE_ORIGIN_REMOVED_MESSAGE).toBe('Deleted in QuickBooks');
+    expect(breezeOriginDivergedMessage('Xero')).toBe('Edited in Xero; Breeze remains the source of truth for this payment');
+    expect(breezeOriginRemovedMessage('Xero')).toBe('Deleted in Xero');
   });
 });

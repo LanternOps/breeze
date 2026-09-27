@@ -9,6 +9,7 @@ import {
   huntressAgents,
   s1Agents,
   securityStatus,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { classifyDeviceProtection } from './protection';
 import { sqlTimestamp } from './sqlTimestamp';
@@ -59,7 +60,10 @@ export async function enrichedDevicesForOrg(
           from ${backupJobs}
           where ${backupJobs.orgId} = ${orgId}
             and ${backupJobs.deviceId} = ${devices.id}
-            and ${backupJobs.status} in ('completed', 'partial')
+            and ${backupJobs.status} in (${sql.join(
+              RESTORABLE_BACKUP_JOB_STATUSES.map((status) => sql`${status}`),
+              sql`, `,
+            )})
         )`,
         warrantyEndsAt: deviceWarranty.warrantyEndDate,
       })

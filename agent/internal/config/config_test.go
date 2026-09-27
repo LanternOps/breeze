@@ -63,8 +63,25 @@ func TestSaveToKeepsFullAgentTokensOutOfAgentYAML(t *testing.T) {
 	if strings.HasPrefix(text, "auth_token:") || strings.HasPrefix(text, "watchdog_auth_token:") {
 		t.Fatalf("agent.yaml contains full-token key:\n%s", text)
 	}
-	if !strings.Contains(text, "helper_auth_token: brz_helper") {
-		t.Fatalf("agent.yaml missing helper-scoped token:\n%s", text)
+	if runtime.GOOS == "windows" {
+		// Windows: no narrower delivery exists yet (see helpertoken_windows.go),
+		// so the helper-scoped token still goes into agent.yaml.
+		if !strings.Contains(text, "helper_auth_token: brz_helper") {
+			t.Fatalf("agent.yaml missing helper-scoped token:\n%s", text)
+		}
+	} else {
+		// Unix: it must NOT be in agent.yaml (world-readable) — it belongs in
+		// the group-scoped helper_token.yaml instead.
+		if strings.Contains(text, "helper_auth_token") {
+			t.Fatalf("agent.yaml must not contain the helper token on this platform:\n%s", text)
+		}
+		helperTokenYAML, err := os.ReadFile(helperTokenFilePathFor(cfgPath))
+		if err != nil {
+			t.Fatalf("read helper token file: %v", err)
+		}
+		if !strings.Contains(string(helperTokenYAML), "helper_auth_token: brz_helper") {
+			t.Fatalf("helper token file missing helper token:\n%s", helperTokenYAML)
+		}
 	}
 
 	loaded, err := Load(cfgPath)
@@ -109,8 +126,16 @@ helper_auth_token: brz_helper
 			t.Fatalf("scrubbed agent.yaml contains %q:\n%s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "helper_auth_token: brz_helper") {
-		t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(text, "helper_auth_token: brz_helper") {
+			t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
+		}
+	} else if strings.Contains(text, "helper_auth_token") {
+		// This raw migration call only has to get the token OUT of
+		// agent.yaml; it lands in secrets.yaml like any other migrated
+		// secret. Seeding the dedicated helper_token.yaml from there is a
+		// separate step — see TestSeedHelperTokenFileFromSecretsIfMissing.
+		t.Fatalf("scrubbed agent.yaml must not contain the helper token on this platform:\n%s", text)
 	}
 
 	loaded, err := Load(cfgPath)
@@ -122,6 +147,133 @@ helper_auth_token: brz_helper
 	}
 	if loaded.WatchdogAuthToken != "brz_watchdog_inline" {
 		t.Fatalf("WatchdogAuthToken = %q, want migrated token", loaded.WatchdogAuthToken)
+	}
+	if loaded.HelperAuthToken != "brz_helper" {
+		t.Fatalf("HelperAuthToken = %q, want brz_helper (migrated into secrets.yaml)", loaded.HelperAuthToken)
+	}
+}
+
+// TestFixAgentYAMLPermissionsLocksDownWhenMigrationLeavesInlineSecrets
+// reproduces the case where migrateInlineSecretsToSecretFile fails partway
+// through (here, its secrets.yaml destination is an existing directory, so
+// the final rename-into-place fails) and confirms the caller does NOT widen
+// agent.yaml to the Helper-readable mode while inline secret material is
+// still sitting in it on disk.
+func TestFixAgentYAMLPermissionsLocksDownWhenMigrationLeavesInlineSecrets(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(
+		"agent_id: agent-1\nserver_url: https://api.example.test\nauth_token: brz_still_inline\n",
+	), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	// Force migration to fail before it ever rewrites cfgPath: its
+	// secrets.yaml destination exists as a directory, so writeYAMLFile's
+	// rename-into-place returns an error and cfgPath is left untouched.
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	if err := os.MkdirAll(secretsPath, 0o755); err != nil {
+		t.Fatalf("seed secrets.yaml as a directory: %v", err)
+	}
+
+	fixAgentYAMLPermissions(cfgPath)
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "brz_still_inline") {
+		t.Fatalf("expected the inline secret to remain on disk (migration was forced to fail): %s", data)
+	}
+	if runtime.GOOS != "windows" {
+		mode := statPerm(t, cfgPath)
+		if mode != 0o600 {
+			t.Fatalf("agent.yaml mode = %o, want 0600 (locked down) while inline secrets remain after a failed migration", mode)
+		}
+	}
+}
+
+// TestFixAgentYAMLPermissionsWidensWhenMigrationSucceeds is the control:
+// once agent.yaml is verifiably clear of inline secrets, it is loosened to
+// the Helper-readable mode as before.
+func TestFixAgentYAMLPermissionsWidensWhenMigrationSucceeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits don't apply on Windows; DACLs covered separately")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(
+		"agent_id: agent-1\nserver_url: https://api.example.test\n",
+	), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+
+	fixAgentYAMLPermissions(cfgPath)
+
+	mode := statPerm(t, cfgPath)
+	if mode != 0o644 {
+		t.Fatalf("agent.yaml mode = %o, want 0644 once it is clear of inline secrets", mode)
+	}
+}
+
+// TestSeedHelperTokenFileFromSecretsIfMissing covers the upgrade path: an
+// existing install migrated helper_auth_token out of agent.yaml and into
+// secrets.yaml (the generic, isSecretYAMLKey-driven destination), and this
+// step is what additionally seeds the group-scoped helper_token.yaml the
+// Helper actually reads on Unix.
+func TestSeedHelperTokenFileFromSecretsIfMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("helper_token.yaml is Unix-only; see helpertoken_windows.go")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte("agent_id: agent-1\nserver_url: https://api.example.test\n"), 0o644); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	if err := os.WriteFile(secretsPath, []byte("helper_auth_token: brz_helper_from_secrets\n"), 0o600); err != nil {
+		t.Fatalf("write secrets.yaml: %v", err)
+	}
+
+	seedHelperTokenFileFromSecretsIfMissing(cfgPath)
+
+	got, err := readHelperTokenFileFor(cfgPath)
+	if err != nil {
+		t.Fatalf("readHelperTokenFileFor returned error: %v", err)
+	}
+	if got != "brz_helper_from_secrets" {
+		t.Fatalf("helper token file = %q, want brz_helper_from_secrets", got)
+	}
+}
+
+// TestSeedHelperTokenFileFromSecretsIfMissingSkipsWhenAlreadyPresent proves
+// the seed step never overwrites an existing helper_token.yaml — e.g. one
+// SaveTo already wrote directly on a fresh install, which must win over
+// whatever a stale secrets.yaml happens to carry.
+func TestSeedHelperTokenFileFromSecretsIfMissingSkipsWhenAlreadyPresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("helper_token.yaml is Unix-only; see helpertoken_windows.go")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte("agent_id: agent-1\n"), 0o644); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	if err := writeHelperTokenFileFor(cfgPath, "brz_current"); err != nil {
+		t.Fatalf("writeHelperTokenFileFor: %v", err)
+	}
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	if err := os.WriteFile(secretsPath, []byte("helper_auth_token: brz_stale\n"), 0o600); err != nil {
+		t.Fatalf("write secrets.yaml: %v", err)
+	}
+
+	seedHelperTokenFileFromSecretsIfMissing(cfgPath)
+
+	got, err := readHelperTokenFileFor(cfgPath)
+	if err != nil {
+		t.Fatalf("readHelperTokenFileFor returned error: %v", err)
+	}
+	if got != "brz_current" {
+		t.Fatalf("helper token file = %q, want brz_current (must not be overwritten)", got)
 	}
 }
 
@@ -615,8 +767,11 @@ func TestIsSecretYAMLKey(t *testing.T) {
 		// Caught by suffix rules (_password, _secret, _token).
 		"smtp_password": true,
 		"some_token":    true,
-		// Explicitly exempted: helper token MUST stay in agent.yaml for Helper.
-		"helper_auth_token": false,
+		// Windows only: helper token stays in agent.yaml (no narrower delivery
+		// exists there yet), so isSecretYAMLKey is false there. On Unix it
+		// belongs in the group-scoped helper_token.yaml instead, so it IS
+		// treated as a secret key (stripped out of agent.yaml) there.
+		"helper_auth_token": runtime.GOOS != "windows",
 		// Non-secret keys that happen to contain "key" or "token" substrings
 		// but don't match any suffix rule.
 		"server_url":       false,
@@ -683,9 +838,13 @@ backup_s3_secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 		}
 	}
 
-	// helper_auth_token must remain in agent.yaml (Helper reads it).
-	if !strings.Contains(text, "helper_auth_token: brz_helper") {
-		t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
+	if runtime.GOOS == "windows" {
+		// helper_auth_token must remain in agent.yaml (Helper reads it there).
+		if !strings.Contains(text, "helper_auth_token: brz_helper") {
+			t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
+		}
+	} else if strings.Contains(text, "helper_auth_token") {
+		t.Fatalf("scrubbed agent.yaml must not contain the helper token on this platform:\n%s", text)
 	}
 
 	// secrets.yaml must contain the S3 credentials.

@@ -524,8 +524,8 @@
         "description": "L'interruttore di emergenza IA è un controllo a livello di piattaforma gestito dagli amministratori di piattaforma di Breeze. Il tuo account non può visualizzarlo né modificarlo."
       },
       "status": {
-        "active": "Azioni IA attive",
-        "killed": "Azioni IA interrotte"
+        "active": "Azioni IA non supervisionate attive",
+        "killed": "Azioni IA non supervisionate interrotte"
       },
       "fields": {
         "epoch": "Epoca",

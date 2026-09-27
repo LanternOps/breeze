@@ -1,8 +1,10 @@
 import { Queue } from 'bullmq';
 import { scriptVerificationClaimSchema } from '@breeze/shared';
+import { validateRegexSafety } from '@breeze/shared/validators';
 import { verifyServiceRunningForTask, verifyProcessAbsentByNameForTask } from '../aiAgents/actVerify';
 import { getBullMQConnection } from '../redis';
 import { captureException } from '../sentry';
+import { testRegexWithTimeout } from './regexMatchTimeout';
 
 export type VerificationOutcome = 'verified' | 'verification_failed' | 'unknown';
 
@@ -14,6 +16,16 @@ export const SCRIPT_VERIFY_MAX_ATTEMPTS = 3;
 export const SCRIPT_VERIFY_RETRY_DELAY_MS = 10 * 60 * 1000;
 const VERIFY_READ_TIMEOUT_MS = 30_000;
 const FILE_LIST_LIMIT = 5000;
+/** Tail-only bound (bytes) on stdout+stderr fed to an `output_matches` regex. */
+const OUTPUT_MATCH_HAYSTACK_CAP = 64 * 1024;
+/**
+ * Hard wall-clock kill for the match-time `output_matches` regex (see
+ * regexMatchTimeout.ts). Generous relative to any legitimate pattern against
+ * a 64 KiB haystack (which completes in low single-digit milliseconds), but
+ * bounded: a pattern that slips past `validateRegexSafety` costs at most
+ * this once per verification attempt, off the main thread either way.
+ */
+const OUTPUT_MATCH_TIMEOUT_MS = 500;
 
 export interface ScriptVerifyJobData {
   proposalId: string;
@@ -76,9 +88,18 @@ export async function evaluateVerificationClaim(
     }
 
     case 'output_matches': {
-      let re: RegExp;
+      // Defence in depth against a row authored before pattern-complexity
+      // validation existed at the schema layer (or a schema regression):
+      // this worker runs the pattern synchronously on the shared,
+      // socket-owner-placed process, so it must not trust that "compiled at
+      // authoring time" also means "bounded". Unsafe here is unknown, not a
+      // crash — same non-punitive posture as an invalid regex below.
+      if (!validateRegexSafety(c.regex).ok) {
+        return { outcome: 'unknown', evidence: { reason: 'unsafe_regex', regex: c.regex } };
+      }
       try {
-        re = new RegExp(c.regex);
+        // eslint-disable-next-line no-new -- validity-only compile check; the actual match runs on the worker thread below.
+        new RegExp(c.regex);
       } catch {
         // A bad regex is the AUTHOR's mistake, not the device's. Unknown, so the
         // run is never claimed as proven on the strength of a pattern that
@@ -89,10 +110,31 @@ export async function evaluateVerificationClaim(
       if (execution.stdout === null && execution.stderr === null) {
         return { outcome: 'unknown', evidence: { reason: 'no_output', status: execution.status } };
       }
-      const haystack = `${execution.stdout ?? ''}\n${execution.stderr ?? ''}`;
-      return re.test(haystack)
-        ? { outcome: 'verified', evidence: { matched: true } }
-        : { outcome: 'verification_failed', evidence: { matched: false, regex: c.regex } };
+      const fullHaystack = `${execution.stdout ?? ''}\n${execution.stderr ?? ''}`;
+      // Bound the string handed to the regex engine independent of the
+      // pattern-complexity check above: execution output is device-supplied
+      // and unbounded in practice, and even a SAFE pattern costs O(haystack)
+      // to scan. Keep the TAIL — most verification claims look for a
+      // completion marker near the end of output.
+      const haystack = fullHaystack.length > OUTPUT_MATCH_HAYSTACK_CAP
+        ? fullHaystack.slice(-OUTPUT_MATCH_HAYSTACK_CAP)
+        : fullHaystack;
+      // Run the match itself on a worker thread with a hard wall-clock kill
+      // (regexMatchTimeout.ts): the two checks above are best-effort and
+      // heuristic; this is the genuine bound. A timeout is `unknown`, not a
+      // failure attributed to the device — the same non-punitive posture as
+      // every other "couldn't evaluate this" branch in this function.
+      const matchResult = await testRegexWithTimeout(c.regex, '', haystack, OUTPUT_MATCH_TIMEOUT_MS);
+      switch (matchResult.status) {
+        case 'matched':
+          return { outcome: 'verified', evidence: { matched: true } };
+        case 'not_matched':
+          return { outcome: 'verification_failed', evidence: { matched: false, regex: c.regex } };
+        case 'timeout':
+          return { outcome: 'unknown', evidence: { reason: 'regex_match_timeout', regex: c.regex } };
+        case 'error':
+          return { outcome: 'unknown', evidence: { reason: 'regex_match_error', regex: c.regex } };
+      }
     }
 
     case 'service_running': {

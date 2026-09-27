@@ -853,6 +853,7 @@
     "hideExpired": "Hide expiré",
     "deleteExpired": "Supprimer les clés expirées",
     "shortCode": "Code court",
+    "shortCodeHidden": "Masqué — nécessite l’autorisation d’inscription",
     "installerUsage": "Appareils de l’installateur {{consumed}} / {{max}}",
     "installerUsageExpired": "Appareils de l’installateur {{consumed}} / {{max}} (expiré)",
     "installerUsageMixed": "Appareils de l’installateur {{liveConsumed}} / {{liveMax}} actifs · {{expired}} expirés",
@@ -5552,7 +5553,9 @@
       "inviteSent": "Invitation envoyée à {{email}}",
       "copied": "Copié !",
       "copyLink": "Copier le lien",
-      "mfaReset": "MFA réinitialisé pour {{email}}"
+      "mfaReset": "MFA réinitialisé pour {{email}}",
+      "roleUpdated": "Rôle mis à jour",
+      "orgAccessUpdated": "Accès aux organisations mis à jour"
     },
     "resetMfa": {
       "title": "Réinitialiser MFA ?",

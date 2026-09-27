@@ -366,8 +366,10 @@ describe('restore routes', () => {
         snapshotId: 'provider-snap-1',
         targetPath: '',
         selectedPaths: [],
+        // Only a stable reference is persisted; the destination (and any
+        // credential in it) is resolved when the command is delivered.
         provider: 's3',
-        providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' },
+        providerConfigRef: { configId: 'cfg-1', orgId: 'org-1' },
       },
       { userId: 'user-1' }
     );

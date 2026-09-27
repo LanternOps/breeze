@@ -56,7 +56,7 @@ func stubHypervSeams(
 		}
 		return nil, errors.New("export seam not configured")
 	}
-	importHypervVM = func(exportPath, vmName string, generateNewID bool) (*hyperv.RestoreResult, error) {
+	importHypervVM = func(exportPath, vmName string) (*hyperv.RestoreResult, error) {
 		rec.importCalls++
 		return &hyperv.RestoreResult{VMName: vmName, Status: "completed"}, nil
 	}

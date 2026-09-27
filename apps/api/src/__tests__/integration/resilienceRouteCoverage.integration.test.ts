@@ -279,9 +279,9 @@ function deniedRouteCases(f: Fixture): MountedRouteCase[] {
     { name: 'restore by ID', method: 'GET', path: `/restore/${f.deniedRestore}` },
     { name: 'restore create source', method: 'POST', path: '/restore', body: { snapshotId: f.snapshotB, deviceId: f.targetA, restoreType: 'full' } },
     { name: 'restore cancel source lineage', method: 'POST', path: `/restore/${f.deniedRestore}/cancel` },
-    { name: 'restore as VM source', method: 'POST', path: '/backup/restore/as-vm', body: { snapshotId: f.snapshotB, targetDeviceId: f.targetA, hypervisor: 'hyperv', vmName: 'Denied VM' } },
-    { name: 'instant boot source', method: 'POST', path: '/backup/restore/instant-boot', body: { snapshotId: f.snapshotB, targetDeviceId: f.targetA, vmName: 'Denied Instant VM' } },
-    { name: 'VM estimate source', method: 'GET', path: `/backup/restore/as-vm/estimate/${f.snapshotB}` },
+    { name: 'restore as VM source', method: 'POST', path: '/restore/as-vm', body: { snapshotId: f.snapshotB, targetDeviceId: f.targetA, hypervisor: 'hyperv', vmName: 'Denied VM' } },
+    { name: 'instant boot source', method: 'POST', path: '/restore/instant-boot', body: { snapshotId: f.snapshotB, targetDeviceId: f.targetA, vmName: 'Denied Instant VM' } },
+    { name: 'VM estimate source', method: 'GET', path: `/restore/as-vm/estimate/${f.snapshotB}` },
     { name: 'Hyper-V list explicit source filter', method: 'GET', path: `/hyperv/vms?deviceId=${f.sourceB}` },
     { name: 'Hyper-V host by ID', method: 'GET', path: `/hyperv/vms/${f.sourceB}` },
     { name: 'Hyper-V discovery target', method: 'POST', path: `/hyperv/discover/${f.sourceB}` },
@@ -347,7 +347,7 @@ describe('mounted recovery route site authorization against real PostgreSQL', ()
 
     const listCases: Array<MountedRouteCase & { extractIds: (body: any) => string[]; allowedIds: string[] }> = [
       { name: 'restore jobs', method: 'GET', path: '/restore', extractIds: (body) => body.data.map((row: any) => row.snapshotId), allowedIds: [f.snapshotA] },
-      { name: 'instant boot jobs', method: 'GET', path: '/backup/restore/instant-boot/active', extractIds: (body) => body.map((row: any) => row.snapshotId), allowedIds: [] },
+      { name: 'instant boot jobs', method: 'GET', path: '/restore/instant-boot/active', extractIds: (body) => body.map((row: any) => row.snapshotId), allowedIds: [] },
       { name: 'Hyper-V VMs', method: 'GET', path: '/hyperv/vms', extractIds: (body) => body.vms.map((row: any) => row.id), allowedIds: [f.vmA] },
       { name: 'MSSQL instances', method: 'GET', path: '/mssql/instances', extractIds: (body) => body.data.map((row: any) => row.deviceId), allowedIds: [f.sourceA] },
       { name: 'MSSQL chains', method: 'GET', path: '/mssql/chains', extractIds: (body) => body.data.map((row: any) => row.deviceId), allowedIds: [f.sourceA] },

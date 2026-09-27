@@ -18,13 +18,52 @@ const mocks = vi.hoisted(() => ({
     remaining: 9,
     resetAt: new Date(Date.now() + 60_000),
   })),
-  getRedis: vi.fn(() => ({ redis: true })),
+  getRedis: vi.fn((): unknown => ({ redis: true })),
   partnerTrustMode: vi.fn((): 'off' | 'enforce' => 'off'),
   evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
   evaluateCapabilityContinuationForState: vi.fn((): any => ({ allow: true })),
   unresolvedPartnerDecision: vi.fn(async () => ({ allow: false as const, code: 'TRUST_RESTRICTED' as const, capability: 'remote_control' as const, reason: 'unresolved' })),
   tightenStatementTimeout: vi.fn(async () => 0),
 }));
+
+// `services/tokenRevocation` is intentionally left UNMOCKED (see below) so
+// the credential-revocation tests exercise the real cutoff-comparison logic
+// against a fake in-memory Redis, rather than a canned boolean that could
+// mask a regression in what argument resolveRemoteWsLiveAuthority passes.
+type FakeRevocationRedis = {
+  get: (key: string) => Promise<string | null>;
+  setex: (key: string, ttlSeconds: number, value: string) => Promise<'OK'>;
+  multi: () => {
+    setex: (key: string, ttlSeconds: number, value: string) => ReturnType<FakeRevocationRedis['multi']>;
+    exec: () => Promise<unknown>;
+  };
+};
+
+function createFakeRevocationRedis(): FakeRevocationRedis {
+  const store = new Map<string, string>();
+  const client: FakeRevocationRedis = {
+    get: async (key) => (store.has(key) ? (store.get(key) as string) : null),
+    setex: async (key, _ttlSeconds, value) => {
+      store.set(key, value);
+      return 'OK';
+    },
+    multi: () => {
+      const pending: Array<() => void> = [];
+      const chain = {
+        setex: (key: string, _ttlSeconds: number, value: string) => {
+          pending.push(() => store.set(key, value));
+          return chain;
+        },
+        exec: async () => {
+          pending.forEach((op) => op());
+          return pending.map(() => [null, 'OK']);
+        },
+      };
+      return chain;
+    },
+  };
+  return client;
+}
 
 vi.mock('./remoteSessionAuth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./remoteSessionAuth')>();
@@ -69,6 +108,8 @@ import {
   revalidateRemoteWsAuthorityBounded,
   type ConsumedRemoteWsTicketContext,
 } from './remoteWsAuthorization';
+// Real implementation — see the FakeRevocationRedis note above.
+import { revokeAllUserTokens } from './tokenRevocation';
 
 function queryRows(rows: readonly unknown[]) {
   const whereResult = Promise.resolve(rows) as Promise<readonly unknown[]> & {
@@ -105,12 +146,14 @@ function consumed(kind: 'terminal' | 'desktop' | 'tunnel'): ConsumedRemoteWsTick
 
 function installAuthorizationRows(input: {
   kind: 'terminal' | 'desktop' | 'tunnel';
+  userId?: string;
   userStatus?: string;
   session?: null | Readonly<{
     userId?: string;
     status?: string;
     type?: string;
     errorMessage?: string | null;
+    createdAt?: Date;
   }>;
   deviceStatus?: string;
   deviceOrgId?: string;
@@ -134,15 +177,16 @@ function installAuthorizationRows(input: {
     ? null
     : {
         id: SESSION_ID,
-        userId: input.session?.userId ?? USER_ID,
+        userId: input.session?.userId ?? input.userId ?? USER_ID,
         orgId: ORG_ID,
         deviceId: DEVICE_ID,
         type: input.session?.type ?? sessionType,
         status: input.session?.status ?? 'active',
         errorMessage: input.session?.errorMessage ?? null,
+        createdAt: input.session?.createdAt ?? new Date(),
       };
   const user = {
-    id: USER_ID,
+    id: input.userId ?? USER_ID,
     status: input.userStatus ?? 'active',
     partnerId: PARTNER_ID,
   };
@@ -208,7 +252,12 @@ beforeEach(() => {
     remaining: 9,
     resetAt: new Date(Date.now() + 60_000),
   });
-  mocks.getRedis.mockReturnValue({ redis: true });
+  // A fresh, empty fake store per test — the real isUserTokenRevoked reads
+  // this and sees "nothing revoked" until a test calls revokeAllUserTokens
+  // against it. All other tests in this file therefore run the REAL
+  // revocation check on an empty store (equivalent to "not revoked"), not a
+  // hardcoded mock.
+  mocks.getRedis.mockReturnValue(createFakeRevocationRedis());
   mocks.partnerTrustMode.mockReturnValue('off');
   mocks.evaluateCapability.mockResolvedValue({ allow: true });
   mocks.evaluateCapabilityContinuationForState.mockReturnValue({ allow: true });
@@ -359,7 +408,7 @@ describe.each(['terminal', 'desktop', 'tunnel'] as const)(
       });
       expect(mocks.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
       expect(mocks.rateLimiter).toHaveBeenCalledWith(
-        { redis: true },
+        mocks.getRedis.mock.results[0]?.value,
         `${kind}ws:conn:${USER_ID}`,
         10,
         60,
@@ -427,6 +476,131 @@ describe.each(['terminal', 'desktop', 'tunnel'] as const)(
     });
   },
 );
+
+describe('credential-change revocation (password reset/change, MFA factor change)', () => {
+  it('denies a live session whose underlying session predates the revocation', async () => {
+    const sessionCreatedAt = new Date(Date.now() - 60_000);
+    installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+    // Real revokeAllUserTokens, real fake-backed store: the revocation is
+    // recorded as happening AFTER this session was created.
+    await revokeAllUserTokens(USER_ID);
+
+    const result = await authorizeConsumedRemoteWsTicket(consumed('desktop'));
+
+    expect(result).toEqual({ ok: false, status: 403, reason: 'credential_revoked' });
+    // No side effects past the credential check — matches every other
+    // pre-rate-limit denial reason.
+    expect(mocks.rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('allows a session created AFTER the revocation event — the 15-minute blanket marker must not over-block a brand-new legitimate session', async () => {
+    // Revoke first, then "create" a session a moment later — exactly the
+    // sequence a fresh login right after a password reset produces.
+    await revokeAllUserTokens(USER_ID);
+    const sessionCreatedAt = new Date(Date.now() + 2_000);
+    installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+
+    const result = await authorizeLiveRemoteSessionAccess({
+      sessionId: SESSION_ID,
+      sessionType: 'desktop',
+      userId: USER_ID,
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('denies a session created just before the revocation, in the same UTC second', async () => {
+    // The revocation and the session creation land in the same wall-clock
+    // second, with the session strictly earlier by 200ms. Second-truncated
+    // comparisons collapse this ordering; the fix must not.
+    vi.useFakeTimers();
+    try {
+      const revocationTime = new Date();
+      revocationTime.setMilliseconds(900);
+      const sessionCreatedAt = new Date(revocationTime.getTime() - 200);
+      vi.setSystemTime(revocationTime);
+
+      installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+      await revokeAllUserTokens(USER_ID);
+
+      const result = await authorizeConsumedRemoteWsTicket(consumed('desktop'));
+
+      expect(result).toEqual({ ok: false, status: 403, reason: 'credential_revoked' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows a session created 1.5 seconds after the revocation', async () => {
+    vi.useFakeTimers();
+    try {
+      const revocationTime = new Date();
+      revocationTime.setMilliseconds(100);
+      vi.setSystemTime(revocationTime);
+      await revokeAllUserTokens(USER_ID);
+
+      const sessionCreatedAt = new Date(revocationTime.getTime() + 1_500);
+      installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+
+      const result = await authorizeConsumedRemoteWsTicket(consumed('desktop'));
+
+      expect(result.ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('denies the connect-code / continuation-mint boundary the same way as the periodic recheck', async () => {
+    const sessionCreatedAt = new Date(Date.now() - 60_000);
+    installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+    await revokeAllUserTokens(USER_ID);
+
+    const result = await authorizeLiveRemoteSessionAccess({
+      sessionId: SESSION_ID,
+      sessionType: 'desktop',
+      userId: USER_ID,
+    });
+
+    expect(result).toEqual({ ok: false, status: 403, reason: 'credential_revoked' });
+  });
+
+  it('denies the periodic live-authority recheck once the marker is set for a pre-existing session', async () => {
+    const sessionCreatedAt = new Date(Date.now() - 60_000);
+    installAuthorizationRows({ kind: 'terminal', session: { createdAt: sessionCreatedAt } });
+    await revokeAllUserTokens(USER_ID);
+
+    await expect(revalidateRemoteWsAuthority(consumed('terminal'))).resolves.toEqual({
+      ok: false,
+      status: 403,
+      reason: 'credential_revoked',
+    });
+  });
+
+  it('control: an unrelated user whose credentials never changed keeps live authority', async () => {
+    const OTHER_USER_ID = '88888888-8888-4888-8888-888888888888';
+    const sessionCreatedAt = new Date(Date.now() - 60_000);
+    // Revoke ONLY USER_ID against the shared fake store — OTHER_USER_ID's
+    // key is never written.
+    await revokeAllUserTokens(USER_ID);
+
+    installAuthorizationRows({ kind: 'desktop', session: { createdAt: sessionCreatedAt } });
+    const result = await authorizeLiveRemoteSessionAccess({
+      sessionId: SESSION_ID,
+      sessionType: 'desktop',
+      userId: USER_ID,
+    });
+    expect(result).toEqual({ ok: false, status: 403, reason: 'credential_revoked' });
+
+    mocks.select.mockReset();
+    installAuthorizationRows({ kind: 'desktop', userId: OTHER_USER_ID, session: { createdAt: sessionCreatedAt } });
+    const unaffected = await authorizeLiveRemoteSessionAccess({
+      sessionId: SESSION_ID,
+      sessionType: 'desktop',
+      userId: OTHER_USER_ID,
+    });
+    expect(unaffected.ok).toBe(true);
+  });
+});
 
 it('reuses the complete live boundary without charging a connection rate limit', async () => {
   installAuthorizationRows({ kind: 'desktop' });

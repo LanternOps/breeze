@@ -6,14 +6,16 @@ loadDotenv({ quiet: true });
 import './config/normalizeNodeEnv';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
+import { installPerRouteMaxPayload } from './services/wsMaxPayload';
 import { Hono } from 'hono';
-import type { Context } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
 
 import { securityMiddleware } from './middleware/security';
+import { exceptPathPrefix } from './middleware/pathExemption';
 import { requestPathLogger } from './middleware/requestPathLogger';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
@@ -293,6 +295,7 @@ import {
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
+import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/schema';
 import { eq, ne, sql } from 'drizzle-orm';
@@ -399,7 +402,12 @@ const readiness = createReadinessEvaluator({
 setWorkerReadinessTransitionHandler(() => readiness.invalidate());
 
 // Create WebSocket helpers (must be done before routes are registered)
-const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({ app });
+// One WebSocketServer instance serves every upgrade route below (terminal,
+// desktop signaling, tunnel relay, event stream, agent ingest) with no
+// per-route hook for `maxPayload`, so the `ws` library default of 100 MiB
+// would otherwise apply everywhere. Size it per route instead.
+installPerRouteMaxPayload(wss);
 const resolveCorsOrigin = createCorsOriginResolver({
   configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
   nodeEnv: process.env.NODE_ENV
@@ -414,19 +422,41 @@ const resolveCorsOrigin = createCorsOriginResolver({
 // but was never mounted, so neither series appeared in a production scrape.
 app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
+
+// The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
+// headers on every request — a restrictive sandboxed CSP that intentionally
+// allows same-origin framing so the app's own iframe can embed the proxied
+// device UI, plus its own cross-site request admission — and does so
+// specifically BECAUSE some of the app-wide headers below (CSP
+// `frame-ancestors 'none'`, X-Frame-Options: DENY, credentialed CORS) are
+// wrong for that one route: applied on top, they silently won the merge over
+// the route's own response and broke iframe embedding entirely (the route's
+// sandbox CSP never reached the browser). Skip only the conflicting header
+// output for that path prefix; every other route keeps it unchanged.
+//
+// `securityMiddleware()` also enforces FORCE_HTTPS redirect and
+// canonical-Host rejection, which have nothing to do with the CSP conflict
+// above and must keep running for this prefix too — so it is exempted via
+// its own `skipHeadersPathPrefix` option (headers only), not via
+// `exceptTunnelHttp`, which would drop that transport enforcement as well.
+const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
+const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, mw);
+
 app.use(
   '*',
-  secureHeaders({
-    // Override defaults to match Breeze security policy:
-    // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-    strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
-    // - X-Frame-Options: DENY (default is SAMEORIGIN)
-    xFrameOptions: 'DENY',
-    // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
-    referrerPolicy: 'strict-origin-when-cross-origin',
-  })
+  exceptTunnelHttp(
+    secureHeaders({
+      // Override defaults to match Breeze security policy:
+      // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+      strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
+      // - X-Frame-Options: DENY (default is SAMEORIGIN)
+      xFrameOptions: 'DENY',
+      // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    })
+  )
 );
-app.use('*', securityMiddleware());
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -438,14 +468,16 @@ app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
 app.use(
   '*',
-  cors({
-    origin: (origin) => resolveCorsOrigin(origin),
-    credentials: true,
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
-    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposeHeaders: ['Content-Length', 'X-Request-Id'],
-    maxAge: 86400
-  })
+  exceptTunnelHttp(
+    cors({
+      origin: (origin) => resolveCorsOrigin(origin),
+      credentials: true,
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      exposeHeaders: ['Content-Length', 'X-Request-Id'],
+      maxAge: 86400
+    })
+  )
 );
 
 const startedAt = Date.now();
@@ -1839,6 +1871,17 @@ async function bootstrap(): Promise<void> {
     }
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
   }
+
+  // Keeps the regular-MSI download cache (installerBuilder.ts) warm from a
+  // background timer instead of the request path: the installer routes that
+  // consume it all run inside an ambient DB transaction opened by auth
+  // middleware before their handlers run, so there is no place inside those
+  // handlers to fetch before "entering" that transaction. Deliberately not
+  // awaited — its own first fetch runs in the background and must not add
+  // GitHub network latency to boot; a request that lands before the first
+  // warm completes still gets its own bounded fetch via fetchRegularMsi's
+  // existing cache-miss fallback.
+  startRegularMsiCacheWarmer();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this

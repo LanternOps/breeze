@@ -1,10 +1,12 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { pipeline } from 'node:stream';
+import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { coerceS3EndpointUrl } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
@@ -132,6 +134,38 @@ function buildS3Client(config: {
           }
         : undefined,
   });
+}
+
+/**
+ * Presigned GET for ONE exact object key of an S3 backup destination, built
+ * with the same tenant-configuration client as the recovery download path.
+ * The key is used verbatim (the agent writes `snapshots/<id>/...` without any
+ * configured prefix; see backupSnapshotStorage.ts). The caller is responsible
+ * for authorizing the key and for bounding `expiresInSeconds` (clamped here to
+ * 1..300).
+ */
+export async function presignSnapshotObjectGet(args: {
+  providerConfig: Record<string, unknown>;
+  key: string;
+  expiresInSeconds: number;
+}): Promise<string> {
+  const providerConfig = asRecord(args.providerConfig);
+  const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
+  const region =
+    getStringValue(providerConfig, 'region')?.trim() ||
+    deriveS3RegionFromEndpoint(getStringValue(providerConfig, 'endpoint'));
+  if (!bucket || !region) {
+    throw new Error('Snapshot storage is misconfigured.');
+  }
+  const client = buildS3Client({
+    region,
+    endpoint: getStringValue(providerConfig, 'endpoint') ?? undefined,
+    accessKeyId: getStringValue(providerConfig, 'accessKey') || getStringValue(providerConfig, 'accessKeyId') || undefined,
+    secretAccessKey: getStringValue(providerConfig, 'secretKey') || getStringValue(providerConfig, 'secretAccessKey') || undefined,
+    sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
+  });
+  const expiresIn = Math.max(1, Math.min(300, Math.floor(args.expiresInSeconds)));
+  return (getSignedUrl as any)(client, new GetObjectCommand({ Bucket: bucket, Key: args.key }), { expiresIn });
 }
 
 function deriveRemoteStorageKey(
@@ -307,12 +341,51 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       originStoragePrefix ? `${originStoragePrefix}/${normalizedRemotePath}` : normalizedRemotePath
     );
     const fileInfo = await stat(filePath);
+    const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';
+    const contentType = normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream';
+
+    // #6489: agent/internal/backup/providers/local.go gzip-compresses on
+    // Upload and gunzips again on Download, keyed purely off a `.gz` key
+    // suffix — S3 keys, by contrast, hold raw bytes even when the recorded
+    // key ends in `.gz` (W09 plan Part 0, "never add or strip .gz": the
+    // suffix is just part of the manifest-recorded key there). Token-mode
+    // recovery reads local-provider storage directly rather than through the
+    // agent, so without mirroring the agent's gunzip here a bare-metal
+    // recovery against a local backend would count compressed bytes as
+    // "restored" bytes. Decision recorded on the issue: the SERVER gunzips.
+    // The decompressed length isn't knowable without decompressing the
+    // object, so this branch deliberately omits a fixed Content-Length and
+    // streams instead (see the route handler in routes/backup/bmr.ts, which
+    // only sets the header when contentLength is non-null).
+    if (normalizedRemotePath.endsWith('.gz')) {
+      const rawStream = createReadStream(filePath);
+      const gunzip = createGunzip();
+      // `pipeline` (not a bare `.pipe()`) so a failure on EITHER side closes
+      // the other: a corrupt/truncated gzip payload destroys `gunzip` but
+      // `.pipe()` alone never destroys its *source* in response, which would
+      // otherwise leak the open file descriptor from `createReadStream`
+      // until GC finalization — the exact case the "corrupt gzip" test
+      // below exercises. The callback below only needs to swallow the
+      // already-consumer-visible error (surfaced via `gunzip`'s own 'error'
+      // event, forwarded by the route handler's ReadableStream), not
+      // re-report it.
+      pipeline(rawStream, gunzip, () => {});
+      return {
+        unavailable: false,
+        type: 'stream' as const,
+        fileName,
+        contentLength: null,
+        contentType,
+        stream: gunzip,
+      };
+    }
+
     return {
       unavailable: false,
       type: 'stream' as const,
-      fileName: normalizedRemotePath.split('/').pop() || 'recovery-object',
+      fileName,
       contentLength: fileInfo.size,
-      contentType: normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+      contentType,
       stream: createReadStream(filePath),
     };
   }

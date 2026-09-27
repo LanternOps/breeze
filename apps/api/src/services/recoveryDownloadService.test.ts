@@ -4,9 +4,23 @@ vi.mock('node:fs/promises', () => ({
   stat: vi.fn(async () => ({ size: 2 })),
 }));
 
-vi.mock('node:fs', () => ({
-  createReadStream: vi.fn(() => ({ on: vi.fn(), destroy: vi.fn() })),
-}));
+vi.mock('node:fs', async () => {
+  // The `.gz` branch pipes the raw read stream into a real zlib gunzip via
+  // `node:stream`'s `pipeline`, which needs a genuine stream interface
+  // (`.once`, `.pipe`, readable-state introspection, etc.) — a hand-rolled
+  // `{ on, destroy }` stub isn't enough. The default bytes must also be a
+  // VALID (if empty) gzip stream: many tests exercising other branches
+  // (capability/authorization refusals, etc.) happen to use `.gz`-suffixed
+  // remote paths and never override this mock, so a real gunzip is always
+  // attached and will actually try to decode whatever this returns — raw
+  // empty bytes fail zlib parsing asynchronously with an unhandled stream
+  // error those tests never listen for.
+  const { Readable } = await import('node:stream');
+  const { gzipSync } = await import('node:zlib');
+  return {
+    createReadStream: vi.fn(() => Readable.from(gzipSync(Buffer.alloc(0)))),
+  };
+});
 
 const resolveSnapshotProviderConfigMock = vi.fn();
 // FIFO queue of rows returned by successive `db.select().from().where().limit()`
@@ -57,6 +71,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 import { stat as statMock } from 'node:fs/promises';
+import { createReadStream as createReadStreamMock } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadService';
 
 describe('getAuthenticatedRecoveryDownloadTarget', () => {
@@ -389,6 +407,44 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       expect(filePathArg).not.toContain('/current/');
     });
 
+    it("R6 + #6489: an authorized external .gz reference is gunzipped from the ORIGIN-prefixed physical path, not left compressed", async () => {
+      // Regression guard for a plausible break the R6 test above can't catch
+      // on its own: R6 only asserts which path `stat()` was called with, but
+      // never reads the returned stream — so a bug that opened the correct
+      // origin-prefixed file yet fed the WRONG bytes into gunzip (or skipped
+      // gunzip entirely for external references) would pass R6 and still
+      // ship broken.
+      mockCurrentSnapshotLocal('store-1');
+      lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
+      lineageRows.push([{ id: 'file-row-1' }]); // membership
+      lineageRows.push([
+        {
+          originOrgId: 'org-1',
+          originDeviceId: 'device-1',
+          originStorageIdentity: 'store-1',
+          originStoragePrefix: 'archive-2025',
+        },
+      ]); // origin
+
+      const original = Buffer.from('origin-prefixed external reference payload for #6489');
+      (createReadStreamMock as any).mockImplementationOnce((requestedPath: string) => {
+        expect(requestedPath).toContain('archive-2025/snapshots/older/files/a.gz');
+        return Readable.from(gzipSync(original));
+      });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.contentLength).toBeNull();
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of result.stream as unknown as AsyncIterable<Buffer>) {
+        chunks.push(chunk);
+      }
+      expect(Buffer.concat(chunks).equals(original)).toBe(true);
+    });
+
     it('R7 (a): a sibling file of a referenced origin snapshot that is NOT itself in the index is refused', async () => {
       mockCurrentSnapshotLocal();
       lineageRows.push([{ fileIndexStatus: 'complete' }]);
@@ -474,6 +530,95 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
       expect(result).toMatchObject({ unavailable: true });
+    });
+  });
+
+  describe('local provider .gz byte contract (#6489)', () => {
+    // agent/internal/backup/providers/local.go gzip-compresses on Upload and
+    // gunzips on Download, keyed purely off the `.gz` key suffix — S3 keys
+    // hold raw bytes even when they end in `.gz` (Part 0 of the W09 plan:
+    // "never add or strip .gz"). Token-mode recovery reads local-provider
+    // storage directly, so the SERVER must mirror that gunzip for local
+    // objects, or a bare-metal recovery counts compressed bytes as
+    // "restored". Decision recorded on the issue: server gunzips.
+    const gzTokenRow = {
+      id: 'token-gz',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      snapshotId: 'snapshot-db-gz',
+      status: 'authenticated' as const,
+      authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+    };
+
+    beforeEach(() => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
+        providerType: 'local',
+        providerConfig: { path: '/var/backups' },
+      });
+    });
+
+    async function readAll(stream: NodeJS.ReadableStream): Promise<Buffer> {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+
+    it('round-trips a gzipped local object through the token-mode download path, matching the original bytes and the SHA-256 the manifest would record', async () => {
+      const original = Buffer.from('bare-metal recovery payload — round trip fixture for #6489\n'.repeat(50));
+      const expectedSha256 = createHash('sha256').update(original).digest('hex');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(gzipSync(original)));
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/payload.dat.gz'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.type).toBe('stream');
+      // The decompressed length isn't knowable without decompressing, so a
+      // fixed Content-Length must NOT be claimed for a local .gz object.
+      expect(result.contentLength).toBeNull();
+
+      const decompressed = await readAll(result.stream as unknown as NodeJS.ReadableStream);
+      expect(decompressed.equals(original)).toBe(true);
+      expect(createHash('sha256').update(decompressed).digest('hex')).toBe(expectedSha256);
+    });
+
+    it('streams a local object whose key does NOT end in .gz verbatim, unchanged', async () => {
+      const raw = Buffer.from('already-uncompressed manifest bytes, unrelated to gzip');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(raw));
+      (statMock as any).mockResolvedValueOnce({ size: raw.length });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/payload.dat'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.contentLength).toBe(raw.length);
+
+      const streamed = await readAll(result.stream as unknown as NodeJS.ReadableStream);
+      expect(streamed.equals(raw)).toBe(true);
+    });
+
+    it('surfaces a corrupt gzip object as an explicit stream error, not truncated success', async () => {
+      const corrupt = Buffer.from('this is not a valid gzip stream at all');
+      (createReadStreamMock as any).mockImplementationOnce(() => Readable.from(corrupt));
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        gzTokenRow as any,
+        'snapshots/snap-ext-001/files/broken.dat.gz'
+      );
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      await expect(readAll(result.stream as unknown as NodeJS.ReadableStream)).rejects.toThrow();
     });
   });
 });

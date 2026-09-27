@@ -41,6 +41,7 @@ breeze_remove_auxiliary() {
     /Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist \
     /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-desktop-helper \
     /usr/local/bin/breeze-backup \
+    /Library/Breeze/bin/breeze-watchdog /Library/Breeze/bin/breeze-backup \
     "/Library/Application Support/Breeze/agent.sock" || return 1
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1

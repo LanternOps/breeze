@@ -8,9 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * row cannot stop it from reaping the rest.
  */
 
-const { endSupportSession, deleteDeviceCascade } = vi.hoisted(() => ({
+const { endSupportSession, deleteDeviceCascade, hasProtectedBackupSnapshots } = vi.hoisted(() => ({
   endSupportSession: vi.fn(async () => ({ ended: true, disconnect: null, commandDelivered: true })),
   deleteDeviceCascade: vi.fn(async () => undefined),
+  hasProtectedBackupSnapshots: vi.fn(async () => false),
 }));
 
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
@@ -21,6 +22,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/quickSupportEnd', () => ({ endSupportSession }));
 vi.mock('../services/deviceDeletion', () => ({ deleteDeviceCascade }));
+vi.mock('../services/deviceLifecycle', () => ({ hasProtectedBackupSnapshots }));
 
 /**
  * Operators become inspectable tokens so the tests can assert the WHERE
@@ -143,6 +145,7 @@ beforeEach(() => {
   callOrder.length = 0;
   purgedDeviceIds.length = 0;
   vi.clearAllMocks();
+  hasProtectedBackupSnapshots.mockResolvedValue(false);
   endSupportSession.mockImplementation(async (...args: unknown[]) => {
     callOrder.push(`end:${String(args[0])}:${String(args[1])}`);
     return { ended: true, disconnect: null, commandDelivered: true };
@@ -268,6 +271,18 @@ describe('reapOnce — pass (e) purge', () => {
     await reapOnce();
 
     expect(deleteDeviceCascade).not.toHaveBeenCalled();
+  });
+
+  it('refuses to purge a device with a backup snapshot under legal hold or immutability', async () => {
+    selectResults.push([], [], [{ id: 'sess-held', deviceId: 'dev-held' }]);
+    selectResults.push([{ id: 'dev-held', isEphemeral: true }]);
+    hasProtectedBackupSnapshots.mockResolvedValueOnce(true);
+
+    await reapOnce();
+
+    expect(hasProtectedBackupSnapshots).toHaveBeenCalledWith({ isTx: true }, 'dev-held');
+    expect(deleteDeviceCascade).not.toHaveBeenCalled();
+    expect(purgedDeviceIds).toEqual([]);
   });
 });
 

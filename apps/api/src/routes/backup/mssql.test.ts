@@ -436,6 +436,7 @@ describe('mssql routes', () => {
 
     expect(res.status).toBe(200);
     expect(resolveBackupConfigForDeviceMock).toHaveBeenCalledWith(DEVICE_ID);
+    expect(executeCommandMock.mock.calls[0]?.[2]).not.toHaveProperty('providerConfig');
     expect(executeCommandMock).toHaveBeenCalledWith(
       DEVICE_ID,
       'MSSQL_BACKUP',
@@ -453,7 +454,7 @@ describe('mssql routes', () => {
         // policy-managed device.
         configId: 'config-1',
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: 'config-1', orgId: ORG_ID },
         storageEncryption: { required: false, mode: 'disabled' },
         instance: 'MSSQLSERVER',
         database: 'AppDb',
@@ -471,6 +472,28 @@ describe('mssql routes', () => {
     const body = await res.json();
     expect(body.data.snapshotDbId).toBe('snapshot-db-1');
     expect(body.data.snapshotId).toBe('provider-snapshot-1');
+  });
+
+  it('records the destination storage identity on the on-demand job it creates', async () => {
+    const jobInsert = chainMock([{ id: 'job-1' }]);
+    insertMock.mockReturnValueOnce(jobInsert);
+    resolveBackupConfigForDeviceMock.mockResolvedValueOnce({ configId: 'config-1', featureLinkId: 'feature-1' });
+    queueDestinationConfigSelect({ provider: 's3', providerConfig: { endpoint: 'https://Storage.Example.com:9443', bucket: 'Backups', accessKeyId: 'AKIA', secretAccessKey: 'secret' } });
+    executeCommandMock.mockResolvedValueOnce({ status: 'completed', stdout: JSON.stringify({ queued: true }) });
+
+    const res = await app.request('/backup/mssql/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }),
+    });
+
+    expect(res.status).toBe(202);
+    // The snapshot persisted from this job copies the job's identity; without
+    // it, restores of the snapshot cannot be served through a storage session.
+    expect(jobInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'database',
+      storageIdentity: 's3::storage.example.com:9443::Backups',
+    }));
   });
 
   // D20b item A: a resolved config id whose backup_configs row has since
@@ -660,8 +683,9 @@ describe('mssql routes', () => {
       backupFileName: 'AppDb_full_20260331.bak',
       targetDatabase: 'AppDb_Restore',
       provider: 'local',
-      providerConfig: { path: '/tmp/backups' },
+      providerConfigRef: { configId: 'config-1', orgId: ORG_ID },
     }));
+    expect(opts.buildPayload('restore-job-1')).not.toHaveProperty('providerConfig');
   });
 
   it('reports a 502 when MSSQL restore fails to dispatch for a non-offline reason', async () => {
@@ -790,10 +814,11 @@ describe('mssql routes', () => {
         snapshotId: 'provider-snapshot-1',
         backupFileName: 'AppDb_full_20260331.bak',
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: 'config-1', orgId: ORG_ID },
       }),
       expect.objectContaining({ userId: 'user-123' })
     );
+    expect(executeCommandMock.mock.lastCall?.[2]).not.toHaveProperty('providerConfig');
   });
 
   it('rejects cross-org device discovery', async () => {

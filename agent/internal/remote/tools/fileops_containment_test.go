@@ -40,6 +40,25 @@ func TestIsSensitiveReadPath(t *testing.T) {
 		{"firefox key4", "/home/alice/.mozilla/firefox/abc.default/key4.db", true},
 		// macOS keychain
 		{"login keychain", "/Users/alice/Library/Keychains/login.keychain-db", true},
+		// The agent's own config/secrets directory, well-known default
+		// locations (holds agent.yaml/secrets.yaml — the agent's own bearer
+		// token and mTLS cert/key).
+		{"windows agent secrets", `C:\ProgramData\Breeze\secrets.yaml`, true},
+		{"windows agent config", `C:\ProgramData\Breeze\agent.yaml`, true},
+		{"windows agent config other drive", `D:\ProgramData\Breeze\secrets.yaml`, true},
+		{"windows agent config case-insensitive", `c:\PROGRAMDATA\BREEZE\SECRETS.YAML`, true},
+		{"linux agent secrets", "/etc/breeze/secrets.yaml", true},
+		{"linux agent config dir node", "/etc/breeze", true},
+		{"macos agent secrets", "/Library/Application Support/Breeze/secrets.yaml", true},
+		// Chromium cookie DB / master key (no file extension).
+		{"chrome cookies", `C:\Users\bob\AppData\Local\Google\Chrome\User Data\Default\Cookies`, true},
+		{"chrome local state", `C:\Users\bob\AppData\Local\Google\Chrome\User Data\Local State`, true},
+		// Cloud/orchestration credentials.
+		{"aws credentials", "/home/alice/.aws/credentials", true},
+		{"kube config", "/home/alice/.kube/config", true},
+		// git and dotenv secrets.
+		{"git credentials store", "/home/alice/.git-credentials", true},
+		{"dotenv file", "/srv/app/.env", true},
 
 		// Benign paths that MUST still be readable
 		{"public ssh key", "/home/alice/.ssh/id_rsa.pub", false},
@@ -49,6 +68,10 @@ func TestIsSensitiveReadPath(t *testing.T) {
 		{"tmp log", "/tmp/breeze.log", false},
 		{"program files exe", `C:\Program Files\App\app.exe`, false},
 		{"user document", `C:\Users\bob\Documents\report.docx`, false},
+		{"programdata sibling app", `C:\ProgramData\BreezeHelperOther\config.json`, false},
+		{"aws dir sibling file, not credentials", "/home/alice/.aws/config", false},
+		{"kube dir sibling file, not config", "/home/alice/.kube/cache.json", false},
+		{"env-suffixed but not dotenv", "/srv/app/production.env", false},
 	}
 
 	for _, tc := range cases {
@@ -359,5 +382,50 @@ func TestListFilesDeniesSensitiveDir(t *testing.T) {
 	res = ListFiles(map[string]any{"path": normalDir})
 	if res.Status != "completed" {
 		t.Fatalf("expected normal dir listing to succeed, got: %q", res.Error)
+	}
+}
+
+// TestIsSensitiveReadPathAgentConfigDirLiveLocation proves the agent's OWN
+// config/secrets directory is denied at its ACTUAL configured location, not
+// just the well-known default paths hardcoded in sensitiveReadPatterns —
+// covering an alternate install (a custom ProgramData root, a relocated
+// /etc/breeze, etc.) that the static entries cannot anticipate.
+func TestIsSensitiveReadPathAgentConfigDirLiveLocation(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "custom-breeze-install")
+	orig := agentConfigDirFunc
+	agentConfigDirFunc = func() string { return custom }
+	t.Cleanup(func() { agentConfigDirFunc = orig })
+
+	cases := []struct {
+		name      string
+		path      string
+		sensitive bool
+	}{
+		{"custom install dir node", custom, true},
+		{"custom install secrets file", filepath.Join(custom, "secrets.yaml"), true},
+		{"custom install nested", filepath.Join(custom, "data", "trash", "x"), true},
+		{"sibling dir untouched", filepath.Join(filepath.Dir(custom), "not-breeze", "file.txt"), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSensitiveReadPath(tc.path); got != tc.sensitive {
+				t.Fatalf("isSensitiveReadPath(%q) = %v, want %v", tc.path, got, tc.sensitive)
+			}
+		})
+	}
+}
+
+// TestIsSensitiveReadPathAgentConfigDirEmpty proves an empty ConfigDir()
+// (e.g. an unexpected resolver failure) does not panic and does not
+// spuriously deny every path (matchesPathFragment("", "") would otherwise be
+// true for an empty needle).
+func TestIsSensitiveReadPathAgentConfigDirEmpty(t *testing.T) {
+	orig := agentConfigDirFunc
+	agentConfigDirFunc = func() string { return "" }
+	t.Cleanup(func() { agentConfigDirFunc = orig })
+
+	if isSensitiveReadPath("/tmp/ordinary-file.txt") {
+		t.Fatal("expected an ordinary path to stay readable when agentConfigDirFunc returns empty")
 	}
 }

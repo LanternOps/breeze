@@ -148,7 +148,8 @@ export const vulnerabilityInlineSettingsSchema = z
 // configurationPolicy ⇄ policyBaselineDefaults import cycle (and to keep route/
 // helper test suites from transitively crash-loading this service). Re-exported
 // here so existing importers that read them from configurationPolicy still work.
-import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, type ConfigFeatureType } from './configFeatureTypes';
+import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, type ConfigFeatureType, isExecutionGatedFeatureType } from './configFeatureTypes';
+import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 export { CONFIG_FEATURE_TYPES };
 export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
@@ -2365,9 +2366,37 @@ async function resolveEffectiveConfigWithExecutor(
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const rawGroupIds = groupRows.map((r) => r.groupId);
 
-  // 4. Build target match conditions
+  // Field-provenance tiering — a device_group-level
+  // config-policy assignment can name a dynamic group whose rules key on an
+  // execution-refused agent-reported field (hostname, tags, deviceRole,
+  // custom.*, ...). Membership itself is left alone (this device really is a
+  // member per the materialized device_group_memberships row).
+  //
+  // What is gated by field provenance is NOT "any assignment from this
+  // group" — it is only assignments for EXECUTION_GATED feature types
+  // (installs/deploys software, runs automations/scripts, elevates
+  // privilege, grants remote access, delivers a credential). A PROTECTIVE
+  // feature type (hardening, DNS/firewall posture, peripheral control,
+  // monitoring, compliance/vulnerability/sensitive-data scanning, ...) only
+  // restricts or detects on the device it applies to, so dropping it because
+  // the group's rules happen to reference an agent-reported field would
+  // silently turn a real protection OFF for a device that never asked to be
+  // excluded — an unsafe-by-default "not enforced" failure mode. Both
+  // classifications therefore still query the full raw membership set below;
+  // only the execution-gated rows sourced from a refused group are dropped,
+  // after the query, once each row's own featureType is known (see the
+  // filter after `sorted` is computed).
+  const { refusedGroups } = await resolveExecutionSafeGroupIds(rawGroupIds);
+  const refusedGroupFieldsById = new Map(refusedGroups.map((g) => [g.id, g.refusedFields]));
+  if (refusedGroups.length > 0) {
+    auditRefusedExecutionGroups(device.orgId, 'config_policy.execution_target_refused_agent_reported_fields', refusedGroups);
+  }
+
+  // 4. Build target match conditions. Every group the device is really a
+  // member of is included here — see the field-provenance tiering note above for why the
+  // protective/execution-gated split cannot be applied at this stage.
   const targetConditions: SQL[] = [];
   targetConditions.push(
     and(
@@ -2375,11 +2404,11 @@ async function resolveEffectiveConfigWithExecutor(
       eq(configPolicyAssignments.targetId, deviceId)
     )!
   );
-  if (groupIds.length > 0) {
+  if (rawGroupIds.length > 0) {
     targetConditions.push(
       and(
         eq(configPolicyAssignments.level, 'device_group'),
-        inArray(configPolicyAssignments.targetId, groupIds)
+        inArray(configPolicyAssignments.targetId, rawGroupIds)
       )!
     );
   }
@@ -2502,8 +2531,21 @@ async function resolveEffectiveConfigWithExecutor(
     },
   );
 
+  // 5b. Drop only the EXECUTION_GATED rows sourced from a refused device_group
+  // — see the field-provenance tiering note above the target-condition build. A row's own
+  // featureType is only known once the assignment/feature-link join has come
+  // back, which is why this happens here rather than by excluding the group
+  // from `targetConditions` entirely.
+  const gatedRows = refusedGroupFieldsById.size === 0
+    ? rows
+    : rows.filter((row) => {
+        if (row.assignmentLevel !== 'device_group') return true;
+        if (!refusedGroupFieldsById.has(row.assignmentTargetId)) return true;
+        return !isExecutionGatedFeatureType(row.featureType as ConfigFeatureType);
+      });
+
   // 6. Sort by level priority (device=5 first), then priority ASC, then createdAt ASC
-  const sorted = rows.sort((a, b) => {
+  const sorted = gatedRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.assignmentLevel as ConfigAssignmentLevel] ?? 0) -
                       (LEVEL_PRIORITY[a.assignmentLevel as ConfigAssignmentLevel] ?? 0);
     if (levelDiff !== 0) return levelDiff;

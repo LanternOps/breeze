@@ -134,11 +134,18 @@ export async function observeLogin(input: { orgId: string; contactId: string; os
   const others = await db.select().from(b)
     .where(and(eq(b.orgId, input.orgId), eq(b.osPrincipal, input.osPrincipal), isNull(b.revokedAt)));
   await withSubjectLocks(db, [target.id, ...others.map((r) => r.id)], async () => {
+    // A self-report claiming a principal another contact's established binding already
+    // holds is quarantined for technician review, never auto-resolved by revoking the
+    // established side: telemetry is corroborating evidence, not an authority to evict it.
     if (others.some((r) => r.contactId !== input.contactId)) {
-      const ids = [...new Set([target.id, ...others.map((r) => r.id)])];
-      await db.execute(sql`UPDATE caller_verification_subject_bindings SET revoked_at=now(),updated_at=now() WHERE id IN (${idList(ids)})`);
-      await revokeGrantsForBindings(input.orgId, ids);
-      await audit(input.orgId, 'caller_verification.binding_conflict', target.id, null);
+      await audit(input.orgId, 'caller_verification.binding_observation_quarantined', target.id, null);
+      return;
+    }
+    // Once a principal is on file for this contact (from any source), a later self-report
+    // never silently rewrites it — that overwrite is exactly what lets an untrusted endpoint
+    // relabel someone else's identity evidence. First observation still binds normally.
+    if (target.osPrincipal !== null && target.osPrincipal !== input.osPrincipal) {
+      await audit(input.orgId, 'caller_verification.binding_observation_quarantined', target.id, null);
       return;
     }
     await db.update(b)

@@ -524,6 +524,14 @@ services:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 40s
+    # Matches the worker service below: with the default BREEZE_ROLE=all, this
+    # container runs the same background workers (automation runtime, patch
+    # job executor) in-process. Docker's 10s default SIGTERM grace was cutting
+    # those off mid-dispatch on every routine deploy/restart, leaving
+    # in-flight automation actions and patch device jobs with a command
+    # already sent to the agent but no completion recorded — the next attempt
+    # then redispatched a second, duplicate command for the same work.
+    stop_grace_period: 90s
     networks:
       - breeze
 
@@ -748,8 +756,21 @@ services:
       - --relay-threads=4
       - --user-quota=4
       - --total-quota=1000
+      # WebRTC
+      # desktop/viewer sessions only ever need UDP relay allocations; RFC 6062
+      # TURN-TCP relay is unused here, so disable it to shrink the relay/abuse
+      # surface. Does not affect the `?transport=tcp` client-to-TURN-server
+      # control channel already advertised for UDP-blocked networks.
+      - --no-tcp-relay
       - --max-bps=${TURN_MAX_BPS:-5000000}
       - --no-multicast-peers
+      # Relay only to public peers. Refused: unspecified, loopback, private/VPC,
+      # CGNAT (100.64/10, also used by tailnets), link-local (including the cloud
+      # metadata address 169.254.169.254), documentation/benchmark, 6to4/Teredo,
+      # multicast and reserved ranges, for IPv4 and IPv6.
+      # Never add this relay's own public IP (the external-ip) to this list: when
+      # both peers are relayed through this server, relay-to-relay traffic targets
+      # that address and would be refused.
       - --denied-peer-ip=0.0.0.0-0.255.255.255
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=100.64.0.0-100.127.255.255
@@ -757,16 +778,29 @@ services:
       - --denied-peer-ip=169.254.0.0-169.254.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
       - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.0.2.0-192.0.2.255
+      - --denied-peer-ip=192.88.99.0-192.88.99.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255
       - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=198.51.100.0-198.51.100.255
+      - --denied-peer-ip=203.0.113.0-203.0.113.255
       - --denied-peer-ip=224.0.0.0-239.255.255.255
       - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - '--denied-peer-ip=::'
       - --denied-peer-ip=::1
+      - --denied-peer-ip=64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2001::-2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      # IPv4-mapped IPv6 and NAT64 ranges: enable after verifying relay-to-relay
+      # on your deployment.
+      # - --denied-peer-ip=::ffff:0:0-::ffff:ffff:ffff
+      # - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+      # verbose is off: it logs detail for every session, including
+      # unauthenticated ones. Enable it temporarily when debugging.
       - --log-file=stdout
-      - --verbose
       - --min-port=49152
       - --max-port=65535
       - --no-cli

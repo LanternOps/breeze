@@ -269,3 +269,50 @@ describe('FileManager uploads', () => {
     }
   });
 });
+
+describe('FileManager directory load errors', () => {
+  beforeEach(() => {
+    mockFetchWithAuth.mockReset();
+  });
+
+  it('translates a stable error code from the API instead of showing the raw English string', async () => {
+    mockFetchWithAuth.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: 'The device is offline.', code: 'DEVICE_OFFLINE' }),
+    });
+
+    render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="/"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('The device is offline')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw error string when the code has no translation', async () => {
+    mockFetchWithAuth.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'Something unexpected happened.', code: 'SOME_UNKNOWN_CODE' }),
+    });
+
+    render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="/"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Something unexpected happened.')).toBeInTheDocument();
+    });
+  });
+});

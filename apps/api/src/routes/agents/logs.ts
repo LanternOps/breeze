@@ -3,14 +3,37 @@ import { bodyLimit } from 'hono/body-limit';
 import { bodyLimitOnError, reportBodyLimitRejection } from '../../middleware/bodyLimitGate';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { gunzipSync } from 'node:zlib';
+import { gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
+
+// Async gunzip: a synchronous inflate blocks the event loop for every OTHER
+// agent's request for the duration of the decompression, which is worst
+// exactly when a request is large (the case this is meant to bound).
+const gunzipAsync = promisify(gunzip);
 import { db } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
 import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { getRedis } from '../../services/redis';
+import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
+import { envInt } from '../../utils/envInt';
 import { recordAgentIngestSubmission } from '../metrics';
 
 export const logsRoutes = new Hono();
+
+/**
+ * Daily per-device / per-org row+byte ingest budgets (issue: no quota beyond
+ * the 200-rows-per-request cap and the per-minute request-count limiters, so
+ * an admitted device can still sustain tens of millions of rows and tens of
+ * GB/day against shared Postgres disk/WAL/backups). Sized well above a
+ * legitimate agent's built-in shipper ceiling (500 entries/60s, i.e. at most
+ * ~720k rows/day if it somehow ran flat-out forever) and well below what the
+ * per-request/per-minute limiters would otherwise admit.
+ */
+const AGENT_LOG_MAX_ROWS_PER_DEVICE_PER_DAY = envInt('AGENT_LOG_MAX_ROWS_PER_DEVICE_PER_DAY', 2_000_000);
+const AGENT_LOG_MAX_BYTES_PER_DEVICE_PER_DAY = envInt('AGENT_LOG_MAX_BYTES_PER_DEVICE_PER_DAY', 500 * 1024 * 1024);
+const AGENT_LOG_MAX_ROWS_PER_ORG_PER_DAY = envInt('AGENT_LOG_MAX_ROWS_PER_ORG_PER_DAY', 20_000_000);
+const AGENT_LOG_MAX_BYTES_PER_ORG_PER_DAY = envInt('AGENT_LOG_MAX_BYTES_PER_ORG_PER_DAY', 5 * 1024 * 1024 * 1024);
 
 // Agent Diagnostic Log Shipping
 //
@@ -80,7 +103,7 @@ logsRoutes.post(
     const raw = Buffer.from(await c.req.arrayBuffer());
     const encoding = c.req.header('content-encoding')?.toLowerCase() ?? '';
     const decoded = encoding.includes('gzip')
-      ? gunzipSync(raw, { maxOutputLength: 10 * 1024 * 1024 }) // 10MB decompressed cap (defense-in-depth)
+      ? await gunzipAsync(raw, { maxOutputLength: 10 * 1024 * 1024 }) // 10MB decompressed cap (defense-in-depth)
       : raw;
     body = JSON.parse(decoded.toString('utf-8'));
   } catch (err) {
@@ -159,6 +182,43 @@ logsRoutes.post(
       agentVersion: log.agentVersion || null,
     };
   });
+
+  // Daily row/byte ingest budget, checked before the batch is written. Bytes
+  // are the stored (redacted) row shape, not the wire payload — what actually
+  // lands on disk is what the budget is protecting.
+  const batchBytes = Buffer.byteLength(JSON.stringify(rows), 'utf-8');
+  const redis = getRedis();
+  const [deviceQuota, orgQuota] = await Promise.all([
+    checkAndConsumeIngestQuota({
+      redis,
+      prefix: 'agent_logs',
+      scope: 'device',
+      id: device.id,
+      rows: rows.length,
+      bytes: batchBytes,
+      maxRows: AGENT_LOG_MAX_ROWS_PER_DEVICE_PER_DAY,
+      maxBytes: AGENT_LOG_MAX_BYTES_PER_DEVICE_PER_DAY,
+    }),
+    checkAndConsumeIngestQuota({
+      redis,
+      prefix: 'agent_logs',
+      scope: 'org',
+      id: device.orgId,
+      rows: rows.length,
+      bytes: batchBytes,
+      maxRows: AGENT_LOG_MAX_ROWS_PER_ORG_PER_DAY,
+      maxBytes: AGENT_LOG_MAX_BYTES_PER_ORG_PER_DAY,
+    }),
+  ]);
+
+  if (!deviceQuota.allowed || !orgQuota.allowed) {
+    console.warn(
+      `[AgentLogs] Daily ingest budget exceeded for device ${device.id} org ${device.orgId} `
+      + `(device rows=${deviceQuota.rowsUsed} bytes=${deviceQuota.bytesUsed}, `
+      + `org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) — dropping ${rows.length} row(s)`,
+    );
+    return c.json({ error: 'Daily log ingest budget exceeded', received: 0, dropped: rows.length }, 429);
+  }
 
   let inserted = 0;
   try {

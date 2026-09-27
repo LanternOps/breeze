@@ -186,3 +186,35 @@ describe('monitor episode response outcome', () => {
     expect(__testOnly.decideMonitorEpisodeOutcome('running')).toBeNull();
   });
 });
+
+describe('#3189 dispatching claim state', () => {
+  it.each(['queued', 'delivered', 'running'] as const)('a claimed action advances dispatching -> %s', (to) => {
+    expect(__testOnly.decideDispatchTransition({ ...pending, status: 'dispatching' }, { status: to }))
+      .toMatchObject({ status: to });
+  });
+
+  it.each(['succeeded', 'failed', 'skipped'] as const)('a claimed synchronous action terminalizes dispatching -> %s', (to) => {
+    expect(__testOnly.decideDispatchTransition({ ...pending, status: 'dispatching' }, { status: to }))
+      .toMatchObject({ status: to, terminalSource: 'dispatch' });
+  });
+
+  it.each(['delivered', 'running'] as const)('a stale queued write never walks %s back', (from) => {
+    expect(__testOnly.decideDispatchTransition({ ...pending, status: from }, { status: 'queued' }))
+      .toBeNull();
+  });
+
+  it('a result can terminalize a claimed action directly', () => {
+    expect(__testOnly.decideTerminalTransition({ ...pending, status: 'dispatching' }, {
+      source: 'command',
+      terminalStatus: 'succeeded',
+      output: 'ok',
+      error: null,
+      completedAt: new Date('2026-09-26T12:00:00Z'),
+    })).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('a claimed action keeps its device running', () => {
+    expect(__testOnly.aggregateActionStatuses(['dispatching'])).toEqual({ status: 'running' });
+    expect(__testOnly.aggregateActionStatuses(['succeeded', 'dispatching'])).toEqual({ status: 'running' });
+  });
+});

@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID } from 'crypto';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
   alerts,
   alertTemplates,
+  automationActionResults,
   automations,
   automationResourceBindings,
   automationRuns,
@@ -47,13 +48,19 @@ import {
   type ResolvedAutomationReferences,
 } from './automationReferenceAuthorization';
 import {
+  claimAutomationActionDispatch,
+  claimAutomationActionDispatches,
+  readAutomationActionState,
   recordAutomationActionDispatch,
   reconcileAutomationRun,
   seedAutomationActionResults,
+  stampClaimedAutomationActionOutcome,
+  type AutomationActionLedgerState,
 } from './automationActionResults';
 import {
   assertRunNotCancelled,
   isRunCancelledError,
+  RunCancelledError,
 } from './automationRunCancellation';
 // scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
 // the same reason softwareDeployment is below: it pulls the
@@ -1117,6 +1124,25 @@ export interface AutomationSiteScopeCheck {
   outOfScopeDeviceIds: string[];
   /** True when the target set is org-wide/unbounded (rejected for restricted callers). */
   unbounded: boolean;
+  /**
+   * True when this check actually resolved a target set against a
+   * site-restricted caller (`perms.allowedSiteIds` was set). False for an
+   * unrestricted caller, where `targetDeviceIds` is always `[]` but that
+   * means "not resolved", not "resolved to zero devices" — a caller reusing
+   * `targetDeviceIds` must check this flag, not just array length.
+   */
+  restricted: boolean;
+  /**
+   * The full resolved target set this check was computed against (empty for
+   * an unbounded target, where no resolution was attempted, and for an
+   * unrestricted caller, where `restricted` is false). A caller that needs
+   * the target set AFTER this check (e.g. to bind a dispatch to it) should
+   * reuse this instead of re-resolving — group/filter membership can change
+   * between two independent resolutions of the same automation (TOCTOU), and
+   * Field-provenance exclusions are themselves computed fresh on every
+   * resolution, so two calls are not guaranteed to agree.
+   */
+  targetDeviceIds: string[];
 }
 
 /**
@@ -1136,17 +1162,17 @@ export async function checkAutomationTargetsWithinSiteScope(
 ): Promise<AutomationSiteScopeCheck> {
   // Unrestricted (partner/system/org-admin without a site allowlist): unaffected.
   if (!perms?.allowedSiteIds) {
-    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false, restricted: false, targetDeviceIds: [] };
   }
 
   const unbounded = isUnboundedOrgWideTarget(automation);
   if (unbounded) {
-    return { ok: false, outOfScopeDeviceIds: [], unbounded: true };
+    return { ok: false, outOfScopeDeviceIds: [], unbounded: true, restricted: true, targetDeviceIds: [] };
   }
 
   const targetDeviceIds = await resolveAutomationTargetDeviceIds(automation);
   if (targetDeviceIds.length === 0) {
-    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false, restricted: true, targetDeviceIds: [] };
   }
 
   const ownerOrgIds = await automationOwnerOrgIds(automation);
@@ -1161,7 +1187,7 @@ export async function checkAutomationTargetsWithinSiteScope(
     .filter((device) => !(typeof device.siteId === 'string' && canAccessSite(perms as UserPermissions, device.siteId)))
     .map((device) => device.id);
 
-  return { ok: outOfScopeDeviceIds.length === 0, outOfScopeDeviceIds, unbounded: false };
+  return { ok: outOfScopeDeviceIds.length === 0, outOfScopeDeviceIds, unbounded: false, restricted: true, targetDeviceIds };
 }
 
 function getExistingLogs(logs: unknown): AutomationLogEntry[] {
@@ -2325,14 +2351,15 @@ async function executeAction(
   };
 }
 
-export async function persistActionExecutionOutcome(
+/** The ledger write that describes one action's dispatch outcome. */
+function actionDispatchInput(
   runId: string,
   deviceId: string,
   actionIndex: number,
   result: ActionExecutionResult,
-): Promise<void> {
+): Parameters<typeof stampClaimedAutomationActionOutcome>[0] {
   const { outcome } = result;
-  await recordAutomationRuntimeActionDispatch({
+  return {
     runId,
     deviceId,
     actionIndex,
@@ -2345,7 +2372,17 @@ export async function persistActionExecutionOutcome(
     message: 'message' in outcome && outcome.message
       ? outcome.message
       : result.log.message,
-  });
+  };
+}
+
+/** Returns whether the ledger row changed (and was therefore reconciled). */
+export async function persistActionExecutionOutcome(
+  runId: string,
+  deviceId: string,
+  actionIndex: number,
+  result: ActionExecutionResult,
+): Promise<boolean> {
+  return recordAutomationRuntimeActionDispatch(actionDispatchInput(runId, deviceId, actionIndex, result));
 }
 
 async function skipTrailingAutomationActions(
@@ -2361,8 +2398,62 @@ async function skipTrailingAutomationActions(
       actionIndex,
       status: 'skipped',
       message: 'Skipped after an earlier automation action failed',
+      // #3189 — a trailing action another attempt of this run already claimed
+      // is that attempt's to finish; never skip it out from under it.
+      onlyFromPending: true,
     });
   }
+}
+
+const REPLAYED_ACTION_MESSAGE =
+  'Action already dispatched by an earlier attempt of this run; not dispatched again';
+
+type ReplayedAction =
+  | { kind: 'terminal_ok' }
+  | { kind: 'terminal_failed'; message: string }
+  | { kind: 'in_flight' };
+
+/**
+ * #3189 — classify an action another attempt of this run already claimed.
+ * Nothing is sent: a committed-but-undelivered command is still `pending` in
+ * device_commands and the heartbeat claim delivers it, and a notification or
+ * alert already carries its stamped terminal outcome.
+ */
+function classifyReplayedAction(state: AutomationActionLedgerState): ReplayedAction {
+  switch (state.status) {
+    case 'succeeded':
+    case 'skipped':
+      return { kind: 'terminal_ok' };
+    case 'failed':
+    case 'timed_out':
+    case 'cancelled':
+      return { kind: 'terminal_failed', message: state.error ?? state.message ?? `Action ${state.status}` };
+    default:
+      return { kind: 'in_flight' };
+  }
+}
+
+function replayedActionLog(
+  state: AutomationActionLedgerState,
+  actionIndex: number,
+  deviceId: string,
+): AutomationLogEntry {
+  return logEntry(REPLAYED_ACTION_MESSAGE, 'info', {
+    actionIndex,
+    deviceId,
+    ...(state.commandId ? { commandId: state.commandId } : {}),
+    details: {
+      status: state.status,
+      ...(state.scriptExecutionId ? { executionId: state.scriptExecutionId } : {}),
+      ...(state.deploymentResultId ? { deploymentResultId: state.deploymentResultId } : {}),
+      ...(state.agentRunId ? { agentRunId: state.agentRunId } : {}),
+    },
+  });
+}
+
+/** A claimed action with nothing to correlate a result by can never finish. */
+function hasCorrelation(state: AutomationActionLedgerState): boolean {
+  return Boolean(state.commandId || state.scriptExecutionId || state.deploymentResultId || state.agentRunId);
 }
 
 /** Use recorded event identity when available; otherwise the configured
@@ -2485,7 +2576,17 @@ export async function executeDeploySoftwareActions(args: {
   createdBy: string | null;
   runId: string;
   resolvedReferences?: ResolvedAutomationReferences;
-}): Promise<{ logs: AutomationLogEntry[]; deployedDeviceIds: Set<string>; failedDeviceIds: Set<string>; failed: boolean }> {
+}): Promise<{
+  logs: AutomationLogEntry[];
+  deployedDeviceIds: Set<string>;
+  failedDeviceIds: Set<string>;
+  /**
+   * #3189 — devices whose action another attempt of this run already claimed.
+   * Nothing was dispatched for them here; the caller continues from `state`.
+   */
+  replayed: Array<{ deviceId: string; actionIndex: number; state: AutomationActionLedgerState }>;
+  failed: boolean;
+}> {
   const deployActions = args.actions
     .map((action, actionIndex) => ({ action, actionIndex }))
     .filter((entry): entry is { action: DeploySoftwareAction; actionIndex: number } =>
@@ -2497,8 +2598,9 @@ export async function executeDeploySoftwareActions(args: {
   // result rows so a deploy-only run doesn't report those devices as `success`
   // (#2023). deployedDeviceIds and failedDeviceIds are disjoint.
   const failedDeviceIds = new Set<string>();
+  const replayed: Array<{ deviceId: string; actionIndex: number; state: AutomationActionLedgerState }> = [];
   let failed = false;
-  if (deployActions.length === 0) return { logs, deployedDeviceIds, failedDeviceIds, failed };
+  if (deployActions.length === 0) return { logs, deployedDeviceIds, failedDeviceIds, replayed, failed };
 
   // Lazy imports — avoid pulling the agentWs→configurationPolicy chain into
   // partial-mock test suites at module-load time.
@@ -2517,25 +2619,59 @@ export async function executeDeploySoftwareActions(args: {
       [...new Set(deployActions.map(({ action }) => action.catalogId))],
     ));
 
+  /**
+   * #3189 — a deterministic, no-effect outcome (no latest version, unsupported
+   * OS, already current) is written pending-only: the CAS from `pending` IS
+   * the claim. If another attempt already claimed the action, its state wins
+   * and the device is reported as replayed. Returns whether this write landed.
+   */
+  const recordUnclaimedOutcome = async (
+    deviceId: string,
+    actionIndex: number,
+    status: 'failed' | 'skipped',
+    message: string,
+  ): Promise<boolean> => {
+    const recorded = await recordAutomationRuntimeActionDispatch({
+      runId: args.runId,
+      deviceId,
+      actionIndex,
+      status,
+      message,
+      onlyFromPending: true,
+    });
+    if (recorded) return true;
+    const state = await withAutomationRuntimeDb(() => readAutomationActionState({
+      runId: args.runId,
+      deviceId,
+      actionIndex,
+    }));
+    if (state && state.status !== 'pending') {
+      replayed.push({ deviceId, actionIndex, state });
+      return false;
+    }
+    // No row at all: nothing to deduplicate against, so keep the old
+    // behaviour of reporting the outcome this attempt decided.
+    return true;
+  };
+
   for (const { actionIndex, action } of deployActions) {
     const info = latest.get(action.catalogId);
     if (!info) {
-      failed = true;
+      let anyRecorded = false;
       for (const device of args.devices) {
-        failedDeviceIds.add(device.id);
-        await recordAutomationRuntimeActionDispatch({
-          runId: args.runId,
-          deviceId: device.id,
-          actionIndex,
-          status: 'failed',
-          message: 'No latest software version is available',
-        });
+        if (await recordUnclaimedOutcome(device.id, actionIndex, 'failed', 'No latest software version is available')) {
+          failed = true;
+          anyRecorded = true;
+          failedDeviceIds.add(device.id);
+        }
       }
-      logs.push(logEntry('deploy_software has no latest version for catalog', 'error', {
-        actionType: action.type,
-        actionIndex,
-        details: { catalogId: action.catalogId },
-      }));
+      if (anyRecorded) {
+        logs.push(logEntry('deploy_software has no latest version for catalog', 'error', {
+          actionType: action.type,
+          actionIndex,
+          details: { catalogId: action.catalogId },
+        }));
+      }
       continue;
     }
     const supportedOs: string[] = Array.isArray(info.version.supportedOs)
@@ -2546,36 +2682,26 @@ export async function executeDeploySoftwareActions(args: {
     const eligibleByOrg = new Map<string, string[]>();
     for (const device of args.devices) {
       if (supportedOs.length > 0 && !supportedOs.includes(device.osType)) {
-        await recordAutomationRuntimeActionDispatch({
-          runId: args.runId,
-          deviceId: device.id,
-          actionIndex,
-          status: 'skipped',
-          message: 'Software is not supported on this device OS',
-        });
-        logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
-          actionType: action.type,
-          actionIndex,
-          deviceId: device.id,
-          details: { deviceOsType: device.osType, supportedOs },
-        }));
+        if (await recordUnclaimedOutcome(device.id, actionIndex, 'skipped', 'Software is not supported on this device OS')) {
+          logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
+            actionType: action.type,
+            actionIndex,
+            deviceId: device.id,
+            details: { deviceOsType: device.osType, supportedOs },
+          }));
+        }
         continue;
       }
       if (await withAutomationRuntimeDb(() =>
         isDeviceSoftwareCurrent(device.id, action.catalogId, info.catalogName, info.version.version))) {
-        await recordAutomationRuntimeActionDispatch({
-          runId: args.runId,
-          deviceId: device.id,
-          actionIndex,
-          status: 'skipped',
-          message: 'Software is already current',
-        });
-        logs.push(logEntry(`Skipped ${info.catalogName}: already current`, 'info', {
-          actionType: action.type,
-          actionIndex,
-          deviceId: device.id,
-          details: { version: info.version.version },
-        }));
+        if (await recordUnclaimedOutcome(device.id, actionIndex, 'skipped', 'Software is already current')) {
+          logs.push(logEntry(`Skipped ${info.catalogName}: already current`, 'info', {
+            actionType: action.type,
+            actionIndex,
+            deviceId: device.id,
+            details: { version: info.version.version },
+          }));
+        }
         continue;
       }
       const bucket = eligibleByOrg.get(device.orgId) ?? [];
@@ -2585,47 +2711,82 @@ export async function executeDeploySoftwareActions(args: {
     if (eligibleByOrg.size === 0) continue;
 
     for (const [orgId, eligible] of eligibleByOrg) {
-      const result = await withAutomationRuntimeDb(() => createSoftwareDeployment({
-        orgId,
-        softwareVersionId: info.version.id,
-        deploymentType: 'install',
-        deviceIds: eligible,
-        scheduleType: 'immediate',
-        createdBy: args.createdBy,
-        name: `Automation: deploy ${info.catalogName}`,
-      }));
-      const exactDeviceResults = result.deviceResults ?? [];
-      for (const deviceResult of exactDeviceResults) {
-        await recordAutomationRuntimeActionDispatch({
+      // #3189 — claim, create and stamp in ONE transaction. A replay of this
+      // run finds the claimed devices past `pending` and reuses their stamped
+      // deployment result instead of creating a second deployment.
+      const batch = await withAutomationRuntimeDb(async () => {
+        const claims = await claimAutomationActionDispatches({
           runId: args.runId,
-          deviceId: deviceResult.deviceId,
           actionIndex,
-          status: deviceResult.status,
-          deploymentResultId: deviceResult.deploymentResultId,
-          ...(deviceResult.deviceCommandId ? { commandId: deviceResult.deviceCommandId } : {}),
-          ...(deviceResult.message ? { message: deviceResult.message } : {}),
+          deviceIds: eligible,
         });
-        if (deviceResult.status === 'failed') {
+        if (claims.runCancelled) throw new RunCancelledError(args.runId);
+        if (claims.claimed.length === 0) return { claims, result: null };
+        const result = await createSoftwareDeployment({
+          orgId,
+          softwareVersionId: info.version.id,
+          deploymentType: 'install',
+          deviceIds: claims.claimed,
+          scheduleType: 'immediate',
+          createdBy: args.createdBy,
+          name: `Automation: deploy ${info.catalogName}`,
+        });
+        const byDevice = new Map((result.deviceResults ?? []).map((deviceResult) => [deviceResult.deviceId, deviceResult]));
+        const dispatched = new Set(result.dispatchedDeviceIds);
+        // Exactly one stamp per claimed row, or the whole batch rolls back: a
+        // committed claim with no outcome could never be closed or redone.
+        for (const deviceId of claims.claimed) {
+          const deviceResult = byDevice.get(deviceId);
+          const stampInput = deviceResult
+            ? {
+              status: deviceResult.status,
+              deploymentResultId: deviceResult.deploymentResultId,
+              ...(deviceResult.deviceCommandId ? { commandId: deviceResult.deviceCommandId } : {}),
+              ...(deviceResult.message ? { message: deviceResult.message } : {}),
+            }
+            : result.status === 'failed' || !dispatched.has(deviceId)
+              ? { status: 'failed' as const, message: result.message ?? 'Software deployment dispatch failed' }
+              : { status: 'queued' as const, message: 'Software deployment dispatched' };
+          const stamped = await stampClaimedAutomationActionOutcome({
+            runId: args.runId,
+            deviceId,
+            actionIndex,
+            ...stampInput,
+          });
+          if (!stamped) {
+            throw new Error(
+              `Automation action claim was not stamped (run=${args.runId} device=${deviceId} action=${actionIndex})`,
+            );
+          }
+        }
+        return { claims, result };
+      });
+      // The stamps did not reconcile inside the transaction; do it now that
+      // they are committed.
+      if (batch.result) await withAutomationRuntimeDb(() => reconcileAutomationRun(args.runId));
+
+      for (const [deviceId, state] of batch.claims.alreadyClaimed) {
+        replayed.push({ deviceId, actionIndex, state });
+      }
+      const result = batch.result;
+      if (!result) continue;
+
+      const claimed = new Set(batch.claims.claimed);
+      const exactDeviceResults = (result.deviceResults ?? []).filter((deviceResult) => claimed.has(deviceResult.deviceId));
+      const dispatched = new Set(result.dispatchedDeviceIds);
+      for (const deviceId of claimed) {
+        const deviceResult = exactDeviceResults.find((candidate) => candidate.deviceId === deviceId);
+        const deviceFailed = deviceResult
+          ? deviceResult.status === 'failed'
+          : result.status === 'failed' || !dispatched.has(deviceId);
+        if (deviceFailed) {
           failed = true;
-          failedDeviceIds.add(deviceResult.deviceId);
+          failedDeviceIds.add(deviceId);
         } else {
-          deployedDeviceIds.add(deviceResult.deviceId);
+          deployedDeviceIds.add(deviceId);
         }
       }
       if (result.status === 'failed') {
-        failed = true;
-        for (const id of eligible) {
-          if (!exactDeviceResults.some((deviceResult) => deviceResult.deviceId === id)) {
-            failedDeviceIds.add(id);
-            await recordAutomationRuntimeActionDispatch({
-              runId: args.runId,
-              deviceId: id,
-              actionIndex,
-              status: 'failed',
-              message: result.message ?? 'Software deployment dispatch failed',
-            });
-          }
-        }
         logs.push(logEntry(`deploy_software failed: ${result.message ?? 'unknown error'}`, 'error', {
           actionType: action.type,
           actionIndex,
@@ -2633,19 +2794,18 @@ export async function executeDeploySoftwareActions(args: {
         }));
         continue;
       }
-      for (const id of result.dispatchedDeviceIds) deployedDeviceIds.add(id);
       logs.push(logEntry(
-        `Deploying ${info.catalogName} ${info.version.version} to ${eligible.length} device(s)`,
+        `Deploying ${info.catalogName} ${info.version.version} to ${claimed.size} device(s)`,
         'info',
         {
           actionType: action.type,
           actionIndex,
-          details: { deploymentId: result.deploymentId, deviceIds: eligible },
+          details: { deploymentId: result.deploymentId, deviceIds: [...claimed] },
         },
       ));
     }
   }
-  return { logs, deployedDeviceIds, failedDeviceIds, failed };
+  return { logs, deployedDeviceIds, failedDeviceIds, replayed, failed };
 }
 
 type OrderedAutomationDevice = ActionExecutionContext['device'];
@@ -2897,9 +3057,14 @@ async function executeAutomationActionsInOrder(args: {
     device: OrderedAutomationDevice,
     actionIndex: number,
     message: string,
+    options: { replayed?: boolean } = {},
   ): Promise<void> => {
     failedDeviceIds.add(device.id);
-    if (args.onFailure === 'notify') {
+    // #3189 — a failure an earlier attempt of this run already recorded had its
+    // on-failure notification sent by that attempt. Re-sending it on every
+    // replay would page the MSP twice for one failure, so a replayed failure
+    // is at-most-once: if the first attempt died before sending, it is lost.
+    if (args.onFailure === 'notify' && !options.replayed) {
       try {
         logs.push(...await sendOnFailureNotifications(
           args.automation,
@@ -2941,12 +3106,87 @@ async function executeAutomationActionsInOrder(args: {
       actionIndex,
       status: 'failed',
       message: AUTOMATION_TARGET_AUTHORITY_LOST,
+      // #3189 — an action another attempt already dispatched keeps its own
+      // outcome; authority loss stops only what has not been dispatched yet.
+      onlyFromPending: true,
     });
     await skipTrailingAutomationActions(args.runId, device.id, args.actions, actionIndex);
     logs.push(logEntry(AUTOMATION_TARGET_AUTHORITY_LOST, 'error', {
       actionIndex,
       deviceId: device.id,
     }));
+  };
+
+  /**
+   * #3189 — continue past an action another attempt of this run already
+   * claimed, using what that attempt stored: its outcome, or its correlation
+   * ids for a still-running action. Nothing is dispatched again.
+   *
+   * Ordering is weaker than on a first attempt: if the owner committed the
+   * action but has not yet settled its delivery, a later claim-time refusal of
+   * that delivery cannot retract actions this replay dispatched after it. The
+   * alternative (stopping here until the owner settles) strands the run for
+   * good when the owner is dead, which is the case a stalled-job replay exists
+   * to recover.
+   */
+  const applyReplayedAction = async (
+    device: OrderedAutomationDevice,
+    actionIndex: number,
+    state: AutomationActionLedgerState,
+  ): Promise<void> => {
+    logs.push(replayedActionLog(state, actionIndex, device.id));
+    const replayed = classifyReplayedAction(state);
+    if (replayed.kind === 'terminal_failed') {
+      await handleFailure(device, actionIndex, replayed.message, { replayed: true });
+      return;
+    }
+    if (replayed.kind === 'in_flight') {
+      hasNonterminalActions = true;
+      if (!hasCorrelation(state)) {
+        // Unreachable by construction: the claim transaction stamps either a
+        // correlation id or a terminal status before it commits. If it ever
+        // happens, nothing will close this action; make that visible.
+        captureException(new Error('automation action claimed without an outcome or correlation id'), undefined, {
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex: String(actionIndex),
+          status: state.status,
+        });
+      }
+    }
+  };
+
+  /**
+   * #3189 — a non-owner `failed` write that found the row already past
+   * `pending` means another attempt (or this one, before it threw) owns the
+   * action. Re-read it and continue from its state instead of reporting a
+   * failure that did not happen.
+   */
+  const recordFailureOrReplay = async (
+    device: OrderedAutomationDevice,
+    actionIndex: number,
+    message: string,
+  ): Promise<void> => {
+    const recorded = await recordAutomationRuntimeActionDispatch({
+      runId: args.runId,
+      deviceId: device.id,
+      actionIndex,
+      status: 'failed',
+      message,
+      onlyFromPending: true,
+    });
+    if (!recorded) {
+      const state = await withAutomationRuntimeDb(() => readAutomationActionState({
+        runId: args.runId,
+        deviceId: device.id,
+        actionIndex,
+      }));
+      if (state && state.status !== 'pending') {
+        await applyReplayedAction(device, actionIndex, state);
+        return;
+      }
+    }
+    await handleFailure(device, actionIndex, message);
   };
 
   // Execute action-major, not device-major. Deployment dispatch is batched
@@ -3012,6 +3252,7 @@ async function executeAutomationActionsInOrder(args: {
               logs: [],
               deployedDeviceIds: new Set<string>(),
               failedDeviceIds: new Set<string>(),
+              replayed: [],
               failed: false,
             };
           return { deployOutcome, lockedDevices };
@@ -3022,12 +3263,23 @@ async function executeAutomationActionsInOrder(args: {
         }
         logs.push(...deployOutcome.logs);
         if (deployOutcome.deployedDeviceIds.size > 0) hasNonterminalActions = true;
+        const replayedByDevice = new Map(deployOutcome.replayed.map((entry) => [entry.deviceId, entry.state]));
         for (const device of lockedDevices) {
-          if (deployOutcome.failedDeviceIds.has(device.id)) {
+          const replayedState = replayedByDevice.get(device.id);
+          if (replayedState) {
+            await applyReplayedAction(device, actionIndex, replayedState);
+          } else if (deployOutcome.failedDeviceIds.has(device.id)) {
             await handleFailure(device, actionIndex, 'Software deployment dispatch failed');
           }
         }
       } catch (err) {
+        if (isRunCancelledError(err)) {
+          cancelled = true;
+          logs.push(logEntry('Automation run cancelled; software deployment was not dispatched', 'warning', {
+            actionIndex,
+          }));
+          break;
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error('[automationRuntime] software action threw during dispatch', {
           actionIndex,
@@ -3035,14 +3287,7 @@ async function executeAutomationActionsInOrder(args: {
         });
         captureException(err);
         for (const device of activeDevices) {
-          await recordAutomationRuntimeActionDispatch({
-            runId: args.runId,
-            deviceId: device.id,
-            actionIndex,
-            status: 'failed',
-            message,
-          });
-          await handleFailure(device, actionIndex, message);
+          await recordFailureOrReplay(device, actionIndex, message);
         }
         logs.push(logEntry(`Automation action threw: ${message}`, 'error', { actionIndex }));
       }
@@ -3059,6 +3304,19 @@ async function executeAutomationActionsInOrder(args: {
             ? await lockCurrentAutomationTargetDevices(args.automation, [device.id])
             : [device];
           if (!currentDevice) return null;
+          // #3189 — claim the action in THIS transaction, before its effect.
+          // The claim, the rows executeAction creates, and the outcome stamped
+          // below commit or roll back together, so a stalled-job replay of this
+          // run finds the action claimed and reuses it instead of sending again.
+          const claim = await claimAutomationActionDispatch({
+            runId: args.runId,
+            deviceId: currentDevice.id,
+            actionIndex,
+          });
+          if (claim.kind === 'run_cancelled') throw new RunCancelledError(args.runId);
+          if (claim.kind === 'already_claimed') {
+            return { currentDevice, replayed: claim.state } as const;
+          }
           const result = await executeAction(action, actionIndex, {
             ...buildActionExecutionContext({
               automation: args.automation,
@@ -3075,19 +3333,37 @@ async function executeAutomationActionsInOrder(args: {
             // or a fast agent answers against rows the result path cannot see.
             deferDelivery: true,
           });
-          return { currentDevice, result };
+          const stamped = await stampClaimedAutomationActionOutcome(
+            actionDispatchInput(args.runId, currentDevice.id, actionIndex, result),
+          );
+          if (!stamped) {
+            // A committed claim with no stamped outcome could never be closed
+            // or safely redone. Roll the whole dispatch back instead.
+            throw new Error(
+              `Automation action claim was not stamped (run=${args.runId} device=${currentDevice.id} action=${actionIndex})`,
+            );
+          }
+          return { currentDevice, result } as const;
         });
         if (!admitted) {
           await handleAuthorityLost(device, actionIndex);
           return;
         }
         const { currentDevice } = admitted;
+        if (admitted.replayed) {
+          await applyReplayedAction(currentDevice, actionIndex, admitted.replayed);
+          return;
+        }
         // Committed: the rows are visible to the agent result path now.
         const result = admitted.result.afterCommit
           ? await admitted.result.afterCommit()
           : admitted.result;
         logs.push(result.log);
-        await persistActionExecutionOutcome(args.runId, currentDevice.id, actionIndex, result);
+        // The stamp inside the claim transaction did not reconcile (it must
+        // never publish uncommitted state), so reconcile now if this upgrade
+        // did not already.
+        const upgraded = await persistActionExecutionOutcome(args.runId, currentDevice.id, actionIndex, result);
+        if (!upgraded) await withAutomationRuntimeDb(() => reconcileAutomationRun(args.runId));
         const compensation = await cancelDispatchIfRunCancelled(args.runId, currentDevice.id, result);
         if (compensation !== 'not_needed') {
           cancelled = true;
@@ -3130,14 +3406,11 @@ async function executeAutomationActionsInOrder(args: {
           actionIndex,
           deviceId: device.id,
         }));
-        await recordAutomationRuntimeActionDispatch({
-          runId: args.runId,
-          deviceId: device.id,
-          actionIndex,
-          status: 'failed',
-          message,
-        });
-        await handleFailure(device, actionIndex, message);
+        // A throw inside the claim transaction rolled the claim back to
+        // `pending`, so this records the failure. A throw after it committed
+        // (delivery, persist) leaves the stamped row alone: its command or
+        // outcome is real and closes on its own evidence.
+        await recordFailureOrReplay(device, actionIndex, message);
       }
     });
   }
@@ -3165,7 +3438,16 @@ export async function createAutomationRunRecord(options: {
    * path (every other caller) is unchanged byte-for-byte.
    */
   deferStartedEvent?: boolean;
-}): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
+  /**
+   * #3189 — the trigger occurrence this run is for (`schedule:<slot>`,
+   * `event:<eventId>`). When set, a second call for the same automation and
+   * occurrence (a replayed trigger job) returns the EXISTING run with
+   * `reused: true` instead of minting another one, and neither bumps
+   * `runCount` nor re-publishes `automation.started`. Omit for manual and
+   * webhook runs, which are never deduplicated.
+   */
+  occurrenceKey?: string;
+}): Promise<{ run: AutomationRunRow; targetDeviceIds: string[]; reused: boolean }> {
   const normalized = normalizeAutomationInput({
     trigger: options.automation.trigger,
     actions: options.automation.actions,
@@ -3176,10 +3458,10 @@ export async function createAutomationRunRecord(options: {
   const targetDeviceIds = options.boundDeviceIds
     ?? await resolveAutomationTargetDeviceIds(options.automation);
 
-  const run = await db.transaction(async (tx) => {
+  const { run, reused } = await db.transaction(async (tx) => {
     await resolveStandaloneAutomationReferencesForAdmission(tx, options.automation, normalized);
 
-    const [created] = await tx
+    const insert = tx
       .insert(automationRuns)
       .values({
         automationId: options.automation.id,
@@ -3188,6 +3470,7 @@ export async function createAutomationRunRecord(options: {
         devicesTargeted: targetDeviceIds.length,
         devicesSucceeded: 0,
         devicesFailed: 0,
+        occurrenceKey: options.occurrenceKey ?? null,
         logs: [
           logEntry('Automation run created', 'info', {
             details: {
@@ -3196,8 +3479,30 @@ export async function createAutomationRunRecord(options: {
             },
           }),
         ],
-      })
-      .returning();
+      });
+    const [created] = options.occurrenceKey
+      ? await insert.onConflictDoNothing({
+        target: [automationRuns.automationId, automationRuns.occurrenceKey],
+        // Must match the partial unique index predicate exactly for Postgres
+        // to infer it as the arbiter (automation_runs_automation_occurrence_uq).
+        where: sql.raw('automation_id IS NOT NULL AND occurrence_key IS NOT NULL'),
+      }).returning()
+      : await insert.returning();
+
+    if (!created && options.occurrenceKey) {
+      const [existing] = await tx
+        .select()
+        .from(automationRuns)
+        .where(and(
+          eq(automationRuns.automationId, options.automation.id),
+          eq(automationRuns.occurrenceKey, options.occurrenceKey),
+        ))
+        .limit(1);
+      if (!existing) {
+        throw new Error(`Automation run for occurrence ${options.occurrenceKey} conflicted but could not be read`);
+      }
+      return { run: existing, reused: true };
+    }
 
     if (!created) {
       throw new Error('Failed to create automation run record');
@@ -3211,10 +3516,11 @@ export async function createAutomationRunRecord(options: {
         updatedAt: new Date(),
       })
       .where(eq(automations.id, options.automation.id));
-    return created;
+    return { run: created, reused: false };
   });
 
-  if (options.deferStartedEvent) return { run, targetDeviceIds };
+  // A reused run already published its `automation.started` when it was minted.
+  if (options.deferStartedEvent || reused) return { run, targetDeviceIds, reused };
 
   // Lifecycle events carry an org. An org-owned automation publishes to its
   // own org (unchanged); a partner-wide automation (orgId NULL, #2133) has no
@@ -3245,7 +3551,7 @@ export async function createAutomationRunRecord(options: {
     );
   }
 
-  return { run, targetDeviceIds };
+  return { run, targetDeviceIds, reused };
 }
 
 async function distinctDeviceOrgIds(deviceIds: string[]): Promise<string[]> {
@@ -3407,6 +3713,63 @@ function buildActionExecutionContext(base: {
   return { ...base, device };
 }
 
+/**
+ * #3189 — the stored outcome of a run that is already over, or null when it is
+ * still `running`. `cancelled` counts as over for dispatch purposes: its
+ * children close on their own evidence and nothing new may be sent.
+ */
+function terminalRunOutcome(run: Pick<AutomationRunRow, 'status' | 'devicesSucceeded' | 'devicesFailed'>): {
+  status: AutomationRunOutcomeStatus;
+  devicesSucceeded: number;
+  devicesFailed: number;
+} | null {
+  if (run.status === 'running') return null;
+  if (run.status === 'cancelled') return { status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+  return { status: run.status, devicesSucceeded: run.devicesSucceeded, devicesFailed: run.devicesFailed };
+}
+
+/**
+ * #3189 — devices that already have ledger rows for this run. A resumed run
+ * re-resolves its targets; without these, a device the first attempt seeded
+ * but the new resolution dropped would keep `pending` rows no attempt ever
+ * visits, and the run would never finish.
+ */
+async function ledgerDeviceIdsForRun(runId: string): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ deviceId: automationActionResults.deviceId })
+    .from(automationActionResults)
+    .where(eq(automationActionResults.runId, runId));
+  return rows.map((row) => row.deviceId);
+}
+
+/**
+ * #3189 — a resumed run whose previously-seeded device is now denied (moved
+ * out of the owner boundary) must still close that device's unclaimed rows;
+ * `recordPreRunDeniedDeviceResults` only inserts, so it cannot. Pending-only:
+ * an action another attempt already dispatched keeps its own outcome.
+ */
+async function settleDeniedResumedDevices(
+  runId: string,
+  deniedDeviceIds: readonly string[],
+  resumedDeviceIds: ReadonlySet<string>,
+  actionCount: number,
+  reason: string,
+): Promise<void> {
+  for (const deviceId of deniedDeviceIds) {
+    if (!resumedDeviceIds.has(deviceId)) continue;
+    for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
+      await recordAutomationRuntimeActionDispatch({
+        runId,
+        deviceId,
+        actionIndex,
+        status: 'failed',
+        message: reason,
+        onlyFromPending: true,
+      });
+    }
+  }
+}
+
 async function executeAutomationRunInner(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
@@ -3425,6 +3788,14 @@ async function executeAutomationRunInner(
   if (!run) {
     throw new Error('Automation run not found');
   }
+
+  // #3189 — a queued job is not a reason to run again. A replay (BullMQ
+  // stalled-job recovery, or a trigger replay that found this run through its
+  // occurrence key) of a run that already finished must not seed or dispatch
+  // anything. A still-`running` run falls through: its per-action claims make
+  // the resume dispatch only what no attempt has claimed yet.
+  const finished = terminalRunOutcome(run);
+  if (finished) return finished;
 
   if (!run.automationId) {
     throw new Error('Automation run is not linked to a standalone automation (may be a config policy run)');
@@ -3454,9 +3825,13 @@ async function executeAutomationRunInner(
   const resolvedReferences = await withAutomationRuntimeDb(() => db.transaction((tx) =>
     resolveStandaloneAutomationReferencesForAdmission(tx, automation, normalized)));
 
-  const targetDeviceIds = targetDeviceIdsFromQueue && targetDeviceIdsFromQueue.length > 0
+  const resolvedTargetIds = targetDeviceIdsFromQueue && targetDeviceIdsFromQueue.length > 0
     ? targetDeviceIdsFromQueue
     : await withAutomationRuntimeDb(() => resolveAutomationTargetDeviceIds(automation));
+  // #3189 — on a resume, keep every device an earlier attempt already seeded.
+  // Empty on a first attempt, so this is a no-op there.
+  const resumedDeviceIds = new Set(await withAutomationRuntimeDb(() => ledgerDeviceIdsForRun(run.id)));
+  const targetDeviceIds = [...new Set([...resolvedTargetIds, ...resumedDeviceIds])];
 
   await withAutomationRuntimeDb(() => db
     .update(automationRuns)
@@ -3502,6 +3877,13 @@ async function executeAutomationRunInner(
     preRunDeniedDevices,
     AUTOMATION_TARGET_AUTHORITY_LOST,
   ));
+  await settleDeniedResumedDevices(
+    run.id,
+    preRunDeniedDevices.map((device) => device.id),
+    resumedDeviceIds,
+    normalized.actions.length,
+    AUTOMATION_TARGET_AUTHORITY_LOST,
+  );
 
   const existingLogs = getExistingLogs(run.logs);
   const logs: AutomationLogEntry[] = [...existingLogs];
@@ -3648,6 +4030,8 @@ async function admitConfigPolicyAutomationRun(
     targetDeviceIds: string[];
     triggeredBy: string;
     details?: Record<string, unknown>;
+    /** #3189 — see `createAutomationRunRecord`'s `occurrenceKey`. */
+    occurrenceKey?: string;
   },
   actions: readonly AutomationAction[] | null,
   requireOrgId: boolean,
@@ -3655,6 +4039,8 @@ async function admitConfigPolicyAutomationRun(
   run: AutomationRunRow;
   context: { configPolicyId: string; orgId: string | null; partnerId: string | null };
   resolvedReferences: ResolvedAutomationReferences | null;
+  /** #3189 — true when the occurrence already had a run and it was returned. */
+  reused: boolean;
 }> {
   return db.transaction(async (tx) => {
     const context = await resolveConfigPolicyAutomationContext(
@@ -3678,7 +4064,7 @@ async function admitConfigPolicyAutomationRun(
         actions,
       )
       : null;
-    const [run] = await tx
+    const insert = tx
       .insert(automationRuns)
       .values({
         automationId: null,
@@ -3689,6 +4075,7 @@ async function admitConfigPolicyAutomationRun(
         devicesTargeted: options.targetDeviceIds.length,
         devicesSucceeded: 0,
         devicesFailed: 0,
+        occurrenceKey: options.occurrenceKey ?? null,
         logs: [
           logEntry('Config policy automation run created', 'info', {
             details: {
@@ -3699,11 +4086,33 @@ async function admitConfigPolicyAutomationRun(
             },
           }),
         ],
-      })
-      .returning();
+      });
+    const [run] = options.occurrenceKey
+      ? await insert.onConflictDoNothing({
+        target: [automationRuns.configPolicyId, automationRuns.occurrenceKey],
+        // Must match automation_runs_config_policy_occurrence_uq's predicate.
+        where: sql.raw('automation_id IS NULL AND occurrence_key IS NOT NULL'),
+      }).returning()
+      : await insert.returning();
+
+    if (!run && options.occurrenceKey) {
+      const [existing] = await tx
+        .select()
+        .from(automationRuns)
+        .where(and(
+          isNull(automationRuns.automationId),
+          eq(automationRuns.configPolicyId, context.configPolicyId),
+          eq(automationRuns.occurrenceKey, options.occurrenceKey),
+        ))
+        .limit(1);
+      if (!existing) {
+        throw new Error(`Config policy run for occurrence ${options.occurrenceKey} conflicted but could not be read`);
+      }
+      return { run: existing, context, resolvedReferences, reused: true };
+    }
 
     if (!run) throw new Error('Failed to create config policy automation run record');
-    return { run, context, resolvedReferences };
+    return { run, context, resolvedReferences, reused: false };
   });
 }
 
@@ -3738,12 +4147,23 @@ export async function executeConfigPolicyAutomationRun(
   configPolicyId: string,
   targetDeviceIds: string[],
   triggeredBy: string,
+  options: {
+    /**
+     * #3189 — the trigger occurrence (`<cpAutomationId>:schedule:<slot>`,
+     * `<cpAutomationId>:event:<deviceId>:<eventId>`). A replayed
+     * `execute-config-policy-run` job for the same occurrence resumes (or, if
+     * finished, returns) the run the first attempt admitted instead of
+     * admitting a second one.
+     */
+    occurrenceKey?: string;
+  } = {},
 ): Promise<{
   runId: string;
   status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
+  const occurrenceKey = options.occurrenceKey;
   let actions: AutomationAction[];
   try {
     actions = normalizeAutomationActions(automation.actions);
@@ -3752,10 +4172,14 @@ export async function executeConfigPolicyAutomationRun(
     // pre-authorization runtime contract. No action can be dispatched because
     // parsing failed, so this branch deliberately skips reference resolution.
     const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-      { automation, configPolicyId, targetDeviceIds, triggeredBy },
+      { automation, configPolicyId, targetDeviceIds, triggeredBy, occurrenceKey },
       null,
       true,
     ));
+    // A replay of an occurrence that already finished reports that outcome;
+    // it must not relabel it.
+    const finished = terminalRunOutcome(admission.run);
+    if (finished) return { runId: admission.run.id, ...finished };
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     await withAutomationRuntimeDb(() => db
       .update(automationRuns)
@@ -3767,7 +4191,7 @@ export async function executeConfigPolicyAutomationRun(
           logEntry(`Failed to parse automation actions: ${errorMsg}`, 'error'),
         ],
       })
-      .where(eq(automationRuns.id, admission.run.id)));
+      .where(and(eq(automationRuns.id, admission.run.id), eq(automationRuns.status, 'running'))));
 
     return {
       runId: admission.run.id,
@@ -3777,7 +4201,7 @@ export async function executeConfigPolicyAutomationRun(
     };
   }
   const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-    { automation, configPolicyId, targetDeviceIds, triggeredBy },
+    { automation, configPolicyId, targetDeviceIds, triggeredBy, occurrenceKey },
     actions,
     true,
   ));
@@ -3786,6 +4210,12 @@ export async function executeConfigPolicyAutomationRun(
   }
   const orgId = admission.context.orgId!;
   const run = admission.run;
+  // #3189 — same short-circuit as the standalone runner.
+  const finished = terminalRunOutcome(run);
+  if (finished) return { runId: run.id, ...finished };
+  const resumedDeviceIds = admission.reused
+    ? new Set(await withAutomationRuntimeDb(() => ledgerDeviceIdsForRun(run.id)))
+    : new Set<string>();
 
   const onFailure = automation.onFailure ?? 'stop';
 
@@ -3860,6 +4290,13 @@ export async function executeConfigPolicyAutomationRun(
     deniedDevices,
     CONFIG_POLICY_TARGET_ORG_CHANGED,
   ));
+  await settleDeniedResumedDevices(
+    run.id,
+    deniedDeviceIds,
+    resumedDeviceIds,
+    actions.length,
+    CONFIG_POLICY_TARGET_ORG_CHANGED,
+  );
 
   const notificationChannelIds = new Set<string>();
   for (const action of actions) {

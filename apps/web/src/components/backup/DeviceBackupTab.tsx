@@ -25,7 +25,10 @@ import '../../lib/i18n';
 
 // `partial` is terminal but degraded: a restorable snapshot exists while a large
 // share of the data did not make it. Warning severity — never green, never red.
-type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled' | 'partial';
+// `completed_with_errors` (#5396) is a milder, distinct degraded outcome: a
+// restorable snapshot with SOME (under-threshold) file failures. Also warning
+// severity, but must never collapse into `completed` or the "pending" fallback.
+type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled' | 'partial' | 'completed_with_errors';
 type VssWriterState = 'stable' | 'failed' | 'waiting' | string;
 
 type VssWriter = {
@@ -93,6 +96,7 @@ const jobStatusConfig: Record<BackupJobStatus, { icon: typeof CheckCircle2; clas
   running: { icon: Clock, className: 'text-primary bg-primary/10', label: 'Running' },
   failed: { icon: XCircle, className: 'text-destructive bg-destructive/10', label: 'Failed' },
   partial: { icon: AlertTriangle, className: 'text-warning bg-warning/10', label: 'Partial' },
+  completed_with_errors: { icon: AlertTriangle, className: 'text-warning bg-warning/10', label: 'Completed with errors' },
   pending: { icon: Clock, className: 'text-muted-foreground bg-muted', label: 'Pending' },
   cancelled: { icon: XCircle, className: 'text-muted-foreground bg-muted', label: 'Cancelled' },
 };
@@ -415,6 +419,10 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // errorLog entirely, so such a run displayed as a clean green backup.
   const lastJobDiagnostic = lastJob?.errorLog?.trim() || null;
   const lastJobFailed = lastJobStatus === 'failed';
+  // #5396: distinct from the generic "completed with warnings" framing — this
+  // run has a concrete, agent-reported count of files that failed to read or
+  // upload (still under the `partial` threshold), which the banner should name.
+  const lastJobCompletedWithErrors = lastJobStatus === 'completed_with_errors';
   const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null;
   // Prefer the API-reported device zone; fall back to the already-validated
   // zone passed by the parent (never an invalid IANA id). formatDateTime
@@ -615,7 +623,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
             <p className="font-medium">
               {lastJobFailed
                 ? t('deviceBackupTab.lastBackupFailed')
-                : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
+                : lastJobCompletedWithErrors
+                  ? t('deviceBackupTab.lastBackupCompletedWithErrors')
+                  : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
             </p>
             <p className="mt-1 break-words opacity-90">{lastJobDiagnostic}</p>
           </div>

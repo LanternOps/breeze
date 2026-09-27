@@ -56,6 +56,7 @@ type BulkFailCode =
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
+  | 'BACKUP_PROTECTED'
   | 'ERROR';
 
 interface BulkFailed {

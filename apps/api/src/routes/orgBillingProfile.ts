@@ -3,7 +3,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations } from '../db/schema';
-import { requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { partnerMemberMayReachOrg } from '../services/partnerOrgSelection';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -57,7 +57,7 @@ export function registerOrgBillingProfileRoutes(orgRoutes: Hono) {
     } catch (err) { return fail(c, err); }
   });
 
-  orgRoutes.put('/organizations/:id/billing-profile', partnerOnly, write, async (c) => {
+  orgRoutes.put('/organizations/:id/billing-profile', partnerOnly, write, requireMfa(), async (c) => {
     const org = await resolveAccessibleOrg(c);
     if (org instanceof Response) return org;
     const parsed = assignmentSchema.safeParse(await c.req.json().catch(() => null));
@@ -73,7 +73,7 @@ export function registerOrgBillingProfileRoutes(orgRoutes: Hono) {
     } catch (err) { return fail(c, err); }
   });
 
-  orgRoutes.delete('/organizations/:id/billing-profile', partnerOnly, write, async (c) => {
+  orgRoutes.delete('/organizations/:id/billing-profile', partnerOnly, write, requireMfa(), async (c) => {
     const org = await resolveAccessibleOrg(c);
     if (org instanceof Response) return org;
     try {

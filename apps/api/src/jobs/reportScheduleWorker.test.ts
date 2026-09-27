@@ -115,7 +115,7 @@ const scopeState = vi.hoisted(() => ({
   decodeError: null as Error | null,
 }));
 const resolveLiveReportAuthorityMock = vi.fn(
-  async (_userId: string, _orgId: string, _action: 'read') => scopeState.liveResult,
+  async (_userId: string, _orgId: string, _action: 'read' | 'export') => scopeState.liveResult,
 );
 const decodeSiteScopeMock = vi.fn((_row: unknown, _orgId: string) => {
   if (scopeState.decodeError) throw scopeState.decodeError;
@@ -126,7 +126,7 @@ const intersectSiteScopesMock = vi.fn(
 );
 // #3198 W01 — partner-owned definitions reauthorize through the partner resolver.
 const resolveLivePartnerReportAuthorityMock = vi.fn(
-  async (_userId: string, _partnerId: string, _action: 'read') => scopeState.partnerLiveResult,
+  async (_userId: string, _partnerId: string, _action: 'read' | 'export') => scopeState.partnerLiveResult,
 );
 // #3198 W02 (ruling P8) — the business-type permission re-check.
 const resolveLiveReportTypePermissionsMock = vi.fn(
@@ -155,9 +155,9 @@ vi.mock('../services/siteScope', async (importOriginal) => {
   reportOwnerOf: actual.reportOwnerOf,
   partnerWideScope: actual.partnerWideScope,
   resolveLivePartnerReportAuthority: (...args: unknown[]) =>
-    resolveLivePartnerReportAuthorityMock(...(args as [string, string, 'read'])),
+    resolveLivePartnerReportAuthorityMock(...(args as [string, string, 'read' | 'export'])),
   resolveLiveReportAuthority: (...args: unknown[]) =>
-    resolveLiveReportAuthorityMock(...(args as [string, string, 'read'])),
+    resolveLiveReportAuthorityMock(...(args as [string, string, 'read' | 'export'])),
   decodeSiteScope: (...args: unknown[]) =>
     decodeSiteScopeMock(...(args as [unknown, string])),
   intersectSiteScopes: (...args: unknown[]) =>
@@ -805,7 +805,7 @@ describe('processRunScheduledReport', () => {
     expect(resolveLiveReportAuthorityMock).toHaveBeenCalledWith(
       report.executionScopeUserId,
       ORG_ID,
-      'read',
+      'export',
     );
     // #3198 W01 — the org owner axis is threaded into decode and preflight.
     expect(decodeSiteScopeMock).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID });
@@ -1699,7 +1699,7 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
     await run();
 
     expect(decodeSiteScopeMock).toHaveBeenCalledWith(partnerReport, { partnerId: PARTNER_ID });
-    expect(resolveLivePartnerReportAuthorityMock).toHaveBeenCalledWith(USER_ID, PARTNER_ID, 'read');
+    expect(resolveLivePartnerReportAuthorityMock).toHaveBeenCalledWith(USER_ID, PARTNER_ID, 'export');
     expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
     expect(reportExecutionPreflightMock).toHaveBeenCalledWith(
       { partnerId: PARTNER_ID },
@@ -1899,7 +1899,7 @@ describe('partner-owned scheduled definitions (#3198 W01/W02)', () => {
 
     await run();
 
-    expect(resolveLivePartnerReportAuthorityMock).toHaveBeenCalledWith(USER_ID, PARTNER_ID, 'read');
+    expect(resolveLivePartnerReportAuthorityMock).toHaveBeenCalledWith(USER_ID, PARTNER_ID, 'export');
     expect(insertMock).toHaveBeenCalledTimes(1);
     expect(failedInsert.values).toHaveBeenCalledWith(
       expect.objectContaining({

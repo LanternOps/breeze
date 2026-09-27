@@ -65,7 +65,7 @@ import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
 import { getRecipe, validateRecipeNextStep } from './recipes';
-import type { RecipeDefinition, StepKind } from './recipes/types';
+import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
 import { evaluateCriterion } from './verification';
 import {
@@ -78,6 +78,7 @@ import {
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
+import { requesterAccessLost } from './requesterAccessGate';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { markStepWaiting, openStep, resolveStepKind, settleStep } from './stepService';
@@ -671,6 +672,21 @@ const KIND_ADVANCERS: Readonly<Partial<Record<StepKind, StepAdvancer>>> = {
   wait: (a) => advanceWait(a),
 };
 
+/**
+ * Whether the step a task is ABOUT to dispatch is a new-effect boundary
+ * (spec §5.1: "Manual delegation ... rechecks current access before each new
+ * effect"). Classified by the step's KIND, not by its key — so this stays
+ * correct for a future recipe that names its mutating step something other
+ * than `execute`, or for a `human_work`/`wait` resume (`settleStepAndMove`)
+ * that jumps directly into one, without this function or its caller needing
+ * to change. `advanceTask` below consults it once, at the single point every
+ * step dispatch passes through, however the task arrived at that step —
+ * rather than each per-recipe advancer re-implementing its own recheck.
+ */
+export function stepNeedsRequesterAccessRecheck(step: StepDefinition | undefined): boolean {
+  return step?.kind === 'effect';
+}
+
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
   const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
   if (!parsedCheckpoint.ok) {
@@ -762,6 +778,29 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
       detail: `unknown step '${stepKey}'`, checkpoint,
     });
     return `failed: unknown step ${stepKey}`;
+  }
+
+  // Spec §5.1's requester-access recheck happens HERE, before dispatching
+  // into the step, not inside any one step's advancer — see
+  // `stepNeedsRequesterAccessRecheck`. That makes it a property of the
+  // dispatch table itself: every step of kind `effect`, from every recipe,
+  // reached by any path (a normal per-tick advance, or a `human_work`/`wait`
+  // resume that jumps straight to a step by name), passes through this same
+  // check before anything below it can run. No-op for a task with no human
+  // requester (automatic origins have nothing to re-check).
+  if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
+    const accessCheck = await requesterAccessLost(task, checkpoint.recipeInput.deviceId);
+    if (accessCheck.lost) {
+      await settle({
+        task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
+        detail: `requester access lost: ${accessCheck.detail}`, checkpoint,
+        handoffSummary:
+          `The person who delegated this task no longer has the access it needs (${accessCheck.detail}). `
+          + 'The task was paused before taking further action. Delegate again once access is restored, '
+          + 'or complete the remaining work manually.',
+      });
+      return `handed off: requester access lost (${accessCheck.detail})`;
+    }
   }
 
   return advance({ task, leaseEpoch, checkpoint, recipe, now });
@@ -921,6 +960,11 @@ async function advanceExecute(
   checkpoint: TaskCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
+  // Spec §5.1's requester-access recheck ("rechecks current access before
+  // each new effect") already ran in `advanceTask`, generically, before this
+  // function was even called — see `stepNeedsRequesterAccessRecheck`. `execute`
+  // is `service_recovery`'s only step of kind `effect`, so nothing here
+  // re-derives it a second time.
   const operation = await readLatestOperation(task.orgId, task.id);
   if (!operation) {
     await settle({

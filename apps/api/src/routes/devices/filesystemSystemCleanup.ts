@@ -15,6 +15,7 @@
  */
 
 import { Hono, type Context } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -38,6 +39,20 @@ import {
   systemCleanupCatalogSchema,
 } from '../../services/systemCleanup';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
+
+/**
+ * List/run dispatch to the device, the same class as /system-tools,
+ * so they honour the per-device remote-tools policy like
+ * routes/systemTools/index.ts does. Checked after the tenant/site check so
+ * another tenant's device reads as not found. (Cancel dispatches nothing and
+ * stays allowed.)
+ */
+async function remoteToolsRefusal(c: Context, deviceId: string) {
+  const policy = await checkDeviceRemoteToolsPolicy(deviceId);
+  if (policy.allowed) return null;
+  return c.json({ success: false, error: policy.reason, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
+}
 
 export const filesystemSystemCleanupRoutes = new Hono();
 
@@ -78,6 +93,8 @@ filesystemSystemCleanupRoutes.post(
     const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
+    const refusedList = await remoteToolsRefusal(c, deviceId);
+    if (refusedList) return refusedList;
 
     // The gate and the queue live in `services/systemCleanup.ts` so the W05 AI
     // lane runs the SAME code (alignment 17). The route keeps only HTTP
@@ -85,9 +102,10 @@ filesystemSystemCleanupRoutes.post(
     const queued = await queueSystemCleanupList({ device, requestedBy: auth.user.id });
     if (!queued.ok) {
       if (queued.status === 409) return agentUpdateRequired(c);
+      if (queued.status === 403) return c.json({ success: false, error: queued.error, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
       // 500 rather than 502: Cloudflare replaces an origin 502 body with its
       // own page, which would blank the reason on hosted deployments.
-      return c.json({ success: false, error: queued.error, code: 'agent_execution_failed' }, 500);
+      return c.json({ success: false, error: queued.error, code: ERROR_CODES.AGENT_EXECUTION_FAILED }, 500);
     }
 
     writeRouteAudit(c, {
@@ -167,6 +185,8 @@ filesystemSystemCleanupRoutes.post(
     const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
+    const refusedRun = await remoteToolsRefusal(c, deviceId);
+    if (refusedRun) return refusedRun;
     // Gate + `device_filesystem_cleanup_runs` insert + queue + the failed-queue
     // rollback all live in `startSystemCleanupRun` (alignment 17). W05's AI
     // tool calls the same function, so there is exactly one place that can
@@ -185,7 +205,8 @@ filesystemSystemCleanupRoutes.post(
         }, 409);
       }
       if (started.status === 409) return agentUpdateRequired(c);
-      return c.json({ success: false, error: started.error, code: 'agent_execution_failed' }, started.status === 400 ? 400 : 500);
+      if (started.status === 403) return c.json({ success: false, error: started.error, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
+      return c.json({ success: false, error: started.error, code: ERROR_CODES.AGENT_EXECUTION_FAILED }, started.status === 400 ? 400 : 500);
     }
 
     // The "who asked, and for what" record. The measured-bytes audit

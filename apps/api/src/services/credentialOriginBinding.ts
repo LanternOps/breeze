@@ -16,6 +16,21 @@ export function urlOriginChanged(current: string, next: string): boolean {
   }
 }
 
+/**
+ * Whether `next` contains any member `existing` does not have (trimmed,
+ * exact-match comparison). For destination shapes that are a SET of hosts
+ * rather than one URL — a discovery profile's `subnets`, for instance, where
+ * "the destination" is everything the job probes — a credential must not
+ * follow the set to a member it has never reached before. Removing members
+ * only narrows the destination, so it is never itself a change: a PATCH that
+ * drops subnets sends the stored secret nowhere new and needs no
+ * re-confirmation, mirroring `urlOriginChanged`'s single-URL contract.
+ */
+export function destinationSetGainedMembers(existing: readonly string[], next: readonly string[]): boolean {
+  const existingSet = new Set(existing.map((value) => value.trim()));
+  return next.some((value) => !existingSet.has(value.trim()));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

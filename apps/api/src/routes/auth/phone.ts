@@ -543,7 +543,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     userId: auth.user.id,
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
-  });
+  }, { failClosed: true, failClosedMethods: true });
   if (!policy.allowedMethods.sms) {
     return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
   }

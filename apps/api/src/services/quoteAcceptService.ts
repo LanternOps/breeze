@@ -15,6 +15,7 @@ import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { enqueueAccountingInvoicePush } from '../jobs/accountingSyncWorker';
+import { resolveActiveConnectionFor } from './accounting/accountingConnectionService';
 import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteToContract';
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
@@ -734,10 +735,12 @@ export async function emitAcceptInvoiceIssued(
     console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
-  // QuickBooks auto-push, as issueInvoice does (#7135). The worker applies the
-  // connected / pushMode gates, so this is a no-op for partners without it.
+  // Accounting auto-push, as issueInvoice does (#7135): enqueued only when the
+  // partner has an invoice-push-capable connection, carrying its id (Xero W01
+  // producer gate). The worker applies the connected / pushMode gates.
   try {
-    await enqueueAccountingInvoicePush(res.invoiceId, res.quote.partnerId);
+    const conn = await resolveActiveConnectionFor(res.quote.partnerId, 'invoicePush');
+    if (conn) await enqueueAccountingInvoicePush(res.invoiceId, res.quote.partnerId, conn.id);
   } catch (err) {
     console.error('[quoteAccept] enqueueAccountingInvoicePush failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));

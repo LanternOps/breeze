@@ -405,16 +405,21 @@ func TestSaveToPreservesStagedCredentials(t *testing.T) {
 	}
 }
 
-// helper_auth_token is deliberately exempted from stripping because the Breeze
-// Helper runs as the logged-in user and reads it from agent.yaml. Its STAGED
-// counterpart must NOT inherit that exemption: a staged credential is not yet
-// the Helper's identity, and putting it in the 0644 agent.yaml would publish an
-// unpromoted token to every local user. This asymmetry is easy to "tidy up" by
-// accident, so pin it.
+// On Windows, helper_auth_token is deliberately exempted from stripping
+// because the Breeze Helper runs as the logged-in user and reads it from
+// agent.yaml there (no narrower delivery exists yet on that platform — see
+// helpertoken_windows.go). On Unix it is NOT exempted: it lives in its own
+// group-scoped helper_token.yaml instead (helpertoken_unix.go).
+//
+// Either way, its STAGED counterpart must NOT inherit any exemption: a
+// staged credential is not yet the Helper's identity, and putting it in the
+// 0644 agent.yaml would publish an unpromoted token to every local user.
+// This asymmetry is easy to "tidy up" by accident, so pin it.
 func TestPendingHelperTokenIsNotExemptedFromStripping(t *testing.T) {
-	if !secretKeyAllowedInAgentYAML["helper_auth_token"] {
-		t.Fatal("precondition changed: helper_auth_token is no longer agent.yaml-exempt; " +
-			"revisit whether the Helper still reads it from there")
+	wantExempt := runtime.GOOS == "windows"
+	if secretKeyAllowedInAgentYAML["helper_auth_token"] != wantExempt {
+		t.Fatalf("precondition changed: helper_auth_token agent.yaml exemption = %v, want %v for this platform; "+
+			"revisit whether the Helper still reads it from there", secretKeyAllowedInAgentYAML["helper_auth_token"], wantExempt)
 	}
 	if secretKeyAllowedInAgentYAML[secretKeyPendingHelperAuthToken] {
 		t.Error("pending_helper_auth_token must not be exempted into the world-readable agent.yaml")

@@ -7,16 +7,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
-// watchdogBinaryPathUnix is where the watchdog service binary lives on
-// Linux/macOS (matches breeze-watchdog's own service install paths).
-const watchdogBinaryPathUnix = "/usr/local/bin/breeze-watchdog"
-
-// watchdogBinaryPath returns the on-disk path of the installed watchdog binary
-// so the agent can read its version for heartbeat telemetry.
+// watchdogBinaryPath returns the on-disk path of the installed watchdog
+// binary so the agent can read its version for heartbeat telemetry, and so
+// a remote watchdog update knows where to write.
+//
+// On Linux this is always securefs.LegacyExecutableDir — Linux installs
+// aren't relocated by this release. On macOS it prefers
+// securefs.TrustedExecutableDir (where a migrated install's watchdog
+// actually runs from) and falls back to the legacy path for a host that
+// hasn't migrated yet, so this keeps working correctly across the upgrade.
 func watchdogBinaryPath() (string, error) {
-	return watchdogBinaryPathUnix, nil
+	if runtime.GOOS == "darwin" {
+		trusted := securefs.TrustedExecutableDir + "/breeze-watchdog"
+		if _, err := os.Stat(trusted); err == nil {
+			return trusted, nil
+		}
+	}
+	return securefs.LegacyExecutableDir + "/breeze-watchdog", nil
 }
 
 // replaceWatchdogBinaryUnix atomically swaps the watchdog binary at dest with

@@ -44,6 +44,12 @@ vi.mock('./aiTools', () => ({
       // P2-5 (#4192): mirrors the real registry entry
       // (`aiAgentSdkTools.ts` TOOL_TIERS.manage_ai_agents = 3).
       manage_ai_agents: 3,
+      // Mirrors the real registry entries
+      // (aiToolsGoogle.ts googleToolTiers — all Tier 3).
+      google_set_forwarding: 3,
+      google_disable_forwarding: 3,
+      google_add_mail_delegate: 3,
+      google_share_calendar: 3,
     };
     return tiers[toolName];
   }),
@@ -933,6 +939,77 @@ describe('buildApprovalDescription — manage_ai_agents copy (P2-5, #4192)', () 
   it('other manage_ai_agents actions keep the generic description shape (no regression)', () => {
     const result = checkGuardrails('manage_ai_agents', { action: 'rotate_something' });
     expect(result.description).toBe('manage_ai_agents: rotate_something');
+  });
+});
+
+// The approval headline for these four
+// Google Workspace tools used to fall through to the generic `${toolName}`
+// default — no destination address anywhere in the always-visible headline,
+// on web or mobile. These assert the destination is now in the headline, and
+// that a destination on a different domain from the mailbox being acted on
+// is flagged distinctly. Domain comparison uses the tool's own `userEmail`/
+// `ownerEmail` argument as the workspace-domain stand-in (this layer has no
+// connection/customerDomain lookup, and checkGuardrails is synchronous, so a
+// verified-domain lookup would need a broader async refactor) — the label
+// below is worded as a heuristic accordingly. See D-41a for the owner
+// decision on actually locking these tools to verified domains.
+describe('buildApprovalDescription — Google external-destination copy', () => {
+  it('google_set_forwarding: same-domain destination has no domain-mismatch flag', () => {
+    const result = checkGuardrails('google_set_forwarding', {
+      userEmail: 'alice@acme.example',
+      forwardTo: 'bob@acme.example',
+      reason: 'coverage',
+    });
+    expect(result.description).toBe('Forward mail from alice@acme.example to bob@acme.example');
+  });
+
+  it('google_set_forwarding: cross-domain destination is flagged in the headline', () => {
+    const result = checkGuardrails('google_set_forwarding', {
+      userEmail: 'alice@acme.example',
+      forwardTo: 'ext-recipient@foreign.example',
+      reason: 'coverage',
+    });
+    expect(result.description).toContain('ext-recipient@foreign.example');
+    expect(result.description).toContain('different domain from source mailbox');
+  });
+
+  it('google_add_mail_delegate: names the delegate and flags a cross-domain one', () => {
+    const result = checkGuardrails('google_add_mail_delegate', {
+      userEmail: 'alice@acme.example',
+      delegateEmail: 'ext-recipient@foreign.example',
+      reason: 'coverage',
+    });
+    expect(result.description).toContain('ext-recipient@foreign.example');
+    expect(result.description).toContain('different domain from source mailbox');
+  });
+
+  it('google_share_calendar: names the share target and flags a cross-domain one', () => {
+    const result = checkGuardrails('google_share_calendar', {
+      ownerEmail: 'alice@acme.example',
+      shareWithEmail: 'ext-recipient@foreign.example',
+      reason: 'coverage',
+    });
+    expect(result.description).toContain('ext-recipient@foreign.example');
+    expect(result.description).toContain('different domain from source mailbox');
+  });
+
+  it('google_disable_forwarding: with removeAddress, names and flags the removed address', () => {
+    const result = checkGuardrails('google_disable_forwarding', {
+      userEmail: 'alice@acme.example',
+      forwardTo: 'ext-recipient@foreign.example',
+      removeAddress: true,
+      reason: 'coverage',
+    });
+    expect(result.description).toContain('ext-recipient@foreign.example');
+    expect(result.description).toContain('different domain from source mailbox');
+  });
+
+  it('google_disable_forwarding: without removeAddress never mentions a destination', () => {
+    const result = checkGuardrails('google_disable_forwarding', {
+      userEmail: 'alice@acme.example',
+      reason: 'coverage',
+    });
+    expect(result.description).not.toContain('different domain from source mailbox');
   });
 });
 

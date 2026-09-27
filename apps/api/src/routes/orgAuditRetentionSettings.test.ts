@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbSelectResult, serviceMocks, auditSpy } = vi.hoisted(() => ({
+const { authRef, dbSelectResult, serviceMocks, auditSpy, auditRetentionFloorErrorCtor } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -19,6 +19,21 @@ const { authRef, dbSelectResult, serviceMocks, auditSpy } = vi.hoisted(() => ({
     upsertOrgAuditRetentionPolicy: vi.fn(),
   },
   auditSpy: vi.fn(),
+  // A REAL error class, not a mock function — the route's
+  // own `err instanceof AuditRetentionFloorError` check must see the actual
+  // constructor the (mocked) service throws. `vi.hoisted` is required here:
+  // a plain top-level `class` declared after `vi.mock` would not exist yet
+  // when the (hoisted) mock factory runs.
+  auditRetentionFloorErrorCtor: {
+    current: class AuditRetentionFloorError extends Error {
+      floorDays: number;
+      constructor(floorDays: number) {
+        super(`retentionDays must be at least ${floorDays} for an organization-scoped caller`);
+        this.name = 'AuditRetentionFloorError';
+        this.floorDays = floorDays;
+      }
+    },
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -67,6 +82,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/auditRetentionPolicyService', () => ({
+  AuditRetentionFloorError: auditRetentionFloorErrorCtor.current,
   getOrgAuditRetentionPolicy: (...args: unknown[]) => serviceMocks.getOrgAuditRetentionPolicy(...args),
   upsertOrgAuditRetentionPolicy: (...args: unknown[]) => serviceMocks.upsertOrgAuditRetentionPolicy(...args),
 }));
@@ -222,7 +238,7 @@ describe('PUT /organizations/:id/audit-retention', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toMatchObject({ orgId: ORG_ID, configured: true, retentionDays: 180 });
-    expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 180);
+    expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 180, { enforceOrgFloor: false });
     expect(auditSpy).toHaveBeenCalledTimes(1);
     const event = auditSpy.mock.calls[0]?.[1];
     expect(event.action).toBe('organization.audit_retention.update');
@@ -265,8 +281,40 @@ describe('PUT /organizations/:id/audit-retention', () => {
     });
     const res = await put({ retentionDays: 120 });
     expect(res.status).toBe(200);
-    expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 120);
+    expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 120, { enforceOrgFloor: true });
     expect(auditSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe('org-floor enforcement', () => {
+    it('400 when the (mocked) service refuses an org-scoped caller\'s below-floor value', async () => {
+      resetAuth(orgScopedAuth(ORG_ID));
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      serviceMocks.upsertOrgAuditRetentionPolicy.mockImplementation(() => {
+        throw new auditRetentionFloorErrorCtor.current(90);
+      });
+      const res = await put({ retentionDays: 30 });
+      expect(res.status).toBe(400);
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
+    it('passes enforceOrgFloor: true for an organization-scoped caller, false for partner/system', async () => {
+      resetAuth(orgScopedAuth(ORG_ID));
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      serviceMocks.upsertOrgAuditRetentionPolicy.mockResolvedValue({
+        orgId: ORG_ID, configured: true, retentionDays: 90, lastCleanupAt: null,
+      });
+      await put({ retentionDays: 90 });
+      expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 90, { enforceOrgFloor: true });
+
+      vi.clearAllMocks();
+      resetAuth({ scope: 'system' });
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      serviceMocks.upsertOrgAuditRetentionPolicy.mockResolvedValue({
+        orgId: ORG_ID, configured: true, retentionDays: 1, lastCleanupAt: null,
+      });
+      await put({ retentionDays: 1 });
+      expect(serviceMocks.upsertOrgAuditRetentionPolicy).toHaveBeenCalledWith(ORG_ID, 1, { enforceOrgFloor: false });
+    });
   });
 
   it('404 when an organization-scoped caller targets a DIFFERENT org (#5423)', async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #3036: the diagnostic re-read runs on a NESTED transaction (a postgres.js
 // SAVEPOINT) and MUST issue its query on the `tx` handed to the callback rather
@@ -13,13 +13,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // below would fail. A shared spy would make that mistake invisible.
 const txSelect = vi.hoisted(() => vi.fn());
 
+// Work handed to runAfterDbContextExit is held here until the test flushes it,
+// standing in for "the outermost transaction has settled". A plain function,
+// not a vi.fn, so the suite-wide vi.resetAllMocks() cannot strip it.
+const afterContextExitWork = vi.hoisted(() => [] as Array<{ label: string; work: () => unknown }>);
+async function flushAfterContextExit(): Promise<void> {
+  for (const task of afterContextExitWork.splice(0)) await task.work();
+}
+
 vi.mock('../db', () => {
   const dbUpdate = vi.fn();
+  const dbInsert = vi.fn();
   return {
     db: {
       update: dbUpdate,
       select: vi.fn(),
-      insert: vi.fn(),
+      insert: dbInsert,
       delete: vi.fn(),
       // D18 W01: the late-result base fence AND (on its accept path) the
       // main job UPDATE both now run inside this ONE transaction, under the
@@ -32,10 +41,18 @@ vi.mock('../db', () => {
       // through the same connection). `tx.select` stays a DISTINCT spy
       // (txSelect) — that half of the "must go through tx, not the ambient
       // proxy" assertion (#2189) is still meaningful and still tested.
-      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect, update: dbUpdate })),
+      // `tx.insert` is likewise the SAME spy as `db.insert`: the
+      // backup_snapshots INSERT now runs inside its own nested SAVEPOINT
+      // transaction (see backupResultPersistence.ts) to isolate a 23505 from
+      // the outer request transaction, and every existing test that
+      // configures `vi.mocked(db.insert)...` keeps working the same way.
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect, update: dbUpdate, insert: dbInsert })),
     },
 
     runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    runAfterDbContextExit: (label: string, work: () => unknown) => {
+      afterContextExitWork.push({ label, work });
+    },
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
@@ -60,6 +77,7 @@ vi.mock('../db/schema', () => ({
   backupSnapshots: {
     id: 'backupSnapshots.id',
     jobId: 'backupSnapshots.jobId',
+    deviceId: 'backupSnapshots.deviceId',
     snapshotId: 'backupSnapshots.snapshotId',
     legalHold: 'backupSnapshots.legalHold',
     legalHoldReason: 'backupSnapshots.legalHoldReason',
@@ -105,6 +123,11 @@ const captureMessageMock = vi.fn();
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
   captureMessage: (...args: unknown[]) => captureMessageMock(...(args as [])),
+}));
+
+const findForeignSnapshotClaimMock = vi.fn();
+vi.mock('./backupSnapshotOwnership', () => ({
+  findForeignSnapshotClaim: (...args: unknown[]) => findForeignSnapshotClaimMock(...(args as [])),
 }));
 
 vi.mock('../db/schema/applicationBackup', () => ({
@@ -176,9 +199,11 @@ describe('backup result persistence', () => {
     // (the overwhelming majority) do not have to know it exists. Tests that
     // DO care push their own mockReturnValueOnce ahead of this default.
     vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    afterContextExitWork.length = 0;
     // The diagnostic-failure capture is one-shot per process (#3036); without
     // this the "captures once" assertion would depend on test ordering.
     __resetBackupPredicateMissDiagnosticGuardForTests();
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
   });
 
   it('ignores stale backup job results when the job is no longer in flight', async () => {
@@ -472,6 +497,95 @@ describe('backup result persistence', () => {
     });
   });
 
+  describe('snapshot timestamp clamping', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function arrange(jobCreatedAt: Date) {
+      vi.mocked(db.update)
+        .mockReturnValueOnce(chainMock([{
+          id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', createdAt: jobCreatedAt,
+        }]) as any)
+        .mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([]) as any)
+        .mockReturnValueOnce(chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any);
+      vi.mocked(db.insert).mockReturnValueOnce(
+        chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any
+      );
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+      resolveBackupProtectionForDeviceMock.mockResolvedValue(null);
+    }
+
+    it('clamps a far-future agent-reported timestamp to server receipt time (retention-evasion guard)', async () => {
+      arrange(new Date('2026-05-01T00:00:00.000Z'));
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: {
+          snapshotId: 'provider-snap-1',
+          filesBackedUp: 1,
+          snapshot: { id: 'provider-snap-1', timestamp: '2099-01-01T00:00:00.000Z' },
+        },
+      });
+
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+      const written = (insertValues as any).mock.calls[0][0];
+      expect(written.timestamp.getTime()).toBeLessThanOrEqual(new Date('2026-06-01T00:00:00.000Z').getTime() + 5 * 60 * 1000);
+      expect(written.timestamp.getFullYear()).toBe(2026);
+    });
+
+    it('clamps a far-past agent-reported timestamp to the job creation floor', async () => {
+      arrange(new Date('2026-05-31T12:00:00.000Z'));
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: {
+          snapshotId: 'provider-snap-1',
+          filesBackedUp: 1,
+          snapshot: { id: 'provider-snap-1', timestamp: '1990-01-01T00:00:00.000Z' },
+        },
+      });
+
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+      const written = (insertValues as any).mock.calls[0][0];
+      expect(written.timestamp.getTime()).toBeGreaterThanOrEqual(new Date('2026-05-31T12:00:00.000Z').getTime() - 5 * 60 * 1000);
+    });
+
+    it('keeps an honest, in-window agent-reported timestamp unchanged', async () => {
+      arrange(new Date('2026-05-31T12:00:00.000Z'));
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: {
+          snapshotId: 'provider-snap-1',
+          filesBackedUp: 1,
+          snapshot: { id: 'provider-snap-1', timestamp: '2026-05-31T23:00:00.000Z' },
+        },
+      });
+
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+      const written = (insertValues as any).mock.calls[0][0];
+      expect(written.timestamp.toISOString()).toBe('2026-05-31T23:00:00.000Z');
+    });
+  });
+
   it('marks a backup job failed only while it is still pending or running', async () => {
     const returning = vi.fn().mockResolvedValueOnce([{ id: 'job-1' }]).mockResolvedValueOnce([]);
     vi.mocked(db.update).mockReturnValue({
@@ -674,6 +788,90 @@ describe('backup result persistence', () => {
       systemStateManifest: null,
       hardwareProfile: null,
     }));
+  });
+
+  // SEC follow-up: a terminal result naming a snapshot id another device (or,
+  // on a bucket shared across orgs, another org) already claims must not be
+  // adopted — neither onto the job row nor into a new backup_snapshots row —
+  // even though the result itself is a genuine completion.
+  it('refuses a terminal result whose snapshot id is already claimed by another device', async () => {
+    findForeignSnapshotClaimMock.mockResolvedValue({
+      ownerDeviceId: 'device-2',
+      ownerOrgId: 'org-1',
+      crossOrg: false,
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: null, backupMode: 'file' }]) as any);
+
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 5 } as any,
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: 'provider-snap-1',
+    });
+    // The job row's own UPDATE must not carry the foreign-claimed snapshot id.
+    const jobUpdateSet = vi.mocked(db.update).mock.results[0]?.value?.set;
+    expect(jobUpdateSet).toHaveBeenCalledWith(
+      expect.not.objectContaining({ snapshotId: expect.anything() })
+    );
+    // No backup_snapshots row is created for the foreign-claimed id.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('already claimed by device device-2') })
+    );
+  });
+
+  // The app-layer findForeignSnapshotClaim check runs under this request's own org-scoped
+  // RLS context and cannot see a different org's row, so it cannot be the
+  // cross-org guarantee on its own — findForeignSnapshotClaim correctly
+  // returns null here (nothing visible), and the DB-level
+  // `backup_snapshots_storage_identity_snapshot_id_uq` unique constraint is
+  // what actually refuses the write, surfaced as a 23505 on the INSERT.
+  it('refuses to create a backup_snapshots row when the INSERT loses the DB-level cross-org unique-index race', async () => {
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: null, backupMode: 'file', storageIdentity: 'shared-bucket' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any) // existingSnapshot: nothing visible to this org
+      .mockReturnValueOnce(chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any);
+    const uniqueViolation = Object.assign(
+      new Error('duplicate key value violates unique constraint "backup_snapshots_storage_identity_snapshot_id_uq"'),
+      { code: '23505', constraint_name: 'backup_snapshots_storage_identity_snapshot_id_uq' },
+    );
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockRejectedValue(uniqueViolation) }),
+    } as any);
+
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 5 } as any,
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: 'provider-snap-1',
+    });
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('already claimed by another organization') })
+    );
+    // The generic "concurrent delete" anomaly warning must NOT also fire —
+    // this was a deliberate refusal, not data loss.
+    expect(captureExceptionMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('no backup_snapshots row was written') })
+    );
   });
 
   it('honors an explicit result.backupType over the mode-derived value', async () => {
@@ -943,7 +1141,9 @@ describe('backup result persistence', () => {
       errorLog: string;
       errorCount: number;
     };
-    expect(setArg.status).toBe('completed');
+    // #5396: `completed` means every file was read. Any failure under the
+    // partial threshold is `completed_with_errors`, never a green `completed`.
+    expect(setArg.status).toBe('completed_with_errors');
     expect(setArg.errorCount).toBe(2);
     expect(setArg.errorLog).toContain('2 of 10 files failed to upload');
   });
@@ -1134,6 +1334,29 @@ describe('backup result persistence', () => {
     // recorded its own outcome — neither may ever be resurrected.
     expect(reconcileGuard).not.toContain('cancelled');
     expect(reconcileGuard).not.toContain('partial');
+    // #5396: the same half-written state exists for a completed_with_errors
+    // job, and must stay recoverable too.
+    expect(reconcileGuard).toContain('completed_with_errors');
+  });
+
+  // #5396: a reconcile result is synthesized from the manifest and carries no
+  // errorCount, so it cannot know whether the run had file failures. When it
+  // re-adopts a half-written completed_with_errors job it must not launder the
+  // job back to a clean `completed`.
+  it('does not launder a completed_with_errors job to completed on reconcile', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 },
+      source: 'reconcile',
+    });
+    const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof setArg.status).not.toBe('string');
+    expect(JSON.stringify(setArg.status)).toContain('completed_with_errors');
   });
 
   // #3006: a reconcile adoption can flip a job the AGENT genuinely failed (no
@@ -1349,7 +1572,7 @@ describe('backup result persistence', () => {
       expect(stampSet).toHaveBeenCalledWith(expect.objectContaining({ fileIndexStatus: 'agent' }));
     });
 
-    it('enqueues file-index hydration when referencedFiles > 0', async () => {
+    it('enqueues file-index hydration when referencedFiles > 0 (non-S3 destination), after the context exits', async () => {
       vi.mocked(db.update)
         .mockReturnValueOnce(
           chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any
@@ -1375,6 +1598,9 @@ describe('backup result persistence', () => {
         result: { snapshotId: 'provider-snap-1', filesBackedUp: 0, referencedFiles: 40 } as any,
       });
 
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
       expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result');
     });
 
@@ -1404,6 +1630,7 @@ describe('backup result persistence', () => {
         result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any,
       });
 
+      await flushAfterContextExit();
       expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
     });
 
@@ -1437,11 +1664,151 @@ describe('backup result persistence', () => {
         }),
       ).resolves.not.toThrow();
 
+      await expect(flushAfterContextExit()).resolves.toBeUndefined();
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         expect.stringContaining('snapshot-db-1'),
         expect.any(Error),
       );
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('eager file-index hydration for S3 snapshots', () => {
+    function arrangeSuccess(opts: {
+      storageIdentity: string | null;
+      backupType?: string;
+      snapshotRow?: Record<string, unknown>;
+    }) {
+      vi.mocked(db.update)
+        .mockReturnValueOnce(
+          chainMock([{
+            id: 'job-1', orgId: 'org-1', configId: 'config-1',
+            backupType: opts.backupType ?? 'file', backupMode: 'file',
+            storageIdentity: opts.storageIdentity,
+          }]) as any
+        )
+        .mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([]) as any)
+        .mockReturnValueOnce(
+          chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any
+        );
+      vi.mocked(db.insert).mockReturnValueOnce(
+        chainMock([{
+          id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1', fileIndexStatus: 'none',
+          ...opts.snapshotRow,
+        }]) as any
+      );
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+    }
+
+    it('queues hydration exactly once for a full S3 snapshot, only after the DB context exits', async () => {
+      arrangeSuccess({ storageIdentity: 's3::minio.example:9443::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+      });
+
+      // Nothing reaches the queue while the persisting transaction is held.
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+      expect(afterContextExitWork).toHaveLength(1);
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('queues hydration exactly once for an incremental S3 snapshot (full-index reason, not the referenced-only one)', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 0, referencedFiles: 40 } as any,
+      });
+
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it.each(['system_image', 'application'])('queues hydration for an S3 %s snapshot', async (backupType) => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket', backupType });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('does not queue hydration for a full snapshot on a local destination', async () => {
+      arrangeSuccess({ storageIdentity: 'local::/srv/backups' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('queues hydration for a full S3 database snapshot (a generic verify reads it through the index)', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket', backupType: 'database' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('does not queue hydration when the snapshot index is already complete', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket', snapshotRow: { fileIndexStatus: 'complete' } });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('queues hydration for a snapshot adopted from storage (reconcile source)', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', source: 'reconcile',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+      });
+
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('does not queue hydration for a failed result', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'failed',
+        result: { snapshotId: 'provider-snap-1', error: 'disk full' } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1588,6 +1955,7 @@ describe('partial backup terminal status (#3000)', () => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
     vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
   });
 
   function mockSuccessPath() {
@@ -1750,11 +2118,119 @@ describe('partial backup terminal status (#3000)', () => {
   });
 });
 
+// #5396: `completed` means every file was read. A run that produced a snapshot
+// but had one or more file failures (under the #3000 partial threshold) is
+// `completed_with_errors`. Derived server-side from errorCount so every agent
+// version already in the field — all of which report `completed` for such a
+// run — gets the honest status without an agent release.
+describe('completed_with_errors terminal status (#5396)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+  });
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  function setArgs() {
+    return vi.mocked(db.update).mock.results[0]?.value?.set;
+  }
+
+  async function run(agentStatus: string | undefined, errorCount: number | undefined) {
+    mockSuccessPath();
+    return applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus,
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 10047,
+        errorCount,
+        warning: errorCount ? '1 file(s) could not be read during collection: perm-denied.txt: permission denied' : undefined,
+      } as any,
+    });
+  }
+
+  it('downgrades an agent-reported completed run with one failed file (the #5396 field case)', async () => {
+    await run('completed', 1);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed_with_errors',
+      errorCount: 1,
+      errorLog: expect.stringContaining('perm-denied.txt'),
+    }));
+  });
+
+  it('downgrades a legacy agent result that carries no inner status', async () => {
+    await run(undefined, 3);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed_with_errors' }));
+  });
+
+  it('accepts completed_with_errors reported by the agent itself, without warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await run('completed_with_errors', 2);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed_with_errors' }));
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('keeps a clean run completed (errorCount 0 or absent)', async () => {
+    await run('completed', 0);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    vi.mocked(db.update).mockReset();
+    await run('completed', undefined);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('leaves partial as partial — over the threshold wins over "with errors"', async () => {
+    await run('partial', 21);
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'partial' }));
+  });
+
+  it('still records the restorable snapshot for a completed_with_errors run', async () => {
+    const outcome = await run('completed', 1);
+    expect(db.insert).toHaveBeenCalled();
+    expect(outcome.snapshotDbId).toBe('snapshot-db-1');
+  });
+
+  it('keeps a failed result failed regardless of errorCount', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1' }]) as any);
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      agentStatus: 'completed',
+      result: { error: 'provider unreachable', errorCount: 4 } as any,
+    });
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+});
+
 describe('VSS metadata persistence (#3027)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
     vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
   });
 
   function mockSuccessPath() {

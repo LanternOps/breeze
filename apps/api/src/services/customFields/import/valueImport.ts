@@ -586,6 +586,16 @@ async function writeRow(
   // up is the row this one wrote. A batch-level default here would silently
   // break re-resolution.
   const linkSystem = row.externalSystem?.trim() || DEFAULT_IMPORT_SYSTEM;
+  // device_external_links_uniq is scoped to the whole PARTNER, deliberately
+  // (a source system's identity is unique across its tenant, not per org — see
+  // the migration header). A caller whose reach is a strict subset of the
+  // partner (an organization-scoped token) must never be able to tell FROM
+  // THE RESPONSE whether an (system, externalId) pair was already claimed by
+  // a SIBLING org's device: comparing `linkCreated` across guessed values
+  // would answer that with one bit per guess. A caller who already sees the
+  // whole partner (accessibleOrgIds === null) learns nothing new either way,
+  // so the real outcome is reported for them.
+  const restrictedReach = ctx.accessibleOrgIds !== null;
 
   return db.transaction(async (tx) => {
     // Every statement below is issued on `tx`. Issuing on the ambient `db` proxy
@@ -617,7 +627,12 @@ async function writeRow(
         // same link first is a no-op, not a failure.
         .onConflictDoNothing()
         .returning({ id: deviceExternalLinks.id });
-      linkCreated = created.length > 0;
+      // For a restricted-reach caller, collapse "inserted" and "conflicted"
+      // to the same answer — see the comment on `restrictedReach` above. The
+      // conflict itself is real (the row genuinely was not (re)written), but
+      // WHY it conflicted — this device's own prior link vs. a sibling org's
+      // — is exactly the bit that must not reach the response.
+      linkCreated = restrictedReach ? true : created.length > 0;
     }
 
     const warranty = hasWarranty

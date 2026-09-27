@@ -17,6 +17,7 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
+import { EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
 import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
 import {
   decodeSiteScope,
@@ -214,7 +215,11 @@ complianceRoutes.get(
       complianceConditions.push(eq(patches.source, query.source));
     }
     if (query.severity) {
-      complianceConditions.push(eq(patches.severity, query.severity));
+      // Effective severity: the shared, trusted classification when known,
+      // else this device's own reported severity — see
+      // services/patchSeverityOverlay.ts. Rows here are already scoped to
+      // deviceIds (this request's org/partner), so this stays tenant-safe.
+      complianceConditions.push(sql`${EFFECTIVE_PATCH_SEVERITY_SQL} = ${query.severity}`);
     }
 
     const approvalRingScope = query.ringId
@@ -296,8 +301,8 @@ complianceRoutes.get(
                 : sql`true`
             })`
           : sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
-        criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical')`,
-        importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'important')`,
+        criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical')`,
+        importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
         thirdPartyMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('third_party', 'custom'))`,
         lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt}::timestamptz::text end)`,
@@ -320,7 +325,7 @@ complianceRoutes.get(
       .where(and(...complianceConditions))
       .groupBy(devicePatches.deviceId, devices.hostname, devices.osType, devices.lastSeenAt)
       .having(sql`count(*) filter (where ${isOutstanding}) > 0`)
-      .orderBy(sql`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical') desc`);
+      .orderBy(sql`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical') desc`);
 
     const devicesNeedingPatches = deviceBreakdown.map(row => ({
       id: row.deviceId,
@@ -344,14 +349,14 @@ complianceRoutes.get(
     // 'missing' tombstones must not be counted as pending here either.
     const severityCounts = await db
       .select({
-        severity: patches.severity,
+        severity: EFFECTIVE_PATCH_SEVERITY_SQL,
         installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`,
         outstanding: sql<number>`count(*) filter (where ${isOutstanding})`
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
       .where(and(...complianceConditions))
-      .groupBy(patches.severity);
+      .groupBy(EFFECTIVE_PATCH_SEVERITY_SQL);
 
     const severityMap: Record<string, { total: number; patched: number; pending: number }> = {};
     for (const row of severityCounts) {

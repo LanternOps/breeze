@@ -20,6 +20,7 @@ import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { breezeRegion } from '../config/env';
 import { emitRunProgress } from './aiAgents/runProgress';
 import { DATASET_ADAPTERS, EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasets';
+import { SensitiveEventLogAccessError } from './eventLogSensitivity';
 import {
   buildExportStream, ExportCapError,
   EXPORT_DEFAULT_MAX_ROWS, EXPORT_HARD_MAX_ROWS, EXPORT_WALL_MS, EXPORT_DEFAULT_MAX_BYTES,
@@ -200,6 +201,12 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({
             error: error.code,
             message: 'The export exceeded this run\'s artifact byte budget. Narrow the filters or the device set and try again.',
+          });
+        }
+        if (error instanceof SensitiveEventLogAccessError) {
+          return JSON.stringify({
+            error: 'sensitive_category_forbidden',
+            message: error.message,
           });
         }
         // sanitizeThrownToolError already logs the raw message/stack plus this

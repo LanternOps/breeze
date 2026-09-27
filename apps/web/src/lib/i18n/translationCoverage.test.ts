@@ -56,13 +56,8 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
-    // payment pull-back, Phase D) — the badge value IS the proper noun, and
-    // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
-    // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 61, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 59, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.manual "Manual" are
     // identical cognates in pt-BR.
@@ -90,6 +85,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 177,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
+    // AGENT_COMMAND_REJECTED) translated too — still 0 cognates.
     'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
@@ -211,11 +208,8 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
-    // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 47, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; source.manual "Manual" is an identical cognate in es-419.
     'checklists.json': 2,
@@ -247,7 +241,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -358,13 +354,8 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
-    // payment pull-back, Phase D) — the badge value IS the proper noun, and
-    // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
-    // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -402,7 +393,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -530,13 +523,8 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
-    // payment pull-back, Phase D) — the badge value IS the proper noun, and
-    // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
-    // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -574,7 +562,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -712,11 +702,8 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
-    // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
-    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.name — "Name" is also the German word.
     'checklists.json': 2,
@@ -762,7 +749,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -870,10 +859,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
-    // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 38, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
     // are the same loanwords deliverables.json already keeps untranslated in it-IT.
@@ -898,7 +884,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -995,10 +983,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
-    // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 23, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
@@ -1017,7 +1002,9 @@ const namespaceDuplicateBaselines = {
     // native review, so all 9 codes are exact-English cognates for now.
     // +2 (Part of #3859, Wave E2a): AGENT_EXECUTION_FAILED and DEVICE_UNREACHABLE
     // added as English placeholders, same as the rest of this namespace.
-    'errors.json': 11,
+    // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
+    // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
+    'errors.json': 16,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder

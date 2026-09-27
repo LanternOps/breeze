@@ -86,10 +86,22 @@ describe('seeded Org Technician is not the ceiling for backup/vault/report tools
     expect(allows(parseGrants(['organizations:write']), 'configure_vault')).toBe(true);
   });
 
+  // query_backups is a per-action map — list_jobs mirrors
+  // routes/backup/jobs.ts:61 (organizations:read), list_configs mirrors
+  // routes/backup/configs.ts:232 (backup:read, a permission Org Technician
+  // also lacks).
+  it('query_backups list_jobs is denied to Org Technician and allowed only with organizations:read', () => {
+    expect(allows(ORG_TECHNICIAN, 'query_backups', { action: 'list_jobs' })).toBe(false);
+    expect(allows(parseGrants(['organizations:read']), 'query_backups', { action: 'list_jobs' })).toBe(true);
+  });
+  it('query_backups list_configs is denied to Org Technician and allowed only with backup:read', () => {
+    expect(allows(ORG_TECHNICIAN, 'query_backups', { action: 'list_configs' })).toBe(false);
+    expect(allows(parseGrants(['backup:read']), 'query_backups', { action: 'list_configs' })).toBe(true);
+  });
+
   // §2.5 — backup / hyperv / mssql reads.
   it.each([
     // tool, the route's permission, route evidence
-    ['query_backups', 'organizations:read'], // routes/backup/jobs.ts:61
     ['browse_snapshots', 'backup:read'], // routes/backup/snapshots.ts:273
     ['get_vm_restore_estimate', 'backup:read'], // routes/backup/vmrestore.ts:501
     ['query_hyperv_vms', 'organizations:read'], // routes/backup/hyperv.ts:52
@@ -150,5 +162,47 @@ describe('registry_operations reads are agent executions, not device reads (§2.
     expect(allows(readOnly, 'file_operations', { action: 'list' })).toBe(false);
     expect(allows(readOnly, 'file_operations', { action: 'read' })).toBe(false);
     expect(allows(readOnly, 'registry_operations', { action: 'read_key' })).toBe(false);
+  });
+});
+
+// These four tools require the same permission as the HTTP route they mirror.
+// Each pair below is asserted in BOTH directions: the previous tool grant
+// alone is refused, and the route's grant is allowed.
+describe('manage_quotes decline requires quotes:accept, like routes/quotes/lifecycle.ts decline-on-behalf', () => {
+  it('a role with quotes:write but not quotes:accept loses AI decline', () => {
+    expect(allows(parseGrants(['quotes:write']), 'manage_quotes', { action: 'decline' })).toBe(false);
+  });
+  it('a role with quotes:accept is allowed', () => {
+    expect(allows(parseGrants(['quotes:accept']), 'manage_quotes', { action: 'decline' })).toBe(true);
+  });
+});
+
+describe('manage_quotes create_pay_link requires invoices:send (+ quotes:read), like POST /invoices/:id/pay-link', () => {
+  it('quotes:write without invoices:send loses AI quote pay links', () => {
+    expect(allows(parseGrants(['quotes:write']), 'manage_quotes', { action: 'create_pay_link' })).toBe(false);
+  });
+  it('invoices:send alone is not enough — quotes:read is also required (an extra, not the route grant itself)', () => {
+    expect(allows(parseGrants(['invoices:send']), 'manage_quotes', { action: 'create_pay_link' })).toBe(false);
+  });
+  it('invoices:send + quotes:read is allowed', () => {
+    expect(allows(parseGrants(['invoices:send', 'quotes:read']), 'manage_quotes', { action: 'create_pay_link' })).toBe(true);
+  });
+});
+
+describe('manage_catalog archive_item requires catalog:delete, like POST /catalog/items/:id/archive', () => {
+  it('catalog:write without catalog:delete loses AI archive', () => {
+    expect(allows(parseGrants(['catalog:write']), 'manage_catalog', { action: 'archive_item' })).toBe(false);
+  });
+  it('catalog:delete is allowed', () => {
+    expect(allows(parseGrants(['catalog:delete']), 'manage_catalog', { action: 'archive_item' })).toBe(true);
+  });
+});
+
+describe('test_webhook requires organizations:write, like POST /webhooks/:id/test', () => {
+  it('devices:write without organizations:write loses the AI webhook test', () => {
+    expect(allows(parseGrants(['devices:write']), 'test_webhook')).toBe(false);
+  });
+  it('organizations:write is allowed', () => {
+    expect(allows(parseGrants(['organizations:write']), 'test_webhook')).toBe(true);
   });
 });

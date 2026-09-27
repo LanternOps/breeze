@@ -47,7 +47,9 @@ async function createFixture(): Promise<Fixture> {
     await createPamDecisionIntent(tx, {
       request: {
         id: fixture.requestId, orgId: fixture.orgId, deviceId: fixture.deviceId,
-        targetExecutablePath: 'C:\\Fixture\\fixture.exe', targetExecutableHash: null,
+        // A path-targeting decision with no verifiable hash is refused before
+        // any actuation is created; the fixture needs a pinned target.
+        targetExecutablePath: 'C:\\Fixture\\fixture.exe', targetExecutableHash: 'a'.repeat(64),
         subjectUsername: 'fixture-user',
       },
       requestRevision: 1,

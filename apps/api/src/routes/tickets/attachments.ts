@@ -247,9 +247,19 @@ ticketAttachmentRoutes.post(
     // ticket suite's module graph and breaks the ones whose partial
     // `vi.mock('../../db/schema')` factories do not declare it. Same reason
     // `ticketAttachmentStorage.openBytes` defers it.
-    const { resolveArtifact } = await import('../../services/artifacts/artifactService');
-    const artifact = await resolveArtifact(handle, { orgId: ticket.orgId });
-    if (!artifact) {
+    //
+    // OBJECT-LEVEL check (not a coarse permission): `findArtifactForAuth` is
+    // the SAME authorization helper the canonical `GET /ai/artifacts/:id`
+    // route uses — it proves the CALLER may read this specific artifact under
+    // their own org-axis scoping, without requiring `ai_agents:read` as a
+    // standing grant (seeded technician roles hold `tickets:write` without
+    // it). That alone is not sufficient: a partner-scope caller can read
+    // artifacts across many orgs, so the artifact must ALSO belong to the
+    // TICKET's own org — never the caller's — or a sibling org's file could
+    // land on this customer's ticket.
+    const { findArtifactForAuth } = await import('../../services/artifacts/artifactService');
+    const artifact = await findArtifactForAuth(handle, auth);
+    if (!artifact || artifact.orgId !== ticket.orgId) {
       return fail(c, 404, 'ARTIFACT_NOT_FOUND', 'No such artifact is available to this organization');
     }
 

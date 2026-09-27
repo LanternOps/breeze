@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
-  auth: { current: null as any }, permission: { current: 'read,write' },
+  auth: { current: null as any }, permission: { current: 'read,write' }, mfaSatisfied: { current: true },
   selectOrg: vi.fn(), partnerMemberMayReachOrg: vi.fn(),
   getOrgAssignment: vi.fn(), assignProfileToOrg: vi.fn(), clearOrgAssignment: vi.fn(), writeRouteAudit: vi.fn(),
 }));
@@ -17,6 +17,8 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: (resource: string, action: string) => async (c: any, next: any) =>
     resource === 'billing_profiles' && mocks.permission.current.split(',').includes(action)
       ? next() : c.json({ error: 'Forbidden' }, 403),
+  requireMfa: () => async (c: any, next: any) =>
+    mocks.mfaSatisfied.current ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403),
 }));
 vi.mock('../db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: mocks.selectOrg })) })) })) },
@@ -59,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.current = { scope: 'partner', partnerId, partnerOrgAccess: 'all', user: { id: userId }, canAccessOrg: () => true };
   mocks.permission.current = 'read,write';
+  mocks.mfaSatisfied.current = true;
   mocks.selectOrg.mockResolvedValue([{ id: orgId, partnerId }]);
   mocks.partnerMemberMayReachOrg.mockResolvedValue(true);
   mocks.getOrgAssignment.mockResolvedValue(assignment);
@@ -94,6 +97,19 @@ describe('organization billing profile assignment', () => {
     mocks.auth.current.scope = 'organization';
     expect((await request(method, method === 'PUT' ? { billingProfileId: profileId } : undefined)).status).toBe(403);
     expect(mocks.getOrgAssignment).not.toHaveBeenCalled();
+  });
+  it.each(['PUT', 'DELETE'])('%s is 403 without a fresh-MFA session, before any DB read', async (method) => {
+    mocks.mfaSatisfied.current = false;
+    const res = await request(method, method === 'PUT' ? { billingProfileId: profileId } : undefined);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    expect(mocks.selectOrg).not.toHaveBeenCalled();
+    expect(mocks.assignProfileToOrg).not.toHaveBeenCalled();
+    expect(mocks.clearOrgAssignment).not.toHaveBeenCalled();
+  });
+  it('GET is unaffected by a non-MFA-satisfied session', async () => {
+    mocks.mfaSatisfied.current = false;
+    expect((await request('GET')).status).toBe(200);
   });
   it.each(['GET', 'PUT', 'DELETE'])('%s denies unauthenticated requests', async (method) => {
     mocks.auth.current = null;

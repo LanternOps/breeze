@@ -22,6 +22,7 @@ import {
 } from './featureConfigResolver';
 import { isManagedAutomation } from './aiAgents/managedAutomation';
 import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
+import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
@@ -1209,6 +1210,21 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
   }
 
   if (targets.groupIds && targets.groupIds.length > 0) {
+    // Field-provenance tiering — this resolver feeds
+    // `triggerRemediationAutomation` (dispatches an automation run for every
+    // non-compliant device in the target set), always execution-bearing. A
+    // device that self-selected into a group via an agent-reported filter
+    // field must not be able to steer itself into (or out of) automatic
+    // remediation, so refused groups are dropped before membership is
+    // resolved — same gate as the deployment-target resolver, update-ring
+    // expansion, patch scheduling and automation scheduling.
+    const { allowedGroupIds, refusedGroups } = await resolveExecutionSafeGroupIds(targets.groupIds);
+    if (refusedGroups.length > 0) {
+      auditRefusedExecutionGroups(policy.orgId, 'policy_evaluation.execution_target_refused_agent_reported_fields', refusedGroups);
+    }
+    if (allowedGroupIds.length === 0) {
+      return [];
+    }
     return db
       .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
@@ -1216,7 +1232,7 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
       .where(
         and(
           scopeCondition,
-          inArray(deviceGroupMemberships.groupId, targets.groupIds)
+          inArray(deviceGroupMemberships.groupId, allowedGroupIds)
         )
       );
   }
@@ -2024,6 +2040,18 @@ async function resolveDevicesForAssignmentTarget(
       return [targetId];
     }
     case 'device_group': {
+      // Field-provenance tiering — this resolver feeds
+      // `scanAndEvaluateConfigPolicyCompliance`, which triggers the same
+      // remediation-automation dispatch on a non-compliant match. Gate
+      // before resolving membership, same as the auto-remediation policy
+      // groupIds branch above and the sibling execution paths elsewhere.
+      const { allowedGroupIds, refusedGroups } = await resolveExecutionSafeGroupIds([targetId]);
+      if (refusedGroups.length > 0) {
+        auditRefusedExecutionGroups(null, 'policy_evaluation.execution_target_refused_agent_reported_fields', refusedGroups);
+      }
+      if (allowedGroupIds.length === 0) {
+        return [];
+      }
       const rows = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
@@ -2155,3 +2183,5 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
 // convention as __evaluateRulesForDevice above.
 export const __triggerRemediationAutomation = triggerRemediationAutomation;
 export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;
+export const __resolveTargetDevices = resolveTargetDevices;
+export const __resolveDevicesForAssignmentTarget = resolveDevicesForAssignmentTarget;

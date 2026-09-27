@@ -112,6 +112,14 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: () => '203.0.113.7',
 }));
 
+// Default ON so the rest of this suite (written before the PAM-enablement
+// gate existed) doesn't have to know about it; tests exercising the gate
+// itself override with mockResolvedValueOnce.
+const pamConfigMocks = vi.hoisted(() => ({
+  buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: true })),
+}));
+vi.mock('./helpers', () => pamConfigMocks);
+
 import { db, withDbAccessContext } from '../../db';
 import { elevationRequestsRoutes } from './elevationRequests';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -408,6 +416,39 @@ describe('agent elevation-requests ingestion route', () => {
       60,
     );
   });
+
+  it('refuses ingest with no insert/fan-out when PAM/UAC interception is disabled for the device', async () => {
+    pamConfigMocks.buildPamConfigUpdate.mockResolvedValueOnce({ uacInterceptionEnabled: false });
+    const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const app = buildApp();
+    const response = await app.request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goodPayload),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ id: null, status: 'ignored' });
+    expect(values).not.toHaveBeenCalled();
+    expect(bridgeMocks.resolveElevationApprovers).not.toHaveBeenCalled();
+    expect(pamConfigMocks.buildPamConfigUpdate).toHaveBeenCalledWith('device-1');
+  });
+
+  it('proceeds with normal decisioning when PAM/UAC interception is enabled', async () => {
+    pamConfigMocks.buildPamConfigUpdate.mockResolvedValueOnce({ uacInterceptionEnabled: true });
+    happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const app = buildApp();
+    const response = await app.request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goodPayload),
+    });
+
+    expect(response.status).toBe(201);
+  });
 });
 
 describe('ingest decisioning (#1163)', () => {
@@ -485,6 +526,28 @@ describe('ingest decisioning (#1163)', () => {
       expect.objectContaining({ softwarePolicyId: 'pol-2' }),
       'pam-ingest',
     );
+  });
+
+  it('a decision intent refused for an unverifiable target hash surfaces as denied + refused, not a silent 500 or a false "auto_approved"', async () => {
+    pamMocks.evaluatePamBridge.mockResolvedValue({
+      match: 'allowlist',
+      policyId: 'pol-2',
+      auditMatches: [],
+    });
+    lifecycleMocks.createPamDecisionIntent.mockResolvedValueOnce({
+      actuationId: '',
+      elevationRequestId: 'req-refused',
+      requestRevision: 1,
+      generation: 0,
+      desiredState: 'cleanup',
+      refusalReason: 'Target identity could not be verified on the device; re-request elevation.',
+    });
+    happyPathInsert([{ id: 'req-refused', status: 'auto_approved' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body).toEqual({ id: 'req-refused', status: 'denied', enforcementStatus: 'refused' });
   });
 
   it('pam rule auto_deny (real engine) -> denied with rule metadata', async () => {

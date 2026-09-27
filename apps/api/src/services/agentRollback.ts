@@ -48,6 +48,52 @@ function normalizedStableVersion(version: string): string | null {
   return normalized && prerelease(normalized) === null ? normalized : null;
 }
 
+// As the recommended default: each rollback hop is individually MFA'd and audited,
+// but nothing before this checked whether the resolved target is a version
+// flagged as unsafe to run, or how far behind current it is. Signature
+// verification (releaseIsVerified) answers "is this genuinely a Breeze
+// release," not "is this release safe to run." Both knobs default to unset
+// (no-op): populating them is a product/security decision about which
+// releases to list and where to draw the floor, not something to guess at
+// here. The heightened-approval-when-far-behind half of the recommended
+// default is NOT implemented — it needs its own approval-tier design and is
+// left for that follow-up decision.
+function getAgentRollbackDenylistedVersions(): ReadonlySet<string> {
+  const raw = process.env.AGENT_ROLLBACK_DENYLISTED_VERSIONS;
+  if (!raw) return EMPTY_VERSION_SET;
+  const out = new Set<string>();
+  for (const part of raw.split(',')) {
+    const normalized = valid(part.trim());
+    if (normalized) out.add(normalized);
+  }
+  return out;
+}
+const EMPTY_VERSION_SET: ReadonlySet<string> = new Set();
+
+function getAgentRollbackMinimumVersion(): string | null {
+  const raw = process.env.AGENT_ROLLBACK_MIN_VERSION?.trim();
+  if (!raw) return null;
+  // A malformed configured floor must not turn into "refuse every rollback" —
+  // that would be a self-inflicted denial-of-service on an already-narrow
+  // emergency path. Treat it the same as unset and let the operator's env
+  // validation catch the typo separately.
+  return valid(raw);
+}
+
+function assertRollbackTargetAllowed(version: string): void {
+  if (getAgentRollbackDenylistedVersions().has(version)) {
+    throw new AgentRollbackValidationError(
+      `rollback target ${version} is on the configured rollback denylist (release flagged unsafe to run)`,
+    );
+  }
+  const floor = getAgentRollbackMinimumVersion();
+  if (floor && lt(version, floor)) {
+    throw new AgentRollbackValidationError(
+      `rollback target ${version} is below the configured minimum rollback version ${floor}`,
+    );
+  }
+}
+
 export function selectImmediateStableRollbackTarget(input: {
   currentVersion: string;
   platform: string;
@@ -82,6 +128,7 @@ export function selectImmediateStableRollbackTarget(input: {
   if (duplicates.length !== 1) {
     throw new AgentRollbackValidationError(`ambiguous rollback target registration for ${selectedVersion}`);
   }
+  assertRollbackTargetAllowed(selectedVersion);
   return candidates[0]!;
 }
 

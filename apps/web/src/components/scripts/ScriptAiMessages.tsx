@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, Wrench, Check, X, Loader2 } from 'lucide-react';
 import { useScriptAiStore, type ScriptAiMessage } from '@/stores/scriptAiStore';
+import { SafeMarkdownImage } from '@/lib/safeMarkdownImage';
 
 type ScriptsT = TFunction<'scripts'>;
 
@@ -61,6 +62,9 @@ function MessageBubble({ message, t }: { message: ScriptAiMessage; t: ScriptsT }
                     {children}
                   </a>
                 ),
+                // AI-authored markdown images must never auto-load — see
+                // safeMarkdownImage.tsx for why.
+                img: ({ src, alt }) => <SafeMarkdownImage src={src} alt={alt} />,
               }}
             >
               {message.content}

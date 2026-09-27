@@ -16,6 +16,14 @@ export const partnerSendingDomains = pgTable('partner_sending_domains', {
   provider: varchar('provider', { length: 20 }).$type<'resend' | 'ses' | 'static' | 'fake'>().notNull(),
   providerDomainId: text('provider_domain_id'),
   providerManaged: boolean('provider_managed').notNull().default(true),
+  /**
+   * Self-service DNS-TXT ownership proof for adopting a pre-existing
+   * provider object (services/emailDomains/dnsOwnershipProof.ts). Issued once
+   * at row creation; the partner publishes it at `_breeze-verify.<domain>`.
+   * Never rotated — `domain` already carries a global unique index, so the
+   * token is effectively per (partner, domain) via the row itself.
+   */
+  ownershipVerifyToken: varchar('ownership_verify_token', { length: 64 }),
   provisionAttemptedAt: timestamp('provision_attempted_at', { withTimezone: true }),
   providerRegion: varchar('provider_region', { length: 32 }),
   status: varchar('status', { length: 20 })

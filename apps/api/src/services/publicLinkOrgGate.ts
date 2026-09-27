@@ -20,6 +20,17 @@
  * already been re-tenanted onto the survivor, so `resolveQuoteLinkOrgGate`
  * resolves the survivor through the same merged-org id set the routes use for
  * every other lookup, and an active survivor keeps the link working.
+ *
+ * The gate ALSO joins the owning partner's status. Partner suspension
+ * (`suspendPartnerForAbuse`, `revokePartnerTenantAccess`) tears down partner
+ * credentials exhaustively but never writes `organizations.status` for the
+ * partner's orgs — this surface carries no bearer credential, so it is the
+ * one entry point `partnerGuard` structurally cannot reach. Without this
+ * join, a partner suspended for abuse mid-investigation keeps collecting on
+ * every already-issued invoice/quote link. The bar is strict `'active'`, the
+ * same as `getActivePartner`/`partnerGuard` — not the wider session-allowed
+ * set (`pending` may authenticate to see a billing screen, but must not keep
+ * transacting through an unauthenticated public link).
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import {
@@ -28,7 +39,7 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
-import { organizations } from '../db/schema';
+import { organizations, partners } from '../db/schema';
 import { quotes } from '../db/schema/quotes';
 
 /**
@@ -43,6 +54,13 @@ import { quotes } from '../db/schema/quotes';
  */
 export const PUBLIC_LINK_LIVE_ORG_STATUSES = ['active', 'trial'] as const;
 
+/**
+ * Partner statuses whose orgs' public links keep working. Strict — the same
+ * single status `getActivePartner` and `partnerGuard` require, not the wider
+ * `pending`-inclusive set that governs authenticated *session* establishment.
+ */
+export const PUBLIC_LINK_LIVE_PARTNER_STATUSES = ['active'] as const;
+
 /** The single 410 body every public route returns for a non-live tenant. */
 export const PUBLIC_LINK_ORG_UNAVAILABLE = {
   error: 'This link is no longer available',
@@ -53,11 +71,14 @@ export interface PublicLinkOrgGate {
   /** The org that currently owns the linked row, or null when nothing matched. */
   orgId: string | null;
   status: string | null;
+  /** The owning partner's status, or null when nothing matched. */
+  partnerStatus: string | null;
   /**
-   * True ONLY when a row WAS found and its owning org is not link-live. A
-   * missing row leaves the gate open so the handler's own 401/404 keeps
-   * owning "this link resolves to nothing" — the gate must never turn a
-   * not-found into an existence oracle with a different status code.
+   * True ONLY when a row WAS found and either its owning org is not link-live
+   * or its owning partner is not link-live. A missing row leaves the gate
+   * open so the handler's own 401/404 keeps owning "this link resolves to
+   * nothing" — the gate never answers a not-found with a different status
+   * code.
    */
   blocked: boolean;
 }
@@ -66,15 +87,26 @@ export function isPublicLinkOrgStatusLive(status: string | null | undefined): bo
   return (PUBLIC_LINK_LIVE_ORG_STATUSES as readonly string[]).includes(status ?? '');
 }
 
+export function isPublicLinkPartnerStatusLive(status: string | null | undefined): boolean {
+  return (PUBLIC_LINK_LIVE_PARTNER_STATUSES as readonly string[]).includes(status ?? '');
+}
+
 /** Gate for "no row resolved" — see `blocked` above. */
 export const PUBLIC_LINK_ORG_GATE_OPEN: PublicLinkOrgGate = {
   orgId: null,
   status: null,
+  partnerStatus: null,
   blocked: false,
 };
 
-function toGate(orgId: string | null, status: string | null): PublicLinkOrgGate {
-  return { orgId, status, blocked: orgId !== null && !isPublicLinkOrgStatusLive(status) };
+function toGate(
+  orgId: string | null,
+  status: string | null,
+  partnerStatus: string | null,
+): PublicLinkOrgGate {
+  const blocked =
+    orgId !== null && (!isPublicLinkOrgStatusLive(status) || !isPublicLinkPartnerStatusLive(partnerStatus));
+  return { orgId, status, partnerStatus, blocked };
 }
 
 /**
@@ -104,23 +136,25 @@ export async function resolveQuoteLinkOrgGate(
   if (orgIds.length === 0) return PUBLIC_LINK_ORG_GATE_OPEN;
   const [row] = await readAsSystem(() =>
     db
-      .select({ orgId: organizations.id, status: organizations.status })
+      .select({ orgId: organizations.id, status: organizations.status, partnerStatus: partners.status })
       .from(quotes)
       .innerJoin(organizations, eq(organizations.id, quotes.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(and(eq(quotes.id, quoteId), inArray(quotes.orgId, orgIds)))
       .limit(1),
   );
-  return toGate(row?.orgId ?? null, row?.status ?? null);
+  return toGate(row?.orgId ?? null, row?.status ?? null, row?.partnerStatus ?? null);
 }
 
 /** Gate for a row whose owning org id the caller already resolved. */
 export async function resolveOrgLinkGate(orgId: string): Promise<PublicLinkOrgGate> {
   const [row] = await readAsSystem(() =>
     db
-      .select({ id: organizations.id, status: organizations.status })
+      .select({ id: organizations.id, status: organizations.status, partnerStatus: partners.status })
       .from(organizations)
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(eq(organizations.id, orgId))
       .limit(1),
   );
-  return toGate(row?.id ?? null, row?.status ?? null);
+  return toGate(row?.id ?? null, row?.status ?? null, row?.partnerStatus ?? null);
 }

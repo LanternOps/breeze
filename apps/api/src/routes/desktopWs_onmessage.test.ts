@@ -85,6 +85,7 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('./remote/helpers', () => ({
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
+  buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
 }));
 
 vi.mock('../services/clientIp', () => ({

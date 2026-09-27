@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/securefs"
 	"github.com/spf13/cobra"
 )
 
 const (
-	watchdogBinaryPath = "/usr/local/bin/breeze-watchdog"
+	watchdogBinaryPath = securefs.TrustedExecutableDir + "/breeze-watchdog"
 	watchdogPlistDst   = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
 	watchdogLabel      = "com.breeze.watchdog"
 )
@@ -27,7 +28,7 @@ const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-watchdog</string>
+        <string>/Library/Breeze/bin/breeze-watchdog</string>
         <string>run</string>
     </array>
 
@@ -79,6 +80,18 @@ func serviceInstallCmd() *cobra.Command {
 				return fmt.Errorf("failed to create %s: %w", logDir, err)
 			}
 
+			// The binary directory must be root-owned and not group/other
+			// writable — see securefs.VerifyTrustedExecutableOwner, run at
+			// every privileged startup. EnsureTrustedDirChain walks every
+			// component under /Library with a symlink-refusing check instead
+			// of blindly creating/chowning through whatever is already
+			// there — /Library itself is admin-group-writable, so a
+			// pre-planted symlink or a foreign-owned directory must be
+			// refused, not followed.
+			if err := securefs.EnsureTrustedDirChain(securefs.TrustedExecutableDirRoot, securefs.TrustedExecutableDir, 0, 0, 0755); err != nil {
+				return fmt.Errorf("failed to secure %s: %w", securefs.TrustedExecutableDir, err)
+			}
+
 			// Stop existing service before replacing binary.
 			if _, err := os.Stat(watchdogPlistDst); err == nil {
 				if stopErr := exec.Command("launchctl", "unload", watchdogPlistDst).Run(); stopErr != nil {
@@ -88,7 +101,7 @@ func serviceInstallCmd() *cobra.Command {
 				}
 			}
 
-			// Copy current binary to /usr/local/bin/.
+			// Copy current binary to the trusted binary directory.
 			exePath, err := os.Executable()
 			if err != nil {
 				return fmt.Errorf("failed to determine executable path: %w", err)

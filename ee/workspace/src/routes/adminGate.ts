@@ -22,7 +22,7 @@ export type WorkspaceRouteEnv = {
   };
 };
 
-const WORKSPACE_RESOURCE = 'workspace';
+export const WORKSPACE_RESOURCE = 'workspace';
 
 function requiredPermissions(method: string, path: string): Array<[string, string]> {
   if (method === 'GET' || method === 'HEAD') {

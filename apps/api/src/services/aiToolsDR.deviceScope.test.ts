@@ -133,8 +133,11 @@ describe('manage_dr_plan add_group — stored-device scope', () => {
   });
 
   it('attaches when the plan only reaches the run\'s own device', async () => {
+    // The {id, siteId} device read serves both the org partition scan and
+    // add_group's proposed-device check, which expects exactly the
+    // submitted ids back — so the org holds only the run's own device here.
     mockReads({
-      orgDevices: [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }],
+      orgDevices: [{ id: 'dev-1', siteId: 'site-1' }],
       storedGroups: [{ devices: ['dev-1'] }],
     });
     const out = JSON.parse(await handlerFor('manage_dr_plan')(

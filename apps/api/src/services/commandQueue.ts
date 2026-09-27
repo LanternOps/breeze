@@ -10,10 +10,12 @@ import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { captureException, captureMessage } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
+import { randomUUID } from 'node:crypto';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { refreshClaimedPayloadForPush } from './commandDelivery';
 import { commandAuditDetails } from './commandAudit';
 import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
@@ -28,6 +30,8 @@ import { dispatchDeviceCommand, dispatchDeviceCommandWithSystemPrecheck } from '
 import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
+  needsStorageDestinationSeal,
+  sealStorageCredentialsForPersistence,
   terminalPayloadErasureSet,
   toAgentCommandFrame,
 } from './sensitiveCommandPayload';
@@ -553,6 +557,29 @@ export async function resolveCommandCreatedBy(
 }
 
 /**
+ * The payload as it may be written to `device_commands`, plus the command id
+ * to insert with. Only a payload carrying an inline storage destination is
+ * changed (sealed — see `sealStorageCredentialsForPersistence`), and only then
+ * is an id reserved; everything else keeps the column default exactly as
+ * before.
+ */
+function persistableCommandPayload(
+  deviceId: string,
+  type: string,
+  payload: CommandPayload,
+  reservedCommandId: string | undefined,
+): { commandId: string | undefined; payload: CommandPayload } {
+  if (!needsStorageDestinationSeal(type, payload)) {
+    return { commandId: reservedCommandId, payload };
+  }
+  const commandId = reservedCommandId ?? randomUUID();
+  return {
+    commandId,
+    payload: sealStorageCredentialsForPersistence(type, payload, { commandId, deviceId }),
+  };
+}
+
+/**
  * Queue a command for execution on a device
  */
 export async function queueCommand(
@@ -606,6 +633,11 @@ export async function queueCommand(
   // `users` row, which would fail the created_by FK with 23503 (#3978).
   const safeUserId = await resolveCommandCreatedBy(deviceId, userId, options.aiOrigin);
 
+  // An inline storage destination is never persisted in plaintext: it is
+  // sealed under an AAD bound to this command's id, so the id is reserved
+  // here when the caller did not reserve one.
+  const persisted = persistableCommandPayload(deviceId, type, payload, options.commandId);
+
   // Insert under a system context (device_commands has no RLS, but a bare-pool
   // write with no access context trips the #1375 contextless-write guard, which
   // CI runs in strict mode). BullMQ workers and other background callers reach
@@ -616,10 +648,10 @@ export async function queueCommand(
     db
       .insert(deviceCommands)
       .values({
-        ...(options.commandId ? { id: options.commandId } : {}),
+        ...(persisted.commandId ? { id: persisted.commandId } : {}),
         deviceId,
         type,
-        payload,
+        payload: persisted.payload,
         status: 'pending',
         createdBy: safeUserId,
         ...(options.deliverBy ? { deliverBy: options.deliverBy } : {}),
@@ -721,7 +753,7 @@ export async function queueCommand(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname,
-          details: commandAuditDetails(commandId, type, payload),
+          details: commandAuditDetails(commandId, type, persisted.payload),
           // Dispatch-time row: the agent hasn't reported back yet, so this
           // cannot claim 'success' (#4225). A completion-time audit event
           // DOES exist (action: 'agent.command.result.submit', written in
@@ -794,7 +826,13 @@ export async function waitForCommandResult(
         completedAt,
         result: {
           status: 'timeout',
-          error: `Command timed out after ${timeoutMs}ms`
+          error: `Command timed out after ${timeoutMs}ms`,
+          // Required by commandAcceptsAgentResultCondition to distinguish
+          // this server-written marker from an agent-reported `status:
+          // 'timeout'` (buildStoredCommandResult never copies this key from
+          // the agent's payload). Matches the other two server-side timeout
+          // writers (staleCommandReaper.ts, verificationScheduled.ts).
+          timedOutBy: 'server',
         },
         ...terminalPayloadErasureSet(),
       })
@@ -1315,6 +1353,8 @@ async function dispatchPreparedCommand(
       ? { ...(payload as Record<string, unknown>), timeoutSeconds: Math.ceil(timeoutMs / 1000) }
       : payload;
 
+    const persisted = persistableCommandPayload(deviceId, type, payloadWithBudget, options.commandId);
+
     // Insert command (device_commands — no RLS, but establish a system context
     // so it isn't a contextless bare-pool write under runOutsideDbContext, #1375).
     const [command] = await withSystemDbAccessContext(() =>
@@ -1323,8 +1363,8 @@ async function dispatchPreparedCommand(
         .values({
           deviceId,
           type,
-          payload: payloadWithBudget,
-          ...(options.commandId ? { id: options.commandId } : {}),
+          payload: persisted.payload,
+          ...(persisted.commandId ? { id: persisted.commandId } : {}),
           status: 'pending',
           createdBy: safeUserId,
           targetRole,
@@ -1381,7 +1421,7 @@ async function dispatchPreparedCommand(
               resourceType: 'device',
               resourceId: deviceId,
               resourceName: device.hostname,
-              details: commandAuditDetails(command.id, type, payload),
+              details: commandAuditDetails(command.id, type, persisted.payload),
               // Dispatch-time row: the agent hasn't reported back yet, so
               // this cannot claim 'success' (#4225).
               result: 'dispatched',
@@ -1409,9 +1449,29 @@ async function dispatchPreparedCommand(
     if (device.agentId && dispatchViaWs) {
       const claimed = await claimPendingCommandForDelivery(command.id);
       if (claimed) {
-        // Decrypt once up-front; null means the payload can't be decrypted, so
-        // there's nothing deliverable to retry — skip the send loop and release.
-        const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
+        // Same late-binding preparation as the heartbeat claim and the
+        // enqueue-time push: the registered refresher runs FIRST (it resolves
+        // anything the row stores only by reference, e.g. a storage
+        // destination), then decryption. The refresher sees the stored
+        // payload — the reference, never an inline credential.
+        const refreshed = await refreshClaimedPayloadForPush(
+          type,
+          payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>)
+            : {},
+          { commandId: command.id, deviceId, type, claimedAt: claimed.executedAt },
+        );
+        if (!refreshed.ok && refreshed.refusal !== null) {
+          // Refused: the row is already expired (the reaper reports it), and
+          // no retry can succeed — fail now instead of burning `timeoutMs`.
+          return { status: 'failed' as const, error: refreshed.refusal, commandId: command.id };
+        }
+        // Decrypt once up-front; null means the payload can't be refreshed or
+        // decrypted, so there's nothing deliverable to retry — skip the send
+        // loop and release.
+        const delivered = refreshed.ok
+          ? decryptCommandForDelivery({ id: command.id, type, deviceId, payload: refreshed.payload })
+          : null;
         let sent = false;
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
           sent = sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered));

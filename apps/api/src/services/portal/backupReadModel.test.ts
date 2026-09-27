@@ -235,6 +235,36 @@ it('serializes raw-SQL timestamps that postgres-js returns as strings', async ()
   });
 });
 
+it('marks a completed_with_errors restore point as degraded (#5396)', async () => {
+  state.rows.push(
+    [{ count: 1 }],
+    [{
+      id: 'd-1',
+      hostname: 'Laptop',
+      displayName: null,
+      configured: true,
+      lastBackupAt: '2026-09-02 09:00:00+00',
+      lastBackupStatus: 'completed_with_errors',
+      testRestoreStatus: null,
+      testRestoreAt: null,
+      restoreTimeSeconds: null,
+      openBreaches: [],
+      readinessScore: null,
+      estimatedRtoMinutes: null,
+      estimatedRpoMinutes: null,
+    }],
+  );
+
+  const page = await backupDevicesPage(ORG_ID, {
+    page: 1,
+    limit: 25,
+    timezone: 'America/Denver',
+    now: new Date('2026-09-02T12:00:00Z'),
+  });
+
+  expect(page.data[0]!.lastRestorePointDegraded).toBe(true);
+});
+
 it('returns every enrolled device, including not configured', async () => {
   state.rows.push(
     [{ count: 2 }],

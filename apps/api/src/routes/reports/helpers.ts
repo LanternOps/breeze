@@ -37,6 +37,19 @@ import {
 export { getPagination } from '../../utils/pagination';
 
 /**
+ * Email recipients carried in a report's own typed config (the shared
+ * builder key, `services/reportConfigSchemas.ts`), as opposed to the
+ * org-scoped contact rows in `reportScheduleRecipients`. Both feed the same
+ * scheduled-delivery union in `resolveScheduledReportRecipients`, but only
+ * this one is caller-supplied free text on the definition itself.
+ */
+export function reportConfigEmailRecipients(config: unknown): string[] {
+  if (!config || typeof config !== 'object') return [];
+  const recipients = (config as Record<string, unknown>).emailRecipients;
+  return Array.isArray(recipients) ? recipients.filter((r): r is string => typeof r === 'string') : [];
+}
+
+/**
  * #4562 W10 — a 409, not a 403, for the same reason as `system_managed_report`:
  * the caller's permissions are fine, it is the definition's OWNERSHIP that
  * makes the mutation impossible while the customer portal exposes it.

@@ -15,7 +15,9 @@ vi.mock('../services/auditEvents', () => ({
 
 vi.mock('./updateRingsHelpers', () => ({
   resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
-  resolveRingDeviceIds: vi.fn().mockResolvedValue([])
+  resolveRingDeviceIds: vi.fn().mockResolvedValue([]),
+  resolveRingDeviceCountsWithWarnings: vi.fn().mockResolvedValue(new Map()),
+  resolveRingDeviceIdsWithWarnings: vi.fn().mockResolvedValue({ deviceIds: [], warnings: [] }),
 }));
 
 vi.mock('../db', () => ({

@@ -39,6 +39,7 @@ import {
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
   agentAcceptsServedEdition,
+  shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -48,7 +49,8 @@ import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
-import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../middleware/agentAuth';
+import { shouldRotateAgentToken } from './heartbeatTokenRotation';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -268,6 +270,28 @@ export function normalizeRevocationLeaseProtocolVersion(value: unknown): 0 | 1 {
  * refuses with 503 agent_upgrade_required.
  */
 export function normalizeDesktopFenceProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Normalize the only consent/notification prompt protocol version
+ * implemented here. Same tolerance contract as the fence/lease versions:
+ * absent, malformed, or a future version this server does not speak is 0,
+ * and any dispatch site resolving a policy that requires consent or
+ * notification must refuse to start rather than send a `prompt` block a
+ * capability-0 agent will silently ignore.
+ */
+export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Normalize the backup helper's brokered storage-read protocol. Only the
+ * version this server implements (1) is recorded; absent, malformed or a
+ * future version is 0, and restore-shaped commands are then delivered with
+ * the storage destination as before (services/backupStorageSessions.ts).
+ */
+export function normalizeBackupReadProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
@@ -920,6 +944,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     desktopFenceProtocolVersion: normalizeDesktopFenceProtocolVersion(
       data.securityCapabilities?.desktopFenceProtocolVersion,
     ),
+    // Consent/notification prompt capability, same non-sticky contract: an
+    // agent that stops reporting it self-heals back to 0 so a policy
+    // requiring consent is refused again rather than trusting a stale claim.
+    consentPromptProtocolVersion: normalizeConsentPromptProtocolVersion(
+      data.securityCapabilities?.consentPromptProtocolVersion,
+    ),
+    // Backup helper brokered-read protocol, same non-sticky contract: a helper
+    // downgrade (or an agent that stops reporting it) reads as 0 on the next
+    // beat, so restore commands stop receiving storage sessions.
+    backupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -996,8 +1030,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // 'auto' is the fleet-wide default, so without the inequality check every
   // steady-state heartbeat would look like a filterable change and trigger a
   // dynamic-group re-evaluation (#4630 review).
+  //
+  // A flip INTO a privileged role (server/DC-style dynamic-group targeting)
+  // is agent-reported and server-unverified, so it is not auto-applied: the
+  // stored role is left as-is and the claim is audit-logged for review
+  // instead of silently granted the group memberships that role targets.
   if (data.deviceRole && device.deviceRoleSource === 'auto' && data.deviceRole !== device.deviceRole) {
-    deviceUpdates.deviceRole = data.deviceRole;
+    if (shouldAutoApplyAgentReportedDeviceRole(device.deviceRole, data.deviceRole)) {
+      deviceUpdates.deviceRole = data.deviceRole;
+    } else {
+      writeAuditEvent(c, {
+        orgId: agent.orgId,
+        action: 'device.role.self_reported_privileged_flip_blocked',
+        resourceType: 'device',
+        resourceId: device.id,
+        result: 'success',
+        actorType: 'agent',
+        details: { from: device.deviceRole, reported: data.deviceRole },
+      });
+    }
   }
 
   // Keep devices.watchdog_version fresh from the main agent's heartbeat (#1802).
@@ -1305,6 +1356,21 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       if (wasSet !== nowSet) {
         changes.push({ field: 'mainAgentSilent', before: wasSet, after: nowSet });
       }
+    }
+
+    // Backup helper storage-read protocol dropping from a brokered-capable
+    // value to 0: restore commands for this device go back to carrying the
+    // storage destination. Recorded per device (the dispatch metric has no
+    // device dimension) so an unexpected downgrade can be found and followed.
+    const priorBackupReadProtocol = Number(device.backupReadProtocolVersion ?? 0);
+    if (priorBackupReadProtocol >= 1 && deviceUpdates.backupReadProtocolVersion === 0) {
+      changes.push({ field: 'backupReadProtocolVersion', before: priorBackupReadProtocol, after: 0 });
+      console.warn('[heartbeat] backup read protocol dropped to 0; restore commands will carry the storage destination', {
+        deviceId: device.id,
+        orgId: device.orgId,
+        before: priorBackupReadProtocol,
+        after: 0,
+      });
     }
 
     if (changes.length > 0) {
@@ -1898,11 +1964,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // Only the TENANT drain is checked: `deviceUninstallDraining` returns from
   // the minimal drain beat at the top of this handler and never reaches here,
   // so testing it too would be unreachable code.
-  const rotateToken =
-    !agent?.tenantDraining &&
-    !authenticatedWithPreviousToken &&
-    !pendingRotationLive &&
-    (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
+  const rotateToken = shouldRotateAgentToken({
+    tenantDraining: !!agent?.tenantDraining,
+    authenticatedWithPreviousToken,
+    pendingRotationLive,
+    watchdogTokenHash: device.watchdogTokenHash,
+    tokenIssuedAt: device.tokenIssuedAt,
+  });
 
   let manageRemoteManagement = false;
   try {
@@ -1925,6 +1993,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
       data.securityCapabilities?.scriptSecretEnvVersion,
     ),
+    // Same reasoning for the backup helper's storage-read protocol: this
+    // beat's report is authoritative over the (guarded) device write.
+    reportedBackupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
   });
 
   let networkContextReceipt;
@@ -2321,19 +2392,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   });
 });
 
+/**
+ * Upper bound on check results accepted in one monitoring-results submit. The
+ * agent sends one result per configured watch per check cycle; a policy holds
+ * at most 200 watches (monitoringInlineSettingsSchema) and monitor-derived
+ * watches are unioned on top, so this leaves generous headroom while bounding
+ * the per-request insert and the per-result Redis/event work below.
+ */
+export const MAX_MONITORING_RESULTS_PER_REQUEST = 1000;
+
 // Receive service/process monitoring check results from agent
 heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), async (c) => {
   const agentId = c.req.param('id');
+  const agent = c.get('agent') as { orgId?: string; partnerId?: string | null } | undefined;
 
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.agentId, agentId))
-    .limit(1);
-
-  if (!device) {
-    return c.json({ error: 'Device not found' }, 404);
+  // `monitoring-results` is in SELF_MANAGED_DB_CONTEXT_ACTIONS (agentAuth.ts):
+  // the middleware opens no request-long transaction here, so this handler
+  // builds its own org-scoped context from the authenticated agent. Fail fast
+  // rather than build a vacuous context that would RLS-deny every read.
+  if (!agent?.orgId) {
+    console.error(`[monitoring] monitoring-results submit with no org context agent=${agentId}`);
+    return c.json({ error: 'Agent context missing organization' }, 401);
   }
+  const dbContext = {
+    scope: 'organization' as const,
+    orgId: agent.orgId,
+    accessibleOrgIds: [agent.orgId],
+    // Partner-AXIS access (breeze_has_partner_access → writes) stays empty.
+    accessiblePartnerIds: [],
+    // Self-managed context: carry the partner id across explicitly, exactly
+    // as the heartbeat / eventlogs handlers do.
+    currentPartnerId: agent.partnerId ?? null,
+  };
 
   let body: { results: Array<Record<string, unknown>> };
   try {
@@ -2345,77 +2435,130 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
   if (!Array.isArray(body?.results) || body.results.length === 0) {
     return c.json({ error: 'results array required' }, 400);
   }
+  if (body.results.length > MAX_MONITORING_RESULTS_PER_REQUEST) {
+    return c.json({
+      error: 'Too many results in one request',
+      maxResults: MAX_MONITORING_RESULTS_PER_REQUEST,
+    }, 413);
+  }
 
   const { serviceProcessCheckResults } = await import('../../db/schema');
   const { getRedis } = await import('../../services/redis');
   const { publishEvent } = await import('../../services/eventBus');
 
-  const insertValues = body.results.map((r) => ({
-    orgId: device.orgId,
-    deviceId: device.id,
-    watchType: (r.watchType === 'service' ? 'service' : 'process') as 'service' | 'process',
-    name: String(r.name ?? ''),
-    status: (['running', 'stopped', 'not_found', 'error'].includes(r.status as string) ? r.status : 'error') as 'running' | 'stopped' | 'not_found' | 'error',
-    cpuPercent: typeof r.cpuPercent === 'number' ? r.cpuPercent : null,
-    memoryMb: typeof r.memoryMb === 'number' ? r.memoryMb : null,
-    pid: typeof r.pid === 'number' ? r.pid : null,
-    // #2434: details is an agent-supplied free-form blob surfaced in the
-    // service-monitoring UI — redact secret-shaped strings before persistence.
-    details: (r.details && typeof r.details === 'object') ? redactSecretsDeep(r.details) : null,
-    autoRestartAttempted: r.autoRestartAttempted === true,
-    autoRestartSucceeded: typeof r.autoRestartSucceeded === 'boolean' ? r.autoRestartSucceeded : null,
-  }));
+  // Phase 1 (one short org-scoped context): resolve the device and persist
+  // the batch. Nothing but DB work runs while this transaction is open.
+  type StoreOutcome =
+    | { kind: 'not_found' }
+    | { kind: 'insert_failed' }
+    | {
+        kind: 'stored';
+        device: { id: string; orgId: string; siteId: typeof devices.$inferSelect['siteId'] };
+        insertValues: Array<{ name: string; watchType: 'service' | 'process'; status: 'running' | 'stopped' | 'not_found' | 'error' }>;
+      };
+  const outcome = await withDbAccessContext(dbContext, async (): Promise<StoreOutcome> => {
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(eq(devices.agentId, agentId))
+      .limit(1);
 
-  // Batch insert results
-  try {
-    await db.insert(serviceProcessCheckResults).values(insertValues);
-  } catch (err) {
-    console.error(`[monitoring] failed to insert check results for device ${device.id}:`, err);
+    if (!device) {
+      return { kind: 'not_found' };
+    }
+
+    const insertValues = body.results.map((r) => ({
+      orgId: device.orgId,
+      deviceId: device.id,
+      watchType: (r.watchType === 'service' ? 'service' : 'process') as 'service' | 'process',
+      name: String(r.name ?? ''),
+      status: (['running', 'stopped', 'not_found', 'error'].includes(r.status as string) ? r.status : 'error') as 'running' | 'stopped' | 'not_found' | 'error',
+      cpuPercent: typeof r.cpuPercent === 'number' ? r.cpuPercent : null,
+      memoryMb: typeof r.memoryMb === 'number' ? r.memoryMb : null,
+      pid: typeof r.pid === 'number' ? r.pid : null,
+      // #2434: details is an agent-supplied free-form blob surfaced in the
+      // service-monitoring UI — redact secret-shaped strings before persistence.
+      details: (r.details && typeof r.details === 'object') ? redactSecretsDeep(r.details) : null,
+      autoRestartAttempted: r.autoRestartAttempted === true,
+      autoRestartSucceeded: typeof r.autoRestartSucceeded === 'boolean' ? r.autoRestartSucceeded : null,
+    }));
+
+    // Batch insert results
+    try {
+      await db.insert(serviceProcessCheckResults).values(insertValues);
+    } catch (err) {
+      console.error(`[monitoring] failed to insert check results for device ${device.id}:`, err);
+      return { kind: 'insert_failed' };
+    }
+
+    return {
+      kind: 'stored',
+      device: { id: device.id, orgId: device.orgId, siteId: device.siteId },
+      insertValues: insertValues.map(({ name, watchType, status }) => ({ name, watchType, status })),
+    };
+  });
+
+  if (outcome.kind === 'not_found') {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+  if (outcome.kind === 'insert_failed') {
     return c.json({ error: 'Failed to store results' }, 500);
   }
+  const { device, insertValues } = outcome;
 
-  // Track consecutive failures in Redis and manage alerts
+  // Phase 2 (no DB context held): track consecutive failures in Redis and
+  // publish the real-time events. One pipelined round trip for the whole
+  // batch instead of one-to-two sequential round trips per result.
   const redis = getRedis();
-  for (const result of insertValues) {
-    const failureKey = `svc-mon:${device.id}:${result.name}:failures`;
+  if (redis) {
+    const keyFor = (name: string) => `svc-mon:${device.id}:${name}:failures`;
+    const pipeline = redis.pipeline();
+    for (const result of insertValues) {
+      const failureKey = keyFor(result.name);
+      if (result.status !== 'running') {
+        pipeline.incr(failureKey);
+        pipeline.expire(failureKey, 3600); // TTL 1h
+      } else {
+        pipeline.get(failureKey);
+        pipeline.del(failureKey);
+      }
+    }
 
-    if (result.status !== 'running') {
-      // Increment consecutive failure counter
-      if (redis) {
-        try {
-          const count = await redis.incr(failureKey);
-          await redis.expire(failureKey, 3600); // TTL 1h
+    let replies: Array<[Error | null, unknown]> | null = null;
+    try {
+      replies = (await pipeline.exec()) as Array<[Error | null, unknown]> | null;
+    } catch (err) {
+      console.warn(`[monitoring] Redis failure counter pipeline error for ${device.id}:`, err);
+    }
+
+    if (replies) {
+      // Each result queued exactly two commands, in order; the first reply of
+      // each pair carries the value the event needs.
+      insertValues.forEach((result, i) => {
+        const [err, value] = replies![i * 2] ?? [new Error('missing reply'), null];
+        if (err) {
+          console.warn(`[monitoring] Redis failure counter error for ${device.id}/${result.name}:`, err);
+          return;
+        }
+        if (result.status !== 'running') {
           // Publish event for real-time UI updates
           publishEvent(
             'monitoring.check_failed',
             device.orgId,
-            { deviceId: device.id, name: result.name, watchType: result.watchType, status: result.status, consecutiveFailures: count },
+            { deviceId: device.id, name: result.name, watchType: result.watchType, status: result.status, consecutiveFailures: Number(value) },
             'agent-monitoring',
             { siteId: device.siteId }
           );
-        } catch (err) {
-          console.warn(`[monitoring] Redis failure counter error for ${device.id}/${result.name}:`, err);
+        } else if (value && Number(value) > 0) {
+          publishEvent(
+            'monitoring.check_recovered',
+            device.orgId,
+            { deviceId: device.id, name: result.name, watchType: result.watchType, previousFailures: Number(value) },
+            'agent-monitoring',
+            { siteId: device.siteId }
+          );
         }
-      }
-    } else {
-      // Reset failure counter on recovery
-      if (redis) {
-        try {
-          const prevCount = await redis.get(failureKey);
-          await redis.del(failureKey);
-          if (prevCount && Number(prevCount) > 0) {
-            publishEvent(
-              'monitoring.check_recovered',
-              device.orgId,
-              { deviceId: device.id, name: result.name, watchType: result.watchType, previousFailures: Number(prevCount) },
-              'agent-monitoring',
-              { siteId: device.siteId }
-            );
-          }
-        } catch (err) {
-          console.warn(`[monitoring] Redis failure reset error for ${device.id}/${result.name}:`, err);
-        }
-      }
+      });
     }
   }
 

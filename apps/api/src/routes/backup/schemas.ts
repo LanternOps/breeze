@@ -167,7 +167,7 @@ export const jobListSchema = z.object({
   // passing one through to a pgEnum comparison makes Postgres raise
   // `invalid input value for enum backup_status` (a 500, not an empty list).
   status: z.enum([
-    'pending', 'running', 'completed', 'failed', 'cancelled', 'partial',
+    'pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial',
     'queued', 'canceled',
   ]).optional(),
   device: z.string().optional(),
@@ -345,6 +345,17 @@ export const bmrAuthenticateSchema = z.object({
 export const bmrRecoveryDownloadSchema = z.object({
   token: z.string().min(1),
   path: z.string().min(1).max(4096),
+});
+
+// Recovery-token-authenticated (not session-authenticated): the shipped
+// run-recovery.sh/.ps1 launch script only ever holds the plaintext recovery
+// token, the same credential /bmr/recover/authenticate already accepts —
+// there is no user session to gate this behind requirePermission the way
+// /bmr/signing-key and /bmr/media/:id/signature are.
+export const bmrRecoveryBinarySignatureSchema = z.object({
+  token: z.string().min(1),
+  platform: z.enum(['linux', 'windows']),
+  architecture: z.string().min(1).max(20),
 });
 
 // ── Bare-metal recovery schemas (W04a) ──────────────────────────────

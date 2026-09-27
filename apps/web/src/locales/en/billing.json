@@ -1942,19 +1942,17 @@
       },
       "reverseError": "Could not reverse the payment.",
       "reverseSuccess": "Payment reversed",
-      "reverseInQuickbooksToo": "Reverse this in QuickBooks too",
       "sendLink": "Send payment link",
       "setUp": "Set up",
       "shareLinkPrompt": "Share this payment link with your customer:",
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
       "viaStripe": "via Stripe",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "via QuickBooks",
-      "inQuickbooks": "In QuickBooks",
-      "syncingToQuickbooks": "Syncing…",
-      "quickbooksSyncFailed": "QuickBooks sync failed",
-      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check.",
+      "inProvider": "In {{provider}}",
+      "syncingToProvider": "Syncing…",
+      "providerSyncFailed": "{{provider}} sync failed",
+      "reverseInProviderToo": "Reverse this in {{provider}} too"
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",
@@ -1994,22 +1992,22 @@
       "error": "Could not reset the link"
     },
     "accountingSync": {
-      "title": "QuickBooks sync",
+      "title": "{{provider}} sync",
       "status": {
         "pending": "Not pushed yet",
         "synced": "Synced",
         "error": "Sync failed",
         "synced_with_tax_variance": "Synced with tax difference"
       },
-      "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
-      "docNumber": "QuickBooks document {{docNumber}}",
+      "taxVarianceHint": "{{provider}} calculated a different tax total. Compare both records before closing the period.",
+      "docNumber": "{{provider}} document {{docNumber}}",
       "lastSynced": "Last synced {{when}}",
       "syncing": "Syncing…",
-      "push": "Push to QuickBooks",
-      "pushed": "Invoice pushed to QuickBooks.",
-      "pushFailed": "Failed to push the invoice to QuickBooks.",
-      "voidedHint": "This invoice is voided — there is nothing to push to QuickBooks.",
-      "remoteDeletedHint": "This invoice was deleted in QuickBooks. Pushing again would create a duplicate — resolve it in QuickBooks first."
+      "push": "Push to {{provider}}",
+      "pushed": "Invoice pushed to {{provider}}.",
+      "pushFailed": "Failed to push the invoice to {{provider}}.",
+      "voidedHint": "This invoice is voided — there is nothing to push to {{provider}}.",
+      "remoteDeletedHint": "This invoice was deleted in {{provider}}. Pushing again would create a duplicate — resolve it in {{provider}} first."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2070,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Void",
       "voidedVerb": "voided",
-      "quickbooks": "Push to QuickBooks",
-      "quickbooksQueued": "{{enqueued}} queued for QuickBooks",
-      "quickbooksQueuedPartial": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped",
-      "quickbooksQueuedFailed": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped, {{failed}} failed to queue",
-      "quickbooksFailed": "Failed to queue the QuickBooks push. Retry."
+      "pushToProvider": "Push to {{provider}}",
+      "providerQueued": "{{enqueued}} queued for {{provider}}",
+      "providerQueuedPartial": "{{enqueued}} queued for {{provider}}, {{skipped}} skipped",
+      "providerQueuedFailed": "{{enqueued}} queued for {{provider}}, {{skipped}} skipped, {{failed}} failed to queue",
+      "providerFailed": "Failed to queue the {{provider}} push. Retry."
     },
     "bulkDelete": {
       "message": "Delete {{count}} selected invoice(s)? Only DRAFT invoices will be deleted; this cannot be undone.",

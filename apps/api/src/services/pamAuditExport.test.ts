@@ -1,0 +1,196 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  PAM_AUDIT_DETAIL_ALLOWLIST,
+  PAM_AUDIT_EXPORT_COLUMNS,
+  PAM_AUDIT_WRITER_DETAIL_KEYS,
+  decodeExportCursor,
+  encodeExportCursor,
+  projectAuditDetails,
+  serializeElevationAuditPage,
+  type ExportRecord,
+} from './pamAuditExport';
+import { exportQuerySchema } from '../routes/pamAuditExport';
+
+const ID = '3f1c2b7e-9a41-4d52-8f0e-2b6c1d9e7a10';
+
+function record(over: Partial<ExportRecord> = {}): ExportRecord {
+  const base = Object.fromEntries(PAM_AUDIT_EXPORT_COLUMNS.map((c) => [c, null])) as ExportRecord;
+  return { ...base, id: ID, event_type: 'approved', actor: 'user', details: {}, ...over };
+}
+
+describe('export cursor (#4910)', () => {
+  it('round-trips Postgres timestamptz text at full microsecond precision', () => {
+    for (const ts of ['2026-09-25 04:10:00.123456+00', '2026-09-25 04:10:00+05:30', '2028-02-29 23:59:59.5-08']) {
+      expect(decodeExportCursor(encodeExportCursor(ts, ID))).toEqual({ recordedAt: ts, id: ID });
+    }
+  });
+
+  it('rejects anything that is not a timestamp|uuid pair', () => {
+    for (const raw of [
+      '', 'x', `now()|${ID}`, '2026-09-25 04:10:00+00|not-a-uuid', "2026-09-25 04:10:00+00|' OR 1=1 --",
+      // Pattern-shaped but not castable: each would 500 at ::timestamptz / ::uuid.
+      `2026-13-01 00:00:00+00|${ID}`, `2026-02-30 00:00:00+00|${ID}`, `2026-09-25 25:00:00+00|${ID}`,
+      `2026-09-25 04:10:00+99|${ID}`, '2026-09-25 04:10:00+00|------------------------------------',
+    ]) {
+      expect(decodeExportCursor(Buffer.from(raw, 'utf8').toString('base64url'))).toBeNull();
+    }
+    expect(decodeExportCursor('%%%not-base64%%%')).toBeNull();
+  });
+});
+
+/**
+ * The source text of every `details:` value whose next sibling key is
+ * `occurredAt:` — the shape of an elevation_audit row. The value ends at the
+ * first depth-0 `,` or closing bracket, skipping string literals.
+ */
+function elevationAuditDetailsValues(text: string): string[] {
+  const values: string[] = [];
+  for (const m of text.matchAll(/\bdetails:/g)) {
+    let i = m.index! + m[0].length;
+    const start = i;
+    let depth = 0;
+    let quote: string | null = null;
+    for (; i < text.length; i++) {
+      const ch = text[i]!;
+      if (quote) {
+        if (ch === '\\') i++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+      else if ('({['.includes(ch)) depth++;
+      else if (')}]'.includes(ch)) {
+        if (depth === 0) break;
+        depth--;
+      } else if (ch === ',' && depth === 0) break;
+    }
+    if (/^,\s*occurredAt:/.test(text.slice(i))) values.push(text.slice(start, i));
+  }
+  return values;
+}
+
+describe('elevation_audit writer inventory (#4910)', () => {
+  const SRC = join(__dirname, '..');
+  function walk(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) return name === '__tests__' ? [] : walk(path);
+      return path.endsWith('.ts') && !path.endsWith('.test.ts') ? [path] : [];
+    });
+  }
+
+  it('every file that inserts into elevation_audit has its details keys inventoried (a new writer fails here until reviewed)', () => {
+    const writers = walk(SRC)
+      .filter((path) => {
+        const text = readFileSync(path, 'utf8');
+        return text.includes('insert(elevationAudit)') || /INSERT\s+INTO\s+elevation_audit\b/i.test(text);
+      })
+      .map((path) => relative(SRC, path).split('\\').join('/'))
+      .sort();
+    expect(writers).toEqual(Object.keys(PAM_AUDIT_WRITER_DETAIL_KEYS).sort());
+  });
+
+  it("every key an inventoried writer puts in details is in that writer's inventory (a new key fails here)", () => {
+    // Keys sit in key position of a `details: { ... }` literal (after `{` or
+    // `,`), or as quoted names in a raw-SQL jsonb_build_object(...).
+    const missing: string[] = [];
+    for (const [file, keys] of Object.entries(PAM_AUDIT_WRITER_DETAIL_KEYS)) {
+      const text = readFileSync(join(SRC, file), 'utf8');
+      const found = new Set<string>();
+      for (const value of elevationAuditDetailsValues(text)) {
+        const literal = value.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, "''");
+        // Only inline object literals can be read: a spread of a variable
+        // (`...extra`) or a non-literal value (`details: payload`) could carry
+        // keys this scan never sees, so it fails until rewritten inline.
+        if (/\.\.\.\s*[A-Za-z_$]/.test(literal) || !/^\s*[{(]|\?/.test(literal)) {
+          missing.push(`${file}: unscannable details value \`${value.trim().slice(0, 60)}\``);
+        }
+        for (const k of literal.matchAll(/[{,]\s*([A-Za-z_]\w*)\s*(?=[:,}])/g)) found.add(k[1]!);
+      }
+      for (const m of text.matchAll(/jsonb_build_object\(([^)]*)\)/g)) {
+        for (const k of m[1]!.matchAll(/'([A-Za-z_]\w*)'/g)) found.add(k[1]!);
+      }
+      expect(found.size, `${file}: no details keys found; the scan no longer understands this writer`).toBeGreaterThan(0);
+      for (const key of found) if (!(keys as readonly string[]).includes(key)) missing.push(`${file}: ${key}`);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('the export allowlist is exactly the inventoried writer keys', () => {
+    expect([...PAM_AUDIT_DETAIL_ALLOWLIST].sort()).toEqual(
+      [...new Set(Object.values(PAM_AUDIT_WRITER_DETAIL_KEYS).flat())].sort(),
+    );
+    expect(PAM_AUDIT_DETAIL_ALLOWLIST).toEqual(
+      expect.arrayContaining(['assurance_level', 'factor', 'software_policy_id', 'matched_field', 'commandId', 'pamRuleId', 'actuationId', 'generation']),
+    );
+  });
+});
+
+describe('projectAuditDetails (#4910)', () => {
+  it('keeps only allowlisted scalar keys and drops everything else', () => {
+    expect(
+      projectAuditDetails({
+        reason: 'ok',
+        duration_minutes: 30,
+        pam_rule_name: 'r',
+        secret_token: 'leak',
+        nested: { reason: 'x' },
+        tool_name: { not: 'scalar' },
+      }),
+    ).toEqual({ reason: 'ok', duration_minutes: 30, pam_rule_name: 'r' });
+  });
+
+  it('treats non-object details as empty', () => {
+    expect(projectAuditDetails(null)).toEqual({});
+    expect(projectAuditDetails(['reason'])).toEqual({});
+    expect(projectAuditDetails('reason')).toEqual({});
+  });
+});
+
+describe('serializeElevationAuditPage (#4910)', () => {
+  it('CSV: header on the page, every cell quoted, spreadsheet formulas neutralized, details JSON-encoded', () => {
+    const out = serializeElevationAuditPage(
+      [record({ request_reason: '=HYPERLINK("http://x")', details: { reason: 'a,b' } })],
+      'csv',
+    );
+    const [header, row] = out.trimEnd().split('\n');
+    expect(header!.split(',')).toHaveLength(PAM_AUDIT_EXPORT_COLUMNS.length);
+    expect(header!.startsWith('"id","org_id"')).toBe(true);
+    expect(row).toContain(`"'=HYPERLINK(""http://x"")"`);
+    expect(row).toContain('"{""reason"":""a,b""}"');
+  });
+
+  it('CSV of an empty page is just the header', () => {
+    expect(serializeElevationAuditPage([], 'csv').trimEnd().split('\n')).toHaveLength(1);
+  });
+
+  it('JSONL: one object per line, strings untouched', () => {
+    const out = serializeElevationAuditPage([record({ request_reason: '=1+1' }), record({ id: 'b' })], 'jsonl');
+    const lines = out.trimEnd().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]!).request_reason).toBe('=1+1');
+    expect(serializeElevationAuditPage([], 'jsonl')).toBe('');
+  });
+});
+
+describe('exportQuerySchema (#4910)', () => {
+  const ok = { from: '2026-09-01T00:00:00Z', to: '2026-09-25T00:00:00Z' };
+
+  it('defaults to CSV and a 1000-row page', () => {
+    expect(exportQuerySchema.parse(ok)).toMatchObject({ format: 'csv', limit: 1000 });
+  });
+
+  it('requires both bounds, from before to, and a window of at most 366 days', () => {
+    expect(exportQuerySchema.safeParse({ from: ok.from }).success).toBe(false);
+    expect(exportQuerySchema.safeParse({ from: ok.to, to: ok.from }).success).toBe(false);
+    expect(exportQuerySchema.safeParse({ from: '2025-01-01T00:00:00Z', to: '2026-09-25T00:00:00Z' }).success).toBe(false);
+    expect(exportQuerySchema.safeParse({ from: '2025-09-25T00:00:00Z', to: '2026-09-25T00:00:00Z' }).success).toBe(true);
+  });
+
+  it('caps the page size at 1000', () => {
+    expect(exportQuerySchema.safeParse({ ...ok, limit: '1001' }).success).toBe(false);
+    expect(exportQuerySchema.safeParse({ ...ok, limit: '0' }).success).toBe(false);
+  });
+});

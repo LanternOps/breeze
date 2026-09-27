@@ -150,4 +150,32 @@ describe('commandAudit', () => {
       expect(JSON.stringify(command)).not.toContain('abc123');
     });
   });
+
+  it('never copies a storage destination into audit or history payloads', () => {
+    const payload = {
+      snapshotId: 'snap-1',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'tenant-bucket',
+        endpoint: 'https://storage.other-origin.example',
+        accessKey: 'AKIA-SYNTHETIC-ACCESS',
+        secretKey: 'synthetic-secret-value',
+      },
+      providerConfigEnvelope: 'enc:v3:current:synthetic-ciphertext',
+      providerConfigRef: { configId: 'cfg-1', orgId: 'org-1' },
+    };
+
+    const details = commandAuditDetails('cmd-9', 'backup_restore', payload);
+    const history = sanitizeCommandForHistory({ type: 'backup_restore', payload, result: null });
+
+    for (const out of [details.payload, history.payload]) {
+      const record = out as Record<string, unknown>;
+      expect(record.providerConfig).toBe('[REDACTED]');
+      expect(record.providerConfigEnvelope).toBe('[REDACTED]');
+      // The stable reference is not secret and keeps the audit row useful.
+      expect(record.providerConfigRef).toEqual({ configId: 'cfg-1', orgId: 'org-1' });
+      expect(JSON.stringify(out)).not.toContain('tenant-bucket');
+      expect(JSON.stringify(out)).not.toContain('synthetic-ciphertext');
+    }
+  });
 });

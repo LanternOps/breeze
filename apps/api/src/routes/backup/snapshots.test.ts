@@ -77,6 +77,10 @@ vi.mock('../../db/schema', () => ({
     orgId: 'devices.org_id',
     siteId: 'devices.site_id',
   },
+  organizations: {
+    id: 'organizations.id',
+    status: 'organizations.status',
+  },
 }));
 
 const applyBackupSnapshotImmutabilityMock = vi.fn();
@@ -447,6 +451,7 @@ describe('snapshot routes', () => {
   });
 
   it('applies legal hold with a required reason', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ status: 'active' }]));
     selectMock.mockReturnValueOnce(chainMock([makeSnapshot()]));
     updateMock.mockReturnValueOnce(chainMock([
       makeSnapshot({
@@ -475,6 +480,19 @@ describe('snapshot routes', () => {
       expect.anything(),
       expect.objectContaining({ action: 'backup.snapshot.legal_hold.apply' }),
     );
+  });
+
+  it('refuses to apply a legal hold while the organization is being erased', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ status: 'purging' }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/legal-hold`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'Litigation' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('releases legal hold via DELETE', async () => {

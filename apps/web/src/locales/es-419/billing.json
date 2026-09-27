@@ -1942,19 +1942,17 @@
       },
       "reverseError": "No se pudo revertir el pago.",
       "reverseSuccess": "Pago revertido",
-      "reverseInQuickbooksToo": "Revierte este pago también en QuickBooks",
       "sendLink": "Enviar enlace de pago",
       "setUp": "Configuración",
       "shareLinkPrompt": "Comparta este enlace de pago con su cliente:",
       "stripeNudge": "Conecte Stripe para aceptar pagos con tarjeta en línea.",
       "title": "Pagos",
       "viaStripe": "vía Stripe",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "vía QuickBooks",
-      "inQuickbooks": "En QuickBooks",
-      "syncingToQuickbooks": "Sincronizando…",
-      "quickbooksSyncFailed": "Error de sincronización con QuickBooks",
-      "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta factura en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación."
+      "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta factura en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación.",
+      "inProvider": "En {{provider}}",
+      "syncingToProvider": "Sincronizando…",
+      "providerSyncFailed": "Error de sincronización con {{provider}}",
+      "reverseInProviderToo": "Revierte este pago también en {{provider}}"
     },
     "requestPayment": {
       "invoiceSent": "factura enviada",
@@ -1994,22 +1992,22 @@
       "error": "No se pudo restablecer el enlace"
     },
     "accountingSync": {
-      "title": "Sincronización con QuickBooks",
+      "title": "Sincronización con {{provider}}",
       "status": {
         "pending": "Aún no enviada",
         "synced": "Sincronizada",
         "error": "Error de sincronización",
         "synced_with_tax_variance": "Sincronizada con diferencia de impuestos"
       },
-      "taxVarianceHint": "QuickBooks calculó un total de impuestos diferente. Compara ambos registros antes de cerrar el período.",
-      "docNumber": "Documento de QuickBooks {{docNumber}}",
+      "taxVarianceHint": "{{provider}} calculó un total de impuestos diferente. Compara ambos registros antes de cerrar el período.",
+      "docNumber": "Documento de {{provider}} {{docNumber}}",
       "lastSynced": "Última sincronización: {{when}}",
       "syncing": "Sincronizando…",
-      "push": "Enviar a QuickBooks",
-      "pushed": "Factura enviada a QuickBooks.",
-      "pushFailed": "No se pudo enviar la factura a QuickBooks.",
-      "voidedHint": "Esta factura está anulada — no hay nada que enviar a QuickBooks.",
-      "remoteDeletedHint": "Esta factura fue eliminada en QuickBooks. Enviarla de nuevo crearía un duplicado — resuélvelo primero en QuickBooks."
+      "push": "Enviar a {{provider}}",
+      "pushed": "Factura enviada a {{provider}}.",
+      "pushFailed": "No se pudo enviar la factura a {{provider}}.",
+      "voidedHint": "Esta factura está anulada — no hay nada que enviar a {{provider}}.",
+      "remoteDeletedHint": "Esta factura fue eliminada en {{provider}}. Enviarla de nuevo crearía un duplicado — resuélvelo primero en {{provider}}."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2070,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Anular",
       "voidedVerb": "anulado",
-      "quickbooks": "Enviar a QuickBooks",
-      "quickbooksQueued": "{{enqueued}} en cola para QuickBooks",
-      "quickbooksQueuedPartial": "{{enqueued}} en cola para QuickBooks, {{skipped}} omitidas",
-      "quickbooksQueuedFailed": "{{enqueued}} en cola para QuickBooks, {{skipped}} omitidas, {{failed}} no se pudieron poner en cola",
-      "quickbooksFailed": "No se pudo poner en cola el envío a QuickBooks. Reintenta."
+      "pushToProvider": "Enviar a {{provider}}",
+      "providerQueued": "{{enqueued}} en cola para {{provider}}",
+      "providerQueuedPartial": "{{enqueued}} en cola para {{provider}}, {{skipped}} omitidas",
+      "providerQueuedFailed": "{{enqueued}} en cola para {{provider}}, {{skipped}} omitidas, {{failed}} no se pudieron poner en cola",
+      "providerFailed": "No se pudo poner en cola el envío a {{provider}}. Reintenta."
     },
     "bulkDelete": {
       "message": "¿Eliminar las facturas seleccionadas {{count}}? Sólo se eliminarán las facturas DRAFT; esto no se puede deshacer.",

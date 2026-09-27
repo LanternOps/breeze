@@ -44,23 +44,64 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   devices: { id: 'id', orgId: 'org_id' },
-  deviceGroups: { id: 'id', orgId: 'org_id' },
+  deviceGroups: { id: 'id', orgId: 'org_id', filterFieldsUsed: 'filter_fields_used' },
   deviceGroupMemberships: { deviceId: 'device_id', groupId: 'group_id' },
 }));
 
 const mockEvaluateFilter = vi.fn();
+// Field-provenance tiering: agent-reported fields with real targeting value
+// are refused; low-value agent facts and
+// server-controlled fields are not. Mirrors the real filterEngine.ts subset
+// this test suite exercises.
+const REFUSED_TEST_FIELDS = new Set(['hostname', 'tags', 'deviceRole', 'custom.foo']);
 vi.mock('./filterEngine', () => ({
   evaluateFilter: (...args: any[]) => mockEvaluateFilter(...args),
+  getExecutionRefusedFieldsUsed: (fields: string[]) => fields.filter((f) => REFUSED_TEST_FIELDS.has(f)),
+  extractFieldsFromFilter: (filter: any) => {
+    const fields: string[] = [];
+    const walk = (node: any) => {
+      if (!node) return;
+      if (Array.isArray(node.conditions)) node.conditions.forEach(walk);
+      else if (node.field) fields.push(node.field);
+    };
+    walk(filter);
+    return fields;
+  },
+}));
+
+const mockWriteAuditEvent = vi.fn();
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: (...args: any[]) => mockWriteAuditEvent(...args),
+  requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
 import { resolveDeploymentTargets } from './deploymentTargetResolver';
 import { db } from '../db';
+
+// A second chain-mock helper that returns a FIXED value regardless of the
+// shared `mockSelectResult`, for tests that need the two sequential
+// db.select() calls in the `groups` branch (filterFieldsUsed lookup, then
+// membership rows) to return different, purpose-built rows.
+function chainMockWith(value: unknown) {
+  const makeChain = (): any => {
+    const target = {} as any;
+    target.then = (onFulfilled: any, onRejected?: any) => Promise.resolve(value).then(onFulfilled, onRejected);
+    return new Proxy(target, {
+      get(_target, prop) {
+        if (prop === 'then') return target.then;
+        return (..._args: any[]) => makeChain();
+      },
+    });
+  };
+  return makeChain();
+}
 
 describe('resolveDeploymentTargets', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSelectResult = [];
     mockEvaluateFilter.mockReset();
+    mockWriteAuditEvent.mockReset();
   });
 
   // ----------------------------------------------------------------
@@ -141,6 +182,72 @@ describe('resolveDeploymentTargets', () => {
     });
   });
 
+  describe('type: groups — agent-reported field gating', () => {
+    it('excludes a group whose rules reference an agent-reported field, and audits the refusal', async () => {
+      (db.select as any)
+        .mockImplementationOnce(() =>
+          chainMockWith([
+            { id: GROUP_ID_1, filterFieldsUsed: ['hostname'] },
+            { id: GROUP_ID_2, filterFieldsUsed: ['orgId'] },
+          ]),
+        )
+        .mockImplementationOnce(() => chainMockWith([{ deviceId: DEVICE_ID_2 }]));
+
+      const result = await resolveDeploymentTargets({
+        orgId: ORG_ID,
+        targetConfig: { type: 'groups', groupIds: [GROUP_ID_1, GROUP_ID_2] },
+      });
+
+      // Only GROUP_ID_2 (server-controlled-only rules) contributes members.
+      expect(result).toEqual([DEVICE_ID_2]);
+      expect(mockWriteAuditEvent).toHaveBeenCalledTimes(1);
+      expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'device_group.execution_target_refused_agent_reported_fields',
+          resourceType: 'device_group',
+          resourceId: GROUP_ID_1,
+          details: expect.objectContaining({ refusedFields: ['hostname'] }),
+        }),
+      );
+    });
+
+    it('resolves normally (no refusal, no audit) when every requested group has no agent-reported rules', async () => {
+      (db.select as any)
+        .mockImplementationOnce(() =>
+          chainMockWith([
+            { id: GROUP_ID_1, filterFieldsUsed: [] },
+            { id: GROUP_ID_2, filterFieldsUsed: ['siteId'] },
+          ]),
+        )
+        .mockImplementationOnce(() => chainMockWith([{ deviceId: DEVICE_ID_1 }, { deviceId: DEVICE_ID_2 }]));
+
+      const result = await resolveDeploymentTargets({
+        orgId: ORG_ID,
+        targetConfig: { type: 'groups', groupIds: [GROUP_ID_1, GROUP_ID_2] },
+      });
+
+      expect(result).toEqual([DEVICE_ID_1, DEVICE_ID_2]);
+      expect(mockWriteAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('returns no devices (never queries membership) when every requested group is refused', async () => {
+      (db.select as any).mockImplementationOnce(() =>
+        chainMockWith([{ id: GROUP_ID_1, filterFieldsUsed: ['tags'] }]),
+      );
+
+      const result = await resolveDeploymentTargets({
+        orgId: ORG_ID,
+        targetConfig: { type: 'groups', groupIds: [GROUP_ID_1] },
+      });
+
+      expect(result).toEqual([]);
+      expect(mockWriteAuditEvent).toHaveBeenCalledTimes(1);
+      // Only the filterFieldsUsed lookup ran — no membership query for zero allowed groups.
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // ----------------------------------------------------------------
   // type: 'filter' — evaluates filter and returns matching devices
   // ----------------------------------------------------------------
@@ -174,6 +281,55 @@ describe('resolveDeploymentTargets', () => {
 
       expect(result).toEqual([]);
       expect(mockEvaluateFilter).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('type: filter — agent-reported field gating (inline filter target)', () => {
+    it('refuses an inline filter that references an execution-refused field, without evaluating it, and audits the refusal', async () => {
+      const filterCondition = {
+        operator: 'AND' as const,
+        conditions: [
+          { field: 'hostname', operator: 'contains' as const, value: 'SRV' },
+        ],
+      };
+
+      const result = await resolveDeploymentTargets({
+        orgId: ORG_ID,
+        targetConfig: { type: 'filter', filter: filterCondition },
+      });
+
+      expect(result).toEqual([]);
+      expect(mockEvaluateFilter).not.toHaveBeenCalled();
+      expect(mockWriteAuditEvent).toHaveBeenCalledTimes(1);
+      expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'deployment_target.filter_refused_agent_reported_fields',
+          resourceType: 'deployment_target',
+          details: expect.objectContaining({ refusedFields: ['hostname'] }),
+        }),
+      );
+    });
+
+    it('keeps the documented canonical example ("Windows Servers with >90% disk") usable as an inline filter target', async () => {
+      mockEvaluateFilter.mockResolvedValueOnce({ deviceIds: [DEVICE_ID_1] });
+
+      const filterCondition = {
+        operator: 'AND' as const,
+        conditions: [
+          { field: 'osType', operator: 'equals' as const, value: 'windows' },
+          { field: 'metrics.diskPercent', operator: 'greaterThan' as const, value: 90 },
+        ],
+      };
+
+      const result = await resolveDeploymentTargets({
+        orgId: ORG_ID,
+        targetConfig: { type: 'filter', filter: filterCondition },
+      });
+
+      expect(result).toEqual([DEVICE_ID_1]);
+      expect(mockEvaluateFilter).toHaveBeenCalledWith(filterCondition, { orgId: ORG_ID });
+      expect(mockWriteAuditEvent).not.toHaveBeenCalled();
     });
   });
 

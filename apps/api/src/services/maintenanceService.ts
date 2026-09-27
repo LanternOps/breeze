@@ -5,6 +5,7 @@ import {
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
 } from './featureConfigResolver';
+import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 
 // ============================================
 // Types
@@ -119,7 +120,19 @@ async function checkStandaloneMaintenanceWindows(
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
 
-  const groupIds = deviceGroupIds.map((g) => g.groupId);
+  const rawGroupIds = deviceGroupIds.map((g) => g.groupId);
+
+  // Field-provenance tiering — a standalone window can suppress
+  // alerts, patching, automations AND scripts for the device it targets; that
+  // is a capability grant (evade detection while it runs), not merely a
+  // restriction, so unlike peripheral/hardening-style protective controls it
+  // must not be reachable by a device that self-selected into a group via an
+  // agent-reported filter field. Gate before the group is used to match a
+  // window, same as the other execution paths.
+  const { allowedGroupIds: groupIds, refusedGroups } = await resolveExecutionSafeGroupIds(rawGroupIds);
+  if (refusedGroups.length > 0) {
+    auditRefusedExecutionGroups(device.orgId, 'maintenance_window.execution_target_refused_agent_reported_fields', refusedGroups);
+  }
 
   // Ownership is dual-axis (#2131): the device's own org's windows OR
   // partner-wide windows (org_id NULL) owned by the device org's partner.

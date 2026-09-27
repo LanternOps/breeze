@@ -115,6 +115,35 @@ describe('applyDlpToText', () => {
     expect(r.findings).toEqual([{ detector: 'ticket_id', action: 'redact', count: 1 }]);
   });
 
+  it('a custom pattern shaped as a catastrophic-backtracking regex scans worst-case input in well under a second', () => {
+    // Separated-nested-quantifier "evil regex" shape: ~900ms+ on a plain
+    // backtracking JS RegExp for this exact input. RE2 has no backtracking
+    // to use, so this should come back in single-digit milliseconds.
+    const cfg: DlpConfig = {
+      ...DEFAULT_DLP_CONFIG,
+      customPatterns: [{ name: 'evil', pattern: '^(([a-z])+.)+[A-Z]([a-z])+$', action: 'log' }],
+    };
+    const evilInput = 'a'.repeat(40) + '!';
+    const start = Date.now();
+    const r = applyDlpToText(evilInput, cfg);
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(r.blocked).toBe(false);
+  }, 10_000);
+
+  it('an RE2-incompatible custom pattern (e.g. lookaround) is skipped, not thrown — other rules keep working', () => {
+    const cfg: DlpConfig = {
+      ...DEFAULT_DLP_CONFIG,
+      customPatterns: [
+        { name: 'legacy lookaround', pattern: '(?=E)EMP-\\d+', action: 'block' },
+        { name: 'ticket_id', pattern: 'TICKET-\\d+', action: 'redact' },
+      ],
+    };
+    const r = applyDlpToText('see TICKET-4821, EMP-123456 too', cfg);
+    expect(r.blocked).toBe(false);
+    expect(r.text).toContain('[REDACTED:ticket_id]');
+    expect(r.findings.some((f) => f.detector === 'legacy lookaround')).toBe(false);
+  });
+
   // ── invariant: idempotence ────────────────────────────────────────────────
   it('is idempotent: re-scanning redacted output yields zero findings', () => {
     const first = applyDlpToText('card 4111 1111 1111 1111 ssn 536-90-4399', DEFAULT_DLP_CONFIG);

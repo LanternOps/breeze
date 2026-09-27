@@ -209,6 +209,11 @@ export type AutoMapDecision = {
   mappingSource: 'auto_external_code' | 'auto_name';
 };
 
+export type AutoMapNameSuggestion = {
+  customerId: string;
+  orgId: string;
+};
+
 function normalizeName(value: string | null | undefined): string | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
@@ -219,9 +224,16 @@ function normalizeName(value: string | null | undefined): string | null {
  * PURE auto-mapping rules (spec, `backup_provider_customers` section).
  *
  * Both inputs are already scoped to ONE connection and ONE partner by the
- * caller; this function never widens that. Rule order is deliberate and the
- * external code always wins: it is an identifier the MSP typed on purpose,
- * while a name collision is an accident waiting to happen.
+ * caller; this function never widens that.
+ *
+ * Only an external code commits automatically -- it is an identifier the MSP
+ * typed on purpose. A normalized-name match is NEVER written here: renaming
+ * an org to match an unmapped vendor customer's name used to silently
+ * capture that customer's backup inventory
+ * on the next sync, with no confirmation step distinct from an ordinary org
+ * rename. See `resolveCustomerAutoMapNameSuggestions` -- a name match is
+ * surfaced there as a suggestion a human with full partner access must
+ * confirm through the existing manual remap path.
  *
  * An org is claimed by at most one customer per pass — two vendor customers
  * pointing at one Breeze org is a data problem a human must settle, and
@@ -232,6 +244,35 @@ export function resolveCustomerAutoMappings(
   orgs: AutoMapOrgRow[],
 ): AutoMapDecision[] {
   const orgById = new Map(orgs.map((o) => [o.id.toLowerCase(), o.id]));
+
+  const claimed = new Set<string>();
+  const out: AutoMapDecision[] = [];
+  for (const customer of customers) {
+    const code = customer.vendorExternalCode?.trim();
+    if (!code || !UUID_RE.test(code)) continue;
+    const orgId = orgById.get(code.toLowerCase());
+    if (!orgId || claimed.has(orgId)) continue;
+    claimed.add(orgId);
+    out.push({ customerId: customer.id, orgId, mappingSource: 'auto_external_code' });
+  }
+  return out;
+}
+
+/**
+ * Name-based candidates — SUGGESTIONS ONLY. Never written by
+ * `autoMapCustomers`; a human with full
+ * partner access confirms one through the existing manual remap path
+ * (`remapCustomer`), which already carries that access check.
+ *
+ * `alreadyClaimedOrgIds` lets a caller exclude orgs a same-pass
+ * external-code commit already took, so a suggestion is never surfaced for
+ * an org that just got mapped for a different reason.
+ */
+export function resolveCustomerAutoMapNameSuggestions(
+  customers: AutoMapCustomerRow[],
+  orgs: AutoMapOrgRow[],
+  alreadyClaimedOrgIds: ReadonlySet<string> = new Set(),
+): AutoMapNameSuggestion[] {
   const orgsByName = new Map<string, string[]>();
   for (const org of orgs) {
     const key = normalizeName(org.name);
@@ -241,33 +282,17 @@ export function resolveCustomerAutoMappings(
     else orgsByName.set(key, [org.id]);
   }
 
-  const byCode: AutoMapDecision[] = [];
-  const byName: AutoMapDecision[] = [];
-
+  const claimed = new Set(alreadyClaimedOrgIds);
+  const out: AutoMapNameSuggestion[] = [];
   for (const customer of customers) {
-    const code = customer.vendorExternalCode?.trim();
-    if (code && UUID_RE.test(code)) {
-      const orgId = orgById.get(code.toLowerCase());
-      if (orgId) {
-        byCode.push({ customerId: customer.id, orgId, mappingSource: 'auto_external_code' });
-        continue;
-      }
-    }
     const key = normalizeName(customer.vendorCustomerName);
     if (!key) continue;
     const candidates = orgsByName.get(key);
     if (!candidates || candidates.length !== 1) continue;
-    byName.push({ customerId: customer.id, orgId: candidates[0]!, mappingSource: 'auto_name' });
-  }
-
-  // Two passes so an external-code match always beats a name match for the
-  // same org, whatever order the vendor returned the customers in.
-  const claimed = new Set<string>();
-  const out: AutoMapDecision[] = [];
-  for (const decision of [...byCode, ...byName]) {
-    if (claimed.has(decision.orgId)) continue;
-    claimed.add(decision.orgId);
-    out.push(decision);
+    const orgId = candidates[0]!;
+    if (claimed.has(orgId)) continue;
+    claimed.add(orgId);
+    out.push({ customerId: customer.id, orgId });
   }
   return out;
 }
@@ -313,6 +338,19 @@ export async function autoMapCustomers(
     ));
 
   const decisions = resolveCustomerAutoMappings(customers, orgs);
+
+  // Visibility only: a name match is
+  // never auto-written, but an operator watching sync logs should still see
+  // that one is waiting on a manual remap. Nothing here is persisted.
+  const claimedOrgIds = new Set(decisions.map((d) => d.orgId));
+  const nameSuggestions = resolveCustomerAutoMapNameSuggestions(customers, orgs, claimedOrgIds);
+  if (nameSuggestions.length > 0) {
+    console.log(
+      `[BackupProviders] connection ${connectionId}: ${nameSuggestions.length} customer(s) matched an org by ` +
+      'name only -- left unmapped pending manual confirmation',
+    );
+  }
+
   if (decisions.length === 0) return 0;
 
   // One UPDATE ... FROM (VALUES ...) rather than N statements. The

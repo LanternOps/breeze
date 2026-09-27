@@ -83,6 +83,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('hardwareHealthRetention'),
   consumers('logCorrelationWorker'),
   consumers('agentLogRetention'),
+  // One Worker, no flag gate; attaches under 'helperScreenshotRetention',
+  // which differs from its registry key.
+  consumers('helperScreenshotRetentionWorker', ['helperScreenshotRetention']),
   consumers('ipHistoryRetention'),
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),

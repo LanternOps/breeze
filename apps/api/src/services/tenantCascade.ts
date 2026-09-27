@@ -51,6 +51,7 @@ import { deleteObjectKeys } from './ticketAttachmentStorage';
 import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
+import { captureMessage } from './sentry';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -392,6 +393,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_sla_events',
   'backup_snapshot_retirements',
   'backup_snapshots',
+  // Brokered storage sessions: org_id denormalised from the executing device;
+  // every FK (command, both devices, snapshot, config) is ON DELETE CASCADE,
+  // so position is determinism, not correctness.
+  'backup_storage_sessions',
   'backup_verifications',
   'bare_metal_recoveries',
   'brain_device_context',
@@ -1308,6 +1313,77 @@ export interface CascadeStats {
   totalRowsDeleted: number;
 }
 
+export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
+
+/**
+ * Thrown by `cascadeDeleteOrg` when the erasure is refused before any row is
+ * deleted. Distinct from a mid-cascade failure (which throws a plain `Error`
+ * and is recorded as `tenant.erasure.failed`) so callers can tell "nothing
+ * happened, fix the precondition and retry" apart from "something broke
+ * partway through."
+ */
+export class TenantCascadeRefusalError extends Error {
+  constructor(
+    public readonly code: TenantCascadeRefusalCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TenantCascadeRefusalError';
+  }
+}
+
+export const LEGAL_HOLD_ACTIVE_MESSAGE =
+  'This organization has one or more backup snapshots under legal hold. '
+  + 'Release the hold before erasing the organization.';
+
+/**
+ * True if any `backup_snapshots` row for this org still carries an active
+ * legal hold. Deliberately checks `legal_hold` ONLY — an immutability window
+ * (`is_immutable` / `immutable_until`) does not by itself block a full-tenant
+ * erasure; only an operator-placed hold does, and it must be released first.
+ */
+export async function hasActiveLegalHoldSnapshots(orgId: string): Promise<boolean> {
+  const result = await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.execute(sql`
+      SELECT id FROM backup_snapshots
+       WHERE org_id = ${orgId}::uuid
+         AND legal_hold = true
+       LIMIT 1
+    `),
+  );
+  return rowsFromExecute<{ id: string }>(result).length > 0;
+}
+
+/**
+ * `backup_snapshots`'s delete step in the main cascade walk (below).
+ *
+ * `hasActiveLegalHoldSnapshots` above is a check-then-act precondition run
+ * once, before the walk starts; the walk itself can run for minutes on a
+ * large tenant (each table is its own committed transaction), so a hold
+ * placed after that entry check but before this specific step would
+ * otherwise slip through. This closes that window by re-checking INSIDE the
+ * same transaction that performs the delete: `SELECT ... FOR UPDATE` locks
+ * every one of the org's snapshot rows first, which also blocks a concurrent
+ * "set legal hold" `UPDATE` on any of those same rows until this transaction
+ * commits or rolls back — so a hold cannot be inserted into the exact set of
+ * rows we are about to check and delete while we hold the lock.
+ */
+export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<number> {
+  return dbModule.withSystemDbAccessContext(async () => {
+    const locked = await dbModule.db.execute(sql`
+      SELECT id, legal_hold FROM backup_snapshots
+       WHERE org_id = ${orgId}::uuid
+       FOR UPDATE
+    `);
+    const rows = rowsFromExecute<{ id: string; legal_hold: boolean }>(locked);
+    if (rows.some((row) => row.legal_hold === true)) {
+      throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
+    }
+    const result = await deleteOrgRows('backup_snapshots', orgId);
+    return extractRowCount(result);
+  });
+}
+
 /**
  * Hard-deletes every row keyed on this org across the cascade set.
  *
@@ -1316,6 +1392,11 @@ export interface CascadeStats {
  * cascade itself will then drop the org's `audit_logs` rows; the
  * tenant.erasure event survives because it's written with org_id=NULL).
  *
+ * Refuses (before any row is deleted, and before the `tenant.erasure.started`
+ * audit row is even written) while any of the org's backup snapshots carry an
+ * active legal hold. The operator must release the hold(s) first; the refusal
+ * itself is audited so there's a forensic record of the attempt.
+ *
  * Idempotent: re-running on an already-erased org matches zero rows.
  */
 export async function cascadeDeleteOrg(
@@ -1323,6 +1404,29 @@ export async function cascadeDeleteOrg(
   performedBy: string,
   performedByEmail?: string,
 ): Promise<CascadeStats> {
+  if (await hasActiveLegalHoldSnapshots(orgId)) {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'tenant.erasure.refused_legal_hold',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: { reason: 'LEGAL_HOLD_ACTIVE' },
+      result: 'failure',
+      errorMessage: LEGAL_HOLD_ACTIVE_MESSAGE,
+    });
+    // A BullMQ job result of `{ skipped: true }` is a job SUCCESS, not a
+    // failure, so nothing else here would otherwise raise an alert — the
+    // audit row above is easy to miss unless someone goes looking for it.
+    captureMessage(
+      `[tenantCascade] erasure refused for org=${orgId}: active legal hold at entry`,
+      { eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'entry' } },
+    );
+    throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
+  }
+
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   const stats: CascadeStats = {
@@ -1517,6 +1621,8 @@ export async function cascadeDeleteOrg(
             stats.totalRowsDeleted += deleted.versions;
             return deleted.catalogs;
           })
+        : table === 'backup_snapshots'
+        ? await deleteBackupSnapshotsCascadeStep(orgId)
         : await dbModule.withSystemDbAccessContext(async () => {
             const isAuditAdmin = AUDIT_ADMIN_REQUIRED_TABLES.has(table);
             if (isAuditAdmin) {
@@ -1533,6 +1639,41 @@ export async function cascadeDeleteOrg(
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
     } catch (err) {
+      // A precondition refusal (the `backup_snapshots` re-check above found a
+      // hold that appeared mid-walk) is not a failure — it's the same
+      // "nothing happened, fix the precondition and retry" outcome as the
+      // entry-point check in `cascadeDeleteOrg` above, just discovered later.
+      // Audit and alert it under its own action/event code, with the
+      // progress made so far, and re-throw UNCHANGED so the caller's
+      // `err instanceof TenantCascadeRefusalError` check (tenantErasure.ts)
+      // still recognizes it as a skip rather than a generic job failure.
+      if (err instanceof TenantCascadeRefusalError) {
+        try {
+          await createAuditLog({
+            orgId: null,
+            actorType: 'user',
+            actorId: performedBy,
+            actorEmail: performedByEmail,
+            action: 'tenant.erasure.refused_legal_hold',
+            resourceType: 'organization',
+            resourceId: orgId,
+            details: {
+              reason: err.code,
+              tablesDeleted: stats.tablesDeleted,
+              totalRowsDeleted: stats.totalRowsDeleted,
+            },
+            result: 'failure',
+            errorMessage: err.message,
+          });
+        } catch (auditErr) {
+          console.warn('[tenantCascade] refused-legal-hold audit write failed:', auditErr);
+        }
+        captureMessage(
+          `[tenantCascade] erasure refused for org=${orgId}: active legal hold appeared mid-cascade`,
+          { eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'mid_cascade' } },
+        );
+        throw err;
+      }
       // A single table failure aborts the WALK. It does NOT roll the erasure
       // back: each table above deletes inside its own
       // `withSystemDbAccessContext` transaction, so every table already

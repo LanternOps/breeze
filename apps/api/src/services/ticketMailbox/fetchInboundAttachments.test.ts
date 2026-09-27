@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
 
-const { listMock, getBytesMock, tokenMock, putBytesMock, deleteBytesMock } = vi.hoisted(() => ({
+const { listMock, getBytesMock, tokenMock, putBytesMock, deleteBytesMock, dbSelectResult } = vi.hoisted(() => ({
   listMock: vi.fn(),
   getBytesMock: vi.fn(),
   tokenMock: vi.fn(),
   putBytesMock: vi.fn(),
   deleteBytesMock: vi.fn(),
+  // `discardUnpersistedAttachments` re-verifies against the committed table;
+  // each test sets this to the ids that "actually landed".
+  dbSelectResult: { current: [] as Array<{ id: string }> },
 }));
 
 // Graph is ALWAYS mocked — these tests never reach Microsoft.
@@ -20,6 +23,17 @@ vi.mock('../ticketAttachmentStorage', async () => {
   return { putBytes: putBytesMock, deleteBytes: deleteBytesMock, AttachmentStorageError: BlobStorageError };
 });
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../../db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve(dbSelectResult.current),
+      }),
+    }),
+  },
+  runOutsideDbContext: <T,>(fn: () => T): T => fn(),
+  withSystemDbAccessContext: <T,>(fn: () => T): T => fn(),
+}));
 
 import { prepareM365Attachments, discardUnpersistedAttachments } from './fetchInboundAttachments';
 import { BlobStorageError } from '../blobStorage';
@@ -52,6 +66,7 @@ beforeEach(() => {
   tokenMock.mockResolvedValue('tok');
   putBytesMock.mockImplementation(async () => ({ backend: 's3', storageKey: 'ticket-attachments/x', data: null }));
   deleteBytesMock.mockResolvedValue(undefined);
+  dbSelectResult.current = [];
 });
 
 describe('prepareM365Attachments', () => {
@@ -214,7 +229,7 @@ describe('prepareM365Attachments', () => {
 });
 
 describe('discardUnpersistedAttachments', () => {
-  it('deletes stored blobs whose row was never inserted, and leaves persisted ones alone', async () => {
+  it('deletes stored blobs whose row was never committed, and leaves committed ones alone', async () => {
     const stored = (key: string) => ({
       attachmentId: key, contentType: 'application/pdf', byteSize: 1, sha256: 'a'.repeat(64),
       storageBackend: 's3' as const, storageKey: key, data: null,
@@ -226,11 +241,36 @@ describe('discardUnpersistedAttachments', () => {
         { filename: 'skip.eml', contentType: 'message/rfc822', size: 1, skipReason: 'unsupported_type' },
       ],
     });
+    dbSelectResult.current = [{ id: 'k1' }];
 
     await discardUnpersistedAttachments(email);
 
     expect(deleteBytesMock).toHaveBeenCalledTimes(1);
     expect(deleteBytesMock.mock.calls[0]![0]).toMatchObject({ storageKey: 'k2' });
+  });
+
+  // #6688 regression: persistInboundAttachments sets `persisted = true` the
+  // instant its INSERT returns, still inside the pipeline transaction. A later
+  // failure in that SAME transaction (e.g. reopenResolvedTicket) rolls the
+  // insert back — the row never actually lands — but the flag was already set.
+  // Trusting the flag alone would leave this blob orphaned forever.
+  it('deletes a blob whose row was rolled back after insert, even though the in-process flag says persisted', async () => {
+    const email = m365Email({
+      attachments: [{
+        filename: 'rolled-back.pdf', contentType: 'application/pdf', size: 1,
+        stored: {
+          attachmentId: 'k-rolled-back', contentType: 'application/pdf', byteSize: 1, sha256: 'a'.repeat(64),
+          storageBackend: 's3', storageKey: 'k-rolled-back', data: null,
+        },
+        persisted: true,
+      }],
+    });
+    dbSelectResult.current = []; // the transaction rolled back — the row never committed
+
+    await discardUnpersistedAttachments(email);
+
+    expect(deleteBytesMock).toHaveBeenCalledTimes(1);
+    expect(deleteBytesMock.mock.calls[0]![0]).toMatchObject({ storageKey: 'k-rolled-back' });
   });
 
   it('never throws when the compensating delete fails', async () => {

@@ -29,6 +29,7 @@ import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { AGENT_MAX_FILE_WRITE_BYTES } from '../routes/systemTools/schemas';
+import { isAgentConfigPath } from '../routes/systemTools/sensitiveTargets';
 import {
   buildCleanupPreview,
   getLatestFilesystemSnapshot,
@@ -166,6 +167,16 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const fileCommandType = actionMap[input.action as string];
       if (!fileCommandType) return JSON.stringify({ error: `Unknown action: ${input.action}` });
+
+      // Deny the agent's own config/secrets directory outright, regardless
+      // of the caller's permission — this tool does not go through
+      // routes/systemTools (it calls aiExecuteCommand directly), so it must carry its
+      // own copy of the same check the REST file routes apply.
+      const targetPath = input.path as string;
+      const targetNewPath = input.newPath as string | undefined;
+      if (isAgentConfigPath(targetPath) || (targetNewPath !== undefined && isAgentConfigPath(targetNewPath))) {
+        return JSON.stringify({ error: 'Access to this path is not permitted' });
+      }
 
       // The agent rejects file_write payloads over 4MB decoded, and its WS
       // read limit (16MB) is sized from that cap — an oversized frame kills

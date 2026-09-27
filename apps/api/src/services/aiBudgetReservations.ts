@@ -103,6 +103,18 @@ export interface ReserveAiBudgetInput {
   namespace?: AiBudgetNamespace;
   /** REQUIRED when namespace is 'client'; rejected otherwise. */
   clientBudget?: ClientAiBudgetCaps;
+  /**
+   * Upper bound on the amount THIS reservation may hold, in addition to the
+   * daily/monthly remaining-cap fence. Omitted (the pre-existing default)
+   * still reserves the whole remaining cap, which is the general JD L-2 hold
+   * on this module — every caller with a real per-request ceiling should pass
+   * it so one dispatch does not serialize every other AI surface in a capped
+   * org, and so an indeterminate outcome only holds that ceiling for its
+   * extended TTL rather than the whole remaining budget. Never widens a hold:
+   * when the true remaining amount is tighter than the ceiling, the tighter
+   * figure still wins.
+   */
+  maxHoldCents?: number;
   now?: Date;
 }
 
@@ -260,6 +272,10 @@ function validateIdentity(input: ReserveAiBudgetInput): void {
   }
   if (namespace !== 'client' && input.clientBudget) {
     throw new Error('clientBudget is only meaningful for a client-namespace reservation');
+  }
+  if (input.maxHoldCents !== undefined
+      && (!Number.isFinite(input.maxHoldCents) || input.maxHoldCents <= 0)) {
+    throw new Error('maxHoldCents must be a finite positive amount');
   }
 }
 
@@ -533,6 +549,15 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
       // Load-bearing: the TIGHTER of the two caps. Using dailyRemaining alone
       // lets a large daily allowance overrun a small monthly one.
       reservedCostCents = Math.min(dailyRemaining, monthlyRemaining);
+
+      // JD L-2: bound the hold to the caller's own request ceiling — never
+      // widens it. This is what keeps one dispatch from reserving the org's
+      // ENTIRE remaining cap (and, via the same reserved_cost_cents row,
+      // holding all of it through an indeterminate outcome's extended TTL)
+      // when its own request never needed more than a fraction of it.
+      if (input.maxHoldCents !== undefined) {
+        reservedCostCents = Math.min(reservedCostCents, input.maxHoldCents);
+      }
 
       // #5557: the client sub-cap narrows further, never widens. An org with no
       // AI budget at all still gets an atomic fence here whenever the add-in

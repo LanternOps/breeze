@@ -74,7 +74,11 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
       });
       return next();
     }),
-    requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+    // Matches the real requireMfa()'s success-path shape: it awaits next()
+    // without forwarding next()'s own return value (only a denial returns a
+    // Response directly). dualAuth's denial-propagation depends on that
+    // distinction to tell "denied" apart from "succeeded".
+    requireMfa: vi.fn(() => async (_c: any, next: any) => { await next(); }),
   };
 });
 
@@ -140,6 +144,7 @@ vi.mock('../../services/customFields/queries', () => ({
 }));
 
 import { customFieldValuesRoutes } from './customFieldValues';
+import { requireMfa } from '../../middleware/auth';
 import { db } from '../../db';
 import { createAuditLog } from '../../services/auditService';
 import { loadVisibleCustomFieldDefinitions, persistDeviceCustomFieldValues } from '../../services/customFields/queries';
@@ -497,6 +502,35 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    // dualAuth composes authMiddleware/requireScope/requirePermission/
+    // requireMfa by hand instead of registering them as separate Hono
+    // middlewares. requireMfa() denies by RETURNING a Response rather than
+    // throwing; nested several closures deep like this, a returned value
+    // that nothing forwards is just discarded. This asserts on the actual
+    // SIDE EFFECT (the write never runs), not just the status code, so it
+    // tells a write-despite-denial apart from a status-code-only bug.
+    it('does not run the write when requireMfa() denies (no write, whatever the status)', async () => {
+      vi.mocked(requireMfa).mockImplementationOnce(() => async (c: any, _next: any) =>
+        c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403));
+      // No rigDeviceLookup(): the denial happens before the device lookup
+      // runs, so queuing an unconsumed db.select().mockReturnValueOnce here
+      // would desync the queue for later tests in this file.
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ note: 'hi' }),
+      });
+
+      // The handler must not have run: no write, no audit — regardless of
+      // whether the status code correctly reflects the denial.
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
+      expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
+      // The status must also be 403, not an empty 200, even though the two
+      // above already prove there was no write.
+      expect(res.status).toBe(403);
     });
   });
 

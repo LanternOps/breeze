@@ -81,6 +81,30 @@ function monitorReadCondition(auth: AuthContext): SQL | undefined {
   return orgCondition ? or(orgCondition, partnerWide) : partnerWide;
 }
 
+/**
+ * Display-safe projection for a partner-wide monitor viewed by an org-scope
+ * caller. `monitorReadCondition` deliberately admits partner-wide rows
+ * to any caller under that partner so an org technician can see what applies
+ * to their devices, but the MSP-authored action payloads (script/command text
+ * and parameters), delivery routing and the escalation/AI-agent wiring are
+ * administrative detail with no read-side justification for full exposure —
+ * `GET /automations/:compiledId` already withholds the equivalent compiled
+ * fields from org tokens. Only strips fields on rows the caller cannot write
+ * anyway (`assertCanWrite` refuses org scope on a partner-wide row), so this
+ * never removes something a caller could otherwise legitimately use.
+ */
+export function projectMonitorForCaller<T extends MonitorDefinitionRow>(row: T, auth: AuthContext): T {
+  if (row.orgId !== null || auth.scope !== 'organization') return row;
+  return {
+    ...row,
+    responses: [],
+    recurrenceActions: [],
+    deliveryChannelIds: [],
+    escalationPolicyId: null,
+    aiAgentId: null,
+  };
+}
+
 function assertCanWrite(auth: AuthContext, owner: MonitorOwner): void {
   if (owner.partnerId) {
     if (!canManagePartnerWidePolicies(auth)) {
@@ -225,10 +249,14 @@ function validateDefinitionShape(args: {
   return { condition: parsed.data as Record<string, unknown>, responses, recurrenceActions };
 }
 
-export async function listMonitorDefinitions(
-  auth: AuthContext,
-  filters?: { kind?: MonitorKind; enabled?: boolean },
-): Promise<MonitorDefinitionRow[]> {
+type MonitorListFilters = { kind?: MonitorKind; enabled?: boolean };
+
+/**
+ * The visibility + filter predicate shared by listMonitorDefinitions and
+ * listMonitorDefinitionsPage. The page applies it to both its count and its
+ * rows, so `total` is counted over exactly the rows the page can return.
+ */
+function listConditions(auth: AuthContext, filters?: MonitorListFilters): SQL | undefined {
   const conditions: SQL[] = [];
   const read = monitorReadCondition(auth);
   if (read) conditions.push(read);
@@ -236,12 +264,65 @@ export async function listMonitorDefinitions(
   if (filters?.enabled !== undefined) {
     conditions.push(eq(monitorDefinitions.enabled, filters.enabled));
   }
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
 
-  return db
+/** List the caller's visible monitor definitions, ordered by name (unpaged; the REST list route). */
+export async function listMonitorDefinitions(
+  auth: AuthContext,
+  filters?: MonitorListFilters,
+): Promise<MonitorDefinitionRow[]> {
+  const rows = await db
     .select()
     .from(monitorDefinitions)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .where(listConditions(auth, filters))
     .orderBy(asc(monitorDefinitions.name));
+  return rows.map((row) => projectMonitorForCaller(row, auth));
+}
+
+/**
+ * One page of the caller's visible monitor definitions, paged in SQL (#6735),
+ * with the total of the whole filtered set.
+ *
+ * The page and the total come from ONE statement, so they share one snapshot:
+ * separate statements under READ COMMITTED can each see a different set, and
+ * a concurrent insert or delete between them would make `total`/`hasMore`
+ * disagree with the rows returned. The statement reads a one-row count and
+ * LEFT JOINs the page onto it, so an empty page (nothing visible, or an
+ * offset past the end) still carries the real total with no second query.
+ * `id` breaks name ties so the order is deterministic for an unchanged set.
+ * This is offset paging (the shared AI-tool cursor carries only an offset):
+ * a monitor added or removed between two page requests can still make a
+ * later page repeat or skip a row. Each page's own total is consistent.
+ */
+export async function listMonitorDefinitionsPage(
+  auth: AuthContext,
+  filters: MonitorListFilters | undefined,
+  page: { limit: number; offset: number },
+): Promise<{ rows: MonitorDefinitionRow[]; total: number }> {
+  const where = listConditions(auth, filters);
+  const counted = db
+    .select({ total: sql<number>`count(*)::int`.as('total') })
+    .from(monitorDefinitions)
+    .where(where)
+    .as('counted');
+  const pageIds = db
+    .select({ id: monitorDefinitions.id })
+    .from(monitorDefinitions)
+    .where(where)
+    .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id))
+    .limit(page.limit)
+    .offset(page.offset);
+  const rows = await db
+    .select({ total: counted.total, row: monitorDefinitions })
+    .from(counted)
+    .leftJoin(monitorDefinitions, inArray(monitorDefinitions.id, pageIds))
+    .orderBy(asc(monitorDefinitions.name), asc(monitorDefinitions.id));
+
+  return {
+    rows: rows.flatMap((r) => (r.row ? [projectMonitorForCaller(r.row, auth)] : [])),
+    total: Number(rows[0]?.total ?? 0),
+  };
 }
 
 export async function getMonitorDefinition(
@@ -255,7 +336,7 @@ export async function getMonitorDefinition(
     .from(monitorDefinitions)
     .where(read ? and(eq(monitorDefinitions.id, id), read) : eq(monitorDefinitions.id, id))
     .limit(1);
-  return row ?? null;
+  return row ? projectMonitorForCaller(row, auth) : null;
 }
 
 export async function createMonitorDefinition(

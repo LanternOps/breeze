@@ -2,7 +2,16 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
-import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination, asRecord, asString, asNumber, asOptionalNumber } from './helpers';
+import {
+  getDeviceWithOrgAndSiteCheck,
+  requireDevicesExecute,
+  SITE_ACCESS_DENIED,
+  getPagination,
+  asRecord,
+  asString,
+  asNumber,
+  asOptionalNumber
+} from './helpers';
 import {
   deviceIdParamSchema,
   eventLogNameParamSchema,
@@ -10,6 +19,7 @@ import {
   eventRecordParamSchema
 } from './schemas';
 import { isCommandFailure, buildCommandFailureResponse } from './fileBrowserHelpers';
+import { isSensitiveEventLogChannel } from './sensitiveEventLogChannels';
 import type { EventLogInfo, EventLogEntry } from './types';
 
 function normalizeEventLevel(value?: string): EventLogEntry['level'] {
@@ -183,6 +193,10 @@ eventLogsRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    if (isSensitiveEventLogChannel(name) && !(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+
     const { page, limit } = getPagination(query);
 
     const result = await executeCommand(deviceId, CommandTypes.EVENT_LOGS_QUERY, {
@@ -239,6 +253,10 @@ eventLogsRoutes.get(
     }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    if (isSensitiveEventLogChannel(name) && !(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
     }
 
     const result = await executeCommand(deviceId, CommandTypes.EVENT_LOG_GET, {

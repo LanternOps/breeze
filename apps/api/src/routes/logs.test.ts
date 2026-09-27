@@ -133,6 +133,16 @@ vi.mock('../services/logSearch', () => ({
   updateSavedSearchRunStats: updateSavedSearchRunStatsMock,
 }));
 
+// Not under test here (see logs.eventLogSensitivity.test.ts / logSearch.eventLogSensitivity.test.ts):
+// stub to devices:execute so the pre-existing search/aggregation/trends tests
+// exercise the same unrestricted path they did before the sensitivity gate.
+vi.mock('../services/eventLogSensitivity', async () => {
+  const actual = await vi.importActual<typeof import('../services/eventLogSensitivity')>(
+    '../services/eventLogSensitivity'
+  );
+  return { ...actual, canReadSensitiveEventLogCategory: vi.fn(async () => true) };
+});
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {

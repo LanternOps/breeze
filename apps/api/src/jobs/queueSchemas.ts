@@ -334,6 +334,10 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     configPolicyId: z.string().min(1).optional(),
     targetDeviceIds: z.array(z.string().min(1)),
     triggeredBy: z.string().min(1),
+    // #3189 — the trigger occurrence this run is for, so a replayed job resumes
+    // the run the first attempt admitted instead of admitting a second one.
+    // Optional: jobs enqueued before this field existed simply are not deduped.
+    occurrenceKey: z.string().min(1).max(255).optional(),
   }).strict(),
 ]);
 

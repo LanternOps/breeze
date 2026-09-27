@@ -17,6 +17,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/securefs"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/watchdog"
@@ -325,7 +326,61 @@ func failoverRecoveryIntent(cmdType string) (intent watchdog.RecoveryIntent, res
 // stopCh is an optional channel that, when closed, triggers a clean shutdown.
 // On Unix this is nil (signal handling is used instead). On Windows the SCM
 // handler closes it on Stop/Shutdown.
+// osExecutableFn, verifyTrustedExecutableOwnerFn, and geteuidFn are
+// package-level vars so tests can exercise
+// verifyOwnExecutableTrustedIfPrivileged's branching without needing to run
+// the test binary as root.
+var (
+	osExecutableFn                 = os.Executable
+	verifyTrustedExecutableOwnerFn = securefs.VerifyTrustedExecutableOwner
+	geteuidFn                      = os.Geteuid
+)
+
+// verifyOwnExecutableTrustedIfPrivileged reports (but, see
+// enforceExecutableTrustAtStartup, does not currently enforce) when this
+// process is running as root/SYSTEM (a LaunchDaemon or systemd unit, not an
+// interactive dev/test run) but its own executable — or the directory
+// containing it — is not root-owned and free of group/other write access.
+// Mirrors the identical check in internal/agentapp; see
+// securefs.VerifyTrustedExecutableOwner for the underlying rationale.
+func verifyOwnExecutableTrustedIfPrivileged() error {
+	if geteuidFn() != 0 {
+		return nil
+	}
+	self, err := osExecutableFn()
+	if err != nil {
+		return fmt.Errorf("resolve own executable path: %w", err)
+	}
+	// Intentionally NOT filepath.EvalSymlinks'd: VerifyTrustedExecutableOwner
+	// itself refuses a symlinked final path component, and resolving it here
+	// first would erase exactly that signal.
+	return verifyTrustedExecutableOwnerFn(filepath.Clean(self))
+}
+
+// enforceExecutableTrustAtStartup mirrors the identical constant in
+// internal/agentapp; see there for the rationale (no installer/self-updater
+// in this release repairs a chowned /usr/local/bin, so fail-closed here
+// would strand an already-affected host). Flip both together.
+const enforceExecutableTrustAtStartup = false
+
+// reportExecutableTrustWarning logs an executable-trust check failure
+// loudly instead of exiting; see internal/agentapp's identical helper.
+func reportExecutableTrustWarning(err error) {
+	msg := "executable trust check failed at startup; continuing because " +
+		"enforcement is not yet enabled for this release"
+	fmt.Fprintf(os.Stderr, "Breeze watchdog: %s: %v\n", msg, err)
+	slog.Warn(msg, "error", err.Error())
+}
+
 func runWatchdog(stopCh <-chan struct{}) {
+	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
+		reportExecutableTrustWarning(err)
+		if enforceExecutableTrustAtStartup {
+			os.Exit(1)
+		}
+	}
+	maybeMigrateLegacyInstall()
+
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)

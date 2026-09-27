@@ -139,3 +139,114 @@ describe('resolveBackupBinary (github mode, spec 3d)', () => {
     );
   });
 });
+
+describe('buildLaunchScript / buildBundleReadme (binary signature verification)', () => {
+  it('bash launch script fetches and verifies the binary signature before executing the binary, failing closed on missing minisign/curl or a failed check', async () => {
+    const { buildLaunchScript } = await import('./recoveryMediaService');
+    const script = buildLaunchScript({
+      platform: 'linux',
+      architecture: 'amd64',
+      fileName: 'breeze-backup',
+      serverUrl: 'https://breeze.example.com',
+    });
+    expect(script.fileName).toBe('run-recovery.sh');
+    // Verification must happen, and must happen BEFORE the binary is exec'd.
+    const verifyIdx = script.content.indexOf('minisign -V');
+    const execIdx = script.content.indexOf('"$BINARY" bmr-recover');
+    expect(verifyIdx).toBeGreaterThan(-1);
+    expect(execIdx).toBeGreaterThan(-1);
+    expect(verifyIdx).toBeLessThan(execIdx);
+    // Fails closed: every one of these guards must `exit 1` before ever
+    // reaching the exec line, not merely print a warning.
+    expect(script.content).toContain('command -v minisign');
+    expect(script.content).toContain('/api/v1/backup/bmr/recover/binary-signature');
+    expect(script.content).toContain('exit 1');
+  });
+
+  it('windows launch script fetches and verifies the binary signature before executing the binary, failing closed', async () => {
+    const { buildLaunchScript } = await import('./recoveryMediaService');
+    const script = buildLaunchScript({
+      platform: 'windows',
+      architecture: 'amd64',
+      fileName: 'breeze-backup.exe',
+      serverUrl: 'https://breeze.example.com',
+    });
+    expect(script.fileName).toBe('run-recovery.ps1');
+    const verifyIdx = script.content.indexOf('-V -P');
+    const execIdx = script.content.indexOf('& $binary bmr-recover');
+    expect(verifyIdx).toBeGreaterThan(-1);
+    expect(execIdx).toBeGreaterThan(-1);
+    expect(verifyIdx).toBeLessThan(execIdx);
+    expect(script.content).toContain('minisign.exe');
+    expect(script.content).toContain('/api/v1/backup/bmr/recover/binary-signature');
+    expect(script.content).toContain('exit 1');
+  });
+
+  it('bash launch script verifies against a public key baked into the bundle at build time, never one the server hands back', async () => {
+    const { buildLaunchScript } = await import('./recoveryMediaService');
+    const script = buildLaunchScript({
+      platform: 'linux',
+      architecture: 'amd64',
+      fileName: 'breeze-backup',
+      serverUrl: 'https://breeze.example.com',
+      signingPublicKey: 'RWRUZXN0UHViS2V5MTIzNA==',
+    });
+    // The key must be a literal baked into the script text, not something
+    // parsed out of the /binary-signature response — the response must
+    // never be trusted for the key, only the signature.
+    expect(script.content).toContain('RWRUZXN0UHViS2V5MTIzNA==');
+    expect(script.content).not.toContain('"publicKey"');
+    const bakedKeyIdx = script.content.indexOf('RWRUZXN0UHViS2V5MTIzNA==');
+    const verifyIdx = script.content.indexOf('minisign -V');
+    expect(bakedKeyIdx).toBeGreaterThan(-1);
+    expect(bakedKeyIdx).toBeLessThan(verifyIdx);
+  });
+
+  it('windows launch script verifies against a public key baked into the bundle at build time, never one the server hands back', async () => {
+    const { buildLaunchScript } = await import('./recoveryMediaService');
+    const script = buildLaunchScript({
+      platform: 'windows',
+      architecture: 'amd64',
+      fileName: 'breeze-backup.exe',
+      serverUrl: 'https://breeze.example.com',
+      signingPublicKey: 'RWRUZXN0UHViS2V5MTIzNA==',
+    });
+    expect(script.content).toContain('RWRUZXN0UHViS2V5MTIzNA==');
+    expect(script.content).not.toContain('.publicKey');
+    const bakedKeyIdx = script.content.indexOf('RWRUZXN0UHViS2V5MTIzNA==');
+    const verifyIdx = script.content.indexOf('-V -P');
+    expect(bakedKeyIdx).toBeGreaterThan(-1);
+    expect(bakedKeyIdx).toBeLessThan(verifyIdx);
+  });
+
+  it('bash launch script fails closed before any network fetch when no signing key was embedded at build time', async () => {
+    const { buildLaunchScript } = await import('./recoveryMediaService');
+    const script = buildLaunchScript({
+      platform: 'linux',
+      architecture: 'amd64',
+      fileName: 'breeze-backup',
+      serverUrl: 'https://breeze.example.com',
+      signingPublicKey: null,
+    });
+    const emptyKeyGuardIdx = script.content.indexOf('EXPECTED_PUBKEY');
+    const fetchIdx = script.content.indexOf('/api/v1/backup/bmr/recover/binary-signature');
+    expect(emptyKeyGuardIdx).toBeGreaterThan(-1);
+    expect(emptyKeyGuardIdx).toBeLessThan(fetchIdx);
+    expect(script.content).toContain('exit 1');
+  });
+
+  it('bundle README documents the verification step', async () => {
+    const { buildBundleReadme } = await import('./recoveryMediaService');
+    const readme = buildBundleReadme({
+      platform: 'linux',
+      architecture: 'amd64',
+      serverUrl: 'https://breeze.example.com',
+      tokenId: 'token-1',
+      snapshotId: 'snapshot-1',
+      restoreType: 'bare_metal',
+      fileName: 'breeze-backup',
+    });
+    expect(readme).toMatch(/minisign/i);
+    expect(readme).toMatch(/verif/i);
+  });
+});

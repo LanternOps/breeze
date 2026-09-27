@@ -8,6 +8,7 @@ import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
+import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from './mcpTenantToolSelfManagedContext';
 
 export interface ApiKeyContext {
   apiKey: {
@@ -121,7 +122,9 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         createdBy: apiKeys.createdBy,
         source: apiKeys.source,
         principalType: apiKeys.principalType,
-        principalId: apiKeys.principalId
+        principalId: apiKeys.principalId,
+        creatorAuthEpoch: apiKeys.creatorAuthEpoch,
+        creatorMfaEpoch: apiKeys.creatorMfaEpoch
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -174,7 +177,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     // in PR 5 — do not build on that behavior.)
     const creator = await withSystemDbAccessContext(async () => {
       const [row] = await db
-        .select({ status: users.status })
+        .select({ status: users.status, authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch })
         .from(users)
         .where(eq(users.id, apiKey.createdBy))
         .limit(1);
@@ -182,6 +185,19 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     });
     if (!creator || creator.status !== 'active') {
       throw new HTTPException(401, { message: 'API key creator is not active' });
+    }
+
+    // A human-delegated key's authority must not outlive the credential
+    // state its creator held at mint time. A password change/reset bumps
+    // auth_epoch; an MFA factor add/remove/reset bumps mfa_epoch (both via
+    // routes/auth/password.ts and services/mfaAssurance.ts, mirroring the
+    // check authMiddleware already applies to user-session JWTs). A NULL
+    // snapshot means the key predates this binding and is not checked.
+    if (
+      (apiKey.creatorAuthEpoch !== null && apiKey.creatorAuthEpoch !== creator.authEpoch) ||
+      (apiKey.creatorMfaEpoch !== null && apiKey.creatorMfaEpoch !== creator.mfaEpoch)
+    ) {
+      throw new HTTPException(401, { message: 'API key creator credentials have changed' });
     }
   }
 
@@ -286,6 +302,16 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     principalId: apiKey.principalId,
   });
   c.set('apiKeyOrgId', apiKey.orgId);
+
+  // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: set only by
+  // mcpAuthMiddleware, only for an MCP tools/call request already known to
+  // target a tenant (BYO MCP) tool. Every DB read/write on that path manages
+  // its own short context, so the ambient wrap below is skipped rather than
+  // pinning a pooled connection across the tool's outbound call.
+  if (c.get(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY) === true) {
+    await next();
+    return;
+  }
 
   await withDbAccessContext(
     {

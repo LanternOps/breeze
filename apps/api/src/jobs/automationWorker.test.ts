@@ -215,7 +215,7 @@ describe('processTriggerEvent device binding', () => {
     expect(lookup.from).toHaveBeenCalledWith(devices);
     expect(lookup.innerJoin).toHaveBeenCalledWith(organizations, eq(devices.orgId, organizations.id));
     expect(lookup.where).toHaveBeenCalledWith(eq(devices.id, deviceId));
-    expect(selectMock).toHaveBeenLastCalledWith({ orgId: devices.orgId, partnerId: organizations.partnerId });
+    expect(selectMock).toHaveBeenLastCalledWith({ orgId: devices.orgId, partnerId: organizations.partnerId, siteId: devices.siteId });
   });
 
   it.each([

@@ -3,7 +3,7 @@ import type { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, type Database } from '../../db';
-import { devices, patches, devicePatches } from '../../db/schema';
+import { devices, patches, devicePatches, patchSeverityEnum } from '../../db/schema';
 import { enqueueWingetReleaseTest } from '../../jobs/wingetReleaseTestWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { envInt } from '../../utils/envInt';
@@ -45,10 +45,10 @@ function logRejections(agentId: string, kind: string, admission: PatchAdmission<
  * same row, and every tenant's UI, `patch_approvals` and patch jobs read it.
  * The two upserts below therefore classify each column:
  *
- * - **Volatile / operational** (`category`, `description`, `requires_reboot`,
- *   `os_types`): these genuinely change between scans and keep refreshing. They
- *   are only hardened against *null downgrades* — a scan that omits a field must
- *   not blank a value an earlier scan established.
+ * - **Volatile / operational** (`description`, `requires_reboot`, `os_types`):
+ *   these genuinely change between scans and keep refreshing. They are only
+ *   hardened against *null downgrades* — a scan that omits a field must not
+ *   blank a value an earlier scan established.
  * - **Identity-bearing** (`title`, `vendor`, `package_id`, `version`): these say
  *   *what the row is*. `package_id` is forwarded for package managers whose
  *   external identity is already provider-qualified. For KB-bearing Microsoft
@@ -56,17 +56,36 @@ function logRejections(agentId: string, kind: string, admission: PatchAdmission<
  *   drops this global first-writer value and WUA resolves the endpoint-observed
  *   KB instead. Raw agent strings may only **fill** these columns, never rewrite them;
  *   overwriting is reserved for server-side catalog enrichment.
- * - **Authoritative-only** (`severity`): agent scans may fill or *raise* it and
- *   nothing else. See `raiseOnlySeverity`.
+ * - **Trusted-source-only** (`severity`, `category`): no agent report — first,
+ *   curated or otherwise — may ORIGINATE a classification on this column, only
+ *   fill an already-trusted one. A curated third-party catalog HIT (the
+ *   catalog's own `defaultSeverity`/`category`, not the agent's strings) is
+ *   the one agent-path trust anchor; an uncurated report contributes neither
+ *   column at all, on insert or on conflict. See `fillUnsetSeverity`.
  *
  * Two columns are load-bearing for cross-tenant integrity, because a compromised
  * agent in ONE tenant writes a row every OTHER tenant's approval engine reads:
  *
  * - `severity` gates auto-approval rules (`patchApprovalEvaluator`'s severity
- *   filters). Letting an agent LOWER it globally would silently downgrade a
- *   critical patch for every other MSP customer, so the agent path is now
- *   fill-or-raise only. Lowering is reserved for server-authoritative writers —
- *   today that is `jobs/cveEnrichmentWorker.ts`, which itself only ever raises.
+ *   filters). Earlier revisions let an agent-reported value fill this column
+ *   on first classification (first-scanner-wins), which meant a device racing
+ *   to report a brand-new patch could permanently suppress or inflate its
+ *   severity for every other tenant with no correction path. Now only a
+ *   curated catalog match (or a future trusted writer) may set it at all; an
+ *   uncurated row starts and stays `'unknown'` until one does. Changing an
+ *   already-classified value is reserved for server-authoritative writers —
+ *   today that is `jobs/cveEnrichmentWorker.ts`, which writes `patches`
+ *   directly, not through this route (and only ever raises third-party rows
+ *   with an OSV mapping — there is no equivalent trusted classifier yet for
+ *   `microsoft`/`winget` rows without a catalog hit; those stay `'unknown'`
+ *   until one exists).
+ * - `category` gates category-based auto-approval/exclude rules the same way
+ *   (`patchApprovalEvaluator`'s category rules are terminal), so it gets the
+ *   same trusted-source-only treatment.
+ * - Per-device/per-org visibility into what an individual agent actually
+ *   reported is deliberately NOT added here: no such column exists on
+ *   `device_patches` today, and adding one is a larger, deferred schema
+ *   change (tracked alongside the interim scope of this fix).
  * - `version` drives the version pin / block rules in `patchApprovalEvaluator`.
  *   Agent scan data may only **fill** it on both paths, never rewrite it. The
  *   per-device *observed available* version — which legitimately advances
@@ -94,27 +113,39 @@ function updateIfReported<T>(column: unknown, value: T | null | undefined) {
   return value === null || value === undefined ? sql`${column}` : value;
 }
 
-/** Enum ordering for `patch_severity`, weakest first. Mirrors SEVERITY_RANK in jobs/cveEnrichmentWorker.ts. */
-const SEVERITY_RANK_SQL = sql`ARRAY['unknown','low','moderate','important','critical']::text[]`;
-
 /**
- * Agent-reported severity may only FILL or RAISE the shared row, never lower it.
- * `patches` is global, so a compromised agent lowering a critical patch's
- * severity mis-classifies it for every other tenant's auto-approval rules.
- * Lowering is reserved for server-authoritative writers (the CVE enrichment
- * worker, which itself only raises).
+ * Agent-reported severity may only FILL an unset shared row once; it can
+ * never raise OR lower an already-classified value. `patches` is global and
+ * un-tenanted, so letting any agent move this column after the first
+ * classification would let one tenant's device re-grade a patch for every
+ * other tenant's auto-approval rules. Changing an already-classified value is
+ * reserved for server-authoritative writers (the CVE enrichment worker, which
+ * writes `patches` directly and does not go through this route).
  */
-export function raiseOnlySeverity(column: unknown, value: string | null | undefined) {
+export function fillUnsetSeverity(column: unknown, value: string | null | undefined) {
   if (!value || value === 'unknown') {
     return sql`COALESCE(${column}, 'unknown'::patch_severity)`;
   }
   return sql`CASE
-    WHEN ${column} IS NULL THEN ${value}::patch_severity
-    WHEN COALESCE(array_position(${SEVERITY_RANK_SQL}, ${value}), 0)
-       > COALESCE(array_position(${SEVERITY_RANK_SQL}, ${column}::text), 0)
-      THEN ${value}::patch_severity
+    WHEN ${column} IS NULL OR ${column} = 'unknown'::patch_severity THEN ${value}::patch_severity
     ELSE ${column}
   END`;
+}
+
+/**
+ * Narrow an agent-reported severity string to a valid enum value or null.
+ * Used ONLY for the per-device `device_patches.reported_severity` overlay —
+ * this is the device's own report, scoped to its own device_id/org_id row, so
+ * unlike `fillUnsetSeverity` (the shared, un-tenanted row) it may be
+ * refreshed by this device's own scans without any trust gating.
+ */
+function narrowReportedSeverity(
+  value: string | null | undefined
+): (typeof patchSeverityEnum.enumValues)[number] | null {
+  if (!value) return null;
+  return (patchSeverityEnum.enumValues as readonly string[]).includes(value)
+    ? (value as (typeof patchSeverityEnum.enumValues)[number])
+    : null;
 }
 
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
@@ -220,6 +251,25 @@ async function upsertPendingPatches(
     // from the server-side catalog rather than the agent's own strings — the
     // only case in which an identity-bearing column may be rewritten.
     const curated = enriched.matchedCatalogId !== null;
+    // `severity`/`category` are classification columns on a GLOBAL,
+    // un-tenanted row: no agent report — curated or not — may originate a
+    // classification, only a trusted server-side source may. A catalog HIT is
+    // that trusted source (the catalog itself, not the agent, supplies the
+    // value); an uncurated report supplies neither column at all, so it can
+    // never set, raise or lower them, not even on the first insert that
+    // creates the row. That keeps first-scanner-wins from applying to
+    // classification: an uncurated row starts and stays 'unknown'/NULL until
+    // a trusted writer (the catalog match above, or `jobs/cveEnrichmentWorker.ts`)
+    // classifies it.
+    const trustedSeverity = curated ? enriched.severity : null;
+    const trustedCategory = curated ? enriched.category : null;
+    // This device's own report, unconditionally — never gated by `curated`.
+    // Written to device_patches (per-device, per-org), never to the shared
+    // `patches` row above, so it can never originate or move classification
+    // for any other tenant. See services/patchSeverityOverlay.ts for how this
+    // is read back as an effective severity/category fallback.
+    const reportedSeverity = narrowReportedSeverity(patchData.severity ?? null);
+    const reportedCategory = category ?? null;
 
     const [patch] = await executor
       .insert(patches)
@@ -228,8 +278,8 @@ async function upsertPendingPatches(
         externalId: externalId,
         title: enriched.title,
         description: description,
-        severity: enriched.severity ?? 'unknown',
-        category: enriched.category,
+        severity: trustedSeverity ?? 'unknown',
+        category: trustedCategory,
         releaseDate: sanitizeDate(patchData.releaseDate),
         requiresReboot: patchData.requiresRestart || false,
         downloadSizeMb: toDownloadSizeMb(patchData.size),
@@ -249,9 +299,11 @@ async function upsertPendingPatches(
           packageId: fillIfNull(patches.packageId, packageId),
           // Volatile: refresh, but never blank out what an earlier scan set.
           description: updateIfReported(patches.description, description),
-          // Agent severity is raise-only; only server-authoritative writers may lower it.
-          severity: raiseOnlySeverity(patches.severity, enriched.severity),
-          category: updateIfReported(patches.category, enriched.category),
+          // Classification: only a curated catalog match may touch these at
+          // all, and even then only fill an unset value — never raise, lower
+          // or originate one from an uncurated (agent-only) report.
+          severity: curated ? fillUnsetSeverity(patches.severity, trustedSeverity) : sql`${patches.severity}`,
+          category: curated ? fillIfNull(patches.category, trustedCategory) : sql`${patches.category}`,
           requiresReboot: updateIfReported(patches.requiresReboot, patchData.requiresRestart),
           // Agent scan data may only fill the shared column, never rewrite it;
           // the per-device value lives on device_patches.available_version.
@@ -297,6 +349,8 @@ async function upsertPendingPatches(
         status: 'pending',
         scope: patchData.scope ?? null,
         availableVersion: version,
+        reportedSeverity: reportedSeverity,
+        reportedCategory: reportedCategory,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
@@ -309,6 +363,12 @@ async function upsertPendingPatches(
           // from providers with no scope concept, and blanking the column
           // would re-expose user-scope rows to the sweep.
           scope: patchData.scope ?? sql`${devicePatches.scope}`,
+          // Refresh on every scan that reports a value; keep the stored one
+          // when this scan didn't carry it. Unlike the shared `patches` row,
+          // this is per-device/per-org so it can be freely refreshed, raised
+          // or lowered by this device's own later scans.
+          reportedSeverity: updateIfReported(devicePatches.reportedSeverity, reportedSeverity),
+          reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }
@@ -335,6 +395,25 @@ async function upsertInstalledPatches(
     const { externalId, packageId, title, version, vendor, category } = identity;
     const inferredOsType = inferPatchOsType(patchData.source, device.osType);
     const derivedVendor = deriveVendor(packageId, vendor);
+    // `category` is a classification column on the shared, un-tenanted row
+    // (see the doc block above `upsertPendingPatches`): the agent-reported
+    // `category` here may only be used when a curated catalog match confirms
+    // it, exactly like the pending-scan path. Installed inventory never
+    // carries a `severity`, so that column stays 'unknown'/untouched as before.
+    const enriched = await enrichFromCatalog({
+      source: patchData.source,
+      packageId: packageId,
+      title: title,
+      vendor: derivedVendor,
+      severity: null,
+      category: category,
+    });
+    const curated = enriched.matchedCatalogId !== null;
+    const trustedCategory = curated ? enriched.category : null;
+    // This device's own report, unconditionally (see the parallel comment in
+    // upsertPendingPatches). Installed inventory never carries a severity
+    // signal, so reportedSeverity is left untouched by this path.
+    const reportedCategory = category ?? null;
 
     const [patch] = await executor
       .insert(patches)
@@ -343,7 +422,7 @@ async function upsertInstalledPatches(
         externalId: externalId,
         title: title,
         severity: 'unknown',
-        category: category,
+        category: trustedCategory,
         vendor: derivedVendor,
         packageId: packageId,
         version: version,
@@ -353,11 +432,13 @@ async function upsertInstalledPatches(
         target: [patches.source, patches.externalId],
         set: {
           // Installed inventory is the lowest-authority writer on this shared
-          // row: it carries no catalog enrichment, and its `version` is the
-          // *installed* version rather than the available one. It may only fill
-          // columns that are still unset — never rewrite them. `title` is NOT
-          // NULL, so it is simply never updated from this path.
-          category: fillIfNull(patches.category, category),
+          // row: it carries no catalog enrichment beyond the classification
+          // check above, and its `version` is the *installed* version rather
+          // than the available one. It may only fill columns that are still
+          // unset — never rewrite them. `title` is NOT NULL, so it is simply
+          // never updated from this path. `category` may only fill from a
+          // curated catalog match, never from the raw agent-reported value.
+          category: curated ? fillIfNull(patches.category, trustedCategory) : sql`${patches.category}`,
           vendor: fillIfNull(patches.vendor, derivedVendor),
           packageId: fillIfNull(patches.packageId, packageId),
           version: fillIfNull(patches.version, version),
@@ -435,6 +516,7 @@ async function upsertInstalledPatches(
         status: 'installed',
         installedAt: installedAt,
         installedVersion: version,
+        reportedCategory: reportedCategory,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
@@ -447,6 +529,7 @@ async function upsertInstalledPatches(
             ? installedAtParam
             : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
           installedVersion: version,
+          reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }

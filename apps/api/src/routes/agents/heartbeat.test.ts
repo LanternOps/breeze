@@ -206,6 +206,10 @@ vi.mock('./helpers', () => ({
   // that don't exercise it. The edition-gate describe overrides per-test and
   // restores this implementation in afterEach (clearAllMocks does not).
   agentAcceptsServedEdition: vi.fn(() => true),
+  // Mirrors the real helper: only a flip INTO 'server' from a different role
+  // is withheld from auto-apply; every other transition passes through.
+  shouldAutoApplyAgentReportedDeviceRole: vi.fn((current: string | null | undefined, reported: string) =>
+    reported !== 'server' || current === 'server'),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -3113,6 +3117,68 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.desktopFenceProtocolVersion).toBe(expectedFence);
     expect(updateArg.revocationLeaseProtocolVersion).toBe(expectedLease);
   });
+
+  // consentPromptProtocolVersion: same non-sticky contract — the server must
+  // be able to tell whether this build honors a `prompt` block on a desktop
+  // stream start, and an agent that stops reporting it (old build, or a
+  // downgrade) must self-heal back to capability 0 so a policy requiring
+  // consent/notification is refused rather than silently started unfenced.
+  it.each([
+    { name: 'recognized version 1', capabilities: { consentPromptProtocolVersion: 1 }, expected: 1 },
+    { name: 'omitted capability object', capabilities: undefined, expected: 0 },
+    { name: 'omitted key (pre-consent-gate agent)', capabilities: {}, expected: 0 },
+    { name: 'explicit zero downgrade', capabilities: { consentPromptProtocolVersion: 0 }, expected: 0 },
+    { name: 'unknown integer version', capabilities: { consentPromptProtocolVersion: 2 }, expected: 0 },
+    { name: 'fractional version', capabilities: { consentPromptProtocolVersion: 1.5 }, expected: 0 },
+    { name: 'string version', capabilities: { consentPromptProtocolVersion: '1' }, expected: 0 },
+  ])('persists tolerant non-sticky consent-prompt capability: $name', async ({
+    capabilities,
+    expected,
+  }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.consentPromptProtocolVersion).toBe(expected);
+  });
+
+  // The backup helper's brokered-read protocol is a TOP-LEVEL heartbeat field
+  // (not inside securityCapabilities), reported from the INSTALLED helper and
+  // recorded non-sticky on every beat: omitted, lower, unknown, fractional and
+  // string values all persist as 0 so a helper downgrade stops delivery of
+  // storage sessions on the next beat.
+  it.each([
+    { name: 'recognized version 1', extra: { backupReadProtocolVersion: 1 }, expected: 1 },
+    { name: 'omitted (older helper or agent)', extra: {}, expected: 0 },
+    { name: 'explicit zero downgrade', extra: { backupReadProtocolVersion: 0 }, expected: 0 },
+    { name: 'unknown future version', extra: { backupReadProtocolVersion: 2 }, expected: 0 },
+    { name: 'fractional version', extra: { backupReadProtocolVersion: 1.5 }, expected: 0 },
+    { name: 'string version', extra: { backupReadProtocolVersion: '1' }, expected: 0 },
+    { name: 'nested in securityCapabilities is not the field', extra: { securityCapabilities: { backupReadProtocolVersion: 1 } }, expected: 0 },
+  ])('persists the non-sticky backup read protocol version: $name', async ({ extra, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.backupReadProtocolVersion).toBe(expected);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -4262,13 +4328,36 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation enqu
       hostname: 'new-host',
       osVersion: '10.0.22631',
       osBuild: '22631',
-      deviceRole: 'server',
+      // 'nas' is a non-privileged flip target (unlike 'server' below), so it
+      // still auto-applies and this test can keep exercising the general
+      // changedFields plumbing.
+      deviceRole: 'nas',
     });
 
     expect(resp.status).toBe(200);
     const request = requestDeviceGroupReevaluationMock.mock.calls[0]?.[0];
     expect(request?.changedFields).toEqual(
       expect.arrayContaining(['hostname', 'osVersion', 'osBuild', 'deviceRole']),
+    );
+  });
+
+  it('does not auto-apply or re-evaluate on an agent-reported flip into a privileged role, and audit-logs the claim', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0', deviceRole: 'server' });
+
+    expect(resp.status).toBe(200);
+    // deviceRole is not in the update set, so it is excluded from the
+    // filterable-change list and never reaches dynamic-group re-evaluation.
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'device.role.self_reported_privileged_flip_blocked',
+        resourceId: 'device-1',
+        details: { from: 'workstation', reported: 'server' },
+      }),
     );
   });
 
@@ -4924,6 +5013,35 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       before: 'https://cp.example.com',
       after: 'https://new-cp.example.com',
     });
+  });
+
+  it('a backup read protocol drop from 1 to 0 is audited per device and logged', async () => {
+    arrange({ backupReadProtocolVersion: 1 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resp = await beat({ ...minimalHeartbeatBody });
+    expect(resp.status).toBe(200);
+
+    const calls = await auditCalls();
+    expect(calls).toHaveLength(1);
+    const changes = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes;
+    expect(changes).toContainEqual({ field: 'backupReadProtocolVersion', before: 1, after: 0 });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('backup read protocol'),
+      expect.objectContaining({ deviceId: 'device-1', orgId: 'org-1', before: 1, after: 0 }),
+    );
+    warn.mockRestore();
+  });
+
+  it.each([
+    { name: 'steady at 1', before: 1, extra: { backupReadProtocolVersion: 1 } },
+    { name: 'steady at 0', before: 0, extra: {} },
+    { name: 'first report of 1', before: 0, extra: { backupReadProtocolVersion: 1 } },
+  ])('no backup read protocol audit when $name', async ({ before, extra }) => {
+    arrange({ backupReadProtocolVersion: before });
+    const resp = await beat({ ...minimalHeartbeatBody, ...extra });
+    expect(resp.status).toBe(200);
+    const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+    expect(changes.filter((ch) => ch.field === 'backupReadProtocolVersion')).toEqual([]);
   });
 
   it('tccPermissions change emits a state_change audit', async () => {
@@ -5774,6 +5892,187 @@ describe('PUT /:id/monitoring-results — secret redaction (#2434)', () => {
     const serialized = JSON.stringify(inserted);
     expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
     expect(serialized).not.toContain('MIIBOgIBAAJBAKe0m0h');
+  });
+});
+
+// The monitoring ingest opens its own short org-scoped DB context for the
+// device read + insert, and runs the per-result failure-counter Redis work
+// only AFTER that context has been released, so a pooled connection is never
+// held idle-in-transaction across Redis round trips. The per-request result
+// count is bounded before any DB or Redis work.
+describe('PUT /:id/monitoring-results — DB context and per-request bounds', () => {
+  function recordingRedis(initial: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(initial));
+    const run = (cmd: string, key: string): unknown => {
+      callOrder.push(`redis:${cmd}`);
+      if (cmd === 'incr') {
+        const next = Number(store.get(key) ?? '0') + 1;
+        store.set(key, String(next));
+        return next;
+      }
+      if (cmd === 'expire') return 1;
+      if (cmd === 'get') return store.get(key) ?? null;
+      if (cmd === 'del') {
+        const had = store.has(key);
+        store.delete(key);
+        return had ? 1 : 0;
+      }
+      return null;
+    };
+    const client = {
+      incr: vi.fn(async (key: string) => run('incr', key)),
+      expire: vi.fn(async (key: string) => run('expire', key)),
+      get: vi.fn(async (key: string) => run('get', key)),
+      del: vi.fn(async (key: string) => run('del', key)),
+      pipeline: vi.fn(() => {
+        const queued: Array<[string, string]> = [];
+        const p: Record<string, unknown> = {};
+        for (const cmd of ['incr', 'expire', 'get', 'del']) {
+          p[cmd] = (key: string) => {
+            queued.push([cmd, key]);
+            return p;
+          };
+        }
+        p.exec = async () => queued.map(([cmd, key]) => [null, run(cmd, key)]);
+        return p;
+      }),
+    };
+    return { client, store };
+  }
+
+  function mockDeviceLookup() {
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: 'device-1', orgId: 'org-1', siteId: 'site-1' },
+          ]),
+        }),
+      }),
+    });
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    orgDbContexts.length = 0;
+    const { getRedis } = await import('../../services/redis');
+    vi.mocked(getRedis).mockReturnValue(null);
+  });
+
+  it('opens an org-scoped context carrying the agent partner for the read + insert', async () => {
+    mockDeviceLookup();
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const res = await buildApp().request('/agents/agent-1/monitoring-results', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: [{ watchType: 'service', name: 'sshd', status: 'running' }] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(orgDbContexts).toHaveLength(1);
+    expect(orgDbContexts[0]).toMatchObject({
+      scope: 'organization',
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [],
+      currentPartnerId: 'partner-1',
+    });
+  });
+
+  it('runs the failure-counter Redis work only after the DB context is released', async () => {
+    mockDeviceLookup();
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const { client, store } = recordingRedis({ 'svc-mon:device-1:nginx:failures': '3' });
+    const { getRedis } = await import('../../services/redis');
+    vi.mocked(getRedis).mockReturnValue(client as any);
+
+    const res = await buildApp().request('/agents/agent-1/monitoring-results', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        results: [
+          { watchType: 'service', name: 'sshd', status: 'stopped' },
+          { watchType: 'process', name: 'nginx', status: 'running' },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 2 });
+
+    const released = callOrder.lastIndexOf('dbContext:released');
+    const redisIdx = callOrder
+      .map((entry, i) => (entry.startsWith('redis:') ? i : -1))
+      .filter((i) => i >= 0);
+    expect(released).toBeGreaterThanOrEqual(0);
+    expect(redisIdx.length).toBeGreaterThan(0);
+    expect(Math.min(...redisIdx)).toBeGreaterThan(released);
+
+    // Same counter semantics as before: a failure increments with a 1h TTL, a
+    // recovery clears the counter and reports how many failures preceded it.
+    expect(store.get('svc-mon:device-1:sshd:failures')).toBe('1');
+    expect(store.has('svc-mon:device-1:nginx:failures')).toBe(false);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'monitoring.check_failed',
+      'org-1',
+      { deviceId: 'device-1', name: 'sshd', watchType: 'service', status: 'stopped', consecutiveFailures: 1 },
+      'agent-monitoring',
+      { siteId: 'site-1' },
+    );
+    expect(publishEvent).toHaveBeenCalledWith(
+      'monitoring.check_recovered',
+      'org-1',
+      { deviceId: 'device-1', name: 'nginx', watchType: 'process', previousFailures: 3 },
+      'agent-monitoring',
+      { siteId: 'site-1' },
+    );
+  });
+
+  it('refuses a batch above the per-request result cap before any DB or Redis work', async () => {
+    const { client } = recordingRedis();
+    const { getRedis } = await import('../../services/redis');
+    vi.mocked(getRedis).mockReturnValue(client as any);
+
+    const results = Array.from({ length: 1001 }, (_, i) => ({
+      watchType: 'service',
+      name: `n${i}`,
+      status: 'stopped',
+    }));
+    const res = await buildApp().request('/agents/agent-1/monitoring-results', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results }),
+    });
+
+    expect(res.status).toBe(413);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(callOrder.filter((e) => e.startsWith('redis:'))).toEqual([]);
+  });
+
+  it('still accepts a batch at the per-request result cap', async () => {
+    mockDeviceLookup();
+    const values = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values });
+
+    const results = Array.from({ length: 1000 }, (_, i) => ({
+      watchType: 'process',
+      name: `n${i}`,
+      status: 'running',
+    }));
+    const res = await buildApp().request('/agents/agent-1/monitoring-results', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 1000 });
+    expect(values).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -180,6 +180,27 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     expect(setArg.result.error).toContain('never delivered');
   });
 
+  it('a row expired because its delivery was refused reports the refusal, not a reconnect deadline', async () => {
+    const deliverBy = new Date(NOW - 1000);
+    selectMock.mockReturnValue(selectChain([scriptRow({
+      type: 'backup_restore',
+      payload: { restoreJobId: 'rj-1' },
+      deliverBy,
+      result: { deliveryRefusal: 'the storage destination no longer resolves' },
+    })]));
+    const { command: update } = routeUpdates([{ id: 'c1' }]);
+
+    expect(await reapStaleDeviceCommands()).toBe(1);
+    const setArg = update.set.mock.calls[0]![0] as {
+      result: { status: string; reason: string; clock: string; error: string };
+    };
+    expect(setArg.result.status).toBe('timeout');
+    expect(setArg.result.clock).toBe('delivery');
+    expect(setArg.result.reason).toBe('delivery_refused');
+    expect(setArg.result.error).toContain('the storage destination no longer resolves');
+    expect(setArg.result.error).not.toContain('did not reconnect');
+  });
+
   it('a legacy pending row (deliver_by NULL) keeps the created_at + execution-timeout rule', async () => {
     selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy: null })]));
     const { command: update } = routeUpdates([{ id: 'c1' }]);

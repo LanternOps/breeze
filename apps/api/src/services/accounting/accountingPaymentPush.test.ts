@@ -41,14 +41,20 @@ const {
   captureExceptionMock,
   AccountingMappingError,
 } = vi.hoisted(() => {
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs / throttleSource / cause).
   class AccountingMappingError extends Error {
+    readonly retryAfterMs?: number;
+    readonly throttleSource?: string;
     constructor(
       public readonly code: string,
-      public readonly status: 404 | 409 | 502,
+      public readonly status: 404 | 409 | 429 | 502,
       message: string,
+      opts: { retryAfterMs?: number; throttleSource?: string; cause?: unknown } = {},
     ) {
-      super(message);
+      super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
       this.name = 'AccountingMappingError';
+      this.retryAfterMs = opts.retryAfterMs;
+      this.throttleSource = opts.throttleSource;
     }
   }
   return {
@@ -91,7 +97,36 @@ vi.mock('./accountingMappingService', () => ({
   AccountingMappingError,
 }));
 vi.mock('./providerRegistry', () => ({
-  getAccountingProvider: () => ({ createPayment: createPaymentMock, deletePayment: deletePaymentMock }),
+  // `limits.paymentRefMax` mirrors QuickBooks' published 21-char PaymentRefNum
+  // cap (Xero W01 Task 9: the coordinator reads the cap off the provider).
+  getAccountingProvider: () => ({
+    createPayment: createPaymentMock, deletePayment: deletePaymentMock, limits: { paymentRefMax: 21 },
+  }),
+  providerSupports: (id: string) => id === 'quickbooks',
+  LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
+  // An unknown id returns a sentinel, never 'QuickBooks', so a caller that
+  // passes the wrong value (a display name, undefined) cannot pass by default.
+  accountingProviderDisplayName: (id: string) =>
+    ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? `UNKNOWN_PROVIDER:${String(id)}`,
+}));
+// Xero W01: a payment mapping's audit names ITS connection's provider. Resolved
+// against the same stateful fake below: the mapping row -> its integration_id's
+// connection, partner-guarded exactly like the real join.
+//
+// The lookup is `getConnectionProviderForMapping` — provider column only. The
+// full-row `getConnectionForMapping` decrypts the realm/tokens, and these audit
+// paths (a payment void, an unresolved-delete drop) never touched the
+// connection row before W01, so an undecryptable token must not abort them:
+// the full-row mock THROWS, so any regression back to it fails every audit test.
+vi.mock('./accountingConnectionService', () => ({
+  getConnectionProviderForMapping: async (_dbc: unknown, mappingId: string, partnerId: string) => {
+    const row = currentMappings.find((m) => m.id === mappingId && m.partnerId === partnerId);
+    const conn = row ? currentConns.find((c) => c.id === row.integrationId && c.partnerId === partnerId) : undefined;
+    return conn?.provider ?? null;
+  },
+  getConnectionForMapping: async () => {
+    throw new Error('decrypt failed: audit provider lookups must not load (and decrypt) the connection row');
+  },
 }));
 vi.mock('../auditEvents', () => ({
   writeAuditEvent: writeAuditEventMock,
@@ -101,6 +136,8 @@ vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { qboErrorToProviderError } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import { db } from '../../db';
 import {
@@ -378,7 +415,12 @@ const HANDLED_MAPPING_COLUMNS: ReadonlySet<string> = new Set([
 /** Live row references (so an UPDATE's `Object.assign` sticks). */
 function matchedRows(table: unknown, cond: unknown): unknown[] {
   if (table === accountingConnections) {
-    return currentConns.filter((r) => boundTo(cond, r.partnerId) && boundTo(cond, r.provider) && boundTo(cond, r.status));
+    // `provider` is evaluated only when the condition references it: the
+    // partner's ONE connection is read without a provider filter (Xero W01).
+    const text = compiledSql(cond);
+    const providerOk = (r: ConnRow): boolean =>
+      !text.includes('"accounting_connections"."provider"') || boundTo(cond, r.provider);
+    return currentConns.filter((r) => boundTo(cond, r.partnerId) && providerOk(r) && boundTo(cond, r.status));
   }
   if (table === invoices) {
     return currentInvoices.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId));
@@ -565,7 +607,7 @@ beforeEach(() => {
 
   resolveConnectionMock.mockImplementation(async () => ({ ...currentConns[0], provider: 'quickbooks' }));
   resolveLiveConnectionMock.mockImplementation(async (c: unknown) => ({ ...(c as object), accessToken: 'fresh' }));
-  createPaymentMock.mockResolvedValue({ id: '181', syncToken: '0' });
+  createPaymentMock.mockResolvedValue({ id: '181', remoteVersion: '0' });
   deletePaymentMock.mockResolvedValue('deleted');
   installDbMocks();
 });
@@ -586,7 +628,7 @@ describe('constants (spec decisions 2, 3)', () => {
     // so: an earlier text quoted a bare amount ("Partially refunded in Stripe
     // (67.00)") that a bookkeeper who had already entered the first refund read
     // as a SECOND, fresh amount to enter.
-    expect(partialRefundDivergenceMessage('67.00'))
+    expect(partialRefundDivergenceMessage('67.00', 'QuickBooks'))
       .toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
   });
 });
@@ -616,15 +658,24 @@ describe('requestPaymentPush gating (spec decision 10)', () => {
     expect(mapping()).toMatchObject({ id, pendingOp: 'push', breezeOrigin: true });
   });
 
-  it('reads the connection partner-scoped, connected and provider-filtered', async () => {
+  it('reads the partner\'s ONE connection partner-scoped and connected, with no provider filter (Xero W01)', async () => {
     currentMappings = [invoiceMapRow(), orgMapRow()];
     await runCtx(request);
 
     const connSelect = stmtsOf('select', 'accounting_connections')[0]!;
     expect(compiledSql(connSelect.where)).toMatch(
-      /"accounting_connections"\."partner_id" = \$\d+ and "accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+/i,
+      /"accounting_connections"\."partner_id" = \$\d+ and "accounting_connections"\."status" = \$\d+/i,
     );
-    expect(paramsOf(connSelect.where)).toEqual([PARTNER, 'quickbooks', 'connected']);
+    expect(compiledSql(connSelect.where)).not.toContain('"accounting_connections"."provider"');
+    expect(paramsOf(connSelect.where)).toEqual([PARTNER, 'connected']);
+  });
+
+  it('treats a connection whose provider cannot push payments as not connected (capability gate)', async () => {
+    currentConns = [connRow({ provider: 'xero' })];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await expect(runCtx(request)).resolves.toBeNull();
+    expect(stmtsOf('insert', 'accounting_entity_mappings')).toHaveLength(0);
   });
 
   it('returns null when push_payments is off — no row, nothing to enqueue', async () => {
@@ -897,7 +948,7 @@ describe('pushPaymentToAccounting', () => {
     // by hand — the generation has to survive the whole coordinator, not just
     // the UPDATE that bumped it.
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ pushGeneration: 3 })];
-    createPaymentMock.mockResolvedValueOnce({ id: '190', syncToken: '0' });
+    createPaymentMock.mockResolvedValueOnce({ id: '190', remoteVersion: '0' });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
 
@@ -915,7 +966,7 @@ describe('pushPaymentToAccounting', () => {
     createPaymentMock.mockImplementationOnce(async () => {
       depthAtProviderCall = ctx.depth;
       claimedDuringFlight = mapping()!.claimedAt;
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
@@ -933,7 +984,7 @@ describe('pushPaymentToAccounting', () => {
         currencyCode: 'USD',
         txnDate: '2026-09-02',
         reference: 'ch_123',
-        privateNote: `Breeze payment ${PAYMENT}`,
+        marker: `Breeze payment ${PAYMENT}`,
         pushGeneration: 0,
       },
     );
@@ -1211,7 +1262,7 @@ describe('pushPaymentToAccounting', () => {
   it('converts to a delete when the payment vanished DURING the QuickBooks call (spec decision 7)', async () => {
     createPaymentMock.mockImplementationOnce(async () => {
       currentPayments = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
@@ -1230,7 +1281,7 @@ describe('pushPaymentToAccounting', () => {
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ pendingSince: stale })];
     createPaymentMock.mockImplementationOnce(async () => {
       currentPayments = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
@@ -1243,7 +1294,7 @@ describe('pushPaymentToAccounting', () => {
     // requestPaymentDelete runs before the invoice_payments delete.
     createPaymentMock.mockImplementationOnce(async () => {
       mapping()!.pendingOp = 'delete';
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
@@ -1259,7 +1310,7 @@ describe('pushPaymentToAccounting', () => {
     createPaymentMock.mockImplementationOnce(async () => {
       await runCtx(() => requestPaymentDelete(db, PAYMENT));
       currentPayments = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
@@ -1272,7 +1323,7 @@ describe('pushPaymentToAccounting', () => {
   it('is record_failed when the invoice cannot be locked in phase 2', async () => {
     createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
@@ -1282,7 +1333,7 @@ describe('pushPaymentToAccounting', () => {
   it('stamps normally when the invoice went void DURING the call (decision 11 beats decision 7)', async () => {
     createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = [invRow({ status: 'void' })];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
@@ -1299,7 +1350,7 @@ describe('pushPaymentToAccounting', () => {
       // its own at-most-once claim, and a row still owing a push would be
       // re-enqueued by the sweep and double-book once QBO's requestid window
       // lapsed.
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('already_adopted');
@@ -1313,7 +1364,7 @@ describe('pushPaymentToAccounting', () => {
       m.remoteEntityId = '181/145';
       m.remoteSyncToken = '4';
       m.pendingOp = 'delete';
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
@@ -1325,7 +1376,7 @@ describe('pushPaymentToAccounting', () => {
       const m = mapping()!;
       m.remoteEntityId = '999/145';
       m.remoteSyncToken = '4';
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
@@ -1339,7 +1390,7 @@ describe('pushPaymentToAccounting', () => {
     // would enter a refund for money that was never returned.
     createPaymentMock.mockImplementationOnce(async () => {
       currentPayments = [payRow({ amount: '40.00' })];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('diverged');
@@ -1349,7 +1400,7 @@ describe('pushPaymentToAccounting', () => {
       syncStatus: 'error',
       pendingOp: null,
       claimedAt: null,
-      lastError: partialRefundDivergenceMessage('67.00'),
+      lastError: partialRefundDivergenceMessage('67.00', 'QuickBooks'),
     });
     // Both divergence paths (this one and stripeReconcile's) go through the same
     // helper with the same quantity, so the two can never quote different numbers.
@@ -1375,11 +1426,11 @@ describe('pushPaymentToAccounting', () => {
     currentPayments = [payRow({ amount: '5000.50' })];
     createPaymentMock.mockImplementationOnce(async () => {
       currentPayments = [payRow({ amount: '3000.25' })];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('diverged');
-    expect(mapping()!.lastError).toBe(partialRefundDivergenceMessage('2001.00'));
+    expect(mapping()!.lastError).toBe(partialRefundDivergenceMessage('2001.00', 'QuickBooks'));
     expect(mapping()!.lastError).not.toContain('2000.25');
   });
 
@@ -1390,7 +1441,7 @@ describe('pushPaymentToAccounting', () => {
     }));
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       syncStatus: 'error',
       lastError: 'QuickBooks rejected the payment sync (HTTP 400)',
@@ -1409,12 +1460,13 @@ describe('pushPaymentToAccounting', () => {
     // or Sentry, only the server log.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      createPaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), {
+      // The fixture models what the provider throws: a QBO fault translated at its boundary.
+      createPaymentMock.mockRejectedValueOnce(qboErrorToProviderError(Object.assign(new Error('boom'), {
         status: 400,
         body: '{"Fault":{"Error":[{"code":"6000","Message":"Business Validation Error","Detail":"Customer Acme owes 4200.00"}]}}',
         qboFaultCode: '6000',
         qboFaultMessage: 'Business Validation Error',
-      }));
+      }), 'QuickBooks payment create'));
 
       await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
 
@@ -1438,7 +1490,7 @@ describe('pushPaymentToAccounting', () => {
       // only remaining ways here are tenant erasure or hand surgery — but the
       // coordinator must still refuse to silently lose the QuickBooks result.
       currentMappings = currentMappings.filter((m) => m.breezeEntityType !== 'payment');
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
@@ -1456,7 +1508,7 @@ describe('pushPaymentToAccounting', () => {
     // a SECOND real Payment. `record_failed` gets its own, much shorter bound.
     const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     for (let sweep = 1; sweep < PAYMENT_RECORD_FAILED_MAX_SWEEPS; sweep++) {
@@ -1501,7 +1553,7 @@ describe('pushPaymentToAccounting', () => {
     // and is the only thing the retirement reads.
     const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     for (let sweep = 1; sweep < PAYMENT_RECORD_FAILED_MAX_SWEEPS; sweep++) {
@@ -1532,7 +1584,7 @@ describe('pushPaymentToAccounting', () => {
     // — without it, nothing in Breeze can ever point a human at that Payment.
     const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = [];
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
     for (let i = 0; i < PAYMENT_RECORD_FAILED_MAX_SWEEPS; i++) {
       failPhase2();
@@ -1614,11 +1666,11 @@ describe('pushPaymentToAccounting', () => {
       updateMock.mockImplementationOnce(() => {
         throw Object.assign(new Error(text), { code });
       });
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       pendingOp: 'push', // still owed, so the sweep retries it
       terminalReason: null,
@@ -1638,7 +1690,7 @@ describe('pushPaymentToAccounting', () => {
     // bound the retries.
     createPaymentMock.mockImplementationOnce(async () => {
       currentInvoices = []; // phase 2 cannot lock the invoice
-      return { id: '181', syncToken: '0' };
+      return { id: '181', remoteVersion: '0' };
     });
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
@@ -1678,7 +1730,7 @@ describe('deletePaymentInAccounting', () => {
     expect(depthAtProviderCall).toBe(0);
     expect(deletePaymentMock).toHaveBeenCalledWith(
       expect.objectContaining({ accessToken: 'fresh' }),
-      { remotePaymentId: '181', syncToken: '3' },
+      { remotePaymentId: '181', remoteVersion: '3' },
     );
     expect(mapping()).toBeNull();
     expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -1811,11 +1863,32 @@ describe('deletePaymentInAccounting', () => {
     deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
     expect(mapping()).toMatchObject({
       pendingOp: 'delete',
       claimedAt: null,
       lastError: 'QuickBooks rejected the payment sync (HTTP 500)',
+    });
+  });
+
+  it('tags a delete failure\'s Sentry event with the QBO fault code (qbo_fault_code) beside the core keys', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    deletePaymentMock.mockRejectedValueOnce(qboErrorToProviderError(Object.assign(new Error('boom'), {
+      status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+    }), 'QuickBooks payment delete'));
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      qbo_fault_code: '6000',
+      service: 'accountingPaymentPush',
+      accounting_mapping_id: MAPPING,
+      remote_entity_id: '181',
+      sync_attempts: '1',
     });
   });
 
@@ -1858,7 +1931,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     failCreate();
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       syncAttempts: 4,
@@ -1889,7 +1962,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     failCreate();
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS,
@@ -1913,7 +1986,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error' });
+      .rejects.toMatchObject({ code: 'provider_error' });
 
     expect(mapping()).toMatchObject({
       pendingOp: 'delete',
@@ -2334,11 +2407,249 @@ describe('listOwedPaymentMappings (the sweep query)', () => {
   });
 });
 
+describe('connection targets and audit providers (Xero W01)', () => {
+  it('pushPaymentToAccounting passes its target to the connection resolve', async () => {
+    const target = { connectionId: CONN_ID };
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx, target)).resolves.toBe('pushed');
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+  });
+
+  it('deletePaymentInAccounting passes its target to the connection resolve', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending',
+    })];
+    const target = { connectionId: CONN_ID };
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx, target)).resolves.toBe('deleted');
+    expect(resolveConnectionMock).toHaveBeenCalledWith(PARTNER, target);
+  });
+
+  it('the orphan_retained audit names the mapping\'s own connection provider (byte-identical for QuickBooks)', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null, pendingSince: null, remoteEntityId: null,
+      syncStatus: 'error', terminalReason: 'orphaned', lastError: 'x',
+    })];
+
+    await runCtx(() => requestPaymentDelete(db, PAYMENT));
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.orphan_retained',
+      details: { provider: 'quickbooks', invoicePaymentId: PAYMENT, mappingId: MAPPING },
+    }));
+  });
+
+  it('the delete_unresolved audit names the dropped row\'s connection provider, read BEFORE the row is deleted', async () => {
+    currentConns = [connRow({ provider: 'xero' })];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete', remoteEntityId: null,
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
+
+    expect(mapping()).toBeNull();
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.delete_unresolved',
+      details: expect.objectContaining({ provider: 'xero', mappingId: MAPPING }),
+    }));
+  });
+
+  it('the delete_unresolved audit keeps provider quickbooks for a QuickBooks row', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete', remoteEntityId: null,
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.delete_unresolved',
+      details: expect.objectContaining({ provider: 'quickbooks' }),
+    }));
+  });
+});
+
 describe('AccountingPaymentPushError', () => {
   it('carries a typed code and status', () => {
-    const err = new AccountingPaymentPushError('quickbooks_error', 502, 'nope');
+    const err = new AccountingPaymentPushError('provider_error', 502, 'nope');
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('AccountingPaymentPushError');
-    expect({ code: err.code, status: err.status }).toEqual({ code: 'quickbooks_error', status: 502 });
+    expect({ code: err.code, status: err.status }).toEqual({ code: 'provider_error', status: 502 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14, Review Focus 5): a throttle is a DELAY, not
+// a failure. The push stays owed, the lease is released so the delayed retry
+// can claim it, and nothing is counted toward PAYMENT_PUSH_MAX_ATTEMPTS.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting (Review Focus 5)', () => {
+  const throttle = (retryAfterMs = 30_000) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks payment create', httpStatus: 429, retryAfterMs,
+  });
+
+  it('a 429 during payment create keeps the push owed, releases the lease, and does NOT count an attempt', async () => {
+    createPaymentMock.mockRejectedValueOnce(throttle());
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000 });
+    expect(mapping()!.pendingOp).toBe('push');
+    expect(mapping()!.claimedAt).toBeNull();
+    expect(mapping()!.syncAttempts).toBe(before);
+    expect(mapping()!.terminalReason ?? null).toBeNull();
+    expect(mapping()!.lastError).toBe('QuickBooks is rate limiting requests; retrying automatically');
+    // A throttle is not an incident: no Sentry event for it.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('sustained throttling never retires a push: a row one short of the ceiling is NOT given up', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1 })];
+    createPaymentMock.mockRejectedValueOnce(throttle());
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', claimedAt: null, syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1, terminalReason: null,
+    });
+  });
+
+  it('a throttled TOKEN refresh after the lease was claimed releases the lease too (no 10-minute block)', async () => {
+    // resolveLiveConnection re-types a token-endpoint 429 as the mapping
+    // service's rate_limited error; the lease was already claimed in phase 1.
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 12_000 }),
+    );
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingPaymentPushError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 12_000 });
+    expect(createPaymentMock).not.toHaveBeenCalled();
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', claimedAt: null, syncAttempts: before,
+      lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a 429 during payment DELETE keeps the delete owed, releases the lease, counts nothing, raises nothing', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 0,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(throttle(45_000));
+
+    const err = await deletePaymentInAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 45_000 });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', claimedAt: null, syncAttempts: 0,
+      lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+    });
+    // attempts <= 1 would otherwise raise the delete path's first Sentry event.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh on the DELETE path releases the lease as well', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 2,
+    })];
+    resolveLiveConnectionMock.mockRejectedValueOnce(
+      new AccountingMappingError('rate_limited', 429, 'throttled', { retryAfterMs: 9_000 }),
+    );
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 9_000 });
+    expect(deletePaymentMock).not.toHaveBeenCalled();
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', claimedAt: null, syncAttempts: 2 });
+  });
+
+  it('the delayed retry re-claims the released lease and completes the push', async () => {
+    createPaymentMock.mockRejectedValueOnce(throttle());
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
+    expect(mapping()).toMatchObject({ pendingOp: null, remoteEntityId: '181/145', syncStatus: 'synced' });
+  });
+});
+
+describe('AccountingPaymentPushError rate_limited shape', () => {
+  it('carries retryAfterMs and status 429', () => {
+    const err = new AccountingPaymentPushError('rate_limited', 429, 'throttled', { retryAfterMs: 5_000 });
+    expect({ code: err.code, status: err.status, retryAfterMs: err.retryAfterMs })
+      .toEqual({ code: 'rate_limited', status: 429, retryAfterMs: 5_000 });
+    expect(new AccountingPaymentPushError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
+  });
+
+  it('carries the throttle source and cause only when given (F1/F2)', () => {
+    const err = new AccountingPaymentPushError('rate_limited', 429, 'x', { retryAfterMs: 1_000, throttleSource: 'local', cause: 'c' });
+    expect(err).toMatchObject({ throttleSource: 'local', cause: 'c' });
+    const plain = new AccountingPaymentPushError('provider_error', 502, 'x');
+    expect(plain.throttleSource).toBeUndefined();
+    expect(plain.cause).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1/F2 (PR #7197 review): a throttle's SOURCE is carried and worded truthfully
+// (a Breeze pacing refusal or a limiter-store failure is never blamed on the
+// provider), and the provider error rides along as `cause` for the logs.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting — throttle source and cause (F1/F2)', () => {
+  const throttle = (throttleSource: 'provider' | 'local' | 'limiter_unavailable') => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks payment create', retryAfterMs: 5_000, throttleSource,
+  });
+
+  it.each([
+    ['provider', 'QuickBooks is rate limiting requests; retrying automatically'],
+    ['local', 'Breeze is pacing requests to QuickBooks; retrying automatically'],
+    ['limiter_unavailable', 'Breeze could not reach its rate limiter; retrying automatically'],
+  ] as const)('a %s throttle on payment create persists %j, carries the source and the cause', async (source, message) => {
+    const original = throttle(source);
+    createPaymentMock.mockRejectedValueOnce(original);
+    const before = mapping()!.syncAttempts;
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AccountingPaymentPushError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 5_000, throttleSource: source, message });
+    expect(err.cause).toBe(original);
+    expect(mapping()).toMatchObject({ pendingOp: 'push', claimedAt: null, syncAttempts: before, lastError: message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a local throttle on the TOKEN refresh keeps its source through the mapping service error', async () => {
+    const mappingErr = new AccountingMappingError(
+      'rate_limited', 429, 'Breeze is pacing requests to QuickBooks; try again shortly', { retryAfterMs: 4_000, throttleSource: 'local' },
+    );
+    resolveLiveConnectionMock.mockRejectedValueOnce(mappingErr);
+
+    const err = await pushPaymentToAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', throttleSource: 'local', message: 'Breeze is pacing requests to QuickBooks; retrying automatically',
+    });
+    expect(err.cause).toBe(mappingErr);
+    expect(mapping()!.lastError).toBe('Breeze is pacing requests to QuickBooks; retrying automatically');
+  });
+
+  it('a limiter_unavailable throttle on payment DELETE is worded as Breeze\'s and keeps the delete owed', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 0,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(throttle('limiter_unavailable'));
+
+    const err = await deletePaymentInAccounting(MAPPING, PARTNER, runCtx).catch((e) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', throttleSource: 'limiter_unavailable' });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', claimedAt: null, syncAttempts: 0, lastError: 'Breeze could not reach its rate limiter; retrying automatically',
+    });
   });
 });

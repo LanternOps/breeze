@@ -37,6 +37,7 @@ import {
   reorderBlocksSchema,
   reorderLinesSchema,
   listQuotesQuerySchema,
+  declineQuoteOnBehalfSchema,
 } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -64,6 +65,7 @@ import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { requestLikeFromSnapshot } from './auditEvents';
 import { writeAuditEvent } from './auditEvents';
 import { supersededAuditEvent } from './quoteSupersedeAudit';
+import { declinedOnBehalfAuditEvent } from './quoteDeclineOnBehalfAudit';
 
 type UpdateQuoteLinePatch = Parameters<typeof updateLine>[2];
 
@@ -106,7 +108,10 @@ const REQUIRED_PARAMS: Record<string, readonly string[]> = {
   move_line: ['quoteId', 'lineId', 'blockId'],
   reorder_lines: ['quoteId', 'blockId', 'lineIds'],
   send: ['quoteId'],
-  decline: ['quoteId'],
+  // Matches routes/quotes/lifecycle.ts
+  // decline-on-behalf: recording the customer's decision needs the same
+  // evidence the route requires (declineQuoteOnBehalfSchema).
+  decline: ['quoteId', 'method', 'reference'],
   create_pay_link: ['quoteId'],
 };
 
@@ -312,7 +317,17 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               'Optional part-number override STORED on the created line (add_catalog_line only). ' +
               'Not a lookup key — the catalog item is always selected by catalogItemId.',
           },
-          reason: { type: 'string', description: 'Decline reason' },
+          reason: { type: 'string', description: "Decline reason — the customer's own words, if given (optional)." },
+          method: {
+            type: 'string',
+            enum: ['verbal', 'email', 'signed_document', 'purchase_order', 'other'],
+            description: 'REQUIRED for decline. How the customer\'s decline arrived (recording it on their behalf).',
+          },
+          reference: {
+            type: 'string',
+            description:
+              'REQUIRED for decline. What a dispute reviewer would look for (e.g. "email from J. Doe 2026-09-20 14:02", "call with owner"). 1-500 characters.',
+          },
           input: {
             type: 'object',
             description:
@@ -507,8 +522,39 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               superseded: result.superseded,
             });
           }
-          case 'decline':
-            return JSON.stringify(await declineQuoteByActor(String(input.quoteId), s('reason'), actor));
+          case 'decline': {
+            // Mirrors
+            // routes/quotes/lifecycle.ts POST /:id/decline-on-behalf (:253-275)
+            // exactly: same evidence schema, same sent/viewed pre-check with the
+            // same QUOTE_NOT_DECLINABLE code and message, same audit row.
+            const { method, reference, reason } = declineQuoteOnBehalfSchema.parse({
+              method: input.method,
+              reference: input.reference,
+              reason: input.reason ?? undefined,
+            });
+            const quoteId = String(input.quoteId);
+            const { quote } = await getQuote(quoteId, actor);
+            if (quote.status !== 'sent' && quote.status !== 'viewed') {
+              return JSON.stringify({
+                error: quote.status === 'draft'
+                  ? 'This quote was never sent, so there is no customer decline to record — delete the draft instead'
+                  : `Only a sent or viewed quote can be declined on the customer's behalf (this one is ${quote.status})`,
+                code: 'QUOTE_NOT_DECLINABLE',
+              });
+            }
+            const updated = await declineQuoteByActor(quoteId, reason, actor, 'msp');
+            writeAuditEvent(requestLikeFromSnapshot({}), {
+              ...declinedOnBehalfAuditEvent({
+                quoteId,
+                orgId: updated.orgId,
+                method,
+                reference,
+                reason,
+              }),
+              actorId: actor.userId,
+            });
+            return JSON.stringify(updated);
+          }
           case 'create_pay_link':
             return JSON.stringify(await createQuotePayLink(String(input.quoteId), actor));
           default:

@@ -51,10 +51,9 @@ The card also shows the last sync time, customer and device counts, how many dev
 
 Each Cove customer must be mapped to a Breeze organization before its devices appear anywhere in Breeze. Devices under an unmapped customer are counted on the connection card but never stored.
 
-On each sync Breeze maps new customers automatically:
+On each sync Breeze maps a new customer automatically only when the Cove customer's **external code** is set to a Breeze organization ID.
 
-1. **By external code** — if the Cove customer's external code is set to a Breeze organization ID, that match wins.
-2. **By name** — otherwise, a customer whose name exactly matches one organization name (ignoring case) is mapped to it.
+A customer whose name exactly matches one organization name (ignoring case) is **not** mapped automatically. It stays unmapped until you map it yourself. Before v0.118.0 such name matches were mapped on sync; mappings made that way are not changed by the upgrade, but check them. To have customers map themselves, set each Cove customer's external code to its Breeze organization ID.
 
 An organization is only auto-mapped to one customer. Auto-mapped rows show an **Auto** badge.
 

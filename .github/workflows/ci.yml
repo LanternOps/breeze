@@ -2220,7 +2220,14 @@ jobs:
       - name: Build helper + ISO
         run: |
           cd agent
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o breeze-backup-linux-amd64 ./cmd/breeze-backup
+          # -X recoveryconsole.unattendedCmdlineEnabled=1: this ISO is the
+          # ONLY place in the whole pipeline that opts into honoring
+          # breeze.ci=1 from the kernel cmdline (see
+          # internal/recoveryconsole/buildflags.go) — the QEMU boot below
+          # needs it to drive the recovery console unattended. Every
+          # release/self-host build (scripts/build-edition.sh) omits this
+          # flag, so breeze.ci=1 is inert on real recovery media.
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X github.com/breeze-rmm/agent/internal/recoveryconsole.unattendedCmdlineEnabled=1" -o breeze-backup-linux-amd64 ./cmd/breeze-backup
           go build -o breeze-recovery-fakeserver ./cmd/breeze-recovery-fakeserver
           # ubuntu-latest's `live-build` is Ubuntu's own old fork
           # (3.0~a57-based, not Debian's) and rejects flags Debian's

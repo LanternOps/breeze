@@ -50,17 +50,32 @@ describe('ConversionPendingBanner', () => {
   });
   it('previews all partner policies even with one org selected, confirms the hash and reports the result', async () => {
     const onConverted = vi.fn();
-    fetchWithAuth.mockResolvedValueOnce(json({ data: { partnerId: 'p-1', previewHash: 'partner-h', policies: 9, rows: 40, convertible: 39, unconvertible: [{ sourceTable: 'alert_templates', sourceId: 's1', name: 'Custom', policyId: null, policyName: null, reason: 'unconvertible:custom' }] } }))
+    fetchWithAuth.mockResolvedValueOnce(json({ data: { partnerId: 'p-1', previewHash: 'partner-h', policies: 9, rows: 40, convertible: 39, unconvertible: [{ sourceTable: 'alert_templates', sourceId: 's1', name: 'Custom', policyId: null, policyName: null, reason: 'unconvertible:custom_condition' }] } }))
       .mockResolvedValueOnce(json({ data: { policies: 9, converted: 39, unconvertible: 1 } }));
     render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} onConverted={onConverted} />);
     fireEvent.click(await screen.findByTestId('conversion-convert-everything'));
     expect(await screen.findByTestId('conversion-convert-everything-confirm')).toHaveTextContent(/40 legacy rules/);
     expect(screen.getByTestId('conversion-convert-everything-confirm')).toHaveTextContent('Custom');
+    // The confirm list must resolve unconvertible:* reasons through the same
+    // reason map as the retirement banner, not print the raw token alone.
+    expect(screen.getByTestId('conversion-convert-everything-confirm')).toHaveTextContent('custom condition');
     fireEvent.click(screen.getByTestId('conversion-convert-everything-run'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/monitor-definitions/conversion/partner/convert-all', { method: 'POST', body: JSON.stringify({ previewHash: 'partner-h' }) }));
     await waitFor(() => expect(onConverted).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/39.*9.*1/) }));
     expect(fetchPendingCounts).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the singular for exactly one converted row and one policy in the convert-everything toast', async () => {
+    const onConverted = vi.fn();
+    fetchWithAuth.mockResolvedValueOnce(json({ data: { partnerId: 'p-1', previewHash: 'partner-h', policies: 1, rows: 1, convertible: 1, unconvertible: [] } }))
+      .mockResolvedValueOnce(json({ data: { policies: 1, converted: 1, unconvertible: 0 } }));
+    render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} onConverted={onConverted} />);
+    fireEvent.click(await screen.findByTestId('conversion-convert-everything'));
+    fireEvent.click(await screen.findByTestId('conversion-convert-everything-run'));
+    await waitFor(() => expect(onConverted).toHaveBeenCalled());
+    const call = vi.mocked(showToast).mock.calls.find(([arg]) => arg.type === 'success');
+    expect(call?.[0].message).not.toMatch(/1 policies|1 rows/);
   });
   it('drops a stale preview after a 409, shows readable text and needs a fresh preview to confirm again', async () => {
     const onConverted = vi.fn();

@@ -384,7 +384,7 @@ describe('hyperv routes', () => {
         // policy-managed device.
         configId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', orgId: ORG_ID },
         storageEncryption: { required: false, mode: 'disabled' },
         vmName: 'Accounting VM',
         consistencyType: 'application',
@@ -397,6 +397,25 @@ describe('hyperv routes', () => {
         resultStatus: 'completed',
       })
     );
+  });
+
+  it('records the destination storage identity on the on-demand job it creates', async () => {
+    const jobInsert = chainMock([{ id: '44444444-4444-4444-8444-444444444444' }]);
+    insertMock.mockReturnValueOnce(jobInsert);
+    queueDestinationConfigSelect({ provider: 's3', providerConfig: { endpoint: 'https://Storage.Example.com:9443', bucket: 'Backups', accessKeyId: 'AKIA', secretAccessKey: 'secret' } });
+    executeCommandMock.mockResolvedValueOnce({ status: 'completed', stdout: JSON.stringify({ queued: true }) });
+
+    const res = await app.request('/backup/hyperv/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, vmName: 'Accounting VM', consistencyType: 'application' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(jobInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'application',
+      storageIdentity: 's3::storage.example.com:9443::Backups',
+    }));
   });
 
   // D20b item A: a resolved config id whose backup_configs row has since
@@ -549,8 +568,9 @@ describe('hyperv routes', () => {
       vmName: 'Recovered VM',
       generateNewId: true,
       provider: 'local',
-      providerConfig: { path: '/tmp/backups' },
+      providerConfigRef: { configId: 'config-1', orgId: ORG_ID },
     });
+    expect(opts.buildPayload('restore-job-1')).not.toHaveProperty('providerConfig');
   });
 
   it('reports a 502 when Hyper-V restore fails to dispatch for a non-offline reason', async () => {

@@ -57,6 +57,12 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: { SYSTEM_CLEANUP_LIST: 'system_cleanup_list', SYSTEM_CLEANUP_RUN: 'system_cleanup_run' },
 }));
 
+// The service runs the per-device remote-tools policy for both of
+// its callers (the route and the AI tool); the AI tool reaches the device only
+// through here, never through aiDispatch.
+const checkAiRemoteToolsPolicy = vi.hoisted(() => vi.fn());
+vi.mock('./aiRemoteToolsPolicy', () => ({ checkAiRemoteToolsPolicy }));
+
 import { awaitSystemCleanupResult, queueSystemCleanupList, startSystemCleanupRun } from './systemCleanup';
 
 const DEVICE = {
@@ -74,6 +80,7 @@ describe('systemCleanup service — AI origin passthrough', () => {
     seam.queueCalls = [];
     seam.insertedRuns = [];
     seam.commandRows = [];
+    checkAiRemoteToolsPolicy.mockResolvedValue({ allowed: true });
     seam.context.mockImplementation(async (_context: unknown, callback: () => Promise<unknown>) => callback());
     seam.outside.mockImplementation(async (callback: () => Promise<unknown>) => callback());
     seam.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
@@ -143,6 +150,23 @@ describe('systemCleanup service — AI origin passthrough', () => {
   it('omits aiOrigin entirely on the human route path (no synthetic origin)', async () => {
     await queueSystemCleanupList({ device: DEVICE, requestedBy: 'user-1' });
     expect(seam.queueCalls[0]!.options).not.toHaveProperty('aiOrigin');
+  });
+
+  it('refuses the list on a policy-denied device: 403, nothing queued', async () => {
+    checkAiRemoteToolsPolicy.mockResolvedValue({ allowed: false, reason: 'off', error: 'REMOTE_TOOLS_DISABLED_BY_POLICY: off' });
+    const result = await queueSystemCleanupList({ device: DEVICE, requestedBy: null, aiOrigin: AI_ORIGIN });
+    expect(result).toMatchObject({ ok: false, status: 403, error: 'REMOTE_TOOLS_DISABLED_BY_POLICY: off' });
+    expect(checkAiRemoteToolsPolicy).toHaveBeenCalledWith(DEVICE.id, 'system_cleanup_list');
+    expect(seam.queueCalls).toHaveLength(0);
+  });
+
+  it('refuses the run on a policy-denied device: 403, no run row, nothing queued', async () => {
+    checkAiRemoteToolsPolicy.mockResolvedValue({ allowed: false, reason: 'off', error: 'REMOTE_TOOLS_DISABLED_BY_POLICY: off' });
+    const result = await startSystemCleanupRun({ device: DEVICE, requestedBy: null, actionIds: ['linux_pkg_cache_clean'], aiOrigin: AI_ORIGIN });
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(checkAiRemoteToolsPolicy).toHaveBeenCalledWith(DEVICE.id, 'system_cleanup_run');
+    expect(seam.insertedRuns).toHaveLength(0);
+    expect(seam.queueCalls).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { inArray } from 'drizzle-orm';
 import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
 import { getFileAttachmentBytes, listMessageAttachments, type GraphAttachmentMeta } from './graphMailClient';
 import { getMailboxToken } from './mailboxToken';
@@ -6,6 +7,8 @@ import { deleteBytes, putBytes } from '../ticketAttachmentStorage';
 import { sniffAttachmentMime } from '../attachmentSniff';
 import { sanitizeAttachmentFilename } from '../attachmentFilename';
 import { captureException } from '../sentry';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { ticketAttachments } from '../../db/schema/ticketAttachments';
 import type { InboundEmailAttachment, NormalizedInboundEmail } from '../inboundEmail/types';
 
 /**
@@ -147,8 +150,37 @@ export async function prepareM365Attachments(
 }
 
 async function discardUnpersisted(attachments: InboundEmailAttachment[]): Promise<void> {
-  for (const a of attachments) {
-    if (!a.stored || a.persisted) continue;
+  const stored = attachments.filter(
+    (a): a is InboundEmailAttachment & { stored: NonNullable<InboundEmailAttachment['stored']> } => !!a.stored,
+  );
+  if (stored.length === 0) return;
+
+  // The in-process `persisted` flag is set the instant persistInboundAttachments'
+  // INSERT returns — still inside the pipeline transaction. A LATER failure in
+  // that same transaction (e.g. reopenResolvedTicket) rolls the insert back
+  // without ever clearing the flag, so trusting it alone would leave the S3
+  // object permanently unswept. Re-check against the committed table instead of
+  // (or in addition to) the flag: a row that isn't actually there gets its blob
+  // deleted regardless of what `persisted` claims.
+  let confirmedIds: Set<string>;
+  try {
+    const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db
+        .select({ id: ticketAttachments.id })
+        .from(ticketAttachments)
+        .where(inArray(ticketAttachments.id, stored.map((a) => a.stored.attachmentId))),
+    ));
+    confirmedIds = new Set(rows.map((r) => r.id));
+  } catch (err) {
+    // The verification read itself failed (e.g. DB unreachable) — fall back to
+    // the in-process flag rather than deleting bytes we can't confirm are
+    // orphaned.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    confirmedIds = new Set(stored.filter((a) => a.persisted).map((a) => a.stored.attachmentId));
+  }
+
+  for (const a of stored) {
+    if (confirmedIds.has(a.stored.attachmentId)) continue;
     try {
       await deleteBytes({
         storageBackend: a.stored.storageBackend,
@@ -165,8 +197,9 @@ async function discardUnpersisted(attachments: InboundEmailAttachment[]): Promis
 
 /**
  * Delete storage for every attachment prepared above whose `ticket_attachments`
- * row was never inserted — the email was a duplicate, quarantined, dropped, or
- * its transaction failed. Never throws.
+ * row was never actually committed — the email was a duplicate, quarantined,
+ * dropped, or its transaction rolled back (even if the row was inserted and
+ * then undone later in the same transaction). Never throws.
  */
 export async function discardUnpersistedAttachments(email: NormalizedInboundEmail): Promise<void> {
   await discardUnpersisted(email.attachments);

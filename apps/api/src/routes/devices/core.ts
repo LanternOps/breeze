@@ -289,7 +289,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
-  'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
+  'backup_snapshots', 'backup_storage_sessions', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -524,6 +524,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
+  // Brokered storage sessions reference the snapshot, the command and the
+  // device (executing = device_id; the snapshot's source device cascades by FK).
+  'backup_storage_sessions',
   'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
@@ -1101,7 +1104,18 @@ coreRoutes.get(
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
-        helperLifecycleMode: devices.helperLifecycleMode
+        helperLifecycleMode: devices.helperLifecycleMode,
+        // #6449 — why the server is withholding update offers from this
+        // device; drives the "update withheld" list badge.
+        updateOfferWithheldReason: devices.updateOfferWithheldReason,
+        // #4073 — the agent self-update currently being attempted; drives
+        // the "update stuck" list badge (#7068).
+        updateAttemptTargetVersion: devices.updateAttemptTargetVersion,
+        updateAttemptStartedAt: devices.updateAttemptStartedAt,
+        updateAttemptLastAt: devices.updateAttemptLastAt,
+        // #6925 — agent-reported Breeze Assist install problem; drives the
+        // "Assist enabled but not installed" list badge (#7023).
+        helperInstallIssue: devices.helperInstallIssue
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -1303,6 +1317,15 @@ coreRoutes.get(
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
+        // Selected above but historically the mapper is where list fields
+        // get silently dropped (#800/#1273/#2138/#5701) — the #7068 stuck-
+        // update and #7023 Assist-install-issue list badges hit the same
+        // failure mode.
+        updateOfferWithheldReason: d.updateOfferWithheldReason ?? null,
+        updateAttemptTargetVersion: d.updateAttemptTargetVersion ?? null,
+        updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
+        updateAttemptLastAt: d.updateAttemptLastAt ?? null,
+        helperInstallIssue: d.helperInstallIssue ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,
@@ -1918,6 +1941,16 @@ coreRoutes.post(
       device.agentTokenHash,
       device.previousTokenHash,
       device.pendingTokenHash,
+      // The route comment (and #2621's design) call this the incident-response
+      // revocation path: it ends every credential the device holds. A device's
+      // watchdog and helper roles authenticate with their OWN live hashes
+      // (independent of agentTokenHash), so they are revoked here too — watchdog
+      // heartbeat/commands/logs and the helper surface stop accepting the old
+      // tokens along with the agent's.
+      device.watchdogTokenHash,
+      device.previousWatchdogTokenHash,
+      device.helperTokenHash,
+      device.previousHelperTokenHash,
     ].filter((hash): hash is string => typeof hash === 'string');
 
     const [updated] = await db
@@ -1935,6 +1968,19 @@ coreRoutes.post(
         pendingWatchdogTokenHash: null,
         pendingHelperTokenHash: null,
         pendingTokenExpiresAt: null,
+        // Null (not re-key) the watchdog/helper roles: they have no admin-
+        // facing "new token" to hand back, and the agent's own periodic
+        // rotation (agentTokenPromotion.ts / routes/agents/token.ts) mints and
+        // stages fresh ones for both roles the next time the main agent
+        // authenticates with its new credential.
+        watchdogTokenHash: null,
+        watchdogTokenIssuedAt: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        helperTokenHash: null,
+        helperTokenIssuedAt: null,
+        previousHelperTokenHash: null,
+        previousHelperTokenExpiresAt: null,
         updatedAt: new Date()
       })
       .where(eq(devices.id, deviceId))
@@ -1968,7 +2014,19 @@ coreRoutes.post(
     return c.json({
       deviceId,
       agentId: updated?.agentId ?? device.agentId,
-      authToken: newToken
+      authToken: newToken,
+      // Watchdog/helper credentials are revoked here but not replaced in this
+      // response — the device has no admin-facing "new token" for either
+      // role. Both are only re-issued when the main agent next reconnects
+      // with its new token and the server's existing self-heal rotation runs
+      // (heartbeat -> rotate-token -> confirm/implicit promotion). Surface
+      // that plainly so an operator doesn't read watchdog failover or Helper
+      // access as broken.
+      watchdogHelperRecovery: {
+        status: 'pending_agent_reconnect',
+        message:
+          'Watchdog and Helper access are revoked immediately, but recovery is unavailable until the main agent reconnects and completes its next credential rotation.',
+      },
     });
   }
 );

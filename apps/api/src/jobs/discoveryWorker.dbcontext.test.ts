@@ -61,7 +61,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id' },
-  discoveryJobs: { id: 'discoveryJobs.id' },
+  discoveryJobs: { id: 'discoveryJobs.id', status: 'discoveryJobs.status' },
   discoveredAssets: {
     id: 'discoveredAssets.id',
     orgId: 'discoveredAssets.orgId',
@@ -173,6 +173,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     siteId: 'site-1',
     agentId: 'agent-1',
   };
+  const JOB_ROW_SCHEDULED = { status: 'scheduled' };
   const PROFILE_ROW = { id: 'profile-1' };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
 
@@ -195,6 +196,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     // Requested-agent path: profile select, then validateRequestedAgentForDiscovery's
     // devices select — exactly two selects, both inside phase 1.
     mockDb.select
+      .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
       .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never)
       .mockReturnValueOnce(selectLimitChain([VALID_AGENT_ROW], 'agentValidateSelect') as never);
     mockDb.update.mockReturnValue(updateChain('statusUpdate') as never);
@@ -207,6 +209,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     // status flip to 'running' gets its own short context.
     expect(ctxState.events).toEqual([
       'ctx:enter',
+      'jobStatusSelect@depth1',
       'profileSelect@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',
@@ -219,7 +222,9 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
   });
 
   it('holds no context past phase 1 when the profile is missing', async () => {
-    mockDb.select.mockReturnValueOnce(selectLimitChain([], 'profileSelect') as never);
+    mockDb.select
+      .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
+      .mockReturnValueOnce(selectLimitChain([], 'profileSelect') as never);
     mockDb.update.mockReturnValue(updateChain('markJobFailed') as never);
 
     const result = await __testables.processDispatchScan(DATA);
@@ -228,11 +233,12 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     // markJobFailed (an UPDATE) shares phase 1's context with the profile read.
-    expect(ctxState.events).toEqual(['ctx:enter', 'profileSelect@depth1', 'markJobFailed@depth1', 'ctx:exit']);
+    expect(ctxState.events).toEqual(['ctx:enter', 'jobStatusSelect@depth1', 'profileSelect@depth1', 'markJobFailed@depth1', 'ctx:exit']);
   });
 
   it('checks connectivity OUTSIDE any context, then reopens a short context to mark the job failed when the agent is not connected', async () => {
     mockDb.select
+      .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
       .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never)
       .mockReturnValueOnce(selectLimitChain([VALID_AGENT_ROW], 'agentValidateSelect') as never);
     mockDb.update.mockReturnValue(updateChain('markJobFailed') as never);
@@ -248,6 +254,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(ctxState.events).toEqual([
       'ctx:enter',
+      'jobStatusSelect@depth1',
       'profileSelect@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',
@@ -264,6 +271,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     // (0 rows, no error) — the job would sit 'pending' forever. Lock the
     // depth-1 requirement down the same way backupWorker.dbcontext.test.ts does.
     mockDb.select
+      .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
       .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never)
       .mockReturnValueOnce(selectLimitChain([VALID_AGENT_ROW], 'agentValidateSelect') as never);
     mockDb.update.mockReturnValue(updateChain('markJobFailed') as never);
@@ -277,6 +285,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
     expect(ctxState.events).toEqual([
       'ctx:enter',
+      'jobStatusSelect@depth1',
       'profileSelect@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',

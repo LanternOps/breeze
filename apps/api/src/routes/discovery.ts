@@ -41,6 +41,7 @@ import {
   maskSnmpCredentials,
   mergeEncryptSnmpCommunities,
   mergeEncryptSnmpCredentials,
+  subnetChangeWouldRetainSnmpSecrets,
 } from '../services/snmpSecrets';
 
 export const discoveryRoutes = new Hono();
@@ -696,6 +697,8 @@ discoveryRoutes.patch(
       id: discoveryProfiles.id,
       orgId: discoveryProfiles.orgId,
       siteId: discoveryProfiles.siteId,
+      subnets: discoveryProfiles.subnets,
+      excludeIps: discoveryProfiles.excludeIps,
       snmpCommunities: discoveryProfiles.snmpCommunities,
       snmpCredentials: discoveryProfiles.snmpCredentials,
     }).from(discoveryProfiles)
@@ -703,6 +706,33 @@ discoveryRoutes.patch(
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
     if (!canAccessRecordSite(permissions, existing.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const siteChanged = updates.siteId !== undefined && updates.siteId !== existing.siteId;
+
+    // Same origin-binding contract as credentialOriginBinding.ts: a masked or simply omitted
+    // snmpCommunities/snmpCredentials field must not carry the org's live
+    // SNMP secrets forward onto a destination this profile has never probed
+    // before. That covers a widened `subnets` set, a narrowed `excludeIps`
+    // set (un-walling a host already inside an approved subnet), and any
+    // `siteId` move (the stored subnets have no site binding of their own —
+    // the site picks the physical LAN they're probed on).
+    if (
+      subnetChangeWouldRetainSnmpSecrets({
+        existingSubnets: existing.subnets,
+        nextSubnets: updates.subnets,
+        existingExcludeIps: existing.excludeIps,
+        nextExcludeIps: updates.excludeIps,
+        siteChanged,
+        existingCommunities: existing.snmpCommunities,
+        nextCommunities: updates.snmpCommunities,
+        existingCredentials: existing.snmpCredentials,
+        nextCredentials: updates.snmpCredentials,
+      })
+    ) {
+      return c.json({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      }, 400);
     }
 
     // Site change gate, mirroring PATCH /assets/:id: the target site must
@@ -1181,10 +1211,14 @@ discoveryRoutes.post(
 
     if (!updated) return c.json({ error: 'Failed to cancel job' }, 500);
 
-    // Best-effort: remove from BullMQ queue if still queued
+    // Best-effort: remove the queued dispatch from BullMQ if it hasn't run
+    // yet. enqueueDiscoveryScan adds it under `discovery-dispatch-${jobId}`
+    // (jobs/discoveryWorker.ts), never the bare row id — removing the bare id
+    // was always a no-op, letting the queued scan dispatch after cancel and
+    // flip the row back to 'running'.
     try {
       const queue = getDiscoveryQueue();
-      await queue.remove(jobId);
+      await queue.remove(`discovery-dispatch-${jobId}`);
     } catch {
       // Job may already be processing or completed in the queue — ignore
     }

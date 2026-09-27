@@ -19,6 +19,7 @@
     "running": "Wird ausgeführt",
     "failed": "Fehlgeschlagen",
     "completed": "Abgeschlossen",
+    "completedWithErrors": "Abgeschlossen mit Fehlern",
     "partial": "Teilweise",
     "queued": "In der Warteschlange",
     "cancelled": "Abgesagt",
@@ -52,7 +53,9 @@
     "errorCount_other": "{{count}} Fehler",
     "failedCount_one": "{{count}} fehlgeschlagen",
     "failedCount_other": "{{count}} fehlgeschlagen",
-    "failedFilesTooltip": "Dateien, die bei dieser Sicherung fehlgeschlagen sind"
+    "failedFilesTooltip": "Dateien, die bei dieser Sicherung fehlgeschlagen sind",
+    "filesNotBackedUp_one": "{{count}} Datei nicht gesichert",
+    "filesNotBackedUp_other": "{{count}} Dateien nicht gesichert"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Noch keine Anbieter-Zeitleiste verfügbar.",
@@ -175,6 +178,7 @@
     "vssUnprotectedVolumes": "Vom Live-Volume gelesen, nicht von einer VSS-Schattenkopie: {{volumes}}. Auf diesen Volumes verwendete Dateien wurden möglicherweise übersprungen oder in einem inkonsistenten Zustand erfasst.",
     "lastBackupFailed": "Letzte Sicherung fehlgeschlagen",
     "lastBackupCompletedWithWarnings": "Letzte Sicherung mit Warnungen abgeschlossen",
+    "lastBackupCompletedWithErrors": "Letzte Sicherung mit Fehlern abgeschlossen",
     "writer": "VSS-Writer",
     "state": "Status",
     "noVssWriterDetailsWereReportedForThe": "Für die letzte Sicherung wurden keine VSS-Writerdetails gemeldet.",

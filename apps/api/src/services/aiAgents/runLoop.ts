@@ -2009,6 +2009,12 @@ async function driveSdkLoop(
     orgId: run.orgId,
     idempotencyKey: `ai-agent-run:${run.id}`,
     billingSource,
+    // JD L-2: bound the hold to this run's own ceiling instead of the whole
+    // remaining cap, so one agent run does not serialize technician chat,
+    // ticket drafts and every other AI surface in a capped org — and so an
+    // indeterminate outcome only holds this ceiling for the extended TTL
+    // below, not the org's entire remaining budget.
+    maxHoldCents: runLimits.maxBudgetCentsPerRun,
   });
   if (reservation.kind === 'denied') {
     throw new AgentRunError('org_budget_exceeded', reservation.message);

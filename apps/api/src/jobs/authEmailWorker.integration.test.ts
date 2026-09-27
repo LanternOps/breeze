@@ -111,6 +111,9 @@ describe('authEmailWorker — password reset, real Postgres (SR2-22)', () => {
     const firstKeys = await redis.keys('reset:*');
     const firstEnvelope = JSON.parse((await redis.get(firstKeys[0]!)) as string);
 
+    // A re-request inside the per-account cooldown is skipped outright; model
+    // one that arrives after the window by clearing the cooldown claim.
+    await redis.del(`reset-cooldown:${user.id}`);
     await handleAuthEmailJob({ kind: 'password-reset', email });
     const liveEpoch = await readEpoch(user.id);
 

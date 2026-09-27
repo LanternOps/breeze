@@ -94,6 +94,18 @@ function makeAuth(): AuthContext {
   } as any;
 }
 
+// The ONLY way an `ai_agent` principal ever
+// reaches this handler branch (no `proposalId`) is act mode's
+// manifest-matched unattended dispatch — see the doc comment on
+// `isUnattendedAgentDispatch` in aiToolsScripts.ts.
+function makeAgentAuth(): AuthContext {
+  return {
+    ...makeAuth(),
+    principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+    user: { id: 'agent-1', email: 'agent+agent-1@breeze.internal', name: 'Patch agent' },
+  } as any;
+}
+
 // Same table-dispatched select mock as the orgEquality suite: a script row
 // (saved default runAs 'system') and a device row, both single-org, so
 // nothing here trips the org-equality / partner-wide guards this file isn't
@@ -199,6 +211,39 @@ describe('run_script forwards an assistant-chosen run context to dispatchScriptT
 
     expect(out.error).toEqual(expect.any(String));
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+});
+
+describe('an unattended act-mode agent dispatch ignores a model-chosen runAs/targetSessionId', () => {
+  it('ignores runAs: "user" from an ai_agent principal — dispatch is called with runAs: undefined, not the caller\'s value', async () => {
+    await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, deviceIds: [DEVICE_A], runAs: 'user' },
+      makeAgentAuth(),
+    );
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    const call = dispatchScriptToDevice.mock.calls[0]![0];
+    expect(call).toHaveProperty('runAs', undefined);
+  });
+
+  it('ignores runAs: "user" + targetSessionId: 3 together from an ai_agent principal — the saved script\'s own runAs governs instead', async () => {
+    await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, deviceIds: [DEVICE_A], runAs: 'user', targetSessionId: 3 },
+      makeAgentAuth(),
+    );
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    const call = dispatchScriptToDevice.mock.calls[0]![0];
+    expect(call).toMatchObject({ runAs: undefined, targetSessionId: undefined });
+  });
+
+  it('a human/chat caller (no ai_agent principal) is UNAFFECTED — its chosen runAs still forwards', async () => {
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_A], runAs: 'user' }, makeAuth());
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(
+      expect.objectContaining({ runAs: 'user' }),
+    );
   });
 });
 

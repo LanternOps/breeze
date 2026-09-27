@@ -1,4 +1,4 @@
-import { normalizeScanPath, osRootScanPath } from '@breeze/shared';
+import { normalizeScanPath, osRootScanPath, ERROR_CODES } from '@breeze/shared';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { toCleanupOs } from '@breeze/shared';
@@ -20,6 +20,7 @@ import { deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes, executeCommandWithSystemPrecheck, queueCommandForExecution } from '../../services/commandQueue';
+import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
 import {
   buildCleanupPreview,
   getFilesystemScanState,
@@ -243,6 +244,12 @@ filesystemRoutes.post(
     if (!device) {
       return failJson(c, 'Device not found', 404);
     }
+    // The scan enumerates the device's filesystem, the same class
+    // as /system-tools, and honours the per-device remote-tools policy.
+    const remoteTools = await checkDeviceRemoteToolsPolicy(deviceId);
+    if (!remoteTools.allowed) {
+      return c.json({ success: false, error: remoteTools.reason, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
+    }
 
     const osType = (device as { osType?: unknown }).osType;
     const scanPath = normalizeScanPath(osType, payload.path);
@@ -323,7 +330,7 @@ filesystemRoutes.post(
     if (!queued.command) {
       // 500, not 502: Cloudflare replaces an origin 502 body with its own branded
       // page, which would blank the queue's reason on hosted deployments.
-      return c.json({ success: false, error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
+      return c.json({ success: false, error: queued.error || 'Failed to queue filesystem analysis', code: ERROR_CODES.AGENT_EXECUTION_FAILED }, 500);
     }
 
     // Register the volume before accepting its result, including its first scan.
@@ -446,6 +453,10 @@ filesystemRoutes.post(
       const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
       if (device === SITE_ACCESS_DENIED) return { kind: 'site_denied' as const };
       if (!device) return { kind: 'device_missing' as const };
+      // Checked BEFORE the claim, so a refusal leaves the previewed
+      // run untouched and nothing is deleted. Joins this context.
+      const remoteTools = await checkDeviceRemoteToolsPolicy(deviceId);
+      if (!remoteTools.allowed) return { kind: 'remote_tools_denied' as const, reason: remoteTools.reason };
 
       const [row] = await db
         .update(deviceFilesystemCleanupRuns)
@@ -481,6 +492,9 @@ filesystemRoutes.post(
 
     if (claimed.kind === 'site_denied') return failJson(c, 'Access to this site denied', 403);
     if (claimed.kind === 'device_missing') return failJson(c, 'Device not found', 404);
+    if (claimed.kind === 'remote_tools_denied') {
+      return c.json({ success: false, error: claimed.reason, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
+    }
     if (claimed.kind === 'missing') {
       return c.json({ success: false, error: 'Cleanup run not found' }, 404);
     }

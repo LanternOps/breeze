@@ -524,8 +524,8 @@
         "description": "The AI kill switch is a platform-wide control managed by Breeze platform admins. Your account cannot view or change it."
       },
       "status": {
-        "active": "AI actions active",
-        "killed": "AI actions killed"
+        "active": "Unattended AI actions active",
+        "killed": "Unattended AI actions killed"
       },
       "fields": {
         "epoch": "Epoch",

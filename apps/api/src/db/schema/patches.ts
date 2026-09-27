@@ -214,6 +214,16 @@ export const devicePatches = pgTable('device_patches', {
   // before the user-context winget pass existed; NULL is treated as
   // machine-wide. Constrained by device_patches_scope_chk.
   scope: varchar('scope', { length: 16 }),
+  // This device's own agent-reported severity/category, written unconditionally
+  // by every scan (routes/agents/patches.ts) regardless of trust — unlike
+  // patches.severity/.category, which only a trusted source (a curated
+  // third-party catalog match) may set. Scoped to this device_id/org_id row,
+  // so one tenant's report can never move another tenant's classification.
+  // Effective severity/category for approval rules, UI and reports is
+  // COALESCE(patches.severity/.category, this row's reported_* value) — see
+  // services/patchSeverityOverlay.ts.
+  reportedSeverity: patchSeverityEnum('reported_severity'),
+  reportedCategory: text('reported_category'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

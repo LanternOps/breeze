@@ -16,6 +16,8 @@ import {
   enqueueAccountingPaymentDelete,
   enqueueAccountingPaymentPush,
 } from '../jobs/accountingSyncWorker';
+import { resolveActiveConnectionRef } from './accounting/accountingConnectionService';
+import { accountingProviderDisplayName } from './accounting/providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 
 export type NormalizedStripeFinancialEvent = {
@@ -356,16 +358,32 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         await db.update(invoicePayments).set({ amount: fromMinorUnits(targetMinor, mapping.currency) })
           .where(eq(invoicePayments.id, payment.id));
         if (targetMinor < previousMinor) {
-          await db.update(accountingEntityMappings).set({
-            syncStatus: 'error',
-            lastError: partialRefundDivergenceMessage(fromMinorUnits(originalMinor - targetMinor, mapping.currency)),
-            updatedAt: new Date(),
-          }).where(and(
-            eq(accountingEntityMappings.breezeEntityType, 'payment'),
-            eq(accountingEntityMappings.breezeEntityId, payment.id),
-            eq(accountingEntityMappings.breezeOrigin, true),
-            isNotNull(accountingEntityMappings.remoteEntityId),
-          ));
+          // Xero W01 hardening: scope the flag to the partner's ACTIVE
+          // connection's mapping. One connection per partner and ON DELETE
+          // CASCADE already make a cross-connection match impossible; this
+          // makes it impossible by predicate too, instead of by schema
+          // accident. Fix round 1: use the non-decrypting id+provider lookup
+          // — this runs inside the money transaction, and a rotated/retired
+          // encryption key must never abort a Stripe refund reconcile. The
+          // provider labels the instruction (Xero W01 Task 9).
+          const activeConn = await resolveActiveConnectionRef(db, invoice.partnerId);
+          if (activeConn) {
+            await db.update(accountingEntityMappings).set({
+              syncStatus: 'error',
+              lastError: partialRefundDivergenceMessage(
+                fromMinorUnits(originalMinor - targetMinor, mapping.currency),
+                accountingProviderDisplayName(activeConn.provider),
+              ),
+              updatedAt: new Date(),
+            }).where(and(
+              eq(accountingEntityMappings.integrationId, activeConn.id),
+              eq(accountingEntityMappings.partnerId, invoice.partnerId),
+              eq(accountingEntityMappings.breezeEntityType, 'payment'),
+              eq(accountingEntityMappings.breezeEntityId, payment.id),
+              eq(accountingEntityMappings.breezeOrigin, true),
+              isNotNull(accountingEntityMappings.remoteEntityId),
+            ));
+          }
         }
       }
     } else if (targetMinor > 0) {

@@ -133,6 +133,7 @@ export async function supportTile(
         sql`${tickets.firstResponseAt} is not null`,
         gte(tickets.createdAt, start),
         lt(tickets.createdAt, end),
+        ticketOwnership,
       )),
   ]);
 

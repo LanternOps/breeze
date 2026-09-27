@@ -187,6 +187,26 @@ describe('discoverSource', () => {
     expect(destructiveInsert).toMatchObject({ name: 'delete_widget', enabled: false, proposedTier: 3, tier: 3 });
   });
 
+  it('a newly discovered tool is forced reviewNeeded regardless of its self-declared tier', async () => {
+    mockSourceLookup(makeSourceRow());
+    mockExistingTools([]);
+    const values = mockInsertCapture();
+    mockUpdateCapture();
+
+    const fakeClient = {
+      initialize: vi.fn().mockResolvedValue({ protocolVersion: '2025-06-18' }),
+      listTools: vi.fn().mockResolvedValue([
+        { name: 'get_widget', description: 'fetch', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true, destructiveHint: false } },
+      ]),
+    };
+    const clientFactory = vi.fn().mockReturnValue(fakeClient);
+
+    await discoverSource(SOURCE_ID, { clientFactory: clientFactory as any });
+
+    const [readOnlyInsert] = values.mock.calls.map((c) => c[0]);
+    expect(readOnlyInsert).toMatchObject({ name: 'get_widget', proposedTier: 1, reviewNeeded: true });
+  });
+
   it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for a remote listing', async () => {
     vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValueOnce(true);
     mockSourceLookup(makeSourceRow());

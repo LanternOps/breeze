@@ -9,6 +9,12 @@ import {
   deviceGroupMemberships,
   patchPolicies
 } from '../db/schema';
+import {
+  resolveExecutionSafeGroupIds,
+  auditRefusedExecutionGroups,
+  warningsForRefusedExecutionGroups,
+  type RefusedExecutionGroup,
+} from '../services/executionTargetGating';
 
 /**
  * One config-policy assignment as this module needs it: the assignment's own
@@ -92,13 +98,14 @@ async function resolveRingAssignedDeviceIds(
   assignments: RingAssignment[],
   /** The ring's own partner. Every resolved device must sit under it. */
   ringPartnerId: string
-): Promise<Set<string>> {
+): Promise<{ deviceIds: Set<string>; refusedGroups: RefusedExecutionGroup[] }> {
   const deviceIds = new Set<string>();
   const directDeviceIds: string[] = [];
   const groupIds: string[] = [];
   const siteIds: string[] = [];
   const orgIds: string[] = [];
   const partnerAssignments: RingAssignment[] = [];
+  let refusedGroups: RefusedExecutionGroup[] = [];
 
   for (const a of assignments) {
     if (a.level === 'device') directDeviceIds.push(a.targetId);
@@ -127,18 +134,31 @@ async function resolveRingAssignedDeviceIds(
 
   // Group expansion joins devices (rather than reading memberships alone) so
   // the ephemeral exclusion below applies here too, matching the scheduler.
+  //
+  // Field-provenance tiering: a device_group-level ring assignment can name a dynamic group
+  // whose rules key on an execution-refused agent-reported field (hostname,
+  // tags, deviceRole, custom.*, ...) — a device's own report could place it
+  // in that group and give it the ring's patch schedule. Gate through the shared
+  // helper before expanding membership, same as script/policy/automation
+  // targets.
   if (groupIds.length > 0) {
-    const groupDevices = await db
-      .select({ deviceId: deviceGroupMemberships.deviceId })
-      .from(deviceGroupMemberships)
-      .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
-      .innerJoin(organizations, eq(devices.orgId, organizations.id))
-      .where(and(
-        inArray(deviceGroupMemberships.groupId, groupIds),
-        eq(devices.isEphemeral, false),
-        underRingPartner
-      ));
-    for (const row of groupDevices) deviceIds.add(row.deviceId);
+    const gated = await resolveExecutionSafeGroupIds(groupIds);
+    refusedGroups = gated.refusedGroups;
+    auditRefusedExecutionGroups(null, 'update_ring.execution_target_refused_agent_reported_fields', refusedGroups);
+
+    if (gated.allowedGroupIds.length > 0) {
+      const groupDevices = await db
+        .select({ deviceId: deviceGroupMemberships.deviceId })
+        .from(deviceGroupMemberships)
+        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+        .innerJoin(organizations, eq(devices.orgId, organizations.id))
+        .where(and(
+          inArray(deviceGroupMemberships.groupId, gated.allowedGroupIds),
+          eq(devices.isEphemeral, false),
+          underRingPartner
+        ));
+      for (const row of groupDevices) deviceIds.add(row.deviceId);
+    }
   }
 
   // Site/org/partner expansion must never pull in ephemeral Quick Support
@@ -186,14 +206,18 @@ async function resolveRingAssignedDeviceIds(
     for (const row of partnerDevices) deviceIds.add(row.id);
   }
 
-  return deviceIds;
+  return { deviceIds, refusedGroups };
 }
 
 /**
- * Resolve the set of device IDs assigned to a single ring via config policy assignments.
- * Used by the compliance handler to scope device-patch status queries.
+ * Resolve the set of device IDs assigned to a single ring via config policy
+ * assignments, plus any field-provenance warnings for excluded groups.
+ * Used by the compliance handler (interactive) to scope device-patch status
+ * queries.
  */
-export async function resolveRingDeviceIds(ringId: string): Promise<string[]> {
+export async function resolveRingDeviceIdsWithWarnings(
+  ringId: string,
+): Promise<{ deviceIds: string[]; warnings: string[] }> {
   const linkedAssignments = await db
     .select({
       level: configPolicyAssignments.level,
@@ -216,18 +240,21 @@ export async function resolveRingDeviceIds(ringId: string): Promise<string[]> {
   // Every row carries the same ring, hence the same partner (DB-enforced — see
   // resolveRingAssignedDeviceIds). No rows => no assignments => no devices.
   const ringPartnerId = linkedAssignments[0]?.ringPartnerId;
-  if (!ringPartnerId) return [];
+  if (!ringPartnerId) return { deviceIds: [], warnings: [] };
 
-  const deviceIds = await resolveRingAssignedDeviceIds(linkedAssignments, ringPartnerId);
-  return Array.from(deviceIds);
+  const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(linkedAssignments, ringPartnerId);
+  return { deviceIds: Array.from(deviceIds), warnings: warningsForRefusedExecutionGroups(refusedGroups) };
 }
 
 /**
- * Resolve device counts per ring by tracing config policy assignments.
+ * Resolve device counts per ring by tracing config policy assignments, plus
+ * any field-provenance warnings per ring.
  * Config Policy → Feature Link (featureType=patch, featurePolicyId=ringId) → Assignment → Devices
  */
-export async function resolveRingDeviceCounts(ringIds: string[]): Promise<Map<string, number>> {
-  const deviceCountMap = new Map<string, number>();
+export async function resolveRingDeviceCountsWithWarnings(
+  ringIds: string[],
+): Promise<Map<string, { count: number; warnings: string[] }>> {
+  const deviceCountMap = new Map<string, { count: number; warnings: string[] }>();
   if (ringIds.length === 0) return deviceCountMap;
 
   // Find config policies linked to each ring via feature links
@@ -263,13 +290,34 @@ export async function resolveRingDeviceCounts(ringIds: string[]): Promise<Map<st
   // Resolve each ring's device count (isolated per ring — one failure doesn't block others)
   for (const [ringId, { partnerId, assignments }] of ringAssignments) {
     try {
-      const deviceIds = await resolveRingAssignedDeviceIds(assignments, partnerId);
-      deviceCountMap.set(ringId, deviceIds.size);
+      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(assignments, partnerId);
+      deviceCountMap.set(ringId, { count: deviceIds.size, warnings: warningsForRefusedExecutionGroups(refusedGroups) });
     } catch (err) {
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);
-      deviceCountMap.set(ringId, 0);
+      deviceCountMap.set(ringId, { count: 0, warnings: [] });
     }
   }
 
   return deviceCountMap;
+}
+
+/**
+ * Legacy shape (plain device-id array) for any caller that only needs the
+ * device list, not the field-provenance warnings — e.g. the compliance count/percentage
+ * math in `updateRings.ts`'s own compliance handler used to call this before
+ * Field-provenance tiering; now that handler uses `resolveRingDeviceIdsWithWarnings` directly and
+ * this wrapper remains for background/non-interactive callers and existing
+ * test coverage.
+ */
+export async function resolveRingDeviceIds(ringId: string): Promise<string[]> {
+  const { deviceIds } = await resolveRingDeviceIdsWithWarnings(ringId);
+  return deviceIds;
+}
+
+/** Legacy shape (`Map<ringId, count>`) — see `resolveRingDeviceIds` above. */
+export async function resolveRingDeviceCounts(ringIds: string[]): Promise<Map<string, number>> {
+  const withWarnings = await resolveRingDeviceCountsWithWarnings(ringIds);
+  const counts = new Map<string, number>();
+  for (const [ringId, { count }] of withWarnings) counts.set(ringId, count);
+  return counts;
 }

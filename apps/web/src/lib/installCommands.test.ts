@@ -113,7 +113,7 @@ describe('buildInstallCommands', () => {
       // server, so Windows must match.
       const { windows } = buildInstallCommands(base);
       expect(windows).toContain(
-        'Invoke-WebRequest -Uri "https://rmm.example.com/api/v1/agents/download/windows/amd64" -OutFile $exe'
+        'Invoke-WebRequest -Uri "https://rmm.example.com/api/v1/agents/download/windows/amd64?version='
       );
       expect(windows).not.toContain('github.com');
     });
@@ -176,6 +176,108 @@ describe('buildInstallCommands', () => {
       expect(windows).toContain('Windows 10 or Windows Server 2016 or later');
       expect(windows.indexOf('OSVersion')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
     });
+
+    it('stages into a freshly created, uniquely named directory instead of a fixed predictable path', () => {
+      const { windows } = buildInstallCommands(base);
+      // A fixed name under $env:TEMP (e.g. 'breeze-install') can be
+      // pre-created by another local principal before this script runs.
+      // The staging directory name must vary per run (GUID/random) so it
+      // cannot be pre-staged, and creation must fail rather than silently
+      // adopt an existing directory of that name.
+      expect(windows).toContain('[guid]::NewGuid()');
+      expect(windows).not.toContain("Join-Path $env:TEMP 'breeze-install'");
+      // No -Force on the staging directory creation: an existing directory at
+      // that (random) path must cause an error, not be silently reused.
+      const newItemMatch = windows.match(/New-Item -ItemType Directory[^;]*/);
+      expect(newItemMatch).not.toBeNull();
+      expect(newItemMatch![0]).not.toContain('-Force');
+      expect(newItemMatch![0]).toContain('-ErrorAction Stop');
+    });
+
+    it('locks the staging directory ACL down to the current principal and SYSTEM', () => {
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain('icacls');
+      expect(windows).toContain('/inheritance:r');
+      // SYSTEM via well-known SID, so this also works when the one-liner
+      // itself is already running as SYSTEM (e.g. PsExec -s, Intune).
+      expect(windows).toContain('S-1-5-18');
+      expect(windows.indexOf('icacls')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
+    });
+
+    it('fetches the signed release checksum and verifies the download before executing anything', () => {
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain('/api/v1/agent-versions/latest?platform=windows&arch=amd64&component=agent');
+      expect(windows).toContain('Get-FileHash');
+      expect(windows).toContain('SHA256');
+      // Checksum must be verified before the executable is ever invoked.
+      expect(windows.indexOf('Get-FileHash')).toBeLessThan(windows.indexOf('service install'));
+      // A metadata fetch failure or a missing/malformed checksum must fail
+      // closed rather than fall back to running the file unverified.
+      expect(windows).toContain('refusing to install');
+    });
+
+    it('checks the Authenticode signature status when the binary is signed, failing closed on tampering', () => {
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain('Get-AuthenticodeSignature');
+      expect(windows.indexOf('Get-AuthenticodeSignature')).toBeLessThan(windows.indexOf('service install'));
+    });
+
+    it('pins the download to the exact version the checksum was fetched for', () => {
+      // GET /agent-versions/latest and GET /agents/download/windows/amd64 are
+      // two independent requests that each resolve "latest"/"promoted"
+      // separately at their own request time. Without a shared pin, a
+      // release promotion landing between the two calls can serve bytes for
+      // a different release than the checksum was fetched for. The download
+      // route already accepts an explicit ?version= to pin it to one exact
+      // release (matches the existing pattern used elsewhere, #5159) — reuse
+      // that instead of trusting the two calls to agree on their own.
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain(
+        'Invoke-WebRequest -Uri "https://rmm.example.com/api/v1/agents/download/windows/amd64?version=$([uri]::EscapeDataString($meta.version))" -OutFile $exe'
+      );
+      // The version must come from the same metadata fetch the checksum is
+      // read from, not a second independent call.
+      expect(windows.indexOf('$meta=Invoke-RestMethod')).toBeLessThan(windows.indexOf('$meta.version'));
+    });
+  });
+
+  it('never interpolates a bare $identifier immediately followed by a colon inside a double-quoted string', () => {
+    // Inside a double-quoted PowerShell string, "$name:" is parsed as a
+    // drive-qualified variable reference (equivalent to ${name:...}), not as
+    // the variable "$name" followed by a literal colon — PowerShell raises a
+    // hard parse error unless "name" happens to be a real PSDrive (env,
+    // global, script, local, function, variable, alias, cert, hklm, hkcu,
+    // wsman, ...). Any other bare "$identifier:" inside a double-quoted
+    // string aborts the whole one-liner before a single statement runs.
+    // Wrap the variable in braces ("${identifier}:") to interpolate it
+    // safely and unambiguously instead.
+    const knownDriveQualifiedPrefixes = new Set([
+      'env',
+      'global',
+      'script',
+      'local',
+      'private',
+      'function',
+      'variable',
+      'alias',
+      'cert',
+      'hklm',
+      'hkcu',
+      'hkcr',
+      'hkey_local_machine',
+      'hkey_current_user',
+      'wsman',
+    ]);
+    const { windows } = buildInstallCommands(base);
+    const offenders: string[] = [];
+    for (const dq of windows.match(/"(?:[^"\\]|\\.)*"/g) ?? []) {
+      for (const m of dq.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*):/g)) {
+        if (!knownDriveQualifiedPrefixes.has(m[1].toLowerCase())) {
+          offenders.push(`${m[0]} in ${dq}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('strips trailing slashes from apiUrl', () => {

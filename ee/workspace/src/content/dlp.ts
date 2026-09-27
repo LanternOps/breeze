@@ -21,6 +21,7 @@
  */
 
 import type { DetectorId, DlpAction, DlpConfig } from '../services/orgSettingsService';
+import { compileRe2, execAllRe2 } from '../services/dlpRegexEngine';
 
 export interface DlpFinding {
   detector: string;
@@ -265,30 +266,27 @@ function compileRules(config: DlpConfig): CompiledRule[] {
 
   for (const custom of config.customPatterns) {
     if (custom.action === 'off') continue;
-    let re: RegExp;
-    try {
-      re = new RegExp(custom.pattern, 'gu');
-    } catch {
-      // Malformed pattern: normalizeDlp() already rejects these at write
-      // time, so this only guards out-of-band data. Skip rather than throw
-      // — a pure scan function should not crash the caller.
+    // RE2, not V8's backtracking engine: RE2 matches in time linear in
+    // input length regardless of pattern shape, so this — not the
+    // write-time gate in normalizeDlp() — is the actual safety boundary for
+    // a tenant-authored regex scanned on every piece of content. RE2
+    // rejects a narrow set of constructs (backreferences, lookaround) that
+    // normalizeDlp() already filters at write/read time; an entry that
+    // still fails here predates that gate or arrived out-of-band. Skip
+    // rather than throw — a pure scan function should not crash the
+    // caller — but warn, so a stale row doesn't silently do nothing.
+    const compiled = compileRe2(custom.pattern);
+    if (!compiled.ok) {
+      console.warn(
+        `[workspace-dlp] skipping custom pattern with an RE2-incompatible pattern: rule=${custom.name} reason=${compiled.reason}`,
+      );
       continue;
     }
+    const re = compiled.re;
     rules.push({
       name: custom.name,
       action: custom.action,
-      detect: (text: string) => {
-        const out: Match[] = [];
-        for (const m of text.matchAll(re)) {
-          // Zero-width matches (e.g. an all-optional custom group) carry no
-          // redactable span; matchAll already advances past them safely on
-          // its own, so skip and keep scanning rather than abandoning the
-          // rest of the text.
-          if (m[0].length === 0) continue;
-          out.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
-        }
-        return out;
-      },
+      detect: (text: string) => execAllRe2(re, text),
     });
   }
   return rules;

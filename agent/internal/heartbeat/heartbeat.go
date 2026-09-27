@@ -124,6 +124,13 @@ type HeartbeatPayload struct {
 	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
 	BackupVersion             string            `json:"backupVersion,omitempty"`
 	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
+	// BackupReadProtocolVersion is the brokered storage-read protocol the
+	// INSTALLED backup helper reports (breeze-backup --protocol-info), never
+	// inferred from this agent's own version. Omitted when the helper is
+	// absent, predates the flag, or reports 0. The server treats omission as
+	// 0 on every heartbeat (non-sticky), so a helper downgrade is reflected
+	// on the next beat.
+	BackupReadProtocolVersion int `json:"backupReadProtocolVersion,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -238,8 +245,17 @@ type SecurityCapabilities struct {
 	// already seen, and refuses all starts after a terminal. Behind
 	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
 	// against an agent reporting 0, same shape as the revocation-lease gate.
-	DesktopFenceProtocolVersion int                      `json:"desktopFenceProtocolVersion,omitempty"`
-	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	DesktopFenceProtocolVersion int `json:"desktopFenceProtocolVersion,omitempty"`
+	// ConsentPromptProtocolVersion declares that this build parses the
+	// `prompt` block on a desktop-stream-start command (parseDesktopPrompt,
+	// handlers_desktop.go) and gates capture on it: a consent dialog or
+	// on-screen notice per the resolved policy. An agent that predates this
+	// silently drops an unfamiliar `prompt` key (JSON unmarshal into a known
+	// struct ignores unrecognized fields) and streams unconditionally, so the
+	// API refuses to start a session that requires consent or notification
+	// against an agent reporting 0.
+	ConsentPromptProtocolVersion int                      `json:"consentPromptProtocolVersion,omitempty"`
+	PamReconciliation            *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -832,6 +848,15 @@ type Heartbeat struct {
 	backupVersionRead          bool
 	backupVersionReadWarned    bool
 
+	// backupReadProtocolReader is a test seam for the --protocol-info probe
+	// (readInstalledBackupReadProtocol); nil in production. The cache fields
+	// below are guarded by backupVersionMu and cleared by
+	// invalidateBackupVersionCache, exactly like the version cache.
+	backupReadProtocolReader   func() (int, backupProbeOutcome)
+	backupReadProtocolValue    int
+	backupReadProtocolRead     bool
+	backupReadProtocolFailedAt time.Time
+
 	// backupHelperDownloader is an optional test seam: when non-nil,
 	// prefetchBackupHelper / reconcileBackupHelper call this instead of
 	// constructing a real updater.Updater (Component: "backup") and invoking
@@ -1028,6 +1053,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithManifestKeys(h.pinnedManifestPubKeys),
 			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
+			// Only the installed agent may install, update, spawn or remove
+			// the host's machine-wide Assist; see config.IsInstalledAgent.
+			helper.WithMachineInstallOwner(cfg.IsInstalledAgent && !cfg.SupportMode),
+			// Re-hash the broker's allowlist when a new helper binary lands, or
+			// the broker rejects it until the agent restarts (#7043). Reads
+			// h.sessionBroker at call time: the broker is built further down.
+			helper.WithOnInstalled(h.onHelperInstalled),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -1064,6 +1096,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithManifestKeys(h.pinnedManifestPubKeys),
 			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
+			// Only the installed agent may install, update, spawn or remove
+			// the host's machine-wide Assist; see config.IsInstalledAgent.
+			helper.WithMachineInstallOwner(cfg.IsInstalledAgent && !cfg.SupportMode),
+			// Re-hash the broker's allowlist when a new helper binary lands, or
+			// the broker rejects it until the agent restarts (#7043). Reads
+			// h.sessionBroker at call time: the broker is built further down.
+			helper.WithOnInstalled(h.onHelperInstalled),
 		)
 	}
 
@@ -4596,6 +4635,9 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
+	// Read from the installed helper at startup and again after any helper
+	// install (invalidateBackupVersionCache).
+	payload.BackupReadProtocolVersion = h.backupReadProtocolVersion()
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation
@@ -7787,5 +7829,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
 		DesktopFenceProtocolVersion:     1,
+		ConsentPromptProtocolVersion:    1,
 	}
 }

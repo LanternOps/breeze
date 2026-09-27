@@ -101,6 +101,24 @@ describe('get_vault_status — site scoping (cross-site secret/device read)', ()
   });
 });
 
+describe('query_vaults — site narrowing', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('fails closed (empty, no query) for a site-restricted caller whose org never resolves', async () => {
+    let anyQueryRan = false;
+    mockDb.select.mockImplementation(() => {
+      anyQueryRan = true;
+      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'v1' }]) }) }) }) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: [] };
+    const result = await handlerFor('query_vaults')({}, auth);
+    const parsed = JSON.parse(result);
+    expect(parsed.vaults).toEqual([]);
+    expect(parsed.showing).toBe(0);
+    expect(anyQueryRan).toBe(false);
+  });
+});
+
 describe('trigger_vault_sync — site scoping (vault → device)', () => {
   beforeEach(() => vi.clearAllMocks());
 

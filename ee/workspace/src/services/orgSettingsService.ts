@@ -2,6 +2,8 @@ import type { WorkspaceDatabase } from '../hostTypes';
 import { eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { workspaceOrgSettings } from '../schema/orgSettings';
+import { DLP_MAX_CUSTOM_RULES, validateDlpPatternStatic } from '@breeze/shared/validators';
+import { compileRe2 } from './dlpRegexEngine';
 
 export type DlpAction = 'block' | 'redact' | 'log' | 'off';
 export type DetectorId = 'credit_card' | 'iban' | 'ssn' | 'api_key' | 'email' | 'phone';
@@ -64,14 +66,35 @@ function normalizeDlp(raw: unknown): DlpConfig {
   const rawPatterns = Array.isArray(rawObj.customPatterns) ? rawObj.customPatterns : [];
   const customPatterns: DlpConfig['customPatterns'] = [];
   for (const entry of rawPatterns) {
+    if (customPatterns.length >= DLP_MAX_CUSTOM_RULES) break;
     if (!entry || typeof entry !== 'object') continue;
     const { name, pattern, action } = entry as Record<string, unknown>;
     if (typeof name !== 'string' || typeof pattern !== 'string') continue;
     if (typeof action !== 'string' || !ACTIONS.includes(action as DlpAction)) continue;
-    try {
-      void new RegExp(pattern); // validity check only, the RegExp itself is discarded
-    } catch {
-      continue; // malformed pattern: drop the entry rather than trust it
+    // Cheap, pattern-only re-check (empty/length cap, backreference and
+    // lookaround bans, nested-quantifier and ambiguous-alternation
+    // heuristics, compile validity) — see
+    // packages/shared/src/validators/clientAiDlp.ts. Runs on every read
+    // (including the ingest hot path via getOrgSettings), never against user
+    // text, so it carries no backtracking exposure. This is the backstop for
+    // rows written before this check existed or written out-of-band; the PUT
+    // route additionally runs the full timed-probe gate at write time.
+    if (!validateDlpPatternStatic(pattern).ok) continue;
+    // This function runs on BOTH the write path (putOrgSettings) and the
+    // read path (getOrgSettings) — it's the single normalization
+    // chokepoint. Also requiring the pattern to compile under RE2 (the
+    // engine ../content/dlp.ts actually scans with) here means: a new
+    // write with a backreference/lookaround pattern is rejected before
+    // storage, AND a row already in the database that predates this check
+    // (or arrived out-of-band) is dropped on every subsequent read rather
+    // than reaching the scanner. Warn so a dropped legacy row is visible
+    // instead of silently doing nothing.
+    const compiled = compileRe2(pattern);
+    if (!compiled.ok) {
+      console.warn(
+        `[workspace-dlp] dropping custom pattern with an RE2-incompatible pattern: rule=${name} reason=${compiled.reason}`,
+      );
+      continue;
     }
     customPatterns.push({ name, pattern, action: action as DlpAction });
   }

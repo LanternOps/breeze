@@ -31,6 +31,7 @@ import {
 } from '../../services/expoPush';
 import type { RiskTier } from '@breeze/shared';
 import { createPamDecisionIntent } from '../../services/pamActuationLifecycle';
+import { buildPamConfigUpdate } from './helpers';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -358,6 +359,24 @@ elevationRequestsRoutes.post(
         return c.json({ error: 'Device not found' }, 404);
       }
 
+      // Same resolution the agent's own heartbeat uses to decide whether it
+      // should be capturing UAC events at all (config-policy hierarchy, org
+      // grandfathering, then the opt-in-off default). A device with capture
+      // disabled has no legitimate reason to post observations here; without
+      // this gate a misbehaving agent can still insert
+      // elevation_requests rows and fan out mobile approval pushes to every
+      // PAM approver even though the org never turned PAM/UAC interception
+      // on, which is unbounded table growth and push flooding with zero
+      // product value. Mirrors the existing 'ignored' response shape (the
+      // agent treats any 200/201 as success and ignores the body either way).
+      const pamSettings = await buildPamConfigUpdate(device.id);
+      if (!pamSettings.uacInterceptionEnabled) {
+        console.warn(
+          `[ElevationRequests] ingest refused: PAM/UAC interception disabled for device=${device.id} org=${device.orgId}`,
+        );
+        return c.json({ id: null, status: 'ignored' }, 200);
+      }
+
       const observedAt = payload.observed_at ? new Date(payload.observed_at) : new Date();
       if (Number.isNaN(observedAt.getTime())) {
         return c.json({ error: 'Invalid observed_at' }, 400);
@@ -628,7 +647,8 @@ elevationRequestsRoutes.post(
           }
           await tx.insert(elevationAudit).values(auditRows);
 
-          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
+          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null = null;
+          let finalStatus: typeof insertedRow.status = insertedRow.status;
           if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
             const actuation = await createPamDecisionIntent(tx, {
               request: {
@@ -643,11 +663,16 @@ elevationRequestsRoutes.post(
               decision: decision.kind,
               expiresAt,
             });
-            enforcementStatus = actuation.desiredState === 'active'
-              ? 'pending_dispatch'
-              : 'cleanup_pending';
+            if (actuation.refusalReason) {
+              enforcementStatus = 'refused';
+              finalStatus = 'denied';
+            } else {
+              enforcementStatus = actuation.desiredState === 'active'
+                ? 'pending_dispatch'
+                : 'cleanup_pending';
+            }
           }
-          return { ...insertedRow, enforcementStatus };
+          return { ...insertedRow, status: finalStatus, enforcementStatus };
         });
 
         writeAuditEvent(c, {

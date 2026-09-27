@@ -2,12 +2,15 @@ package heartbeat
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
 // backupVersionPrefix is the line prefix `breeze-backup --version` prints the
@@ -232,6 +235,9 @@ func (h *Heartbeat) invalidateBackupVersionCache() {
 	h.backupVersionOutcome = backupProbeOK
 	h.backupVersionProbeFailedAt = time.Time{}
 	h.backupVersionReadWarned = false
+	h.backupReadProtocolRead = false
+	h.backupReadProtocolValue = 0
+	h.backupReadProtocolFailedAt = time.Time{}
 }
 
 // parseBackupVersion extracts the version from `breeze-backup --version`
@@ -245,4 +251,89 @@ func parseBackupVersion(out string) string {
 		}
 	}
 	return ""
+}
+
+// backupReadProtocolVersion returns the brokered storage-read protocol
+// version the INSTALLED breeze-backup helper implements, as reported by
+// `breeze-backup --protocol-info`. 0 when the helper is not installed, cannot
+// be probed, or predates the flag. Caching mirrors
+// installedBackupVersionOutcome: a stable answer (ok / not installed) is kept
+// until invalidateBackupVersionCache runs after a helper install; a failed
+// probe is retried after backupVersionProbeCooldown.
+func (h *Heartbeat) backupReadProtocolVersion() int {
+	h.backupVersionMu.Lock()
+	if h.backupReadProtocolRead {
+		v := h.backupReadProtocolValue
+		h.backupVersionMu.Unlock()
+		return v
+	}
+	if !h.backupReadProtocolFailedAt.IsZero() && time.Since(h.backupReadProtocolFailedAt) < backupVersionProbeCooldown {
+		h.backupVersionMu.Unlock()
+		return 0
+	}
+	h.backupVersionMu.Unlock()
+
+	read := h.backupReadProtocolReader
+	if read == nil {
+		read = h.readInstalledBackupReadProtocol
+	}
+	v, outcome := read()
+	if v < 0 {
+		v = 0
+	}
+
+	h.backupVersionMu.Lock()
+	defer h.backupVersionMu.Unlock()
+	switch outcome {
+	case backupProbeOK, backupProbeNotInstalled:
+		h.backupReadProtocolValue = v
+		h.backupReadProtocolRead = true
+		h.backupReadProtocolFailedAt = time.Time{}
+	case backupProbeFailed:
+		h.backupReadProtocolValue = 0
+		h.backupReadProtocolFailedAt = time.Now()
+		v = 0
+	default: // unresolved: never cached
+		v = 0
+	}
+	return v
+}
+
+// readInstalledBackupReadProtocol execs the on-disk helper with
+// --protocol-info. A helper that predates the flag exits non-zero (unknown
+// flag) and is reported as backupProbeFailed, i.e. version 0.
+func (h *Heartbeat) readInstalledBackupReadProtocol() (int, backupProbeOutcome) {
+	path, err := h.resolveBackupBinaryPath()
+	if err != nil {
+		return 0, backupProbeUnresolved
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		return 0, backupProbeNotInstalled
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backupVersionReadTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--"+backupipc.ProtocolInfoFlag).Output()
+	if err != nil {
+		log.Debug("backup helper did not report protocol info", "path", path, "error", err.Error())
+		return 0, backupProbeFailed
+	}
+	v, ok := parseBackupReadProtocol(string(out))
+	if !ok {
+		log.Debug("backup helper protocol info unparseable", "path", path)
+		return 0, backupProbeFailed
+	}
+	return v, backupProbeOK
+}
+
+// parseBackupReadProtocol decodes --protocol-info output. ok is false for
+// anything that is not a JSON object with a non-negative integer version.
+func parseBackupReadProtocol(out string) (int, bool) {
+	var info backupipc.ProtocolInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &info); err != nil {
+		return 0, false
+	}
+	if info.BackupReadProtocolVersion < 0 {
+		return 0, false
+	}
+	return info.BackupReadProtocolVersion, true
 }

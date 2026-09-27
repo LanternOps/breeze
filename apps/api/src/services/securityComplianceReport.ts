@@ -22,6 +22,7 @@ import {
   securityStatus,
   sites
 } from '../db/schema';
+import { EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 import type { PostureSummary } from '@breeze/shared';
 import {
@@ -259,7 +260,10 @@ export async function generateSecurityCompliancePostureReport(
   const huntressDevices = new Set(huntressRows.map((r) => r.deviceId).filter(isString));
 
   const patchRows = await db
-    .select({ deviceId: devicePatches.deviceId, severity: patches.severity })
+    // Effective per-device severity (patchSeverityOverlay.ts) — see the same
+    // note in securityPosture.ts. Per device_patches row, inside a query
+    // already scoped to this org + these deviceIds; never mixed across orgs.
+    .select({ deviceId: devicePatches.deviceId, severity: EFFECTIVE_PATCH_SEVERITY_SQL })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
     .where(

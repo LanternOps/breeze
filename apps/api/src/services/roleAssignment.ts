@@ -8,6 +8,7 @@ import {
   isAssignablePermission,
   type UserPermissions,
 } from './permissions';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 
 /**
  * Canonical assignable-role validation. Lifted VERBATIM out of routes/users.ts
@@ -287,4 +288,67 @@ export async function validateAssignableRole(
   }
   const callerPermissions = await getCallerPermissions(c, auth);
   return applyCeiling(callerPermissions, role, rolePermissionsForAssignment);
+}
+
+/**
+ * Minimal shape needed to rank-and-scope-check a target of a user-management
+ * mutation (role assign, MFA reset, membership removal). `siteIds` mirrors
+ * `organizationUsers.siteIds` — `null`/`undefined` means the target is
+ * unrestricted within its org; present only for organization scope.
+ */
+export interface ManageableTarget {
+  roleId: string;
+  isSystem: boolean;
+  siteIds?: string[] | null;
+}
+
+/**
+ * Shared caller-vs-target check for every mutation that acts on an EXISTING
+ * user (as opposed to `validateAssignableRole`, which ceilings a role being
+ * newly assigned). Two independent checks, both must pass:
+ *
+ *  - Rank: the caller must hold every permission the target's CURRENT role
+ *    carries (same ceiling walk as a role assignment — "outrank or equal").
+ *    Without this, a lower-privileged admin could demote, MFA-reset or
+ *    remove a higher-ranked admin even though they could never have been
+ *    granted that admin's role themselves.
+ *  - Scope (organization only): a site-restricted caller may act only on a
+ *    target whose own site access is a non-null subset of the caller's.
+ *    A site-restricted caller can never manage an unrestricted target, nor
+ *    one holding a site outside the caller's own allowlist. Partner scope
+ *    has no site axis, so this half is a no-op there.
+ *
+ * Returns an error message when the caller may not manage the target, or
+ * `null` when allowed.
+ */
+export async function assertCanManageTarget(
+  c: any,
+  auth: AuthLike,
+  scopeContext: ScopeContext,
+  target: ManageableTarget
+): Promise<string | null> {
+  const callerPermissions = await getCallerPermissions(c, auth);
+
+  if (scopeContext.scope === 'organization') {
+    // No resolvable caller permissions fails closed (empty allowlist), same as
+    // a malformed DB value — never treated as unrestricted.
+    const allowed = callerPermissions
+      ? normalizeSiteAllowlist(callerPermissions.allowedSiteIds)
+      : ([] as readonly string[]);
+    if (allowed !== undefined) {
+      // Caller is site-restricted. A target with no site restriction of its
+      // own (org-wide access) is always broader than any restricted caller.
+      const targetSites = target.siteIds;
+      if (!targetSites || targetSites.length === 0) {
+        return 'Cannot manage a user outside your site access';
+      }
+      const allowedSet = new Set(allowed);
+      const targetOutOfReach = targetSites.some((siteId) => !allowedSet.has(siteId));
+      if (targetOutOfReach) {
+        return 'Cannot manage a user outside your site access';
+      }
+    }
+  }
+
+  return checkRolePermissionCeiling(callerPermissions, { id: target.roleId, isSystem: target.isSystem });
 }

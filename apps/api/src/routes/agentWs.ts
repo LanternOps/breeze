@@ -97,6 +97,7 @@ import { applyCommandAutomationTerminal } from '../services/automationTerminalEv
 import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
+  collapseAgentReportedTimeoutStatus,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
@@ -112,6 +113,9 @@ import {
   loadTrustState,
   partnerIdForDevice,
 } from '../services/partnerTrust';
+import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
+import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
+import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async', 'backup_queue_async'] as const;
 
@@ -749,12 +753,17 @@ function buildStoredCommandResult(
   // megabytes of random base64 and would silently corrupt the artifact (#2401).
   const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
   return {
-    status: result.status,
+    // See collapseAgentReportedTimeoutStatus: an agent-reported 'timeout'
+    // must never be stored verbatim — that literal string doubles as the
+    // server's own reopen marker.
+    status: collapseAgentReportedTimeoutStatus(result.status),
     exitCode: result.exitCode,
     stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
     stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
     durationMs: result.durationMs,
-    error: result.error != null ? redactSecretsFromOutput(result.error) : result.error,
+    error: result.error != null
+      ? redactSecretsFromOutput(result.error)
+      : result.status === 'timeout' ? 'Agent reported a timeout' : result.error,
   };
 }
 
@@ -1566,7 +1575,13 @@ export async function processOrphanedCommandResult(
 
   // Check if this is a discovery job result
   const [discoveryJob] = await db
-    .select({ id: discoveryJobs.id, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId, agentId: discoveryJobs.agentId })
+    .select({
+      id: discoveryJobs.id,
+      orgId: discoveryJobs.orgId,
+      siteId: discoveryJobs.siteId,
+      agentId: discoveryJobs.agentId,
+      status: discoveryJobs.status
+    })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, result.commandId))
     .limit(1);
@@ -1574,6 +1589,17 @@ export async function processOrphanedCommandResult(
   if (discoveryJob) {
     if (!discoveryJob.agentId || discoveryJob.agentId !== agentId) {
       console.warn(`[AgentWs] Rejecting discovery result for job ${discoveryJob.id} from unexpected agent ${agentId}`);
+      return;
+    }
+    // A job that already left 'running' (completed, failed, cancelled) has
+    // either finished or been superseded by a later dispatch of the same job
+    // id. Accepting a late/replayed result here would let the probe agent
+    // rewrite site assets or job history at any later time, with no time
+    // bound. Guarding on status also serves as a coarse consume-once: the
+    // conditional updates below only take effect for the first result to
+    // land while the job is still 'running'.
+    if (discoveryJob.status !== 'running') {
+      console.warn(`[AgentWs] Rejecting stale discovery result for job ${discoveryJob.id} (status=${discoveryJob.status})`);
       return;
     }
     console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
@@ -1596,7 +1622,7 @@ export async function processOrphanedCommandResult(
             errors: { message: errorMsg },
             updatedAt: new Date()
           })
-          .where(eq(discoveryJobs.id, discoveryJob.id));
+          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
         console.warn(`[AgentWs] Discovery job ${discoveryJob.id} failed: ${errorMsg}`);
         return;
       }
@@ -1632,7 +1658,7 @@ export async function processOrphanedCommandResult(
             errors: { message: 'Results received but could not be processed: job queue unavailable' },
             updatedAt: new Date()
           })
-          .where(eq(discoveryJobs.id, discoveryJob.id));
+          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
@@ -1646,7 +1672,7 @@ export async function processOrphanedCommandResult(
             errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
             updatedAt: new Date()
           })
-          .where(eq(discoveryJobs.id, discoveryJob.id));
+          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
       } catch (dbErr) {
         // #3530: the orphaned-result twin of the registry handler's fallback.
         console.error(`[AgentWs] Additionally failed to mark discovery job ${discoveryJob.id} as failed:`, dbErr);
@@ -2706,6 +2732,64 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
       try {
+        // Per-socket message-rate budget: cheaper than any other check on
+        // this path (in-memory, synchronous), so it runs before even the
+        // reauthorization check below — a flooding socket should be shed
+        // before it costs a single allocation or DB round trip, not after.
+        //
+        // command_result/update_status carry TERMINAL STATUS (#3001: a
+        // silently dropped command_result reads as a job vanishing, reaped as
+        // "stalled" 15 minutes later with zero trace). A cheap, bounded-prefix
+        // sniff of the raw frame — NOT a full JSON.parse, which stays exactly
+        // as expensive as before and still only runs once, below — routes
+        // each type to its OWN lane instead of sharing the general one:
+        // command_result gets real headroom for a reconnect-burst of queued
+        // results, while update_status — the frame type that serializes most on
+        // the devices row — stays capped at or below the general
+        // lane's own ceiling, never wider (see agentWsMessageBudget.ts).
+        const rawFrameText = typeof event.data === 'string' ? event.data : null;
+        const terminalMessageType = rawFrameText ? sniffTerminalMessageType(rawFrameText) : null;
+        const budgetKind = terminalMessageType ?? 'general';
+        const budgetVerdict = checkAgentWsMessageBudget(ws, agentId, Date.now(), budgetKind);
+        if (budgetVerdict === 'close') {
+          if (terminalMessageType) {
+            // Sustained abuse dressed up as terminal-status frames is still
+            // sustained abuse — closes exactly like the general lane — but the
+            // loss of whatever terminal status was in flight gets the same
+            // error-level trace a dropped one does, for the same #3001 reason.
+            const commandId = sniffCommandId(rawFrameText!);
+            console.error(
+              `[AgentWs] Closing connection for agent ${agentId} after sustained abuse on the ` +
+              `${terminalMessageType} lane; last frame's commandId=${commandId ?? 'unknown'}`,
+            );
+          }
+          ws.close(1008, 'Message rate budget exceeded');
+          return;
+        }
+        if (budgetVerdict === 'drop') {
+          if (terminalMessageType) {
+            // A dropped terminal-state frame must never be silent — log at
+            // error with everything needed to find the job, matching
+            // buildAgentMessageRejection's posture for the validation-
+            // rejection path below, and tell the agent so it can log the loss
+            // locally instead of assuming delivery.
+            const commandId = sniffCommandId(rawFrameText!);
+            console.error(
+              `[AgentWs] DROPPED ${terminalMessageType} from agent ${agentId} by the message-rate ` +
+              `budget — the job will have no terminal status and will be failed by a reaper. ` +
+              `commandId=${commandId ?? 'unknown'}`,
+            );
+            ws.send(JSON.stringify({
+              type: 'error',
+              code: 'MESSAGE_RATE_BUDGET_EXCEEDED',
+              message: 'Message dropped by rate budget',
+              messageType: terminalMessageType,
+              ...(commandId !== undefined ? { commandId } : {}),
+            }));
+          }
+          return;
+        }
+
         const authenticatedAgent = agentDb;
 
         // This is deliberately the first frame operation: stale oversized or
@@ -2795,9 +2879,38 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           }
           const { sessionId, data: termData, encoding } = parsed.data;
           const termSession = getActiveTerminalSession(sessionId);
-          if (!termSession || termSession.agentId !== agentId) {
+          if (termSession && termSession.agentId !== agentId) {
+            // The session IS tracked locally, and this process's own memory
+            // already says it belongs to a DIFFERENT, specific agent — an
+            // unambiguous same-process ownership conflict, not something a
+            // restart or a just-closed socket could produce. No lookup
+            // needed; count it exactly as before.
             console.warn(`[AgentWs] Dropping terminal_output for unowned session ${sessionId} from agent ${agentId}`);
             recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'terminal_output');
+            return;
+          }
+          if (!termSession) {
+            // A session missing from THIS process's in-memory map is not, on
+            // its own, evidence of a cross-tenant probe: it's also exactly
+            // what a just-closed session (the socket closed mid-output) or an
+            // API replica restart (the map is process-local and starts empty)
+            // looks like from here, and the agent's shell/PTY can still be
+            // producing real output for either of those for a while after.
+            // Resolve the session's actual owning device (short-lived local
+            // cache, else one DB read — this branch is rare on the hot path;
+            // ordinary owned output never reaches it) and only count this as
+            // a probe when that device is provably NOT the sender's own.
+            const ownerDeviceId = await resolveTerminalSessionOwnerDeviceId(
+              sessionId,
+              runWithAgentDbAccess,
+            );
+            const senderDeviceId = authenticatedAgent?.deviceId;
+            if (ownerDeviceId && senderDeviceId && ownerDeviceId !== senderDeviceId) {
+              console.warn(`[AgentWs] Dropping terminal_output for unowned session ${sessionId} from agent ${agentId} (belongs to a different device)`);
+              recordCrossTenantDrop(agentId, senderDeviceId, 'terminal_output');
+            } else {
+              console.warn(`[AgentWs] Dropping terminal_output for session ${sessionId} not tracked locally from agent ${agentId} (own device — not counted toward auto-suspension)`);
+            }
             return;
           }
           const decodedOutput = decodeTerminalOutput(termData, encoding);
@@ -2886,76 +2999,88 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
         // Handle update_status messages: agent is about to self-update
         if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
-          if (agentDb) {
-            await runWithAgentDbAccess('agentWs.updateStatus', async () => {
-              try {
-                const now = new Date();
-                // #4073 — every update_status precedes an update ATTEMPT (a
-                // wedged update re-sends it on every heartbeat), so record the
-                // episode on the device row: first attempt, last attempt,
-                // count. The heartbeat clears it on convergence; an old open
-                // record that is still retrying is a stuck update, visible
-                // without depending on log shipping. A failed read must never
-                // cost the status flip — it just starts a fresh episode.
-                // Oversized targets (column is varchar(50)) are not recorded.
-                const targetVersion: string = message.targetVersion;
-                let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
-                if (targetVersion.length > 0 && targetVersion.length <= 50) {
-                  let prev: {
-                    targetVersion: string | null;
-                    startedAt: Date | null;
-                    lastAttemptAt: Date | null;
-                    attemptCount: number | null;
-                  } | undefined;
-                  try {
-                    [prev] = await db
-                      .select({
-                        targetVersion: devices.updateAttemptTargetVersion,
-                        startedAt: devices.updateAttemptStartedAt,
-                        lastAttemptAt: devices.updateAttemptLastAt,
-                        attemptCount: devices.updateAttemptCount,
-                      })
-                      .from(devices)
-                      .where(eq(devices.agentId, agentId))
-                      .limit(1);
-                  } catch (readError) {
-                    console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
+          const targetVersion: string = message.targetVersion;
+          // Coalesce repeats per agent (services/agentUpdateStatusCoalescer.ts):
+          // a frame arriving while a write is in flight, or naming the same
+          // target version just written, is absorbed without opening a
+          // transaction against the devices row. The dedupe window is shorter
+          // than the heartbeat-driven retry cadence, so every real update
+          // attempt still reaches the attempt record below.
+          if (agentDb && beginAgentUpdateStatusWrite(agentId, targetVersion)) {
+            let written = false;
+            try {
+              await runWithAgentDbAccess('agentWs.updateStatus', async () => {
+                try {
+                  const now = new Date();
+                  // #4073 — every update_status precedes an update ATTEMPT (a
+                  // wedged update re-sends it on every heartbeat), so record the
+                  // episode on the device row: first attempt, last attempt,
+                  // count. The heartbeat clears it on convergence; an old open
+                  // record that is still retrying is a stuck update, visible
+                  // without depending on log shipping. A failed read must never
+                  // cost the status flip — it just starts a fresh episode.
+                  // Oversized targets (column is varchar(50)) are not recorded.
+                  let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
+                  if (targetVersion.length > 0 && targetVersion.length <= 50) {
+                    let prev: {
+                      targetVersion: string | null;
+                      startedAt: Date | null;
+                      lastAttemptAt: Date | null;
+                      attemptCount: number | null;
+                    } | undefined;
+                    try {
+                      [prev] = await db
+                        .select({
+                          targetVersion: devices.updateAttemptTargetVersion,
+                          startedAt: devices.updateAttemptStartedAt,
+                          lastAttemptAt: devices.updateAttemptLastAt,
+                          attemptCount: devices.updateAttemptCount,
+                        })
+                        .from(devices)
+                        .where(eq(devices.agentId, agentId))
+                        .limit(1);
+                    } catch (readError) {
+                      console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
+                    }
+                    attempt = nextAgentUpdateAttempt(
+                      prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
+                      targetVersion,
+                      now,
+                    );
+                  } else {
+                    console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
                   }
-                  attempt = nextAgentUpdateAttempt(
-                    prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
-                    targetVersion,
-                    now,
-                  );
-                } else {
-                  console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
+                  // Same terminal-status guard as updateDeviceStatus (#2230):
+                  // this write must not resurrect a decommissioned/quarantined
+                  // row to 'updating'.
+                  await db
+                    .update(devices)
+                    .set({
+                      status: 'updating',
+                      lastSeenAt: now,
+                      updatedAt: now,
+                      ...(attempt
+                        ? {
+                            updateAttemptTargetVersion: attempt.targetVersion,
+                            updateAttemptStartedAt: attempt.startedAt,
+                            updateAttemptLastAt: attempt.lastAttemptAt,
+                            updateAttemptCount: attempt.attemptCount,
+                          }
+                        : {}),
+                    })
+                    .where(and(
+                      eq(devices.agentId, agentId),
+                      notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES])
+                    ));
+                  written = true;
+                  console.log(`[AgentWs] Agent ${agentId} entering update to ${targetVersion}`);
+                } catch (error) {
+                  console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
                 }
-                // Same terminal-status guard as updateDeviceStatus (#2230):
-                // this write must not resurrect a decommissioned/quarantined
-                // row to 'updating'.
-                await db
-                  .update(devices)
-                  .set({
-                    status: 'updating',
-                    lastSeenAt: now,
-                    updatedAt: now,
-                    ...(attempt
-                      ? {
-                          updateAttemptTargetVersion: attempt.targetVersion,
-                          updateAttemptStartedAt: attempt.startedAt,
-                          updateAttemptLastAt: attempt.lastAttemptAt,
-                          updateAttemptCount: attempt.attemptCount,
-                        }
-                      : {}),
-                  })
-                  .where(and(
-                    eq(devices.agentId, agentId),
-                    notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES])
-                  ));
-                console.log(`[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`);
-              } catch (error) {
-                console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
-              }
-            });
+              });
+            } finally {
+              finishAgentUpdateStatusWrite(agentId, targetVersion, written);
+            }
           }
           return;
         }
@@ -3858,6 +3983,62 @@ const desktopCommandResultSchema = z.object({
     stopReason: z.string().max(300).optional(),
   }).strict().optional(),
 }).passthrough();
+
+// Short-lived local cache for the owner-device lookup below — bounds DB load
+// from a burst of trailing frames for the SAME just-closed/unknown session
+// (leg a: socket closed mid-output; leg b: a fresh replica with an empty
+// in-memory map) without adding a persistence dependency. Deliberately tiny
+// TTL: this only needs to survive one burst, not become a second source of
+// truth for session ownership.
+const TERMINAL_OUTPUT_OWNER_CACHE_TTL_MS = 30_000;
+const TERMINAL_OUTPUT_OWNER_CACHE_MAX_ENTRIES = 500;
+const terminalOutputOwnerCache = new Map<string, { deviceId: string | null; expiresAt: number }>();
+
+/**
+ * Resolve which device a `remote_sessions` row actually belongs to, for a
+ * sessionId this process's in-memory `activeTerminalSessions` map does not
+ * (or no longer) recognize. Used ONLY to distinguish a genuine cross-tenant
+ * probe (a sessionId naming a DIFFERENT device) from the two benign cases
+ * that look identical from the in-memory map alone: a session that just
+ * closed on this same device, or a session this replica never saw because it
+ * started after the session did (restart). Returns null on "not found" or on
+ * any lookup failure — the caller treats null as "don't count toward
+ * auto-suspension", which is the fail-safe direction for a signal whose whole
+ * purpose is to avoid falsely locking a device's management channel.
+ */
+async function resolveTerminalSessionOwnerDeviceId(
+  sessionId: string,
+  runWithAgentDbAccess: <T>(label: string, fn: () => Promise<T>) => Promise<T>,
+): Promise<string | null> {
+  const now = Date.now();
+  const cached = terminalOutputOwnerCache.get(sessionId);
+  if (cached && cached.expiresAt > now) {
+    return cached.deviceId;
+  }
+  let deviceId: string | null = null;
+  try {
+    const [row] = await runWithAgentDbAccess('agentWs.terminalOutput.resolveOwner', async () =>
+      db.select({ deviceId: remoteSessions.deviceId })
+        .from(remoteSessions)
+        .where(eq(remoteSessions.id, sessionId))
+        .limit(1)
+    );
+    deviceId = row?.deviceId ?? null;
+  } catch {
+    // Fail toward "unknown" (not counted), not toward "probe" — see doc
+    // comment above.
+    deviceId = null;
+  }
+  if (terminalOutputOwnerCache.size >= TERMINAL_OUTPUT_OWNER_CACHE_MAX_ENTRIES) {
+    for (const [key, entry] of terminalOutputOwnerCache) {
+      if (entry.expiresAt <= now) terminalOutputOwnerCache.delete(key);
+    }
+  }
+  if (terminalOutputOwnerCache.size < TERMINAL_OUTPUT_OWNER_CACHE_MAX_ENTRIES) {
+    terminalOutputOwnerCache.set(sessionId, { deviceId, expiresAt: now + TERMINAL_OUTPUT_OWNER_CACHE_TTL_MS });
+  }
+  return deviceId;
+}
 
 // M-D1 / Task 18: Cross-tenant probe detection.
 //
