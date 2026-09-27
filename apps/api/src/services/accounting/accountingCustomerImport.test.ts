@@ -9,9 +9,10 @@ const {
   updateMock,
   deleteMock,
   executeMock,
-  getConnectionMock,
+  resolveActiveConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
+  commitImportMock,
   captureExceptionMock,
   ReauthRequiredError,
 } = vi.hoisted(() => {
@@ -24,9 +25,10 @@ const {
     updateMock: vi.fn(),
     deleteMock: vi.fn(),
     executeMock: vi.fn(),
-    getConnectionMock: vi.fn(),
+    resolveActiveConnectionMock: vi.fn(),
     getValidAccessTokenMock: vi.fn(),
     listRemoteCustomersMock: vi.fn(),
+    commitImportMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     ReauthRequiredError,
   };
@@ -42,7 +44,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('./accountingConnectionService', () => ({
-  getConnection: getConnectionMock,
+  resolveActiveConnection: resolveActiveConnectionMock,
 }));
 
 vi.mock('./accountingTokens', () => ({
@@ -52,6 +54,8 @@ vi.mock('./accountingTokens', () => ({
 
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock }),
+  providerSupports: () => true,
+  accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : 'Xero'),
 }));
 
 // Org creation now also guarantees the partner's currency default card.
@@ -64,9 +68,9 @@ import { organizations, organizationExternalLinks, partners, sites } from '../..
 import { ensureDefaultProfile } from '../billingProfileService';
 import { contacts } from '../../db/schema/contacts';
 import {
-  importQuickbooksCustomers,
-  listQuickbooksCustomersAnnotated,
-} from './quickbooksCustomerImport';
+  importAccountingCustomers,
+  listAccountingCustomersAnnotated,
+} from './accountingCustomerImport';
 
 function connectedConn() {
   return { id: 'c1', partnerId: 'p1', provider: 'quickbooks', realmId: 'r1', accessToken: 'tok', environment: 'sandbox', status: 'connected' };
@@ -156,11 +160,11 @@ beforeEach(() => {
   // this path (and clears the legacy jsonb blob to `{}` just the same).
   deleteMock.mockImplementation(() => ({ where: () => Promise.resolve([]) }));
   executeMock.mockResolvedValue([]);
-  getConnectionMock.mockResolvedValue(connectedConn());
+  resolveActiveConnectionMock.mockResolvedValue(connectedConn());
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
 });
 
-describe('listQuickbooksCustomersAnnotated', () => {
+describe('listAccountingCustomersAnnotated', () => {
   it('does not flag a same-named but unlinked org as already imported', async () => {
     listRemoteCustomersMock.mockResolvedValue([
       { id: '1', displayName: 'A' }, { id: '2', displayName: 'B' },
@@ -169,7 +173,7 @@ describe('listQuickbooksCustomersAnnotated', () => {
     // an org with no link row is a NAME match, never "already imported".
     stubState([{ id: 'org-1', name: 'A', slug: 'a' }]);
 
-    const result = await listQuickbooksCustomersAnnotated('p1');
+    const result = await listAccountingCustomersAnnotated('p1', 'quickbooks');
 
     expect(result).toEqual([
       expect.objectContaining({ id: '1', alreadyImported: false, organizationId: null }),
@@ -181,14 +185,14 @@ describe('listQuickbooksCustomersAnnotated', () => {
   it('annotates customers linked via organization_external_links', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
     stubState([{ id: 'org-9', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-9', system: 'quickbooks', externalId: 'qb-9' }]);
-    const result = await listQuickbooksCustomersAnnotated('p1');
+    const result = await listAccountingCustomersAnnotated('p1', 'quickbooks');
     expect(result[0]).toMatchObject({ alreadyImported: true, organizationId: 'org-9' });
   });
 
   it('does NOT mark a same-named-but-unlinked org as already imported', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
     stubState([{ id: 'org-name', name: 'Acme', slug: 'acme' }], []);
-    const result = await listQuickbooksCustomersAnnotated('p1');
+    const result = await listAccountingCustomersAnnotated('p1', 'quickbooks');
     // A bare name match is not linkage — the import refuses it rather than
     // pretending the customer is already imported.
     expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
@@ -201,7 +205,7 @@ describe('listQuickbooksCustomersAnnotated', () => {
     // in the web UI, blocking the import forever with no way to reach the
     // refusal message.
     stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
-    const result = await listQuickbooksCustomersAnnotated('p1');
+    const result = await listAccountingCustomersAnnotated('p1', 'quickbooks');
     expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
   });
 
@@ -214,17 +218,24 @@ describe('listQuickbooksCustomersAnnotated', () => {
       [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
       [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'qb-9' }],
     );
-    const result = await listQuickbooksCustomersAnnotated('p1');
+    const result = await listAccountingCustomersAnnotated('p1', 'quickbooks');
     expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
   });
 
-  it('throws QbImportError(not_connected) when no connection exists', async () => {
-    getConnectionMock.mockResolvedValue(null);
-    await expect(listQuickbooksCustomersAnnotated('p1')).rejects.toMatchObject({ code: 'not_connected', status: 404 });
+  it('throws AccountingImportError(not_connected) when no connection exists', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(null);
+    await expect(listAccountingCustomersAnnotated('p1', 'quickbooks')).rejects.toMatchObject({ code: 'not_connected', status: 404 });
+  });
+
+  it("refuses a provider that is not the partner's active connection", async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn());
+    await expect(listAccountingCustomersAnnotated('p1', 'xero')).rejects.toMatchObject({
+      code: 'not_connected', status: 404, message: 'Xero is not connected for this partner',
+    });
   });
 });
 
-describe('importQuickbooksCustomers', () => {
+describe('importAccountingCustomers', () => {
   it('creates an org + site for a new customer, mapping billing + shipping data', async () => {
     listRemoteCustomersMock.mockResolvedValue([{
       id: '1', displayName: 'Acme Co', email: 'ap@acme.test', phone: '555', contactName: 'Jane Doe',
@@ -233,7 +244,7 @@ describe('importQuickbooksCustomers', () => {
     }]);
     stubState();
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'], actor: { userId: 'u1' } });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'], actor: { userId: 'u1' } });
 
     // Ids are the mock's insert counter. This customer HAS contact data, so the
     // compat mirror inserts a contacts row between the org and the link, and
@@ -265,7 +276,7 @@ describe('importQuickbooksCustomers', () => {
   it('writes the external link row ONLY — never the legacy accounting columns', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     // The seam owns linkage. The legacy single-valued columns no longer exist
     // (dropped 2026-08-18) — naming them in an insert would now throw at the DB.
     expect(orgInserts()[0]).not.toHaveProperty('accountingProvider');
@@ -273,17 +284,25 @@ describe('importQuickbooksCustomers', () => {
     expect(linkInserts()).toEqual([expect.objectContaining({ system: 'quickbooks', externalId: '1' })]);
   });
 
+  it("dedupes against organization_external_links under the connection's provider", async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn());
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    stubState();
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'], actor: { userId: null } });
+    expect(linkInserts()[0]).toMatchObject({ system: 'quickbooks' });
+  });
+
   it('falls back to billing address for the site when shipping is absent', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { line1: '1 Bill St', city: 'Austin' } }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(siteInserts()[0]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
   });
 
   it('nulls billingAddressCountry when QB Country is not a 2-char code (char(2) guard)', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { country: 'United States' } }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(orgInserts()[0]!.billingAddressCountry).toBeNull();
     // …but the full country is preserved on the site address JSONB (no length cap).
     expect(siteInserts()[0]!.address).toMatchObject({ country: 'United States' });
@@ -292,7 +311,7 @@ describe('importQuickbooksCustomers', () => {
   it('uppercases a genuine 2-char country code into billingAddressCountry', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { country: 'us' } }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(orgInserts()[0]!.billingAddressCountry).toBe('US');
   });
 
@@ -301,7 +320,7 @@ describe('importQuickbooksCustomers', () => {
     const longCity = 'C'.repeat(200);
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: longName, billAddr: { city: longCity } }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(orgInserts()[0]!.name).toHaveLength(255);
     expect(orgInserts()[0]!.billingAddressCity).toHaveLength(120);
     expect(siteInserts()[0]!.address).toMatchObject({ city: longCity });
@@ -310,7 +329,7 @@ describe('importQuickbooksCustomers', () => {
   it('maps QB address region -> site address state key', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { region: 'TX', city: 'Austin' } }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(siteInserts()[0]!.address).toMatchObject({ state: 'TX', city: 'Austin' });
     expect(ensureDefaultProfile).toHaveBeenCalledWith('p1', 'CAD', expect.anything());
   });
@@ -318,7 +337,7 @@ describe('importQuickbooksCustomers', () => {
   it('skips customers linked via organization_external_links', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState([{ id: 'org-9', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-9', system: 'quickbooks', externalId: '1' }]);
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-9', reason: 'already_imported' }]);
     expect(insertMock).not.toHaveBeenCalled();
   });
@@ -332,7 +351,7 @@ describe('importQuickbooksCustomers', () => {
       [{ id: 'org-csv', name: 'Acme', slug: 'acme' }],
       [{ orgId: 'org-csv', system: 'quickbooks', externalId: 'qb-77' }],
     );
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-77'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['qb-77'] });
     expect(summary.skipped).toEqual([
       { customerId: 'qb-77', displayName: 'Acme', organizationId: 'org-csv', reason: 'already_imported' },
     ]);
@@ -343,14 +362,14 @@ describe('importQuickbooksCustomers', () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     // A DIFFERENT org owns the slug (name differs, so this is not a name match).
     stubState([{ id: 'org-x', name: 'Acme Holdings', slug: 'acme' }]);
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
     expect(orgInserts()[0]).toMatchObject({ slug: 'acme-2' });
   });
 
   it('reserves slugs within the batch so two same-named new customers do not collide', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }, { id: '2', displayName: 'Acme' }]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '2'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1', '2'] });
     expect(orgInserts().map((o) => o.slug)).toEqual(['acme', 'acme-2']);
   });
 
@@ -358,7 +377,7 @@ describe('importQuickbooksCustomers', () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState([{ id: 'org-existing', name: 'Acme', slug: 'acme' }], []);
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(summary.imported).toEqual([]);
     expect(summary.skipped).toEqual([]);
@@ -383,7 +402,7 @@ describe('importQuickbooksCustomers', () => {
       [{ orgId: 'org-1', system: 'quickbooks', externalId: 'qb-old' }],
     );
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-new'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['qb-new'] });
 
     expect(summary.errors).toEqual([{
       customerId: 'qb-new',
@@ -399,7 +418,7 @@ describe('importQuickbooksCustomers', () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(summary.imported).toEqual([]);
     expect(summary.errors).toEqual([{
@@ -418,7 +437,7 @@ describe('importQuickbooksCustomers', () => {
       [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
       [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'qb-9' }],
     );
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-9'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['qb-9'] });
     expect(summary.errors).toEqual([{
       customerId: 'qb-9',
       displayName: 'Acme',
@@ -434,7 +453,7 @@ describe('importQuickbooksCustomers', () => {
       { id: '2', displayName: 'Globex' },
     ]);
     stubState([{ id: 'org-existing', name: 'Acme', slug: 'acme' }], []);
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '2'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1', '2'] });
     expect(summary.errors).toHaveLength(1);
     expect(summary.imported).toEqual([expect.objectContaining({ customerId: '2', displayName: 'Globex' })]);
   });
@@ -443,7 +462,7 @@ describe('importQuickbooksCustomers', () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Bad' }, { id: '2', displayName: 'Good' }]);
     stubState();
     stubInserts({ failOn: (v) => (v.name === 'Bad' ? new Error('boom') : null) });
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '2'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1', '2'] });
     expect(summary.errors).toEqual([{ customerId: '1', displayName: 'Bad', error: 'boom' }]);
     expect(summary.imported).toHaveLength(1);
     expect(summary.imported[0]!.customerId).toBe('2');
@@ -457,7 +476,7 @@ describe('importQuickbooksCustomers', () => {
     const pgErr = Object.assign(new Error('deadlock detected'), { code: '40P01' });
     stubInserts({ failOn: () => pgErr });
 
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(captureExceptionMock).toHaveBeenCalledWith(pgErr);
   });
@@ -470,7 +489,7 @@ describe('importQuickbooksCustomers', () => {
       { id: 'org-2', name: 'Acme', slug: 'acme-2' },
     ], []);
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(summary.errors).toHaveLength(1);
     expect(summary.errors[0]!.error).toContain('Multiple existing organizations are named');
@@ -483,7 +502,7 @@ describe('importQuickbooksCustomers', () => {
     // A write failure whose message happens to read like a seam recheck string.
     stubInserts({ failOn: () => new Error('Annotation changed since preview: totally not a recheck') });
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     // Prefix matching would have swallowed this as a benign "changed in Breeze"
     // notice and skipped the Sentry event.
@@ -494,7 +513,7 @@ describe('importQuickbooksCustomers', () => {
   it('reports requested ids not present in QuickBooks as errors', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState();
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', 'missing'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1', 'missing'] });
     expect(summary.errors).toContainEqual({ customerId: 'missing', error: 'Customer not found in QuickBooks' });
     expect(summary.imported).toHaveLength(1);
   });
@@ -502,7 +521,7 @@ describe('importQuickbooksCustomers', () => {
   it('imports a repeated customer id once', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState();
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1', '1'] });
     expect(summary.imported).toHaveLength(1);
     expect(orgInserts()).toHaveLength(1);
   });
@@ -511,7 +530,7 @@ describe('importQuickbooksCustomers', () => {
     getValidAccessTokenMock.mockResolvedValue('fresh-token');
     listRemoteCustomersMock.mockResolvedValue([]);
     stubState();
-    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: [] });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: [] });
     expect(listRemoteCustomersMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }));
   });
 
@@ -524,7 +543,7 @@ describe('importQuickbooksCustomers', () => {
     });
     stubInserts({ failOn: (v) => (v.system === 'quickbooks' ? dupErr : null) });
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(summary.errors).toEqual([]);
     expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-dup', reason: 'already_imported' }]);
@@ -540,7 +559,7 @@ describe('importQuickbooksCustomers', () => {
     });
     stubInserts({ failOn: (v) => (v.system === 'quickbooks' ? dupErr : null) });
 
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    const summary = await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
 
     expect(summary.skipped).toEqual([]);
     expect(summary.imported).toEqual([]);
@@ -553,23 +572,23 @@ describe('importQuickbooksCustomers', () => {
   });
 });
 
-describe('importQuickbooksCustomers — connection/QBO error mapping', () => {
-  it('throws QbImportError(reauth_required, 409) when the connection needs reauth', async () => {
-    getConnectionMock.mockResolvedValue({ ...connectedConn(), status: 'reauth_required' });
-    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+describe('importAccountingCustomers — connection/QBO error mapping', () => {
+  it('throws AccountingImportError(reauth_required, 409) when the connection needs reauth', async () => {
+    resolveActiveConnectionMock.mockResolvedValue({ ...connectedConn(), status: 'reauth_required' });
+    await expect(importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] }))
       .rejects.toMatchObject({ code: 'reauth_required', status: 409 });
   });
 
-  it('maps a ReauthRequiredError from getValidAccessToken to QbImportError(409)', async () => {
+  it('maps a ReauthRequiredError from getValidAccessToken to AccountingImportError(409)', async () => {
     getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredError());
-    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+    await expect(importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] }))
       .rejects.toMatchObject({ code: 'reauth_required', status: 409 });
   });
 
-  it('maps a QBO API failure to QbImportError(provider_error, 502)', async () => {
+  it('maps a QBO API failure to AccountingImportError(provider_error, 502)', async () => {
     getValidAccessTokenMock.mockResolvedValue('tok');
     listRemoteCustomersMock.mockRejectedValue(new Error('QuickBooks customer query failed with 429'));
-    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+    await expect(importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] }))
       .rejects.toMatchObject({ code: 'provider_error', status: 502 });
   });
 });

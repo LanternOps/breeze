@@ -25,10 +25,10 @@ import {
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
-  importQuickbooksCustomers,
-  listQuickbooksCustomersAnnotated,
-  QbImportError,
-} from '../../services/accounting/quickbooksCustomerImport';
+  importAccountingCustomers,
+  listAccountingCustomersAnnotated,
+  AccountingImportError,
+} from '../../services/accounting/accountingCustomerImport';
 import {
   AccountingMappingError,
   listMappingProposals,
@@ -209,8 +209,8 @@ const remoteCandidatesQuerySchema = partnerQuerySchema.extend({
 });
 
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
-  if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
+  // AccountingImportError.status is a narrowed literal union (400|404|409|502), so no cast.
+  if (err instanceof AccountingImportError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -814,7 +814,7 @@ accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requ
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   try {
-    const data = await listQuickbooksCustomersAnnotated(partner.partnerId);
+    const data = await listAccountingCustomersAnnotated(partner.partnerId, provider);
     return c.json({ data });
   } catch (err) {
     return handleImportError(c, err);
@@ -836,8 +836,9 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
 
   let summary;
   try {
-    summary = await importQuickbooksCustomers({
+    summary = await importAccountingCustomers({
       partnerId: partner.partnerId,
+      provider,
       customerIds: c.req.valid('json').customerIds,
       // Stamped onto organization_external_links.created_by by the seam.
       actor: { userId: auth.user?.id ?? null },

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mirrors the mocking pattern established in quickbooksCustomerImport.test.ts:
+// Mirrors the mocking pattern established in accountingCustomerImport.test.ts:
 // mock the db module, the connection/token seams, and the provider registry,
 // then exercise the real matching logic against those mocks.
 const {

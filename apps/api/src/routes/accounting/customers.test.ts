@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authState } = vi.hoisted(() => {
+const { listAnnotatedMock, importMock, writeRouteAuditMock, AccountingImportError, authState } = vi.hoisted(() => {
   const listAnnotatedMock = vi.fn();
   const importMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
-  class QbImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
+  class AccountingImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
   // The import route creates orgs + default sites and is gated on both write
   // permissions. The list route is read-only, but both routes still require
   // full-partner org access because they enter the partner-wide import seam.
@@ -14,12 +14,12 @@ const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authS
     partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
     permissions: new Set<string>(['accounting:read', 'accounting:manage', 'organizations:write', 'sites:write']),
   };
-  return { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authState };
+  return { listAnnotatedMock, importMock, writeRouteAuditMock, AccountingImportError, authState };
 });
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: listAnnotatedMock,
-  importQuickbooksCustomers: importMock,
-  QbImportError,
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: listAnnotatedMock,
+  importAccountingCustomers: importMock,
+  AccountingImportError,
 }));
 
 // Auth middleware stubs: inject a partner-scoped auth context.
@@ -85,25 +85,25 @@ describe('GET /accounting/:provider/customers', () => {
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: '1', displayName: 'Acme', alreadyImported: false, organizationId: null }] });
-    expect(listAnnotatedMock).toHaveBeenCalledWith('p1');
+    expect(listAnnotatedMock).toHaveBeenCalledWith('p1', 'quickbooks');
   });
 
-  it('maps QbImportError(not_connected) to 404', async () => {
-    listAnnotatedMock.mockRejectedValue(new QbImportError('nope', 'not_connected', 404));
+  it('maps AccountingImportError(not_connected) to 404', async () => {
+    listAnnotatedMock.mockRejectedValue(new AccountingImportError('nope', 'not_connected', 404));
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ code: 'not_connected' });
   });
 
-  it('maps QbImportError(reauth_required) to 409', async () => {
-    listAnnotatedMock.mockRejectedValue(new QbImportError('reconnect', 'reauth_required', 409));
+  it('maps AccountingImportError(reauth_required) to 409', async () => {
+    listAnnotatedMock.mockRejectedValue(new AccountingImportError('reconnect', 'reauth_required', 409));
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'reauth_required' });
   });
 
-  it('maps QbImportError(provider_error) to 502', async () => {
-    listAnnotatedMock.mockRejectedValue(new QbImportError('upstream', 'provider_error', 502));
+  it('maps AccountingImportError(provider_error) to 502', async () => {
+    listAnnotatedMock.mockRejectedValue(new AccountingImportError('upstream', 'provider_error', 502));
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ code: 'provider_error' });
@@ -158,7 +158,7 @@ describe('POST /accounting/:provider/customers/import', () => {
     const body = await res.json();
     expect(body.data.imported).toHaveLength(1);
     // The actor is forwarded so the seam stamps organization_external_links.created_by.
-    expect(importMock).toHaveBeenCalledWith({ partnerId: 'p1', customerIds: ['1'], actor: { userId: 'u1' } });
+    expect(importMock).toHaveBeenCalledWith({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'], actor: { userId: 'u1' } });
     // Each created org is audited — guards against the audit loop being dropped.
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),

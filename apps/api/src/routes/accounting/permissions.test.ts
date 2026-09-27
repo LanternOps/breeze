@@ -112,10 +112,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   })),
 }));
 
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: effects.listCustomers,
-  importQuickbooksCustomers: effects.importCustomers,
-  QbImportError: AccountingError,
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: effects.listCustomers,
+  importAccountingCustomers: effects.importCustomers,
+  AccountingImportError: AccountingError,
 }));
 
 vi.mock('../../services/accounting/accountingMappingService', () => ({

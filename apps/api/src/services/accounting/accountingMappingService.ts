@@ -72,7 +72,7 @@ import {
 // workers whose closure must never reach socket-local dispatch (see
 // workerEntrypointClosure.contract.test.ts).
 import { billingAddressColumns } from '../orgImport/addressColumns';
-// Narrow import: `./quickbooksCustomerImport` transitively pulls in
+// Narrow import: `./accountingCustomerImport` transitively pulls in
 // `../orgImport` (for commitOrgImport/previewOrgImport), same reachability
 // concern as billingAddressColumns above.
 import { siteAddressFrom } from './addressMapping';
@@ -130,7 +130,7 @@ export type AccountingMappingErrorCode =
   | 'rate_limited';
 
 // Typed failure the route translates straight to an HTTP status (mirrors
-// QbImportError in quickbooksCustomerImport.ts). Narrowing `code`/`status` to
+// AccountingImportError in accountingCustomerImport.ts). Narrowing `code`/`status` to
 // literals lets a route drop its `as`-cast.
 export class AccountingMappingError extends Error {
   /** Set on `rate_limited` only: how long to wait before retrying. */

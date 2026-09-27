@@ -116,10 +116,10 @@ vi.mock('../../services/accounting/accountingConnectionService', async (importOr
 }));
 
 // Not exercised by these tests, but imported transitively by routes/accounting/index.ts.
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: vi.fn(),
-  importQuickbooksCustomers: vi.fn(),
-  QbImportError: class QbImportError extends Error {
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: vi.fn(),
+  importAccountingCustomers: vi.fn(),
+  AccountingImportError: class AccountingImportError extends Error {
     code: string;
     status: number;
     constructor(m: string, c: string, s: number) {
