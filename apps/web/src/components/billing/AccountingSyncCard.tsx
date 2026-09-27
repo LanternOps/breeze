@@ -7,10 +7,16 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { AccountingSyncSummary, InvoiceStatus } from './invoiceTypes';
+import { ACCOUNTING_PROVIDER_NAMES, accountingPath, type AccountingProviderId } from '../../lib/accountingProviders';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
+  /** The provider the push goes to: the mapping row's own provider when one
+   *  exists, else the partner's active invoice-push-capable connection. `null`
+   *  when neither is known to this caller — that hides ONLY the push action;
+   *  status rendering and the post-Issue watch behave exactly as without it. */
+  provider: AccountingProviderId | null;
   invoiceId: string;
   /**
    * The API's `accountingSync` field. `null`/`undefined` means "no QuickBooks
@@ -64,7 +70,7 @@ function isPushable(status: AccountingSyncSummary['syncStatus']): boolean {
 }
 
 /** The QuickBooks push is asynchronous: `/invoices/:id/issue` (auto push mode)
- *  and `/accounting/quickbooks/invoices/:id/push` both return as soon as the
+ *  and `/accounting/:provider/invoices/:id/push` both return as soon as the
  *  job is enqueued, and the worker lands a beat later. Anything below is a
  *  settled outcome — the watch stops the moment the refetched mapping row
  *  reads one of them. */
@@ -109,7 +115,7 @@ function shouldWatchOnMount(
   return age < MOUNT_WATCH_MAX_AGE_MS;
 }
 
-export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, invoiceTouchedAt, canPush, onChanged }: Props) {
+export default function AccountingSyncCard({ provider, invoiceId, sync, invoiceStatus, invoiceTouchedAt, canPush, onChanged }: Props) {
   const { t } = useTranslation('billing');
   const [pushing, setPushing] = useState(false);
   // The push is in flight somewhere server-side; poll the invoice until the
@@ -186,7 +192,13 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
   // While the watch is live the push is already in flight server-side: the
   // affordance has to go, or the operator double-submits the very push they
   // are waiting on.
-  const pushable = canPush && statusPushable && !voided && !remoteDeleted && !watching;
+  const pushable = canPush && provider !== null && statusPushable && !voided && !remoteDeleted && !watching;
+  // Display name for the {{provider}} interpolation below. Always read off
+  // the synced record's OWN provider (`sync.provider`), never the caller's
+  // `provider` prop — that prop can be null (or, in principle, a different
+  // provider than an existing mapping row) and only gates the push button;
+  // the status text must describe what the mapping row actually is.
+  const providerName = ACCOUNTING_PROVIDER_NAMES[sync.provider];
   const statusLabel = watching
     ? t('invoiceDetail.accountingSync.syncing')
     : t(/* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`);
@@ -208,13 +220,14 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
         : AlertTriangle;
 
   async function push() {
+    if (!provider) return;
     setPushing(true);
     try {
       await runAction({
         request: () =>
-          fetchWithAuth(`/accounting/quickbooks/invoices/${invoiceId}/push`, { method: 'POST' }),
-        errorFallback: t('invoiceDetail.accountingSync.pushFailed'),
-        successMessage: t('invoiceDetail.accountingSync.pushed'),
+          fetchWithAuth(accountingPath(provider, `/invoices/${invoiceId}/push`), { method: 'POST' }),
+        errorFallback: t('invoiceDetail.accountingSync.pushFailed', { provider: providerName }),
+        successMessage: t('invoiceDetail.accountingSync.pushed', { provider: providerName }),
         onUnauthorized: UNAUTHORIZED,
       });
       // No watch here: unlike the auto-push path, this route AWAITS the
@@ -227,7 +240,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
       // A typed 409 (currency_mismatch, customer_not_mapped, …) has already
       // been toasted by runAction with the route's own message; deliberately
       // no refetch, because nothing about the invoice changed.
-      handleActionError(err, t('invoiceDetail.accountingSync.pushFailed'));
+      handleActionError(err, t('invoiceDetail.accountingSync.pushFailed', { provider: providerName }));
     } finally {
       setPushing(false);
     }
@@ -236,7 +249,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
   return (
     <div className="rounded-lg border bg-card p-4" data-testid="invoice-detail-accounting-sync">
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {t('invoiceDetail.accountingSync.title')}
+        {t('invoiceDetail.accountingSync.title', { provider: providerName })}
       </h3>
       <div className="space-y-2 text-sm">
         <span
@@ -248,7 +261,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
 
         {syncStatus === 'synced_with_tax_variance' && (
           <p className="text-xs text-amber-800" data-testid="invoice-accounting-sync-variance">
-            {t('invoiceDetail.accountingSync.taxVarianceHint')}
+            {t('invoiceDetail.accountingSync.taxVarianceHint', { provider: providerName })}
           </p>
         )}
 
@@ -265,18 +278,18 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
             need two explanations for one missing button. */}
         {statusPushable && voided && (
           <p className="text-xs text-muted-foreground" data-testid="invoice-accounting-sync-voided-hint">
-            {t('invoiceDetail.accountingSync.voidedHint')}
+            {t('invoiceDetail.accountingSync.voidedHint', { provider: providerName })}
           </p>
         )}
         {statusPushable && remoteDeleted && !voided && (
           <p className="text-xs text-muted-foreground" data-testid="invoice-accounting-sync-remote-deleted-hint">
-            {t('invoiceDetail.accountingSync.remoteDeletedHint')}
+            {t('invoiceDetail.accountingSync.remoteDeletedHint', { provider: providerName })}
           </p>
         )}
 
         {sync.remoteDocNumber && (
           <p className="text-muted-foreground" data-testid="invoice-accounting-sync-docnumber">
-            {t('invoiceDetail.accountingSync.docNumber', { docNumber: sync.remoteDocNumber })}
+            {t('invoiceDetail.accountingSync.docNumber', { docNumber: sync.remoteDocNumber, provider: providerName })}
           </p>
         )}
 
@@ -295,7 +308,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, inv
             className="inline-flex w-full items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
             {pushing && <Loader2 className="h-4 w-4 animate-spin" />}
-            {t('invoiceDetail.accountingSync.push')}
+            {t('invoiceDetail.accountingSync.push', { provider: providerName })}
           </button>
         )}
       </div>

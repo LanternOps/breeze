@@ -145,17 +145,17 @@ vi.mock("./BackupProvidersIntegration", () => ({
 
 // The Accounting tab hosts the QuickBooks mapping workbench, which owns a
 // NESTED tab hash (#quickbooks-customers / #quickbooks-items) inside the page's
-// own hash. Render the REAL workbench behind a stubbed QuickbooksIntegration so
-// the nested-hash contract is exercised end to end rather than re-implemented
+// own hash. Render the REAL workbench behind a stubbed AccountingConnectionPanel
+// so the nested-hash contract is exercised end to end rather than re-implemented
 // in the test.
-vi.mock("./QuickbooksIntegration", async () => {
-  const { default: QuickbooksMappingWorkbench } = await import(
-    "./QuickbooksMappingWorkbench"
+vi.mock("./AccountingConnectionPanel", async () => {
+  const { default: AccountingMappingWorkbench } = await import(
+    "./AccountingMappingWorkbench"
   );
   return {
-    default: () => (
-      <div data-testid="stub-quickbooks">
-        <QuickbooksMappingWorkbench defaultIncomeAccountRef="income-1" />
+    default: ({ provider }: { provider: "quickbooks" | "xero" }) => (
+      <div data-testid={`stub-${provider}`}>
+        <AccountingMappingWorkbench provider={provider} defaultIncomeAccountRef="income-1" />
       </div>
     ),
   };
@@ -668,13 +668,37 @@ describe("IntegrationsPage — per-tab documentation link", () => {
 // page off the Accounting tab. Clicking "Items" writes #quickbooks-items, which
 // the page's hash router used to treat as an unknown tab and fall back to
 // Webhooks — making the Items tab unreachable (reproduced on prod v0.110.0).
+const ALL_CAPS = { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true };
+// GET /accounting/providers (Xero W01): the Accounting tab renders a provider's
+// card and panel only when the instance has it configured.
+const PROVIDERS_QBO_ONLY = {
+  data: [
+    { id: "quickbooks", displayName: "QuickBooks", configured: true, capabilities: ALL_CAPS },
+    { id: "xero", displayName: "Xero", configured: false, capabilities: ALL_CAPS },
+  ],
+  activeConnection: null,
+};
+const PROVIDERS_BOTH = {
+  data: PROVIDERS_QBO_ONLY.data.map((p) => ({ ...p, configured: true })),
+  activeConnection: null,
+};
+let providersBody: unknown = PROVIDERS_QBO_ONLY;
+let providersStatus = 200;
+
 describe("IntegrationsPage — nested QuickBooks workbench hash", () => {
   beforeEach(() => {
     scope = "partner";
     orgState.currentOrgId = null;
     orgState.jwtOrgId = null;
     fetchWithAuthMock.mockReset();
+    providersBody = PROVIDERS_QBO_ONLY;
+    providersStatus = 200;
     fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === "/accounting/providers") {
+        return Promise.resolve(
+          new Response(JSON.stringify(providersBody), { status: providersStatus }),
+        );
+      }
       const body = url.includes("income-accounts")
         ? { data: [{ id: "income-1", displayName: "Sales" }] }
         : {
@@ -708,7 +732,7 @@ describe("IntegrationsPage — nested QuickBooks workbench hash", () => {
 
   it("stays on the Accounting tab when the workbench Items tab is clicked", async () => {
     render(<IntegrationsPage />);
-    expect(screen.getByTestId("quickbooks-mapping-workbench")).toBeTruthy();
+    expect(await screen.findByTestId("quickbooks-mapping-workbench")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
     // jsdom does not fire hashchange for a scripted hash write.
@@ -731,22 +755,102 @@ describe("IntegrationsPage — nested QuickBooks workbench hash", () => {
     );
   });
 
-  it("deep-links straight to the workbench Items tab", () => {
+  it("deep-links straight to the workbench Items tab", async () => {
     window.history.replaceState({}, "", "/integrations#quickbooks-items");
     render(<IntegrationsPage />);
     expect(screen.queryByTestId("stub-webhooks")).toBeNull();
-    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
     expect(
       screen.getByTestId("quickbooks-mapping-tab-items").getAttribute("aria-selected"),
     ).toBe("true");
   });
 
-  it("keeps the #quickbooks sub-tab deep link on Customers", () => {
+  it("keeps the #quickbooks sub-tab deep link on Customers", async () => {
     window.history.replaceState({}, "", "/integrations#quickbooks");
     render(<IntegrationsPage />);
-    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
     expect(
       screen.getByTestId("quickbooks-mapping-tab-customers").getAttribute("aria-selected"),
     ).toBe("true");
+  });
+});
+
+describe("IntegrationsPage — accounting provider cards (Xero W01)", () => {
+  beforeEach(() => {
+    scope = "partner";
+    orgState.currentOrgId = null;
+    orgState.jwtOrgId = null;
+    fetchWithAuthMock.mockReset();
+    providersBody = PROVIDERS_QBO_ONLY;
+    providersStatus = 200;
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === "/accounting/providers"
+          ? new Response(JSON.stringify(providersBody), { status: providersStatus })
+          : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      ),
+    );
+    window.history.replaceState({}, "", "/integrations#accounting");
+  });
+  afterEach(() => {
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("renders one card per configured provider and the QuickBooks panel by default", async () => {
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("accounting-provider-card-quickbooks")).toBeTruthy();
+    expect(screen.queryByTestId("accounting-provider-card-xero")).toBeNull();
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
+    // The Stripe payments sub-tab stays reachable beside the cards.
+    fireEvent.click(screen.getByRole("button", { name: /payments/i }));
+    expect(await screen.findByTestId("stub-stripe-payments")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+  });
+
+  it("does not open an unconfigured provider's panel through its hash", async () => {
+    window.history.replaceState({}, "", "/integrations#xero");
+    render(<IntegrationsPage />);
+    // Still on the Accounting tab (the card row renders), but no Xero panel.
+    expect(await screen.findByTestId("accounting-provider-card-quickbooks")).toBeTruthy();
+    expect(screen.queryByTestId("stub-xero")).toBeNull();
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+  });
+
+  it("does not open an unconfigured provider's nested hash either", async () => {
+    window.history.replaceState({}, "", "/integrations#xero-items");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("accounting-provider-card-quickbooks")).toBeTruthy();
+    expect(screen.queryByTestId("stub-xero")).toBeNull();
+  });
+
+  it("opens a configured provider's panel from its hash and from its card", async () => {
+    providersBody = PROVIDERS_BOTH;
+    window.history.replaceState({}, "", "/integrations#xero");
+    const { unmount } = render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+    unmount();
+
+    window.history.replaceState({}, "", "/integrations#accounting");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("accounting-provider-card-xero"));
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+    expect(window.location.hash).toBe("#xero");
+  });
+
+  it("selects the provider an OAuth return names, so its panel can report the result", async () => {
+    providersBody = PROVIDERS_BOTH;
+    window.history.replaceState({}, "", "/integrations?accounting=xero&error=provider_conflict#accounting");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+  });
+
+  it("says so when the provider list cannot be loaded instead of rendering a blank tab", async () => {
+    providersStatus = 500;
+    providersBody = { error: "boom" };
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("accounting-providers-error")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
   });
 });

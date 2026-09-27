@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mirrors the mocking pattern established in quickbooksCustomerImport.test.ts:
+// Mirrors the mocking pattern established in accountingCustomerImport.test.ts:
 // mock the db module, the connection/token seams, and the provider registry,
 // then exercise the real matching logic against those mocks.
 const {
@@ -1299,6 +1299,26 @@ describe('syncMappedEntity', () => {
     const persisted = currentMappingRows.find((r) => r.id === 'm1');
     expect(persisted).toMatchObject({ syncStatus: 'error', remoteEntityId: 'qb-1' }); // prior ref survives the failure
     expect(persisted?.lastError).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
+  });
+
+  it.each([
+    ['quickbooks', 400, 'QuickBooks rejected the customer sync (HTTP 400)'],
+    ['quickbooks', undefined, 'QuickBooks rejected the customer sync'],
+    ['xero', 400, 'Xero rejected the customer sync (HTTP 400)'],
+    ['xero', undefined, 'Xero rejected the customer sync'],
+  ] as const)('labels the sanitized sync failure with the connection\'s provider (%s, HTTP %s) (Xero W01)', async (provider, status, expected) => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(Object.assign(new Error('upstream body'), status === undefined ? {} : { status }));
+
+    const err: unknown = await syncMappedEntity(syncOrg({ provider }), runCtx).catch((e: unknown) => e);
+
+    expect(upsertCustomerMock).toHaveBeenCalledTimes(1);
+    expect(err).toMatchObject({ code: 'provider_error', status: 502, message: expected });
+    expect(currentMappingRows.find((r) => r.id === 'm1')?.lastError).toBe(expected);
   });
 
   // ---------------------------------------------------------------------------

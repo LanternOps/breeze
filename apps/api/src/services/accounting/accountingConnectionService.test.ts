@@ -1096,7 +1096,7 @@ describe('resolveActiveConnectionId (Xero W01 Task 6 fix round 1 — non-decrypt
     return { dbc, captured };
   }
 
-  it('returns the id, selecting ONLY id + provider (no realm/token decrypt)', async () => {
+  it('returns the id, selecting ONLY id + provider + status (no realm/token decrypt)', async () => {
     // Fix B refactor: resolveActiveConnectionId now shares the private
     // resolveActiveConnectionRef helper with resolveActiveConnectionFor
     // (below), which also needs `provider`. The contract this test actually
@@ -1108,7 +1108,10 @@ describe('resolveActiveConnectionId (Xero W01 Task 6 fix round 1 — non-decrypt
 
     await expect(resolveActiveConnectionId(dbc as any, 'p1')).resolves.toBe('conn-1');
 
-    expect(captured.projection).toEqual({ id: accountingConnections.id, provider: accountingConnections.provider });
+    // Task 15 added `status` (a plain column) for GET /accounting/providers and the connect pre-check.
+    expect(captured.projection).toEqual({
+      id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status,
+    });
     const where = new PgDialect().sqlToQuery(captured.where!);
     expect(where.sql).toContain('"accounting_connections"."partner_id" = $1');
     expect(where.params).toEqual(['p1']);
@@ -1184,7 +1187,7 @@ describe('resolveActiveConnectionFor (Xero W01 producer gate)', () => {
     expect(conn?.provider).toBe('quickbooks');
   });
 
-  it('selects ONLY id + provider (no realm/token decrypt) — Task 5 minor fix', async () => {
+  it('selects ONLY id + provider + status (no realm/token decrypt) — Task 5 minor fix', async () => {
     const { accountingConnections } = await import('../../db/schema');
     const { db } = makeAmbientFakeDb(ambientConnectionRow({
       // Non-null ciphertext-shaped values: if the implementation regressed to
@@ -1201,8 +1204,10 @@ describe('resolveActiveConnectionFor (Xero W01 producer gate)', () => {
 
     const conn = await resolveActiveConnectionFor('p1', 'invoicePush');
 
-    expect(conn).toEqual({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', provider: 'quickbooks' });
-    expect(db.select).toHaveBeenCalledWith({ id: accountingConnections.id, provider: accountingConnections.provider });
+    expect(conn).toEqual({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', provider: 'quickbooks', status: 'connected' });
+    expect(db.select).toHaveBeenCalledWith({
+      id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status,
+    });
     expect(decryptSpy).not.toHaveBeenCalled();
     decryptSpy.mockRestore();
   });

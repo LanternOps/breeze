@@ -7,6 +7,10 @@ import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
 import { _resetShowMarginMemoryForTests } from './billingUi';
 import { fetchWithAuth } from '../../stores/auth';
 
+const authPerms = vi.hoisted(() => ({
+  permissions: [{ resource: '*', action: '*' }] as { resource: string; action: string }[],
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
@@ -14,7 +18,7 @@ vi.mock('../../stores/auth', () => ({
   // full functionality.
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
-      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+      selector({ user: { permissions: authPerms.permissions } }),
     { getState: () => ({ tokens: null }) },
   ),
 }));
@@ -40,6 +44,19 @@ const lines: InvoiceDetailData['lines'] = [
     workedMinutes: null,
   },
 ];
+
+// The one active-connection response shared by every test whose payment-row
+// sync badge names a provider (e.g. "In QuickBooks") but doesn't otherwise
+// give the invoice its own `accountingSync` — the real app resolves this
+// through GET /accounting/providers, and the badge must not guess a brand
+// when that call hasn't been mocked (R10/finding 4).
+const activeQuickbooksProviders = {
+  data: [{
+    id: 'quickbooks', displayName: 'QuickBooks', configured: true,
+    capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true },
+  }],
+  activeConnection: { provider: 'quickbooks', status: 'connected' },
+};
 
 const issued: InvoiceDetailData = {
   invoice: {
@@ -390,6 +407,20 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-online-p2')).not.toBeInTheDocument();
   });
 
+  it('badges a payment pulled from any accounting provider with that provider\'s brand name', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p9', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'XR-1', receivedAt: '2026-06-11', note: null, createdAt: '', source: 'xero' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p9')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-xero-p9')).toHaveTextContent('Xero');
+    expect(screen.queryByTestId('invoice-payment-quickbooks-p9')).not.toBeInTheDocument();
+  });
+
   it('keeps the void affordance and adds no badge on operator-recorded payments', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [
@@ -411,6 +442,7 @@ describe('InvoiceDetail', () => {
   // above, where a Breeze-side reverse would never touch the books).
   it('badges a synced Breeze-origin payment and STILL offers the void button', async () => {
     fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/accounting/providers') return json(activeQuickbooksProviders);
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p4', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-13', note: null, createdAt: '', source: 'manual', accountingSync: { status: 'synced', lastError: null } },
       ] });
@@ -438,6 +470,7 @@ describe('InvoiceDetail', () => {
 
   it('surfaces the sync error text and reason on a failed push', async () => {
     fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/accounting/providers') return json(activeQuickbooksProviders);
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p6', invoiceId: 'inv-1', amount: '120.00', method: 'card', reference: 'pi_y', receivedAt: '2026-06-15', note: null, createdAt: '', source: 'stripe', accountingSync: { status: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' } },
       ] });
@@ -589,6 +622,39 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
   });
+
+  // Ruling R9: the card's post-Issue watch is what refetches the invoice until
+  // the auto-push lands the mapping row. A user with invoices:write but no
+  // accounting grants can never resolve a push provider (GET
+  // /accounting/providers would 403), and must still get that live status.
+  it('keeps the post-Issue sync watch for a user without accounting grants (no push provider)', async () => {
+    authPerms.permissions = [
+      { resource: 'invoices', action: 'read' },
+      { resource: 'invoices', action: 'write' },
+    ];
+    try {
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input === '/accounting/providers') return json({ error: 'Forbidden' }, false, 403);
+        if (input.endsWith('/payments')) return json({ data: [] });
+        return json({ data: {} });
+      });
+      const onChanged = vi.fn();
+      render(
+        <InvoiceDetail
+          detail={{ ...issued, invoice: { ...issued.invoice, updatedAt: new Date().toISOString() }, accountingSync: null }}
+          onChanged={onChanged}
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+      // No mapping row yet: nothing rendered, but the watch polls the refetch.
+      expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
+      await waitFor(() => expect(onChanged).toHaveBeenCalled(), { timeout: 5000 });
+      // The push provider is not even asked for without accounting:manage.
+      expect(fetchMock).not.toHaveBeenCalledWith('/accounting/providers');
+    } finally {
+      authPerms.permissions = [{ resource: '*', action: '*' }];
+    }
+  }, 10000);
 
   it('renders the card in the rail when accountingSync is present', async () => {
     render(

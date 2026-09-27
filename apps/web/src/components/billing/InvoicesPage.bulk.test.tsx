@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // Mock fetchWithAuth — InvoicesPage calls it directly (no listInvoices wrapper).
 const fetchWithAuth = vi.fn();
@@ -57,11 +57,38 @@ const INVOICES = [
   { id: I2, orgId: 'o1', status: 'draft', total: '20.00', balance: '20.00', currencyCode: 'USD', issueDate: null, dueDate: null },
 ];
 
+const ALL_CAPS = { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true };
+/** GET /accounting/providers — the bulk push is offered only for an active
+ *  connection whose provider can push invoices (Xero W01). QuickBooks
+ *  connected by default; a test swaps this to model other partners. */
+const QBO_CONNECTED = {
+  data: [
+    { id: 'quickbooks', displayName: 'QuickBooks', configured: true, capabilities: ALL_CAPS },
+    { id: 'xero', displayName: 'Xero', configured: false, capabilities: { ...ALL_CAPS, invoicePush: false } },
+  ],
+  activeConnection: { provider: 'quickbooks', status: 'connected' },
+};
+let providersBody: unknown = QBO_CONNECTED;
+
 function wireDefault() {
   fetchWithAuth.mockImplementation((url: string) => {
+    if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
     if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
     if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
     return Promise.resolve(json({}, 404));
+  });
+}
+
+/** Waits until the page has READ the GET /accounting/providers body (its
+ *  `json()` resolved) and React has committed whatever that answer drives, so
+ *  a following absence assertion is about the answer, not a pending fetch. */
+async function settleProvidersResponse() {
+  await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/accounting/providers'));
+  const idx = fetchWithAuth.mock.calls.findIndex((c) => c[0] === '/accounting/providers');
+  const res = (await fetchWithAuth.mock.results[idx]!.value) as Response;
+  await waitFor(() => expect(res.json).toHaveBeenCalled());
+  await act(async () => {
+    await (res.json as () => Promise<unknown>)();
   });
 }
 
@@ -69,6 +96,7 @@ function wireDefault() {
 function wirePushBulk(body: unknown) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (String(url).includes('/accounting/quickbooks/invoices/push-bulk')) return Promise.resolve(json(body));
+    if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
     if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
     if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
     return Promise.resolve(json({}, 404));
@@ -80,6 +108,7 @@ describe('InvoicesPage bulk actions', () => {
     vi.clearAllMocks();
     canFn = () => true;
     authTokens = null;
+    providersBody = QBO_CONNECTED;
     wireDefault();
   });
 
@@ -94,6 +123,7 @@ describe('InvoicesPage bulk actions', () => {
     fetchWithAuth.mockImplementation((url: string) => {
       if (String(url).includes('/bulk-delete'))
         return Promise.resolve(json({ data: { total: 2, succeeded: 2, skipped: 0, failed: 0, skippedReasons: {} } }));
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
       if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
       if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: [] }));
       return Promise.resolve(json({}, 404));
@@ -135,6 +165,7 @@ describe('InvoicesPage bulk actions', () => {
     fetchWithAuth.mockImplementation((url: string) => {
       if (String(url).includes('/bulk-void'))
         return Promise.resolve(json({ data: { total: 1, succeeded: 1, skipped: 0, failed: 0, skippedReasons: {} } }));
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
       if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
       if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: [] }));
       return Promise.resolve(json({}, 404));
@@ -168,6 +199,7 @@ describe('InvoicesPage bulk actions', () => {
     fetchWithAuth.mockImplementation((url: string) => {
       if (String(url).includes('/bulk-void'))
         return Promise.resolve(json({ error: 'Internal server error' }, 500));
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
       if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
       if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
       return Promise.resolve(json({}, 404));
@@ -199,12 +231,13 @@ describe('InvoicesPage bulk actions', () => {
     fetchWithAuth.mockImplementation((url: string) => {
       if (String(url).includes('/accounting/quickbooks/invoices/push-bulk'))
         return Promise.resolve(json({ enqueued: 1, skipped: 1 }));
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
       if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
       if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
       return Promise.resolve(json({}, 404));
     });
 
-    fireEvent.click(screen.getByTestId('invoices-bulk-action-quickbooks'));
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-quickbooks'));
 
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find((c) =>
@@ -248,7 +281,7 @@ describe('InvoicesPage bulk actions', () => {
     // them as queued would promise a push that will never happen.
     wirePushBulk({ enqueued: 3, skipped: 1, failed: 2 });
 
-    fireEvent.click(screen.getByTestId('invoices-bulk-action-quickbooks'));
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-quickbooks'));
 
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(
@@ -272,7 +305,7 @@ describe('InvoicesPage bulk actions', () => {
 
     wirePushBulk({ enqueued: 1, skipped: 2, failed: 0 });
 
-    fireEvent.click(screen.getByTestId('invoices-bulk-action-quickbooks'));
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-quickbooks'));
 
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith({
@@ -290,7 +323,7 @@ describe('InvoicesPage bulk actions', () => {
     // Older/unexpected body shape: no `failed` key at all.
     wirePushBulk({ enqueued: 1, skipped: 0 });
 
-    fireEvent.click(screen.getByTestId('invoices-bulk-action-quickbooks'));
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-quickbooks'));
 
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '1 queued for QuickBooks' }));
@@ -317,7 +350,7 @@ describe('InvoicesPage bulk actions', () => {
 
     fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
 
-    expect(screen.getByTestId('invoices-bulk-action-quickbooks')).toBeInTheDocument();
+    expect(await screen.findByTestId('invoices-bulk-action-quickbooks')).toBeInTheDocument();
   });
 
   it('does not hide the QuickBooks bulk push while the scope is unresolved', async () => {
@@ -329,6 +362,87 @@ describe('InvoicesPage bulk actions', () => {
 
     fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
 
+    expect(await screen.findByTestId('invoices-bulk-action-quickbooks')).toBeInTheDocument();
+  });
+
+  // Xero W01 (plan preamble item 10): with no invoice-push-capable connection
+  // the action used to enqueue jobs the worker then dropped. It is now hidden.
+  it.each([
+    ['no connection', { ...QBO_CONNECTED, activeConnection: null }],
+    ['a connection whose provider cannot push invoices', {
+      data: [{ id: 'xero', displayName: 'Xero', configured: true, capabilities: { ...ALL_CAPS, invoicePush: false } }],
+      activeConnection: { provider: 'xero', status: 'connected' },
+    }],
+  ])('hides the bulk push with %s', async (_label, body) => {
+    providersBody = body;
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+    await settleProvidersResponse();
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
+    expect(screen.queryByTestId('invoices-bulk-action-quickbooks')).toBeNull();
+    expect(screen.queryByTestId('invoices-bulk-action-xero')).toBeNull();
+    // Control: the bar itself rendered.
+    expect(screen.getByTestId('invoices-bulk-action-issue')).toBeInTheDocument();
+  });
+
+  // Control for the case above: the SAME settle, with a push-capable
+  // connection, is enough for the action to be present synchronously — so an
+  // absence after that settle is the provider answer, not a race.
+  it('offers the bulk push after the same settle when a push-capable connection exists', async () => {
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+    await settleProvidersResponse();
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
     expect(screen.getByTestId('invoices-bulk-action-quickbooks')).toBeInTheDocument();
+  });
+
+  it('pushes to the active provider\'s bulk route', async () => {
+    providersBody = {
+      data: [{ id: 'xero', displayName: 'Xero', configured: true, capabilities: ALL_CAPS }],
+      activeConnection: { provider: 'xero', status: 'connected' },
+    };
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
+      if (String(url).includes('/accounting/xero/invoices/push-bulk')) return Promise.resolve(json({ enqueued: 1, skipped: 0 }));
+      if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
+      if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
+      return Promise.resolve(json({}, 404));
+    });
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-xero'));
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/accounting/xero/invoices/push-bulk',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+  });
+
+  // Ruling R6 (Xero W01c): a throttled bulk push surfaces the server's own
+  // "rate limiting" text through runAction, not the generic bulk failure copy.
+  it('surfaces a 429 rate_limited bulk push with the server text, not the generic fallback', async () => {
+    const serverText = 'QuickBooks is rate limiting requests. Try again in a minute.';
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (String(url) === '/accounting/providers') return Promise.resolve(json(providersBody));
+      if (String(url).includes('/accounting/quickbooks/invoices/push-bulk'))
+        return Promise.resolve(json({ error: serverText, code: 'rate_limited' }, 429));
+      if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
+      if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
+      return Promise.resolve(json({}, 404));
+    });
+    fireEvent.click(await screen.findByTestId('invoices-bulk-action-quickbooks'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: serverText }));
+    expect(showToast).toHaveBeenCalledTimes(1);
   });
 });

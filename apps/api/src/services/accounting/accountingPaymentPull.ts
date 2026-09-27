@@ -467,7 +467,7 @@ async function applyInsideTransaction(
   // would silently disagree with its own status with no operator signal. The
   // marker is the same invoice-mapping path the currency mismatch uses.
   if (inv.status === 'void') {
-    const message = 'Payment received in QuickBooks against a voided invoice';
+    const message = `Payment received in ${accountingProviderDisplayName(conn.provider)} against a voided invoice`;
     await markInvoiceMappingError(conn, invoiceMapping.id, `${PAYMENT_PULL_ERROR_PREFIX}${message}`);
     captureException(
       new Error(`${message} (remotePaymentId=${line.remotePaymentId}, invoiceId=${inv.id})`),
@@ -639,7 +639,7 @@ async function applyInsideTransaction(
       reference,
       receivedAt: normalized.txnDate,
       recordedBy: null,
-      note: 'Pulled from QuickBooks',
+      note: `Pulled from ${accountingProviderDisplayName(conn.provider)}`,
     })
     .returning({ id: invoicePayments.id });
   const paymentId = (insertedPayments as Array<{ id: string }>)[0]?.id;

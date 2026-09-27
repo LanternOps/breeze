@@ -33,7 +33,8 @@ import Pax8Integration from "./Pax8Integration";
 import TdSynnexCatalogPanel from "../settings/TdSynnexCatalogPanel";
 import TdSynnexEcExpressPanel from "../settings/TdSynnexEcExpressPanel";
 import TdSynnexSftpPanel from "../settings/TdSynnexSftpPanel";
-import QuickbooksIntegration from "./QuickbooksIntegration";
+import AccountingConnectionPanel from "./AccountingConnectionPanel";
+import AccountingProviderCards from "./AccountingProviderCards";
 import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
 import BackupProvidersIntegration from "./BackupProvidersIntegration";
@@ -44,6 +45,13 @@ import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
 import { useOrgStore } from "../../stores/orgStore";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import {
+  ACCOUNTING_PROVIDER_IDS,
+  isAccountingProviderId,
+  isAccountingProviderVisible,
+  type AccountingProviderId,
+  type AccountingProvidersResponse,
+} from "../../lib/accountingProviders";
 
 type TabId =
   | "webhooks"
@@ -59,7 +67,7 @@ type TabId =
 type SecuritySubTab = "sentinelone" | "huntress";
 type CloudTenantsSubTab = "google" | "m365";
 type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec" | "tdsynnex-sftp";
-type AccountingSubTab = "quickbooks" | "stripe";
+type AccountingSubTab = AccountingProviderId | "stripe";
 
 const tabs: { id: TabId; labelKey: string; icon: typeof Activity }[] = [
   { id: "webhooks", labelKey: "integrationsPage.webhooks", icon: Webhook },
@@ -111,10 +119,13 @@ const distributorSubTabs: { id: DistributorSubTab; labelKey: string }[] = [
   { id: "tdsynnex-sftp", labelKey: "integrationsPage.tdSYNNEXPriceFile" },
 ];
 
-const accountingSubTabs: { id: AccountingSubTab; labelKey: string }[] = [
-  { id: "quickbooks", labelKey: "integrationsPage.quickbooks" },
-  { id: "stripe", labelKey: "integrationsPage.payments" },
-];
+// Every accounting provider is listed statically so `#xero` / `#xero-items`
+// route to the Accounting tab. Whether a provider's panel actually renders is
+// decided by GET /accounting/providers (configured providers, plus the connected
+// one — see isAccountingProviderVisible), never by the hash alone. Providers
+// are picked from AccountingProviderCards; only the Stripe payments entry
+// renders as a sub-tab button.
+const accountingSubTabs: AccountingSubTab[] = [...ACCOUNTING_PROVIDER_IDS, "stripe"];
 
 // Each top-level tab links to its own dedicated help-doc page. Opening the doc
 // goes through the shared help panel (useHelpStore) so it respects the
@@ -186,7 +197,7 @@ function parseHash(fallbackTab: TabId): {
     return { tab: "cloud-tenants", cloudTenantsSub: hash as CloudTenantsSubTab };
   if (distributorSubTabs.some((s) => s.id === hash))
     return { tab: "distributors", distributorSub: hash as DistributorSubTab };
-  if (accountingSubTabs.some((s) => s.id === hash))
+  if (accountingSubTabs.some((s) => s === hash))
     return { tab: "accounting", accountingSub: hash as AccountingSubTab };
   // Panels nested INSIDE an accounting sub-tab own their own hash segment,
   // namespaced with the sub-tab id they live under — the QuickBooks mapping
@@ -195,9 +206,9 @@ function parseHash(fallbackTab: TabId): {
   // sub-tab; treating them as unknown made the page fall back to Webhooks the
   // moment the workbench's Items tab was clicked, leaving it unreachable.
   // Anything nested deeper keeps this convention: `<subTabId>-<nested...>`.
-  const nestedAccountingSub = accountingSubTabs.find((s) => hash.startsWith(`${s.id}-`));
+  const nestedAccountingSub = accountingSubTabs.find((s) => hash.startsWith(`${s}-`));
   if (nestedAccountingSub)
-    return { tab: "accounting", accountingSub: nestedAccountingSub.id };
+    return { tab: "accounting", accountingSub: nestedAccountingSub };
   return { tab: fallbackTab };
 }
 
@@ -230,6 +241,11 @@ export default function IntegrationsPage({
   const [cloudTenantsSubTab, setCloudTenantsSubTab] = useState<CloudTenantsSubTab>("google");
   const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>("pax8");
   const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>("quickbooks");
+  // GET /accounting/providers as loaded by AccountingProviderCards: undefined
+  // while loading, null when it could not be loaded.
+  const [accountingProviders, setAccountingProviders] = useState<
+    AccountingProvidersResponse | null | undefined
+  >(undefined);
   const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
     result: M365CustomerGraphReadCallbackResult | null;
     refreshKey: number;
@@ -272,6 +288,13 @@ export default function IntegrationsPage({
       if (parsed.cloudTenantsSub) setCloudTenantsSubTab(parsed.cloudTenantsSub);
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
       if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
+      else if (parsed.tab === "accounting") {
+        // The accounting OAuth callback returns to
+        // /integrations?accounting=<provider>&…#accounting. Open that
+        // provider's panel so it can report the result (and strip the params).
+        const returning = new URLSearchParams(window.location.search).get("accounting");
+        if (returning && isAccountingProviderId(returning)) setAccountingSubTab(returning);
+      }
       if (parsed.consumeCustomerGraphReadResult) {
         setCustomerGraphReadCallback((current) => ({
           result: parsed.customerGraphReadResult ?? null,
@@ -360,16 +383,30 @@ export default function IntegrationsPage({
   // scope is blocked; everything else falls through to the server's own check.
   const isOrgScoped = claims.scope === "organization";
 
-  // SEC-2026-09-05-057: the QuickBooks routes now require the dedicated
-  // `accounting:read` capability. Gate the QuickBooks sub-tab entry and its
+  // SEC-2026-09-05-057: the accounting provider routes require the dedicated
+  // `accounting:read` capability. Gate the provider cards and every provider
   // panel on it so a caller without the grant gets the standard
   // permission-denied state instead of a screen of 403s. The Stripe payments
   // sub-tab is a separate integration with its own routes and is NOT gated on
   // the accounting capability. UX only — every route re-checks server-side.
   const canReadAccounting = usePermissions().can("accounting", "read");
-  const visibleAccountingSubTabs = accountingSubTabs.filter(
-    (sub) => sub.id !== "quickbooks" || canReadAccounting,
-  );
+  const selectedAccountingProvider = isAccountingProviderId(accountingSubTab)
+    ? accountingSubTab
+    : null;
+  // A provider's panel renders only when it is visible — configured on this
+  // instance, or holding the partner's active connection (so a connection whose
+  // provider config was removed can still be disconnected). This is the same
+  // predicate that decides which cards show, so a hand-typed `#xero` on an
+  // instance without Xero configured is not a way into a dead panel.
+  const selectedProviderVisible = !!selectedAccountingProvider
+    && !!accountingProviders?.data.some(
+      (p) => p.id === selectedAccountingProvider
+        && isAccountingProviderVisible(p, accountingProviders.activeConnection),
+    );
+  const selectAccountingSubTab = (id: AccountingSubTab) => {
+    if (typeof window !== "undefined") window.location.hash = id;
+    setAccountingSubTab(id);
+  };
   const visibleCustomerGraphReadResult = callbackOrgId !== null
     && customerGraphReadCallback.orgId === callbackOrgId
     ? customerGraphReadCallback.result
@@ -511,30 +548,31 @@ export default function IntegrationsPage({
         </div>
       )}
 
-      {/* Accounting sub-tabs (hidden for org-scope users, who can't use these APIs) */}
+      {/* Accounting sub-navigation (hidden for org-scope users, who can't use
+          these APIs): one card per visible accounting provider, plus the
+          separate Stripe payments sub-tab. */}
       {activeTab === "accounting" && !isOrgScoped && (
-        <div className="flex gap-2">
-          {visibleAccountingSubTabs.map((sub) => {
-            const isActive = sub.id === accountingSubTab;
-            return (
-              <button
-                key={sub.id}
-                type="button"
-                onClick={() => {
-                  if (typeof window !== "undefined")
-                    window.location.hash = sub.id;
-                  setAccountingSubTab(sub.id);
-                }}
-                className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-                  isActive
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t(/* i18n-dynamic */ sub.labelKey)}
-              </button>
-            );
-          })}
+        <div className="space-y-3">
+          {canReadAccounting && (
+            <AccountingProviderCards
+              selected={selectedAccountingProvider}
+              onSelect={selectAccountingSubTab}
+              onLoaded={setAccountingProviders}
+            />
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => selectAccountingSubTab("stripe")}
+              className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+                accountingSubTab === "stripe"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-background text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t("integrationsPage.payments")}
+            </button>
+          </div>
         </div>
       )}
 
@@ -599,12 +637,22 @@ export default function IntegrationsPage({
       )}
       {activeTab === "accounting" &&
         !isOrgScoped &&
-        accountingSubTab === "quickbooks" &&
-        (canReadAccounting ? (
-          <QuickbooksIntegration />
-        ) : (
-          <AccessDenied testId="accounting-quickbooks-denied" />
-        ))}
+        selectedAccountingProvider &&
+        (!canReadAccounting ? (
+          <AccessDenied testId={`accounting-${selectedAccountingProvider}-denied`} />
+        ) : accountingProviders === null ? (
+          <p
+            className="py-12 text-center text-sm text-muted-foreground"
+            data-testid="accounting-providers-error"
+          >
+            {t("accountingProviders.loadFailed")}
+          </p>
+        ) : selectedProviderVisible ? (
+          <AccountingConnectionPanel
+            key={selectedAccountingProvider}
+            provider={selectedAccountingProvider}
+          />
+        ) : null)}
       {activeTab === "accounting" &&
         !isOrgScoped &&
         accountingSubTab === "stripe" && <StripePaymentsIntegration />}

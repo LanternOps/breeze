@@ -14,10 +14,16 @@ import { loginPathWithNext, getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { showToast } from "../shared/Toast";
-import QuickbooksCustomerImport from "./QuickbooksCustomerImport";
-import QuickbooksMappingWorkbench from "./QuickbooksMappingWorkbench";
+import AccountingCustomerImport from "./AccountingCustomerImport";
+import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import {
+  ACCOUNTING_PROVIDER_NAMES,
+  ACCOUNTING_PROVIDER_PRODUCT_NAMES,
+  accountingPath,
+  type AccountingProviderId,
+} from "../../lib/accountingProviders";
 
 type ConnectionStatus =
   | "connected"
@@ -39,14 +45,14 @@ interface QuickbooksStatus {
   /**
    * QuickBooks `Preferences.CurrencyPrefs.MultiCurrencyEnabled`. Nullable BY
    * DESIGN — `null`/absent means "not captured yet", which is a different fact
-   * from `false`. GET /accounting/quickbooks does not currently carry it, so
+   * from `false`. GET /accounting/:provider does not currently carry it, so
    * on a cold load it is only learned from POST /settings/refresh; typed
    * optional here so it is picked up for free if the status route ever adds it.
    */
   multiCurrencyEnabled?: boolean | null;
   /**
    * Phase D — whether the accounting-reconcile worker pulls QuickBooks payments
-   * back onto Breeze invoices. GET /accounting/quickbooks answers with it on
+   * back onto Breeze invoices. GET /accounting/:provider answers with it on
    * BOTH branches (connected and disconnected), so the switch always has a
    * value; typed optional only so an older API build degrades to "off" rather
    * than rendering `undefined`.
@@ -56,7 +62,7 @@ interface QuickbooksStatus {
   lastReconcileAt?: string | null;
   /**
    * Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for
-   * this connection. GET /accounting/quickbooks answers with it on BOTH
+   * this connection. GET /accounting/:provider answers with it on BOTH
    * branches (connected and disconnected), same story as pullPayments.
    */
   pushPayments?: boolean;
@@ -83,8 +89,19 @@ function isMfaError(err: unknown): boolean {
   );
 }
 
-export default function QuickbooksIntegration() {
+interface Props {
+  provider: AccountingProviderId;
+}
+
+/** Monogram for the panel header badge — a brand mark, never translated. */
+const PROVIDER_MONOGRAMS: Record<AccountingProviderId, string> = { quickbooks: "QB", xero: "X" };
+
+export default function AccountingConnectionPanel({ provider }: Props) {
   const { t, i18n } = useTranslation("integrations");
+  const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
+  // Full product name — only "connectDescription" has ever said "QuickBooks
+  // Online" rather than the shorter brand name (R10).
+  const productName = ACCOUNTING_PROVIDER_PRODUCT_NAMES[provider];
   const claims = getJwtClaims();
   const isOrgScoped = claims.scope === "organization";
   /**
@@ -124,7 +141,7 @@ export default function QuickbooksIntegration() {
   }, []);
 
   const fetchStatus = useCallback(async () => {
-    const res = await fetchWithAuth("/accounting/quickbooks");
+    const res = await fetchWithAuth(accountingPath(provider));
     if (res.status === 401) {
       onUnauthorized();
       return null;
@@ -132,19 +149,19 @@ export default function QuickbooksIntegration() {
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(
-        t("quickbooksIntegration.failedToLoadStatusCode", {
+        t("accountingConnection.failedToLoadStatusCode", { provider: providerName,
           status: res.status,
         }),
       );
     }
     return json as QuickbooksStatus;
-  }, [onUnauthorized]);
+  }, [provider, providerName, onUnauthorized]);
 
   const fetchOwedOperations = useCallback(async () => {
     setOwed(null);
     setOwedError(false);
     try {
-      const res = await fetchWithAuth("/accounting/quickbooks/owed-operations");
+      const res = await fetchWithAuth(accountingPath(provider, "/owed-operations"));
       if (res.status === 401) {
         onUnauthorized();
         return;
@@ -154,7 +171,7 @@ export default function QuickbooksIntegration() {
     } catch {
       setOwedError(true);
     }
-  }, [onUnauthorized]);
+  }, [provider, providerName, onUnauthorized]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -169,7 +186,7 @@ export default function QuickbooksIntegration() {
       setLoadError(
         err instanceof Error
           ? err.message
-          : t("quickbooksIntegration.failedToLoadQuickBooksStatus"),
+          : t("accountingConnection.failedToLoadProviderStatus", { provider: providerName }),
       );
     } finally {
       setLoading(false);
@@ -177,25 +194,35 @@ export default function QuickbooksIntegration() {
   }, [fetchStatus, fetchOwedOperations]);
 
   // Surface the OAuth round-trip result. The API callback redirects back to
-  // /integrations?accounting=quickbooks&connected=1 (or &error=...). Show a
+  // /integrations?accounting=<provider>&connected=1 (or &error=...). Show a
   // toast, strip the params so a refresh doesn't re-toast, then load status.
+  // A return addressed to another provider is left for that provider's panel.
   useEffect(() => {
     if (isOrgScoped || typeof window === "undefined") {
       setLoading(false);
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    if (params.get("accounting") === "quickbooks") {
+    if (params.get("accounting") === provider) {
+      const error = params.get("error");
       if (params.get("connected") === "1") {
         showToast({
           type: "success",
-          message: t("quickbooksIntegration.quickbooksConnected"),
+          message: t("accountingConnection.providerConnected", { provider: providerName }),
         });
-      } else if (params.get("error")) {
+      } else if (error === "provider_conflict") {
+        // One accounting connection per partner: retrying cannot succeed
+        // until the other provider is disconnected, so say that instead of
+        // the generic "connection failed, try again".
+        showToast({
+          type: "error",
+          message: t("accountingConnection.providerConflict", { provider: providerName }),
+        });
+      } else if (error) {
         showToast({
           type: "error",
           message: t(
-            "quickbooksIntegration.quickbooksConnectionFailedPleaseTryAgain",
+            "accountingConnection.providerConnectionFailedPleaseTryAgain", { provider: providerName },
           ),
         });
       }
@@ -206,16 +233,16 @@ export default function QuickbooksIntegration() {
       window.history.replaceState({}, "", next);
     }
     void load();
-  }, [isOrgScoped, load]);
+  }, [isOrgScoped, load, provider, providerName]);
 
   const handleConnect = useCallback(async () => {
     setConnecting(true);
     setLoadError(null);
     try {
       const result = await runAction<{ authUrl: string }>({
-        request: () => fetchWithAuth("/accounting/quickbooks/connect"),
+        request: () => fetchWithAuth(accountingPath(provider, "/connect")),
         errorFallback: t(
-          "quickbooksIntegration.failedToStartTheQuickBooksConnection",
+          "accountingConnection.failedToStartTheProviderConnection", { provider: providerName },
         ),
         onUnauthorized,
       });
@@ -223,41 +250,41 @@ export default function QuickbooksIntegration() {
       window.location.assign(result.authUrl);
     } catch (err) {
       if (isMfaError(err))
-        setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
       else if (!(err instanceof ActionError))
         handleActionError(
           err,
-          t("quickbooksIntegration.failedToStartTheQuickBooksConnection"),
+          t("accountingConnection.failedToStartTheProviderConnection", { provider: providerName }),
         );
       setConnecting(false);
     }
-  }, [onUnauthorized]);
+  }, [provider, providerName, onUnauthorized]);
 
   const handleDisconnect = useCallback(async () => {
     setDisconnecting(true);
     try {
       await runAction({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/disconnect", {
+          fetchWithAuth(accountingPath(provider, "/disconnect"), {
             method: "POST",
           }),
-        errorFallback: t("quickbooksIntegration.failedToDisconnectQuickBooks"),
-        successMessage: t("quickbooksIntegration.quickbooksDisconnected"),
+        errorFallback: t("accountingConnection.failedToDisconnectProvider", { provider: providerName }),
+        successMessage: t("accountingConnection.providerDisconnected", { provider: providerName }),
         onUnauthorized,
       });
       await load();
     } catch (err) {
       if (isMfaError(err))
-        setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
       else if (!(err instanceof ActionError))
         handleActionError(
           err,
-          t("quickbooksIntegration.failedToDisconnectQuickBooks"),
+          t("accountingConnection.failedToDisconnectProvider", { provider: providerName }),
         );
     } finally {
       setDisconnecting(false);
     }
-  }, [load, onUnauthorized]);
+  }, [provider, providerName, load, onUnauthorized]);
 
   const handleSetPushMode = useCallback(
     async (pushMode: PushMode) => {
@@ -266,17 +293,17 @@ export default function QuickbooksIntegration() {
       try {
         const updated = await runAction<QuickbooksStatus>({
           request: () =>
-            fetchWithAuth("/accounting/quickbooks/settings", {
+            fetchWithAuth(accountingPath(provider, "/settings"), {
               method: "PATCH",
               body: JSON.stringify({ pushMode }),
             }),
           errorFallback: t(
-            "quickbooksIntegration.failedToUpdateThePushSetting",
+            "accountingConnection.failedToUpdateThePushSetting", { provider: providerName },
           ),
           successMessage:
             pushMode === "auto"
-              ? t("quickbooksIntegration.invoicesPushAutomatically")
-              : t("quickbooksIntegration.invoicesPushManually"),
+              ? t("accountingConnection.invoicesPushAutomatically", { provider: providerName })
+              : t("accountingConnection.invoicesPushManually", { provider: providerName }),
           onUnauthorized,
         });
         setStatus((prev) =>
@@ -284,17 +311,17 @@ export default function QuickbooksIntegration() {
         );
       } catch (err) {
         if (isMfaError(err))
-          setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+          setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
         else if (!(err instanceof ActionError))
           handleActionError(
             err,
-            t("quickbooksIntegration.failedToUpdateThePushSetting"),
+            t("accountingConnection.failedToUpdateThePushSetting", { provider: providerName }),
           );
       } finally {
         setSavingMode(false);
       }
     },
-    [savingMode, status?.pushMode, onUnauthorized],
+    [savingMode, status?.pushMode, provider, providerName, onUnauthorized],
   );
 
   // Phase D — turn the payment pull-back on or off. Same PATCH route and same
@@ -309,16 +336,16 @@ export default function QuickbooksIntegration() {
       try {
         const updated = await runAction<QuickbooksStatus>({
           request: () =>
-            fetchWithAuth("/accounting/quickbooks/settings", {
+            fetchWithAuth(accountingPath(provider, "/settings"), {
               method: "PATCH",
               body: JSON.stringify({ pullPayments: next }),
             }),
           errorFallback: t(
-            "quickbooksIntegration.failedToUpdatePullPayments",
+            "accountingConnection.failedToUpdatePullPayments", { provider: providerName },
           ),
           successMessage: next
-            ? t("quickbooksIntegration.pullPaymentsEnabled")
-            : t("quickbooksIntegration.pullPaymentsDisabled"),
+            ? t("accountingConnection.pullPaymentsEnabled", { provider: providerName })
+            : t("accountingConnection.pullPaymentsDisabled", { provider: providerName }),
           onUnauthorized,
         });
         setStatus((prev) =>
@@ -326,17 +353,17 @@ export default function QuickbooksIntegration() {
         );
       } catch (err) {
         if (isMfaError(err))
-          setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+          setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
         else if (!(err instanceof ActionError))
           handleActionError(
             err,
-            t("quickbooksIntegration.failedToUpdatePullPayments"),
+            t("accountingConnection.failedToUpdatePullPayments", { provider: providerName }),
           );
       } finally {
         setSavingPullPayments(false);
       }
     },
-    [savingPullPayments, status?.pullPayments, onUnauthorized],
+    [savingPullPayments, status?.pullPayments, provider, providerName, onUnauthorized],
   );
 
   // Phase D2 — the outbound half. Same non-optimistic shape as
@@ -351,14 +378,14 @@ export default function QuickbooksIntegration() {
       try {
         const updated = await runAction<QuickbooksStatus>({
           request: () =>
-            fetchWithAuth("/accounting/quickbooks/settings", {
+            fetchWithAuth(accountingPath(provider, "/settings"), {
               method: "PATCH",
               body: JSON.stringify({ pushPayments: next }),
             }),
-          errorFallback: t("quickbooksIntegration.failedToUpdatePushPayments"),
+          errorFallback: t("accountingConnection.failedToUpdatePushPayments", { provider: providerName }),
           successMessage: next
-            ? t("quickbooksIntegration.pushPaymentsEnabled")
-            : t("quickbooksIntegration.pushPaymentsDisabled"),
+            ? t("accountingConnection.pushPaymentsEnabled", { provider: providerName })
+            : t("accountingConnection.pushPaymentsDisabled", { provider: providerName }),
           onUnauthorized,
         });
         setStatus((prev) =>
@@ -366,17 +393,17 @@ export default function QuickbooksIntegration() {
         );
       } catch (err) {
         if (isMfaError(err))
-          setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+          setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
         else if (!(err instanceof ActionError))
           handleActionError(
             err,
-            t("quickbooksIntegration.failedToUpdatePushPayments"),
+            t("accountingConnection.failedToUpdatePushPayments", { provider: providerName }),
           );
       } finally {
         setSavingPushPayments(false);
       }
     },
-    [savingPushPayments, status?.pushPayments, onUnauthorized],
+    [savingPushPayments, status?.pushPayments, provider, providerName, onUnauthorized],
   );
 
   // Phase D — "Sync now". POST /reconcile answers 200 with `{ enqueued }` in
@@ -396,13 +423,13 @@ export default function QuickbooksIntegration() {
     try {
       const result = await runAction<{ enqueued: boolean }>({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/reconcile", {
+          fetchWithAuth(accountingPath(provider, "/reconcile"), {
             method: "POST",
           }),
-        errorFallback: t("quickbooksIntegration.failedToSyncNow"),
+        errorFallback: t("accountingConnection.failedToSyncNow", { provider: providerName }),
         friendly: (code) =>
           code === "payment_sync_disabled"
-            ? t("quickbooksIntegration.syncNowPullDisabled")
+            ? t("accountingConnection.syncNowPullDisabled", { provider: providerName })
             : undefined,
         onUnauthorized,
       });
@@ -410,22 +437,22 @@ export default function QuickbooksIntegration() {
         result.enqueued
           ? {
               type: "success",
-              message: t("quickbooksIntegration.syncNowQueued"),
+              message: t("accountingConnection.syncNowQueued", { provider: providerName }),
             }
           : {
               type: "warning",
-              message: t("quickbooksIntegration.syncNowNotQueued"),
+              message: t("accountingConnection.syncNowNotQueued", { provider: providerName }),
             },
       );
     } catch (err) {
       if (isMfaError(err))
-        setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
       else if (!(err instanceof ActionError))
-        handleActionError(err, t("quickbooksIntegration.failedToSyncNow"));
+        handleActionError(err, t("accountingConnection.failedToSyncNow", { provider: providerName }));
     } finally {
       setReconciling(false);
     }
-  }, [onUnauthorized]);
+  }, [provider, providerName, onUnauthorized]);
 
   // On-demand realm settings refresh (Phase C). This makes a live QuickBooks
   // call server-side and persists what it finds, so it is a mutation (POST,
@@ -438,11 +465,11 @@ export default function QuickbooksIntegration() {
         multiCurrencyEnabled: boolean | null;
       }>({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/settings/refresh", {
+          fetchWithAuth(accountingPath(provider, "/settings/refresh"), {
             method: "POST",
           }),
-        errorFallback: t("quickbooksIntegration.failedToRefreshSettings"),
-        successMessage: t("quickbooksIntegration.settingsRefreshed"),
+        errorFallback: t("accountingConnection.failedToRefreshSettings", { provider: providerName }),
+        successMessage: t("accountingConnection.settingsRefreshed", { provider: providerName }),
         onUnauthorized,
       });
       setStatus((prev) =>
@@ -456,27 +483,27 @@ export default function QuickbooksIntegration() {
       );
     } catch (err) {
       if (isMfaError(err))
-        setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
       else if (!(err instanceof ActionError))
         handleActionError(
           err,
-          t("quickbooksIntegration.failedToRefreshSettings"),
+          t("accountingConnection.failedToRefreshSettings", { provider: providerName }),
         );
     } finally {
       setRefreshingSettings(false);
     }
-  }, [onUnauthorized]);
+  }, [provider, providerName, onUnauthorized]);
 
   if (isOrgScoped) {
     return (
-      <div className="space-y-6" data-testid="quickbooks-panel">
-        <Header />
+      <div className="space-y-6" data-testid={`${provider}-panel`}>
+        <Header provider={provider} />
         <p
           className="text-center text-sm text-muted-foreground"
-          data-testid="quickbooks-org-scope"
+          data-testid={`${provider}-org-scope`}
         >
           {t(
-            "quickbooksIntegration.theQuickBooksAccountingIntegrationIsAvailableToPartner",
+            "accountingConnection.theProviderAccountingIntegrationIsAvailableToPartner", { provider: providerName },
           )}
         </p>
       </div>
@@ -487,10 +514,10 @@ export default function QuickbooksIntegration() {
     return (
       <div
         className="flex items-center gap-2 py-12 text-sm text-muted-foreground"
-        data-testid="quickbooks-loading"
+        data-testid={`${provider}-loading`}
       >
         <Loader2 className="h-4 w-4 animate-spin" />{" "}
-        {t("quickbooksIntegration.loadingQuickBooksStatus")}
+        {t("accountingConnection.loadingProviderStatus", { provider: providerName })}
       </div>
     );
   }
@@ -499,28 +526,28 @@ export default function QuickbooksIntegration() {
   const needsReauth = status?.status === "reauth_required";
 
   return (
-    <div className="space-y-6" data-testid="quickbooks-panel">
+    <div className="space-y-6" data-testid={`${provider}-panel`}>
       <div className="flex items-center gap-3">
-        <Header />
+        <Header provider={provider} />
         {isConnected ? (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
-            data-testid="quickbooks-status-connected"
+            data-testid={`${provider}-status-connected`}
           >
             <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
           </span>
         ) : needsReauth ? (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700"
-            data-testid="quickbooks-status-reauth"
+            data-testid={`${provider}-status-reauth`}
           >
             <AlertTriangle className="h-3.5 w-3.5" />{" "}
-            {t("quickbooksIntegration.reconnectRequired")}
+            {t("accountingConnection.reconnectRequired", { provider: providerName })}
           </span>
         ) : (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
-            data-testid="quickbooks-status-disconnected"
+            data-testid={`${provider}-status-disconnected`}
           >
             <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
           </span>
@@ -530,7 +557,7 @@ export default function QuickbooksIntegration() {
       {loadError && (
         <p
           className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-          data-testid="quickbooks-load-error"
+          data-testid={`${provider}-load-error`}
         >
           {loadError}
         </p>
@@ -540,13 +567,13 @@ export default function QuickbooksIntegration() {
         <div className="rounded-lg border bg-card p-5">
           <p className="text-sm text-muted-foreground">
             {needsReauth
-              ? t("quickbooksIntegration.authorizationExpired")
-              : t("quickbooksIntegration.connectDescription")}
+              ? t("accountingConnection.authorizationExpired", { provider: providerName })
+              : t("accountingConnection.connectDescription", { provider: productName })}
           </p>
           {needsReauth && status?.lastError && (
             <p
               className="mt-2 text-xs text-amber-700"
-              data-testid="quickbooks-last-error"
+              data-testid={`${provider}-last-error`}
             >
               {status.lastError}
             </p>
@@ -556,7 +583,7 @@ export default function QuickbooksIntegration() {
             onClick={() => void handleConnect()}
             disabled={connecting || !canManageAccounting}
             className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            data-testid="quickbooks-connect"
+            data-testid={`${provider}-connect`}
           >
             {connecting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -564,8 +591,8 @@ export default function QuickbooksIntegration() {
               <Plug className="h-4 w-4" />
             )}
             {needsReauth
-              ? t("quickbooksIntegration.reconnectQuickBooks")
-              : t("quickbooksIntegration.connectToQuickBooks")}
+              ? t("accountingConnection.reconnectProvider", { provider: providerName })
+              : t("accountingConnection.connectToProvider", { provider: providerName })}
           </button>
         </div>
       )}
@@ -575,9 +602,9 @@ export default function QuickbooksIntegration() {
           <dl className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <dt className="text-muted-foreground">
-                {t("quickbooksIntegration.environment")}
+                {t("accountingConnection.environment", { provider: providerName })}
               </dt>
-              <dd className="font-medium" data-testid="quickbooks-environment">
+              <dd className="font-medium" data-testid={`${provider}-environment`}>
                 {status.environment ?? "—"}
               </dd>
             </div>
@@ -591,25 +618,25 @@ export default function QuickbooksIntegration() {
             </div>
             <div>
               <dt className="text-muted-foreground">
-                {t("quickbooksIntegration.homeCurrency")}
+                {t("accountingConnection.homeCurrency", { provider: providerName })}
               </dt>
-              <dd className="font-medium" data-testid="quickbooks-home-currency">
+              <dd className="font-medium" data-testid={`${provider}-home-currency`}>
                 {status.homeCurrency ?? "—"}
               </dd>
             </div>
             <div>
               <dt className="text-muted-foreground">
-                {t("quickbooksIntegration.multiCurrency")}
+                {t("accountingConnection.multiCurrency", { provider: providerName })}
               </dt>
               {/* Three states, not two: `null`/absent is "not captured yet",
                   which must not read as a definitive "No" — foreign-currency
                   push behaviour hinges on this flag. */}
-              <dd className="font-medium" data-testid="quickbooks-multi-currency">
+              <dd className="font-medium" data-testid={`${provider}-multi-currency`}>
                 {status.multiCurrencyEnabled === true
                   ? t("common:labels.yes")
                   : status.multiCurrencyEnabled === false
                     ? t("common:labels.no")
-                    : t("quickbooksIntegration.multiCurrencyUnknown")}
+                    : t("accountingConnection.multiCurrencyUnknown", { provider: providerName })}
               </dd>
             </div>
           </dl>
@@ -617,16 +644,16 @@ export default function QuickbooksIntegration() {
           {canWriteInvoices && canManageAccounting && (
           <div>
             <p className="text-sm font-medium">
-              {t("quickbooksIntegration.invoicePush")}
+              {t("accountingConnection.invoicePush", { provider: providerName })}
             </p>
             <p className="text-xs text-muted-foreground">
               {t(
-                "quickbooksIntegration.controlWhenIssuedInvoicesAreSentToQuickBooks",
+                "accountingConnection.controlWhenIssuedInvoicesAreSentToProvider", { provider: providerName },
               )}
             </p>
             <div
               className="mt-2 inline-flex overflow-hidden rounded-md border"
-              data-testid="quickbooks-pushmode"
+              data-testid={`${provider}-pushmode`}
             >
               {(["auto", "manual"] as PushMode[]).map((mode) => {
                 const active = status.pushMode === mode;
@@ -641,11 +668,11 @@ export default function QuickbooksIntegration() {
                         ? "bg-primary text-primary-foreground"
                         : "bg-background text-muted-foreground hover:text-foreground"
                     }`}
-                    data-testid={`quickbooks-pushmode-${mode}`}
+                    data-testid={`${provider}-pushmode-${mode}`}
                   >
                     {mode === "auto"
-                      ? t("quickbooksIntegration.automaticOnIssue")
-                      : t("quickbooksIntegration.manual")}
+                      ? t("accountingConnection.automaticOnIssue", { provider: providerName })
+                      : t("accountingConnection.manual", { provider: providerName })}
                   </button>
                 );
               })}
@@ -660,17 +687,17 @@ export default function QuickbooksIntegration() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
-                {t("quickbooksIntegration.pullPayments")}
+                {t("accountingConnection.pullPayments", { provider: providerName })}
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("quickbooksIntegration.pullPaymentsDescription")}
+                {t("accountingConnection.pullPaymentsDescription", { provider: providerName })}
               </p>
             </div>
             <button
               type="button"
               role="switch"
               aria-checked={status.pullPayments === true}
-              aria-label={t("quickbooksIntegration.pullPayments")}
+              aria-label={t("accountingConnection.pullPayments", { provider: providerName })}
               onClick={() =>
                 void handleSetPullPayments(status.pullPayments !== true)
               }
@@ -678,7 +705,7 @@ export default function QuickbooksIntegration() {
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:opacity-50 ${
                 status.pullPayments === true ? "bg-emerald-500/80" : "bg-muted"
               }`}
-              data-testid="quickbooks-pullpayments"
+              data-testid={`${provider}-pullpayments`}
             >
               <span
                 className={`inline-block h-5 w-5 rounded-full bg-white transition ${
@@ -697,17 +724,17 @@ export default function QuickbooksIntegration() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
-                {t("quickbooksIntegration.pushPayments")}
+                {t("accountingConnection.pushPayments", { provider: providerName })}
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("quickbooksIntegration.pushPaymentsDescription")}
+                {t("accountingConnection.pushPaymentsDescription", { provider: providerName })}
               </p>
             </div>
             <button
               type="button"
               role="switch"
               aria-checked={status.pushPayments === true}
-              aria-label={t("quickbooksIntegration.pushPayments")}
+              aria-label={t("accountingConnection.pushPayments", { provider: providerName })}
               onClick={() =>
                 void handleSetPushPayments(status.pushPayments !== true)
               }
@@ -715,7 +742,7 @@ export default function QuickbooksIntegration() {
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:opacity-50 ${
                 status.pushPayments === true ? "bg-emerald-500/80" : "bg-muted"
               }`}
-              data-testid="quickbooks-pushpayments"
+              data-testid={`${provider}-pushpayments`}
             >
               <span
                 className={`inline-block h-5 w-5 rounded-full bg-white transition ${
@@ -735,24 +762,24 @@ export default function QuickbooksIntegration() {
               onClick={() => void handleReconcileNow()}
               disabled={reconciling}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              data-testid="quickbooks-reconcile-now"
+              data-testid={`${provider}-reconcile-now`}
             >
               {reconciling ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {t("quickbooksIntegration.syncNow")}
+              {t("accountingConnection.syncNow", { provider: providerName })}
             </button>
             )}
             <p
               className="text-xs text-muted-foreground"
-              data-testid="quickbooks-last-reconcile"
+              data-testid={`${provider}-last-reconcile`}
             >
-              {t("quickbooksIntegration.lastPaymentSync")}:{" "}
+              {t("accountingConnection.lastPaymentSync", { provider: providerName })}:{" "}
               {status.lastReconcileAt
                 ? formatDateTime(status.lastReconcileAt)
-                : t("quickbooksIntegration.never")}
+                : t("accountingConnection.never", { provider: providerName })}
             </p>
           </div>
 
@@ -767,7 +794,7 @@ export default function QuickbooksIntegration() {
           {status.lastError && (
             <p
               className="text-xs text-amber-700"
-              data-testid="quickbooks-reconcile-last-error"
+              data-testid={`${provider}-reconcile-last-error`}
             >
               {status.lastError}
             </p>
@@ -778,7 +805,7 @@ export default function QuickbooksIntegration() {
               type="button"
               onClick={() => void load()}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
-              data-testid="quickbooks-refresh"
+              data-testid={`${provider}-refresh`}
             >
               <RefreshCw className="h-4 w-4" /> {t("common:actions.refresh")}
             </button>
@@ -787,58 +814,58 @@ export default function QuickbooksIntegration() {
               onClick={() => void handleRefreshSettings()}
               disabled={refreshingSettings || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              data-testid="quickbooks-settings-refresh"
+              data-testid={`${provider}-settings-refresh`}
             >
               {refreshingSettings ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {t("quickbooksIntegration.refreshSettings")}
+              {t("accountingConnection.refreshSettings", { provider: providerName })}
             </button>
             <button
               type="button"
               onClick={() => void handleDisconnect()}
               disabled={disconnecting || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-              data-testid="quickbooks-disconnect"
+              data-testid={`${provider}-disconnect`}
             >
               {disconnecting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Unplug className="h-4 w-4" />
               )}
-              {t("quickbooksIntegration.disconnect")}
+              {t("accountingConnection.disconnect", { provider: providerName })}
             </button>
           </div>
         </div>
       )}
 
       {status && (
-        <section className="space-y-3 rounded-lg border bg-card p-5" data-testid="quickbooks-owed-operations" aria-labelledby="quickbooks-owed-heading">
-          <h2 id="quickbooks-owed-heading" className="font-semibold">{t("quickbooksIntegration.owedTitle")}</h2>
+        <section className="space-y-3 rounded-lg border bg-card p-5" data-testid={`${provider}-owed-operations`} aria-labelledby={`${provider}-owed-heading`}>
+          <h2 id={`${provider}-owed-heading`} className="font-semibold">{t("accountingConnection.owedTitle", { provider: providerName })}</h2>
           {owedError ? (
-            <p role="alert" className="text-sm text-destructive" data-testid="quickbooks-owed-error">{t("quickbooksIntegration.owedLoadError")}</p>
+            <p role="alert" className="text-sm text-destructive" data-testid={`${provider}-owed-error`}>{t("accountingConnection.owedLoadError", { provider: providerName })}</p>
           ) : !owed ? (
             <p className="text-sm text-muted-foreground">{t("common:states.loading")}</p>
           ) : (
             <>
-              <p className="text-sm text-muted-foreground">{t("quickbooksIntegration.owedCount", { total: owed.count })}</p>
+              <p className="text-sm text-muted-foreground">{t("accountingConnection.owedCount", { provider: providerName, total: owed.count })}</p>
               {owed.count === 0 ? (
-                <p className="text-sm">{t("quickbooksIntegration.owedEmpty")}</p>
+                <p className="text-sm">{t("accountingConnection.owedEmpty", { provider: providerName })}</p>
               ) : (
                 <ul className="divide-y">
                   {owed.data.map((operation) => (
                     <li key={operation.id} className="space-y-1 py-3 text-sm">
                       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                        <span className="font-medium">{operation.pendingOp === "delete" ? t("quickbooksIntegration.owedDelete") : t("quickbooksIntegration.owedPush")}</span>
+                        <span className="font-medium">{operation.pendingOp === "delete" ? t("accountingConnection.owedDelete", { provider: providerName }) : t("accountingConnection.owedPush", { provider: providerName })}</span>
                         {operation.invoiceId ? (
-                          <a className="text-primary underline underline-offset-2" data-testid={`quickbooks-owed-invoice-${operation.id}`} href={`/billing/invoices/${operation.invoiceId}`}>
-                            {operation.invoiceNumber ?? t("quickbooksIntegration.owedViewInvoice")}
+                          <a className="text-primary underline underline-offset-2" data-testid={`${provider}-owed-invoice-${operation.id}`} href={`/billing/invoices/${operation.invoiceId}`}>
+                            {operation.invoiceNumber ?? t("accountingConnection.owedViewInvoice", { provider: providerName })}
                           </a>
-                        ) : <span className="text-muted-foreground">{t("quickbooksIntegration.owedInvoiceUnavailable")}</span>}
+                        ) : <span className="text-muted-foreground">{t("accountingConnection.owedInvoiceUnavailable", { provider: providerName })}</span>}
                       </div>
-                      <p className="text-muted-foreground">{t("quickbooksIntegration.owedAge", { minutes: new Intl.NumberFormat(i18n.language).format(Math.floor(operation.ageSeconds / 60)) })}</p>
+                      <p className="text-muted-foreground">{t("accountingConnection.owedAge", { provider: providerName, minutes: new Intl.NumberFormat(i18n.language).format(Math.floor(operation.ageSeconds / 60)) })}</p>
                       {operation.lastError && <p className="break-words text-destructive">{operation.lastError}</p>}
                     </li>
                   ))}
@@ -850,7 +877,8 @@ export default function QuickbooksIntegration() {
       )}
 
       {isConnected && status && (
-        <QuickbooksMappingWorkbench
+        <AccountingMappingWorkbench
+          provider={provider}
           onUnauthorized={onUnauthorized}
           defaultIncomeAccountRef={status.defaultIncomeAccountRef ?? null}
           onSettingsChanged={(settings) =>
@@ -862,26 +890,28 @@ export default function QuickbooksIntegration() {
       )}
 
       {isConnected && (
-        <QuickbooksCustomerImport onUnauthorized={onUnauthorized} />
+        <AccountingCustomerImport provider={provider} onUnauthorized={onUnauthorized} />
       )}
     </div>
   );
 }
 
-function Header() {
+function Header({ provider }: Props) {
   const { t } = useTranslation("integrations");
+  const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
+  const productName = ACCOUNTING_PROVIDER_PRODUCT_NAMES[provider];
   return (
     <div className="flex items-center gap-3">
       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <span className="text-sm font-bold">QB</span>
+        <span className="text-sm font-bold">{PROVIDER_MONOGRAMS[provider]}</span>
       </div>
       <div>
         <h1 className="text-2xl font-semibold">
-          {t("quickbooksIntegration.quickbooksOnline")}
+          {t("accountingConnection.heading", { provider: productName })}
         </h1>
         <p className="text-sm text-muted-foreground">
           {t(
-            "quickbooksIntegration.syncCustomersInvoicesAndPaymentsToYourBooks",
+            "accountingConnection.syncCustomersInvoicesAndPaymentsToYourBooks", { provider: providerName },
           )}
         </p>
       </div>

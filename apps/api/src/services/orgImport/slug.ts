@@ -1,7 +1,7 @@
 /**
  * Org slug helpers, shared by every org import source.
  *
- * Moved here from services/accounting/quickbooksCustomerImport.ts (#3242) so
+ * Moved here from services/accounting/accountingCustomerImport.ts (#3242) so
  * the shared import pipeline and the QuickBooks importer use one
  * implementation; the old module re-exports these for back-compat.
  */

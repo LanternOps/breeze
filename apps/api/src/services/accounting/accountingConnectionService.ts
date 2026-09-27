@@ -188,26 +188,26 @@ export async function resolveActiveConnection(
 /**
  * The non-decrypting core of `resolveActiveConnection`'s WHERE/limit, shared by
  * every caller that does not need the decrypted realm/token columns. Selects
- * only `id` + `provider` — never the encrypted columns `mapConnection`
+ * only `id` + `provider` + `status` — never the encrypted columns `mapConnection`
  * decrypts. Any future filter added to `resolveActiveConnection` (W02's
  * pending_tenant exclusion) must be mirrored here too.
  *
- * Exported as the public id+provider read for callers that never need tokens
- * (e.g. a route that only stamps `.id`/`.provider` on a response, or a
- * conflict check that only compares providers) — using it instead of
+ * Exported as the public id+provider+status read for callers that never need
+ * tokens (e.g. a route that only stamps `.id`/`.provider`/`.status` on a
+ * response, or a conflict check that only compares providers) — using it instead of
  * `resolveActiveConnection` means a rotated/retired encryption key can never
  * abort a path that was going to ignore the decrypted columns anyway.
  */
 export async function resolveActiveConnectionRef(
   dbc: DbExecutor,
   partnerId: string,
-): Promise<{ id: string; provider: AccountingProviderId } | null> {
+): Promise<{ id: string; provider: AccountingProviderId; status: AccountingConnectionStatus } | null> {
   const [row] = await dbc
-    .select({ id: accountingConnections.id, provider: accountingConnections.provider })
+    .select({ id: accountingConnections.id, provider: accountingConnections.provider, status: accountingConnections.status })
     .from(accountingConnections)
     .where(eq(accountingConnections.partnerId, partnerId))
     .limit(1);
-  return row ? { id: row.id, provider: row.provider as AccountingProviderId } : null;
+  return row ? { id: row.id, provider: row.provider as AccountingProviderId, status: row.status as AccountingConnectionStatus } : null;
 }
 
 /**

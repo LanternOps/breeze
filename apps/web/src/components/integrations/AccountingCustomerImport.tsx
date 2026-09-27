@@ -5,6 +5,11 @@ import { showToast } from "../shared/Toast";
 import { useBulkSelection } from "../billing/bulk/useBulkSelection";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import {
+  ACCOUNTING_PROVIDER_NAMES,
+  accountingPath,
+  type AccountingProviderId,
+} from "../../lib/accountingProviders";
 
 interface AnnotatedCustomer {
   id: string;
@@ -22,11 +27,13 @@ interface ImportSummary {
 }
 
 interface Props {
+  provider: AccountingProviderId;
   onUnauthorized?: () => void;
 }
 
-export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
+export default function AccountingCustomerImport({ provider, onUnauthorized }: Props) {
   const { t } = useTranslation("integrations");
+  const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
   const [customers, setCustomers] = useState<AnnotatedCustomer[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -41,9 +48,9 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
     setFailures([]);
     try {
       const data = await runAction<{ data: AnnotatedCustomer[] }>({
-        request: () => fetchWithAuth("/accounting/quickbooks/customers"),
+        request: () => fetchWithAuth(accountingPath(provider, "/customers")),
         errorFallback: t(
-          "quickbooksCustomerImport.failedToLoadQuickBooksCustomers",
+          "accountingCustomerImport.failedToLoadProviderCustomers", { provider: providerName },
         ),
         onUnauthorized,
       });
@@ -65,11 +72,11 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
       // the outcome toast here. No `successMessage`: it only emits green.
       const res = await runAction<{ data: ImportSummary }>({
         request: () =>
-          fetchWithAuth("/accounting/quickbooks/customers/import", {
+          fetchWithAuth(accountingPath(provider, "/customers/import"), {
             method: "POST",
             body: JSON.stringify({ customerIds }),
           }),
-        errorFallback: t("quickbooksCustomerImport.failedToImportCustomers"),
+        errorFallback: t("accountingCustomerImport.failedToImportCustomers", { provider: providerName }),
         onUnauthorized,
       });
       const s = res.data;
@@ -103,34 +110,34 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
 
   return (
     <div
-      data-testid="quickbooks-import-panel"
+      data-testid={`${provider}-import-panel`}
       className="mt-6 border-t border-gray-200 pt-6"
     >
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">
-          {t("quickbooksCustomerImport.importCustomers")}
+          {t("accountingCustomerImport.importCustomers", { provider: providerName })}
         </h3>
         <button
           type="button"
-          data-testid="quickbooks-import-load"
+          data-testid={`${provider}-import-load`}
           onClick={load}
           disabled={loading}
           className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
         >
           {loading
-            ? t("quickbooksCustomerImport.loading")
+            ? t("accountingCustomerImport.loading", { provider: providerName })
             : customers
               ? t("common:actions.refresh")
-              : t("quickbooksCustomerImport.loadCustomers")}
+              : t("accountingCustomerImport.loadCustomers", { provider: providerName })}
         </button>
       </div>
 
       {customers && customers.length === 0 && (
         <p
           className="mt-4 text-sm text-gray-500"
-          data-testid="quickbooks-import-empty"
+          data-testid={`${provider}-import-empty`}
         >
-          {t("quickbooksCustomerImport.noCustomersFoundInQuickBooks")}
+          {t("accountingCustomerImport.noCustomersFoundInProvider", { provider: providerName })}
         </p>
       )}
 
@@ -138,15 +145,15 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
         <>
           <table
             className="mt-4 w-full text-sm"
-            data-testid="quickbooks-import-table"
+            data-testid={`${provider}-import-table`}
           >
             <thead>
               <tr className="text-left text-gray-500">
                 <th className="w-8">
                   <input
                     type="checkbox"
-                    data-testid="quickbooks-import-select-all"
-                    aria-label={t("quickbooksCustomerImport.selectAll")}
+                    data-testid={`${provider}-import-select-all`}
+                    aria-label={t("accountingCustomerImport.selectAll", { provider: providerName })}
                     checked={
                       importable.length > 0 &&
                       importable.every((c) => selection.has(c.id))
@@ -155,7 +162,7 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
                   />
                 </th>
                 <th>{t("common:labels.name")}</th>
-                <th>{t("quickbooksCustomerImport.email")}</th>
+                <th>{t("accountingCustomerImport.email", { provider: providerName })}</th>
                 <th />
               </tr>
             </thead>
@@ -163,13 +170,13 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
               {customers.map((c) => (
                 <tr
                   key={c.id}
-                  data-testid={`quickbooks-import-row-${c.id}`}
+                  data-testid={`${provider}-import-row-${c.id}`}
                   className="border-t border-gray-100"
                 >
                   <td>
                     <input
                       type="checkbox"
-                      data-testid={`quickbooks-import-select-${c.id}`}
+                      data-testid={`${provider}-import-select-${c.id}`}
                       checked={selection.has(c.id)}
                       disabled={c.alreadyImported}
                       onChange={() => selection.toggle(c.id)}
@@ -180,10 +187,10 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
                   <td className="py-1.5">
                     {c.alreadyImported && (
                       <span
-                        data-testid={`quickbooks-import-badge-${c.id}`}
+                        data-testid={`${provider}-import-badge-${c.id}`}
                         className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700"
                       >
-                        {t("quickbooksCustomerImport.alreadyImported")}
+                        {t("accountingCustomerImport.alreadyImported", { provider: providerName })}
                       </span>
                     )}
                   </td>
@@ -195,14 +202,14 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
           <div className="mt-4">
             <button
               type="button"
-              data-testid="quickbooks-import-submit"
+              data-testid={`${provider}-import-submit`}
               onClick={importSelected}
               disabled={importing || selection.size === 0}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               {importing
-                ? t("quickbooksCustomerImport.importing")
-                : t("quickbooksCustomerImport.importSelected", {
+                ? t("accountingCustomerImport.importing", { provider: providerName })
+                : t("accountingCustomerImport.importSelected", { provider: providerName,
                     count: selection.size,
                   })}
             </button>
@@ -211,10 +218,10 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
           {failures.length > 0 && (
             <div
               className="mt-4 rounded-md border border-red-200 bg-red-50 p-3"
-              data-testid="quickbooks-import-failures"
+              data-testid={`${provider}-import-failures`}
             >
               <p className="text-sm font-medium text-red-800">
-                {t("quickbooksCustomerImport.customerFailedCount", {
+                {t("accountingCustomerImport.customerFailedCount", { provider: providerName,
                   count: failures.length,
                 })}
               </p>
@@ -222,7 +229,7 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
                 {failures.map((f) => (
                   <li
                     key={f.customerId}
-                    data-testid={`quickbooks-import-failure-${f.customerId}`}
+                    data-testid={`${provider}-import-failure-${f.customerId}`}
                   >
                     <span className="font-medium">
                       {f.displayName ?? f.customerId}

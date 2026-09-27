@@ -40,6 +40,7 @@ const { authState, effects, AccountingError } = vi.hoisted(() => {
       dbSelect: vi.fn(),
       dbUpdateReturning: vi.fn(),
       audit: vi.fn(),
+      resolveActiveConnectionRef: vi.fn(),
     },
     AccountingError,
   };
@@ -90,15 +91,14 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   AccountingConnectionError: AccountingError,
   // Xero W01: bulk push resolves the partner's ONE connection first (its id
   // rides on every job). A connected QuickBooks row keeps the route on its path.
-  resolveActiveConnectionRef: vi.fn(async (_db: unknown, partnerId: string) => ({
-    id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
-  })),
+  // Also backs GET /accounting/providers (listProvidersHandler).
+  resolveActiveConnectionRef: effects.resolveActiveConnectionRef,
 }));
 
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: effects.listCustomers,
-  importQuickbooksCustomers: effects.importCustomers,
-  QbImportError: AccountingError,
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: effects.listCustomers,
+  importAccountingCustomers: effects.importCustomers,
+  AccountingImportError: AccountingError,
 }));
 
 vi.mock('../../services/accounting/accountingMappingService', () => ({
@@ -122,6 +122,9 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteItems: vi.fn(),
   }),
   providerSupports: (id: string) => id === 'quickbooks',
+  // Xero W01 route gate: only QuickBooks is registered, configured and capable.
+  findAccountingProvider: (id: string) => (id === 'quickbooks'
+    ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
@@ -133,12 +136,6 @@ vi.mock('../../jobs/accountingReconcileWorker', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: effects.audit }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
 
 import { accountingRoutes } from './index';
 
@@ -151,6 +148,11 @@ type RouteCase = {
 };
 
 const routes: RouteCase[] = [
+  // No :provider in the path — registered before GET /:provider so it isn't
+  // captured by the enum. Reads the connection through the same
+  // resolveActiveConnectionRef + requireAccountingPartnerAuthority/requireAccountingRead
+  // chain as GET /:provider status.
+  { name: 'providers', path: '/providers', effect: 'resolveActiveConnectionRef' },
   { name: 'connect', path: '/quickbooks/connect', effect: 'buildAuthUrl' },
   { name: 'disconnect', method: 'POST', path: '/quickbooks/disconnect', effect: 'deleteConnection' },
   { name: 'status', path: '/quickbooks', effect: 'getConnection' },
@@ -240,6 +242,9 @@ beforeEach(() => {
     status: 'connected', environment: 'production', pushMode: 'auto',
     defaultIncomeAccountRef: '79', defaultTaxCodeRef: null, lastError: null, pullPayments: true,
   }]);
+  effects.resolveActiveConnectionRef.mockImplementation(async (_db: unknown, partnerId: string) => ({
+    id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
+  }));
 });
 
 describe('partner-global accounting route authority', () => {

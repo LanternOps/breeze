@@ -308,7 +308,7 @@ const tokenExchangeSchema = z.object({
  * other route; the discovery call happens BETWEEN these blocks, holding nothing.
  * The `runOutsideDbContext` wrap is a defensive no-op here (there is no ambient
  * context to exit) that keeps this correct if the route is ever removed from the
- * allowlist. Pattern: services/accounting/quickbooksCustomerImport.ts.
+ * allowlist. Pattern: services/accounting/accountingCustomerImport.ts.
  */
 
 /**

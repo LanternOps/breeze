@@ -23,7 +23,7 @@ import { ensureDefaultProfile } from './billingProfileService';
  *    GET /orgs/organizations route uses (no settings/ssoConfig/billing leak).
  *  - `create_org` is a PARTNER-scope operation: an organization-scoped caller
  *    gets a clean PARTNER_SCOPE_REQUIRED error. The insert mirrors the
- *    POST /orgs/organizations route + quickbooksCustomerImport service:
+ *    POST /orgs/organizations route + accountingCustomerImport service:
  *    tenant creation must escape the request RLS context
  *    (runOutsideDbContext → withSystemDbAccessContext) because the new org id
  *    cannot be in the caller's accessible set yet. Like the QB customer import
@@ -69,7 +69,7 @@ import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 const ORG_STATUSES = ['active', 'suspended', 'trial', 'churned'] as const;
 type OrgStatus = (typeof ORG_STATUSES)[number];
 
-// Local copy of the slug helpers from services/accounting/quickbooksCustomerImport.ts
+// Local copy of the slug helpers from services/accounting/accountingCustomerImport.ts
 // (duplicated rather than imported so this file doesn't drag the accounting
 // provider stack into every consumer; keep the two in sync).
 export function slugifyOrgName(name: string): string {
@@ -248,7 +248,7 @@ async function handleCreateOrg(
 
   // Tenant creation must escape the request RLS context: the new org id cannot
   // be in the caller's accessible set yet (same rationale + pattern as
-  // POST /orgs/organizations and quickbooksCustomerImport). Partner authority
+  // POST /orgs/organizations and accountingCustomerImport). Partner authority
   // was checked above. The slug read, org insert, and default-site insert share
   // one system-context transaction.
   const createOrgWithDefaultSite = () => runOutsideDbContext(() =>

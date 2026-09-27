@@ -367,7 +367,7 @@ export async function processReconcileConnectionJob(
       // `connection_mismatch` name a job whose target isn't (or is no longer)
       // the live connection, so there is nothing safe to stamp. Reuses the
       // finding-H mechanism (`stampReconcileRunError`) — rendered on the
-      // connected-state "Sync now" card in QuickbooksIntegration.tsx.
+      // connected-state "Sync now" card in AccountingConnectionPanel.tsx.
       if (skipReason === 'both_switches_off' && conn) {
         await runInDbContext(() =>
           stampReconcileRunError(db, conn.id, data.partnerId, 'run skipped — disabled for this connection'),

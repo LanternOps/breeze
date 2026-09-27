@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import QuickbooksMappingWorkbench from "./QuickbooksMappingWorkbench";
+import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 
 // SEC-2026-09-05-057: every mutating control here is gated on
 // `accounting:manage`. This suite covers the workbench's own behaviour, so it
 // holds the grant throughout; the gate itself is covered by
-// QuickbooksMappingWorkbench.accountingPermissions.test.tsx.
+// AccountingMappingWorkbench.accountingPermissions.test.tsx.
 vi.mock("../../lib/permissions", () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));
@@ -101,13 +101,13 @@ beforeEach(() => {
   window.location.hash = "";
 });
 
-describe("QuickbooksMappingWorkbench", () => {
+describe("AccountingMappingWorkbench", () => {
   it("loads customer proposals and marks ambiguous rows for manual selection", async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       jsonResponse({ data: [ambiguousOrgProposal] }),
     );
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -157,7 +157,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -221,7 +221,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -277,7 +277,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -306,7 +306,7 @@ describe("QuickbooksMappingWorkbench", () => {
       .mockResolvedValueOnce(jsonResponse({ data: [itemProposalCreateNew] }));
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -344,7 +344,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -418,7 +418,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef="acct-1"
       />,
@@ -466,7 +466,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
         onSettingsChanged={onSettingsChanged}
@@ -511,7 +511,7 @@ describe("QuickbooksMappingWorkbench", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -527,7 +527,7 @@ describe("QuickbooksMappingWorkbench", () => {
 
   it("switches between customer and item tabs via window.location.hash", () => {
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -541,7 +541,7 @@ describe("QuickbooksMappingWorkbench", () => {
   it("initializes the active tab from window.location.hash on mount", () => {
     window.location.hash = "#quickbooks-items";
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -561,7 +561,7 @@ describe("QuickbooksMappingWorkbench", () => {
     );
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={onUnauthorized}
         defaultIncomeAccountRef={null}
       />,
@@ -575,7 +575,7 @@ describe("QuickbooksMappingWorkbench", () => {
   it("shows an empty state when there are no proposals", async () => {
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -591,7 +591,7 @@ describe("QuickbooksMappingWorkbench", () => {
     fetchWithAuthMock.mockReturnValueOnce(pending.promise);
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -616,7 +616,7 @@ describe("QuickbooksMappingWorkbench", () => {
       .mockResolvedValueOnce(jsonResponse({ data: [itemProposal] }));
 
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef="79"
       />,
@@ -645,7 +645,7 @@ describe("QuickbooksMappingWorkbench", () => {
       }),
     );
     render(
-      <QuickbooksMappingWorkbench
+      <AccountingMappingWorkbench provider="quickbooks"
         onUnauthorized={vi.fn()}
         defaultIncomeAccountRef={null}
       />,
@@ -662,7 +662,7 @@ describe("QuickbooksMappingWorkbench", () => {
   });
 });
 
-describe("QuickbooksMappingWorkbench remote candidate search", () => {
+describe("AccountingMappingWorkbench remote candidate search", () => {
   function wire(candidates: unknown[], proposals: unknown[] = [ambiguousOrgProposal]) {
     fetchWithAuthMock.mockImplementation((url: string) => {
       const u = String(url);
@@ -679,7 +679,7 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
   it("debounces the search into ONE GET carrying entityType and the query", async () => {
     wire([{ id: "qb-77", displayName: "Acme Corporation", email: "ap@acme.test", currencyCode: "USD" }]);
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -709,7 +709,7 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
   it("searches items with entityType=catalog_item on the Items tab", async () => {
     wire([{ id: "qb-item-3", displayName: "Support Plan", sku: "SUP-1" }], [itemProposal]);
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
@@ -750,7 +750,7 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
     });
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -786,7 +786,7 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
       }),
     );
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
 
@@ -796,7 +796,7 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
   });
 });
 
-describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
+describe("AccountingMappingWorkbench auto-sync after a decision", () => {
   const confirmedPending = {
     breezeEntityType: "org",
     breezeEntityId: ORG_ID,
@@ -826,7 +826,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       .mockResolvedValueOnce(jsonResponse({ data: confirmedSynced }));
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -872,7 +872,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       .mockResolvedValueOnce(jsonResponse({ data: createdSynced }));
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
@@ -908,7 +908,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       .mockResolvedValueOnce(jsonResponse({ data: created }));
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -946,7 +946,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       .mockResolvedValueOnce(jsonResponse({ data: created }));
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
@@ -998,7 +998,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     });
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -1029,7 +1029,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -1052,7 +1052,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -1090,7 +1090,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -1130,7 +1130,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
@@ -1159,7 +1159,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       jsonResponse({ data: [suggestedOrgProposal] }),
     );
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
 
@@ -1173,7 +1173,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       jsonResponse({ data: [{ ...suggestedOrgProposal, linkStatus: "confirmed" }] }),
     );
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
 
@@ -1196,7 +1196,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
       );
 
     render(
-      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
     );
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
@@ -1216,5 +1216,46 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveTextContent(
       "Created customer in QuickBooks",
     );
+  });
+});
+
+describe("AccountingMappingWorkbench provider wiring", () => {
+  // Ruling R6 (Xero W01c): a throttled mapping sync answers 429
+  // `{ code: 'rate_limited', error: '<provider> is rate limiting…' }`. The
+  // server text is what tells the operator to wait, so it must reach both the
+  // toast and the row error verbatim — never the generic failedToSyncEntity.
+  it("surfaces a 429 rate_limited mapping sync with the server text, not the generic fallback", async () => {
+    const serverText = "QuickBooks is rate limiting requests. Try again in a minute.";
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      String(url).includes("/mappings/sync")
+        ? jsonResponse({ error: serverText, code: "rate_limited" }, 429)
+        : jsonResponse({ data: [{ ...suggestedOrgProposal, linkStatus: "confirmed" }] }),
+    );
+
+    render(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    fireEvent.click(await screen.findByTestId(`quickbooks-mapping-sync-${ORG_ID}`));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({ type: "error", message: serverText }),
+    );
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId(`quickbooks-mapping-error-${ORG_ID}`)).toHaveTextContent(serverText);
+  });
+
+  it("scopes its API calls, test ids and hash tabs to the provider prop", async () => {
+    fetchWithAuthMock.mockImplementation(() => jsonResponse({ data: [] }));
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-tab-items"));
+    expect(window.location.hash).toBe("#xero-items");
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith("/accounting/xero/mappings?entityType=catalog_item"),
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith("/accounting/xero/income-accounts");
   });
 });

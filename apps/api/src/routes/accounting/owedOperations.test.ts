@@ -43,10 +43,14 @@ const { authState, effects, AccountingError } = vi.hoisted(() => {
       dbSelect: vi.fn(),
       dbUpdateReturning: vi.fn(),
       audit: vi.fn(),
+      // Honours the capability argument (QuickBooks supports everything) so the
+      // per-route capability table can deny exactly one capability.
+      providerSupports: vi.fn(),
     },
     AccountingError,
   };
 });
+const defaultProviderSupports = (id: string, _cap: string) => id === 'quickbooks';
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
@@ -91,10 +95,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   AccountingConnectionError: AccountingError,
 }));
 
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: effects.listCustomers,
-  importQuickbooksCustomers: effects.importCustomers,
-  QbImportError: AccountingError,
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: effects.listCustomers,
+  importAccountingCustomers: effects.importCustomers,
+  AccountingImportError: AccountingError,
 }));
 
 vi.mock('../../services/accounting/accountingMappingService', () => ({
@@ -117,6 +121,10 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteCustomers: effects.listRemoteCustomers,
     listRemoteItems: vi.fn(),
   }),
+  // Xero W01 route gate: only QuickBooks is registered, configured and capable.
+  findAccountingProvider: (id: string) => (id === 'quickbooks'
+    ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
+  providerSupports: (id: string, cap: string) => effects.providerSupports(id, cap),
 }));
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
@@ -127,12 +135,6 @@ vi.mock('../../jobs/accountingReconcileWorker', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: effects.audit }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
 
 import { accountingRoutes } from './index';
 
@@ -152,9 +154,24 @@ beforeEach(() => {
   authState.partnerId = PARTNER_ID;
   authState.partnerOrgAccess = 'all';
   effects.dbSelect.mockResolvedValue({ rows: [] });
+  effects.providerSupports.mockImplementation(defaultProviderSupports);
 });
 
 describe('GET /accounting/quickbooks/owed-operations', () => {
+  // Xero W01 review: pin the capability this route gates on (plan Task 15,
+  // "Route -> capability map"): owed operations are the payment-PUSH outbox.
+  it.each([['paymentPush']] as const)('answers 409 capability_unavailable when the provider lacks %s', async (capability) => {
+    effects.providerSupports.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+    const res = await request();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(effects.providerSupports).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(effects.providerSupports).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+    expect(effects.dbSelect).not.toHaveBeenCalled();
+  });
+
   it('returns a zero count for an empty outbox', async () => {
     const res = await request();
     expect(res.status).toBe(200);
