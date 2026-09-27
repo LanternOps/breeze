@@ -10,6 +10,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
  */
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+// Xero W01: the rate-limit call slot is a passthrough here (limiter has its own suite).
+vi.mock('./accountingRateLimit', () => ({
+  withProviderCallSlot: (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn(),
+}));
 
 import { QuickbooksProvider, quickbooksProvider } from './quickbooksProvider';
 import { AccountingProviderError } from './accountingProviderError';
@@ -52,6 +56,35 @@ describe('QuickbooksProvider error boundary', () => {
     expect(err.kind).toBe('reauth');
     expect(err.provider).toBe('quickbooks');
     expect(err.status).toBe(400);
+  });
+
+  // F6 (PR #7197 review): a throttled token endpoint often answers 429 with an
+  // empty or HTML body. It must still classify as a (provider) throttle rather
+  // than dying in JSON.parse as an unclassified transient.
+  it.each([
+    ['an empty body', () => new Response('', { status: 429 }), 60_000],
+    ['a JSON body', () => new Response('{"error":"throttled"}', { status: 429 }), 60_000],
+    ['an HTML body with Retry-After: 7', () => new Response('<html><body>Too Many Requests</body></html>', {
+      status: 429, headers: { 'Retry-After': '7' },
+    }), 7_000],
+  ])('refresh(): a 429 with %s rejects as a provider rate_limited with its Retry-After', async (_label, reply, retryAfterMs) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(reply());
+
+    const err = await rejectionOf(quickbooksProvider.refresh('r'));
+
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'rate_limited', status: 429, retryAfterMs, throttleSource: 'provider' });
+  });
+
+  it('refresh(): a NON-429 non-JSON token reply keeps its pre-W01 behaviour (a raw parse failure, transient)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('<html>Bad Gateway</html>', { status: 502 }));
+
+    const err = await rejectionOf(quickbooksProvider.refresh('r'));
+
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err.kind).toBe('transient');
+    expect(err.status).toBeUndefined();
+    expect(err.cause).toBeInstanceOf(SyntaxError);
   });
 
   it('voidInvoice(): a payment-linked 6000 fault rejects as kind payment_linked', async () => {

@@ -64,7 +64,7 @@ const {
     getRepeatableJobsMock: vi.fn(),
     removeRepeatableByKeyMock: vi.fn(),
     queueCloseMock: vi.fn(async () => {}),
-    workerInstances: [] as Array<{ queueName: string; opts: Record<string, unknown> }>,
+    workerInstances: [] as Array<{ queueName: string; opts: Record<string, unknown>; processor: (job: unknown, token?: string) => Promise<unknown> }>,
     workerCloseMock: vi.fn(async () => {}),
     captureExceptionMock: vi.fn(),
     attachWorkerObservabilityMock: vi.fn(),
@@ -110,11 +110,17 @@ vi.mock('bullmq', () => ({
     on = vi.fn();
     close = workerCloseMock;
     constructor(queueName: string, _processor: unknown, opts: Record<string, unknown>) {
-      workerInstances.push({ queueName, opts });
+      workerInstances.push({ queueName, opts, processor: _processor as (job: unknown, token?: string) => Promise<unknown> });
     }
   },
   Job: class {},
+  DelayedError: class DelayedError extends Error { constructor() { super('bullmq:movedToDelayed'); this.name = 'DelayedError'; } },
 }));
+
+// Daily-budget deferral (Xero W01 Task 14): QuickBooks declares no daily
+// budget, so the real helper never defers; the mock drives the W02 branch.
+const { shouldDeferMock } = vi.hoisted(() => ({ shouldDeferMock: vi.fn(async (..._args: unknown[]) => false) }));
+vi.mock('../services/accounting/accountingRateLimit', () => ({ shouldDeferBackgroundWork: shouldDeferMock }));
 
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
@@ -147,6 +153,7 @@ vi.mock('../services/accounting/accountingMappingService', () => ({
 
 vi.mock('../services/accounting/providerRegistry', () => ({
   getAccountingProvider: getAccountingProviderMock,
+  findAccountingProvider: (id: string) => ({ id, limits: { rate: { provider: id } } }),
   providerSupports: providerSupportsMock,
 }));
 
@@ -933,7 +940,7 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
@@ -954,7 +961,7 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
   });
 
   it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
@@ -1217,5 +1224,108 @@ describe('connection by id + capability gates (Xero W01)', () => {
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
     expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14): a throttled reconcile is delayed at
+// Retry-After (moveToDelayed + DelayedError), never counted as a failure, and
+// the sweep defers a connection whose daily budget is nearly spent.
+// ---------------------------------------------------------------------------
+
+import { createAccountingReconcileWorker } from './accountingReconcileWorker';
+import { AccountingProviderError } from '../services/accounting/accountingProviderError';
+
+describe('rate limiting (Xero W01 Task 14)', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    shouldDeferMock.mockImplementation(async () => false);
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => errorSpy.mockRestore());
+
+  const throttle = (retryAfterMs = 30_000) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks CDC', httpStatus: 429, retryAfterMs,
+  });
+  const delayedJob = () => ({ id: 'j1', moveToDelayed: vi.fn(async (_ts: number, _token?: string) => undefined) });
+
+  it('a throttled CDC read delays the job at Retry-After, with no Sentry event, no error log, and the cursor untouched', async () => {
+    reconcileChangesMock.mockRejectedValueOnce(throttle(30_000));
+    const job = delayedJob();
+    const before = Date.now();
+
+    await expect(processReconcileConnectionJob(JOB, { job: job as never, token: 'tok' })).rejects.toMatchObject({ name: 'DelayedError' });
+
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'tok');
+    expect(job.moveToDelayed.mock.calls[0]![0]).toBeGreaterThanOrEqual(before + 30_000);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+    expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh (resolveConnectionAndToken) delays the job too', async () => {
+    resolveConnectionAndTokenMock.mockRejectedValueOnce(
+      Object.assign(new Error('QuickBooks is rate limiting requests; try again shortly'), { code: 'rate_limited', retryAfterMs: 12_000 }),
+    );
+    const job = delayedJob();
+
+    await expect(processReconcileConnectionJob(JOB, { job: job as never, token: 'tok' })).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledOnce();
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-throttle failure is NOT delayed (the retry ladder still applies)', async () => {
+    reconcileChangesMock.mockRejectedValueOnce(new Error('boom'));
+    const job = delayedJob();
+
+    await expect(processReconcileConnectionJob(JOB, { job: job as never, token: 'tok' })).rejects.toThrow('boom');
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('without a job context the throttle is rethrown unchanged', async () => {
+    const err = throttle();
+    reconcileChangesMock.mockRejectedValueOnce(err);
+
+    await expect(processReconcileConnectionJob(JOB)).rejects.toBe(err);
+  });
+
+  it('the worker factory passes the job AND its lock token through', async () => {
+    createAccountingReconcileWorker();
+    const processor = workerInstances.at(-1)!.processor;
+    reconcileChangesMock.mockRejectedValueOnce(throttle());
+    const job = { ...delayedJob(), data: JOB };
+
+    await expect(processor(job, 'lock-token')).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'lock-token');
+  });
+
+  it('the sweep defers a connection whose daily budget is nearly spent, and reports it', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([
+      { id: 'c-low', partnerId: 'p1', provider: 'quickbooks' },
+      { id: 'c-ok', partnerId: 'p2', provider: 'quickbooks' },
+    ]);
+    shouldDeferMock.mockImplementation(async (...args: unknown[]) => args[2] === 'c-low');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(processReconcileSweep()).resolves.toEqual({
+        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0,
+      });
+      expect(logSpy.mock.calls.some((c) => c.some((a) => String(a).includes('deferred=1')))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(shouldDeferMock).toHaveBeenCalledWith('quickbooks', { provider: 'quickbooks' }, 'c-low');
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(queueAddMock.mock.calls[0]![1]).toMatchObject({ connectionId: 'c-ok' });
+  });
+
+  it('the sweep\'s pending-op pass is never deferred (a delete must still go out)', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([{ id: 'c-low', partnerId: 'p1', provider: 'quickbooks' }]);
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm1', partnerId: 'p1', pendingOp: 'delete' }]);
+    shouldDeferMock.mockImplementation(async () => true);
+
+    await expect(processReconcileSweep()).resolves.toMatchObject({ deferred: 1, pendingOpsEnqueued: 1 });
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m1', 'p1');
   });
 });

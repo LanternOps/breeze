@@ -174,6 +174,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
+import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
@@ -518,6 +519,53 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the Preferences fetch is refused by the accounting rate limiter (Xero W01)', async () => {
+    // fetchRealmSettings takes the connection's call slot; a refusal is a
+    // rate_limited AccountingProviderError, which the non-fatal capture must
+    // absorb exactly like any other failed capture.
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 5_000,
+    }));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+    // F7: a throttle is not an incident. A limiter-store outage is reported
+    // once, centrally, by the limiter itself — never again here.
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it.each(['provider', 'local', 'limiter_unavailable'] as const)(
+    'callback does not Sentry-capture a %s-throttled Preferences fetch (F7)',
+    async (throttleSource) => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+      mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+        kind: 'rate_limited', provider: 'quickbooks', operation: 'fetchRealmSettings', retryAfterMs: 5_000, throttleSource,
+      }));
+
+      const res = await runCallback(app);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('connected=1');
+      expect(mocks.captureException).not.toHaveBeenCalled();
+    },
+  );
+
+  it('callback still Sentry-captures a NON-throttle Preferences failure (F7 control)', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'transient', provider: 'quickbooks', operation: 'fetchRealmSettings', httpStatus: 503,
+    }));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('callback still connects when the Preferences fetch is ABORTED by its timeout', async () => {

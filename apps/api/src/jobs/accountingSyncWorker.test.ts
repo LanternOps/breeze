@@ -1,12 +1,23 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Capture queue.add calls without opening a socket, mirroring invoiceWorker.test.ts.
-const { queueAddMock, queueGetJobMock, selectWhereMock } = vi.hoisted(() => ({ queueAddMock: vi.fn(), queueGetJobMock: vi.fn(), selectWhereMock: vi.fn() }));
+const { queueAddMock, queueGetJobMock, selectWhereMock, workerProcessors } = vi.hoisted(() => ({
+  queueAddMock: vi.fn(), queueGetJobMock: vi.fn(), selectWhereMock: vi.fn(),
+  workerProcessors: [] as Array<(job: unknown, token?: string) => Promise<unknown>>,
+}));
 vi.mock('bullmq', () => ({
   Queue: class { add = queueAddMock; getJob = queueGetJobMock; },
-  Worker: class {},
+  Worker: class {
+    constructor(_queue: string, processor: (job: unknown, token?: string) => Promise<unknown>) { workerProcessors.push(processor); }
+  },
   Job: class {},
+  DelayedError: class DelayedError extends Error { constructor() { super('bullmq:movedToDelayed'); this.name = 'DelayedError'; } },
 }));
+
+// Daily-budget deferral (Xero W01 Task 14). QuickBooks declares no daily budget,
+// so the real helper never defers; the mock lets a test drive the W02 branch.
+const { shouldDeferMock } = vi.hoisted(() => ({ shouldDeferMock: vi.fn(async (_p: string, _spec: unknown, _connectionId: string) => false) }));
+vi.mock('../services/accounting/accountingRateLimit', () => ({ shouldDeferBackgroundWork: shouldDeferMock }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
@@ -45,6 +56,7 @@ const getConnectionByIdMock = getConnectionMock;
 const { providerSupportsMock } = vi.hoisted(() => ({ providerSupportsMock: vi.fn((_id: string, _cap: string) => true) }));
 vi.mock('../services/accounting/providerRegistry', () => ({
   providerSupports: providerSupportsMock,
+  findAccountingProvider: (id: string) => ({ id, limits: { rate: { provider: id } } }),
   LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
 }));
 
@@ -562,7 +574,7 @@ describe('mapping jobs and recovery sweep', () => {
     const now = new Date('2026-09-16T12:00:00Z');
     selectWhereMock.mockResolvedValueOnce([mappingJob, { ...mappingJob, breezeEntityId: MAPPING_ID }]);
     queueGetJobMock.mockResolvedValueOnce({ getState: async () => 'active' });
-    await expect(processMappingSweep(now)).resolves.toEqual({ enqueued: 1, failed: 0 });
+    await expect(processMappingSweep(now)).resolves.toEqual({ enqueued: 1, failed: 0, deferred: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(1);
     expect(queueAddMock.mock.calls[0]![1].breezeEntityId).toBe(MAPPING_ID);
     const query = new PgDialect().sqlToQuery(selectWhereMock.mock.calls[0]![0]);
@@ -573,7 +585,7 @@ describe('mapping jobs and recovery sweep', () => {
   it.each(['waiting', 'active', 'delayed', 'prioritized'])('does not enqueue an in-flight %s job', async state => {
     selectWhereMock.mockResolvedValueOnce([mappingJob]);
     queueGetJobMock.mockResolvedValueOnce({ getState: async () => state });
-    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 0 });
+    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 0, deferred: 0 });
     expect(queueAddMock).not.toHaveBeenCalled();
   });
   it('releases the sweep DB context before enqueue and reports Redis outages', async () => {
@@ -587,7 +599,7 @@ describe('mapping jobs and recovery sweep', () => {
       expect(inContext).toBe(false);
       throw new Error('redis down');
     });
-    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 1 });
+    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 1, deferred: 0 });
     expect(runOutsideDbContextMock).toHaveBeenCalled();
   });
   it('dispatches the scheduled sweep and rethrows a failed DB read', async () => {
@@ -697,11 +709,153 @@ describe('connectionId + capability gates (Xero W01)', () => {
     ]);
     providerSupportsMock.mockImplementation((id: string) => id === 'quickbooks');
     try {
-      await expect(processMappingSweep()).resolves.toEqual({ enqueued: 1, failed: 0 });
+      await expect(processMappingSweep()).resolves.toEqual({ enqueued: 1, failed: 0, deferred: 0 });
     } finally {
       providerSupportsMock.mockImplementation(() => true);
     }
     expect(queueAddMock).toHaveBeenCalledTimes(1);
     expect(queueAddMock.mock.calls[0]![1]).toEqual({ ...mappingJob, connectionId: 'c-qbo' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14): a throttled job goes back to `delayed` at
+// Retry-After via moveToDelayed(ts, token) + DelayedError — not a failure, no
+// Sentry event, no console.error, and no attempt consumed.
+// ---------------------------------------------------------------------------
+
+import { createAccountingSyncWorker } from './accountingSyncWorker';
+import { AccountingProviderError } from '../services/accounting/accountingProviderError';
+
+describe('rate limiting (Xero W01 Task 14)', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queueAddMock.mockResolvedValue({ id: 'job' });
+    queueGetJobMock.mockResolvedValue(undefined);
+    shouldDeferMock.mockResolvedValue(false);
+    awaitsRemoteRefMock.mockResolvedValue(false);
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => errorSpy.mockRestore());
+
+  const delayedJob = () => ({ id: 'j1', name: 'x', moveToDelayed: vi.fn(async (_ts: number, _token?: string) => undefined) });
+
+  it('a rate-limited payment job is delayed, not failed (Review Focus 5)', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected', pushMode: 'auto', pushPayments: true });
+    pushPaymentMock.mockRejectedValue(new AccountingPaymentPushError('rate_limited', 429, 'throttled', { retryAfterMs: 30_000 }));
+    const job = { moveToDelayed: vi.fn(async () => undefined) };
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: 'm1', partnerId: 'p1' }, { job: job as any, token: 't' }))
+      .rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 't');
+  });
+
+  it('a rate-limited delete-payment job is delayed at Retry-After, with no Sentry event and no error log', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pushPayments: true }));
+    deletePaymentMock.mockRejectedValue(new AccountingPaymentPushError('rate_limited', 429, 'throttled', { retryAfterMs: 30_000 }));
+    const job = delayedJob();
+    const before = Date.now();
+
+    await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }, { job: job as any, token: 'tok' }))
+      .rejects.toMatchObject({ name: 'DelayedError' });
+
+    expect(job.moveToDelayed.mock.calls[0]![0]).toBeGreaterThanOrEqual(before + 30_000);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['push-invoice', 'void-invoice'] as const)('a rate-limited %s job is delayed, not failed', async (type) => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    const mock = type === 'push-invoice' ? pushInvoiceMock : voidInvoiceMock;
+    mock.mockRejectedValue(new AccountingInvoicePushError('rate_limited', 429, 'QuickBooks is rate limiting requests; retrying automatically', { retryAfterMs: 20_000 }));
+    const job = delayedJob();
+
+    await expect(processAccountingSyncJob({ type, invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' }, { job: job as any, token: 'tok' }))
+      .rejects.toMatchObject({ name: 'DelayedError' });
+
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'tok');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('a rate-limited sync-mapping job is delayed, not failed', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('rate_limited', 429, 'throttled', { retryAfterMs: 10_000 }));
+    const job = delayedJob();
+
+    await expect(processAccountingSyncJob({ ...mappingJob, connectionId: 'conn-1' }, { job: job as any, token: 'tok' }))
+      .rejects.toMatchObject({ name: 'DelayedError' });
+
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'tok');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a RAW provider rate limit (e.g. straight from a token refresh) is delayed too', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingProviderError({ kind: 'rate_limited', provider: 'quickbooks', operation: 'x', retryAfterMs: 5_000 }));
+    const job = delayedJob();
+
+    await expect(processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' }, { job: job as any, token: 'tok' }))
+      .rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledOnce();
+  });
+
+  it('without a job context (a direct call) the rate limit is rethrown for the normal retry ladder', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    const err = new AccountingInvoicePushError('rate_limited', 429, 'throttled', { retryAfterMs: 20_000 });
+    pushInvoiceMock.mockRejectedValue(err);
+
+    await expect(processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' }))
+      .rejects.toBe(err);
+  });
+
+  it('a non-rate-limit provider_error still takes the retry ladder (never delayed)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('provider_error', 502, 'boom'));
+    const job = delayedJob();
+
+    await expect(processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' }, { job: job as any, token: 'tok' }))
+      .rejects.toMatchObject({ code: 'provider_error' });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('the worker factory passes the job AND its lock token through to the handler', async () => {
+    workerProcessors.length = 0;
+    createAccountingSyncWorker();
+    const processor = workerProcessors[0]!;
+    getConnectionMock.mockResolvedValue(connectionRow({ pushPayments: true }));
+    pushPaymentMock.mockRejectedValue(new AccountingPaymentPushError('rate_limited', 429, 'throttled', { retryAfterMs: 30_000 }));
+    const job = { ...delayedJob(), data: { type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID } };
+
+    await expect(processor(job, 'lock-token')).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'lock-token');
+  });
+
+  it('the mapping sweep defers a row whose connection is low on daily budget, and reports the count', async () => {
+    selectWhereMock.mockResolvedValueOnce([
+      { ...mappingJob, integrationId: 'c-low', provider: 'quickbooks' },
+      { ...mappingJob, breezeEntityId: MAPPING_ID, integrationId: 'c-ok', provider: 'quickbooks' },
+    ]);
+    shouldDeferMock.mockImplementation(async (_p: string, _spec: unknown, connectionId: string) => connectionId === 'c-low');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(processMappingSweep()).resolves.toEqual({ enqueued: 1, failed: 0, deferred: 1 });
+      expect(logSpy.mock.calls.some((c) => c.some((a) => String(a).includes('deferred=1')))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(shouldDeferMock).toHaveBeenCalledWith('quickbooks', { provider: 'quickbooks' }, 'c-low');
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(queueAddMock.mock.calls[0]![1]).toMatchObject({ breezeEntityId: MAPPING_ID, connectionId: 'c-ok' });
+  });
+
+  it('a rate-limit-DELAYED mapping job is not duplicated by the sweep', async () => {
+    selectWhereMock.mockResolvedValueOnce([{ ...mappingJob, integrationId: 'c1', provider: 'quickbooks' }]);
+    const remove = vi.fn();
+    queueGetJobMock.mockResolvedValueOnce({ getState: async () => 'delayed', remove });
+
+    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 0, deferred: 0 });
+    expect(remove).not.toHaveBeenCalled();
+    expect(queueAddMock).not.toHaveBeenCalled();
   });
 });

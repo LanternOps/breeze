@@ -5,6 +5,7 @@
  * `accountingInvoicePush.ts` re-exports both names, so existing imports are
  * unchanged.
  */
+import type { AccountingThrottleSource } from './accountingProviderError';
 
 export type AccountingInvoicePushErrorCode =
   | 'not_connected' | 'reauth_required' | 'invoice_not_pushable' // draft or unknown invoice
@@ -46,17 +47,32 @@ export type AccountingInvoicePushErrorCode =
   // A Breeze-side data problem, not an outage: every retry would refuse the
   // same way, so it is terminal in the worker.
   | 'invoice_totals_mismatch'
+  // The provider (or Breeze's own limiter) is throttling: the throttled call
+  // itself was not accepted remotely — though a dependency sync that ran
+  // earlier in the same push may have been (translateNestedSyncError), which
+  // the retry re-reads through its mapping. 429 with `retryAfterMs` and
+  // `throttleSource`; the worker DELAYS the job without
+  // consuming an attempt (jobs/accountingJobDelay.ts), the route answers 429 +
+  // Retry-After. Deliberately NOT in the worker's TERMINAL_CODES.
+  | 'rate_limited'
   | 'provider_error' | 'record_failed' // 502s; record_failed = remote ok, local persist failed (never retry)
   // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error';
 
 export class AccountingInvoicePushError extends Error {
+  /** Set on `rate_limited` only: how long to wait before retrying. */
+  readonly retryAfterMs?: number;
+  /** Set on `rate_limited` only: who throttled (provider 429, Breeze's limiter, or its store). */
+  readonly throttleSource?: AccountingThrottleSource;
   constructor(
     public readonly code: AccountingInvoicePushErrorCode,
-    public readonly status: 404 | 409 | 502,
+    public readonly status: 404 | 409 | 429 | 502,
     message: string,
+    opts: { retryAfterMs?: number; throttleSource?: AccountingThrottleSource; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.name = 'AccountingInvoicePushError';
+    this.retryAfterMs = opts.retryAfterMs;
+    this.throttleSource = opts.throttleSource;
   }
 }

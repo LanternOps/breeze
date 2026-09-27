@@ -64,7 +64,8 @@ import { accountingProviderDisplayName, getAccountingProvider } from './provider
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import {
-  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerTelemetryTags,
+  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerRateLimitedMessage,
+  providerRateLimitedRetryLaterMessage, providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf,
 } from './accountingProviderError';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -107,18 +108,26 @@ const PUSHABLE_STATUSES = new Set(['sent', 'partially_paid', 'overdue', 'paid'])
 
 /**
  * `resolveConnectionAndToken` throws `AccountingMappingError` (a different
- * error hierarchy — Task 4's entity-mapping workbench). Only the two codes it
- * can actually raise are re-typed here; anything else is a bug and propagates
+ * error hierarchy — Task 4's entity-mapping workbench). The three codes it can
+ * actually raise (`not_connected`, `reauth_required`, and `rate_limited` from a
+ * throttled token refresh) are re-typed here; any other AccountingMappingError
+ * becomes a generic upstream failure, and a non-mapping error propagates
  * unchanged rather than being silently swallowed into a generic bucket.
  */
 function translateMappingError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingInvoicePushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
+    // A throttled token refresh (Xero W01) stays a typed, delayable rate limit.
+    if (err.code === 'rate_limited') {
+      throw new AccountingInvoicePushError('rate_limited', 429, err.message, {
+        retryAfterMs: err.retryAfterMs, throttleSource: rateLimitSourceOf(err) ?? undefined, cause: err,
+      });
+    }
     // Any other AccountingMappingError code reaching here is unexpected at this
-    // call site (resolveConnectionAndToken only ever raises the two above) —
+    // call site (resolveConnectionAndToken only ever raises the three above) —
     // surface it as a generic upstream failure rather than mis-typing it.
-    throw new AccountingInvoicePushError('provider_error', err.status, err.message);
+    throw new AccountingInvoicePushError('provider_error', err.status === 429 ? 502 : err.status, err.message);
   }
   throw err;
 }
@@ -327,6 +336,12 @@ function translateNestedSyncError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingInvoicePushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
+    // A throttled dependency sync is a delay, not a provider failure (Xero W01).
+    if (err.code === 'rate_limited') {
+      throw new AccountingInvoicePushError('rate_limited', 429, err.message, {
+        retryAfterMs: err.retryAfterMs, throttleSource: rateLimitSourceOf(err) ?? undefined, cause: err,
+      });
+    }
     if (err.code === 'provider_error' || err.code === 'quickbooks_error' || err.code === 'sync_in_progress') {
       throw new AccountingInvoicePushError('provider_error', 502, err.message);
     }
@@ -417,6 +432,29 @@ async function markInvoiceMappingErrorInOwnContext(
       service: 'accountingInvoicePush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
   }
+}
+
+/**
+ * A throttle after the invoice mapping was claimed by a PUSH (Xero W01, ruling
+ * P6): the row gets the SAME `error` marker a transient failure leaves — never
+ * left `pending`, which would strand a manual push (no sweep re-pushes invoices)
+ * and make every later void answer `sync_in_progress` — but with no Sentry
+ * event. The wording is true on the manual route too, where nothing retries
+ * (P6b). The delayed job's retry re-claims the row via `upsertInvoiceMappingPending`.
+ */
+async function markInvoiceRateLimitedAndThrow(
+  runInDbContext: DbContextRunner,
+  mappingId: string,
+  partnerId: string,
+  provider: AccountingConnection['provider'],
+  retryAfterMs: number,
+  throttle: unknown,
+): Promise<never> {
+  // Worded by WHO throttled (F1); the provider wording is unchanged.
+  const throttleSource = rateLimitSourceOf(throttle) ?? 'provider';
+  const message = providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(provider), 'push', throttleSource);
+  await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message);
+  throw new AccountingInvoicePushError('rate_limited', 429, message, { retryAfterMs, throttleSource, cause: throttle });
 }
 
 /**
@@ -797,7 +835,15 @@ export async function pushInvoiceToAccounting(
 
   // Token refresh runs with NO context held — `resolveLiveConnection` asserts
   // that and opens its own short system transactions (accountingTokens.ts).
-  const liveConn = await resolveLiveConnection(conn).catch(translateMappingError);
+  // The row is already claimed `pending` here, so a throttled refresh must mark
+  // it like any other throttle (ruling P6).
+  const liveConn = await resolveLiveConnection(conn).catch(async (err: unknown) => {
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null) {
+      return markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, retryAfterMs, err);
+    }
+    return translateMappingError(err);
+  });
 
   const payload = buildInvoicePayload(inv, prep.linePayloads, customerRemoteId, customerSyncToken, mappingRow);
   const providerImpl = getAccountingProvider(conn.provider);
@@ -806,6 +852,10 @@ export async function pushInvoiceToAccounting(
   try {
     result = await runOutsideDbContext(() => providerImpl.pushInvoice(liveConn, payload, lineMappings));
   } catch (err) {
+    const throttleMs = rateLimitRetryAfterMs(err);
+    if (throttleMs !== null) {
+      await markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, throttleMs, err);
+    }
     const label = accountingProviderDisplayName(conn.provider);
     const message = sanitizeInvoiceSyncErrorMessage(err, label);
     logProviderFault('pushInvoice', mappingRow.id, err);
@@ -995,6 +1045,18 @@ export async function voidInvoiceInAccounting(
   try {
     voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
+    // Throttled (ruling P6a): NO marker and no Sentry. The void claims no row,
+    // so nothing can be stranded, and a marker on this synced row would outlive
+    // the delayed void's success (that path leaves last_error alone). The
+    // message is never persisted; the worker (the only caller) delays the job.
+    const throttleMs = rateLimitRetryAfterMs(err);
+    if (throttleMs !== null) {
+      const throttleSource = rateLimitSourceOf(err) ?? 'provider';
+      throw new AccountingInvoicePushError(
+        'rate_limited', 429, providerRateLimitedMessage(accountingProviderDisplayName(conn.provider), throttleSource),
+        { retryAfterMs: throttleMs, throttleSource, cause: err },
+      );
+    }
     // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
     // never allow this". A payment applied to the invoice in QuickBooks makes
     // the void permanently impossible until an operator removes it there, so

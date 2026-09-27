@@ -2,6 +2,8 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
+import { withProviderCallSlot } from './accountingRateLimit';
 import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -305,8 +307,35 @@ function qboFaultBody(err: unknown): string {
     : '';
 }
 
+/**
+ * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
+ * Returns null when absent or unreadable (a negative delta included), so the
+ * caller picks its own default.
+ */
+export function parseRetryAfterMs(header: string | null): number | null {
+  if (!header || !header.trim()) return null;
+  if (/^\s*-?\d+(?:\.\d+)?\s*$/.test(header)) {
+    const seconds = Number(header);
+    return seconds >= 0 ? Math.ceil(seconds * 1000) : null;
+  }
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}
+
+/**
+ * A throttle: the limiter refused the call slot, or Intuit answered 429. Every
+ * internal retry/fallback below (5010 re-read, 610 already-absent, the CDC
+ * backfill's `overflowed` degradation) must let it PROPAGATE to the boundary,
+ * where it becomes a delayed retry — never read it as a fault verdict.
+ */
+function isQboRateLimited(err: unknown): boolean {
+  if (err instanceof AccountingProviderError) return err.kind === 'rate_limited';
+  return !!err && typeof err === 'object' && (err as { status?: unknown }).status === 429;
+}
+
 /** QBO fault 610 — the object does not exist (already deleted, or never was). */
 function isQboObjectNotFound(err: unknown): boolean {
+  if (isQboRateLimited(err)) return false;
   const fault = qboFaultOf(err);
   if (fault.code === '610') return true;
   if (fault.message && /Object Not Found/i.test(fault.message)) return true;
@@ -318,6 +347,7 @@ function isQboObjectNotFound(err: unknown): boolean {
 
 /** QBO fault 5010 — the object exists but our SyncToken is behind. */
 function isQboStaleObject(err: unknown): boolean {
+  if (isQboRateLimited(err)) return false;
   const fault = qboFaultOf(err);
   if (fault.code === '5010') return true;
   if (fault.message && /Stale Object/i.test(fault.message)) return true;
@@ -665,51 +695,58 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
-    const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
-    // An explicit controller rather than AbortSignal.timeout so the timer is
-    // cleared on the normal path and the abort reason is a sanitized error.
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(preferencesError(null, 'timed out')),
-      QBO_PREFERENCES_TIMEOUT_MS,
-    );
-    let response: Response;
-    try {
-      response = await runOutsideDbContext(() =>
-        fetch(url, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${conn.accessToken}`,
-            Accept: 'application/json',
-          },
-          signal: controller.signal,
-        })
+    // Preferences is an API call on the realm, so it takes the same call slot
+    // as `qboRequest` (Xero W01). A refusal throws `rate_limited` before any
+    // fetch; the OAuth callback's capture is non-fatal, so it treats that like
+    // any other failed capture. The abort budget starts inside the slot and so
+    // times the Intuit round trip only.
+    return withProviderCallSlot('quickbooks', this.limits.rate, conn.id, async () => {
+      const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
+      // An explicit controller rather than AbortSignal.timeout so the timer is
+      // cleared on the normal path and the abort reason is a sanitized error.
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(preferencesError(null, 'timed out')),
+        QBO_PREFERENCES_TIMEOUT_MS,
       );
-    } finally {
-      clearTimeout(timer);
-    }
+      let response: Response;
+      try {
+        response = await runOutsideDbContext(() =>
+          fetch(url, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${conn.accessToken}`,
+              Accept: 'application/json',
+            },
+            signal: controller.signal,
+          })
+        );
+      } finally {
+        clearTimeout(timer);
+      }
 
-    if (!response.ok) {
-      // Sanitized, unlike listRemoteCustomers. The body is never read — but it
-      // must still be discarded, or undici holds the connection open until GC.
-      await response.body?.cancel().catch(() => {});
-      throw preferencesError(response.status, 'failed');
-    }
+      if (!response.ok) {
+        // Sanitized, unlike listRemoteCustomers. The body is never read — but it
+        // must still be discarded, or undici holds the connection open until GC.
+        await response.body?.cancel().catch(() => {});
+        throw preferencesError(response.status, 'failed');
+      }
 
-    // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
-    // from an unguarded .json() embeds a snippet of that body in its message —
-    // which the OAuth callback would hand straight to captureException, defeating
-    // the sanitization above.
-    let parsed: QboRawPreferences;
-    try {
-      parsed = await response.json() as QboRawPreferences;
-    } catch {
-      throw preferencesError(response.status, 'returned a non-JSON body');
-    }
-    return {
-      homeCurrency: mapQboHomeCurrency(parsed),
-      multiCurrencyEnabled: mapQboMultiCurrencyEnabled(parsed),
-    };
+      // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
+      // from an unguarded .json() embeds a snippet of that body in its message —
+      // which the OAuth callback would hand straight to captureException, defeating
+      // the sanitization above.
+      let parsed: QboRawPreferences;
+      try {
+        parsed = await response.json() as QboRawPreferences;
+      } catch {
+        throw preferencesError(response.status, 'returned a non-JSON body');
+      }
+      return {
+        homeCurrency: mapQboHomeCurrency(parsed),
+        multiCurrencyEnabled: mapQboMultiCurrencyEnabled(parsed),
+      };
+    });
   }
 
   private async listRemoteIncomeAccountsRaw(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
@@ -1365,6 +1402,11 @@ export class QuickbooksProvider implements AccountingProvider {
           `QuickBooks ${entity} change backfill query`,
         );
       } catch (err) {
+        // A throttle is not a failed backfill: degrading it to `overflowed`
+        // would report a Sentry error and hold the cursor on every busy
+        // minute. It propagates, and the boundary turns it into a delayed
+        // retry of the whole reconcile (the cursor is untouched either way).
+        if (isQboRateLimited(err)) throw err;
         // Sanitized by qboRequest (status only, never a fault body). Reported,
         // not rethrown: the CDC rows we already have are still worth applying,
         // and `overflowed` is what stops the cursor from advancing past them.
@@ -1423,53 +1465,64 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
-    const response = await runOutsideDbContext(() => fetch(
-      `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
-      {
-        ...init,
-        headers: {
-          Authorization: `Bearer ${conn.accessToken}`,
-          Accept: 'application/json',
-          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-          ...init.headers,
+    // One call slot per HTTP round trip (Xero W01). Leaf-level on purpose:
+    // callers that issue several requests (paging, 5010 re-read) take one slot
+    // per request and never hold one while waiting for another, which would
+    // deadlock at the per-connection concurrency cap.
+    return withProviderCallSlot('quickbooks', this.limits.rate, conn.id, async () => {
+      const response = await runOutsideDbContext(() => fetch(
+        `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
+        {
+          ...init,
+          headers: {
+            Authorization: `Bearer ${conn.accessToken}`,
+            Accept: 'application/json',
+            ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+            ...init.headers,
+          },
         },
-      },
-    ));
-    const text = await response.text();
-    if (!response.ok) {
-      const error = new Error(`${operation} failed with ${response.status}`);
-      // The fault is read off the FULL text and carried as its own fields;
-      // `body` stays truncated for storage. Classifying on the truncated body
-      // was the bug: a fault whose `code` sat behind a long `Detail` read as
-      // "not a stale object", so the SyncToken re-read never fired and the write
-      // failed permanently on a fault designed to be retried.
-      const fault = parseQboFault(text);
-      Object.assign(error, {
-        status: response.status,
-        body: text.slice(0, 500),
-        qboFaultCode: fault.code ?? undefined,
-        qboFaultMessage: fault.message ?? undefined,
-        // Boolean only — derived from the FULL text for the same reason the
-        // code is, since Intuit states this reason in the `Detail` that
-        // truncation drops. The Detail text itself is never carried (#5180).
-        qboPaymentLinked: fault.paymentLinked === true ? true : undefined,
-      });
-      // Server log only — `body` can carry Intuit's `Detail`, which names the
-      // offending customer/amount. It never reaches Sentry (scrubbed) or a
-      // mapping card (only the fault CLASS does).
-      console.error(
-        `[quickbooksProvider] ${operation} failed`,
-        `status=${response.status}`,
-        `faultCode=${fault.code ?? 'none'}`,
-        `body=${text.slice(0, 500)}`,
-      );
-      throw error;
-    }
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new Error(`${operation} returned invalid JSON`);
-    }
+      ));
+      const text = await response.text();
+      if (!response.ok) {
+        const error = new Error(`${operation} failed with ${response.status}`);
+        // The fault is read off the FULL text and carried as its own fields;
+        // `body` stays truncated for storage. Classifying on the truncated body
+        // was the bug: a fault whose `code` sat behind a long `Detail` read as
+        // "not a stale object", so the SyncToken re-read never fired and the write
+        // failed permanently on a fault designed to be retried.
+        const fault = parseQboFault(text);
+        Object.assign(error, {
+          status: response.status,
+          body: text.slice(0, 500),
+          qboFaultCode: fault.code ?? undefined,
+          qboFaultMessage: fault.message ?? undefined,
+          // Boolean only — derived from the FULL text for the same reason the
+          // code is, since Intuit states this reason in the `Detail` that
+          // truncation drops. The Detail text itself is never carried (#5180).
+          qboPaymentLinked: fault.paymentLinked === true ? true : undefined,
+          // Xero W01: throttling is a delay, not a failure. Intuit usually omits
+          // Retry-After on 429; 60s is its documented throttle window.
+          retryAfterMs: response.status === 429
+            ? parseRetryAfterMs(response.headers.get('retry-after')) ?? 60_000
+            : undefined,
+        });
+        // Server log only — `body` can carry Intuit's `Detail`, which names the
+        // offending customer/amount. It never reaches Sentry (scrubbed) or a
+        // mapping card (only the fault CLASS does).
+        console.error(
+          `[quickbooksProvider] ${operation} failed`,
+          `status=${response.status}`,
+          `faultCode=${fault.code ?? 'none'}`,
+          `body=${text.slice(0, 500)}`,
+        );
+        throw error;
+      }
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new Error(`${operation} returned invalid JSON`);
+      }
+    });
   }
 
   private async requestTokens(
@@ -1498,6 +1551,25 @@ export class QuickbooksProvider implements AccountingProvider {
     );
 
     const text = await response.text();
+    if (response.status === 429) {
+      // A throttled token endpoint often answers with an empty or HTML body, so
+      // a 429 must not depend on JSON.parse to be recognised: without a status
+      // the boundary would classify the SyntaxError as a plain transient. Every
+      // other status keeps the historical parse-first order below.
+      let throttled: QboTokenResponse = {};
+      try {
+        throttled = text ? JSON.parse(text) as QboTokenResponse : {};
+      } catch {
+        // Not JSON — the status alone classifies it.
+      }
+      const err = new Error(throttled.error_description || throttled.error || 'QuickBooks token request failed with 429');
+      Object.assign(err, {
+        status: 429,
+        qboError: throttled.error,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')) ?? 60_000,
+      });
+      throw err;
+    }
     const parsed = text ? JSON.parse(text) as QboTokenResponse : {};
     if (!response.ok) {
       const err = new Error(parsed.error_description || parsed.error || `QuickBooks token request failed with ${response.status}`);
