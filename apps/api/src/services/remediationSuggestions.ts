@@ -7,6 +7,7 @@ import {
   metricAnomalies,
   remediationSuggestions,
 } from '../db/schema';
+import { attachProvenFixes } from './fixMemory/attach';
 import {
   listCatalogPlaybooks, listCatalogScripts, listCatalogTemplates, NON_REMEDIATION_SYSTEM_SCRIPT_NAMES,
   resolveDeviceOs, resolveOrgPartnerId, TEMPLATE_LANGUAGES_BY_OS,
@@ -337,6 +338,10 @@ export async function generateRemediationSuggestions(
     };
   }
 
+  // AI Suggested Fixes W1 — proven memory first; free, and the catalog loop
+  // below then reuses (never duplicates) a script memory already attached.
+  const memoryAttached = await attachProvenFixes({ sourceType: input.sourceType, sourceId: input.sourceId, orgId: ctx.orgId });
+
   const existing = await db
     .select()
     .from(remediationSuggestions)
@@ -394,13 +399,22 @@ export async function generateRemediationSuggestions(
     if (inserted) created.push(inserted);
   }
 
+  // AI Suggested Fixes W1 — a memory row the catalog loop above never touched
+  // (no keyword-matched candidate for that script) still belongs in the
+  // result; `existing` was queried after attachProvenFixes, so it already
+  // reflects anything just attached.
+  const createdIds = new Set(created.map((row) => row.id));
+  const memoryRows = memoryAttached > 0
+    ? existing.filter((row) => row.origin === 'memory' && !createdIds.has(row.id))
+    : [];
+
   return {
     sourceType: input.sourceType,
     sourceId: input.sourceId,
     orgId: ctx.orgId,
     skipped: false,
     usedFallback,
-    suggestions: created,
+    suggestions: [...memoryRows, ...created],
   };
 }
 

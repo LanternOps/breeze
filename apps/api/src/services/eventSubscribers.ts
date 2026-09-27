@@ -183,6 +183,19 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'fix-memory-attach',
+    // AI Suggested Fixes W1 — a proven fix for this alert's signature is
+    // attached for free (no LLM). Idempotent: ON CONFLICT on the per-source
+    // script unique index. Lazy for the worker-closure reason above.
+    eventTypes: ['alert.triggered'],
+    handler: async (event: BreezeEvent) => {
+      const { handleAlertTriggeredForFixMemory } = await import('./fixMemory/attach');
+      return handleAlertTriggeredForFixMemory(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
     id: 'fix-outcome-watcher',
     // AI Suggested Fixes W1 — fast path for fix_outcomes. Gates on the
     // published payload; every write is a CAS, so redelivery is a no-op.

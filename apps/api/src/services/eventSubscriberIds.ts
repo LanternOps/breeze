@@ -19,6 +19,8 @@ export const EVENT_SUBSCRIBER_IDS = [
   // into a delivery record per the deliverable's completion policy.
   'deliverable-status',
   'dns-threat-alerts',
+  // AI Suggested Fixes W1 — attach proven fix memory to a newly triggered alert.
+  'fix-memory-attach',
   // AI Suggested Fixes W1 — fast path for the fix-outcome state machine
   // (alert.resolved, alert.triggered). The sweeper is authoritative.
   'fix-outcome-watcher',

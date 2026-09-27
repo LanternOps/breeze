@@ -77,6 +77,8 @@ vi.mock('./mlFeatureFlags', () => ({
   shouldProduceMlOutput: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('./fixMemory/attach', () => ({ attachProvenFixes: vi.fn(async () => 0) }));
+
 import { __testOnly, generateRemediationSuggestions } from './remediationSuggestions';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 
