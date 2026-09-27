@@ -1607,13 +1607,23 @@ bmrPublicRoutes.get(
         },
       });
 
+      // #6489: a local-provider `.gz` object is decompressed on the fly
+      // (getAuthenticatedRecoveryDownloadTarget), so its decompressed length
+      // isn't known up front — that branch returns `contentLength: null`.
+      // Sending a `Content-Length` header at all in that case would either
+      // lie (the compressed size) or require buffering the whole object
+      // first, so the header is only set when a real length is known.
+      const streamHeaders: Record<string, string> = {
+        'Content-Type': target.contentType,
+        'Cache-Control': 'no-store',
+      };
+      if (target.contentLength != null) {
+        streamHeaders['Content-Length'] = String(target.contentLength);
+      }
+
       return new Response(webStream, {
         status: 200,
-        headers: {
-          'Content-Type': target.contentType,
-          'Content-Length': String(target.contentLength),
-          'Cache-Control': 'no-store',
-        },
+        headers: streamHeaders,
       });
     });
   }
