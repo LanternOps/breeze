@@ -97,7 +97,8 @@
       "create": "Monitör oluştur",
       "test": "Bir cihazda test et",
       "deploy": "Şuraya dağıt…",
-      "delete": "Sil"
+      "delete": "Sil",
+      "backToMonitors": "Monitörlere Dön"
     },
     "errors": {
       "load": "Monitör yüklenemedi",

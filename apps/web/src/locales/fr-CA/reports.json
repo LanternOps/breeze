@@ -873,6 +873,7 @@
           "title": "Type de rapport"
         }
       },
+      "removeField": "Supprimer {{field}}",
       "selectedFields": "Domaines sélectionnés",
       "success": {
         "created": "Rapport « {{name}} » enregistré.",

@@ -244,6 +244,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           <a
             href="/scripts"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('scriptEditPage.actions.backToScripts')}
           >
             <ArrowLeft className="h-5 w-5" />
           </a>

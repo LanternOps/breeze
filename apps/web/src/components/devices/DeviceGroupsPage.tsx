@@ -1142,7 +1142,7 @@ export default function DeviceGroupsPage() {
         </div>
       ) : (
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
-          <div className="flex items-center gap-3 text-sm font-medium text-muted-foreground">
+          <label className="flex items-center gap-3 text-sm font-medium text-muted-foreground">
             <input
               type="checkbox"
               checked={allSelected}
@@ -1150,7 +1150,7 @@ export default function DeviceGroupsPage() {
               className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
             />
             {t("deviceGroupsPage.selectAllGroups")}{" "}
-          </div>
+          </label>
           <div className="space-y-4">
             {groups.map((group) => {
               const deviceIds = getGroupDeviceIds(group);

@@ -25,7 +25,8 @@
     },
     "actions": {
       "create": "Create Automation",
-      "saveChanges": "Save Changes"
+      "saveChanges": "Save Changes",
+      "backToAutomations": "Back to Jobs"
     }
   },
   "automationForm": {
@@ -434,6 +435,7 @@
       "generic": "An error occurred"
     },
     "loading": "Loading compliance data...",
+    "backToPolicies": "Back to Policies",
     "policyTitle": "Compliance: {{policy}}",
     "policyFallback": "Policy",
     "title": "Compliance Dashboard",
@@ -491,7 +493,8 @@
     },
     "actions": {
       "create": "Create Policy",
-      "saveChanges": "Save Changes"
+      "saveChanges": "Save Changes",
+      "backToPolicies": "Back to Policies"
     }
   },
   "policyForm": {
@@ -550,7 +553,8 @@
     },
     "actions": {
       "savePolicy": "Save policy",
-      "addRule": "Add Rule"
+      "addRule": "Add Rule",
+      "removeRule": "Remove Rule"
     },
     "fields": {
       "name": "Policy name",
@@ -981,6 +985,7 @@
     "loading": "Loading executions...",
     "actions": {
       "backToScripts": "Back to Scripts",
+      "backToScript": "Back to Script",
       "runScript": "Run Script"
     },
     "breadcrumb": {

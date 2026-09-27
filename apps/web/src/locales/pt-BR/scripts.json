@@ -25,7 +25,8 @@
     },
     "actions": {
       "create": "Criar automação",
-      "saveChanges": "Salvar alterações"
+      "saveChanges": "Salvar alterações",
+      "backToAutomations": "Voltar para tarefas"
     }
   },
   "automationForm": {
@@ -434,6 +435,7 @@
       "generic": "Ocorreu um erro"
     },
     "loading": "Carregando dados de conformidade...",
+    "backToPolicies": "Voltar para políticas",
     "policyTitle": "Conformidade: {{policy}}",
     "policyFallback": "Política",
     "title": "Painel de conformidade",
@@ -491,7 +493,8 @@
     },
     "actions": {
       "create": "Criar política",
-      "saveChanges": "Salvar alterações"
+      "saveChanges": "Salvar alterações",
+      "backToPolicies": "Voltar para políticas"
     }
   },
   "policyForm": {
@@ -550,7 +553,8 @@
     },
     "actions": {
       "savePolicy": "Salvar política",
-      "addRule": "Adicionar regra"
+      "addRule": "Adicionar regra",
+      "removeRule": "Remover regra"
     },
     "fields": {
       "name": "Nome da política",
@@ -981,6 +985,7 @@
     "loading": "Carregando execuções...",
     "actions": {
       "backToScripts": "Voltar para scripts",
+      "backToScript": "Voltar para o script",
       "runScript": "Executar script"
     },
     "breadcrumb": {

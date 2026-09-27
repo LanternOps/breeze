@@ -1923,6 +1923,7 @@ export default function ReportBuilder({
                       <button
                         type="button"
                         onClick={() => toggleField(field)}
+                        aria-label={t('reports.reportBuilder.removeField', { field: getFieldLabel(field) })}
                         className="shrink-0 text-muted-foreground hover:text-foreground"
                       >
                         <X className="h-4 w-4" />
@@ -2195,8 +2196,9 @@ export default function ReportBuilder({
 
               <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
+                  <label htmlFor="report-builder-run-time" className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
                   <input
+                    id="report-builder-run-time"
                     type="time"
                     value={scheduleTime}
                     onChange={event => setScheduleTime(event.target.value)}

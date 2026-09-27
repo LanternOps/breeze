@@ -628,6 +628,7 @@ export default function PolicyForm({
                     type="button"
                     onClick={() => remove(index)}
                     disabled={fields.length === 1}
+                    aria-label={t('policyForm.actions.removeRule')}
                     className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Trash2 className="h-4 w-4" />

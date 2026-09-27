@@ -95,6 +95,37 @@ function openFeatureTab(label: string) {
   fireEvent.click(screen.getByText(label));
 }
 
+describe('ConfigPolicyDetailPage — a11y (#7158)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('gives the icon-only back-to-list link an accessible name', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByRole('link', { name: 'Back to list' })).toHaveAttribute(
+      'href',
+      '/configuration-policies'
+    );
+  });
+
+  it('links the Name and Description fields on the Overview tab to their labels', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+  });
+});
+
 describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide policies (#2101)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();

@@ -89,6 +89,23 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     expect(screen.getByPlaceholderText('alex@company.com')).toHaveValue('alex@company.com');
   });
 
+  it('gives the icon-only back-to-organizations link an accessible name (#7158 a11y)', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    expect(await screen.findByRole('link', { name: 'Back to organizations' })).toHaveAttribute(
+      'href',
+      `/organizations/${ORG_ID}`
+    );
+  });
+
+  it('links the site name input to its label (#7158 a11y)', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    expect(await screen.findByLabelText('Site name')).toHaveValue('Main Office');
+  });
+
   it('confirms a successful save with a toast (#5313)', async () => {
     mockApi();
     vi.mocked(showToast).mockClear();

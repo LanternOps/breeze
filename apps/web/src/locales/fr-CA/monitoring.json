@@ -97,7 +97,8 @@
       "create": "Créer un moniteur",
       "test": "Tester sur un appareil",
       "deploy": "Déployer vers…",
-      "delete": "Supprimer"
+      "delete": "Supprimer",
+      "backToMonitors": "Retour aux moniteurs"
     },
     "errors": {
       "load": "Impossible de charger le moniteur",

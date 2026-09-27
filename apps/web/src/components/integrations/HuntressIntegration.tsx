@@ -725,10 +725,11 @@ export default function HuntressIntegration() {
 
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm font-medium">
+              <label htmlFor="huntress-connection-name" className="mb-1 block text-sm font-medium">
                 {t("common:labels.name")}
               </label>
               <input
+                id="huntress-connection-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -737,13 +738,14 @@ export default function HuntressIntegration() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium">
+              <label htmlFor="huntress-account-id" className="mb-1 block text-sm font-medium">
                 {t("huntressIntegration.accountID")}
                 <span className="text-xs text-muted-foreground">
                   {t("huntressIntegration.optional")}
                 </span>
               </label>
               <input
+                id="huntress-account-id"
                 type="text"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
@@ -1117,6 +1119,9 @@ export default function HuntressIntegration() {
                   value={mappingSearch}
                   onChange={(event) => setMappingSearch(event.target.value)}
                   placeholder={t(
+                    "huntressIntegration.searchHuntressOrBreezeOrganizations",
+                  )}
+                  aria-label={t(
                     "huntressIntegration.searchHuntressOrBreezeOrganizations",
                   )}
                   className="h-9 w-full rounded-md border bg-background pl-9 pr-8 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"

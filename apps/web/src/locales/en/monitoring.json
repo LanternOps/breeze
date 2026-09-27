@@ -97,7 +97,8 @@
       "create": "Create monitor",
       "test": "Test on a device",
       "deploy": "Deploy to…",
-      "delete": "Delete"
+      "delete": "Delete",
+      "backToMonitors": "Back to Monitors"
     },
     "errors": {
       "load": "Failed to load monitor",

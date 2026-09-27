@@ -582,10 +582,11 @@ export default function CommunicationIntegrations() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label htmlFor="slack-default-channel" className="text-sm font-medium">
                 {t("communicationIntegrations.defaultChannel")}
               </label>
               <input
+                id="slack-default-channel"
                 type="text"
                 value={slackDefaultChannel}
                 onChange={(event) => setSlackDefaultChannel(event.target.value)}
@@ -659,10 +660,11 @@ export default function CommunicationIntegrations() {
           <div className="mt-5 space-y-4">
             <div className="grid gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">
+                <label htmlFor="teams-tenant-id" className="text-sm font-medium">
                   {t("communicationIntegrations.tenantID")}
                 </label>
                 <input
+                  id="teams-tenant-id"
                   type="text"
                   value={teamsTenantId}
                   onChange={(event) => setTeamsTenantId(event.target.value)}
@@ -671,10 +673,11 @@ export default function CommunicationIntegrations() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">
+                <label htmlFor="teams-client-id" className="text-sm font-medium">
                   {t("communicationIntegrations.clientID")}
                 </label>
                 <input
+                  id="teams-client-id"
                   type="text"
                   value={teamsClientId}
                   onChange={(event) => setTeamsClientId(event.target.value)}
@@ -683,10 +686,11 @@ export default function CommunicationIntegrations() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">
+                <label htmlFor="teams-client-secret" className="text-sm font-medium">
                   {t("communicationIntegrations.clientSecret")}
                 </label>
                 <input
+                  id="teams-client-secret"
                   type="password"
                   value={teamsClientSecret}
                   onChange={(event) => setTeamsClientSecret(event.target.value)}
@@ -760,10 +764,11 @@ export default function CommunicationIntegrations() {
 
           <div className="mt-5 space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label htmlFor="discord-webhook-url" className="text-sm font-medium">
                 {t("communicationIntegrations.webhookURL")}
               </label>
               <input
+                id="discord-webhook-url"
                 type="text"
                 value={discordWebhookUrl}
                 onChange={(event) => setDiscordWebhookUrl(event.target.value)}
