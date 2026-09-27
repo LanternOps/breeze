@@ -10,8 +10,10 @@ const {
   getConnectionMock,
   enqueueAccountingReconcileMock,
   writeRouteAuditMock,
+  providerSupportsMock,
   authState,
 } = vi.hoisted(() => {
+  const providerSupportsMock = vi.fn();
   const getConnectionMock = vi.fn();
   const enqueueAccountingReconcileMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
@@ -21,8 +23,11 @@ const {
     permissions: new Set<string>(['accounting:read', 'accounting:manage', 'invoices:write']),
     mfa: true,
   };
-  return { getConnectionMock, enqueueAccountingReconcileMock, writeRouteAuditMock, authState };
+  return { getConnectionMock, enqueueAccountingReconcileMock, writeRouteAuditMock, providerSupportsMock, authState };
 });
+// Honours the capability argument (QuickBooks supports everything) so the
+// per-route capability table can deny exactly one capability.
+const defaultProviderSupports = (id: string, _cap: string) => id === 'quickbooks';
 
 vi.mock('../../services/accounting/accountingConnectionService', () => ({
   getConnection: getConnectionMock,
@@ -73,7 +78,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
   // Xero W01 route gate: only QuickBooks is registered, configured and capable.
   findAccountingProvider: (id: string) => (id === 'quickbooks'
     ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
-  providerSupports: (id: string) => id === 'quickbooks',
+  providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap),
 }));
 
 vi.mock('../../services/accounting/accountingCustomerImport', () => ({
@@ -146,12 +151,29 @@ beforeEach(() => {
   authState.scope = 'partner';
   authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
+  providerSupportsMock.mockImplementation(defaultProviderSupports);
 });
 
 describe('POST /accounting/:provider/reconcile', () => {
   function reconcile(query = '') {
     return app().request(`/accounting/quickbooks/reconcile${query}`, { method: 'POST' });
   }
+
+  // Xero W01 review: pin the capability this route gates on (plan Task 15,
+  // "Route -> capability map"): "Sync now" pulls payments back.
+  it.each([['paymentPull']] as const)('answers 409 capability_unavailable when the provider lacks %s', async (capability) => {
+    providerSupportsMock.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+    getConnectionMock.mockResolvedValue(connectionRow());
+    enqueueAccountingReconcileMock.mockResolvedValue(true);
+    const res = await reconcile();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(providerSupportsMock).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+    expect(enqueueAccountingReconcileMock).not.toHaveBeenCalled();
+  });
 
   it('200 { enqueued: true } on the happy path, enqueues with trigger "manual", and audits', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());

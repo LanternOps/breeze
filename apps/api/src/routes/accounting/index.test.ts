@@ -44,6 +44,10 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       getConnection: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
       configError: vi.fn((): string | null => null),
+      // A vi.fn so the per-route capability table can assert the exact
+      // capability each route gates on; the registry mock's default
+      // implementation honours the capability argument.
+      providerSupports: vi.fn(),
       upsertConnection: vi.fn(),
       deleteConnection: vi.fn(async () => ({
         removed: true,
@@ -177,7 +181,7 @@ vi.mock('../../services/accounting/providerRegistry', () => {
   return {
     getAccountingProvider: vi.fn(() => qbo),
     findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : null),
-    providerSupports: (id: string, cap: string) => id === 'quickbooks' && (qbo.capabilities as Record<string, boolean>)[cap] === true,
+    providerSupports: (id: string, cap: string) => mocks.providerSupports(id, cap),
     accountingProviderDisplayName: (id: string) => ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? id,
     listRegisteredAccountingProviders: () => [qbo],
     LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
@@ -209,6 +213,11 @@ function exchangedTokens(realmId = 'realm-A') {
     refreshTokenExpiresAt: new Date(Date.now() + 8_640_000_000),
   };
 }
+
+const QBO_CAPABILITIES: Record<string, boolean> = {
+  connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+};
+const defaultProviderSupports = (id: string, cap: string) => id === 'quickbooks' && QBO_CAPABILITIES[cap] === true;
 
 async function runCallback(app: Hono, realmId = 'realm-A') {
   const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
@@ -243,6 +252,7 @@ describe('accounting routes', () => {
     mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
     mocks.resolveActiveConnectionRef.mockResolvedValue(null);
     mocks.configError.mockReturnValue(null);
+    mocks.providerSupports.mockImplementation(defaultProviderSupports);
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -1122,6 +1132,38 @@ describe('accounting routes', () => {
         .some((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toBe(false);
     });
   });
+  // Xero W01 review: pin the capability EACH route gates on (plan Task 15,
+  // "Route -> capability map"). The provider is registered and configured but
+  // lacks exactly that capability, so the route must answer 409
+  // capability_unavailable and must have asked the registry for that exact
+  // capability — a route gated on the wrong capability goes red here.
+  describe('per-route capability gate (Xero W01)', () => {
+    const jsonInit = (method: string, body: unknown) => ({
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    it.each([
+      ['GET /:provider (status)', 'connect', '/accounting/quickbooks', undefined],
+      ['GET /:provider/connect', 'connect', '/accounting/quickbooks/connect', undefined],
+      ['GET /:provider/callback', 'connect', '/accounting/quickbooks/callback?code=abc&realmId=realm-A&state=s', undefined],
+      ['POST /:provider/disconnect', 'connect', '/accounting/quickbooks/disconnect', { method: 'POST' }],
+      ['PATCH /:provider/settings', 'connect', '/accounting/quickbooks/settings', jsonInit('PATCH', { pushMode: 'manual' })],
+      ['POST /:provider/settings/refresh', 'connect', '/accounting/quickbooks/settings/refresh', { method: 'POST' }],
+    ] as const)('%s answers 409 capability_unavailable without %s', async (_route, capability, url, init) => {
+      mocks.providerSupports.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+      const res = await app.request(url, init);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+      expect(mocks.providerSupports).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(mocks.providerSupports).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+      expect(mocks.refreshRealmSettings).not.toHaveBeenCalled();
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    });
+  });
+
   describe('provider generalisation (Xero W01)', () => {
     async function startConnect(provider: 'quickbooks') {
       const res = await app.request(`/accounting/${provider}/connect`);

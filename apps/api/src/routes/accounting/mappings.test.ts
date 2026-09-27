@@ -106,6 +106,19 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 
+// The REAL registry, with providerSupports wrapped in a vi.fn that delegates to
+// the real one by default, so the per-route capability table can deny exactly
+// one capability and assert which capability the route asked for.
+const { providerSupportsMock, realProviderSupports } = vi.hoisted(() => ({
+  providerSupportsMock: vi.fn(),
+  realProviderSupports: { fn: (_id: string, _cap: string): boolean => false },
+}));
+vi.mock('../../services/accounting/providerRegistry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/accounting/providerRegistry')>();
+  realProviderSupports.fn = actual.providerSupports as (id: string, cap: string) => boolean;
+  return { ...actual, providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap) };
+});
+
 vi.mock('../../config/env', () => ({
   QBO_CLIENT_ID: 'client-id',
   QBO_CLIENT_SECRET: 'client-secret',
@@ -159,6 +172,40 @@ beforeEach(() => {
   authState.scope = 'partner';
   authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write', 'catalog:write']);
   authState.mfa = true;
+  providerSupportsMock.mockImplementation((id: string, cap: string) => realProviderSupports.fn(id, cap));
+});
+
+// Xero W01 review: pin the capability EACH route in this file gates on (plan
+// Task 15, "Route -> capability map"). The provider is registered and
+// configured but lacks exactly that capability: the route must answer 409
+// capability_unavailable and must have asked for that exact capability.
+describe('per-route capability gate (Xero W01)', () => {
+  const jsonInit = (method: string, body: unknown) => ({
+    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  it.each([
+    ['GET /:provider/mappings', 'mapping', '/accounting/quickbooks/mappings?entityType=org', undefined],
+    ['GET /:provider/income-accounts', 'mapping', '/accounting/quickbooks/income-accounts', undefined],
+    ['PUT /:provider/mappings', 'mapping', '/accounting/quickbooks/mappings', jsonInit('PUT', {
+      breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'confirmed', remoteEntityId: 'qb-1',
+    })],
+    ['POST /:provider/mappings/sync', 'mapping', '/accounting/quickbooks/mappings/sync', jsonInit('POST', {
+      breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
+    })],
+  ] as const)('%s answers 409 capability_unavailable without %s', async (_route, capability, url, init) => {
+    providerSupportsMock.mockImplementation((id: string, cap: string) => realProviderSupports.fn(id, cap) && cap !== capability);
+    const res = await app().request(url, init);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(providerSupportsMock).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+    expect(listMappingProposalsMock).not.toHaveBeenCalled();
+    expect(listRemoteIncomeAccountsForPartnerMock).not.toHaveBeenCalled();
+    expect(saveMappingDecisionMock).not.toHaveBeenCalled();
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
+  });
 });
 
 /**

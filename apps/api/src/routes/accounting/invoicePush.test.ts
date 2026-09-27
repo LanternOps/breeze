@@ -108,8 +108,11 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 // existing bulk tests drive exactly the path they always did.
 const { resolveActiveConnectionRefMock, providerSupportsMock } = vi.hoisted(() => ({
   resolveActiveConnectionRefMock: vi.fn(),
-  providerSupportsMock: vi.fn((id: string, _cap: string) => id === 'quickbooks'),
+  providerSupportsMock: vi.fn(),
 }));
+// Honours the capability argument (QuickBooks supports everything) so the
+// per-route capability table can deny exactly one capability.
+const defaultProviderSupports = (id: string, _cap: string) => id === 'quickbooks';
 vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>()),
   resolveActiveConnectionRef: resolveActiveConnectionRefMock,
@@ -225,6 +228,33 @@ beforeEach(() => {
   // The enqueue helper reports whether the queue ACCEPTED the job; the bulk
   // route counts on that, so the default must be a real acceptance.
   enqueueAccountingInvoicePushMock.mockResolvedValue(true);
+  providerSupportsMock.mockImplementation(defaultProviderSupports);
+});
+
+// Xero W01 review: pin the capability EACH route in this file gates on (plan
+// Task 15, "Route -> capability map"). The provider is registered and
+// configured but lacks exactly that capability: the route must answer 409
+// capability_unavailable and must have asked for that exact capability.
+describe('per-route capability gate (Xero W01)', () => {
+  it.each([
+    ['POST /:provider/invoices/:invoiceId/push', 'invoicePush', `/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' }],
+    ['POST /:provider/invoices/push-bulk', 'invoicePush', '/accounting/quickbooks/invoices/push-bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceIds: [INVOICE_ID] }),
+    }],
+    ['GET /:provider/remote-candidates', 'mapping', '/accounting/quickbooks/remote-candidates?entityType=org&q=Acme', undefined],
+  ] as const)('%s answers 409 capability_unavailable without %s', async (_route, capability, url, init) => {
+    providerSupportsMock.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+    const res = await app().request(url, init);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(providerSupportsMock).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+    expect(pushInvoiceToAccountingMock).not.toHaveBeenCalled();
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
