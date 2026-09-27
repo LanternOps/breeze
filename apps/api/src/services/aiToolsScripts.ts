@@ -654,7 +654,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: "Execute a system command on a device. list_processes, file_list, event_logs_list skip durable approval in auto-execute modes (audit logged); per-step mode requires inline confirmation. All other command types, including file_read, require full user approval.",
+      description: "Execute a system command on a device. list_processes/file_list/event_logs_list skip approval in auto-execute (audited); per-step needs inline confirm. Others, incl. file_read, need full approval. list_processes cpuPercent is per-core (100%=1 core).",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -669,7 +669,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             ],
             description: 'The type of command to execute'
           },
-          payload: { type: 'object', description: 'Command-specific parameters: serviceName (name alias) for service control; processName/pid for kill_process; path for file_read/file_list.' }
+          payload: {
+            type: 'object',
+            description: 'Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.',
+            properties: {
+              level: { type: ['string', 'number'], description: 'event_logs_query: severity — critical, error, warning, information (or "info"), verbose, or level number 1-5.' },
+            },
+          }
         },
         required: ['deviceId', 'commandType']
       }

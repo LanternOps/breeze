@@ -33,10 +33,10 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
-import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS } from '@breeze/shared/validators';
+import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape } from './aiToolSchemas';
+import { deliveryToolShape, executeCommandShape, setDeviceContextShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -991,7 +991,7 @@ export function scriptProposalToolDefinitions(
         content: z.string().min(1).max(65536),
         goal: z.string().min(1).max(2000),
         expectedEffect: z.string().min(1).max(2000),
-        verification: z.record(z.string(), z.unknown()),
+        verification: scriptVerificationClaimSchema,
         rollbackNote: z.string().max(2000).optional(),
         deviceIds: z.array(uuid).min(1).max(10),
         runAs: z.enum(['system', 'user']).optional(),
@@ -1658,16 +1658,7 @@ export function buildBreezeSdkTools(
     tool(
       'execute_command',
       registryDescription('execute_command'),
-      {
-        deviceId: uuid,
-        commandType: z.enum([
-          'list_processes', 'kill_process',
-          'list_services', 'start_service', 'stop_service', 'restart_service',
-          'file_list', 'file_read',
-          'event_logs_list', 'event_logs_query',
-        ]),
-        payload: z.record(z.string(), z.unknown()).optional(),
-      },
+      executeCommandShape,
       makeHandler('execute_command', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -2209,13 +2200,7 @@ export function buildBreezeSdkTools(
     tool(
       'set_device_context',
       registryDescription('set_device_context'),
-      {
-        deviceId: uuid,
-        contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
-        summary: z.string().min(1).max(255),
-        details: z.record(z.string(), z.unknown()).optional(),
-        expiresInDays: z.number().int().positive().max(365).optional(),
-      },
+      setDeviceContextShape,
       makeHandler('set_device_context', getAuth, onPreToolUse, onPostToolUse)
     ),
 
