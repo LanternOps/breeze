@@ -4,12 +4,23 @@ vi.mock('node:fs/promises', () => ({
   stat: vi.fn(async () => ({ size: 2 })),
 }));
 
-vi.mock('node:fs', () => ({
-  // `pipe` is a harmless passthrough default so the `.gz` branch's
-  // `rawStream.pipe(gunzip)` doesn't throw for tests that don't override
-  // this mock — those tests never inspect stream contents.
-  createReadStream: vi.fn(() => ({ on: vi.fn(), destroy: vi.fn(), pipe: vi.fn((dest: unknown) => dest) })),
-}));
+vi.mock('node:fs', async () => {
+  // The `.gz` branch pipes the raw read stream into a real zlib gunzip via
+  // `node:stream`'s `pipeline`, which needs a genuine stream interface
+  // (`.once`, `.pipe`, readable-state introspection, etc.) — a hand-rolled
+  // `{ on, destroy }` stub isn't enough. The default bytes must also be a
+  // VALID (if empty) gzip stream: many tests exercising other branches
+  // (capability/authorization refusals, etc.) happen to use `.gz`-suffixed
+  // remote paths and never override this mock, so a real gunzip is always
+  // attached and will actually try to decode whatever this returns — raw
+  // empty bytes fail zlib parsing asynchronously with an unhandled stream
+  // error those tests never listen for.
+  const { Readable } = await import('node:stream');
+  const { gzipSync } = await import('node:zlib');
+  return {
+    createReadStream: vi.fn(() => Readable.from(gzipSync(Buffer.alloc(0)))),
+  };
+});
 
 const resolveSnapshotProviderConfigMock = vi.fn();
 // FIFO queue of rows returned by successive `db.select().from().where().limit()`
@@ -394,6 +405,44 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       const [filePathArg] = (statMock as any).mock.calls[0];
       expect(filePathArg).toContain('archive-2025/snapshots/older/files/a.gz');
       expect(filePathArg).not.toContain('/current/');
+    });
+
+    it("R6 + #6489: an authorized external .gz reference is gunzipped from the ORIGIN-prefixed physical path, not left compressed", async () => {
+      // Regression guard for a plausible break the R6 test above can't catch
+      // on its own: R6 only asserts which path `stat()` was called with, but
+      // never reads the returned stream — so a bug that opened the correct
+      // origin-prefixed file yet fed the WRONG bytes into gunzip (or skipped
+      // gunzip entirely for external references) would pass R6 and still
+      // ship broken.
+      mockCurrentSnapshotLocal('store-1');
+      lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
+      lineageRows.push([{ id: 'file-row-1' }]); // membership
+      lineageRows.push([
+        {
+          originOrgId: 'org-1',
+          originDeviceId: 'device-1',
+          originStorageIdentity: 'store-1',
+          originStoragePrefix: 'archive-2025',
+        },
+      ]); // origin
+
+      const original = Buffer.from('origin-prefixed external reference payload for #6489');
+      (createReadStreamMock as any).mockImplementationOnce((requestedPath: string) => {
+        expect(requestedPath).toContain('archive-2025/snapshots/older/files/a.gz');
+        return Readable.from(gzipSync(original));
+      });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result.unavailable).toBe(false);
+      if (result.unavailable) throw new Error('unreachable');
+      expect(result.contentLength).toBeNull();
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of result.stream as unknown as AsyncIterable<Buffer>) {
+        chunks.push(chunk);
+      }
+      expect(Buffer.concat(chunks).equals(original)).toBe(true);
     });
 
     it('R7 (a): a sibling file of a referenced origin snapshot that is NOT itself in the index is refused', async () => {

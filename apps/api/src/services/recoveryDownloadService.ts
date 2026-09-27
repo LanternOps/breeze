@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { pipeline } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
@@ -327,10 +328,16 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     if (normalizedRemotePath.endsWith('.gz')) {
       const rawStream = createReadStream(filePath);
       const gunzip = createGunzip();
-      // A read error on the raw file (e.g. truncated mid-stream) must also
-      // surface as an explicit stream error, not a silently short gunzip.
-      rawStream.on('error', (error) => gunzip.destroy(error));
-      rawStream.pipe(gunzip);
+      // `pipeline` (not a bare `.pipe()`) so a failure on EITHER side closes
+      // the other: a corrupt/truncated gzip payload destroys `gunzip` but
+      // `.pipe()` alone never destroys its *source* in response, which would
+      // otherwise leak the open file descriptor from `createReadStream`
+      // until GC finalization — the exact case the "corrupt gzip" test
+      // below exercises. The callback below only needs to swallow the
+      // already-consumer-visible error (surfaced via `gunzip`'s own 'error'
+      // event, forwarded by the route handler's ReadableStream), not
+      // re-report it.
+      pipeline(rawStream, gunzip, () => {});
       return {
         unavailable: false,
         type: 'stream' as const,
