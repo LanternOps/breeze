@@ -37,14 +37,75 @@ describe('accountingJobDelay', () => {
     expect(rateLimitRetryAfterMs('rate_limited')).toBeNull();
   });
 
-  it('moves the job to delayed WITHOUT consuming an attempt', async () => {
-    const job = { moveToDelayed: vi.fn(async () => undefined), attemptsMade: 2 };
+  it('moves the job to delayed at now + Retry-After with its lock token, then throws DelayedError', async () => {
+    // That this consumes no attempt is BullMQ's behaviour, not this function's:
+    // proven against a real queue in accountingJobDelay.integration.test.ts.
+    const job = { moveToDelayed: vi.fn(async () => undefined) };
     const before = Date.now();
     await expect(delayJobForRateLimit({ job: job as any, token: 'tok' }, new Error('x'), 30_000)).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledTimes(1);
     const [ts, token] = job.moveToDelayed.mock.calls[0]! as unknown as [number, string];
     expect(token).toBe('tok');
     expect(ts).toBeGreaterThanOrEqual(before + 30_000);
-    expect(job.attemptsMade).toBe(2);
+    expect(ts).toBeLessThanOrEqual(Date.now() + 30_000);
+  });
+
+  it('a non-finite Retry-After waits the default instead of retrying immediately (F4)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+        const job = { moveToDelayed: vi.fn(async () => undefined) };
+        const before = Date.now();
+        await delayJobForRateLimit({ job: job as any, token: 't' }, new Error('x'), bad).catch(() => undefined);
+        const [ts] = job.moveToDelayed.mock.calls[0]! as unknown as [number];
+        expect(ts).toBeGreaterThanOrEqual(before + DEFAULT_RATE_LIMIT_DELAY_MS);
+        expect(ts).toBeLessThanOrEqual(Date.now() + DEFAULT_RATE_LIMIT_DELAY_MS);
+      }
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('the delay log line names the throttle message, its source and the provider operation (F2), after the move', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const cause = new AccountingProviderError({
+        kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks payment create', retryAfterMs: 5_000, throttleSource: 'local',
+      });
+      const err = new AccountingInvoicePushError('rate_limited', 429, 'Breeze is pacing requests to QuickBooks; retrying automatically', {
+        retryAfterMs: 5_000, throttleSource: 'local', cause,
+      });
+      const job = { name: 'push-invoice', id: 'j1', moveToDelayed: vi.fn(async () => undefined) };
+      await delayJobForRateLimit({ job: job as any, token: 't' }, err, 5_000).catch(() => undefined);
+      const line = warnSpy.mock.calls.map((c) => c.join(' ')).find((l) => l.includes('job delayed without consuming an attempt'));
+      expect(line).toBeDefined();
+      expect(line).toContain('message=Breeze is pacing requests to QuickBooks; retrying automatically');
+      expect(line).toContain('source=local');
+      expect(line).toContain('operation=QuickBooks payment create');
+      expect(line).toContain('jobId=j1');
+      expect(warnSpy.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(job.moveToDelayed.mock.invocationCallOrder[0]!);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('a failed moveToDelayed logs both errors, does NOT claim the job was delayed, and rethrows the move error (F5)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const moveErr = new Error('Missing lock for job j1');
+      const job = { name: 'push-invoice', id: 'j1', moveToDelayed: vi.fn(async () => { throw moveErr; }) };
+      const throttle = new AccountingProviderError({ kind: 'rate_limited', provider: 'quickbooks', operation: 'op', retryAfterMs: 5_000 });
+      await expect(delayJobForRateLimit({ job: job as any, token: 't' }, throttle, 5_000)).rejects.toBe(moveErr);
+      expect(warnSpy.mock.calls.some((c) => c.join(' ').includes('job delayed'))).toBe(false);
+      const line = errorSpy.mock.calls.map((c) => c.join(' ')).find((l) => l.includes('failed to delay throttled job'));
+      expect(line).toBeDefined();
+      expect(line).toContain('Missing lock for job j1');
+      expect(line).toContain(throttle.message);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   it('clamps an absurd Retry-After to 24h', async () => {
