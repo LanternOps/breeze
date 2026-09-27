@@ -220,6 +220,20 @@ func (r *run) winReattach(ctx context.Context) error {
 		}
 		r.volumes = live
 		r.state.Volumes = live
+		// 18b row 1: reclaim any drive letter a crashed earlier process left
+		// attached to OUR disk (winBoot's ESP letter, or a Format retry's
+		// temporary letter) — this process never held the release func for
+		// them, so unlike winTeardown's espLetterRelease path, the only way
+		// to find them is the live volume list itself. Warn-only: a letter
+		// that fails to release does not block the resume.
+		for _, v := range vols {
+			if v.DriveLetter == "" {
+				continue
+			}
+			if err := r.opts.WinSystem.UnmountVolume(v.DriveLetter + ":"); err != nil {
+				r.warn("reclaim leaked drive letter %s:: %v", v.DriveLetter, err)
+			}
+		}
 	}
 	if r.rootDir == "" && r.state.Completed[PhaseProvision] {
 		return r.winMountTree(ctx)
@@ -248,14 +262,11 @@ func (r *run) winTeardown() {
 		}
 		r.espLetterRelease = nil
 	}
-	for _, d := range []*string{&r.espDir, &r.recoveryDir} {
-		if *d == "" {
-			continue
+	if r.recoveryDir != "" {
+		if err := r.opts.WinSystem.UnmountVolume(r.recoveryDir); err != nil {
+			r.warn("unmount %s: %v", r.recoveryDir, err)
 		}
-		if err := r.opts.WinSystem.UnmountVolume(*d); err != nil {
-			r.warn("unmount %s: %v", *d, err)
-		}
-		*d = ""
+		r.recoveryDir = ""
 	}
 	if r.rootDir != "" {
 		if err := r.opts.WinSystem.UnmountVolume(r.rootDir); err != nil {

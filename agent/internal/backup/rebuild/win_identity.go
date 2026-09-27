@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -72,8 +71,8 @@ func winIdentity(_ context.Context, r *run) error {
 		if _, err := winhive.NewMachineGuid(r.hives["SOFTWARE"].Root()); err != nil {
 			return fmt.Errorf("identity: rotate MachineGuid: %w", err)
 		}
-		if err := os.Remove(filepath.Join(breeze, "secrets.yaml")); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("identity: delete secrets.yaml: %w", err)
+		if err := removeSecretsAndTemps(breeze); err != nil {
+			return fmt.Errorf("identity: %w", err)
 		}
 		return stripEnrollment(filepath.Join(breeze, "agent.yaml"))
 	default:

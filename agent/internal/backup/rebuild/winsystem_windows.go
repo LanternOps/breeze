@@ -67,6 +67,20 @@ type winSystemWindows struct{}
 // NewWinSystem is the real WinSystem.
 func NewWinSystem() WinSystem { return &winSystemWindows{} }
 
+func init() {
+	// hostWindowsDir (win_boot.go): the OS's own answer, never the
+	// SystemRoot environment variable (ruling D13/SECURITY). "" on a
+	// GetSystemWindowsDirectoryW failure — hostSystemTool's C:\Windows
+	// fallback then applies.
+	hostWindowsDir = func() string {
+		dir, err := windows.GetSystemWindowsDirectory()
+		if err != nil {
+			return ""
+		}
+		return dir
+	}
+}
+
 // attachedVHDX is the PROCESS-wide registry of VHDX attaches this process
 // holds: normalised path -> the virtual-disk handle the attach lives on.
 // Process-wide, not per WinSystem, because a non-permanent attach can only
@@ -611,19 +625,14 @@ func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, w
 	}
 }
 
-// Format runs format.com on a temporary drive letter: format.com refuses a
+// Format runs format.com (the host's own System32 binary, ruling C4 — see
+// formatVolume) on a temporary drive letter: format.com refuses a
 // \\?\Volume{GUID}\ path ("The given volume name does not have a mount
 // point or drive letter", lab-proven). The letter exists only for the
 // format.com call and is released on every path, so the run's
 // no-letters-during-the-run contract holds outside that window.
 func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) error {
-	return withTemporaryLetter(volumeGUIDPath, w.AssignLetter, func(letter string) error {
-		out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(letter+":", filesystem, label)...)
-		if err != nil {
-			return fmt.Errorf("format.com %s (%s:): %s: %w", volumeGUIDPath, letter, strings.TrimSpace(string(out)), err)
-		}
-		return nil
-	})
+	return formatVolume(ctx, w, w.AssignLetter, volumeGUIDPath, filesystem, label)
 }
 
 // MountVolume: SetVolumeMountPointW(dir\, \\?\Volume{GUID}\) — both

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -46,7 +47,10 @@ func validateOSState(_ context.Context, r *run) error {
 		filepath.Join("EFI", "Boot", "bootx64.efi"),
 	} {
 		if _, err := os.Stat(filepath.Join(r.espVolume, rel)); err != nil {
-			return fmt.Errorf("ESP is missing %s after boot phase", rel)
+			if errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("ESP is missing %s after boot phase", rel)
+			}
+			return fmt.Errorf("check ESP file %s: %w", rel, err)
 		}
 	}
 	h, err := r.opts.WinSystem.LoadHiveReadOnly(filepath.Join(r.espVolume, "EFI", "Microsoft", "Boot", "BCD"), hiveMountName(r, "BCD"))

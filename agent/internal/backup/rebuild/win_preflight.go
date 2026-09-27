@@ -159,12 +159,20 @@ func (r *run) hasNTDS() (isDC bool, err error) {
 	hivePath := filepath.Join(r.stateStaging, "registry", "SYSTEM")
 	if _, err := os.Stat(hivePath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			// 18b row 9e: genuinely cannot tell, never a silent "not a DC" —
+			// the offline state apply's own file-tree check (win_system_
+			// state.go) is the actual guard for this snapshot; this warning
+			// is so the operator knows the early preflight refusal did not
+			// run.
+			r.warn("no system-state artifact to check for a domain controller before restore; the file-tree check during restore is the only guard")
 			return false, nil
 		}
 		return false, fmt.Errorf("domain-controller check: %w", err)
 	}
 	mountName := "BRZ_" + targetKey(r.opts.Target) + "_PRE"
-	h, err := r.opts.WinSystem.LoadHive(hivePath, mountName)
+	// Read-only (18b row 8): this check only inspects the staged hive, it
+	// never edits it — same reasoning as validate's BCD load.
+	h, err := r.opts.WinSystem.LoadHiveReadOnly(hivePath, mountName)
 	if err != nil {
 		return false, fmt.Errorf("load SYSTEM hive for domain-controller check: %w", err)
 	}

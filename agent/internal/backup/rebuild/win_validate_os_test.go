@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
@@ -75,8 +76,8 @@ func TestValidateOSState_ClosesHivesThenChecksESPAndBCD(t *testing.T) {
 	if !bcdClosed {
 		t.Fatal("BCD hive handle not closed")
 	}
-	if r.espDir != "" || len(sys.mountLog) != 0 {
-		t.Fatalf("validate must not folder-mount the ESP: espDir=%q mounts=%v", r.espDir, sys.mountLog)
+	if len(sys.mountLog) != 0 {
+		t.Fatalf("validate must not folder-mount the ESP: mounts=%v", sys.mountLog)
 	}
 	for _, c := range sys.cmds {
 		if !strings.HasPrefix(c, "LoadHive") {
@@ -109,6 +110,30 @@ func TestValidateOSState_MissingESPFileFails(t *testing.T) {
 				t.Fatal("hives must be closed even when the ESP check fails")
 			}
 		})
+	}
+}
+
+// 18b row 9a: a Stat error other than "not exist" (a path component that
+// is a file, not a directory) must be wrapped and reported as itself, not
+// flattened into the generic "ESP is missing ..." message — that message
+// would be actively misleading for, say, a permissions error.
+func TestValidateOSState_ESPStatErrorIsWrappedNotFlattenedToMissing(t *testing.T) {
+	r, _, _ := newValidateOSRun(t) // no ESP files
+	// EFI/Microsoft/Boot exists as a FILE, so Stat(.../Boot/BCD) fails with
+	// ENOTDIR, not ErrNotExist.
+	bootPath := filepath.Join(r.espVolume, "EFI", "Microsoft", "Boot")
+	if err := os.MkdirAll(filepath.Dir(bootPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := validateOSState(context.Background(), r)
+	if err == nil || !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("err = %v, want it to wrap ENOTDIR", err)
+	}
+	if strings.Contains(err.Error(), "missing") {
+		t.Fatalf("err = %v, must not say \"missing\" for a non-ErrNotExist Stat failure", err)
 	}
 }
 
@@ -177,7 +202,7 @@ func TestValidateOSState_SkipBootOnlyClosesHives(t *testing.T) {
 // loaded or lettered, and the identity edits on the restored volume.
 func TestRun_WindowsVhdxFullChainCompletes(t *testing.T) {
 	withHostPlatformWindows(t)
-	t.Setenv("SystemRoot", testSystemRoot)
+	withHostWindowsDir(t, testSystemRoot)
 	opts, sys := winFakeOptions(t, t.TempDir())
 	opts.SkipBoot = false
 	opts.Identity = IdentityNew

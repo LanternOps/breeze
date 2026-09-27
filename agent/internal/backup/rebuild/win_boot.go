@@ -15,8 +15,10 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 )
 
-// bcdbootArgs: bcdboot <root>\Windows /s <L>: /f UEFI /v [/p]. /p keeps the
-// host's UEFI boot order untouched on a live host (vhdx: targets; ruling C6).
+// bcdbootArgs: bcdboot <root>\Windows /s <L>: /f UEFI /v [/p]. /p preserves
+// the existing UEFI firmware boot ORDER; it does not stop bcdboot creating
+// or updating a Windows Boot Manager entry. Proven only on a throwaway
+// UEFI VM (ruling C6) — never on KIT or a customer host.
 func bcdbootArgs(root, letter string, vhdx bool) []string {
 	args := []string{filepath.Join(root, "Windows"), "/s", letter + ":", "/f", "UEFI", "/v"}
 	if vhdx {
@@ -26,8 +28,8 @@ func bcdbootArgs(root, letter string, vhdx bool) []string {
 }
 
 // hostSystemTool is the absolute path of a tool in the rebuild HOST's own
-// %SystemRoot%\System32 (C:\Windows when SystemRoot is empty or not a
-// drive-absolute path; X:\Windows under WinPE).
+// Windows directory (C:\Windows when hostWindowsDir answers "" or something
+// not drive-absolute; X:\Windows under WinPE).
 //
 // Ruling C4 (SECURITY) supersedes the plan's "prefer the restored tree's
 // <root>\Windows\System32\bcdboot.exe, else PATH": bcdboot.exe and dism.exe
@@ -42,12 +44,22 @@ func bcdbootArgs(root, letter string, vhdx bool) []string {
 // The path is built with `\` explicitly (not filepath.Join) so it is the
 // same Windows path on every test host.
 func hostSystemTool(name string) string {
-	root := strings.TrimRight(os.Getenv("SystemRoot"), `\/`)
+	root := strings.TrimRight(hostWindowsDir(), `\/`)
 	if !isDriveAbsolute(root) {
 		root = `C:\Windows`
 	}
 	return root + `\System32\` + name
 }
+
+// hostWindowsDir is hostSystemTool's seam: the ACTUAL host Windows
+// directory reported by the OS (GetSystemWindowsDirectoryW —
+// winsystem_windows.go), never the SystemRoot environment variable. A
+// process already running on the box could have altered SystemRoot, which
+// would have pointed the "host" tool anywhere (ruling D13/SECURITY — closes
+// the same class of gap C4 already closes for PATH and the restored tree).
+// "" off Windows (winsystem_other.go); hostSystemTool's C:\Windows fallback
+// then applies.
+var hostWindowsDir func() string
 
 // isDriveAbsolute reports whether p is `<letter>:\...` (or `/`), with
 // something after the root.

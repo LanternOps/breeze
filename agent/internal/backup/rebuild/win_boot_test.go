@@ -28,7 +28,7 @@ const (
 // r.rootDir is only ever a tool argument (ruling C1).
 func newBootRun(t *testing.T, kind TargetKind) (*run, *fakeWinSystem) {
 	t.Helper()
-	t.Setenv("SystemRoot", testSystemRoot)
+	withHostWindowsDir(t, testSystemRoot)
 	sys := newFakeWinSystem(t.TempDir())
 	if err := sys.WriteGPT(1, "disk-guid", []WinGPTPartition{
 		{Number: 1, TypeGUID: layout.GUIDEFISystem, PartGUID: "esp", SizeBytes: 100 * MiB},
@@ -57,21 +57,34 @@ func TestBcdbootArgs(t *testing.T) {
 	}
 }
 
-// Ruling C4: host tools resolve from %SystemRoot%\System32 by absolute
-// path, never PATH; an empty or non-drive-absolute SystemRoot falls back to
-// C:\Windows.
+// Ruling C4: host tools resolve from the host's real Windows directory by
+// absolute path, never PATH; an empty or non-drive-absolute answer falls
+// back to C:\Windows.
 func TestHostSystemTool(t *testing.T) {
-	for _, tc := range []struct{ env, want string }{
+	for _, tc := range []struct{ dir, want string }{
 		{"", `C:\Windows\System32\bcdboot.exe`},
 		{`X:\Windows`, `X:\Windows\System32\bcdboot.exe`},
 		{`D:\WinNT\`, `D:\WinNT\System32\bcdboot.exe`},
 		{`Windows`, `C:\Windows\System32\bcdboot.exe`},
 		{`\\server\share\Windows`, `C:\Windows\System32\bcdboot.exe`},
 	} {
-		t.Setenv("SystemRoot", tc.env)
+		withHostWindowsDir(t, tc.dir)
 		if got := hostSystemTool("bcdboot.exe"); got != tc.want {
-			t.Errorf("SystemRoot=%q: got %q, want %q", tc.env, got, tc.want)
+			t.Errorf("hostWindowsDir=%q: got %q, want %q", tc.dir, got, tc.want)
 		}
+	}
+}
+
+// 18b row 6 / ruling D13: hostSystemTool must resolve from the real host
+// Windows directory (hostWindowsDir, backed by GetSystemWindowsDirectory —
+// winsystem_windows.go), NEVER the SystemRoot environment variable, which a
+// process already running on the box could have altered. A poisoned
+// SystemRoot must not reach the resolved path.
+func TestHostSystemTool_IgnoresSystemRootEnvVar(t *testing.T) {
+	t.Setenv("SystemRoot", `D:\evil`)
+	withHostWindowsDir(t, "")
+	if got, want := hostSystemTool("bcdboot.exe"), `C:\Windows\System32\bcdboot.exe`; got != want {
+		t.Fatalf("hostSystemTool = %q, want %q (SystemRoot must be ignored)", got, want)
 	}
 }
 
@@ -320,7 +333,7 @@ func TestWinBoot_SkipBoot(t *testing.T) {
 // letter.
 func TestRun_WindowsBootClosesHivesBeforeDism(t *testing.T) {
 	withHostPlatformWindows(t)
-	t.Setenv("SystemRoot", testSystemRoot)
+	withHostWindowsDir(t, testSystemRoot)
 	opts, sys := winFakeOptions(t, t.TempDir())
 	opts.SkipBoot = false
 	opts.DriverDirs = []string{`X:\drv`}

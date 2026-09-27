@@ -457,6 +457,16 @@ func (f *fakeWinSystem) UnmountVolume(dir string) error {
 	f.mu.Lock()
 	f.unmounts = append(f.unmounts, dir)
 	f.cmds = append(f.cmds, "UnmountVolume "+dir)
+	// A bare "L:" is a drive-letter release (18b row 1's leaked-letter
+	// reclaim), not a folder-mount unmount — drop the letters entry so a
+	// repeated reclaim (or AssignLetter reusing it) sees it as free.
+	if len(dir) == 2 && dir[1] == ':' {
+		for guidPath, letter := range f.letters {
+			if strings.EqualFold(letter+":", dir) {
+				delete(f.letters, guidPath)
+			}
+		}
+	}
 	f.mu.Unlock()
 	return nil
 }

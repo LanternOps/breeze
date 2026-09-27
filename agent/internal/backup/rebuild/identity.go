@@ -3,6 +3,7 @@ package rebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,8 +66,37 @@ func applyNewIdentity(root string) error {
 			_ = os.WriteFile(filepath.Join(root, "etc", "hostname"), []byte(name+"-restored\n"), 0o644)
 		}
 	}
-	_ = os.Remove(filepath.Join(root, "etc", "breeze", "secrets.yaml"))
+	if err := removeSecretsAndTemps(filepath.Join(root, "etc", "breeze")); err != nil {
+		return err
+	}
 	return stripEnrollment(filepath.Join(root, "etc", "breeze", "agent.yaml"))
+}
+
+// secretsAndTempFiles are every file an "identity: new" pass deletes from
+// the agent's config dir: secrets.yaml itself, plus the temp files a
+// crashed writer can leave behind for it (config.writeYAMLFile's ".tmp",
+// config.atomicWriteFile's ".partial") and for agent.yaml — whose own
+// content survives, since stripEnrollment edits it rather than deleting it.
+func secretsAndTempFiles(dir string) []string {
+	return []string{
+		filepath.Join(dir, "secrets.yaml"),
+		filepath.Join(dir, "secrets.yaml.tmp"),
+		filepath.Join(dir, "secrets.yaml.partial"),
+		filepath.Join(dir, "agent.yaml.tmp"),
+		filepath.Join(dir, "agent.yaml.partial"),
+	}
+}
+
+// removeSecretsAndTemps deletes secretsAndTempFiles(dir), warn-free but
+// error-propagating: a missing file is fine, anything else is not (18b
+// row 4; shared by both engines' "identity: new").
+func removeSecretsAndTemps(dir string) error {
+	for _, f := range secretsAndTempFiles(dir) {
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete %s: %w", filepath.Base(f), err)
+		}
+	}
+	return nil
 }
 
 // stripEnrollment deletes enrollmentKeys from an agent.yaml document,

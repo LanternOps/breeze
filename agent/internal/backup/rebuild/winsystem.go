@@ -80,7 +80,11 @@ type WinSystem interface {
 	LoadHive(hiveFile, mountName string) (winhive.Handle, error)
 	// LoadHiveReadOnly is LoadHive with every key opened KEY_READ, for a
 	// hive that is only inspected (validate's BCD store, whose ACL grants
-	// Administrators ReadKey only).
+	// Administrators ReadKey only; hasNTDS's preflight check, 18b row 8).
+	// KEY_READ restricts only the key HANDLES this package opens:
+	// RegLoadKeyW itself still mounts the hive file writable at the OS
+	// level, so the kernel may still touch its .LOG1/.LOG2 transaction logs
+	// even on a "read-only" load (18b row 9d).
 	LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error)
 	// UnloadStaleHives unloads every HKLM subkey starting with prefix,
 	// returning how many it found — cleanupLeftovers' leftover-mount sweep.

@@ -309,6 +309,9 @@ func TestNewComputerName_EdgeCases(t *testing.T) {
 		{"non-ASCII kept whole", "äbcdéfgh", "ÄBCDÉF-RESTORED"},
 		// Already suffixed: unchanged (upper-cased) even when over 15.
 		{"already suffixed over 15", "longservername-restored", "LONGSERVERNAME-RESTORED"},
+		// 18b row 9b: a base that truncates to end in "-" must not double up
+		// with the suffix's own leading "-".
+		{"truncated base ends in hyphen", "ABCDE-XYZ", "ABCDE-RESTORED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := NewComputerName(tc.in)

@@ -654,8 +654,22 @@ func TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink(t *testing.T)
 	if readlinkErr != nil {
 		t.Fatalf("readlink staged symlink: %v", readlinkErr)
 	}
-	if gotTarget != "/run/systemd/resolve/stub-resolv.conf" {
-		t.Fatalf("symlink target = %q, want %q", gotTarget, "/run/systemd/resolve/stub-resolv.conf")
+	// 18b row 10: the artifact's LinkTarget is POSIX-shaped (a Linux system-
+	// state symlink, e.g. /etc/resolv.conf -> systemd-resolved's stub file)
+	// and symlinkFile writes it to the reparse point VERBATIM — this is
+	// Linux target-string semantics, not a path this code ever interprets
+	// or joins. Windows' own os.Readlink normalizes the stored target to
+	// its native separator on the way back out (a Windows OS/Go runtime
+	// behavior, not a bug in this package), so the round-trip comparison
+	// on Windows must compare after ToSlash; the Linux assertion (and the
+	// literal on-disk bytes, which symlinkFile never touches) is unchanged.
+	wantTarget := "/run/systemd/resolve/stub-resolv.conf"
+	compareTarget := gotTarget
+	if runtime.GOOS == "windows" {
+		compareTarget = filepath.ToSlash(compareTarget)
+	}
+	if compareTarget != wantTarget {
+		t.Fatalf("symlink target = %q, want %q", gotTarget, wantTarget)
 	}
 }
 

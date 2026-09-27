@@ -224,7 +224,9 @@ func NewComputerName(current string) string {
 	if maxBase := netbiosMaxLen - len(restoredSuffix); len(base) > maxBase {
 		base = base[:maxBase]
 	}
-	return string(base) + restoredSuffix
+	// A truncation cut can leave a trailing "-"; without trimming it, the
+	// suffix's own leading "-" doubles up (18b row 9b).
+	return strings.TrimRight(string(base), "-") + restoredSuffix
 }
 
 // NewMachineGuid writes a fresh lower-case v4 GUID to

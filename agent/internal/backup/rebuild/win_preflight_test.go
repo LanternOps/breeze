@@ -250,6 +250,28 @@ func TestWinPreflight_RefusesEntriesFromOtherVolumes(t *testing.T) {
 	}
 }
 
+// 18b row 9e: a snapshot with a staging dir but no system-state/registry/
+// SYSTEM artifact (files-only, or the artifact was itself missing) means
+// hasNTDS genuinely cannot tell — it must not pass that silently as "not a
+// DC"; it must warn so the operator knows the DC refusal did not run.
+func TestHasNTDS_NoSystemStateArtifactWarns(t *testing.T) {
+	staging := t.TempDir() // no registry/SYSTEM under here
+	r := &run{opts: Options{WinSystem: newFakeWinSystem(t.TempDir())}, stateStaging: staging}
+	isDC, err := r.hasNTDS()
+	if err != nil || isDC {
+		t.Fatalf("hasNTDS = %v, %v; want false, nil (cannot tell, not a positive DC finding)", isDC, err)
+	}
+	found := false
+	for _, w := range r.warnings {
+		if strings.Contains(w, "system-state") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want one about the missing system-state artifact", r.warnings)
+	}
+}
+
 // Final-review Imp 5: hasNTDS fails closed — no staging dir is an error,
 // never "not a DC".
 func TestHasNTDS_EmptyStagingIsAnError(t *testing.T) {
@@ -276,5 +298,37 @@ func TestHasNTDS_CloseErrorIsReturned(t *testing.T) {
 	r := &run{opts: Options{WinSystem: sys, Target: Target{Kind: TargetVHDX, Path: "x.vhdx"}}, stateStaging: staging}
 	if _, err := r.hasNTDS(); err == nil || !strings.Contains(err.Error(), "access denied") {
 		t.Fatalf("hasNTDS err = %v, want the unload failure", err)
+	}
+}
+
+// 18b row 8: hasNTDS only inspects the staged SYSTEM hive — it never edits
+// it — so it must load it read-only, like validate's BCD check, not
+// read-write.
+func TestHasNTDS_LoadsHiveReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(staging, "registry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM"), []byte("hive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := newFakeWinSystem(dir)
+	h := winhive.NewFake()
+	sel, _ := h.CreateKey("Select")
+	_ = sel.SetDWORD("Default", 1)
+	_, _ = h.CreateKey("ControlSet001")
+	sys.hives["SYSTEM"] = h
+	target := Target{Kind: TargetVHDX, Path: "x.vhdx"}
+	r := &run{opts: Options{WinSystem: sys, Target: target}, stateStaging: staging}
+	if _, err := r.hasNTDS(); err != nil {
+		t.Fatal(err)
+	}
+	want := "LoadHiveReadOnly " + filepath.Join(staging, "registry", "SYSTEM") + " BRZ_" + targetKey(target) + "_PRE"
+	if got := countCalls(sys.cmds, "LoadHiveReadOnly"); len(got) != 1 || got[0] != want {
+		t.Fatalf("cmds = %v, want exactly %q", sys.cmds, want)
+	}
+	if got := countCalls(sys.cmds, "LoadHive "); len(got) != 0 {
+		t.Fatalf("cmds = %v, hasNTDS must never load read-write", sys.cmds)
 	}
 }

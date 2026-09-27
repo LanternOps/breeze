@@ -3,6 +3,8 @@ package bmr
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -376,5 +378,34 @@ func TestSelectOfflineHives_RenameOrder(t *testing.T) {
 	want := "SYSTEM.LOG1,SAM.LOG2,SOFTWARE,SAM,SYSTEM,SECURITY"
 	if got := strings.Join(order, ","); got != want {
 		t.Errorf("rename order = %s, want %s", got, want)
+	}
+}
+
+// 18b row 3: with no artifact logs, the final rename swap must do the
+// tree-present primaries first and the tree-missing primaries LAST. A failure
+// on the 2nd primary rename must leave config\SYSTEM absent: a filled
+// tree-missing slot would look "complete" to a retry and stop it re-entering
+// the fallback.
+func TestSelectOfflineHives_RenameFailureNeverLeavesCompleteMixedTree(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM", "SECURITY") // SYSTEM missing from the tree
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+
+	calls := 0
+	orig := renameHive
+	renameHive = func(oldpath, newpath string) error {
+		calls++
+		if calls == 2 {
+			return fmt.Errorf("simulated rename failure")
+		}
+		return orig(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameHive = orig })
+
+	if _, err := selectOfflineHives(root, staging); err == nil {
+		t.Fatal("want a rename failure error")
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("config\\SYSTEM stat err = %v, want the tree-missing hive still absent so a retry re-enters the fallback", err)
 	}
 }

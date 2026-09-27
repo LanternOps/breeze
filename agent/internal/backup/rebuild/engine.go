@@ -66,7 +66,6 @@ type run struct {
 	// folder mount point IS one.
 	rootVolume  string
 	espVolume   string                    // the ESP's volume path (W06c boot/validate)
-	espDir      string                    // W06c: folder mount point of the ESP (<staging>\esp) while mounted
 	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot, DISM); Linux uses rootMount instead
 	recoveryDir string                    // Windows Recovery folder mount (<staging>\recovery), "" if the layout has none
 	hives       map[string]winhive.Handle // W06c: loaded SYSTEM/SOFTWARE hives, kept open from restore until validate closes them
