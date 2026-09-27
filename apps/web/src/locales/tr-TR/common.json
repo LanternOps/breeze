@@ -2448,7 +2448,36 @@
         "requesting": "İsteniyor...",
         "requestApproval": "Onay iste",
         "waitingApprovalTitle": "PAM onayı bekleniyor",
-        "approvalPending": "Onay bekleniyor"
+        "approvalPending": "Onay bekleniyor",
+        "proven": {
+          "badge": "Kanıtlanmış çözüm",
+          "trackAllClients": "Müşterilerinizde {{attempts}} denemenin {{verified}} tanesinde işe yaradı",
+          "trackThisClient": "Bu müşteride {{attempts}} denemenin {{verified}} tanesinde işe yaradı"
+        },
+        "feedback": {
+          "worked": "İşe yaradı",
+          "didNotWork": "İşe yaramadı",
+          "recorded": "Geri bildirim kaydedildi",
+          "failed": "Geri bildirim kaydedilemedi"
+        },
+        "done": {
+          "button": "Tamamlandı",
+          "recorded": "Tamamlandı olarak işaretlendi — düzelme izleniyor",
+          "failed": "Tamamlandı olarak işaretlenemedi"
+        },
+        "outcome": {
+          "label": "Sonuç: {{state}}",
+          "state": {
+            "pending": "çalışıyor",
+            "awaitingRecovery": "düzelme izleniyor",
+            "holding": "düzeldi — kalıcılığı doğrulanıyor",
+            "verified": "düzeltme doğrulandı",
+            "failed": "sorunu düzeltmedi",
+            "recurred": "tekrarladı",
+            "inconclusive": "belirsiz",
+            "cancelled": "iptal edildi"
+          }
+        }
       }
     },
     "support": {

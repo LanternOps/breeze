@@ -2448,7 +2448,36 @@
         "requesting": "Richiesta in corso...",
         "requestApproval": "Richiedi l'approvazione",
         "waitingApprovalTitle": "In attesa dell'approvazione PAM",
-        "approvalPending": "In attesa di approvazione"
+        "approvalPending": "In attesa di approvazione",
+        "proven": {
+          "badge": "Correzione comprovata",
+          "trackAllClients": "Ha funzionato {{verified}} volte su {{attempts}} presso i tuoi clienti",
+          "trackThisClient": "Ha funzionato {{verified}} volte su {{attempts}} presso questo cliente"
+        },
+        "feedback": {
+          "worked": "Ha funzionato",
+          "didNotWork": "Non ha funzionato",
+          "recorded": "Feedback registrato",
+          "failed": "Impossibile registrare il feedback"
+        },
+        "done": {
+          "button": "Fatto",
+          "recorded": "Segnato come fatto — in attesa del ripristino",
+          "failed": "Impossibile segnare come fatto"
+        },
+        "outcome": {
+          "label": "Esito: {{state}}",
+          "state": {
+            "pending": "in esecuzione",
+            "awaitingRecovery": "in attesa del ripristino",
+            "holding": "ripristinato — verifica della stabilità",
+            "verified": "correzione verificata",
+            "failed": "non ha risolto il problema",
+            "recurred": "si è ripresentato",
+            "inconclusive": "non conclusivo",
+            "cancelled": "annullato"
+          }
+        }
       }
     },
     "support": {

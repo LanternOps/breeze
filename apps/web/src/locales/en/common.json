@@ -2448,7 +2448,36 @@
         "requesting": "Requesting...",
         "requestApproval": "Request approval",
         "waitingApprovalTitle": "Waiting for PAM approval",
-        "approvalPending": "Approval pending"
+        "approvalPending": "Approval pending",
+        "proven": {
+          "badge": "Proven fix",
+          "trackAllClients": "Worked {{verified}} of {{attempts}} times across your clients",
+          "trackThisClient": "Worked {{verified}} of {{attempts}} times for this client"
+        },
+        "feedback": {
+          "worked": "Worked",
+          "didNotWork": "Didn't work",
+          "recorded": "Feedback recorded",
+          "failed": "Could not record feedback"
+        },
+        "done": {
+          "button": "Done",
+          "recorded": "Marked done — watching for recovery",
+          "failed": "Could not mark done"
+        },
+        "outcome": {
+          "label": "Outcome: {{state}}",
+          "state": {
+            "pending": "running",
+            "awaitingRecovery": "watching for recovery",
+            "holding": "recovered — confirming it stays fixed",
+            "verified": "verified fixed",
+            "failed": "did not fix it",
+            "recurred": "came back",
+            "inconclusive": "inconclusive",
+            "cancelled": "cancelled"
+          }
+        }
       }
     },
     "support": {

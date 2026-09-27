@@ -2448,7 +2448,36 @@
         "requesting": "Anfrage...",
         "requestApproval": "Bitte um Genehmigung",
         "waitingApprovalTitle": "Warten auf PAM-Genehmigung",
-        "approvalPending": "Genehmigung steht aus"
+        "approvalPending": "Genehmigung steht aus",
+        "proven": {
+          "badge": "Bewährte Lösung",
+          "trackAllClients": "Hat {{verified}} von {{attempts}} Mal bei Ihren Kunden funktioniert",
+          "trackThisClient": "Hat {{verified}} von {{attempts}} Mal bei diesem Kunden funktioniert"
+        },
+        "feedback": {
+          "worked": "Hat funktioniert",
+          "didNotWork": "Hat nicht funktioniert",
+          "recorded": "Rückmeldung gespeichert",
+          "failed": "Rückmeldung konnte nicht gespeichert werden"
+        },
+        "done": {
+          "button": "Erledigt",
+          "recorded": "Als erledigt markiert — Wiederherstellung wird beobachtet",
+          "failed": "Konnte nicht als erledigt markiert werden"
+        },
+        "outcome": {
+          "label": "Ergebnis: {{state}}",
+          "state": {
+            "pending": "läuft",
+            "awaitingRecovery": "Wiederherstellung wird beobachtet",
+            "holding": "behoben — Stabilität wird bestätigt",
+            "verified": "Behebung bestätigt",
+            "failed": "hat das Problem nicht behoben",
+            "recurred": "ist zurückgekehrt",
+            "inconclusive": "nicht eindeutig",
+            "cancelled": "abgebrochen"
+          }
+        }
       }
     },
     "support": {
