@@ -6,6 +6,7 @@ import { showToast } from '../../shared/Toast';
 import {
   conversionFriendly,
   conversionPaths, convertBody, fetchPolicyPreview, readConvertResult, readRetireResult, retireBody,
+  unconvertibleReasonKeys,
   type ConversionPreviewItem, type ConvertResult, type PolicyConversionPreview, type PreviewProgress,
 } from './conversionApi';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -118,7 +119,6 @@ export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChange
   const blocked = preview?.blockedBy;
   const canConvert = load.status === 'ready' && !!preview && !blocked && deltas.length === 0 && busy === null;
   const convertible = (preview?.items ?? []).filter((it) => it.outcome === 'convertible');
-  const reasonKey = (reason?: string) => `monitoring:conversion.reasons.${(reason ?? '').replace(/^unconvertible:/, '') || 'unknown'}`;
 
   return (
     <section className="rounded-md border border-warning/40 bg-warning/5 p-4" data-testid="needs-conversion-panel">
@@ -180,7 +180,7 @@ export default function NeedsConversionPanel({ policyId, hasLegacyRows, onChange
                   )}
                 </div>
                 {item.outcome === 'unconvertible' && (
-                  <p className="mt-1 text-xs text-destructive">{t(/* i18n-dynamic */ [reasonKey(item.reason), 'monitoring:conversion.reasons.unknown'], { code: item.reason ?? '' })}</p>
+                  <p className="mt-1 text-xs text-destructive">{t(/* i18n-dynamic */ unconvertibleReasonKeys(item.reason))}</p>
                 )}
                 {item.notes.length > 0 && (
                   <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
