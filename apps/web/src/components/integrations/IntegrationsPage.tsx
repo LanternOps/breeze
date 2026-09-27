@@ -48,6 +48,7 @@ import "@/lib/i18n";
 import {
   ACCOUNTING_PROVIDER_IDS,
   isAccountingProviderId,
+  isAccountingProviderVisible,
   type AccountingProviderId,
   type AccountingProvidersResponse,
 } from "../../lib/accountingProviders";
@@ -120,9 +121,10 @@ const distributorSubTabs: { id: DistributorSubTab; labelKey: string }[] = [
 
 // Every accounting provider is listed statically so `#xero` / `#xero-items`
 // route to the Accounting tab. Whether a provider's panel actually renders is
-// decided by GET /accounting/providers (configured providers only), never by the
-// hash alone. Providers are picked from AccountingProviderCards; only the Stripe
-// payments entry renders as a sub-tab button.
+// decided by GET /accounting/providers (configured providers, plus the connected
+// one — see isAccountingProviderVisible), never by the hash alone. Providers
+// are picked from AccountingProviderCards; only the Stripe payments entry
+// renders as a sub-tab button.
 const accountingSubTabs: AccountingSubTab[] = [...ACCOUNTING_PROVIDER_IDS, "stripe"];
 
 // Each top-level tab links to its own dedicated help-doc page. Opening the doc
@@ -391,12 +393,15 @@ export default function IntegrationsPage({
   const selectedAccountingProvider = isAccountingProviderId(accountingSubTab)
     ? accountingSubTab
     : null;
-  // A provider's panel renders only when the instance has it configured — the
-  // same rule that decides which cards show — so a hand-typed `#xero` on an
+  // A provider's panel renders only when it is visible — configured on this
+  // instance, or holding the partner's active connection (so a connection whose
+  // provider config was removed can still be disconnected). This is the same
+  // predicate that decides which cards show, so a hand-typed `#xero` on an
   // instance without Xero configured is not a way into a dead panel.
-  const selectedProviderConfigured = !!selectedAccountingProvider
+  const selectedProviderVisible = !!selectedAccountingProvider
     && !!accountingProviders?.data.some(
-      (p) => p.id === selectedAccountingProvider && p.configured,
+      (p) => p.id === selectedAccountingProvider
+        && isAccountingProviderVisible(p, accountingProviders.activeConnection),
     );
   const selectAccountingSubTab = (id: AccountingSubTab) => {
     if (typeof window !== "undefined") window.location.hash = id;
@@ -544,7 +549,7 @@ export default function IntegrationsPage({
       )}
 
       {/* Accounting sub-navigation (hidden for org-scope users, who can't use
-          these APIs): one card per configured accounting provider, plus the
+          these APIs): one card per visible accounting provider, plus the
           separate Stripe payments sub-tab. */}
       {activeTab === "accounting" && !isOrgScoped && (
         <div className="space-y-3">
@@ -642,7 +647,7 @@ export default function IntegrationsPage({
           >
             {t("accountingProviders.loadFailed")}
           </p>
-        ) : selectedProviderConfigured ? (
+        ) : selectedProviderVisible ? (
           <AccountingConnectionPanel
             key={selectedAccountingProvider}
             provider={selectedAccountingProvider}

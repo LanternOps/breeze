@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   fetchAccountingProviders,
+  isAccountingProviderVisible,
   type AccountingProviderId,
   type AccountingProvidersResponse,
 } from '../../lib/accountingProviders';
@@ -19,7 +20,9 @@ interface Props {
 }
 
 /**
- * One card per accounting provider this instance has configured (Xero W01).
+ * One card per accounting provider this instance has configured, plus the
+ * provider holding the partner's connection even if it is no longer configured
+ * so it can still be disconnected (`isAccountingProviderVisible`, Xero W01).
  * A partner holds at most one accounting connection, so while one provider is
  * connected every other provider's card is greyed out and says which one to
  * disconnect first — the API would answer a connect there with 409
@@ -53,7 +56,7 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
   return (
     <div className="grid gap-3 sm:grid-cols-2" data-testid="accounting-provider-cards">
       {state.data
-        .filter((p) => p.configured)
+        .filter((p) => isAccountingProviderVisible(p, active))
         .map((p) => {
           const blocked = !!active && active.provider !== p.id;
           const isSelected = selected === p.id;

@@ -28,4 +28,17 @@ describe('AccountingProviderCards', () => {
     expect(xero.getAttribute('aria-disabled')).toBe('true');
     expect(xero.textContent).toContain('Disconnect QuickBooks first');
   });
+
+  it('shows an unconfigured provider\'s card while it holds the active connection, so it can still be disconnected', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'quickbooks', displayName: 'QuickBooks', configured: false, capabilities: caps },
+      { id: 'xero', displayName: 'Xero', configured: false, capabilities: caps },
+    ], activeConnection: { provider: 'quickbooks', status: 'connected' } }));
+    render(<AccountingProviderCards selected="quickbooks" onSelect={() => {}} />);
+    const qbo = await screen.findByTestId('accounting-provider-card-quickbooks');
+    expect(qbo.getAttribute('aria-disabled')).toBe('false');
+    expect(qbo.textContent).toContain('Connected');
+    // An unconfigured provider that is NOT the active connection stays hidden.
+    expect(screen.queryByTestId('accounting-provider-card-xero')).toBeNull();
+  });
 });

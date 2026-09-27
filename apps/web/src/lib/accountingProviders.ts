@@ -38,9 +38,29 @@ export interface AccountingProviderSummary {
   configured: boolean;
   capabilities: Record<AccountingCapability, boolean>;
 }
+export interface AccountingActiveConnection {
+  provider: AccountingProviderId;
+  status: string;
+}
 export interface AccountingProvidersResponse {
   data: AccountingProviderSummary[];
-  activeConnection: { provider: AccountingProviderId; status: string } | null;
+  activeConnection: AccountingActiveConnection | null;
+}
+
+/**
+ * Whether a provider's card and connection panel render. A provider shows when
+ * the instance has it configured OR when it holds the partner's active
+ * connection: an operator can remove a provider's env config while partners
+ * are still connected, and the API keeps status + disconnect working in that
+ * state (ruling R8) — hiding the provider would strand the connection with no
+ * way to disconnect it. The single predicate for AccountingProviderCards and
+ * IntegrationsPage, so the card row and the panel gate can never disagree.
+ */
+export function isAccountingProviderVisible(
+  summary: Pick<AccountingProviderSummary, 'id' | 'configured'>,
+  activeConnection: AccountingActiveConnection | null | undefined,
+): boolean {
+  return summary.configured || activeConnection?.provider === summary.id;
 }
 
 /** GET /accounting/providers. `null` on 401/403, any other non-2xx, a network
