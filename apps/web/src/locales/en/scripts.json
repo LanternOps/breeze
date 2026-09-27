@@ -747,7 +747,9 @@
       "lastHour": "Last Hour",
       "lastDay": "Last 24 Hours",
       "lastWeek": "Last 7 Days",
-      "lastMonth": "Last 30 Days"
+      "lastMonth": "Last 30 Days",
+      "statusLabel": "Status",
+      "dateLabel": "Date range"
     },
     "status": {
       "pending": "Pending",
