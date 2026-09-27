@@ -262,9 +262,19 @@ async function resolveOpenAlerts(orgId: string, complianceRuleId: string, device
   }
 }
 
+function warnMalformed(kind: string, orgId: string, payload: ConfigCompliancePayload): void {
+  console.warn(
+    `[configComplianceAlertBridge] dropping ${kind} compliance event with no deviceId/ruleId `
+    + `(org ${orgId}, rule ${payload.configPolicyComplianceRuleId ?? 'NULL'}, device ${payload.deviceId ?? 'NULL'})`,
+  );
+}
+
 export async function handleConfigComplianceViolation(orgId: string, payload: ConfigCompliancePayload): Promise<void> {
   const { configPolicyComplianceRuleId: complianceRuleId, deviceId } = payload;
-  if (!complianceRuleId || !deviceId) return;
+  if (!complianceRuleId || !deviceId) {
+    warnMalformed('violation', orgId, payload);
+    return;
+  }
 
   const rule = await loadComplianceRule(complianceRuleId);
   if (!rule) return; // Rule deleted since the evaluation — nothing to alert on.
@@ -279,9 +289,19 @@ export async function handleConfigComplianceViolation(orgId: string, payload: Co
   }
 
   const persisted = await persistedCompliance(rule, deviceId);
-  if (persisted?.status !== 'non_compliant') {
-    // Stale or reordered violation: the persisted evaluation has moved on (or
-    // was never written). Creating an alert here would strand it.
+  if (!persisted) {
+    // The evaluator upserts this row BEFORE publishing, so a missing row means
+    // the key no longer lines up (rule renamed, device purged) — or the upsert
+    // contract broke, which would silently stop every compliance alert.
+    console.warn(
+      `[configComplianceAlertBridge] no persisted compliance row for rule ${rule.id} `
+      + `("${rule.name}", link ${rule.featureLinkId}) on device ${deviceId}; not alerting`,
+    );
+    return;
+  }
+  if (persisted.status !== 'non_compliant') {
+    // Stale or reordered violation: a newer evaluation has moved on. Creating an
+    // alert here would strand it with no later event to clear it.
     return;
   }
 
@@ -312,7 +332,10 @@ export async function handleConfigComplianceViolation(orgId: string, payload: Co
 
 export async function handleConfigComplianceCompliant(orgId: string, payload: ConfigCompliancePayload): Promise<void> {
   const { configPolicyComplianceRuleId: complianceRuleId, deviceId } = payload;
-  if (!complianceRuleId || !deviceId) return;
+  if (!complianceRuleId || !deviceId) {
+    warnMalformed('compliant', orgId, payload);
+    return;
+  }
 
   // Resolution does not need the compliance rule to still exist: a deleted rule
   // must still be able to clear what it raised. The org-owned alert rule is

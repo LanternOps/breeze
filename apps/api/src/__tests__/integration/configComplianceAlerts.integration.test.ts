@@ -46,6 +46,7 @@ import {
   alertRules,
   alerts,
   alertTemplates,
+  automationPolicyCompliance,
   configPolicyAssignments,
   configPolicyComplianceRules,
   configPolicyFeatureLinks,
@@ -279,6 +280,108 @@ describe('configuration-policy compliance → alerts (#6669)', () => {
 
     // Retried delivery of the older violation lands after the compliant one.
     await deliver(staleViolation);
+    expect(await openAlertCount(device.id)).toBe(0);
+  });
+
+  async function setEnforcement(ruleId: string, enforcementLevel: Enforcement) {
+    await withSystemDbAccessContext(() => db
+      .update(configPolicyComplianceRules)
+      .set({ enforcementLevel })
+      .where(eq(configPolicyComplianceRules.id, ruleId)));
+  }
+
+  runDb('an event redelivered under a foreign org never raises an alert there (ownership check)', async () => {
+    const partner = await createPartner();
+    const otherPartner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const sibling = await createOrganization({ partnerId: partner.id });
+    const foreign = await createOrganization({ partnerId: otherPartner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    // Partner-wide policy: reaches `org` (same partner), never `foreign`.
+    await seedCompliancePolicy({ orgId: null, partnerId: partner.id }, 'warn', { level: 'partner', targetId: partner.id });
+
+    const { delivered } = await evaluateAndDeliver(device.id);
+    expect(await alertsForDevice(device.id)).toHaveLength(1);
+
+    // Same payload, persisted row still non_compliant — only the ownership
+    // check stands between this event and an alert under the foreign org.
+    await deliver({ ...delivered[0]!, orgId: foreign!.id });
+    const rows = await alertsForDevice(device.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.orgId).toBe(org!.id);
+
+    // Org-owned policy: a sibling org under the SAME partner is still refused.
+    const siblingSite = await createSite({ orgId: sibling!.id });
+    const siblingDevice = await seedDevice(sibling!.id, siblingSite!.id);
+    await seedCompliancePolicy({ orgId: sibling!.id, partnerId: null }, 'warn', { level: 'organization', targetId: sibling!.id });
+    const siblingRun = await evaluateAndDeliver(siblingDevice.id);
+    const siblingViolation = siblingRun.delivered.find((e) => e.type === 'policy.violation'
+      && (e.payload as { configPolicyComplianceRuleName?: string }).configPolicyComplianceRuleName?.startsWith(`Keep ${APP_NAME}`)
+      && siblingRun.results.some((r) => r.complianceRuleId === (e.payload as { configPolicyComplianceRuleId?: string }).configPolicyComplianceRuleId));
+    expect(siblingViolation).toBeDefined();
+    const before = (await alertsForDevice(siblingDevice.id)).length;
+    await deliver({ ...siblingViolation!, orgId: org!.id });
+    expect(await alertsForDevice(siblingDevice.id)).toHaveLength(before);
+  });
+
+  runDb('a compliant event backed by a persisted evaluation ERROR does not resolve the alert', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    const { delivered } = await evaluateAndDeliver(device.id);
+    expect(await openAlertCount(device.id)).toBe(1);
+
+    // The evaluator publishes policy.compliant for status 'error' too.
+    await withSystemDbAccessContext(() => db
+      .update(automationPolicyCompliance)
+      .set({ status: 'error' })
+      .where(eq(automationPolicyCompliance.deviceId, device.id)));
+    await deliver({ ...delivered[0]!, type: 'policy.compliant', payload: { ...delivered[0]!.payload, status: 'error' } });
+    expect(await openAlertCount(device.id)).toBe(1);
+
+    // Control: the same event against a persisted `compliant` row does resolve.
+    await withSystemDbAccessContext(() => db
+      .update(automationPolicyCompliance)
+      .set({ status: 'compliant' })
+      .where(eq(automationPolicyCompliance.deviceId, device.id)));
+    await deliver({ ...delivered[0]!, type: 'policy.compliant' });
+    expect(await openAlertCount(device.id)).toBe(0);
+  });
+
+  runDb('downgrading a rule to monitor resolves the alert it already raised', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    const seeded = await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    await evaluateAndDeliver(device.id);
+    expect(await openAlertCount(device.id)).toBe(1);
+
+    await setEnforcement(seeded.ruleId, 'monitor');
+    const { results } = await evaluateAndDeliver(device.id);
+    expect(results[0]!.status).toBe('non_compliant'); // still failing — only the level changed
+    expect(await openAlertCount(device.id)).toBe(0);
+  });
+
+  runDb('a deleted compliance rule still clears the alert it raised', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    const seeded = await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    const { delivered } = await evaluateAndDeliver(device.id);
+    expect(await openAlertCount(device.id)).toBe(1);
+
+    await withSystemDbAccessContext(() => db
+      .delete(configPolicyComplianceRules)
+      .where(eq(configPolicyComplianceRules.id, seeded.ruleId)));
+    await deliver({ ...delivered[0]!, type: 'policy.compliant' });
     expect(await openAlertCount(device.id)).toBe(0);
   });
 });
