@@ -67,7 +67,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id' },
-  discoveryJobs: { id: 'discoveryJobs.id' },
+  discoveryJobs: { id: 'discoveryJobs.id', status: 'discoveryJobs.status' },
   discoveredAssets: {
     id: 'discoveredAssets.id',
     orgId: 'discoveredAssets.orgId',
@@ -177,6 +177,8 @@ function updateChain(label: string) {
 describe('processDispatchScan topology dispatch authority (D7)', () => {
   const DATA = { type: 'dispatch-scan' as const, jobId: 'job-1', profileId: 'profile-1', orgId: 'org-1', siteId: 'site-1', agentId: 'agent-1' };
   const PROFILE_ROW = { id: 'profile-1', subnets: ['192.0.2.0/24'], methods: ['snmp'] };
+  // main #7199: loadDispatchScanInputs re-reads the job's live status first.
+  const JOB_ROW_SCHEDULED = { status: 'scheduled' };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
   const BLOCK = { acceptedAdjacencyVersions: [2], producerEpoch: 'e'.repeat(64), sourceIdentity: 'o:s:discovery:d', deadline: '2026-11-01T00:15:00.000Z',
     protocols: ['lldp', 'cdp', 'fdb', 'interfaces'], contexts: ['default'], expectedIntervalSeconds: 86400 };
@@ -186,6 +188,7 @@ describe('processDispatchScan topology dispatch authority (D7)', () => {
     vi.clearAllMocks();
     ctxState.depth = 0; ctxState.events = []; sent = undefined;
     mockDb.select
+      .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
       .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never)
       .mockReturnValueOnce(selectLimitChain([VALID_AGENT_ROW], 'agentValidateSelect') as never);
     mockDb.update.mockReturnValue(updateChain('statusUpdate') as never);
