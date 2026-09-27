@@ -123,6 +123,18 @@ describe('OverflowTabs', () => {
 
       expect(screen.getByTestId('t-a').getAttribute('aria-controls')).toBe(overflowPanelId('a', 't-'));
     });
+
+    // axe (aria-required-children): role="tablist" must contain only
+    // role="tab" children. The "More" trigger is a menu-disclosure button,
+    // not a tab, so it must sit outside the tablist rather than as a child
+    // of it.
+    it('keeps the "More" trigger outside the tablist', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+
+      const tablist = screen.getByRole('tablist');
+      const more = screen.getByText('More');
+      expect(tablist.contains(more)).toBe(false);
+    });
   });
 
   describe('with a wide (all-tabs-visible) layout — roving focus', () => {

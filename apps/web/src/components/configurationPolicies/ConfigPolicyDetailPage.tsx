@@ -29,7 +29,7 @@ import { cn } from "@/lib/utils";
 import { useJwtClaims } from "@/lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useHashTab } from "@/lib/useHashState";
-import { OverflowTabs } from "../shared/OverflowTabs";
+import { OverflowTabs, overflowPanelId, overflowTabId } from "../shared/OverflowTabs";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -537,6 +537,17 @@ export default function ConfigPolicyDetailPage({
         onTabChange={(id) => selectTab(id as Tab)}
       />
 
+      {/* Tab panel: exactly one of the activeTab-gated blocks below renders
+          at a time, so this single wrapper always matches whichever tab
+          button's aria-controls is currently pointing at it (axe:
+          aria-valid-attr-value / aria-required-children — #7179). */}
+      <div
+        role="tabpanel"
+        id={overflowPanelId(activeTab)}
+        aria-labelledby={overflowTabId(activeTab)}
+        tabIndex={-1}
+        className="space-y-6"
+      >
       {/* Overview Tab */}
       {activeTab === "overview" && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -755,6 +766,7 @@ export default function ConfigPolicyDetailPage({
             partnerId={policy.partnerId}
           />
         )}
+      </div>
     </div>
   );
 }

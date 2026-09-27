@@ -328,39 +328,45 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
 
   return (
     <div ref={containerRef} className="border-b">
-      <nav
-        ref={navRef as React.RefObject<HTMLElement>}
-        role="tablist"
-        className={`-mb-px flex items-center gap-3 ${measured ? '' : 'invisible'}`}
-      >
-        {visibleTabs.map((tab, index) => {
-          const isActive = activeTab === tab.id;
-          const tabId = overflowTabId(tab.id, testIdPrefix);
-          return (
-            <span key={tab.id} className="contents">
-              {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
-              <button
-                type="button"
-                id={tabId}
-                role="tab"
-                aria-selected={isActive}
-                aria-controls={overflowPanelId(tab.id, testIdPrefix)}
-                tabIndex={tab.id === rovingTabId ? 0 : -1}
-                title={tab.title}
-                data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
-                ref={(el) => { tabButtonRefs.current[tab.id] = el; }}
-                onClick={() => onTabChange(tab.id)}
-                onKeyDown={(e) => handleTabKeyDown(e, index)}
-                className={`${tabClass(isActive)} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
-              >
-                {tab.icon}
-                {tab.label}
-                <CountBadge count={tab.count} testId={testIdPrefix ? `${testIdPrefix}${tab.id}-count` : undefined} />
-                {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
-              </button>
-            </span>
-          );
-        })}
+      {/* The "More" trigger is a menu-disclosure button, not a tab, so it
+          must sit as a sibling of the tablist rather than inside it — a
+          role="tablist" is only allowed to contain role="tab" children
+          (axe: aria-required-children). */}
+      <div className={`-mb-px flex items-center gap-3 ${measured ? '' : 'invisible'}`}>
+        <nav
+          ref={navRef as React.RefObject<HTMLElement>}
+          role="tablist"
+          className="flex items-center gap-3"
+        >
+          {visibleTabs.map((tab, index) => {
+            const isActive = activeTab === tab.id;
+            const tabId = overflowTabId(tab.id, testIdPrefix);
+            return (
+              <span key={tab.id} className="contents">
+                {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+                <button
+                  type="button"
+                  id={tabId}
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-controls={overflowPanelId(tab.id, testIdPrefix)}
+                  tabIndex={tab.id === rovingTabId ? 0 : -1}
+                  title={tab.title}
+                  data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
+                  ref={(el) => { tabButtonRefs.current[tab.id] = el; }}
+                  onClick={() => onTabChange(tab.id)}
+                  onKeyDown={(e) => handleTabKeyDown(e, index)}
+                  className={`${tabClass(isActive)} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                  <CountBadge count={tab.count} testId={testIdPrefix ? `${testIdPrefix}${tab.id}-count` : undefined} />
+                  {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
+                </button>
+              </span>
+            );
+          })}
+        </nav>
         {overflowTabs.length > 0 && (
           <div ref={moreRef} className="relative">
             <button
@@ -432,7 +438,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
             )}
           </div>
         )}
-      </nav>
+      </div>
     </div>
   );
 }

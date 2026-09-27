@@ -10,6 +10,20 @@ describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
   beforeEach(() => onSend.mockClear());
 
+  // axe (aria-allowed-attr): aria-selected is only valid on an element with
+  // role="tab" (or an element whose role implies it); these buttons carried
+  // aria-selected with no role at all.
+  it('gives the mode buttons role="tab" inside a role="tablist" wrapper', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+    const reply = screen.getByTestId('ticket-composer-tab-reply');
+    const internal = screen.getByTestId('ticket-composer-tab-internal');
+    expect(reply.getAttribute('role')).toBe('tab');
+    expect(internal.getAttribute('role')).toBe('tab');
+    const tablist = reply.closest('[role="tablist"]');
+    expect(tablist).not.toBeNull();
+    expect(internal.closest('[role="tablist"]')).toBe(tablist);
+  });
+
   it('defaults to public reply mode', () => {
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);
     expect(screen.getByTestId('ticket-composer-send')).toHaveTextContent('Send reply');
