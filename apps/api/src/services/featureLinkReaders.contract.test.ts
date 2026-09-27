@@ -86,6 +86,13 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // Authored-vs-effective split inside: loadPolicyLocalPatchConfig reads the
   // view, the reference/ownership lookups stay authored. Each query is marked.
   'services/configPolicyPatching.ts',
+  // #6669 — ownership lookup only: joins a compliance rule to the ONE authored
+  // link it hangs on (feature_link_id) to find the policy that owns it, then
+  // checks that owner against the device's org. Through the view one link id
+  // maps to the parent AND every inheriting child, so the owner check would
+  // pick an arbitrary row. Which rules apply to a device is decided upstream by
+  // resolveComplianceRulesForDevice; this never decides what a device gets.
+  'services/configComplianceAlertBridge.ts',
   // Evidence naming for RCA output only — never decides what a device gets.
   'services/alertCorrelationRca.ts',
   // AI tools operate on a policy's own links (create/update/remove/list).
