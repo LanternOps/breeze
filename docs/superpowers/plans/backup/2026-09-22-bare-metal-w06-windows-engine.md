@@ -10669,16 +10669,34 @@ func (r *run) ensureWinHives() error
 func (r *run) closeWinHives() error
 func (r *run) diskPartitionGUIDs() (root string, all []string, err error)
 func rootIsBitLocker(r *run) bool
-func resolveBcdboot(r *run) (path string, hostFallback bool, err error)
+func hostSystemTool(name string) string // host %SystemRoot%\System32\<name>, absolute (ruling C4; no restored-tree or PATH resolution)
+func runHostTool(ctx context.Context, r *run, name string, args ...string) (out []byte, exe string, err error)
 func bcdbootArgs(root, letter string, vhdx bool) []string
-func ensureBootx64(espDir string) error
+func ensureBootx64(espVolume string) error // ESP VOLUME path, never a folder mount (ruling C1)
 type postRestoreActions struct{ SchemaVersion int; BitLocker *postRestoreBitLocker; WinRE postRestoreWinRE }
-// run struct addition: controlSets []string
+// run struct addition: controlSets []string (Select\Default first, then Current)
+
+// agent/internal/backup/winhive (windows; stub elsewhere)
+func LoadReadOnly(hiveFile, mountName string) (Handle, error) // KEY_READ handles; BCD-Template ACL denies KEY_ALL_ACCESS
+
+// agent/internal/backup/rebuild WinSystem seam addition
+LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error)
 ```
+
+(Refreshed 2026-09-26, ruling C-D1: this list originally named `resolveBcdboot` — restored tree's bcdboot first, host fallback — which ruling C4 replaced before merge.)
 
 ---
 
-## Part D — W06d (PR 4, "Closes #5499")
+## Part D — W06d (PR 4, "Closes #7183")
+
+**Tracking (2026-09-26).** Wave #5499 closed when W06c (#6928) merged, so W06d is tracked as its own wave, #7183 (key W10 in `get_feature_status`), on branch `feature/5493-bare-metal-boot-media/wave-7183`. PR 4 closes #7183, not #5499.
+
+**W06d pre-flight: Part C final-review blockers (2026-09-24).** These must land before any Windows DR host is enabled. They come before the API/web tasks below:
+1. Lab-verify that host `dism.exe /Image:<root> /Add-Driver` and host `bcdboot.exe` load no code from the offline image (DISM log servicing-stack path; Procmon image loads under the root mount). If either does, refuse `--drivers` on a live host and leave injection to WinPE (W07).
+2. Reclaim an ESP drive letter left by a killed run: after `winReattach`, delete every `X:\` mount point of the ESP volume, and run `dism /Cleanup-Mountpoints`. Lab row: kill during DISM, then resume.
+3. Run the real-VHDX test as LocalSystem (`psexec -s` or through the agent). Every native run so far used elevated Administrator.
+4. Boot the rebuilt VHDX in a Gen2 Hyper-V VM. On the real seam, assert `\DosDevices\C:` == the rebuilt root GUID, MachineGuid rotated, Tcpip hostname, `secrets.yaml` gone.
+The remaining minors (`/p` comment wording, fallback rename order, `secrets.yaml.tmp`, `format.com` absolute path, `GetSystemWindowsDirectory`, ...) are in the SDD ledger's `followups-partC.md`.
 
 **Depends on:** W06a/b/c on this same wave for `Result.Platform`, `Result.VMCreated`
 (`types.go` additions, Part 0 §1), and `agent/cmd/breeze-backup/exec_bare_metal_rebuild.go`'s
@@ -12242,11 +12260,13 @@ partition's GUID (`DMIO:ID:` + the 16-byte mixed-endian GUID exactly as
 deleted; `\??\Volume{…}` values are left untouched.
 
 `bcdboot <root>\Windows /s <ESP letter>: /f UEFI /v` regenerates the EFI
-system partition from the restored tree's own `bcdboot.exe` when present,
-falling back to the host's with a warning. For a VHDX target on a live
-host, `/p` is added to preserve the host's own UEFI firmware boot entries
-— proven unchanged before/after by the lab run in §11. The captured BCD
-store (`system-state/boot/bcd_export`) is never imported.
+system partition. It always runs the rebuild host's own `bcdboot.exe`, by
+absolute path from `%SystemRoot%\System32`. Nothing from the restored tree is
+ever executed, and there is no fallback: a host without bcdboot fails the
+phase. The guest's boot files are still copied from `<root>\Windows`. For a
+VHDX target on a live host, `/p` is added so bcdboot keeps the existing order
+of the host's UEFI firmware boot entries. The captured BCD store
+(`system-state/boot/bcd_export`) is never imported.
 
 A BitLocker-protected source restores in plaintext. The phase writes a
 post-restore-actions intent file rather than re-encrypting immediately —
@@ -12371,7 +12391,7 @@ grep -c "^### 6.1 Windows offline state apply" docs/superpowers/specs/backup/202
 - [ ] **Step 3: PR.**
 
 ```
-Closes #5499
+Closes #7183
 
 Windows whole-machine recovery: platform-matched rebuild hosts, drive-letter
 absolute paths across the rebuild command/DR/VM-restore schemas, per-host-OS
@@ -12382,7 +12402,7 @@ snapshot platform, i18n across all locales, docs, five follow-up issues for
 what's deliberately out of scope, and a proof run on the KIT lab (WIN-A
 whole-machine snapshot → native VHDX → VM boots; host NVRAM unchanged).
 
-This is PR 4 of 4 on wave #5499 (W06a agent fidelity/guards, W06b engine
+This is PR 4 of 4 for W06 (#5499 → W06d tracked as #7183; W06a agent fidelity/guards, W06b engine
 core, W06c OS state, W06d this PR). Depends on all three merging first.
 
 One independent review round is expected before merge, per this repo's
@@ -12452,4 +12472,4 @@ since W06a/b/c land on branches this PR is stacked on top of.
 
 **Pre-implementation checks (controller, before Task 1).** `git -C <worktree> log -1 --format=%H origin/main` and re-verify the §0 citations that move most (`engine.go:79-168`, `preflight.go:143-198`, `validate.go:61`, `backup.go:1527`, `ci.yml:1874`); `ls apps/api/migrations | sort | tail -1` must still be `2026-10-28-100000-…` or the Task 19 slot moves; Codex availability (`codex exec` one-liner) decides Codex vs Sonnet drivers.
 
-**Next after this doc merges.** `start_wave` W06 on `feature/5493-bare-metal-boot-media/wave-5499` (worktree off main) → Part A (Tasks 1–6) → PR 1 → Part B → PR 2 → Part C → PR 3 → Part D → PR 4 (`Closes #5499`) with the KIT proof (Task 24) before enqueue. Agent release needed for the shipped surface; W07 follows.
+**Next after this doc merges.** `start_wave` W06 on `feature/5493-bare-metal-boot-media/wave-5499` (worktree off main) → Part A (Tasks 1–6) → PR 1 → Part B → PR 2 → Part C → PR 3 → Part D (wave #7183, branch wave-7183) → PR 4 (`Closes #7183`) with the KIT proof (Task 24) before enqueue. Agent release needed for the shipped surface; W07 follows.
