@@ -1458,7 +1458,7 @@ export function buildBreezeSdkTools(
     tool(
       'get_device_hardware_health',
       registryDescription('get_device_hardware_health'),
-      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      { deviceId: uuid, includeEvents: z.boolean().optional(), includeReliability: z.boolean().optional() },
       makeHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
