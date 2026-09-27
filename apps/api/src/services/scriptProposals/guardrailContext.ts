@@ -11,11 +11,22 @@ import type { GuardrailContext } from '../aiGuardrails';
  * synchronous by contract. So every caller loads the context first and hands it
  * in.
  *
- * Returning `undefined` is a DENY signal, not a "no opinion": `checkGuardrails`
- * turns a `run_script` call that names a proposal but arrives with no context
- * into tier 4 / `proposal_context_missing`. That is why a cross-org id and an
- * unreviewed proposal both return undefined rather than a fabricated tier —
- * failing closed here is strictly safer than guessing.
+ * `proposal` absent is still a DENY signal to `checkGuardrails` (a run
+ * without a reviewed risk tier may never proceed), but as of #7129 it comes
+ * with a `proposalDenyReason` so the deny message is model-actionable instead
+ * of one catch-all `proposal_context_missing`:
+ * - no row, or a row in a DIFFERENT org — collapsed into the SAME
+ *   `proposal_not_found`. A cross-org id must be indistinguishable from a
+ *   nonexistent one; giving either its own message would leak cross-tenant
+ *   existence.
+ * - a same-org row whose review hasn't finished yet (`status: 'proposed'`,
+ *   `riskTier` still NULL) — `proposal_review_pending`, so the model polls
+ *   `get_script_proposal` and retries instead of giving up.
+ * - a same-org row that finished negatively (`scan_rejected` / `review_failed`,
+ *   also no `riskTier`) — `proposal_review_failed`; a new proposal is needed.
+ * A later terminal status (`approved`/`rejected`/`expired`/`superseded`/…) has
+ * already had a `riskTier` written at `reviewed` and is instead diagnosed by
+ * `assertProposalRunnable` (scriptProposals/runnable.ts) once past this gate.
  */
 export async function loadProposalGuardrailContext(
   input: Record<string, unknown>,
@@ -27,6 +38,7 @@ export async function loadProposalGuardrailContext(
   const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({
       orgId: scriptProposals.orgId,
+      status: scriptProposals.status,
       riskTier: scriptProposals.riskTier,
       strictHits: scriptProposals.strictHits,
     })
@@ -34,6 +46,7 @@ export async function loadProposalGuardrailContext(
       .where(eq(scriptProposals.id, proposalId))
       .limit(1)));
 
-  if (!row || row.orgId !== orgId || !row.riskTier) return undefined;
-  return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [] } };
+  if (!row || row.orgId !== orgId) return { proposalDenyReason: 'proposal_not_found' };
+  if (row.riskTier) return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [] } };
+  return { proposalDenyReason: row.status === 'proposed' ? 'proposal_review_pending' : 'proposal_review_failed' };
 }

@@ -142,7 +142,11 @@ describe('propose_script', () => {
     const out = JSON.parse(await tools.get('propose_script')!.handler(input, auth));
     expect(enqueueMock).toHaveBeenCalledWith({ proposalId: 'p1', orgId: 'org-dev', attempt: 1 });
     expect(waitMock).toHaveBeenCalledWith('p1', 45_000);
-    expect(out.review).toEqual({ status: 'pending' });
+    expect(out.review).toEqual({
+      status: 'pending',
+      nextStep: 'Review is still in progress. Poll get_script_proposal with this proposalId until '
+        + 'its status is no longer pending, then call run_script.',
+    });
     expect(out.proposalId).toBe('p1');
   });
 
@@ -183,7 +187,11 @@ describe('propose_script', () => {
     // Polling for 45 s here would pin the request's pooled connection
     // idle-in-transaction: answer `pending` instead.
     expect(waitMock).not.toHaveBeenCalled();
-    expect(out.review).toEqual({ status: 'pending' });
+    expect(out.review).toEqual({
+      status: 'pending',
+      nextStep: 'Review is still in progress. Poll get_script_proposal with this proposalId until '
+        + 'its status is no longer pending, then call run_script.',
+    });
     expect(out.status).toBe('proposed');
     expect(dbState.current).toBe(ambient);
   });

@@ -723,12 +723,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: "Run a saved scriptId or reviewed proposalId from propose_script on devices; never both. Maintenance-window suppression is deferred, not failure: report it and do not retry now. Approval is required; the approver sees the run context.",
+      description: "Run a saved scriptId or reviewed proposalId from propose_script on devices; never both. A proposalId whose review has not completed yet is refused with proposal_review_pending — poll get_script_proposal until the review finishes, then retry; do not treat that as a final failure. Maintenance-window suppression is deferred, not failure: report it and do not retry now. Approval is required; the approver sees the run context.",
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing library script to run' },
-          proposalId: { type: 'string', description: 'UUID of a reviewed AI-authored proposal to run. Mutually exclusive with scriptId; takes no parameters.' },
+          proposalId: { type: 'string', description: 'UUID of a REVIEWED AI-authored proposal to run (from propose_script). Mutually exclusive with scriptId; takes no parameters. If the review is still pending, poll get_script_proposal until it completes before calling run_script.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
           parameters: { type: 'object', description: 'Script parameters (library scripts only)' },
           expectedContentSha256: { type: 'string', description: 'Optional: contentSha256 from get_script_details. If the script changed, nothing runs and it returns error script_content_mismatch.' },

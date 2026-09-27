@@ -32,6 +32,8 @@ Read-only command types `list_processes`, `file_list`, and `event_logs_list` ski
 
 For `run_script`, supply exactly one of a saved `scriptId` or a reviewed `proposalId` from `propose_script`. A maintenance-suppressed result is deferred, not failed; do not retry it during the window.
 
+A `proposalId` call refused with `proposal_not_found` means no such proposal exists in this organization — do not retry it. `proposal_review_pending` means the review hasn't finished yet — poll `get_script_proposal` until its status is no longer pending, then retry `run_script`. `proposal_review_failed` means the review ended negatively (static-scan rejection or a technical failure) — submit a new proposal instead of retrying the same id.
+
 A `timeout` means the 60-second wait expired while execution may continue. Read the returned `executionId` with `get_script_execution` before deciding the script failed or changing it. Also use execution lookup for external runs, such as editor Test Run or IDs from `get_script_execution_history`. Other `run_script` outcomes are final and do not need another lookup.
 
 Run context `system` uses LocalSystem/root privileges. Context `user` uses the logged-in desktop session for profiles, mapped drives, and interactive desktop work. Omitting context uses the script's saved default. The context is shown to the approver and does not bypass approval.
