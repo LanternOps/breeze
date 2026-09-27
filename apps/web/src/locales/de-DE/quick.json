@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "Windows fragt Sie vor dem Start",
     "body": "Wenn Sie die Datei öffnen, zeigt Windows eine Abfrage, ob das Programm ausgeführt werden darf. Die Datei ist digital signiert, deshalb nennt diese Abfrage einen Herausgeber: dort sollte {{publisher}} stehen. Steht dort, dass der Herausgeber unbekannt ist, oder ein Name, den Sie nicht erwartet haben, schließen Sie die Abfrage und rufen Sie die Person an, die Ihnen hilft, statt fortzufahren.",
+    "bodyUnsigned": "Wenn Sie die Datei öffnen, zeigt Windows eine Abfrage, ob das Programm ausgeführt werden darf. Dort kann stehen, dass der Herausgeber unbekannt ist – das ist bei diesem Programm normal und kein Anzeichen für ein Problem. Fahren Sie nur fort, wenn Sie diese Sitzung mit der Person begonnen haben, die Ihnen hilft. Wenn nicht, schließen Sie die Abfrage und führen Sie die Datei nicht aus.",
     "publisher": "der Herausgeber von Breeze"
   },
   "trust": {

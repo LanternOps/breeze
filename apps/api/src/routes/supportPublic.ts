@@ -17,6 +17,7 @@ import {
 import { hashSupportCode } from '../services/quickSupportCode';
 import { hashEnrollmentKey, hashEnrollmentSecret } from '../services/enrollmentKeySecurity';
 import { getBinarySource, getGithubAgentUrl } from '../services/binarySource';
+import { isWindowsAgentSigned } from '../services/windowsAgentSigning';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../services/s3Storage';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
@@ -214,7 +215,10 @@ supportPublicRoutes.get('/check/:code', async (c) => {
       }
     : null;
 
-  return c.json({ valid: true, branding }, 200, CHECK_CACHE_HEADERS);
+  // `signed` follows the actual served bytes (see windowsAgentSigning.ts), not
+  // a filename-derived label — the page picks its Windows-prompt copy off
+  // this rather than unconditionally promising a named publisher (#7185).
+  return c.json({ valid: true, branding, signed: await isWindowsAgentSigned() }, 200, CHECK_CACHE_HEADERS);
 });
 
 /**

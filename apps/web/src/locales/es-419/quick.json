@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "Windows le preguntará antes de ejecutarlo",
     "body": "Al abrir el archivo, Windows muestra un aviso que pregunta si permite ejecutarlo. El archivo está firmado digitalmente, así que ese aviso indica un editor: debería decir {{publisher}}. Si dice que el editor es desconocido, o muestra un nombre que usted no esperaba, cierre el aviso y llame a la persona que le está ayudando en lugar de continuar.",
+    "bodyUnsigned": "Al abrir el archivo, Windows muestra un aviso que pregunta si permite ejecutarlo. Puede decir que el editor es desconocido; eso es normal para este programa y no es señal de un problema. Continúe solo si inició esta sesión con la persona que le está ayudando. Si no fue así, cierre el aviso y no ejecute el archivo.",
     "publisher": "el editor de Breeze"
   },
   "trust": {
