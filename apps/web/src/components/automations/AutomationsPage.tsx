@@ -14,7 +14,6 @@ import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
 import { useHashTab } from '@/lib/useHashState';
-import { OverflowTabs, type OverflowTab } from '@/components/shared/OverflowTabs';
 import type { TriggerFilter } from './AutomationList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -460,16 +459,28 @@ export default function AutomationsPage() {
         </a>
       </div>
 
-      <OverflowTabs
-        tabs={JOB_TABS.map((key): OverflowTab => ({
-          id: key,
-          label: t(/* i18n-dynamic */ `automationsPage.tabs.${key}`),
-          icon: null,
-        }))}
-        activeTab={tab}
-        onTabChange={(id) => switchTab(id as JobTab)}
-        testIdPrefix="automations-tab-"
-      />
+      {/* #7148: this row overflowed by 33px at 390px, clipping "Event rules"
+          mid-word. It stayed a plain button row (not OverflowTabs) because an
+          existing test contract (AutomationsPage.tabs.test.tsx) — and the
+          AutomationList trigger-select reverse-mapping it drives — depends on
+          `role="button"` + `aria-current="page"` semantics that OverflowTabs'
+          ARIA tabs pattern (`role="tab"` + `aria-selected`) doesn't provide.
+          overflow-x-auto + shrink-0 + whitespace-nowrap fixes the clipping
+          without changing that contract. */}
+      <nav className="flex gap-1 overflow-x-auto border-b" aria-label={t('automationsPage.tabs.ariaLabel')}>
+        {JOB_TABS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => switchTab(key)}
+            aria-current={tab === key ? 'page' : undefined}
+            data-testid={`automations-tab-${key}`}
+            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          >
+            {t(/* i18n-dynamic */ `automationsPage.tabs.${key}`)}
+          </button>
+        ))}
+      </nav>
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

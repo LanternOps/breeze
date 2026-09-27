@@ -1,5 +1,4 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nextProvider } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
@@ -26,8 +25,12 @@ function renderPage() {
 }
 
 // #7148: at 390px this row was cut mid-word ("Event rules" clipped by 33px)
-// with no scroll or More affordance. Moved onto the shared OverflowTabs
-// component, which folds overflow into a "More" menu instead of clipping.
+// with no scroll or More affordance. This surface stayed a plain button row
+// (not the shared OverflowTabs component) because an existing test contract
+// (AutomationsPage.tabs.test.tsx, plus the reverse trigger-filter mapping it
+// drives) depends on `role="button"` + `aria-current="page"` semantics that
+// OverflowTabs' ARIA tabs pattern (`role="tab"` + `aria-selected`) doesn't
+// provide. The fix is a horizontally scrollable row instead.
 describe('AutomationsPage tabs (#7148)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -35,22 +38,26 @@ describe('AutomationsPage tabs (#7148)', () => {
     fetchMock.mockResolvedValue(json({ data: [] }));
   });
 
-  it('uses OverflowTabs (a role="tablist" nav)', async () => {
+  it('scrolls horizontally instead of clipping tabs off-screen', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
-    expect(screen.getByTestId('automations-tab-all')).toBeInTheDocument();
+    const nav = await screen.findByRole('navigation');
+    expect(nav.className).toContain('overflow-x-auto');
+    for (const button of screen.getAllByRole('button', { name: /./ })) {
+      if (!button.hasAttribute('data-testid') || !button.getAttribute('data-testid')?.startsWith('automations-tab-')) continue;
+      expect(button.className).toContain('shrink-0');
+      expect(button.className).toContain('whitespace-nowrap');
+    }
   });
 
-  it('switches tabs and syncs the URL hash', async () => {
+  it('still switches tabs and syncs the URL hash (plain buttons + aria-current preserved)', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('automations-tab-all')).toBeInTheDocument());
 
-    // jsdom reports 0 for offsetWidth/clientWidth, so OverflowTabs collapses
-    // every tab past the first behind "More" (see OverflowTabs.tsx
-    // computeVisible) — open it to reach later tabs in tests.
-    await userEvent.click(screen.getByTestId('automations-tab-more'));
-    await userEvent.click(await screen.findByTestId('automations-tab-scheduled'));
+    const scheduled = screen.getByRole('button', { name: 'Scheduled' });
+    expect(scheduled).toBe(screen.getByTestId('automations-tab-scheduled'));
+    scheduled.click();
 
-    expect(window.location.hash).toBe('#scheduled');
+    await waitFor(() => expect(window.location.hash).toBe('#scheduled'));
+    expect(scheduled).toHaveAttribute('aria-current', 'page');
   });
 });
