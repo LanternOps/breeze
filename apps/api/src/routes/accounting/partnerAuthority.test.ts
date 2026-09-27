@@ -41,6 +41,7 @@ const { authState, effects, AccountingError } = vi.hoisted(() => {
       dbUpdateReturning: vi.fn(),
       audit: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
+      getPartnerConnectionRef: vi.fn(),
     },
     AccountingError,
   };
@@ -91,8 +92,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   AccountingConnectionError: AccountingError,
   // Xero W01: bulk push resolves the partner's ONE connection first (its id
   // rides on every job). A connected QuickBooks row keeps the route on its path.
-  // Also backs GET /accounting/providers (listProvidersHandler).
   resolveActiveConnectionRef: effects.resolveActiveConnectionRef,
+  // Any-status lookup (Xero W02): backs the /:provider/connect cross-provider
+  // pre-check and GET /accounting/providers (listProvidersHandler).
+  getPartnerConnectionRef: effects.getPartnerConnectionRef,
 }));
 
 vi.mock('../../services/accounting/accountingCustomerImport', () => ({
@@ -150,9 +153,9 @@ type RouteCase = {
 const routes: RouteCase[] = [
   // No :provider in the path — registered before GET /:provider so it isn't
   // captured by the enum. Reads the connection through the same
-  // resolveActiveConnectionRef + requireAccountingPartnerAuthority/requireAccountingRead
+  // getPartnerConnectionRef + requireAccountingPartnerAuthority/requireAccountingRead
   // chain as GET /:provider status.
-  { name: 'providers', path: '/providers', effect: 'resolveActiveConnectionRef' },
+  { name: 'providers', path: '/providers', effect: 'getPartnerConnectionRef' },
   { name: 'connect', path: '/quickbooks/connect', effect: 'buildAuthUrl' },
   { name: 'disconnect', method: 'POST', path: '/quickbooks/disconnect', effect: 'deleteConnection' },
   { name: 'status', path: '/quickbooks', effect: 'getConnection' },
@@ -243,6 +246,9 @@ beforeEach(() => {
     defaultIncomeAccountRef: '79', defaultTaxCodeRef: null, lastError: null, pullPayments: true,
   }]);
   effects.resolveActiveConnectionRef.mockImplementation(async (_db: unknown, partnerId: string) => ({
+    id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
+  }));
+  effects.getPartnerConnectionRef.mockImplementation(async (_db: unknown, partnerId: string) => ({
     id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
   }));
 });

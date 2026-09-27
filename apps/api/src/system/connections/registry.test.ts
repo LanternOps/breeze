@@ -229,6 +229,9 @@ const REVIEWED_PUBLIC_VARS: readonly string[] = [
   'WEBAUTHN_ORIGIN',
   'WEBAUTHN_RP_ID',
   'WEBAUTHN_RP_NAME',
+  'XERO_CLIENT_ID',
+  'XERO_DAILY_CALL_LIMIT',
+  'XERO_REDIRECT_URI',
 ];
 
 describe('reviewed secret:false vars', () => {

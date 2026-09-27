@@ -326,6 +326,19 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'QBO_WEBHOOK_VERIFIER_TOKEN' },
     ],
   }),
+  defineEntry({
+    id: 'xero',
+    group: 'billing',
+    label: 'Xero',
+    docsUrl: '/deploy/environment/#accounting-xero',
+    vars: [
+      { name: 'XERO_CLIENT_ID', secret: false, required: true },
+      { name: 'XERO_CLIENT_SECRET', required: true },
+      { name: 'XERO_REDIRECT_URI', secret: false },
+      { name: 'XERO_WEBHOOK_KEY' },
+      { name: 'XERO_DAILY_CALL_LIMIT', secret: false },
+    ],
+  }),
   // ── microsoft-365 ───────────────────────────────────────────────────────
   defineEntry({
     id: 'm365-identity-tools',
@@ -878,6 +891,7 @@ export const SECRET_NAME_EXCEPTIONS: Readonly<Record<string, string>> = {
   BILLING_URL: 'public payment-setup landing URL',
   BILLING_SERVICE_URL: 'metering service base URL; values with URL userinfo are refused at runtime',
   QBO_REDIRECT_URI: 'public OAuth redirect URI registered with Intuit',
+  XERO_REDIRECT_URI: 'public OAuth redirect URI registered with Xero',
   ENROLLMENT_SECRET_ENFORCEMENT_MODE: 'enum (enforce/warn); "SECRET" names the thing it enforces',
   DELEGANT_BASE_URL: 'Delegant service base URL; values with URL userinfo are refused at runtime',
   OAUTH_RESOURCE_URL: 'public OAuth resource identifier',

@@ -5,7 +5,7 @@ import { accountingConnections } from '../../db/schema';
 import { decryptSecret } from '../secretCrypto';
 import type { AccountingConnection, DbExecutor, DbTransactor } from './accountingConnectionService';
 import { markStatus, updateTokens } from './accountingConnectionService';
-import { getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
 import { providerErrorKindOf } from './accountingProviderError';
 
 // Refresh proactively while the access token still has >5 min of life, so an
@@ -139,15 +139,16 @@ async function handleRefreshFailure(
     }
 
     // The row still holds the exact token we tried — a genuine revocation.
-    // Preserve the underlying Intuit error for forensics before flattening it
+    // Preserve the underlying provider error for forensics before flattening it
     // into the canned reauth status (without it, "why did this flip to
     // reauth_required" is undebuggable).
-    console.error('[accounting] QuickBooks refresh returned invalid_grant', {
+    console.error(`[accounting] ${accountingProviderDisplayName(connection.provider)} refresh returned invalid_grant`, {
       connectionId: connection.id,
       partnerId: connection.partnerId,
       error: err instanceof Error ? err.message : String(err),
     });
-    await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token is invalid or expired');
+    await markStatus(tx, connection.id, connection.partnerId, 'reauth_required',
+      `${accountingProviderDisplayName(connection.provider)} refresh token is invalid or expired`);
     return REAUTH_REQUIRED;
   }), 'accountingTokens.refreshFailureRecheck');
 
@@ -176,7 +177,7 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
   const refreshExpiresAt = connection.refreshTokenExpiresAt?.getTime() ?? 0;
   if (!connection.refreshToken || refreshExpiresAt <= now) {
     await withSystemDbAccessContext(
-      () => markStatus(db, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired'),
+      () => markStatus(db, connection.id, connection.partnerId, 'reauth_required', `${accountingProviderDisplayName(connection.provider)} refresh token expired`),
       'accountingTokens.markReauth',
     );
     throw new ReauthRequiredError();
@@ -231,7 +232,7 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     const lockedRefreshToken = decryptRowRefreshToken(row);
     const lockedRefreshExpiresAt = row.refreshTokenExpiresAt?.getTime() ?? 0;
     if (!lockedRefreshToken || lockedRefreshExpiresAt <= now) {
-      await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired');
+      await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', `${accountingProviderDisplayName(connection.provider)} refresh token expired`);
       // Returned, not thrown, so the status write above commits (#7189).
       return REAUTH_REQUIRED;
     }

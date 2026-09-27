@@ -993,6 +993,20 @@ The warranty worker looks each physical device's serial number up against its ma
   The first four are optional and validated lazily — the API boots fine without them. Until they're set, the in-app QuickBooks connect flow reports that QuickBooks isn't configured on this instance. Set all four to enable [Accounting integration](/features/integrations/#accounting-integrations). `QBO_WEBHOOK_VERIFIER_TOKEN` is independent of them and only affects how quickly recorded payments come back.
 </Aside>
 
+## Accounting (Xero)
+
+| Variable | Default | Description |
+|---|---|---|
+| `XERO_CLIENT_ID` | — | Client ID of your Xero Web app (developer.xero.com → My Apps). The Xero card only appears when this is set. |
+| `XERO_CLIENT_SECRET` | — | That app's client secret |
+| `XERO_REDIRECT_URI` | — | OAuth callback registered on the app, e.g. `https://your-domain/api/v1/accounting/xero/callback` |
+| `XERO_WEBHOOK_KEY` | — | The app's webhook signing key. Read once payment pull-back for Xero ships; safe to set now. |
+| `XERO_DAILY_CALL_LIMIT` | `1000` | Per-organisation daily API budget for your Xero tier (Starter 1000; Core, Plus and Advanced 5000). Background sweeps pause below 20% of it; invoice and payment pushes keep priority. |
+
+<Aside>
+  Xero has no sandbox: connections are always "production", and testing uses Xero's Demo Company. Breeze connects to exactly one Xero organisation per partner. Disconnecting removes only Breeze's own connection in Xero — it never revokes the rest of your Xero app authorisations.
+</Aside>
+
 ## Vulnerability Management
 
 | Variable | Default | Description |
