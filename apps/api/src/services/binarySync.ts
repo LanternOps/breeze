@@ -1870,6 +1870,8 @@ function isVersionRegistrationComplete(state: VersionRegistrationState): boolean
  * Safety net: verify the agentVersions table has entries for the current
  * API version. If not, sync from GitHub. This catches stale Docker volumes,
  * missed CI syncs, and fresh deployments where binaries-init didn't run.
+ * Full-release boots only: a server-only boot returns from syncBinaries()
+ * before reaching this (it never writes agent_versions).
  */
 async function ensureCurrentVersionRegistered(): Promise<void> {
   const currentVersion = (
