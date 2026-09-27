@@ -187,13 +187,19 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'browse_snapshots',
   'configuration_policy_compliance',
   'export_dataset',
+  // W01 (#6755) follow-up
+  'generate_incident_report',
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
   // W01 (#6755)
   'get_backup_status',
+  // W01 (#6755) follow-up
+  'get_browser_security',
   'get_catalog_item',
   'get_cis_compliance',
   'get_cis_device_report',
+  // W01 (#6755) follow-up
+  'get_compliance_status',
   'get_configuration_policy',
   'get_contract',
   'get_device_context',
@@ -202,15 +208,23 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_device_vulnerabilities',
   'get_diagnostic_run', // M4 Task 1 (#6000) one topology diagnostic run, Tier 1 read
   'get_dns_security',
+  // W01 (#6755) follow-up
+  'get_dr_execution_status',
+  // W01 (#6755) follow-up
+  'get_dr_plan_details',
   'get_effective_configuration',
   // W01 (#6755)
   'get_elevation_history',
+  // W01 (#6755) follow-up
+  'get_executive_summary',
   'get_fleet_findings',
   'get_fleet_health',
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
   'get_hyperv_vm_details',
+  // W01 (#6755) follow-up
+  'get_incident_timeline',
   'get_interface_history', // M3 Task 6 topology read
   'get_invite_funnel',
   'get_invoice',
@@ -316,15 +330,27 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_audit_log',
   // W01 (#6755)
   'query_backup_sla',
+  // W01 (#6755) follow-up
+  'query_backups',
+  // W01 (#6755) follow-up
+  'query_c2c_connections',
   'query_change_log',
   // W01 (#6755)
   'query_compliance_policies',
+  // W01 (#6755) follow-up
+  'query_custom_fields',
   'query_devices',
+  // W01 (#6755) follow-up
+  'query_dr_plans',
   // W01 (#6755)
   'query_hyperv_vms',
   'query_monitors',
   // W01 (#6755)
   'query_mssql_instances',
+  // W01 (#6755) follow-up
+  'query_psa_status',
+  // W01 (#6755) follow-up
+  'query_vaults',
   'query_webhooks',
   'read_artifact', // A-W05 (D13a): Tier 1 read, own-run/session scoped
   'search_agent_logs',

@@ -169,10 +169,10 @@ Verdict: no decision rejected. Every agent dispatch path runs through `checkAgen
 | `list_script_templates` (L2) | expose |
 | `get_script_execution_history` (L2) | expose |
 
-**Held for a follow-up PR:** 14 further read-only candidates. They stay in `KNOWN_MISSING_TOOL_TIERS` until then; `get_sensitive_data_overview` is already listed in `AGENT_DENIED_READ_TOOLS`, so it is agent-denied from the moment it is wired.
+**Wired later in the same PR (2026-09-27):** 14 further read-only tools, held until their route-permission parity fixes reached main: `query_custom_fields`, `get_browser_security`, `get_sensitive_data_overview`, `query_vaults`, `query_backups`, `get_executive_summary`, `query_c2c_connections`, `query_dr_plans`, `get_dr_plan_details`, `get_dr_execution_status`, `get_incident_timeline`, `generate_incident_report`, `query_psa_status`, `get_compliance_status`. All are tier 1. `get_sensitive_data_overview` is in `AGENT_DENIED_READ_TOOLS`, so it is chat-only; the other 13 are agent-reachable.
 
 **Totals.**
-- Wired: 32. That is 28 newly tiered (`TOOL_TIERS` 170 → 198, `KNOWN_MISSING_TOOL_TIERS` 88 → 60) plus 4 newly declared (main-declared 166 → 198 with all flags on).
+- Wired: 32. That is 28 newly tiered (`TOOL_TIERS` 170 → 198, `KNOWN_MISSING_TOOL_TIERS` 88 → 60) plus 4 newly declared (main-declared 166 → 198 with all flags on). The 14 wired later take `KNOWN_MISSING_TOOL_TIERS` 60 → 46 and add 14 to `TOOL_TIERS`.
 - `AGENT_DENIED_READ_TOOLS`: 7 (`search_c2c_items`, `query_c2c_jobs`, `get_sensitive_data_overview`, `get_user_risk_scores`, `get_user_risk_detail`, `m365_query_users`, `m365_query_signins`).
 - Candidates excluded from W01: `collect_evidence` (tier 2, dispatches a device command) and `registry_operations` (`read_key`/`get_value` are deliberately tier 2). Both move to W04. All tier-1 `manage_*` multiplexers are left untouched: their read actions become reachable when the whole tool is wired in W02–W04.
 

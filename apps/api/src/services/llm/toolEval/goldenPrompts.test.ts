@@ -18,13 +18,9 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 // removed here rather than left stale, per this test's own "now declared;
 // remove the exception" assertion below.
 const BASELINE_UNDECLARED_TOOLS = new Set([
-  'get_compliance_status',
-  'get_executive_summary',
-  'get_sensitive_data_overview',
   'manage_quotes',
   'manage_tags',
   'manage_tickets',
-  'query_backups',
   'restore_snapshot',
   'trigger_backup',
   'trigger_mssql_backup',
@@ -66,6 +62,6 @@ describe('GOLDEN_CASES', () => {
     const structuralMisses = GOLDEN_CASES
       .filter((c) => c.expect.every((e) => undeclared.has(e.tool)))
       .map((c) => c.id);
-    expect(structuralMisses).toEqual(['g34', 'g35', 'g36', 'g60']);
+    expect(structuralMisses).toEqual(['g34', 'g35', 'g36']);
   });
 });

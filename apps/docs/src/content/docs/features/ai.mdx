@@ -474,6 +474,11 @@ The AI assistant can query, manage, and operate backups across your fleet. These
 | `get_vm_restore_estimate` | 1 | Estimated restore time for a VM snapshot |
 | `query_c2c_jobs` | 1 | List cloud-to-cloud backup jobs for a connection |
 | `search_c2c_items` | 1 | Search backed-up mailbox and drive items |
+| `query_vaults` | 1 | List local backup vault configurations and sync status |
+| `query_c2c_connections` | 1 | List cloud-to-cloud (Microsoft 365 / Google) backup connections, credentials masked |
+| `query_dr_plans` | 1 | List disaster recovery plans |
+| `get_dr_plan_details` | 1 | Details for one disaster recovery plan, including its groups |
+| `get_dr_execution_status` | 1 | Status of a disaster recovery plan execution |
 | `trigger_backup` | 3 | Initiate an on-demand backup for a device (requires approval) |
 | `restore_snapshot` | 3 | Restore data from a snapshot to a device (requires approval) |
 
@@ -509,6 +514,12 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `get_peripheral_activity` | 1 | USB and peripheral device connect/disconnect activity |
 | `get_user_risk_scores` | 1 | Security risk scores for users in an organization or site |
 | `get_user_risk_detail` | 1 | One user's risk history and contributing events |
+| `get_compliance_status` | 1 | Compliance status of devices against one compliance policy |
+| `get_browser_security` | 1 | Browser extension inventory and browser policy compliance |
+| `get_sensitive_data_overview` | 1 | Sensitive data scan findings (chat only, never agents) |
+| `get_executive_summary` | 1 | Latest executive summary: device health, alert trends, patch compliance, SLA statistics |
+| `query_custom_fields` | 1 | Custom field definitions and a device's custom field values |
+| `query_psa_status` | 1 | PSA connection status |
 | `query_analytics` | 1 | SLA compliance and device capacity predictions |
 | `list_monitors` | 1 | List monitor definitions visible to the caller |
 | `get_monitor` | 1 | Get a monitor definition with its policy attachments |

@@ -57,8 +57,8 @@ function humanOnlyProblems(
  * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
  * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
  * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
- * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 28 read-only tools,
- * leaving 60 (14 further read-only tools are held for a follow-up PR).
+ * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
+ * (14 of them after their route-permission parity fixes landed), leaving 46.
  * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
@@ -77,14 +77,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'create_remote_session',
   'execute_containment',
   'execute_dr_plan',
-  'generate_incident_report',
-  'get_browser_security',
-  'get_compliance_status',
-  'get_dr_execution_status',
-  'get_dr_plan_details',
-  'get_executive_summary',
-  'get_incident_timeline',
-  'get_sensitive_data_overview',
   'instant_boot_vm',
   'manage_backup_profiles',
   'manage_browser_policy',
@@ -101,12 +93,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'manage_software_policy',
   'manage_tags',
   'manage_tickets',
-  'query_backups',
-  'query_c2c_connections',
-  'query_custom_fields',
-  'query_dr_plans',
-  'query_psa_status',
-  'query_vaults',
   'registry_operations',
   'remediate_sensitive_data',
   'remediate_software_violation',
@@ -370,10 +356,15 @@ const W01_READ_TOOLS = [
   'get_vault_status', 'get_vm_restore_estimate', 'list_monitors', 'list_remote_sessions', 'query_agent_versions',
   'query_analytics', 'query_backup_sla', 'query_c2c_jobs', 'query_compliance_policies', 'query_hyperv_vms',
   'query_mssql_instances', 'query_webhooks', 'search_c2c_items', 'search_script_library',
+  // Held until their route-permission parity fixes landed.
+  'generate_incident_report', 'get_browser_security', 'get_compliance_status', 'get_dr_execution_status',
+  'get_dr_plan_details', 'get_executive_summary', 'get_incident_timeline', 'get_sensitive_data_overview',
+  'query_backups', 'query_c2c_connections', 'query_custom_fields', 'query_dr_plans', 'query_psa_status',
+  'query_vaults',
 ] as const;
 
 describe('W01 read-only wiring (#6755)', () => {
-  it('has 28 entries', () => expect(new Set(W01_READ_TOOLS).size).toBe(28));
+  it('has 42 entries', () => expect(new Set(W01_READ_TOOLS).size).toBe(42));
 
   it.each(W01_READ_TOOLS)('%s is tier 1 in both maps, declared, and its SDK shape keys equal toolInputSchemas', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(1);

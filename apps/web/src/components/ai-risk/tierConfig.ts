@@ -98,6 +98,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_user_risk_scores', description: 'User security risk scores', category: 'Security & Compliance' },
       { name: 'get_user_risk_detail', description: "One user's risk history", category: 'Security & Compliance' },
       { name: 'get_peripheral_activity', description: 'USB and peripheral device activity', category: 'Security & Compliance' },
+      // W01 (#6755) follow-up
+      { name: 'get_browser_security', description: 'Browser extensions and browser policy compliance', category: 'Security & Compliance' },
+      { name: 'get_sensitive_data_overview', description: 'Sensitive data scan findings (chat only, not agents)', category: 'Security & Compliance' },
+      { name: 'get_incident_timeline', description: 'Incident details and timeline', category: 'Security & Compliance' },
+      { name: 'generate_incident_report', description: 'Incident report', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
       { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
@@ -162,6 +167,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_sla_compliance_report', description: 'Backup SLA compliance report', category: 'Backup & Recovery' },
       { name: 'query_c2c_jobs', description: 'Cloud-to-cloud backup jobs', category: 'Backup & Recovery' },
       { name: 'search_c2c_items', description: 'Search cloud mailbox/file items', category: 'Backup & Recovery' },
+      // W01 (#6755) follow-up: vault, C2C connection and DR reads
+      { name: 'query_vaults', description: 'List backup vaults', category: 'Backup & Recovery' },
+      { name: 'query_c2c_connections', description: 'Cloud-to-cloud backup connections', category: 'Backup & Recovery' },
+      { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
+      { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
+      { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
       { name: 'manage_monitors (get/create/update/delete)', description: 'Monitor details and history; retired writes return guidance', category: 'Monitoring & Analytics' },

@@ -314,6 +314,22 @@ export const TOOL_TIERS = {
   get_sla_compliance_report: 1,
   query_c2c_jobs: 1,
   search_c2c_items: 1,
+  // Spec 2026-09-23 W01 (#6755) follow-up: read-only, previously registered
+  // but untiered. Held until their route-permission parity fixes landed.
+  query_custom_fields: 1,
+  get_browser_security: 1,
+  get_sensitive_data_overview: 1,
+  query_vaults: 1,
+  query_backups: 1,
+  get_executive_summary: 1,
+  query_c2c_connections: 1,
+  query_dr_plans: 1,
+  get_dr_plan_details: 1,
+  get_dr_execution_status: 1,
+  get_incident_timeline: 1,
+  generate_incident_report: 1,
+  query_psa_status: 1,
+  get_compliance_status: 1,
   // Playbook tools
   list_playbooks: 1,
   execute_playbook: 3,
@@ -3187,6 +3203,106 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W01 (#6755) follow-up: read-only, previously registered
+    // but untiered. Shape derived from toolInputSchemas (W01-D7).
+    tool(
+      'query_custom_fields',
+      registryDescription('query_custom_fields'),
+      inputShape('query_custom_fields'),
+      makeHandler('query_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_browser_security',
+      registryDescription('get_browser_security'),
+      inputShape('get_browser_security'),
+      makeHandler('get_browser_security', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_sensitive_data_overview',
+      registryDescription('get_sensitive_data_overview'),
+      inputShape('get_sensitive_data_overview'),
+      makeHandler('get_sensitive_data_overview', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_vaults',
+      registryDescription('query_vaults'),
+      inputShape('query_vaults'),
+      makeHandler('query_vaults', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_backups',
+      registryDescription('query_backups'),
+      inputShape('query_backups'),
+      makeHandler('query_backups', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_executive_summary',
+      registryDescription('get_executive_summary'),
+      inputShape('get_executive_summary'),
+      makeHandler('get_executive_summary', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_c2c_connections',
+      registryDescription('query_c2c_connections'),
+      inputShape('query_c2c_connections'),
+      makeHandler('query_c2c_connections', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_dr_plans',
+      registryDescription('query_dr_plans'),
+      inputShape('query_dr_plans'),
+      makeHandler('query_dr_plans', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_dr_plan_details',
+      registryDescription('get_dr_plan_details'),
+      inputShape('get_dr_plan_details'),
+      makeHandler('get_dr_plan_details', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_dr_execution_status',
+      registryDescription('get_dr_execution_status'),
+      inputShape('get_dr_execution_status'),
+      makeHandler('get_dr_execution_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_incident_timeline',
+      registryDescription('get_incident_timeline'),
+      inputShape('get_incident_timeline'),
+      makeHandler('get_incident_timeline', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'generate_incident_report',
+      registryDescription('generate_incident_report'),
+      inputShape('generate_incident_report'),
+      makeHandler('generate_incident_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'query_psa_status',
+      registryDescription('query_psa_status'),
+      inputShape('query_psa_status'),
+      makeHandler('query_psa_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_compliance_status',
+      registryDescription('get_compliance_status'),
+      inputShape('get_compliance_status'),
+      makeHandler('get_compliance_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
