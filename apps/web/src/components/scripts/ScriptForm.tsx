@@ -575,6 +575,14 @@ export default function ScriptForm({
   return (
     <form
       ref={formRef}
+      // zodResolver(scriptSchema) is the actual validation (see
+      // errors.timeoutSeconds etc. below) — the input's min/max/pattern
+      // attributes are decorative only. Without noValidate, the browser's
+      // own constraint validation runs first and tries to focus the first
+      // invalid field; since #7179 that field can be inside a collapsed,
+      // now-`inert` CollapsibleSection and unfocusable, which is exactly
+      // the class of bug noValidate + the zod resolver avoids entirely.
+      noValidate
       onSubmit={handleSubmit(async values => {
         // Allow the post-save navigation through the guard. Set BEFORE
         // onSubmit so it's true before navigateTo dispatches the event.

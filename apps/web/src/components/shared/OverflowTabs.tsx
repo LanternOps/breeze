@@ -349,7 +349,14 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                   id={tabId}
                   role="tab"
                   aria-selected={isActive}
-                  aria-controls={overflowPanelId(tab.id, testIdPrefix)}
+                  // Consumers mount only the ACTIVE tab's panel (a hash-driven
+                  // `activeTab === id && <div role="tabpanel" .../>` per tab,
+                  // e.g. ConfigPolicyDetailPage / NetworkDeviceDetailPage) — an
+                  // inactive tab's panel doesn't exist in the DOM at all, so
+                  // pointing its aria-controls at that id would dangle (axe
+                  // aria-valid-attr-value: #7179). Only the active tab's
+                  // aria-controls can resolve to anything real.
+                  aria-controls={isActive ? overflowPanelId(tab.id, testIdPrefix) : undefined}
                   tabIndex={tab.id === rovingTabId ? 0 : -1}
                   title={tab.title}
                   data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
