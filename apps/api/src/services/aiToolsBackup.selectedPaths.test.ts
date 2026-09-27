@@ -135,6 +135,18 @@ describe('restore_snapshot selectedPaths (#7210)', () => {
     );
   });
 
+  it('refuses a selection whose normalized form matches more than one indexed file', async () => {
+    arrangeRestore(['/srv/dir\\x.txt', '/srv\\dir/x.txt']);
+
+    const result = JSON.parse(
+      await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1', selectedPaths: ['/srv/dir/x.txt'] }, partnerAuth())
+    );
+
+    expect(result.error).toBe('Selected path matches more than one file in this snapshot: /srv/dir/x.txt');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(vi.mocked(aiQueueCommandForExecution)).not.toHaveBeenCalled();
+  });
+
   it.each([
     'C:/Users/alex/Documents/../../../Windows/System32/config/SAM',
     'C:/Users/alex',

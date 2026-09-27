@@ -576,6 +576,28 @@ describe('restore routes', () => {
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a selection whose normalized form matches more than one indexed file', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(chainMock([
+        { id: 'file-1', sourcePath: '/srv/dir\\x.txt' },
+        { id: 'file-2', sourcePath: '/srv\\dir/x.txt' },
+      ]));
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['/srv/dir/x.txt'] }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Selected path matches more than one file in this snapshot: /srv/dir/x.txt' });
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
   it('fails the restore request when no backup destination config can be resolved for the snapshot', async () => {
     selectMock
       .mockReturnValueOnce(
