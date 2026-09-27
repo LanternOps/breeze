@@ -91,6 +91,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
   })),
   // Only QuickBooks is a registered provider today (Xero W01 capability gate).
   providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap),
+  accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : `UNKNOWN_PROVIDER:${id}`),
 }));
 
 // Xero W01: push-bulk resolves the partner's ONE connection before enqueueing
@@ -167,6 +168,7 @@ vi.mock('../../config/env', () => ({
 }));
 
 import { accountingRoutes } from './index';
+import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
 import { withAuthDbAccessContext } from '../../middleware/auth';
 
 /**
@@ -538,5 +540,58 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     const res = await getCandidates(`?entityType=org&partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(403);
     expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+// Xero W01 Task 14: a throttled call answers 429 with Retry-After (whole
+// seconds, rounded up) instead of 502/500.
+describe('rate limiting answers 429 with Retry-After (Xero W01)', () => {
+  it('a throttled manual push answers 429 with Retry-After', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(Object.assign(
+      new AccountingInvoicePushError('rate_limited', 429, 'QuickBooks is rate limiting requests; retrying automatically'),
+      { retryAfterMs: 30_000 },
+    ));
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    // The invoice-push body shape is `{ error: code, message }` (unchanged).
+    expect(await res.json()).toEqual({ error: 'rate_limited', message: 'QuickBooks is rate limiting requests; retrying automatically' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('rounds a sub-second Retry-After UP, never to 0', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(Object.assign(
+      new AccountingInvoicePushError('rate_limited', 429, 'throttled'), { retryAfterMs: 1_200 },
+    ));
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.headers.get('Retry-After')).toBe('2');
+  });
+
+  it('a non-throttle error carries no Retry-After', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('provider_error', 502, 'QuickBooks returned an error'));
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(res.headers.get('Retry-After')).toBeNull();
+  });
+
+  it('a throttled token refresh on remote-candidates answers 429 with Retry-After (mapping error shape)', async () => {
+    resolveConnectionAndTokenMock.mockRejectedValue(Object.assign(
+      new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 60_000 },
+    ));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('60');
+    expect(await res.json()).toEqual({ error: 'QuickBooks is rate limiting requests; try again shortly', code: 'rate_limited' });
+  });
+
+  it('a RAW provider throttle from the direct remote-candidates call answers 429, not a 500', async () => {
+    resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
+    listRemoteCustomersMock.mockRejectedValue(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', httpStatus: 429, retryAfterMs: 5_000,
+    }));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org&q=Acme');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual({ error: 'QuickBooks is rate limiting requests; try again shortly', code: 'rate_limited' });
   });
 });

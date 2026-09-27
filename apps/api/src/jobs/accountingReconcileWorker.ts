@@ -74,8 +74,10 @@ import {
 } from '../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
-import { getAccountingProvider, providerSupports } from '../services/accounting/providerRegistry';
-import type { ChangeSetPaymentLine } from '../services/accounting/types';
+import { findAccountingProvider, getAccountingProvider, providerSupports } from '../services/accounting/providerRegistry';
+import { shouldDeferBackgroundWork } from '../services/accounting/accountingRateLimit';
+import { delayJobForRateLimit, rateLimitRetryAfterMs, type AccountingJobContext } from './accountingJobDelay';
+import type { ChangeSet, ChangeSetPaymentLine } from '../services/accounting/types';
 import {
   applyAccountingPayment,
   markInvoiceDeletedRemotely,
@@ -334,9 +336,15 @@ function logReconcileSkip(
  * decision 6) short-circuits BEFORE `resolveConnectionAndToken`: that call is
  * itself a QuickBooks round trip plus a token write, and refreshing tokens for
  * a connection the operator has fully disabled is work nobody asked for.
+ *
+ * A throttled token refresh or change-window read (Xero W01) moves the job to
+ * `delayed` at Retry-After without consuming an attempt (`ctx` carries the job
+ * and its lock token). Nothing has been applied at that point, so the window
+ * simply replays on the delayed run.
  */
 export async function processReconcileConnectionJob(
   data: ReconcileConnectionJobData,
+  ctx?: AccountingJobContext,
 ): Promise<ReconcileRunSummary | null> {
   const startedAt = Date.now();
   return runOutsideDbContext(async () => {
@@ -368,14 +376,23 @@ export async function processReconcileConnectionJob(
       return null;
     }
 
-    const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, { connectionId: data.connectionId }, runInDbContext);
+    let fresh: AccountingConnection;
+    let changes: ChangeSet;
+    try {
+      const resolved = await resolveConnectionAndToken(data.partnerId, { connectionId: data.connectionId }, runInDbContext);
+      fresh = resolved.conn;
+      const provider = getAccountingProvider(fresh.provider);
+      changes = await runOutsideDbContext(() => provider.reconcileChanges(resolved.liveConn, resolved.conn.cdcCursor));
+    } catch (err) {
+      const throttleMs = rateLimitRetryAfterMs(err);
+      if (throttleMs !== null) return delayJobForRateLimit(ctx, err, throttleMs);
+      throw err;
+    }
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting
     // to a different QuickBooks company reuses this same connection row, so every
     // write below re-checks this value inside its own transaction and the final
     // cursor write is a compare-and-set on it.
     const expectedRealmFingerprint = fresh.realmIdFingerprint;
-    const provider = getAccountingProvider(fresh.provider);
-    const changes = await runOutsideDbContext(() => provider.reconcileChanges(liveConn, fresh.cdcCursor));
 
     const summary = emptySummary(fresh.cdcCursor);
 
@@ -583,7 +600,7 @@ export async function processReconcileConnectionJob(
  * Postgres connection.
  */
 export async function processReconcileSweep(): Promise<{
-  enqueued: number; failed: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
+  enqueued: number; failed: number; deferred: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
 }> {
   return runOutsideDbContext(async () => {
     // Each pass's DB read is its OWN try/catch: a failure reading the
@@ -612,7 +629,17 @@ export async function processReconcileSweep(): Promise<{
 
     let enqueued = 0;
     let failed = 0;
+    // Pass 1 only (Xero W01): a connection that has nearly spent its provider's
+    // DAILY budget waits for a later sweep, so background reads never starve
+    // interactive calls. QuickBooks declares no daily budget and never defers.
+    // Pass 2 below is never deferred — an owed delete must still go out.
+    let deferred = 0;
     for (const connection of connections) {
+      const provider = findAccountingProvider(connection.provider);
+      if (provider && await shouldDeferBackgroundWork(connection.provider, provider.limits.rate, connection.id)) {
+        deferred++;
+        continue;
+      }
       if (await enqueueAccountingReconcile(connection.id, connection.partnerId, 'sweep')) enqueued++;
       else failed++;
     }
@@ -656,7 +683,7 @@ export async function processReconcileSweep(): Promise<{
 
     console.log(
       '[AccountingReconcileWorker] sweep complete',
-      `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`,
+      `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`, `deferred=${deferred}`,
       `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
     );
 
@@ -670,7 +697,7 @@ export async function processReconcileSweep(): Promise<{
       );
     }
 
-    return { enqueued, failed, pendingOpsEnqueued, pendingOpsFailed };
+    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed };
   });
 }
 
@@ -678,12 +705,13 @@ export async function processReconcileSweep(): Promise<{
 export function createAccountingReconcileWorker(): Worker<AccountingReconcileJobData> {
   return new Worker<AccountingReconcileJobData>(
     ACCOUNTING_RECONCILE_QUEUE,
-    async (job: Job<AccountingReconcileJobData>) => {
+    // The lock token is what lets a throttled job move itself to `delayed`.
+    async (job: Job<AccountingReconcileJobData>, token?: string) => {
       switch (job.data.type) {
         case 'sweep':
           return processReconcileSweep();
         case 'reconcile-connection':
-          return processReconcileConnectionJob(job.data);
+          return processReconcileConnectionJob(job.data, { job, token });
         default:
           throw new Error(`Unknown accounting reconcile job type: ${(job.data as { type: string }).type}`);
       }

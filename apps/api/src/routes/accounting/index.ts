@@ -1,4 +1,4 @@
-import { Hono, type Env, type MiddlewareHandler } from 'hono';
+import { Hono, type Context, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -44,7 +44,10 @@ import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../servi
 import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getAccountingProvider, providerSupports } from '../../services/accounting/providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider, providerSupports } from '../../services/accounting/providerRegistry';
+import {
+  isAccountingProviderError, providerRateLimitedTryAgainMessage, rateLimitRetryAfterMs,
+} from '../../services/accounting/accountingProviderError';
 import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
 import {
@@ -208,11 +211,25 @@ function handleImportError(c: { json: (b: unknown, s: number) => Response }, err
   throw err;
 }
 
-function handleMappingError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  // AccountingMappingError.status is a narrowed literal union (404|409|502), so
-  // no cast, and every current/future code (including item_price_required)
+/** A throttle answers 429 with Retry-After in whole seconds, rounded up (Xero W01). */
+function setRetryAfter(c: Context, err: unknown): number | null {
+  const retryAfterMs = rateLimitRetryAfterMs(err);
+  if (retryAfterMs !== null) c.header('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+  return retryAfterMs;
+}
+
+function handleMappingError(c: Context, err: unknown): Response {
+  // AccountingMappingError.status is a narrowed literal union (404|409|429|502),
+  // so no cast, and every current/future code (including item_price_required)
   // flows through generically — the route never re-enumerates codes.
-  if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof AccountingMappingError) {
+    setRetryAfter(c, err);
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
+  // A raw provider throttle (remote-candidates calls the provider directly).
+  if (isAccountingProviderError(err) && setRetryAfter(c, err) !== null) {
+    return c.json({ error: providerRateLimitedTryAgainMessage(accountingProviderDisplayName(err.provider)), code: 'rate_limited' }, 429);
+  }
   throw err;
 }
 
@@ -223,9 +240,12 @@ function handleMappingError(c: { json: (b: unknown, s: number) => Response }, er
  * class from the mapping workbench's, and this shape is what Task 5's spec
  * calls for.
  */
-function handleInvoicePushError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  // AccountingInvoicePushError.status is a narrowed literal union (404|409|502), so no cast.
-  if (err instanceof AccountingInvoicePushError) return c.json({ error: err.code, message: err.message }, err.status);
+function handleInvoicePushError(c: Context, err: unknown): Response {
+  // AccountingInvoicePushError.status is a narrowed literal union (404|409|429|502), so no cast.
+  if (err instanceof AccountingInvoicePushError) {
+    setRetryAfter(c, err);
+    return c.json({ error: err.code, message: err.message }, err.status);
+  }
   throw err;
 }
 

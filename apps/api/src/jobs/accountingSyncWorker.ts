@@ -48,6 +48,12 @@
  * `sync_in_progress` and `invoice_not_synced` (plus any non-typed error) are
  * retryable. Unlike invoice jobs, the
  * `pushMode` gate does NOT apply to payment jobs — see the handler below.
+ *
+ * RATE LIMITS (Xero W01) are a third lane, checked FIRST in every catch: a
+ * `rate_limited` error (any coordinator's, or a raw provider one) moves the job
+ * back to `delayed` at Retry-After via `delayJobForRateLimit` — no attempt
+ * consumed, no Sentry event, no error log, nothing marked failed. It is in none
+ * of the terminal sets.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
@@ -59,9 +65,11 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
+import { findAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
 import type { AccountingCapability, AccountingProviderId } from '../services/accounting/types';
 import { logJobDrop, resolveJobConnection, type JobConnectionRef } from './accountingJobConnection';
+import { delayJobForRateLimit, rateLimitRetryAfterMs, type AccountingJobContext } from './accountingJobDelay';
+import { shouldDeferBackgroundWork } from '../services/accounting/accountingRateLimit';
 import {
   pushInvoiceToAccounting,
   voidInvoiceInAccounting,
@@ -205,7 +213,7 @@ export function getAccountingSyncQueue(): Queue<AccountingSyncJobData> {
  *     pushed. PAYMENT jobs are gated by the coordinator, not here — see
  *     `processPaymentJob` below.
  */
-export async function processAccountingSyncJob(data: AccountingSyncJobData): Promise<void> {
+export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?: AccountingJobContext): Promise<void> {
   if (data.type === 'mapping-sweep') {
     await processMappingSweep();
     return;
@@ -248,6 +256,8 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
           breezeEntityType: data.breezeEntityType, breezeEntityId: data.breezeEntityId,
         }, runInDbContext, target);
       } catch (err) {
+        const throttleMs = rateLimitRetryAfterMs(err);
+        if (throttleMs !== null) return delayJobForRateLimit(ctx, err, throttleMs);
         // Configuration/ownership refusals need operator action. Provider and
         // unexpected failures use the queue's existing attempts/backoff policy.
         if (!(err instanceof AccountingMappingError) || !MAPPING_TERMINAL_CODES.has(err.code)) throw err;
@@ -276,7 +286,7 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
         // all, and its own comment says it must work for a disconnected realm.
         // Returning here made it unreachable (review finding 8), so a payment
         // destroyed mid-create waited on a reconnect that may never come.
-        await processPaymentJob(data, runInDbContext);
+        await processPaymentJob(data, runInDbContext, undefined, ctx);
         return;
       }
       if (data.type === 'push-payment' || data.type === 'delete-payment') {
@@ -292,7 +302,7 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
     if (data.type === 'push-invoice' && resolution.conn.pushMode !== 'auto') return;
 
     if (data.type === 'push-payment' || data.type === 'delete-payment') {
-      await processPaymentJob(data, runInDbContext, target);
+      await processPaymentJob(data, runInDbContext, target, ctx);
       return;
     }
 
@@ -303,6 +313,8 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
         await voidInvoiceInAccounting(data.invoiceId, data.partnerId, runInDbContext, target);
       }
     } catch (err) {
+      const throttleMs = rateLimitRetryAfterMs(err);
+      if (throttleMs !== null) return delayJobForRateLimit(ctx, err, throttleMs);
       if (err instanceof AccountingInvoicePushError && TERMINAL_CODES.has(err.code)) {
         console.error(
           '[AccountingSyncWorker] terminal failure, not retrying',
@@ -338,6 +350,7 @@ async function processPaymentJob(
   data: PushPaymentJobData | DeletePaymentJobData,
   runInDbContext: <T>(fn: () => Promise<T>) => Promise<T>,
   target?: ConnectionTarget,
+  ctx?: AccountingJobContext,
 ): Promise<void> {
   const startedAt = Date.now();
   let outcome: PaymentPushOutcome | PaymentDeleteOutcome;
@@ -346,6 +359,10 @@ async function processPaymentJob(
       ? await pushPaymentToAccounting(data.mappingId, data.partnerId, runInDbContext, target)
       : await deletePaymentInAccounting(data.mappingId, data.partnerId, runInDbContext, target);
   } catch (err) {
+    // Review Focus 5: the coordinator already released the lease and kept the
+    // row owed without counting an attempt; the job waits out Retry-After.
+    const throttleMs = rateLimitRetryAfterMs(err);
+    if (throttleMs !== null) return delayJobForRateLimit(ctx, err, throttleMs);
     if (err instanceof AccountingPaymentPushError && PAYMENT_TERMINAL_CODES.has(err.code)) {
       console.error(
         '[AccountingSyncWorker] terminal payment failure, not retrying',
@@ -379,7 +396,8 @@ async function processPaymentJob(
 export function createAccountingSyncWorker(): Worker<AccountingSyncJobData> {
   return new Worker<AccountingSyncJobData>(
     ACCOUNTING_SYNC_QUEUE,
-    async (job: Job<AccountingSyncJobData>) => processAccountingSyncJob(job.data),
+    // The lock token is what lets a throttled job move itself to `delayed`.
+    async (job: Job<AccountingSyncJobData>, token?: string) => processAccountingSyncJob(job.data, { job, token }),
     {
       connection: getBullMQConnection(),
       concurrency: 2,
@@ -518,8 +536,14 @@ function mappingJobId(entityType: MappingEntityType, entityId: string, partnerId
  * Each re-enqueued job targets the mapping row's OWN connection (its
  * integration_id, Xero W01); a row whose provider has no mapping capability is
  * skipped rather than enqueued only to be dropped.
+ *
+ * A row whose connection has nearly spent its provider's DAILY budget is
+ * `deferred` (left pending for a later sweep) so background work never starves
+ * interactive calls (Xero W01). QuickBooks declares no daily budget, so it never
+ * defers. A rate-limit-delayed job for the row sits in `delayed`, which the
+ * in-flight check below already skips — the sweep never duplicates it.
  */
-export async function processMappingSweep(now = new Date()): Promise<{ enqueued: number; failed: number }> {
+export async function processMappingSweep(now = new Date()): Promise<{ enqueued: number; failed: number; deferred: number }> {
   return runOutsideDbContext(async () => {
     const rows = await withSystemDbAccessContext(() => db.select({
       partnerId: accountingEntityMappings.partnerId,
@@ -538,8 +562,15 @@ export async function processMappingSweep(now = new Date()): Promise<{ enqueued:
     )), 'accountingSync.mapping-sweep');
     let enqueued = 0;
     let failed = 0;
+    let deferred = 0;
     for (const row of rows) {
-      if (!providerSupports(row.provider as AccountingProviderId, 'mapping')) continue;
+      const providerId = row.provider as AccountingProviderId;
+      if (!providerSupports(providerId, 'mapping')) continue;
+      const provider = findAccountingProvider(providerId);
+      if (provider && await shouldDeferBackgroundWork(providerId, provider.limits.rate, row.integrationId)) {
+        deferred++;
+        continue;
+      }
       const entityType = row.breezeEntityType as MappingEntityType;
       const job = await getAccountingSyncQueue().getJob(mappingJobId(entityType, row.breezeEntityId, row.partnerId));
       if (job) {
@@ -550,7 +581,8 @@ export async function processMappingSweep(now = new Date()): Promise<{ enqueued:
       if (await enqueueAccountingMappingSync(entityType, row.breezeEntityId, row.partnerId, row.integrationId)) enqueued++;
       else failed++;
     }
-    return { enqueued, failed };
+    console.log('[AccountingSyncWorker] mapping sweep complete', `rows=${rows.length}`, `enqueued=${enqueued}`, `failed=${failed}`, `deferred=${deferred}`);
+    return { enqueued, failed, deferred };
   });
 }
 
