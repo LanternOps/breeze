@@ -185,7 +185,15 @@ const DEPTH_LIMIT_ARRAY_KEEP = 2;
 // instead of letting one oversized leaf blow the tier's budget.
 const DEPTH_LIMIT_ITEM_PREVIEW_CHARS = 150;
 
-function shallowGistAtDepthLimit(item: unknown): unknown {
+function shallowGistAtDepthLimit(item: unknown, config: CompactConfig, stats: CompactStats): unknown {
+  // A primitive (string/number/boolean/null) still needs its OWN cap here —
+  // this path replaces the normal recursive compactValue call for these
+  // items, so nothing else will apply the ordinary maxStringChars budget to
+  // it. Without this, a single oversized string element at the depth
+  // ceiling (a long log line, message field — not just object-shaped items
+  // like topIssues) would be kept whole and unbounded, defeating the size
+  // guarantee the depth ceiling exists to provide.
+  if (typeof item === 'string') return truncateText(item, config.maxStringChars, stats);
   if (item === null || typeof item !== 'object') return item;
   const serialized = safeStringify(item);
   if (serialized.length <= DEPTH_LIMIT_ITEM_PREVIEW_CHARS) return item;
@@ -317,7 +325,7 @@ function compactValue(
     // preview otherwise) and mark what didn't fit.
     const atItemDepthCeiling = depth + 1 >= config.maxDepth;
     const compacted = atItemDepthCeiling
-      ? items.slice(0, DEPTH_LIMIT_ARRAY_KEEP).map(shallowGistAtDepthLimit)
+      ? items.slice(0, DEPTH_LIMIT_ARRAY_KEEP).map((item) => shallowGistAtDepthLimit(item, config, stats))
       : items
           .slice(0, config.maxArrayItems)
           .map((item) => compactValue(item, stats, config, depth + 1));
