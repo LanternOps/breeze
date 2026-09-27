@@ -210,7 +210,7 @@ describe('processAccountingSyncJob', () => {
     ).rejects.toBe(err);
   });
 
-  it('rethrows quickbooks_error (502) so BullMQ retries', async () => {
+  it('rethrows provider_error (502) so BullMQ retries', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());
     const err = new AccountingInvoicePushError('provider_error', 502, 'upstream QuickBooks failure');
     pushInvoiceMock.mockRejectedValue(err);
@@ -222,11 +222,12 @@ describe('processAccountingSyncJob', () => {
 
   it('treats the legacy quickbooks_error code as retryable (dead alias, Xero W01)', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());
-    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('quickbooks_error', 502, 'x'));
+    const err = new AccountingInvoicePushError('quickbooks_error', 502, 'x');
+    pushInvoiceMock.mockRejectedValue(err);
 
     await expect(
       processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
-    ).rejects.toThrow('x');
+    ).rejects.toBe(err);
   });
 
   it('rethrows an unexpected non-typed error so BullMQ retries', async () => {
@@ -445,7 +446,7 @@ describe('payment jobs', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
-  it('rethrows a delete-payment RETRYABLE code (quickbooks_error) so BullMQ retries', async () => {
+  it('rethrows a delete-payment RETRYABLE code (provider_error) so BullMQ retries', async () => {
     deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('provider_error', 502, 'upstream'));
     await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
       .rejects.toThrow('upstream');

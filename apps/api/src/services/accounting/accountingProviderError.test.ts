@@ -35,6 +35,10 @@ describe('qboErrorToProviderError (QBO boundary)', () => {
     [raw({ status: 400, qboFaultCode: '610', qboFaultMessage: 'Object Not Found' }), 'not_found'],
     [raw({ status: 400, body: '{"Fault":{"Error":[{"Message":"Duplicate Document Number Error"}]}}' }), 'duplicate_doc_number'],
     [raw({ status: 400, qboFaultCode: '6000', qboFaultMessage: 'Business Validation Error' }), 'validation'],
+    // The status-400 gate on the message regex: a 503 that merely mentions
+    // invalid_grant must NOT become a forced reauth disconnect.
+    [raw({ status: 503 }, 'upstream 503 mentioning invalid_grant'), 'transient'],
+    [raw({ status: 400 }, 'invalid_grant: token revoked'), 'reauth'],
     [raw({ status: 429 }), 'transient'],   // W01c changes this row to rate_limited
     [raw({ status: 503 }), 'transient'],
     [new Error('fetch failed'), 'transient'],

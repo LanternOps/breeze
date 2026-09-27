@@ -1,0 +1,95 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+/**
+ * The QuickBooks provider's error BOUNDARY (Xero W01), end to end from a real
+ * fetch reply. The core coordinators branch on `kind` only, and their tests
+ * inject pre-translated fixtures — so if a public method ever lost its
+ * `boundary()` wrapper, every core test would stay green while a revoked token
+ * retried forever (no `reauth`) and a payment-linked void went back to five
+ * retries (no `payment_linked`, #5180). These tests start from the wire.
+ */
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
+import { quickbooksProvider } from './quickbooksProvider';
+import { AccountingProviderError } from './accountingProviderError';
+import type { AccountingConnection } from './accountingConnectionService';
+
+function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
+  return {
+    id: 'c1', partnerId: 'p1', provider: 'quickbooks',
+    realmId: 'realm123', accessToken: 'tok', refreshToken: 'r',
+    accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+    refreshTokenExpiresAt: new Date(Date.now() + 86_400_000),
+    environment: 'sandbox', homeCurrency: 'USD', multiCurrencyEnabled: null,
+    defaultIncomeAccountRef: null, defaultTaxCodeRef: null,
+    pushMode: 'auto', status: 'connected',
+    createdAt: null, updatedAt: null, lastError: null,
+    realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,
+    ...overrides,
+  };
+}
+
+async function rejectionOf(p: Promise<unknown>): Promise<AccountingProviderError> {
+  return p.then(
+    () => { throw new Error('expected the provider call to reject'); },
+    (e: unknown) => e as AccountingProviderError,
+  );
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('QuickbooksProvider error boundary', () => {
+  it('refresh(): a 400 invalid_grant token response rejects as kind reauth', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'invalid_grant', error_description: 'Token invalid' }),
+      { status: 400 },
+    ));
+
+    const err = await rejectionOf(quickbooksProvider.refresh('revoked-rt'));
+
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err.kind).toBe('reauth');
+    expect(err.provider).toBe('quickbooks');
+    expect(err.status).toBe(400);
+  });
+
+  it('voidInvoice(): a payment-linked 6000 fault rejects as kind payment_linked', async () => {
+    const detail = 'Business Validation Error: You cannot void this invoice because it has payments applied to it.';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6000', Message: 'Business Validation Error', Detail: detail }] } }),
+      { status: 400 },
+    ));
+
+    const err = await rejectionOf(quickbooksProvider.voidInvoice(
+      conn(),
+      { invoiceId: 'inv-1', docNumber: 'INV-1', currencyCode: 'USD' },
+      { remoteEntityId: '310', remoteSyncToken: '4' },
+    ));
+
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err.kind).toBe('payment_linked');
+    expect(err.providerMessage).toBe('Business Validation Error');
+    expect(err.telemetryTags).toEqual({ qbo_fault_code: '6000' });
+  });
+
+  it('pushInvoice(): a plain 500 rejects as kind transient and keeps the original message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('upstream exploded', { status: 500 }));
+
+    const err = await rejectionOf(quickbooksProvider.pushInvoice(conn(), {
+      invoiceId: 'inv-1', docNumber: 'INV-1', txnDate: '2026-09-01', dueDate: '2026-09-15',
+      customerRef: { id: '55' }, currencyCode: 'USD',
+      subtotal: '100.00', taxTotal: '7.00', total: '107.00',
+      lines: [{
+        invoiceLineId: 'l1', description: 'Onsite support',
+        quantity: '2.00', unitPrice: '50.00', lineTotal: '100.00', taxable: true,
+      }],
+      mapping: null,
+    }, []));
+
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err.kind).toBe('transient');
+    expect(err.message).toBe('QuickBooks invoice push failed with 500');
+    expect(err.status).toBe(500);
+  });
+});

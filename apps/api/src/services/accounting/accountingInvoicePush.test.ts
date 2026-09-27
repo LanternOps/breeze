@@ -1060,7 +1060,7 @@ describe('pushInvoiceToAccounting', () => {
     expect(mappingUpdate?.patch.remoteDocNumber).toBeNull();
   });
 
-  it('on provider failure, marks the mapping error with the exact sanitized message and rethrows quickbooks_error 502', async () => {
+  it('on provider failure, marks the mapping error with the exact sanitized message and rethrows provider_error 502', async () => {
     pushInvoiceMock.mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }));
 
     let caught: AccountingInvoicePushError | undefined;
@@ -1188,7 +1188,7 @@ describe('pushInvoiceToAccounting', () => {
     expect(mappingUpdate?.patch.syncStatus).toBe('synced');
   });
 
-  it('maps a concurrent-insert race (unique violation on first push) to quickbooks_error instead of a raw 500', async () => {
+  it('maps a concurrent-insert race (unique violation on first push) to provider_error instead of a raw 500', async () => {
     setup({ mappings: [orgMappingRow()] });
     stubInsertWithViolation();
     insertUniqueViolation = 'accounting_entity_mappings_breeze_uniq';
@@ -1198,7 +1198,7 @@ describe('pushInvoiceToAccounting', () => {
   });
 
   describe('nested dependency-sync failures (syncMappedEntity)', () => {
-    it('maps a permanent pre-flight 409 from the ORG sync (e.g. a create-time currency_mismatch) to dependency_not_ready, never quickbooks_error', async () => {
+    it('maps a permanent pre-flight 409 from the ORG sync (e.g. a create-time currency_mismatch) to dependency_not_ready, never provider_error', async () => {
       setup({
         mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
       });
@@ -1247,7 +1247,7 @@ describe('pushInvoiceToAccounting', () => {
       expect(pushInvoiceMock).not.toHaveBeenCalled();
     });
 
-    it('preserves a genuine quickbooks_error/502 from a nested sync as quickbooks_error — not conflated with dependency_not_ready', async () => {
+    it('preserves a genuine provider_error/502 from a nested sync as provider_error — not conflated with dependency_not_ready', async () => {
       setup({
         mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
       });

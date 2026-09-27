@@ -5,8 +5,8 @@
  *
  * `providerMessage` is the short fault CLASS ("Business Validation Error") —
  * never a provider `Detail`, which carries customer names and amounts.
- * `logBody` is for the SERVER LOG only (it never reaches Sentry or a mapping
- * card). `telemetryTags` are chosen by the provider and must be id- and PII-free
+ * `logBody` is for the SERVER LOG only (it is never placed on a mapping card
+ * or a Sentry tag). `telemetryTags` are chosen by the provider and must be id- and PII-free
  * (QuickBooks keeps its historical `qbo_fault_code` tag this way).
  */
 import type { AccountingProviderId } from './types';

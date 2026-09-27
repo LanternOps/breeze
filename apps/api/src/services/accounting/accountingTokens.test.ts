@@ -447,7 +447,13 @@ describe('accountingTokens', () => {
     const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
     const { db } = makeLockableDb(lockedRow());
     // 503 whose body merely mentions invalid_grant — must NOT force-disconnect.
-    const boom = Object.assign(new Error('upstream 503 mentioning invalid_grant'), { status: 503 });
+    // Built through the real QBO boundary so the classification under test is
+    // the one the provider actually applies (not a raw error isInvalidGrant
+    // would reject for any reason).
+    const boom = qboErrorToProviderError(
+      Object.assign(new Error('upstream 503 mentioning invalid_grant'), { status: 503 }),
+      'QuickBooks token refresh',
+    );
     mocks.provider.refresh.mockRejectedValueOnce(boom);
 
     const { getValidAccessToken } = await import('./accountingTokens');

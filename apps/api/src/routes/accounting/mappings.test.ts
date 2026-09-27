@@ -253,7 +253,7 @@ describe('GET /accounting/:provider/mappings', () => {
     expect(await res.json()).toMatchObject({ code: 'reauth_required' });
   });
 
-  it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
+  it('maps AccountingMappingError(provider_error) to 502 without leaking upstream body', async () => {
     listMappingProposalsMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks returned an error while listing customers'));
     const res = await app().request('/accounting/quickbooks/mappings?entityType=org');
     expect(res.status).toBe(502);
@@ -520,7 +520,7 @@ describe('PUT /accounting/:provider/mappings', () => {
     expect(await res.json()).toMatchObject({ code: 'entity_not_found' });
   });
 
-  it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
+  it('maps AccountingMappingError(provider_error) to 502 without leaking upstream body', async () => {
     saveMappingDecisionMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks returned an error while listing customers'));
     const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'confirmed', remoteEntityId: 'qb-1' });
     expect(res.status).toBe(502);
@@ -633,7 +633,7 @@ describe('POST /accounting/:provider/mappings/sync', () => {
     expect(await res.json()).toMatchObject({ code: 'item_price_required' });
   });
 
-  it('maps AccountingMappingError(quickbooks_error) to 502 without leaking upstream body', async () => {
+  it('maps AccountingMappingError(provider_error) to 502 without leaking upstream body', async () => {
     syncMappedEntityMock.mockRejectedValue(new AccountingMappingError('provider_error', 502, 'QuickBooks rejected the customer sync'));
     const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
     expect(res.status).toBe(502);
