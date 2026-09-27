@@ -26,6 +26,7 @@ import { accountingConnections } from '../../db/schema';
 import { createPartner } from './db-utils';
 import { upsertConnection } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
+import { qboErrorToProviderError } from '../../services/accounting/quickbooksFault';
 
 const refreshMock = vi.fn();
 
@@ -89,7 +90,12 @@ describe('getValidAccessToken persists reauth_required (#7189)', () => {
     const conn = await seedConnection({ refreshTokenExpiresAt: new Date(Date.now() + 30 * DAY) });
     expect(conn.status).toBe('connected');
     refreshMock.mockReset();
-    refreshMock.mockRejectedValueOnce(Object.assign(new Error('invalid_grant'), { status: 400, qboError: 'invalid_grant' }));
+    // What QuickbooksProvider.refresh() really throws since Xero W01: the raw QBO
+    // invalid_grant translated at the provider boundary into kind 'reauth'.
+    refreshMock.mockRejectedValueOnce(qboErrorToProviderError(
+      Object.assign(new Error('invalid_grant'), { status: 400, qboError: 'invalid_grant' }),
+      'QuickBooks token refresh',
+    ));
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
