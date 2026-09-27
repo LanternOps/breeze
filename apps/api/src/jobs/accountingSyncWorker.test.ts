@@ -23,14 +23,29 @@ const { runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(()
   withSystemDbAccessContextMock: vi.fn((fn: () => unknown) => fn()),
 }));
 vi.mock('../db', () => ({
-  db: { select: () => ({ from: () => ({ where: selectWhereMock }) }) },
+  // The mapping sweep joins its connection (Xero W01) — same terminal `where`.
+  db: { select: () => ({ from: () => ({ where: selectWhereMock, innerJoin: () => ({ where: selectWhereMock }) }) }) },
   runOutsideDbContext: runOutsideDbContextMock,
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
 const { getConnectionMock } = vi.hoisted(() => ({ getConnectionMock: vi.fn() }));
+// Xero W01: the worker resolves its connection through resolveJobConnection —
+// by id (targeted jobs), by mapping row (payment jobs) or the partner's active
+// row (legacy jobs). All three delegate to the ONE existing mock so every
+// fixture below keeps driving the same branch it always did.
 vi.mock('../services/accounting/accountingConnectionService', () => ({
   getConnection: getConnectionMock,
+  resolveActiveConnection: (...args: unknown[]) => getConnectionMock(...args),
+  getConnectionById: (...args: unknown[]) => getConnectionMock(...args),
+  getConnectionForMapping: (...args: unknown[]) => getConnectionMock(...args),
+}));
+const getConnectionByIdMock = getConnectionMock;
+
+const { providerSupportsMock } = vi.hoisted(() => ({ providerSupportsMock: vi.fn((_id: string, _cap: string) => true) }));
+vi.mock('../services/accounting/providerRegistry', () => ({
+  providerSupports: providerSupportsMock,
+  LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
 }));
 
 const { pushInvoiceMock, voidInvoiceMock } = vi.hoisted(() => ({
@@ -85,7 +100,7 @@ const INV_ID = '11111111-1111-1111-1111-111111111111';
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 
 function connectionRow(overrides: Record<string, unknown> = {}) {
-  return { id: 'conn-1', status: 'connected', pushMode: 'auto', ...overrides };
+  return { id: 'conn-1', provider: 'quickbooks', status: 'connected', pushMode: 'auto', ...overrides };
 }
 
 describe('processAccountingSyncJob', () => {
@@ -149,7 +164,7 @@ describe('processAccountingSyncJob', () => {
 
     await processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
 
-    expect(voidInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID, expect.any(Function));
+    expect(voidInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID, expect.any(Function), { connectionId: 'conn-1' });
   });
 
   const terminalCodes: Array<[AccountingInvoicePushErrorCode, 404 | 409 | 502]> = [
@@ -250,10 +265,10 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
 
   it('enqueues a push-invoice job with a stable, colon-free jobId and the retry policy', async () => {
     queueAddMock.mockResolvedValue({ id: 'j1' });
-    await enqueueAccountingInvoicePush(INV_ID, PARTNER_ID);
+    await enqueueAccountingInvoicePush(INV_ID, PARTNER_ID, 'conn-1');
     expect(queueAddMock).toHaveBeenCalledWith(
       'push-invoice',
-      { type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID },
+      { type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' },
       expect.objectContaining({
         jobId: `accounting-push-${INV_ID}`,
         attempts: 5,
@@ -272,10 +287,10 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
 
   it('enqueues a void-invoice job with a stable, colon-free jobId and the retry policy', async () => {
     queueAddMock.mockResolvedValue({ id: 'j1' });
-    await enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID);
+    await enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID, 'conn-1');
     expect(queueAddMock).toHaveBeenCalledWith(
       'void-invoice',
-      { type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID },
+      { type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' },
       expect.objectContaining({ jobId: `accounting-void-${INV_ID}` }),
     );
     const opts = queueAddMock.mock.calls[0]![2] as Record<string, unknown>;
@@ -290,19 +305,19 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
 
   it('reports acceptance so the bulk route can count honestly', async () => {
     queueAddMock.mockResolvedValue({ id: 'j1' });
-    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID)).resolves.toBe(true);
-    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBe(true);
+    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(true);
+    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(true);
   });
 
   it('never throws when the queue add fails (e.g. Redis down) — push — and reports false', async () => {
     queueAddMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID)).resolves.toBe(false);
+    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('never throws when the queue add fails (e.g. Redis down) — void — and reports false', async () => {
     queueAddMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBe(false);
+    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 });
@@ -316,7 +331,7 @@ describe('payment jobs', () => {
     // in THIS describe (e.g. the converted_to_delete enqueue below) can never
     // leak into the exact `queueAddMock.mock.calls` assertion further down.
     vi.clearAllMocks();
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'auto', pullPayments: true, pushPayments: true });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected', pushMode: 'auto', pullPayments: true, pushPayments: true });
     pushPaymentMock.mockResolvedValue('pushed');
     deletePaymentMock.mockResolvedValue('deleted');
     awaitsRemoteRefMock.mockResolvedValue(false);
@@ -325,14 +340,14 @@ describe('payment jobs', () => {
   it('runs a push-payment job through the coordinator with a SYSTEM runner and no ambient context', async () => {
     await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
     expect(runOutsideDbContextMock).toHaveBeenCalled();
-    expect(pushPaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+    expect(pushPaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function), { connectionId: 'c1' });
   });
 
   it('does NOT apply the pushMode gate to payment jobs — the coordinator owns that', async () => {
     // The pushMode gate exists for push-invoice only. requestPaymentPush already
     // refused to create the mapping in manual mode, so a payment job that EXISTS
     // in manual mode came from the manual fan-out and must run.
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'manual', pushPayments: true });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected', pushMode: 'manual', pushPayments: true });
     await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
     expect(pushPaymentMock).toHaveBeenCalled();
   });
@@ -351,7 +366,7 @@ describe('payment jobs', () => {
     // Finding I2. The mapping row is the OUTBOX, so a silent return left it
     // `pending` with an empty last_error while the 15-minute sweep re-enqueued
     // it forever against a realm that may have been disconnected for weeks.
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
 
     await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
     await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
@@ -370,19 +385,19 @@ describe('payment jobs', () => {
     // was destroyed, and it needs NO live realm — everything it does happens
     // before `resolveConnection`. Returning at the not-connected gate made it
     // unreachable, so such a row waited on a reconnect that may never come.
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
     awaitsRemoteRefMock.mockResolvedValue(true);
     deletePaymentMock.mockResolvedValue('unresolved_dropped');
 
     await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
 
-    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function), undefined);
     expect(noteSkippedMock).not.toHaveBeenCalled();
   });
 
   it('still records the skip for a disconnected delete-payment that DOES carry a remote id', async () => {
     // That one genuinely needs a live realm to reach QuickBooks with.
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
     awaitsRemoteRefMock.mockResolvedValue(false);
 
     await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
@@ -409,9 +424,9 @@ describe('payment jobs', () => {
   });
 
   it('runs a delete-payment job even when the connection has both switches off', async () => {
-    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'manual', pushPayments: false });
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected', pushMode: 'manual', pushPayments: false });
     await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
-    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function), { connectionId: 'c1' });
   });
 
   it('treats a delete-payment TERMINAL code (not_connected) as logged, not rethrown', async () => {
@@ -490,7 +505,7 @@ describe('mapping jobs and recovery sweep', () => {
   });
   it('syncs mappings outside the DB context with a system runner even in manual mode', async () => {
     await processAccountingSyncJob(mappingJob);
-    expect(syncMappingMock).toHaveBeenCalledWith({ partnerId: PARTNER_ID, provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: INV_ID }, expect.any(Function));
+    expect(syncMappingMock).toHaveBeenCalledWith({ partnerId: PARTNER_ID, provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: INV_ID }, expect.any(Function), { connectionId: 'conn-1' });
     expect(runOutsideDbContextMock).toHaveBeenCalled();
     const runner = syncMappingMock.mock.calls[0]![1];
     await runner(async () => undefined);
@@ -526,12 +541,12 @@ describe('mapping jobs and recovery sweep', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
   it('enqueues with a tenant-qualified stable ID and queue retry policy', async () => {
-    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID)).resolves.toBe(true);
-    expect(queueAddMock).toHaveBeenCalledWith('sync-mapping', mappingJob, { jobId: `accounting-mapping-${PARTNER_ID}-org-${INV_ID}`, attempts: 5, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: true, removeOnFail: true });
+    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(true);
+    expect(queueAddMock).toHaveBeenCalledWith('sync-mapping', { ...mappingJob, connectionId: 'conn-1' }, { jobId: `accounting-mapping-${PARTNER_ID}-org-${INV_ID}`, attempts: 5, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: true, removeOnFail: true });
   });
   it('reports enqueue outages so the sweep can recover', async () => {
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
-    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID)).resolves.toBe(false);
+    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID, 'conn-1')).resolves.toBe(false);
   });
   it('sweeps only stale pending decisions and skips jobs already in flight', async () => {
     const now = new Date('2026-09-16T12:00:00Z');
@@ -569,5 +584,114 @@ describe('mapping jobs and recovery sweep', () => {
     selectWhereMock.mockRejectedValueOnce(new Error('db down'));
     await expect(processAccountingSyncJob({ type: 'mapping-sweep' })).rejects.toThrow('db down');
     expect(queueAddMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('connectionId + capability gates (Xero W01)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    pushInvoiceMock.mockResolvedValue({});
+    syncMappingMock.mockResolvedValue({});
+    queueAddMock.mockResolvedValue({ id: 'job' });
+    queueGetJobMock.mockResolvedValue(undefined);
+  });
+
+  it('a job for a replaced connection completes without calling the coordinator', async () => {
+    getConnectionByIdMock.mockResolvedValue(null);
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: 'i1', partnerId: 'p1', connectionId: 'c-old' });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('[AccountingSyncWorker] job dropped'), 'reason=connection_gone', 'type=push-invoice', expect.anything(), expect.anything());
+  });
+
+  it('a targeted job passes { connectionId } through to the coordinator', async () => {
+    getConnectionByIdMock.mockResolvedValue(connectionRow({ id: 'c1', provider: 'quickbooks' }));
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: 'i1', partnerId: 'p1', connectionId: 'c1' });
+    expect(pushInvoiceMock).toHaveBeenCalledWith('i1', 'p1', expect.any(Function), { connectionId: 'c1' });
+  });
+
+  it('a targeted void passes { connectionId } through to the coordinator', async () => {
+    getConnectionByIdMock.mockResolvedValue(connectionRow({ id: 'c1' }));
+    voidInvoiceMock.mockResolvedValue(undefined);
+    await processAccountingSyncJob({ type: 'void-invoice', invoiceId: 'i1', partnerId: 'p1', connectionId: 'c1' });
+    expect(voidInvoiceMock).toHaveBeenCalledWith('i1', 'p1', expect.any(Function), { connectionId: 'c1' });
+  });
+
+  it('drops a legacy (connectionId-less) job when the partner\'s active connection is not QuickBooks', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ id: 'c-xero', provider: 'xero' }));
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: 'i1', partnerId: 'p1' });
+    await processAccountingSyncJob({ type: 'void-invoice', invoiceId: 'i1', partnerId: 'p1' });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith('[AccountingSyncWorker] job dropped', 'reason=legacy_non_quickbooks', 'type=push-invoice', 'partnerId=p1', 'connectionId=legacy');
+  });
+
+  it('drops a targeted job whose provider lacks the capability', async () => {
+    getConnectionByIdMock.mockResolvedValue(connectionRow({ id: 'c-xero', provider: 'xero' }));
+    providerSupportsMock.mockReturnValueOnce(false);
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: 'i1', partnerId: 'p1', connectionId: 'c-xero' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('xero', 'invoicePush');
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith('[AccountingSyncWorker] job dropped', 'reason=capability_unavailable', 'type=push-invoice', 'partnerId=p1', 'connectionId=c-xero');
+  });
+
+  it('drops a payment job whose mapping\'s provider cannot push payments — no coordinator, no skip stamp', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ id: 'c-xero', provider: 'xero' }));
+    providerSupportsMock.mockReturnValueOnce(false);
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: 'm1', partnerId: 'p1' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('xero', 'paymentPush');
+    expect(pushPaymentMock).not.toHaveBeenCalled();
+    expect(noteSkippedMock).not.toHaveBeenCalled();
+  });
+
+  it('a payment job targets the connection its mapping row belongs to', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ id: 'c-map' }));
+    pushPaymentMock.mockResolvedValue('pushed');
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: 'm1', partnerId: 'p1' });
+    expect(getConnectionMock).toHaveBeenCalledWith(expect.anything(), 'm1', 'p1');
+    expect(pushPaymentMock).toHaveBeenCalledWith('m1', 'p1', expect.any(Function), { connectionId: 'c-map' });
+  });
+
+  it('a targeted sync-mapping job passes its target to syncMappedEntity and uses the row\'s provider', async () => {
+    getConnectionByIdMock.mockResolvedValue(connectionRow({ id: 'c1' }));
+    await processAccountingSyncJob({ ...mappingJob, connectionId: 'c1' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', 'mapping');
+    expect(syncMappingMock).toHaveBeenCalledWith(
+      { partnerId: PARTNER_ID, provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: INV_ID },
+      expect.any(Function), { connectionId: 'c1' },
+    );
+  });
+
+  it('drops a sync-mapping job whose connection is gone', async () => {
+    getConnectionByIdMock.mockResolvedValue(null);
+    await processAccountingSyncJob({ ...mappingJob, connectionId: 'c-old' });
+    expect(syncMappingMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueue helpers carry the connectionId in the payload and keep the job ids unchanged', async () => {
+    await enqueueAccountingInvoicePush(INV_ID, PARTNER_ID, 'c1');
+    await enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID, 'c1');
+    await enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID, 'c1');
+    expect(queueAddMock.mock.calls.map((c) => [c[1], (c[2] as { jobId: string }).jobId])).toEqual([
+      [{ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'c1' }, `accounting-push-${INV_ID}`],
+      [{ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'c1' }, `accounting-void-${INV_ID}`],
+      [{ ...mappingJob, connectionId: 'c1' }, `accounting-mapping-${PARTNER_ID}-org-${INV_ID}`],
+    ]);
+  });
+
+  it('the mapping sweep enqueues with each row\'s own connection and skips providers without mapping', async () => {
+    selectWhereMock.mockResolvedValueOnce([
+      { ...mappingJob, integrationId: 'c-qbo', provider: 'quickbooks' },
+      { ...mappingJob, breezeEntityId: MAPPING_ID, integrationId: 'c-xero', provider: 'xero' },
+    ]);
+    providerSupportsMock.mockImplementation((id: string) => id === 'quickbooks');
+    try {
+      await expect(processMappingSweep()).resolves.toEqual({ enqueued: 1, failed: 0 });
+    } finally {
+      providerSupportsMock.mockImplementation(() => true);
+    }
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(queueAddMock.mock.calls[0]![1]).toEqual({ ...mappingJob, connectionId: 'c-qbo' });
   });
 });

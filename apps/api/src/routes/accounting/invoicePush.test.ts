@@ -89,6 +89,20 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteCustomers: listRemoteCustomersMock,
     listRemoteItems: listRemoteItemsMock,
   })),
+  // Only QuickBooks is a registered provider today (Xero W01 capability gate).
+  providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap),
+}));
+
+// Xero W01: push-bulk resolves the partner's ONE connection before enqueueing
+// (each job carries its id). Defaults to a connected QuickBooks row so the
+// existing bulk tests drive exactly the path they always did.
+const { resolveActiveConnectionRefMock, providerSupportsMock } = vi.hoisted(() => ({
+  resolveActiveConnectionRefMock: vi.fn(),
+  providerSupportsMock: vi.fn((id: string, _cap: string) => id === 'quickbooks'),
+}));
+vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>()),
+  resolveActiveConnectionRef: resolveActiveConnectionRefMock,
 }));
 
 // Not exercised by these tests, but imported transitively by routes/accounting/index.ts.
@@ -200,6 +214,7 @@ function pushOutcome(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks', status: 'connected' });
   authState.scope = 'partner';
   authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
@@ -337,9 +352,9 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ enqueued: 2, skipped: 1, failed: 0 });
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledTimes(2);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1');
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1');
-    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', 'c1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1', 'c1');
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1', 'c1');
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -407,7 +422,49 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     });
     const res = await pushBulk([INVOICE_ID], `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, 'c1');
+  });
+
+  // Xero W01 capability gate (spec: routes return 409 capability_unavailable).
+  it('resolves the partner connection ONCE per request and stamps its id on every job', async () => {
+    selectMock.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
+    });
+    const res = await pushBulk([INVOICE_ID, INVOICE_ID_2]);
+    expect(res.status).toBe(200);
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledTimes(1);
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledWith(expect.anything(), 'p1');
+    expect(enqueueAccountingInvoicePushMock.mock.calls.map((call) => call[2])).toEqual(['c1', 'c1']);
+  });
+
+  it('409 capability_unavailable when the connected provider is not the one in the URL', async () => {
+    resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c-x', partnerId: 'p1', provider: 'xero', status: 'connected' });
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }) });
+    const res = await pushBulk([INVOICE_ID]);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+  });
+
+  it('409 capability_unavailable when the connected provider cannot push invoices', async () => {
+    providerSupportsMock.mockReturnValueOnce(false);
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }) });
+    const res = await pushBulk([INVOICE_ID]);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', 'invoicePush');
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+  });
+
+  it('with NO connection at all keeps the 200 response shape and enqueues nothing (every owned id is skipped)', async () => {
+    resolveActiveConnectionRefMock.mockResolvedValue(null);
+    selectMock.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
+    });
+    const res = await pushBulk([INVOICE_ID, INVOICE_ID_2, INVOICE_ID_FOREIGN]);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enqueued: 0, skipped: 3, failed: 0 });
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
   });
 });
 
@@ -424,7 +481,8 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
-    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks', expect.any(Function));
+    // Xero W01: the route's :provider is the connection target.
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', { provider: 'quickbooks' }, expect.any(Function));
     await expectAuthContextRunner(resolveConnectionAndTokenMock.mock.calls[0]![2]);
     expect(listRemoteCustomersMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Acme');
     expect(listRemoteItemsMock).not.toHaveBeenCalled();

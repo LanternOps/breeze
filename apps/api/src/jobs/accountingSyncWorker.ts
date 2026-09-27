@@ -50,14 +50,16 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { and, eq, inArray, lt } from 'drizzle-orm';
-import { accountingEntityMappings } from '../db/schema/accounting';
+import { accountingConnections, accountingEntityMappings } from '../db/schema/accounting';
 import { jobSchedule } from './scheduleRegistry';
-import { syncMappedEntity, AccountingMappingError, type MappingEntityType, type AccountingMappingErrorCode } from '../services/accounting/accountingMappingService';
+import { syncMappedEntity, AccountingMappingError, type ConnectionTarget, type MappingEntityType, type AccountingMappingErrorCode } from '../services/accounting/accountingMappingService';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { getConnection } from '../services/accounting/accountingConnectionService';
+import { LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
+import type { AccountingCapability, AccountingProviderId } from '../services/accounting/types';
+import { logJobDrop, resolveJobConnection, type JobConnectionRef } from './accountingJobConnection';
 import {
   pushInvoiceToAccounting,
   voidInvoiceInAccounting,
@@ -78,15 +80,20 @@ import {
 
 export const ACCOUNTING_SYNC_QUEUE = 'accounting-sync';
 
+// `connectionId` (Xero W01): the exact connection the job was enqueued for. It
+// is optional ONLY so jobs enqueued before W01 still parse; every enqueue helper
+// below requires it. See `accountingJobConnection.ts` for the drop rules.
 interface PushInvoiceJobData {
   type: 'push-invoice';
   invoiceId: string;
   partnerId: string;
+  connectionId?: string;
 }
 interface VoidInvoiceJobData {
   type: 'void-invoice';
   invoiceId: string;
   partnerId: string;
+  connectionId?: string;
 }
 interface PushPaymentJobData {
   type: 'push-payment';
@@ -105,6 +112,7 @@ interface SyncMappingJobData {
   partnerId: string;
   breezeEntityType: MappingEntityType;
   breezeEntityId: string;
+  connectionId?: string;
 }
 export type AccountingSyncJobData =
   PushInvoiceJobData | VoidInvoiceJobData | PushPaymentJobData | DeletePaymentJobData
@@ -176,7 +184,13 @@ export function getAccountingSyncQueue(): Queue<AccountingSyncJobData> {
  * were entered with none — see the runner built below.
  *
  * Gating:
- *   - No QuickBooks connection, or one not in `status: 'connected'` — return
+ *   - Which connection (Xero W01): `resolveJobConnection` — a job carrying a
+ *     `connectionId` runs against that row or is dropped (log + complete) when
+ *     it is gone or its provider lacks the capability; a legacy job (no
+ *     `connectionId`) runs only against a QuickBooks active connection; a
+ *     payment job binds through its mapping row. The resolved connection is
+ *     passed to the coordinator as its target — never "whatever is connected".
+ *   - No connection, or one not in `status: 'connected'` — return
  *     without calling the coordinator (nothing to sync against). The ONE
  *     exception is a `delete-payment` whose mapping has no remote id: its
  *     grace-window resolution needs no live realm — see
@@ -203,12 +217,33 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
     const runInDbContext = <T>(fn: () => Promise<T>): Promise<T> =>
       withSystemDbAccessContext(fn, `accountingSync.${data.type}`);
 
+    const capability: AccountingCapability = data.type === 'push-payment' || data.type === 'delete-payment'
+      ? 'paymentPush' : data.type === 'sync-mapping' ? 'mapping' : 'invoicePush';
+    const jobConnectionId = 'connectionId' in data ? data.connectionId : undefined;
+    // Exclusive by construction (accountingJobConnection.ts's JobConnectionRef):
+    // payment jobs bind through their mapping row, everything else through
+    // connectionId (or neither, for a legacy pre-W01 job) — never both.
+    const jobConnectionRef: JobConnectionRef = 'mappingId' in data
+      ? { partnerId: data.partnerId, mappingId: data.mappingId }
+      : jobConnectionId !== undefined
+        ? { partnerId: data.partnerId, connectionId: jobConnectionId }
+        : { partnerId: data.partnerId };
+    const resolution = await runInDbContext(() => resolveJobConnection(jobConnectionRef, capability, db));
+    if (resolution.kind === 'drop') {
+      logJobDrop('AccountingSyncWorker', data.type, { partnerId: data.partnerId, connectionId: jobConnectionId }, resolution.reason);
+      return;
+    }
+    const conn = resolution.conn;
+    const target = resolution.kind === 'ok' ? resolution.target : undefined;
+
     if (data.type === 'sync-mapping') {
       try {
+        // A missing/unconnected row still reaches the coordinator: it raises
+        // its own not_connected/reauth_required, which is terminal below.
         await syncMappedEntity({
-          partnerId: data.partnerId, provider: 'quickbooks',
+          partnerId: data.partnerId, provider: conn?.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER,
           breezeEntityType: data.breezeEntityType, breezeEntityId: data.breezeEntityId,
-        }, runInDbContext);
+        }, runInDbContext, target);
       } catch (err) {
         // Configuration/ownership refusals need operator action. Provider and
         // unexpected failures use the queue's existing attempts/backoff policy.
@@ -221,8 +256,7 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
       }
       return;
     }
-    const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    if (!conn || conn.status !== 'connected') {
+    if (resolution.kind !== 'ok') {
       // A payment job's mapping row is the OUTBOX, so returning silently here
       // left it `pending` with an empty `last_error` while the 15-minute sweep
       // re-enqueued it forever against a realm that may have been disconnected
@@ -252,18 +286,18 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
     // already refused in manual mode, so a payment job in manual mode came from
     // the invoice push's own fan-out and must run. Deletes run in every mode:
     // once Breeze created a Payment in QuickBooks it owns its removal.
-    if (data.type === 'push-invoice' && conn.pushMode !== 'auto') return;
+    if (data.type === 'push-invoice' && resolution.conn.pushMode !== 'auto') return;
 
     if (data.type === 'push-payment' || data.type === 'delete-payment') {
-      await processPaymentJob(data, runInDbContext);
+      await processPaymentJob(data, runInDbContext, target);
       return;
     }
 
     try {
       if (data.type === 'push-invoice') {
-        await pushInvoiceToAccounting(data.invoiceId, data.partnerId, runInDbContext);
+        await pushInvoiceToAccounting(data.invoiceId, data.partnerId, runInDbContext, target);
       } else {
-        await voidInvoiceInAccounting(data.invoiceId, data.partnerId, runInDbContext);
+        await voidInvoiceInAccounting(data.invoiceId, data.partnerId, runInDbContext, target);
       }
     } catch (err) {
       if (err instanceof AccountingInvoicePushError && TERMINAL_CODES.has(err.code)) {
@@ -299,13 +333,14 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
 async function processPaymentJob(
   data: PushPaymentJobData | DeletePaymentJobData,
   runInDbContext: <T>(fn: () => Promise<T>) => Promise<T>,
+  target?: ConnectionTarget,
 ): Promise<void> {
   const startedAt = Date.now();
   let outcome: PaymentPushOutcome | PaymentDeleteOutcome;
   try {
     outcome = data.type === 'push-payment'
-      ? await pushPaymentToAccounting(data.mappingId, data.partnerId, runInDbContext)
-      : await deletePaymentInAccounting(data.mappingId, data.partnerId, runInDbContext);
+      ? await pushPaymentToAccounting(data.mappingId, data.partnerId, runInDbContext, target)
+      : await deletePaymentInAccounting(data.mappingId, data.partnerId, runInDbContext, target);
   } catch (err) {
     if (err instanceof AccountingPaymentPushError && PAYMENT_TERMINAL_CODES.has(err.code)) {
       console.error(
@@ -371,20 +406,23 @@ const ENQUEUE_OPTS = {
 };
 
 /**
- * Enqueue a QuickBooks push for a just-issued invoice. Fire-and-forget: a
+ * Enqueue an accounting push for a just-issued invoice. Fire-and-forget: a
  * Redis outage must NEVER fail the issuance that triggered it — the invoice
  * is simply not auto-synced until the next manual push/retry.
+ *
+ * `connectionId` (Xero W01) is REQUIRED: the job runs against that connection
+ * or is dropped. The jobId is unchanged, so dedup semantics do not move.
  *
  * Returns whether the queue ACCEPTED the job. The post-commit issue/void hooks
  * ignore it (there is nothing they could do), but the bulk push route reports
  * it: counting a swallowed Redis failure as "enqueued" told the operator the
  * work was queued when nothing had been.
  */
-export async function enqueueAccountingInvoicePush(invoiceId: string, partnerId: string): Promise<boolean> {
+export async function enqueueAccountingInvoicePush(invoiceId: string, partnerId: string, connectionId: string): Promise<boolean> {
   try {
     await getAccountingSyncQueue().add(
       'push-invoice',
-      { type: 'push-invoice', invoiceId, partnerId },
+      { type: 'push-invoice', invoiceId, partnerId, connectionId },
       { jobId: `accounting-push-${invoiceId}`, ...ENQUEUE_OPTS }
     );
     return true;
@@ -396,14 +434,14 @@ export async function enqueueAccountingInvoicePush(invoiceId: string, partnerId:
 }
 
 /**
- * Enqueue a QuickBooks void for a just-voided invoice. Fire-and-forget for
- * the same reason as the push enqueue above.
+ * Enqueue an accounting void for a just-voided invoice. Fire-and-forget for
+ * the same reason as the push enqueue above; same required `connectionId`.
  */
-export async function enqueueAccountingInvoiceVoid(invoiceId: string, partnerId: string): Promise<boolean> {
+export async function enqueueAccountingInvoiceVoid(invoiceId: string, partnerId: string, connectionId: string): Promise<boolean> {
   try {
     await getAccountingSyncQueue().add(
       'void-invoice',
-      { type: 'void-invoice', invoiceId, partnerId },
+      { type: 'void-invoice', invoiceId, partnerId, connectionId },
       { jobId: `accounting-void-${invoiceId}`, ...ENQUEUE_OPTS }
     );
     return true;
@@ -453,11 +491,11 @@ async function enqueuePaymentJob(
 
 /** A lost enqueue is recovered from the pending mapping by the sweep. */
 export async function enqueueAccountingMappingSync(
-  breezeEntityType: MappingEntityType, breezeEntityId: string, partnerId: string,
+  breezeEntityType: MappingEntityType, breezeEntityId: string, partnerId: string, connectionId: string,
 ): Promise<boolean> {
   try {
     await getAccountingSyncQueue().add('sync-mapping', {
-      type: 'sync-mapping', partnerId, breezeEntityType, breezeEntityId,
+      type: 'sync-mapping', partnerId, breezeEntityType, breezeEntityId, connectionId,
     }, { jobId: mappingJobId(breezeEntityType, breezeEntityId, partnerId), ...ENQUEUE_OPTS });
     return true;
   } catch (err) {
@@ -471,14 +509,24 @@ function mappingJobId(entityType: MappingEntityType, entityId: string, partnerId
   return `accounting-mapping-${partnerId}-${entityType}-${entityId}`;
 }
 
-/** Read in a short system context; release its connection before touching Redis. */
+/**
+ * Read in a short system context; release its connection before touching Redis.
+ * Each re-enqueued job targets the mapping row's OWN connection (its
+ * integration_id, Xero W01); a row whose provider has no mapping capability is
+ * skipped rather than enqueued only to be dropped.
+ */
 export async function processMappingSweep(now = new Date()): Promise<{ enqueued: number; failed: number }> {
   return runOutsideDbContext(async () => {
     const rows = await withSystemDbAccessContext(() => db.select({
       partnerId: accountingEntityMappings.partnerId,
       breezeEntityType: accountingEntityMappings.breezeEntityType,
       breezeEntityId: accountingEntityMappings.breezeEntityId,
-    }).from(accountingEntityMappings).where(and(
+      integrationId: accountingEntityMappings.integrationId,
+      provider: accountingConnections.provider,
+    }).from(accountingEntityMappings).innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    )).where(and(
       eq(accountingEntityMappings.syncStatus, 'pending'),
       inArray(accountingEntityMappings.linkStatus, ['confirmed', 'create_new']),
       inArray(accountingEntityMappings.breezeEntityType, ['org', 'catalog_item']),
@@ -487,6 +535,7 @@ export async function processMappingSweep(now = new Date()): Promise<{ enqueued:
     let enqueued = 0;
     let failed = 0;
     for (const row of rows) {
+      if (!providerSupports(row.provider as AccountingProviderId, 'mapping')) continue;
       const entityType = row.breezeEntityType as MappingEntityType;
       const job = await getAccountingSyncQueue().getJob(mappingJobId(entityType, row.breezeEntityId, row.partnerId));
       if (job) {
@@ -494,7 +543,7 @@ export async function processMappingSweep(now = new Date()): Promise<{ enqueued:
         if (state !== 'completed' && state !== 'failed' && state !== 'unknown') continue;
         await job.remove();
       }
-      if (await enqueueAccountingMappingSync(entityType, row.breezeEntityId, row.partnerId)) enqueued++;
+      if (await enqueueAccountingMappingSync(entityType, row.breezeEntityId, row.partnerId, row.integrationId)) enqueued++;
       else failed++;
     }
     return { enqueued, failed };

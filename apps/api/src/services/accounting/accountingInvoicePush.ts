@@ -53,13 +53,14 @@ import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../.
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
   AccountingMappingError,
+  type ConnectionTarget,
   resolveConnection,
   resolveLiveConnection,
   syncMappedEntity,
 } from './accountingMappingService';
 import type { AccountingConnection } from './accountingConnectionService';
 import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, normalizeCurrencyCode } from './accountingCurrency';
-import { getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import { isQboPaymentLinkedRefusal, qboFaultOf, qboFaultSuffix } from './quickbooksFault';
@@ -242,7 +243,7 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
     throw new AccountingInvoicePushError('home_currency_unknown', 409, err.message);
   }
 
-  const label = conn.provider === 'xero' ? 'Xero' : 'QuickBooks';
+  const label = accountingProviderDisplayName(conn.provider);
   const home = normalizeCurrencyCode(conn.homeCurrency);
   // multiCurrencyEnabled is a tri-state cache of an external fact (nullable =
   // never captured) — only a confirmed `true` gets the "not yet supported"
@@ -293,10 +294,11 @@ async function persistInvoicePreflightErrorInOwnContext(
   partnerId: string,
   invoiceId: string,
   message: string,
+  target?: ConnectionTarget,
 ): Promise<void> {
   try {
     await runInDbContext(async () => {
-      const conn = await resolveConnection(partnerId, 'quickbooks');
+      const conn = await resolveConnection(partnerId, target);
       const existingRows = await loadMappingRowsForType(partnerId, conn.id, 'invoice');
       const existing = existingRows.find((m) => m.breezeEntityId === invoiceId) ?? null;
 
@@ -755,6 +757,7 @@ export async function pushInvoiceToAccounting(
   invoiceId: string,
   partnerId: string,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<InvoicePushOutcome> {
   assertNoAmbientDbContext('pushInvoiceToAccounting');
 
@@ -777,7 +780,7 @@ export async function pushInvoiceToAccounting(
   };
   try {
     prep = await runInDbContext(async () => {
-      const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
+      const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
 
       const inv = await loadOwnedInvoice(invoiceId, partnerId);
       if (inv.invoiceNumber === null || !PUSHABLE_STATUSES.has(inv.status)) {
@@ -850,7 +853,7 @@ export async function pushInvoiceToAccounting(
       // Phase 1's transaction above already rolled back on this throw — this
       // persists in its own, separately-committed context (see the comment
       // on `persistInvoicePreflightErrorInOwnContext`).
-      await persistInvoicePreflightErrorInOwnContext(runInDbContext, partnerId, invoiceId, err.message);
+      await persistInvoicePreflightErrorInOwnContext(runInDbContext, partnerId, invoiceId, err.message, target);
     }
     throw err;
   }
@@ -861,7 +864,7 @@ export async function pushInvoiceToAccounting(
   let orgMapping = prep.orgMapping;
   if (orgMapping.syncStatus !== 'synced') {
     orgMapping = await syncMappedEntity({
-      partnerId, provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: inv.orgId,
+      partnerId, provider: conn.provider, breezeEntityType: 'org', breezeEntityId: inv.orgId,
     }, runInDbContext).catch(translateNestedSyncError);
   }
   const customerRemoteId = orgMapping.remoteEntityId;
@@ -880,7 +883,7 @@ export async function pushInvoiceToAccounting(
 
     if (itemMapping && itemMapping.syncStatus !== 'synced' && line.catalogItemId) {
       itemMapping = await syncMappedEntity({
-        partnerId, provider: 'quickbooks', breezeEntityType: 'catalog_item', breezeEntityId: line.catalogItemId,
+        partnerId, provider: conn.provider, breezeEntityType: 'catalog_item', breezeEntityId: line.catalogItemId,
       }, runInDbContext).catch(translateNestedSyncError);
       // Two lines can reference the same catalog item (e.g. a bundle sold
       // twice on one invoice) — write the synced result back so a LATER line
@@ -996,7 +999,8 @@ export async function pushInvoiceToAccounting(
   });
   if (becameVoid) {
     const { enqueueAccountingInvoiceVoid } = await import('../../jobs/accountingSyncWorker');
-    await enqueueAccountingInvoiceVoid(inv.id, partnerId);
+    // The connection this push just used (Xero W01: the void targets it too).
+    await enqueueAccountingInvoiceVoid(inv.id, partnerId, conn.id);
   }
 
   // ...but NOT for an invoice that went void mid-flight: the void job enqueued
@@ -1061,11 +1065,12 @@ export async function voidInvoiceInAccounting(
   invoiceId: string,
   partnerId: string,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<void> {
   assertNoAmbientDbContext('voidInvoiceInAccounting');
 
   const prep = await runInDbContext(async () => {
-    const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
+    const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
 
     const invoiceMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'invoice');
     const mappingRow = invoiceMappingRows.find((m) => m.breezeEntityId === invoiceId) ?? null;

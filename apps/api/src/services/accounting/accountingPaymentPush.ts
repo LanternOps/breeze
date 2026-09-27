@@ -58,7 +58,7 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
-import { AccountingMappingError, resolveConnection, resolveLiveConnection } from './accountingMappingService';
+import { AccountingMappingError, type ConnectionTarget, resolveConnection, resolveLiveConnection } from './accountingMappingService';
 import {
   AccountingCurrencyContractError,
   assertAccountingInvoicePushCurrency,
@@ -85,11 +85,11 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // `@breeze/shared` is a leaf package, so this closes no cycle.
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
-import { getAccountingProvider } from './providerRegistry';
+import { getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
-import type { AccountingConnection } from './accountingConnectionService';
-import type { AccountingPaymentPayload, PaymentDeleteResult, RemoteRef } from './types';
+import { getConnectionProviderForMapping, type AccountingConnection } from './accountingConnectionService';
+import type { AccountingPaymentPayload, AccountingProviderId, PaymentDeleteResult, RemoteRef } from './types';
 
 /** A row must be at least this stale before the sweep re-enqueues it, so the
  *  sweep never races the immediate enqueue the caller just made. */
@@ -457,6 +457,11 @@ async function paymentIsWithinPushHorizon(
   return createdAt.getTime() >= pushPaymentsSince.getTime();
 }
 
+/**
+ * The partner's ONE connected accounting connection
+ * (accounting_connections_partner_idx), or null when there is none or its
+ * provider cannot push payments (capability gate, Xero W01).
+ */
 async function loadConnectedConnection(
   tx: PaymentMappingExecutor,
   partnerId: string,
@@ -464,6 +469,7 @@ async function loadConnectedConnection(
   const rows = await tx
     .select({
       id: accountingConnections.id,
+      provider: accountingConnections.provider,
       pushMode: accountingConnections.pushMode,
       pushPayments: accountingConnections.pushPayments,
       pushPaymentsSince: accountingConnections.pushPaymentsSince,
@@ -471,11 +477,12 @@ async function loadConnectedConnection(
     .from(accountingConnections)
     .where(and(
       eq(accountingConnections.partnerId, partnerId),
-      eq(accountingConnections.provider, 'quickbooks'),
       eq(accountingConnections.status, 'connected'),
     ))
     .limit(1);
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row || !providerSupports(row.provider as AccountingProviderId, 'paymentPush')) return null;
+  return row;
 }
 
 /**
@@ -772,8 +779,13 @@ export async function requestPaymentDelete(
         + 'a QuickBooks Payment may exist that Breeze cannot name',
         `mappingId=${mapping.id}`, `invoicePaymentId=${invoicePaymentId}`, `partnerId=${mapping.partnerId}`,
       );
+      // Read inside the destroyer's own transaction (`tx`) — no second context.
+      // The row exists, so its connection does (composite FK, ON DELETE CASCADE).
+      // Provider column only: this void must not start failing on a connection
+      // whose tokens cannot be decrypted (it never read the row before W01).
+      const mappingProvider = await getConnectionProviderForMapping(tx, mapping.id, mapping.partnerId);
       fireAudit({
-        provider: 'quickbooks',
+        provider: mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER,
         action: 'accounting.payment.orphan_retained',
         orgId: null,
         resourceType: 'accounting_entity_mapping',
@@ -1300,7 +1312,9 @@ function fireAudit(params: {
  * because a `delete` must propagate even when both switches are off and even for
  * a connection the reconcile fan-out skipped (spec decision 10). The partial
  * index `accounting_entity_mappings_pending_op_idx` serves it, and the steady
- * state is zero rows.
+ * state is zero rows. The provider capability gate (Xero W01: skip rows whose
+ * provider cannot push payments) is applied by the reconcile sweep on top of
+ * this, via `getConnectionProvidersForMappings`, not by joining here.
  */
 export async function listOwedPaymentMappings(
   dbc: PaymentMappingExecutor,
@@ -1529,6 +1543,7 @@ export async function pushPaymentToAccounting(
   mappingId: string,
   partnerId: string,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<PaymentPushOutcome> {
   assertNoAmbientDbContext('pushPaymentToAccounting');
 
@@ -1564,7 +1579,7 @@ export async function pushPaymentToAccounting(
 
     // A typed refusal that must NOT be recorded simply THROWS: this whole phase
     // is one transaction, so the throw rolls the lease claim back too.
-    const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
+    const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
     if (!conn.pushPayments) {
       await markPaymentMappingError(mappingId, partnerId, PAYMENT_PUSH_DISABLED_MESSAGE, { clearPendingOp: true });
       return {
@@ -1886,6 +1901,7 @@ export async function deletePaymentInAccounting(
   mappingId: string,
   partnerId: string,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<PaymentDeleteOutcome> {
   assertNoAmbientDbContext('deletePaymentInAccounting');
 
@@ -1936,16 +1952,24 @@ export async function deletePaymentInAccounting(
       // Past the window nothing will resolve it. Drop the row rather than leave a
       // delete owed forever, and make the loss loud: a QuickBooks Payment may be
       // orphaned and only a human can reconcile it.
+      //
+      // The audit names the row's provider, so read its connection BEFORE the
+      // row (the only link to it) is deleted — in this same context, never a
+      // second one. The connection is never RESOLVED on this path (it must work
+      // even for a disconnected realm); this is a plain read of the row's own
+      // provider column — never its tokens, so a decrypt failure cannot block it.
+      const mappingProvider = await getConnectionProviderForMapping(db, mappingId, partnerId);
       await deleteMappingRow(db, mappingId);
       return {
         kind: 'outcome',
         outcome: 'unresolved_dropped',
         invoicePaymentId: claimed.breezeEntityId,
         unresolvedForMs,
+        provider: (mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId,
       } as const;
     }
 
-    const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
+    const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
 
     // `<PaymentId>/<remoteInvoiceId>` (paymentMappingRemoteId). Split on the
     // FIRST separator only: QBO ids are numeric, but the invoice half is opaque.
@@ -1997,10 +2021,8 @@ export async function deletePaymentInAccounting(
         { service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId },
       );
       fireAudit({
-        // The connection was never resolved on this path (it must work even for
-        // a disconnected realm), and this coordinator only ever runs against
-        // QuickBooks connections.
-        provider: 'quickbooks',
+        // The dropped row's own connection, read in Phase 1 before the delete.
+        provider: prep.provider,
         action: 'accounting.payment.delete_unresolved',
         orgId: null,
         resourceType: 'accounting_entity_mapping',

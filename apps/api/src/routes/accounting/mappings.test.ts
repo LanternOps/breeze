@@ -387,7 +387,7 @@ describe('PUT /accounting/:provider/mappings', () => {
     const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
       decision, ...(decision === 'confirmed' ? { remoteEntityId: 'qb-1' } : {}) });
     expect(res.status).toBe(200);
-    expect(enqueueMappingMock).toHaveBeenCalledWith('org', VALID_ORG_ID, 'p1');
+    expect(enqueueMappingMock).toHaveBeenCalledWith('org', VALID_ORG_ID, 'p1', 'conn-1');
     expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
   });
 

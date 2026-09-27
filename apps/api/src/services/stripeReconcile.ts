@@ -9,6 +9,7 @@ import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
+import { resolveActiveConnectionId } from './accounting/accountingConnectionService';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
 import { markSiblingRevocationIntentInTx, markSessionChargedRepair } from './stripeSessionRevocation';
@@ -343,6 +344,7 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
     }
 
     const paymentId = mapping.invoicePaymentId;
+    const partnerId = await invoicePartnerId(mapping.invoiceId);
     const full = input.amountRefundedCents >= input.chargeAmountCents;
     // The mapping id owed a `delete-payment` job once this transaction returns.
     let deleteMappingId: string | null = null;
@@ -412,21 +414,31 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // live lease would invite a second worker to create a second Payment.
       // Zero rows is legitimate and is NOT an error.
       const refunded = fromMinorUnits(input.amountRefundedCents, input.currency);
-      await db.update(accountingEntityMappings)
-        .set({
-          syncStatus: 'error',
-          lastError: partialRefundDivergenceMessage(refunded),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(accountingEntityMappings.breezeEntityType, 'payment'),
-          eq(accountingEntityMappings.breezeEntityId, paymentId),
-          eq(accountingEntityMappings.breezeOrigin, true),
-          isNotNull(accountingEntityMappings.remoteEntityId),
-        ));
+      // Xero W01 hardening: scope the flag to the partner's ACTIVE connection's
+      // mapping. One connection per partner and ON DELETE CASCADE already make a
+      // cross-connection match impossible; this makes it impossible by predicate
+      // too, instead of by schema accident. Fix round 1: use the non-decrypting
+      // id lookup — this runs inside the money transaction, and a rotated/
+      // retired encryption key must never abort a Stripe refund reconcile.
+      const activeConnId = await resolveActiveConnectionId(db, partnerId);
+      if (activeConnId) {
+        await db.update(accountingEntityMappings)
+          .set({
+            syncStatus: 'error',
+            lastError: partialRefundDivergenceMessage(refunded),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(accountingEntityMappings.integrationId, activeConnId),
+            eq(accountingEntityMappings.partnerId, partnerId),
+            eq(accountingEntityMappings.breezeEntityType, 'payment'),
+            eq(accountingEntityMappings.breezeEntityId, paymentId),
+            eq(accountingEntityMappings.breezeOrigin, true),
+            isNotNull(accountingEntityMappings.remoteEntityId),
+          ));
+      }
     }
     await recomputeInvoiceStatus(mapping.invoiceId);
-    const partnerId = await invoicePartnerId(mapping.invoiceId);
     await emitInvoiceEvent({ type: 'payment.voided', invoiceId: mapping.invoiceId, orgId: mapping.orgId,
       partnerId, paymentId });
     return { deleteMappingId, partnerId };

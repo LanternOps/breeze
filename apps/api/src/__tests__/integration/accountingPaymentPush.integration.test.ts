@@ -65,7 +65,11 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
-import { upsertConnection } from '../../services/accounting/accountingConnectionService';
+import {
+  getConnectionProviderForMapping,
+  getConnectionProvidersForMappings,
+  upsertConnection,
+} from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import type {
@@ -663,6 +667,12 @@ describe('QuickBooks payment push — real Postgres', () => {
 
     const owed = await withSystemDbAccessContext(() => listOwedPaymentMappings(db, new Date()));
     expect(owed).toEqual([{ id: mapping.id, partnerId: fx.partnerId, pendingOp: 'delete' }]);
+    // Xero W01: the sweep's capability filter and the audit label read the
+    // row's OWN connection provider (provider column only) — real-join proof.
+    expect(await withSystemDbAccessContext(() => getConnectionProvidersForMappings(db, [mapping.id])))
+      .toEqual(new Map([[mapping.id, 'quickbooks']]));
+    expect(await withSystemDbAccessContext(() => getConnectionProviderForMapping(db, mapping.id, fx.partnerId)))
+      .toBe('quickbooks');
 
     // And the delete really clears the outbox row.
     const del = stubDeletePayment(async () => 'deleted');

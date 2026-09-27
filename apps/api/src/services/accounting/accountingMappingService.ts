@@ -50,11 +50,11 @@ import {
   sites,
 } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
-import { getConnection } from './accountingConnectionService';
+import { resolveActiveConnection } from './accountingConnectionService';
 import type { AccountingConnection } from './accountingConnectionService';
 import { normalizeCurrencyCode } from './accountingCurrency';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
-import { getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 // Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
@@ -74,6 +74,7 @@ import type {
   AccountingCustomerPayload,
   AccountingEntityMapping as AccountingEntityMappingSeam,
   AccountingItemPayload,
+  AccountingProviderId,
   RemoteAddress,
   RemoteCustomer,
   RemoteIncomeAccount,
@@ -86,7 +87,7 @@ export type MappingDecision = 'confirmed' | 'create_new' | 'unlinked';
 
 export interface ListMappingProposalsInput {
   partnerId: string;
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   entityType: MappingEntityType;
 }
 
@@ -171,6 +172,23 @@ function orgBillingEmail(billingContact: unknown): string | null {
 }
 
 /**
+ * Which connection a call must act on (Xero W01):
+ * - `{ connectionId }` — jobs: the exact connection the work was enqueued for;
+ * - `{ provider }` — routes: the `:provider` in the URL;
+ * - `undefined` — producer-less callers: the partner's active connection.
+ */
+export type ConnectionTarget =
+  | { connectionId: string }
+  | { provider: AccountingProviderId }
+  | undefined;
+
+function notConnectedMessage(provider: AccountingProviderId | null): string {
+  return provider
+    ? `${accountingProviderDisplayName(provider)} is not connected for this partner`
+    : 'No accounting system is connected for this partner';
+}
+
+/**
  * Resolve the partner's connection row, rejecting disconnected/reauth DB
  * states as typed errors. This is a plain read through the ambient `db` (the
  * caller's partner-scoped context) — it never refreshes a live access token,
@@ -181,22 +199,33 @@ function orgBillingEmail(billingContact: unknown): string | null {
  * Split out of `resolveConnectionAndToken` below (Phase C, Task 5 — the
  * unlink-without-live-token fix): callers that DO need a live token call
  * `resolveConnectionAndToken`, which composes this with `resolveLiveConnection`.
+ *
+ * Always the partner's ONE active row (accounting_connections_partner_idx),
+ * then checked against the caller's target: a route's :provider, or a job's
+ * connectionId. A mismatch is `not_connected` — never "use whatever is
+ * connected now".
  */
 export async function resolveConnection(
   partnerId: string,
-  provider: 'quickbooks',
+  target?: ConnectionTarget,
 ): Promise<AccountingConnection> {
-  const conn = await getConnection(db, partnerId, provider);
-  if (!conn) {
-    throw new AccountingMappingError('not_connected', 404, 'QuickBooks is not connected for this partner');
+  const wanted = target && 'provider' in target ? target.provider : null;
+  const conn = await resolveActiveConnection(db, partnerId);
+  if (!conn) throw new AccountingMappingError('not_connected', 404, notConnectedMessage(wanted));
+  if (wanted && conn.provider !== wanted) {
+    throw new AccountingMappingError('not_connected', 404, notConnectedMessage(wanted));
   }
+  if (target && 'connectionId' in target && conn.id !== target.connectionId) {
+    throw new AccountingMappingError('not_connected', 404, notConnectedMessage(conn.provider));
+  }
+  const label = accountingProviderDisplayName(conn.provider);
   // A previously-connected partner whose token was revoked/expired needs
   // "reconnect", not "connect" — distinct remediation from never-connected.
   if (conn.status === 'reauth_required') {
-    throw new AccountingMappingError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+    throw new AccountingMappingError('reauth_required', 409, `${label} needs to be reconnected`);
   }
   if (conn.status !== 'connected') {
-    throw new AccountingMappingError('not_connected', 404, 'QuickBooks is not connected for this partner');
+    throw new AccountingMappingError('not_connected', 404, notConnectedMessage(conn.provider));
   }
   return conn;
 }
@@ -221,7 +250,7 @@ export async function resolveLiveConnection(conn: AccountingConnection): Promise
     accessToken = await getValidAccessToken(db, conn);
   } catch (err) {
     if (err instanceof ReauthRequiredError) {
-      throw new AccountingMappingError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+      throw new AccountingMappingError('reauth_required', 409, `${accountingProviderDisplayName(conn.provider)} needs to be reconnected`);
     }
     throw err;
   }
@@ -246,11 +275,11 @@ export async function resolveLiveConnection(conn: AccountingConnection): Promise
  */
 export async function resolveConnectionAndToken(
   partnerId: string,
-  provider: 'quickbooks',
+  target: ConnectionTarget,
   runInDbContext: DbContextRunner,
 ): Promise<{ conn: AccountingConnection; liveConn: AccountingConnection }> {
   assertNoAmbientDbContext('resolveConnectionAndToken');
-  const conn = await runInDbContext(() => resolveConnection(partnerId, provider));
+  const conn = await runInDbContext(() => resolveConnection(partnerId, target));
   const liveConn = await resolveLiveConnection(conn);
   return { conn, liveConn };
 }
@@ -437,7 +466,7 @@ async function buildOrgProposals(
     .from(organizationExternalLinks)
     .where(and(
       eq(organizationExternalLinks.partnerId, partnerId),
-      eq(organizationExternalLinks.system, 'quickbooks'),
+      eq(organizationExternalLinks.system, conn.provider),
     ));
 
   // Neither read above carries the org query's `type` filter, so both can still
@@ -628,7 +657,7 @@ export async function listMappingProposals(
   runInDbContext: DbContextRunner,
 ): Promise<MappingProposal[]> {
   const { partnerId, provider, entityType } = input;
-  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider, runInDbContext);
+  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, { provider }, runInDbContext);
 
   return entityType === 'org'
     ? proposeOrgMappings(partnerId, conn, liveConn, runInDbContext)
@@ -641,10 +670,10 @@ export async function listMappingProposals(
  * and the provider call so the route stays a thin pass-through.
  */
 export async function listRemoteIncomeAccountsForPartner(
-  input: { partnerId: string; provider: 'quickbooks' },
+  input: { partnerId: string; provider: AccountingProviderId },
   runInDbContext: DbContextRunner,
 ): Promise<RemoteIncomeAccount[]> {
-  const { conn, liveConn } = await resolveConnectionAndToken(input.partnerId, input.provider, runInDbContext);
+  const { conn, liveConn } = await resolveConnectionAndToken(input.partnerId, { provider: input.provider }, runInDbContext);
   // Nothing to persist, so there is no second DB phase: the connection read
   // committed inside `resolveConnectionAndToken`'s short context and this
   // provider call runs with no connection held.
@@ -664,7 +693,7 @@ export async function listRemoteIncomeAccountsForPartner(
 
 export interface SaveMappingDecisionInput {
   partnerId: string;
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   breezeEntityType: MappingEntityType;
   breezeEntityId: string;
   decision: MappingDecision;
@@ -673,7 +702,7 @@ export interface SaveMappingDecisionInput {
 
 export interface SyncMappedEntityInput {
   partnerId: string;
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   breezeEntityType: MappingEntityType;
   breezeEntityId: string;
 }
@@ -851,7 +880,7 @@ export async function saveMappingDecision(
   // Phase 1 — connection, ownership and the current mapping rows, in ONE short
   // context that commits before the `confirmed` path's QuickBooks list call.
   const { conn, mappingRows, hiddenOrgIds, existing } = await runInDbContext(async () => {
-    const conn = await resolveConnection(partnerId, provider);
+    const conn = await resolveConnection(partnerId, { provider });
 
     if (breezeEntityType === 'org') {
       // `unlinked` never reaches QuickBooks, so it stays available for the
@@ -1187,10 +1216,15 @@ async function persistRemoteRef(params: {
  * QBO sparse update carrying the persisted Id+SyncToken (mirrors
  * `AccountingEntityMapping` in types.ts); its absence makes it a create —
  * Item creation additionally requires `accounting_connections.default_income_account_ref`.
+ *
+ * `target` (Xero W01): the sync worker passes the exact connection its job was
+ * enqueued for (`{ connectionId }`); omitted, the connection is resolved by
+ * `input.provider` as before (the explicit-sync route and the invoice push).
  */
 export async function syncMappedEntity(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
+  target?: ConnectionTarget,
 ): Promise<MappingResult> {
   assertNoAmbientDbContext('syncMappedEntity');
   const redis = getRedis();
@@ -1211,7 +1245,7 @@ export async function syncMappedEntity(
   }, 30_000);
   renewal.unref();
   try {
-    return await syncMappedEntityUnderLease(input, runInDbContext);
+    return await syncMappedEntityUnderLease(input, runInDbContext, target);
   } finally {
     clearInterval(renewal);
     try {
@@ -1229,6 +1263,7 @@ export async function syncMappedEntity(
 async function syncMappedEntityUnderLease(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
+  target: ConnectionTarget,
 ): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
   assertNoAmbientDbContext('syncMappedEntity');
@@ -1239,7 +1274,7 @@ async function syncMappedEntityUnderLease(
   // entity_not_found, a create-time currency_mismatch) is raised here, before
   // a token is resolved or QuickBooks is touched.
   const prep = await runInDbContext(async () => {
-    const conn = await resolveConnection(partnerId, provider);
+    const conn = await resolveConnection(partnerId, target ?? { provider });
 
     const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
     const mapping = mappingRows.find((m) => m.breezeEntityId === breezeEntityId);
@@ -1375,7 +1410,7 @@ async function syncMappedEntityUnderLease(
       writeAuditEvent(requestLikeFromSnapshot({}), {
         orgId: breezeEntityId, actorType: 'system', initiatedBy: 'integration',
         action: 'organization.update', resourceType: 'organization', resourceId: breezeEntityId,
-        details: { source: 'quickbooks', message: 'Address imported from QuickBooks' },
+        details: { source: conn.provider, message: `Address imported from ${accountingProviderDisplayName(conn.provider)}` },
       });
     } catch (err) {
       captureException(err instanceof Error ? err : new Error(String(err)));

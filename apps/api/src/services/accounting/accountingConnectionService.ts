@@ -1,11 +1,12 @@
-import { and, eq, isNotNull, isNull, like, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
-import { getAccountingProvider } from './providerRegistry';
+import { accountingProviderDisplayName, getAccountingProvider, providerSupports } from './providerRegistry';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
-import type { AccountingProviderId } from './types';
+import type { AccountingCapability, AccountingProviderId } from './types';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { captureException } from '../sentry';
 
@@ -166,6 +167,186 @@ export async function getConnection(
   return row ? mapConnection(row) : null;
 }
 
+/**
+ * The partner's ONE accounting connection, any provider (Xero W01, spec D2 —
+ * enforced by accounting_connections_partner_idx). Null when none exists.
+ * Replaces every `getConnection(db, partnerId, 'quickbooks')` in the core.
+ * W02 adds the `pending_tenant` exclusion HERE, and only here.
+ */
+export async function resolveActiveConnection(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row ? mapConnection(row) : null;
+}
+
+/**
+ * The non-decrypting core of `resolveActiveConnection`'s WHERE/limit, shared by
+ * every caller that does not need the decrypted realm/token columns. Selects
+ * only `id` + `provider` — never the encrypted columns `mapConnection`
+ * decrypts. Any future filter added to `resolveActiveConnection` (W02's
+ * pending_tenant exclusion) must be mirrored here too.
+ *
+ * Exported as the public id+provider read for callers that never need tokens
+ * (e.g. a route that only stamps `.id`/`.provider` on a response, or a
+ * conflict check that only compares providers) — using it instead of
+ * `resolveActiveConnection` means a rotated/retired encryption key can never
+ * abort a path that was going to ignore the decrypted columns anyway.
+ */
+export async function resolveActiveConnectionRef(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<{ id: string; provider: AccountingProviderId } | null> {
+  const [row] = await dbc
+    .select({ id: accountingConnections.id, provider: accountingConnections.provider })
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId))
+    .limit(1);
+  return row ? { id: row.id, provider: row.provider as AccountingProviderId } : null;
+}
+
+/**
+ * The non-decrypting sibling of `resolveActiveConnection`, for callers that
+ * only need the id (money-path hardening: the Stripe refund reconcile runs
+ * inside the money transaction, and a rotated/retired encryption key must
+ * never abort it via `mapConnection`'s eager decrypt).
+ */
+export async function resolveActiveConnectionId(
+  dbc: DbExecutor,
+  partnerId: string,
+): Promise<string | null> {
+  const ref = await resolveActiveConnectionRef(dbc, partnerId);
+  return ref?.id ?? null;
+}
+
+/** Load one connection by id, partner-guarded. Jobs carry this id (spec: "a job's destination is never reinterpreted"). */
+export async function getConnectionById(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(and(eq(accountingConnections.id, connectionId), eq(accountingConnections.partnerId, partnerId)))
+    .limit(1);
+  return row ? mapConnection(row) : null;
+}
+
+/**
+ * The connection a mapping row belongs to (its integration_id). Payment jobs
+ * bind to their connection THROUGH the outbox row (plan preamble item 4): the
+ * composite FK cascades on disconnect, so a job whose connection is gone finds
+ * no mapping at all rather than a different connection.
+ */
+export async function getConnectionForMapping(
+  dbc: DbExecutor,
+  mappingId: string,
+  partnerId: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select({ connection: accountingConnections })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
+    .limit(1);
+  return row ? mapConnection(row.connection) : null;
+}
+
+/**
+ * Just the PROVIDER of the connection a mapping row belongs to — same
+ * partner-guarded join as `getConnectionForMapping`, but it selects only
+ * `provider`, so it never decrypts the realm/token columns. For audit labels on
+ * paths that must survive an undecryptable token (a payment void, an
+ * unresolved-delete drop): before W01 those paths never read the connection row
+ * at all, and a decrypt failure must not start aborting them.
+ */
+export async function getConnectionProviderForMapping(
+  dbc: DbExecutor,
+  mappingId: string,
+  partnerId: string,
+): Promise<AccountingProviderId | null> {
+  const [row] = await dbc
+    .select({ provider: accountingConnections.provider })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
+    .limit(1);
+  return row ? (row.provider as AccountingProviderId) : null;
+}
+
+/**
+ * Batched `getConnectionProviderForMapping` for the reconcile sweep's owed
+ * payment rows: mapping id -> its own connection's provider, one query. A
+ * mapping absent from the result was deleted since it was listed. Provider
+ * column only (no decrypt). System-context callers only: the rows come from a
+ * cross-partner sweep, so there is no partner id to guard on beyond the join.
+ */
+export async function getConnectionProvidersForMappings(
+  dbc: DbExecutor,
+  mappingIds: string[],
+): Promise<Map<string, AccountingProviderId>> {
+  if (mappingIds.length === 0) return new Map();
+  const rows = await dbc
+    .select({ mappingId: accountingEntityMappings.id, provider: accountingConnections.provider })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
+    .where(inArray(accountingEntityMappings.id, mappingIds));
+  return new Map((rows as Array<{ mappingId: string; provider: AccountingProviderId }>)
+    .map((r) => [r.mappingId, r.provider]));
+}
+
+/**
+ * Producer-side gate (spec "capabilities … producers don't enqueue"). Reads the
+ * partner-axis row through readWithPartnerAxisVisibility: producers run inside
+ * whatever request context issued the invoice, and an org-scoped RLS context
+ * sees ZERO accounting_connections rows, which would silently skip every
+ * enqueue for org-scoped users (#2822). partnerId comes from a row the caller
+ * already resolved under its own context, never from the client.
+ *
+ * Fix round (Task 5 minor): callers use only `.id` (to stamp a job's
+ * `connectionId`), never a decrypted field, so this reads through the
+ * non-decrypting `resolveActiveConnectionRef` instead of `resolveActiveConnection`
+ * + `mapConnection`. Before this, a decrypt failure (rotated/retired
+ * encryption key) threw inside these hooks' try/catch and silently skipped the
+ * auto-push, whereas pre-W01 the job was always enqueued and a failure
+ * surfaced in the worker instead.
+ */
+export async function resolveActiveConnectionFor(
+  partnerId: string,
+  capability: AccountingCapability,
+): Promise<{ id: string; provider: AccountingProviderId } | null> {
+  const ref = await readWithPartnerAxisVisibility(() => resolveActiveConnectionRef(db, partnerId));
+  return ref && providerSupports(ref.provider, capability) ? ref : null;
+}
+
+/** 409 — the partner already has a connection to a DIFFERENT provider (spec D2). */
+export class AccountingProviderConflictError extends Error {
+  readonly code = 'accounting_provider_conflict' as const;
+  readonly status = 409 as const;
+  constructor(
+    readonly existingProvider: AccountingProviderId,
+    readonly requestedProvider: AccountingProviderId,
+  ) {
+    super(`Disconnect ${accountingProviderDisplayName(existingProvider)} before connecting ${accountingProviderDisplayName(requestedProvider)}`);
+    this.name = 'AccountingProviderConflictError';
+  }
+}
+
 export async function upsertConnection(
   db: DbExecutor,
   partnerId: string,
@@ -238,12 +419,24 @@ export async function upsertConnection(
     .insert(accountingConnections)
     .values(values)
     .onConflictDoUpdate({
-      target: [accountingConnections.partnerId, accountingConnections.provider],
+      // accounting_connections_partner_idx (Xero W01): one row per partner. The
+      // update fires ONLY for a same-provider reconnect; a different provider's
+      // row makes this a no-op that returns nothing (handled below), so a Xero
+      // connect can never overwrite a QuickBooks row's tokens or settings.
+      target: accountingConnections.partnerId,
       set: updateSet,
+      setWhere: sql`${accountingConnections.provider} = excluded.provider`,
     })
     .returning();
 
   if (!row) {
+    // Non-decrypting read (Task 5 minor): this branch only compares providers,
+    // so a decrypt failure (rotated/retired encryption key) in
+    // `resolveActiveConnection` must never mask the real 409 conflict here.
+    const existing = await resolveActiveConnectionRef(db, partnerId);
+    if (existing && existing.provider !== provider) {
+      throw new AccountingProviderConflictError(existing.provider, provider);
+    }
     throw new Error('Failed to persist accounting connection');
   }
 
@@ -373,19 +566,15 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
  */
 export async function listReconcilableConnections(
   dbc: DbExecutor,
-  provider: AccountingProviderId,
-): Promise<Array<{ id: string; partnerId: string }>> {
-  return dbc
-    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId })
+): Promise<Array<{ id: string; partnerId: string; provider: AccountingProviderId }>> {
+  const rows = await dbc
+    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId, provider: accountingConnections.provider })
     .from(accountingConnections)
     .where(and(
-      eq(accountingConnections.provider, provider),
       eq(accountingConnections.status, 'connected'),
-      or(
-        eq(accountingConnections.pullPayments, true),
-        eq(accountingConnections.pushPayments, true),
-      ),
+      or(eq(accountingConnections.pullPayments, true), eq(accountingConnections.pushPayments, true)),
     ));
+  return rows as Array<{ id: string; partnerId: string; provider: AccountingProviderId }>;
 }
 
 /**

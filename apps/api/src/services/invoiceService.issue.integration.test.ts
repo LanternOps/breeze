@@ -27,6 +27,14 @@ vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
+// Xero W01 producer gate: the hooks enqueue only for a partner with an
+// invoice-push-capable connection. The fixture partner has none, so pin a
+// connected QuickBooks row here; the hook contract is what is asserted.
+vi.mock('./accounting/accountingConnectionService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./accounting/accountingConnectionService')>()),
+  resolveActiveConnectionFor: vi.fn().mockResolvedValue({ id: 'c1', provider: 'quickbooks' }),
+}));
+
 // Catalog writes (used by the addBundleLine allocation test) emit BullMQ
 // lifecycle events the same way — stub them for the same reason.
 vi.mock('./catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
@@ -235,10 +243,10 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
     const { invoice } = await withDbAccessContext(ctx(f), () =>
       svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
     const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(issued.id, f.partnerId);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(issued.id, f.partnerId, 'c1');
 
     const result = await withDbAccessContext(ctx(f), () => svc.voidInvoice(issued.id, 'wrong amounts', { reissue: true }, actor(f)));
-    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(issued.id, f.partnerId);
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(issued.id, f.partnerId, 'c1');
     // returned object is the fresh draft (getInvoice shape)
     expect(result.invoice.status).toBe('draft');
     expect(result.invoice.replacesInvoiceId).toBe(issued.id);

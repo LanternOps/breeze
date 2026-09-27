@@ -28,8 +28,11 @@ import {
 } from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
+import { resolveActiveConnectionFor } from './accounting/accountingConnectionService';
+import { captureException } from './sentry';
 import type { DbContextRunner } from './accounting/dbContextGuard';
-import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
+import { INVOICE_REMOTE_DELETED_ERROR, type AccountingProviderId } from './accounting/types';
+import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -692,7 +695,7 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
 }
 
 export interface InvoiceAccountingSync {
-  provider: 'quickbooks';
+  provider: AccountingProviderId;
   syncStatus: MappingSyncStatus;
   lastSyncedAt: string | null;
   lastError: string | null;
@@ -709,20 +712,22 @@ export interface InvoiceAccountingSync {
 }
 
 /**
- * QuickBooks push status for this invoice's `accounting_entity_mappings` row
- * (Phase C, Task 5). `accounting_entity_mappings` is a partner-axis (shape 3)
- * RLS table — this is a plain read through the ambient `db` (the caller's
- * request-scoped context), so it deliberately does NOT escalate to a system
- * context: an org-scoped token has no partner access and the read returns no
- * rows, which this function reports as `null` (fail closed) with no special-
- * casing needed. The join to `accounting_connections` scopes the mapping to
- * THIS partner's QuickBooks connection (never another provider/partner's row
- * with a colliding breezeEntityId, which the schema's uniqueness constraints
- * make impossible anyway, but the join keeps the read self-contained).
+ * Accounting push status for this invoice's `accounting_entity_mappings` row
+ * (Phase C, Task 5), for whichever provider owns it (`provider` comes from the
+ * join). `accounting_entity_mappings` is a partner-axis (shape 3) RLS table —
+ * this is a plain read through the ambient `db` (the caller's request-scoped
+ * context), so it deliberately does NOT escalate to a system context: an
+ * org-scoped token has no partner access and the read returns no rows, which
+ * this function reports as `null` (fail closed) with no special-casing needed.
+ * The join to `accounting_connections` scopes the mapping to THIS partner's own
+ * connection (never another partner's row with a colliding breezeEntityId,
+ * which the schema's uniqueness constraints make impossible anyway, but the
+ * join keeps the read self-contained).
  */
 async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): Promise<InvoiceAccountingSync | null> {
   const rows = await db
     .select({
+      provider: accountingConnections.provider,
       syncStatus: accountingEntityMappings.syncStatus,
       lastSyncedAt: accountingEntityMappings.lastSyncedAt,
       lastError: accountingEntityMappings.lastError,
@@ -732,7 +737,6 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     .innerJoin(accountingConnections, and(
       eq(accountingConnections.id, accountingEntityMappings.integrationId),
       eq(accountingConnections.partnerId, partnerId),
-      eq(accountingConnections.provider, 'quickbooks'),
     ))
     .where(and(
       eq(accountingEntityMappings.partnerId, partnerId),
@@ -743,7 +747,7 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
   const row = rows[0];
   if (!row) return null;
   return {
-    provider: 'quickbooks',
+    provider: row.provider as AccountingProviderId,
     syncStatus: row.syncStatus as MappingSyncStatus,
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
@@ -1612,14 +1616,18 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   } catch (err) {
     console.error('[invoiceService] enqueueInvoicePdfRender failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
   }
-  // Auto-push to QuickBooks (Phase C, Task 4). enqueueAccountingInvoicePush is
-  // itself Redis-outage-safe (try/catch + Sentry) — the worker decides whether
-  // this partner is even connected/pushMode:'auto'; the try/catch here is the
-  // same defensive belt-and-braces as the PDF render above.
+  // Auto-push to the partner's accounting system (Phase C, Task 4). Enqueued
+  // only when the partner has an invoice-push-capable connection, and the job
+  // carries that connection's id (Xero W01 producer gate). The worker still
+  // decides connected/pushMode:'auto'. enqueueAccountingInvoicePush is itself
+  // Redis-outage-safe (try/catch + Sentry); the try/catch here also covers the
+  // connection read — same defensive belt-and-braces as the PDF render above.
   try {
-    await enqueueAccountingInvoicePush(invoiceId, inv.partnerId);
+    const conn = await resolveActiveConnectionFor(inv.partnerId, 'invoicePush');
+    if (conn) await enqueueAccountingInvoicePush(invoiceId, inv.partnerId, conn.id);
   } catch (err) {
-    console.error('[invoiceService] enqueueAccountingInvoicePush failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    console.error('[invoiceService] accounting auto-push failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
   return getOwnedInvoiceOr404(invoiceId);
 }
@@ -1870,27 +1878,30 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
           eq(accountingEntityMappings.breezeEntityId, paymentId),
         ))
         .limit(1);
-      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false };
+      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false, provider: null };
       const [inv] = await db
         .select({ partnerId: invoices.partnerId })
         .from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1);
-      if (!inv) return { mapping, quickbooksWillReimport: false };
+      if (!inv) return { mapping, quickbooksWillReimport: false, provider: null };
+      // The partner's ONE accounting connection (accounting_connections_partner_idx).
       const [conn] = await db
-        .select({ status: accountingConnections.status, pullPayments: accountingConnections.pullPayments })
+        .select({
+          provider: accountingConnections.provider,
+          status: accountingConnections.status,
+          pullPayments: accountingConnections.pullPayments,
+        })
         .from(accountingConnections)
-        .where(and(
-          eq(accountingConnections.partnerId, inv.partnerId),
-          eq(accountingConnections.provider, 'quickbooks'),
-        ))
+        .where(eq(accountingConnections.partnerId, inv.partnerId))
         .limit(1);
       return {
         mapping,
         quickbooksWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
+        provider: (conn?.provider ?? null) as AccountingProviderId | null,
       };
     }))
     : null;
 
-  const { inv, audit, deleteMappingId } = await db.transaction(async (tx) => {
+  const { inv, audit, deleteMappingId, owningProvider } = await db.transaction(async (tx) => {
     // The payment row carries orgId but not siteId; the parent invoice drives the
     // site-axis guard (a site-restricted caller must not void a payment on an
     // out-of-site invoice) — run it against the LOCKED row.
@@ -1939,24 +1950,32 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // surviving is the part a reader must not have to infer.
     let quickbooksRecordUntouched = false;
     let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
+    // The provider that owns the payment. A remote-origin mapping row cannot
+    // outlive its connection (composite FK, ON DELETE CASCADE), so the fallback
+    // only covers the "no connection" shape, where every pre-Xero row was
+    // QuickBooks by construction.
+    let owningProvider: AccountingProviderId = LEGACY_UNTARGETED_JOB_PROVIDER;
     if (existingMapping && !existingMapping.breezeOrigin) {
+      // The partner's ONE accounting connection (accounting_connections_partner_idx).
       const [conn] = orgScoped ? [undefined] : await tx
         .select({
+          provider: accountingConnections.provider,
           status: accountingConnections.status,
           pullPayments: accountingConnections.pullPayments,
         })
         .from(accountingConnections)
-        .where(and(
-          eq(accountingConnections.partnerId, parentInv.partnerId),
-          eq(accountingConnections.provider, 'quickbooks'),
-        ))
+        .where(eq(accountingConnections.partnerId, parentInv.partnerId))
         .limit(1);
+      const connProvider = orgScoped ? preCheck!.provider : (conn?.provider ?? null) as AccountingProviderId | null;
+      owningProvider = connProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER;
       const willReimport = orgScoped
         ? preCheck!.quickbooksWillReimport
         : !!conn && conn.status === 'connected' && conn.pullPayments;
       if (willReimport) {
+        const label = accountingProviderDisplayName(owningProvider);
+        // The code keeps its QuickBooks name: apps/web reads it (plan preamble item 8).
         throw new InvoiceServiceError(
-          'This payment came from QuickBooks; reverse it in QuickBooks instead',
+          `This payment came from ${label}; reverse it in ${label} instead`,
           409, 'QUICKBOOKS_OWNED_PAYMENT',
         );
       }
@@ -2014,7 +2033,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
-    return { inv, audit, deleteMappingId };
+    return { inv, audit, deleteMappingId, owningProvider };
   });
   // PERSISTED HERE, not left to the caller (review wave 3, finding D2). The
   // route's own `invoice.payment.voided` entry carries the flag too, but the
@@ -2037,7 +2056,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         invoiceId: audit.invoiceId,
         amount: audit.amount,
         reason: audit.untouchedReason,
-        provider: 'quickbooks',
+        provider: owningProvider,
       },
     });
   }
@@ -2089,10 +2108,11 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
     .from(invoiceStripePayments)
     .where(and(eq(invoiceStripePayments.invoiceId, invoiceId), eq(invoiceStripePayments.status, 'succeeded')));
   const stripeIds = new Set(linked.map((r) => r.invoicePaymentId).filter((x): x is string => !!x));
-  // QuickBooks-sourced payments (Phase D pull-back) carry a 'payment' mapping row
-  // keyed on the invoice_payments id. Same purpose as the Stripe badge: the UI
-  // must not offer a hand-void on a row QuickBooks owns — voiding it here would
-  // just be re-pulled on the next CDC sweep. Partner-scoped for the same reason
+  // Accounting-sourced payments (Phase D pull-back) carry a 'payment' mapping row
+  // keyed on the invoice_payments id, and name the provider that owns them (the
+  // mapping's own connection). Same purpose as the Stripe badge: the UI must not
+  // offer a hand-void on a row the accounting system owns — voiding it here would
+  // just be re-pulled on the next sweep. (`qboLinked` is a legacy name.) Partner-scoped for the same reason
   // every other accounting_entity_mappings read is: RLS is stricter than the app
   // layer, and this read must never depend on it alone.
   const paymentIds = rows.map((r) => r.id);
@@ -2102,8 +2122,14 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
       breezeOrigin: accountingEntityMappings.breezeOrigin,
       syncStatus: accountingEntityMappings.syncStatus,
       lastError: accountingEntityMappings.lastError,
+      // The provider that owns the mapping: its own connection (integration_id).
+      provider: accountingConnections.provider,
     })
     .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, accountingEntityMappings.partnerId),
+    ))
     .where(and(
       eq(accountingEntityMappings.partnerId, inv.partnerId),
       eq(accountingEntityMappings.breezeEntityType, 'payment'),
@@ -2120,7 +2146,7 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
     // and the void propagates the deletion — and instead carries a sync badge.
     const source = stripeIds.has(r.id)
       ? ('stripe' as const)
-      : mapping && !mapping.breezeOrigin ? ('quickbooks' as const) : ('manual' as const);
+      : mapping && !mapping.breezeOrigin ? (mapping.provider as AccountingProviderId) : ('manual' as const);
     return {
       ...r,
       source,
@@ -2371,15 +2397,17 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   }));
 
   await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: voidedOrgId, partnerId: voidedPartnerId, actorUserId: actor.userId });
-  // Auto-void in QuickBooks (Phase C, Task 4). Fire-and-forget, own try/catch —
-  // mirrors the issue-side push hook. VOID jobs process regardless of
-  // pushMode: books must not keep a voided invoice open in QuickBooks just
-  // because auto-push is off (voidInvoiceInAccounting itself no-ops when the
-  // invoice was never pushed).
+  // Auto-void in the accounting system (Phase C, Task 4). Fire-and-forget, own
+  // try/catch — mirrors the issue-side push hook, including its producer gate
+  // (Xero W01). VOID jobs process regardless of pushMode: books must not keep a
+  // voided invoice open just because auto-push is off (voidInvoiceInAccounting
+  // itself no-ops when the invoice was never pushed).
   try {
-    await enqueueAccountingInvoiceVoid(invoiceId, voidedPartnerId);
+    const conn = await resolveActiveConnectionFor(voidedPartnerId, 'invoicePush');
+    if (conn) await enqueueAccountingInvoiceVoid(invoiceId, voidedPartnerId, conn.id);
   } catch (err) {
-    console.error('[invoiceService] enqueueAccountingInvoiceVoid failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    console.error('[invoiceService] accounting void sync failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   if (opts.reissue && draftId) {

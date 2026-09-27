@@ -70,8 +70,12 @@ export const accountingConnections = pgTable('accounting_connections', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+  // Superseded by partnerIdx (Xero W01) but KEPT: the pre-W01 image's
+  // ON CONFLICT (partner_id, provider) needs it on rollback. Drop in a later release.
   partnerProviderIdx: uniqueIndex('accounting_connections_partner_provider_idx')
     .on(table.partnerId, table.provider),
+  // Xero W01 (spec D2): ONE accounting connection per partner, any provider.
+  partnerIdx: uniqueIndex('accounting_connections_partner_idx').on(table.partnerId),
   idPartnerIdx: uniqueIndex('accounting_connections_id_partner_idx').on(table.id, table.partnerId),
   // Webhook realm routing: exactly one connection per (provider, fingerprint).
   // Partial index because the fingerprint is null until backfilled.

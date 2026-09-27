@@ -49,6 +49,8 @@ const {
   listOwedPaymentMappingsMock,
   enqueuePaymentPushMock,
   enqueuePaymentDeleteMock,
+  providerSupportsMock,
+  getConnectionProvidersForMappingsMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
   const record = (name: string) => {
@@ -92,6 +94,8 @@ const {
     listOwedPaymentMappingsMock: vi.fn(),
     enqueuePaymentPushMock: vi.fn(),
     enqueuePaymentDeleteMock: vi.fn(),
+    providerSupportsMock: vi.fn((_id: string, _cap: string) => true),
+    getConnectionProvidersForMappingsMock: vi.fn(),
   };
 });
 
@@ -123,8 +127,13 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
+// Xero W01: the job loads its connection BY ID (`getConnectionById`) instead of
+// (partner, 'quickbooks'); the existing mock drives it so every fixture keeps
+// its branch. `getConnectionProvidersForMappings` feeds the owed-row capability
+// filter — empty by default, i.e. every owed row is enqueued exactly as before.
 vi.mock('../services/accounting/accountingConnectionService', () => ({
-  getConnection: getConnectionMock,
+  getConnectionById: getConnectionMock,
+  getConnectionProvidersForMappings: getConnectionProvidersForMappingsMock,
   listReconcilableConnections: listReconcilableConnectionsMock,
   advanceReconcileCursor: advanceReconcileCursorMock,
   stampReconcileRunAt: stampReconcileRunAtMock,
@@ -138,6 +147,7 @@ vi.mock('../services/accounting/accountingMappingService', () => ({
 
 vi.mock('../services/accounting/providerRegistry', () => ({
   getAccountingProvider: getAccountingProviderMock,
+  providerSupports: providerSupportsMock,
 }));
 
 vi.mock('../services/accounting/accountingPaymentPull', () => ({
@@ -310,6 +320,8 @@ beforeEach(() => {
   applyReturns('applied');
 
   listOwedPaymentMappingsMock.mockResolvedValue([]);
+  getConnectionProvidersForMappingsMock.mockResolvedValue(new Map());
+  providerSupportsMock.mockImplementation(() => true);
   enqueuePaymentPushMock.mockResolvedValue(true);
   enqueuePaymentDeleteMock.mockResolvedValue(true);
 });
@@ -912,9 +924,9 @@ describe('processReconcileSweep', () => {
     listReconcilableConnectionsMock.mockImplementation(async () => {
       record('listReconcilableConnections');
       return [
-        { id: 'c1', partnerId: 'p1' },
-        { id: 'c2', partnerId: 'p2' },
-        { id: 'c3', partnerId: 'p3' },
+        { id: 'c1', partnerId: 'p1', provider: 'quickbooks' },
+        { id: 'c2', partnerId: 'p2', provider: 'quickbooks' },
+        { id: 'c3', partnerId: 'p3', provider: 'quickbooks' },
       ];
     });
 
@@ -936,8 +948,8 @@ describe('processReconcileSweep', () => {
 
   it('counts a refused enqueue into failed rather than reporting it as queued', async () => {
     listReconcilableConnectionsMock.mockResolvedValue([
-      { id: 'c1', partnerId: 'p1' },
-      { id: 'c2', partnerId: 'p2' },
+      { id: 'c1', partnerId: 'p1', provider: 'quickbooks' },
+      { id: 'c2', partnerId: 'p2', provider: 'quickbooks' },
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
@@ -956,7 +968,7 @@ describe('processReconcileSweep', () => {
   });
 
   it('a failed owed-mappings read does not suppress the connection fan-out — it still enqueues, and the job rethrows so BullMQ retries', async () => {
-    listReconcilableConnectionsMock.mockResolvedValue([{ id: 'c1', partnerId: 'p1' }]);
+    listReconcilableConnectionsMock.mockResolvedValue([{ id: 'c1', partnerId: 'p1', provider: 'quickbooks' }]);
     listOwedPaymentMappingsMock.mockRejectedValue(new Error('owed read boom'));
 
     await expect(processReconcileSweep()).rejects.toThrow();
@@ -1136,5 +1148,73 @@ describe('initializeAccountingReconcileWorkers', () => {
   it('exposes the queue name and a 15-minute sweep interval', () => {
     expect(ACCOUNTING_RECONCILE_QUEUE).toBe('accounting-reconcile');
     expect(RECONCILE_SWEEP_INTERVAL_MS).toBe(15 * 60 * 1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Xero W01: the job loads its connection by id; capability gates
+// ---------------------------------------------------------------------------
+
+describe('connection by id + capability gates (Xero W01)', () => {
+  it('loads the connection the job NAMES, by id and partner, and targets the token resolve at it', async () => {
+    await expect(processReconcileConnectionJob(JOB)).resolves.not.toBeNull();
+    expect(getConnectionMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID);
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith(PARTNER_ID, { connectionId: CONN_ID }, expect.any(Function));
+  });
+
+  it('skips with reason=capability_unavailable, before any token work, when the provider cannot pull payments', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    getConnectionMock.mockResolvedValue(connectionRow({ provider: 'xero' } as Partial<AccountingConnection>));
+    providerSupportsMock.mockImplementation((id: string) => id === 'quickbooks');
+
+    await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
+
+    expect(providerSupportsMock).toHaveBeenCalledWith('xero', 'paymentPull');
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AccountingReconcileWorker] run skipped',
+      'reason=capability_unavailable',
+      `connectionId=${CONN_ID}`,
+      `partnerId=${PARTNER_ID}`,
+      'trigger=sweep',
+    );
+    logSpy.mockRestore();
+  });
+
+  it('the sweep fans out only to connections whose provider can pull payments', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([
+      { id: 'c1', partnerId: 'p1', provider: 'quickbooks' },
+      { id: 'c2', partnerId: 'p2', provider: 'xero' },
+    ]);
+    providerSupportsMock.mockImplementation((id: string) => id === 'quickbooks');
+
+    await expect(processReconcileSweep()).resolves.toMatchObject({ enqueued: 1, failed: 0 });
+
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(queueAddMock.mock.calls[0]![1]).toMatchObject({ connectionId: 'c1', partnerId: 'p1' });
+  });
+
+  it('the sweep skips an owed payment row whose connection cannot push payments, in the SAME read context', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([
+      { id: 'm1', partnerId: 'p1', pendingOp: 'push' },
+      { id: 'm2', partnerId: 'p2', pendingOp: 'delete' },
+    ]);
+    let lookupDepth = -1;
+    getConnectionProvidersForMappingsMock.mockImplementation(async () => {
+      lookupDepth = ctx.depth;
+      return new Map([['m1', 'quickbooks'], ['m2', 'xero']]);
+    });
+    providerSupportsMock.mockImplementation((id: string) => id === 'quickbooks');
+
+    await expect(processReconcileSweep()).resolves.toMatchObject({ pendingOpsEnqueued: 1, pendingOpsFailed: 0 });
+
+    expect(getConnectionProvidersForMappingsMock).toHaveBeenCalledWith({}, ['m1', 'm2']);
+    expect(lookupDepth).toBe(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
   });
 });
