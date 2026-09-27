@@ -52,6 +52,32 @@ function normalizeCurrency(value: unknown): string | null {
   return /^[A-Z]{3}$/.test(code) ? code : null;
 }
 
+/**
+ * `xeroApiGet` types its return as `T` but only guarantees valid JSON — a
+ * `null` body (or any non-object shape) parses cleanly and would otherwise
+ * throw a bare TypeError the first time a caller reads a property off it.
+ * Never wraps an error `xeroApiGet` itself threw; it only guards the parsed
+ * payload once that call has already succeeded.
+ */
+function requireBody<T extends object>(body: T | null, operation: string): T {
+  if (body === null || typeof body !== 'object') {
+    throw new AccountingProviderError({
+      kind: 'transient',
+      provider: 'xero',
+      operation,
+      message: `${operation} returned an unexpected response`,
+    });
+  }
+  return body;
+}
+
+/** A field Xero documents as an array can still come back missing or of the
+ *  wrong shape on a malformed/partial response; treat anything but a real
+ *  array as empty rather than let `.filter`/`.length` throw. */
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 function callContext(conn: AccountingConnection, timeoutMs?: number): XeroCallContext {
   if (!conn.realmId) throw new Error('Xero connection is missing a tenant id');
   if (!conn.accessToken) throw new Error('Xero connection is missing an access token');
@@ -111,22 +137,25 @@ export class XeroProvider implements AccountingProvider {
   // Assumes conn.accessToken is valid (getValidAccessToken first); issues no DB queries.
   async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
     const ctx = callContext(conn, XERO_SETTINGS_TIMEOUT_MS);
-    const org = await xeroApiGet<{ Organisations?: XeroOrganisation[] }>(ctx, 'Organisation', 'Xero organisation read');
-    const currencies = await xeroApiGet<{ Currencies?: Array<{ Code?: string }> }>(ctx, 'Currencies', 'Xero currency list');
-    const count = currencies.Currencies?.length;
+    const org = requireBody(await xeroApiGet<{ Organisations?: XeroOrganisation[] } | null>(ctx, 'Organisation', 'Xero organisation read'), 'Xero organisation read');
+    const currencies = requireBody(await xeroApiGet<{ Currencies?: Array<{ Code?: string }> } | null>(ctx, 'Currencies', 'Xero currency list'), 'Xero currency list');
+    const organisations = asArray<XeroOrganisation>(org.Organisations);
+    const currencyList = asArray<{ Code?: string }>(currencies.Currencies);
     return {
-      homeCurrency: normalizeCurrency(org.Organisations?.[0]?.BaseCurrency),
-      multiCurrencyEnabled: typeof count === 'number' ? count > 1 : null,
+      homeCurrency: normalizeCurrency(organisations[0]?.BaseCurrency),
+      multiCurrencyEnabled: Array.isArray(currencies.Currencies) ? currencyList.length > 1 : null,
     };
   }
 
   async listSettingsOptions(conn: AccountingConnection): Promise<ProviderSettingsOptions> {
     const ctx = callContext(conn);
-    const org = await xeroApiGet<{ Organisations?: XeroOrganisation[] }>(ctx, 'Organisation', 'Xero organisation read');
-    const accounts = (await xeroApiGet<{ Accounts?: XeroAccount[] }>(ctx, 'Accounts', 'Xero account list')).Accounts ?? [];
-    const taxRates = (await xeroApiGet<{ TaxRates?: XeroTaxRate[] }>(ctx, 'TaxRates', 'Xero tax rate list')).TaxRates ?? [];
+    const org = requireBody(await xeroApiGet<{ Organisations?: XeroOrganisation[] } | null>(ctx, 'Organisation', 'Xero organisation read'), 'Xero organisation read');
+    const accountsBody = requireBody(await xeroApiGet<{ Accounts?: XeroAccount[] } | null>(ctx, 'Accounts', 'Xero account list'), 'Xero account list');
+    const taxRatesBody = requireBody(await xeroApiGet<{ TaxRates?: XeroTaxRate[] } | null>(ctx, 'TaxRates', 'Xero tax rate list'), 'Xero tax rate list');
+    const accounts = asArray<XeroAccount>(accountsBody.Accounts);
+    const taxRates = asArray<XeroTaxRate>(taxRatesBody.TaxRates);
     const active = accounts.filter((a) => a.Status === 'ACTIVE');
-    const organisation = org.Organisations?.[0];
+    const organisation = asArray<XeroOrganisation>(org.Organisations)[0];
     return {
       organisation: {
         name: organisation?.Name ?? null,
@@ -135,7 +164,7 @@ export class XeroProvider implements AccountingProvider {
       // Invoice lines reference an AccountCode (W04), so a revenue account without a code is not selectable.
       incomeAccounts: active
         .filter((a) => (a.Type === 'REVENUE' || a.Type === 'SALES') && a.Code)
-        .map((a): ProviderSettingsOption => ({ ref: a.Code as string, label: `${a.Code} · ${a.Name ?? ''}`.trim(), detail: a.Type ?? null })),
+        .map((a): ProviderSettingsOption => ({ ref: a.Code as string, label: a.Name ? `${a.Code} · ${a.Name}` : (a.Code as string), detail: a.Type ?? null })),
       // Bank accounts may have no Code; payments accept Account.AccountID (W05).
       bankAccounts: active
         .filter((a) => a.Type === 'BANK' && a.AccountID)

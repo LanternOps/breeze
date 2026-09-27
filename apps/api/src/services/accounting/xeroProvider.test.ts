@@ -107,6 +107,18 @@ describe('fetchRealmSettings', () => {
   it('refuses a connection with no tenant', async () => {
     await expect(xeroProvider.fetchRealmSettings(conn({ realmId: null }))).rejects.toThrow('Xero connection is missing a tenant id');
   });
+
+  it('a null JSON body becomes a transient AccountingProviderError, not a TypeError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json(null));
+    await expect(xeroProvider.fetchRealmSettings(conn())).rejects.toMatchObject({ kind: 'transient', provider: 'xero' });
+  });
+
+  it('a non-array Organisations/Currencies reads as empty rather than throwing', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Organisations: 'not-an-array' }))
+      .mockResolvedValueOnce(json({ Currencies: 'not-an-array' }));
+    await expect(xeroProvider.fetchRealmSettings(conn())).resolves.toEqual({ homeCurrency: null, multiCurrencyEnabled: null });
+  });
 });
 
 describe('listSettingsOptions', () => {
@@ -120,6 +132,7 @@ describe('listSettingsOptions', () => {
         { AccountID: 'a-400', Code: '400', Name: 'Advertising', Type: 'EXPENSE', Status: 'ACTIVE' },
         { AccountID: 'bank-1', Name: 'Business Bank Account', Type: 'BANK', Status: 'ACTIVE', BankAccountNumber: '12-3456' },
         { AccountID: 'rev-nocode', Name: 'No code', Type: 'REVENUE', Status: 'ACTIVE' },
+        { AccountID: 'a-270', Code: '270', Type: 'REVENUE', Status: 'ACTIVE' },
       ] }))
       .mockResolvedValueOnce(json({ TaxRates: [
         { Name: '20% (VAT on Income)', TaxType: 'OUTPUT2', Status: 'ACTIVE', CanApplyToRevenue: true, DisplayTaxRate: 20 },
@@ -132,12 +145,32 @@ describe('listSettingsOptions', () => {
       incomeAccounts: [
         { ref: '200', label: '200 · Sales', detail: 'REVENUE' },
         { ref: '260', label: '260 · Other Revenue', detail: 'SALES' },
+        // A Code with no Name must not render a dangling separator ("270 ·").
+        { ref: '270', label: '270', detail: 'REVENUE' },
       ],
       bankAccounts: [{ ref: 'bank-1', label: 'Business Bank Account', detail: '12-3456' }],
       taxRates: [
         { ref: 'OUTPUT2', label: '20% (VAT on Income)', detail: '20%' },
         { ref: 'NONE', label: 'No VAT', detail: '0%' },
       ],
+    });
+  });
+
+  it('a null JSON body becomes a transient AccountingProviderError, not a TypeError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json(null));
+    await expect(xeroProvider.listSettingsOptions!(conn())).rejects.toMatchObject({ kind: 'transient', provider: 'xero' });
+  });
+
+  it('a non-array Accounts/TaxRates reads as an empty list rather than throwing', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Organisations: [{ Name: 'Demo Company (UK)' }] }))
+      .mockResolvedValueOnce(json({ Accounts: 'x' }))
+      .mockResolvedValueOnce(json({ TaxRates: 'x' }));
+    await expect(xeroProvider.listSettingsOptions!(conn())).resolves.toEqual({
+      organisation: { name: 'Demo Company (UK)', isDemoCompany: null },
+      incomeAccounts: [],
+      bankAccounts: [],
+      taxRates: [],
     });
   });
 });
@@ -150,8 +183,19 @@ describe('tenantSelection', () => {
     const ts = xeroProvider.tenantSelection!;
     expect(ts.connectableTenantType).toBe('ORGANISATION');
     await expect(ts.listGrantTenants('at', 'evt-00001')).resolves.toHaveLength(1);
+    // The filter mode must actually reach the request URL — listGrantTenants
+    // is scoped to the auth event, never the bare (all-tenants) endpoint.
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://api.xero.com/connections?authEventId=evt-00001');
     await ts.removeTenantConnection('at', 'conn-A');
     expect(fetchMock.mock.calls[1]![0]).toBe('https://api.xero.com/connections/conn-A');
+  });
+
+  it('listAllTenants hits the bare (unscoped) connections endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json([{ id: 'conn-A', tenantId: 'ten-A', tenantType: 'ORGANISATION', tenantName: 'Alpha' }]));
+    const ts = xeroProvider.tenantSelection!;
+    await expect(ts.listAllTenants('at')).resolves.toHaveLength(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://api.xero.com/connections');
   });
 });
 

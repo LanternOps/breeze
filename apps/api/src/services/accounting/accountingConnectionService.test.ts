@@ -1317,13 +1317,14 @@ describe('Xero W02 columns', () => {
 });
 
 describe('pending_tenant (Xero W02)', () => {
-  it('resolveActiveConnection and resolveActiveConnectionRef both exclude pending_tenant (the predicate is duplicated — PR #7182)', async () => {
+  it('resolveActiveConnection and resolveActiveConnectionRef both exclude pending_tenant via the shared activeConnectionWhere predicate', async () => {
     const whereSpy = vi.fn((_cond: SQL) => ({ limit: async () => [] }));
     const dbc = { select: () => ({ from: () => ({ where: whereSpy }) }) } as any;
     const { resolveActiveConnection, resolveActiveConnectionRef } = await import('./accountingConnectionService');
     await resolveActiveConnection(dbc, 'p1');
     await resolveActiveConnectionRef(dbc, 'p1');
     const rendered = whereSpy.mock.calls.map(([cond]) => new PgDialect().sqlToQuery(cond as SQL));
+    expect(rendered).toHaveLength(2);
     for (const q of rendered) {
       expect(q.sql).toContain('"accounting_connections"."status" <>');
       expect(q.params).toContain('pending_tenant');
@@ -1369,5 +1370,29 @@ describe('pending_tenant (Xero W02)', () => {
     const err = await upsertConnection(dbc, 'p1', 'xero', { realmId: 't1' }).catch((e) => e);
     expect(err).toBeInstanceOf(AccountingTenantHeldError);
     expect(err).toMatchObject({ code: 'accounting_tenant_held', status: 409, message: 'This Xero organisation is connected to another Breeze account' });
+  });
+
+  it('upsertConnection rethrows a 23505 on a DIFFERENT unique index untouched — never AccountingTenantHeldError', async () => {
+    const { upsertConnection, AccountingTenantHeldError } = await import('./accountingConnectionService');
+    const violation = Object.assign(new Error('dup'), { cause: { code: '23505', constraint_name: 'other_idx' } });
+    const dbc = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => ({ returning: async () => { throw violation; } }) }) }),
+      select: vi.fn(), update: vi.fn(), delete: vi.fn(),
+    } as any;
+    const err = await upsertConnection(dbc, 'p1', 'xero', { realmId: 't1' }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(AccountingTenantHeldError);
+    expect(err).toBe(violation);
+  });
+
+  it('upsertConnection rethrows a non-23505 error untouched — never AccountingTenantHeldError', async () => {
+    const { upsertConnection, AccountingTenantHeldError } = await import('./accountingConnectionService');
+    const violation = Object.assign(new Error('deadlock detected'), { cause: { code: '40P01' } });
+    const dbc = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: () => ({ returning: async () => { throw violation; } }) }) }),
+      select: vi.fn(), update: vi.fn(), delete: vi.fn(),
+    } as any;
+    const err = await upsertConnection(dbc, 'p1', 'xero', { realmId: 't1' }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(AccountingTenantHeldError);
+    expect(err).toBe(violation);
   });
 });

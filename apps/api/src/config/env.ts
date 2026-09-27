@@ -381,7 +381,9 @@ export function xeroWebhookKey(): string {
 }
 // Per-organisation daily call budget. 1000 = Xero Starter tier; hosted sets its
 // tier's value (spec "Commercial constraint"). validate.ts refuses a bad value at
-// boot, so the fallback here only guards direct callers in tests.
+// boot, so the fallback here guards direct callers in tests as well as any
+// process path that reads config without ever running validateConfig() (a
+// script, a job, an unrelated test suite importing this module directly).
 export const XERO_DEFAULT_DAILY_CALL_LIMIT = 1000;
 export function xeroDailyCallLimit(): number {
   const raw = process.env.XERO_DAILY_CALL_LIMIT?.trim();

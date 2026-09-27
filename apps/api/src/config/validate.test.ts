@@ -3007,13 +3007,8 @@ describe('Xero env (W02)', () => {
   it('boots with every Xero var unset (all optional)', () => {
     withEnv({ ...validEnv }, () => { expect(() => validateConfig()).not.toThrow(); });
   });
-  it('refuses a non-integer XERO_DAILY_CALL_LIMIT', () => {
-    withEnv({ ...validEnv, XERO_DAILY_CALL_LIMIT: 'unlimited' }, () => {
-      expect(() => validateConfig()).toThrow(/XERO_DAILY_CALL_LIMIT/);
-    });
-  });
-  it('refuses XERO_DAILY_CALL_LIMIT=0', () => {
-    withEnv({ ...validEnv, XERO_DAILY_CALL_LIMIT: '0' }, () => {
+  it.each(['unlimited', '0', '-3', '12.5'])('refuses an invalid XERO_DAILY_CALL_LIMIT %s', (value) => {
+    withEnv({ ...validEnv, XERO_DAILY_CALL_LIMIT: value }, () => {
       expect(() => validateConfig()).toThrow(/XERO_DAILY_CALL_LIMIT/);
     });
   });

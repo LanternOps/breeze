@@ -216,8 +216,9 @@ export async function resolveActiveConnection(
  * The non-decrypting core of `resolveActiveConnection`'s WHERE/limit, shared by
  * every caller that does not need the decrypted realm/token columns. Selects
  * only `id` + `provider` + `status` — never the encrypted columns `mapConnection`
- * decrypts. Any future filter added to `resolveActiveConnection` (W02's
- * pending_tenant exclusion) must be mirrored here too.
+ * decrypts. Both this and `resolveActiveConnection` build their WHERE from the
+ * SAME `activeConnectionWhere` predicate (W02's pending_tenant exclusion), so
+ * there is nothing left to keep in sync by hand.
  *
  * Exported as the public id+provider+status read for callers that never need
  * tokens (e.g. a route that only stamps `.id`/`.provider`/`.status` on a
