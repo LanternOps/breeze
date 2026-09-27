@@ -62,16 +62,25 @@ function sourceRows(source: PolicySources) {
     openAlertsBySource: [...source.openAlertsBySource].sort(([a], [b]) => a.localeCompare(b)) };
 }
 
-/** Only the digest crosses the queue boundary; channel configuration stays in the caller's DB context. */
-export async function previewFreshness(policyId: string, executor: DbExecutor): Promise<string> {
-  const sources = await loadPolicySources(policyId, executor);
-  if (!sources) throw new ConversionError('policy_not_found', 'Policy not found');
-  const ids = [...await resolveDeviceIdsForPolicy(policyId, executor)].sort();
-  const deviceRows = ids.length ? await executor.select().from(devices).where(inArray(devices.id, ids)).orderBy(devices.id) : [];
-  // Include the owner even for an empty scope, so its settings still invalidate previews.
-  const orgIds = [...new Set([sources.policy.orgId, ...deviceRows.map((d) => d.orgId)].filter((id): id is string => !!id))];
-  const orgs = orgIds.length ? await executor.select().from(organizations).where(inArray(organizations.id, orgIds)).orderBy(organizations.id) : [];
-  const partnerIds = [...new Set([sources.policy.partnerId, ...orgs.map((o) => o.partnerId)].filter((id): id is string => !!id))];
+/**
+ * The device columns conversion reads: assignment targeting (legacyBaseline,
+ * monitorResolver) keys on org, site, role and OS, and equivalence on id, org
+ * and site. Hash these, never the whole row: an agent heartbeat rewrites
+ * last_seen_at, status and partner_export_updated_at every minute, so a hash
+ * over telemetry goes stale before anyone can confirm the preview. The v0.118
+ * boot sweep failed a partner on every retry this way.
+ */
+export const conversionDeviceColumns = {
+  id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType,
+};
+
+/**
+ * Policy, delivery and monitor rows that can decide behaviour for devices in
+ * `orgIds`: each org's own rows plus partner-wide rows of `partnerIds`. Scoped
+ * explicitly rather than by RLS alone, so a system-scope caller (the sweep)
+ * does not hash every tenant's rows and go stale on an unrelated write.
+ */
+export async function ownerAxisInputs(orgIds: string[], partnerIds: string[], executor: DbExecutor) {
   const axis = (table: { orgId: PgColumn; partnerId: PgColumn }) => or(inArray(table.orgId, orgIds), and(isNull(table.orgId), inArray(table.partnerId, partnerIds)));
   const routes = await executor.select().from(notificationRoutingRules).where(axis(notificationRoutingRules)).orderBy(notificationRoutingRules.id);
   const channels = await executor.select().from(notificationChannels).where(axis(notificationChannels)).orderBy(notificationChannels.id);
@@ -82,6 +91,20 @@ export async function previewFreshness(policyId: string, executor: DbExecutor): 
   const assignments = policyIds.length ? await executor.select().from(configPolicyAssignments).where(inArray(configPolicyAssignments.configPolicyId, policyIds)).orderBy(configPolicyAssignments.id) : [];
   const links = policyIds.length ? await executor.select().from(configPolicyFeatureLinks).where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds)).orderBy(configPolicyFeatureLinks.id) : [];
   const definitions = await executor.select().from(monitorDefinitions).where(axis(monitorDefinitions)).orderBy(monitorDefinitions.id);
+  return { routes, channels, escalation, policies, assignments, links, definitions };
+}
+
+/** Only the digest crosses the queue boundary; channel configuration stays in the caller's DB context. */
+export async function previewFreshness(policyId: string, executor: DbExecutor): Promise<string> {
+  const sources = await loadPolicySources(policyId, executor);
+  if (!sources) throw new ConversionError('policy_not_found', 'Policy not found');
+  const ids = [...await resolveDeviceIdsForPolicy(policyId, executor)].sort();
+  const deviceRows = ids.length ? await executor.select(conversionDeviceColumns).from(devices).where(inArray(devices.id, ids)).orderBy(devices.id) : [];
+  // Include the owner even for an empty scope, so its settings still invalidate previews.
+  const orgIds = [...new Set([sources.policy.orgId, ...deviceRows.map((d) => d.orgId)].filter((id): id is string => !!id))];
+  const orgs = orgIds.length ? await executor.select().from(organizations).where(inArray(organizations.id, orgIds)).orderBy(organizations.id) : [];
+  const partnerIds = [...new Set([sources.policy.partnerId, ...orgs.map((o) => o.partnerId)].filter((id): id is string => !!id))];
+  const { routes, channels, escalation, policies, assignments, links, definitions } = await ownerAxisInputs(orgIds, partnerIds, executor);
   const competitors = await Promise.all([...policies].sort((a, b) => a.id.localeCompare(b.id)).map((p) => loadPolicySources(p.id, executor)));
   return sha(canonical({ sources: sourceRows(sources), competitors: competitors.map((p) => p ? sourceRows(p) : null),
     ids, deviceRows, orgs, policies, assignments, links, definitions, routes, channels, escalation }));
