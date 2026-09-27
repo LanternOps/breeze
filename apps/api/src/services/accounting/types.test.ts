@@ -16,6 +16,8 @@ import type {
   InvoicePushResult,
   InvoiceVoidResult,
   PaymentDeleteResult,
+  ProviderSettingsOptions,
+  ProviderTenantSelection,
   RateLimitSpec,
   RealmSettings,
   RemoteRef,
@@ -142,5 +144,18 @@ describe('provider mechanics (Xero W01)', () => {
     expectTypeOf<AccountingProvider['limits']['rate']>().toEqualTypeOf<RateLimitSpec>();
     expectTypeOf<Parameters<AccountingProvider['paymentMarker']['embed']>>().toEqualTypeOf<[string | null, string]>();
     expectTypeOf<ReturnType<AccountingProvider['configError']>>().toEqualTypeOf<string | null>();
+  });
+});
+
+describe('tenant selection and settings options (Xero W02)', () => {
+  it('declares the optional tenant-selection seam', () => {
+    expectTypeOf<AccountingProvider['tenantSelection']>().toEqualTypeOf<ProviderTenantSelection | undefined>();
+    expectTypeOf<Parameters<ProviderTenantSelection['listGrantTenants']>>().toEqualTypeOf<[string, string]>();
+    expectTypeOf<ReturnType<ProviderTenantSelection['authEventIdOf']>>().toEqualTypeOf<string | null>();
+  });
+  it('declares optional settings options and release', () => {
+    expectTypeOf<AccountingProvider['listSettingsOptions']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<ProviderSettingsOptions>) | undefined>();
+    expectTypeOf<AccountingProvider['releaseConnection']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<void>) | undefined>();
+    expectTypeOf<ProviderSettingsOptions['organisation']['isDemoCompany']>().toEqualTypeOf<boolean | null>();
   });
 });
