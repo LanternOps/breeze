@@ -40,7 +40,7 @@ test('accepts a server-only change set and reports the pairing', () => {
   assert.match(result.stdout, /agent-facing server changes: none/u);
 });
 
-test('owner decision: a root .env.example change is still server-only eligible', () => {
+test('by design: a root .env.example change is still server-only eligible', () => {
   const fx = new Fixture();
   const commit = fx.commit({ '.env.example': 'A=1\nNEW_SERVER_VAR=\n', 'apps/api/src/fix.ts': 'fix\n' });
   fx.addRow('v0.118.1', commit);

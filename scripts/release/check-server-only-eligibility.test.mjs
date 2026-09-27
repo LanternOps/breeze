@@ -14,7 +14,7 @@ for (const [label, path] of [
   ['binaries Dockerfile', 'docker/Dockerfile.binaries'],
   ['release workflow', '.github/workflows/release.yml'],
   ['promotion workflow', '.github/workflows/promote-release-images.yml'],
-  ['.github/scripts (owner decision: protected wholesale)', '.github/scripts/new-helper.mjs'],
+  ['.github/scripts (by design: protected wholesale)', '.github/scripts/new-helper.mjs'],
   ['.github/actions', '.github/actions/setup/action.yml'],
   ['release scripts', 'scripts/release/anything.sh'],
   ['guided setup', 'scripts/guided-setup.sh'],

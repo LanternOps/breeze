@@ -63,7 +63,7 @@ test('the ledger negation exempts only the server-only ledger', () => {
   assert.ok(protectedPath('.github/release-provenance/sslcom-tls-rsa-root-ca-2022.pem'));
 });
 
-test('owner decision: .github/scripts is protected wholesale; the root .env.example is exempt', () => {
+test('by design: .github/scripts is protected wholesale; the root .env.example is exempt', () => {
   assert.ok(protectedPath('.github/scripts/check-workflow-security.mjs'));
   assert.ok(protectedPath('.github/scripts/anything/new.sh'));
   assert.ok(!protectedPath('.env.example'));
