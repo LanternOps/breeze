@@ -96,7 +96,11 @@ import type { AccountingPaymentPayload, AccountingProviderId, PaymentDeleteResul
 /** A row must be at least this stale before the sweep re-enqueues it, so the
  *  sweep never races the immediate enqueue the caller just made. */
 export const PAYMENT_SWEEP_MIN_AGE_MS = 2 * 60 * 1000;
-/** QuickBooks caps PaymentRefNum at 21 characters and REJECTS a longer one. */
+/**
+ * @deprecated QuickBooks' PaymentRefNum cap, kept for existing test imports.
+ * The coordinator reads `provider.limits.paymentRefMax` instead (Xero W01);
+ * nothing in the core reads this constant.
+ */
 export const PAYMENT_REF_MAX_LENGTH = 21;
 /**
  * How long a delete-pending mapping with NO remote id is allowed to wait for
@@ -1663,11 +1667,14 @@ export async function pushPaymentToAccounting(
         amount: payment.amount,
         currencyCode: invoice.currencyCode,
         txnDate: payment.receivedAt,
-        // QuickBooks REJECTS a PaymentRefNum over 21 chars, and a Stripe
-        // payment_intent id is 27. Truncation is safe because this field is
-        // human reference only — ownership lives in PrivateNote (decision 3).
-        reference: payment.reference ? payment.reference.slice(0, PAYMENT_REF_MAX_LENGTH) : null,
-        privateNote: buildPaymentPrivateNote(payment.id),
+        // Providers cap the reference (QuickBooks REJECTS a PaymentRefNum over
+        // 21 chars, and a Stripe payment_intent id is 27). Truncation is safe
+        // because this field is human reference only — ownership lives in the
+        // payment marker (decision 3).
+        reference: payment.reference
+          ? payment.reference.slice(0, getAccountingProvider(conn.provider).limits.paymentRefMax)
+          : null,
+        marker: buildPaymentPrivateNote(payment.id),
         // Read off the row this job LEASED, so every BullMQ retry of this
         // ownership sends the same requestid and QuickBooks' replay cache keeps
         // doing its job; only a fan-out re-own moves it.
@@ -1756,7 +1763,7 @@ export async function pushPaymentToAccounting(
       // helper itself always flips the row first, which is the whole reason it
       // exists — so this branch is the backstop, not the common path.
       if (mapping.pendingOp === 'delete' || !payment) {
-        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
           syncStatus: 'pending', linkStatus: 'confirmed', pendingOp: 'delete', lastError: null,
           // A delete debt begins HERE when the payment vanished mid-flight, so
           // its grace window starts here too — the same rule `convertToDelete`
@@ -1788,14 +1795,14 @@ export async function pushPaymentToAccounting(
           toMinorUnits(prep.amount, currency) - toMinorUnits(payment.amount, currency),
           currency,
         );
-        const message = partialRefundDivergenceMessage(totalRefunded);
-        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+        const message = partialRefundDivergenceMessage(totalRefunded, accountingProviderDisplayName(prep.conn.provider));
+        await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
           syncStatus: 'error', linkStatus: 'confirmed', pendingOp: null, lastError: message,
         });
         return { outcome: 'diverged' as const, audit: null };
       }
 
-      await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
+      await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
         syncStatus: 'synced', linkStatus: 'confirmed', pendingOp: null, lastError: null, stampSyncedAt: true,
       });
       return {
@@ -1993,7 +2000,7 @@ export async function deletePaymentInAccounting(
       conn,
       remotePaymentId,
       remoteInvoiceId,
-      syncToken: claimed.remoteSyncToken ?? null,
+      remoteVersion: claimed.remoteSyncToken ?? null,
       invoicePaymentId: claimed.breezeEntityId,
       orgId,
       invoiceId,
@@ -2041,7 +2048,7 @@ export async function deletePaymentInAccounting(
   try {
     result = await runOutsideDbContext(() => provider.deletePayment(liveConn, {
       remotePaymentId: prep.remotePaymentId,
-      syncToken: prep.syncToken,
+      remoteVersion: prep.remoteVersion,
     }));
   } catch (err) {
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));

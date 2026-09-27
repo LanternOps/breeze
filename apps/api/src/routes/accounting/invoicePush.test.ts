@@ -476,7 +476,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
   it('threads the query through to listRemoteCustomers for entityType=org', async () => {
     resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
     listRemoteCustomersMock.mockResolvedValue([
-      { id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD', syncToken: '0' },
+      { id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD', remoteVersion: '0' },
     ]);
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
@@ -490,7 +490,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
 
   it('threads the query through to listRemoteItems for entityType=catalog_item', async () => {
     resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
-    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', syncToken: '0' }]);
+    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', remoteVersion: '0' }]);
     const res = await getCandidates('?entityType=catalog_item&q=Widget');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1' }] });

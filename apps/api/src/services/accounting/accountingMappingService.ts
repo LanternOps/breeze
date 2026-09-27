@@ -503,7 +503,7 @@ async function buildOrgProposals(
         breezeEntityId: link.orgId,
         remoteEntityType: 'Customer',
         remoteEntityId: link.externalId,
-        remoteSyncToken: remote?.syncToken ?? null,
+        remoteSyncToken: remote?.remoteVersion ?? null,
         remoteCurrencyCode: remote?.currencyCode ?? null,
         linkStatus: 'confirmed',
         syncStatus: 'pending',
@@ -948,7 +948,7 @@ export async function saveMappingDecision(
     // — the gate documents the intent rather than relying on that incidentally.
     proposedRemoteName = found.displayName;
     const remoteCurrencyCode = breezeEntityType === 'org' ? (found as RemoteCustomer).currencyCode ?? null : null;
-    fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, remoteCurrencyCode, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
+    fields = { remoteEntityId, remoteSyncToken: found.remoteVersion ?? null, remoteCurrencyCode, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
   } else if (decision === 'create_new') {
     fields = { remoteEntityId: null, remoteSyncToken: null, remoteCurrencyCode: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null };
   } else {
@@ -1380,7 +1380,7 @@ async function syncMappedEntityUnderLease(
         mappingId: mapping.id,
         partnerId,
         remoteEntityId: remote.id,
-        remoteSyncToken: remote.syncToken ?? null,
+        remoteSyncToken: remote.remoteVersion ?? null,
         // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
         // — a catalog_item sync's `remote` always carries none — but the explicit
         // entity-type gate documents that this is a deliberate org-only field, not
@@ -1393,7 +1393,7 @@ async function syncMappedEntityUnderLease(
       service: 'accountingMappingService',
       accounting_mapping_id: mapping.id,
       remote_entity_id: remote.id,
-      remote_sync_token: remote.syncToken ?? 'none',
+      remote_sync_token: remote.remoteVersion ?? 'none',
     });
     const label = breezeEntityType === 'org' ? 'customer' : 'item';
     const message = `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;

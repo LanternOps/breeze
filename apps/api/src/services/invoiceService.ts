@@ -31,7 +31,7 @@ import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './
 import { resolveActiveConnectionFor } from './accounting/accountingConnectionService';
 import { captureException } from './sentry';
 import type { DbContextRunner } from './accounting/dbContextGuard';
-import { INVOICE_REMOTE_DELETED_ERROR, type AccountingProviderId } from './accounting/types';
+import { isInvoiceRemoteDeletedMarker, type AccountingProviderId } from './accounting/types';
 import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
@@ -702,10 +702,10 @@ export interface InvoiceAccountingSync {
   remoteDocNumber: string | null;
   /**
    * True when this mapping row carries the `markInvoiceDeletedRemotely`
-   * marker (#4544) — the reconcile worker saw QuickBooks delete/void an
+   * marker (#4544) — the reconcile worker saw the provider delete/void an
    * invoice Breeze previously pushed. Computed here, server-side, from the
-   * one place that knows the exact sentinel `lastError` string
-   * (`INVOICE_REMOTE_DELETED_ERROR`), so the web layer never has to
+   * one place that knows the exact sentinel `lastError` strings
+   * (`isInvoiceRemoteDeletedMarker`), so the web layer never has to
    * string-match `lastError` to decide whether re-pushing is safe.
    */
   remoteDeleted: boolean;
@@ -752,7 +752,7 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
     remoteDocNumber: row.remoteDocNumber,
-    remoteDeleted: row.lastError === INVOICE_REMOTE_DELETED_ERROR,
+    remoteDeleted: isInvoiceRemoteDeletedMarker(row.lastError),
   };
 }
 

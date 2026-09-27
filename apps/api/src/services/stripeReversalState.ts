@@ -16,7 +16,8 @@ import {
   enqueueAccountingPaymentDelete,
   enqueueAccountingPaymentPush,
 } from '../jobs/accountingSyncWorker';
-import { resolveActiveConnectionId } from './accounting/accountingConnectionService';
+import { resolveActiveConnectionRef } from './accounting/accountingConnectionService';
+import { accountingProviderDisplayName } from './accounting/providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 
 export type NormalizedStripeFinancialEvent = {
@@ -361,17 +362,21 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
           // connection's mapping. One connection per partner and ON DELETE
           // CASCADE already make a cross-connection match impossible; this
           // makes it impossible by predicate too, instead of by schema
-          // accident. Fix round 1: use the non-decrypting id lookup — this
-          // runs inside the money transaction, and a rotated/retired
-          // encryption key must never abort a Stripe refund reconcile.
-          const activeConnId = await resolveActiveConnectionId(db, invoice.partnerId);
-          if (activeConnId) {
+          // accident. Fix round 1: use the non-decrypting id+provider lookup
+          // — this runs inside the money transaction, and a rotated/retired
+          // encryption key must never abort a Stripe refund reconcile. The
+          // provider labels the instruction (Xero W01 Task 9).
+          const activeConn = await resolveActiveConnectionRef(db, invoice.partnerId);
+          if (activeConn) {
             await db.update(accountingEntityMappings).set({
               syncStatus: 'error',
-              lastError: partialRefundDivergenceMessage(fromMinorUnits(originalMinor - targetMinor, mapping.currency)),
+              lastError: partialRefundDivergenceMessage(
+                fromMinorUnits(originalMinor - targetMinor, mapping.currency),
+                accountingProviderDisplayName(activeConn.provider),
+              ),
               updatedAt: new Date(),
             }).where(and(
-              eq(accountingEntityMappings.integrationId, activeConnId),
+              eq(accountingEntityMappings.integrationId, activeConn.id),
               eq(accountingEntityMappings.partnerId, invoice.partnerId),
               eq(accountingEntityMappings.breezeEntityType, 'payment'),
               eq(accountingEntityMappings.breezeEntityId, payment.id),

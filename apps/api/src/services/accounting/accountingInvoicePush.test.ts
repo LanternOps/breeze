@@ -390,10 +390,10 @@ beforeEach(() => {
     return updated;
   });
   pushInvoiceMock.mockResolvedValue({
-    id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001',
+    id: 'qb-inv-1', remoteVersion: '0', docNumber: 'INV-2026-0001',
     remoteTaxTotal: '7.00', remoteTotal: '107.00',
   });
-  voidInvoiceMock.mockResolvedValue({ syncToken: null });
+  voidInvoiceMock.mockResolvedValue({ remoteVersion: null });
   fanOutOwedPaymentsMock.mockResolvedValue([]);
   enqueuePaymentPushMock.mockResolvedValue(true);
 });
@@ -816,7 +816,7 @@ describe('pushInvoiceToAccounting', () => {
     expect(orgCallOrder).toBeLessThan(itemCallOrder!);
 
     const [, , lineMappings] = pushInvoiceMock.mock.calls[0]!;
-    expect(lineMappings).toContainEqual({ invoiceLineId: 'line-1', remoteItemRef: { id: 'qb-synced', syncToken: '0' } });
+    expect(lineMappings).toContainEqual({ invoiceLineId: 'line-1', remoteItemRef: { id: 'qb-synced', remoteVersion: '0' } });
     expect(lineMappings).toContainEqual({ invoiceLineId: 'line-2', remoteItemRef: null });
   });
 
@@ -891,7 +891,7 @@ describe('pushInvoiceToAccounting', () => {
   });
 
   it('flags synced_with_tax_variance when remoteTaxTotal differs from invoice taxTotal by more than 1 cent', async () => {
-    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.02', remoteTotal: '107.02' });
+    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '7.02', remoteTotal: '107.02' });
 
     const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -994,14 +994,14 @@ describe('pushInvoiceToAccounting', () => {
           { id: 'line-2', lineTotal: '0.20', unitPrice: '0.20' },
         ],
       });
-      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '0.00', remoteTotal: '0.30' });
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '0.00', remoteTotal: '0.30' });
 
       await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
       expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
     });
 
     it('marks the mapping drifted (synced_with_tax_variance), not synced, when QuickBooks TotalAmt differs from the Breeze total even though tax matches', async () => {
-      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '157.00' });
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '157.00' });
 
       const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1013,7 +1013,7 @@ describe('pushInvoiceToAccounting', () => {
     });
 
     it('treats a 1-cent TotalAmt difference as plain synced (same tolerance as tax)', async () => {
-      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '107.01' });
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: '107.01' });
 
       const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1022,7 +1022,7 @@ describe('pushInvoiceToAccounting', () => {
     });
 
     it('treats an absent TotalAmt as no total drift (same as an absent tax total)', async () => {
-      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: null });
+      pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '7.00', remoteTotal: null });
 
       const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1032,7 +1032,7 @@ describe('pushInvoiceToAccounting', () => {
   });
 
   it('treats a 1-cent tax difference as plain synced (within tolerance)', async () => {
-    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.01', remoteTotal: '107.01' });
+    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: null, remoteTaxTotal: '7.01', remoteTotal: '107.01' });
 
     const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1041,7 +1041,7 @@ describe('pushInvoiceToAccounting', () => {
   });
 
   it('persists remote_doc_number only when the QBO DocNumber differs from the Breeze invoice number', async () => {
-    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-9999', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
+    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: 'INV-2026-9999', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
 
     const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1051,7 +1051,7 @@ describe('pushInvoiceToAccounting', () => {
   });
 
   it('does not persist remote_doc_number when the QBO DocNumber matches the Breeze invoice number', async () => {
-    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
+    pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', remoteVersion: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
 
     const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1127,7 +1127,7 @@ describe('pushInvoiceToAccounting', () => {
     pushInvoiceMock.mockImplementationOnce(async () => {
       pushed = true;
       currentInvoices = [defaultInvoice({ status: 'void' })];
-      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+      return { id: 'qb-inv-1', remoteVersion: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
     });
 
     await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
@@ -1177,7 +1177,7 @@ describe('pushInvoiceToAccounting', () => {
       ],
     });
     pushInvoiceMock.mockResolvedValue({
-      id: 'qb-inv-1', syncToken: '5', docNumber: 'INV-2026-0001',
+      id: 'qb-inv-1', remoteVersion: '5', docNumber: 'INV-2026-0001',
       remoteTaxTotal: '7.00', remoteTotal: '107.00',
     });
 
@@ -1386,7 +1386,7 @@ describe('voidInvoiceInAccounting', () => {
         },
       ],
     });
-    voidInvoiceMock.mockResolvedValueOnce({ syncToken: '9' });
+    voidInvoiceMock.mockResolvedValueOnce({ remoteVersion: '9' });
 
     await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1398,7 +1398,7 @@ describe('voidInvoiceInAccounting', () => {
 
   it('KEEPS the stored SyncToken when the void reply carries none', async () => {
     // The sibling above proves a returned token is persisted. This is the other
-    // half: a reply with `syncToken: null` must not NULL the stored one —
+    // half: a reply with `remoteVersion: null` must not NULL the stored one —
     // clearing it costs the next write an extra read at best, and on the delete
     // path an unnecessary round trip that can race a concurrent edit. The
     // Payment's revision did not become unknown just because the reply omitted
@@ -1413,7 +1413,7 @@ describe('voidInvoiceInAccounting', () => {
         },
       ],
     });
-    voidInvoiceMock.mockResolvedValueOnce({ syncToken: null });
+    voidInvoiceMock.mockResolvedValueOnce({ remoteVersion: null });
 
     await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
 
@@ -1562,7 +1562,7 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
     // never going to happen.
     pushInvoiceMock.mockImplementationOnce(async () => {
       currentInvoices = [defaultInvoice({ status: 'void' })];
-      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+      return { id: 'qb-inv-1', remoteVersion: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
     });
 
     await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);

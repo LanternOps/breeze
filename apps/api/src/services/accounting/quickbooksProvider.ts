@@ -3,7 +3,7 @@ import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
 import { captureException } from '../sentry';
-import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
+import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import type {
   AccountingCustomerPayload,
   AccountingDeletePaymentPayload,
@@ -11,6 +11,7 @@ import type {
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
   AccountingItemPayload,
+  AccountingPaymentMethod,
   AccountingPaymentPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
@@ -27,7 +28,7 @@ import type {
   RemoteItem,
   RemoteRef,
 } from './types';
-import type { AccountingConnection } from './accountingConnectionService';
+import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import { parseBreezePaymentMarker } from './accountingPaymentMarker';
 
 const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
@@ -68,6 +69,36 @@ export const QBO_CDC_CURSOR_SLACK_MS = 5 * 60 * 1000;
  * cursor rather than pretending the window was drained.
  */
 export const QBO_CDC_QUERY_MAX_PAGES = 50;
+
+/**
+ * QuickBooks PaymentMethod name -> Breeze `payment_method` enum.
+ *
+ * Only the names QuickBooks ships as realm defaults are mapped. Everything else
+ * — including plausible-looking rails like "ACH", "Wire" or "Direct Debit" — is
+ * `other` ON PURPOSE: `bank_transfer` is never INFERRED from a free-text name a
+ * QBO admin can rename at will, because mis-labelling the rail on a money row is
+ * worse than an honest `other`.
+ */
+export const QBO_PAYMENT_METHOD_NAMES: Record<string, AccountingPaymentMethod> = {
+  cash: 'cash',
+  check: 'check',
+  cheque: 'check',
+  'credit card': 'card',
+  card: 'card',
+  'debit card': 'card',
+  visa: 'card',
+  mastercard: 'card',
+  'master card': 'card',
+  amex: 'card',
+  'american express': 'card',
+  discover: 'card',
+  'diners club': 'card',
+};
+
+export function mapQboPaymentMethod(name: string | null): AccountingPaymentMethod {
+  if (typeof name !== 'string') return 'other';
+  return QBO_PAYMENT_METHOD_NAMES[name.trim().toLowerCase()] ?? 'other';
+}
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -246,8 +277,9 @@ export function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnecti
     amountMinor: toMinorUnits(line.Amount ?? 0, currency),
     currency,
     txnDate: raw.TxnDate ?? '',
-    remotePaymentSyncToken: raw.SyncToken ?? null,
+    remotePaymentVersion: raw.SyncToken ?? null,
     paymentMethodName: raw.PaymentMethodRef?.name ?? null,
+    method: mapQboPaymentMethod(raw.PaymentMethodRef?.name ?? null),
     paymentRefNum: raw.PaymentRefNum ?? null,
     // Anchored whole-note match only — an operator-authored note that merely
     // mentions a Breeze id must never claim a Breeze payment row.
@@ -397,7 +429,7 @@ export function mapQboCustomer(raw: QboRawCustomer): RemoteCustomer {
     active: raw.Active,
     billAddr: mapQboAddress(raw.BillAddr),
     shipAddr: mapQboAddress(raw.ShipAddr),
-    syncToken: raw.SyncToken,
+    remoteVersion: raw.SyncToken,
     currencyCode: raw.CurrencyRef?.value || undefined,
   };
 }
@@ -411,7 +443,7 @@ function mapRemoteItem(raw: QboRawItem): RemoteItem {
     type: raw.Type,
     unitPrice: raw.UnitPrice,
     active: raw.Active,
-    syncToken: raw.SyncToken,
+    remoteVersion: raw.SyncToken,
   };
 }
 
@@ -452,6 +484,36 @@ export class QuickbooksProvider implements AccountingProvider {
   readonly capabilities = {
     connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
   } as const;
+
+  readonly limits = {
+    paymentRefMax: 21, // QBO REJECTS a PaymentRefNum over 21 chars
+    rate: {
+      perConnection: { limit: 500, windowSeconds: 60 }, // Intuit: 500 req/min per realm per app
+      maxConcurrentPerConnection: 10, // Intuit: 10 concurrent per realm per app
+      appWide: null,
+      dailyPerConnection: null,
+    },
+  } as const satisfies AccountingProvider['limits'];
+
+  readonly paymentMarker = {
+    // PrivateNote holds the marker ALONE; PaymentRefNum keeps the reference.
+    embed: (_reference: string | null, marker: string): string => marker,
+    extract: parseBreezePaymentMarker,
+  };
+
+  connectEnvironment(): AccountingEnvironment {
+    return QBO_ENVIRONMENT as AccountingEnvironment;
+  }
+
+  configError(): string | null {
+    if (!QBO_CLIENT_ID || !QBO_CLIENT_SECRET || !QBO_REDIRECT_URI || !QBO_ENVIRONMENT) {
+      return 'QuickBooks OAuth is not configured on this instance';
+    }
+    if (QBO_ENVIRONMENT !== 'sandbox' && QBO_ENVIRONMENT !== 'production') {
+      return 'QBO_ENVIRONMENT must be sandbox or production';
+    }
+    return null;
+  }
 
   buildAuthUrl(state: string): string {
     const url = new URL(QBO_AUTH_URL);
@@ -533,6 +595,15 @@ export class QuickbooksProvider implements AccountingProvider {
     return this.boundary('QuickBooks payment delete', () => this.deletePaymentRaw(conn, payment));
   }
 
+  /**
+   * QuickBooks change data capture. The returned `cursor` is the instant the
+   * CDC window ends. QBO's `/cdc` answers only for the last
+   * `QBO_CDC_LOOKBACK_DAYS` (30) days, so a stored cursor older than that is
+   * clamped to the floor (the skipped range is reported, never silently
+   * dropped), and an entity the CDC response truncated is backfilled through
+   * the paging `/query` endpoint — `overflowed` is set when that backfill
+   * could not drain it.
+   */
   async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
     return this.boundary('QuickBooks change data capture', () => this.reconcileChangesRaw(conn, sinceCursor));
   }
@@ -697,7 +768,7 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
     return {
       id: parsed.Customer.Id,
-      syncToken: parsed.Customer.SyncToken,
+      remoteVersion: parsed.Customer.SyncToken,
       currencyCode: parsed.Customer.CurrencyRef?.value || undefined,
       billAddr: mapQboAddress(parsed.Customer.BillAddr),
       shipAddr: mapQboAddress(parsed.Customer.ShipAddr),
@@ -735,7 +806,7 @@ export class QuickbooksProvider implements AccountingProvider {
       readSyncToken: (id) => this.readEntitySyncToken(conn, 'Item', id),
     });
     if (!parsed.Item?.Id) throw new Error('QuickBooks item response was missing an Id');
-    return { id: parsed.Item.Id, syncToken: parsed.Item.SyncToken };
+    return { id: parsed.Item.Id, remoteVersion: parsed.Item.SyncToken };
   }
 
   /**
@@ -924,7 +995,7 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!parsed.Invoice?.Id) throw new Error('QuickBooks invoice response was missing an Id');
     return {
       id: parsed.Invoice.Id,
-      syncToken: parsed.Invoice.SyncToken,
+      remoteVersion: parsed.Invoice.SyncToken,
       docNumber: parsed.Invoice.DocNumber,
       remoteTaxTotal: parsed.Invoice.TxnTaxDetail?.TotalTax != null ? String(parsed.Invoice.TxnTaxDetail.TotalTax) : null,
       remoteTotal: parsed.Invoice.TotalAmt != null ? String(parsed.Invoice.TotalAmt) : null,
@@ -992,7 +1063,7 @@ export class QuickbooksProvider implements AccountingProvider {
         'QuickBooks invoice void',
         { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: syncToken }) },
       );
-      return { syncToken: parsed.Invoice?.SyncToken ?? null };
+      return { remoteVersion: parsed.Invoice?.SyncToken ?? null };
     };
 
     if (!mapping.remoteSyncToken) {
@@ -1040,7 +1111,7 @@ export class QuickbooksProvider implements AccountingProvider {
           TotalAmt: Number(payment.amount),
           TxnDate: payment.txnDate,
           ...(payment.reference ? { PaymentRefNum: payment.reference } : {}),
-          PrivateNote: payment.privateNote,
+          PrivateNote: this.paymentMarker.embed(payment.reference, payment.marker),
           Line: [{
             Amount: Number(payment.amount),
             LinkedTxn: [{ TxnId: payment.remoteInvoiceId, TxnType: 'Invoice' }],
@@ -1056,14 +1127,14 @@ export class QuickbooksProvider implements AccountingProvider {
       },
     );
     if (!parsed.Payment?.Id) throw new Error('QuickBooks payment response was missing an Id');
-    return { id: parsed.Payment.Id, syncToken: parsed.Payment.SyncToken };
+    return { id: parsed.Payment.Id, remoteVersion: parsed.Payment.SyncToken };
   }
 
   private async deletePaymentRaw(
     conn: AccountingConnection,
     payment: AccountingDeletePaymentPayload,
   ): Promise<PaymentDeleteResult> {
-    let syncToken = payment.syncToken;
+    let syncToken = payment.remoteVersion;
     // No token held (an adoption that never read one) — fetch one before trying.
     if (syncToken === null) {
       const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);

@@ -124,16 +124,16 @@ vi.mock('./accounting/accountingPaymentPush', async (importOriginal) => ({
 }));
 
 // Xero W01 (Task 6): the partial-refund divergence flag is scoped to the
-// partner's ACTIVE accounting connection, via the non-decrypting id lookup
-// (fix round 1 — the plain resolveActiveConnection would eagerly decrypt
+// partner's ACTIVE accounting connection, via the non-decrypting id+provider
+// lookup (Task 9: the provider labels the divergence text) (fix round 1 — the plain resolveActiveConnection would eagerly decrypt
 // realm/token columns inside this money transaction). Defaults to a
 // connected partner so every pre-existing test in this file keeps its prior
 // behaviour; the two tests owned by Task 6 override this per-case.
-const { resolveActiveConnectionIdMock } = vi.hoisted(() => ({
-  resolveActiveConnectionIdMock: vi.fn(),
+const { resolveActiveConnectionRefMock } = vi.hoisted(() => ({
+  resolveActiveConnectionRefMock: vi.fn(),
 }));
 vi.mock('./accounting/accountingConnectionService', () => ({
-  resolveActiveConnectionId: resolveActiveConnectionIdMock,
+  resolveActiveConnectionRef: resolveActiveConnectionRefMock,
 }));
 
 const { enqueuePaymentPush, enqueuePaymentDelete } = vi.hoisted(() => ({
@@ -167,8 +167,8 @@ beforeEach(() => {
   enqueuePaymentPush.mockReset(); enqueuePaymentPush.mockResolvedValue(true);
   enqueuePaymentDelete.mockReset(); enqueuePaymentDelete.mockResolvedValue(true);
   processPendingReversals.mockReset(); processPendingReversals.mockResolvedValue(0);
-  resolveActiveConnectionIdMock.mockReset();
-  resolveActiveConnectionIdMock.mockResolvedValue('conn-1');
+  resolveActiveConnectionRefMock.mockReset();
+  resolveActiveConnectionRefMock.mockResolvedValue({ id: 'conn-1', provider: 'quickbooks' });
 });
 
 describe('recordStripePayment', () => {
@@ -507,7 +507,7 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     queueResult([]); // update stripe mapping -> refunded
   }
 
-  /** The reads reflectStripeRefund issues on the PARTIAL-refund arm. `resolveActiveConnectionId`
+  /** The reads reflectStripeRefund issues on the PARTIAL-refund arm. `resolveActiveConnectionRef`
    *  is mocked (Xero W01, Task 6) and does not consume from this queue. */
   function queuePartialRefund(mappingRows: unknown[] = [{ id: 'map-1' }]) {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
@@ -593,7 +593,7 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
     expect(patch).toMatchObject({
       syncStatus: 'error',
-      lastError: partialRefundDivergenceMessage('67.00'),
+      lastError: partialRefundDivergenceMessage('67.00', 'QuickBooks'),
     });
     expect(patch.lastError).toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
     // pending_op and claimed_at are deliberately UNTOUCHED: an owed push or a
@@ -625,7 +625,7 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     });
 
     const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
-    expect(patch.lastError).toBe(partialRefundDivergenceMessage('6700.00'));
+    expect(patch.lastError).toBe(partialRefundDivergenceMessage('6700.00', 'QuickBooks'));
   });
 
   it('only flags a payment that Breeze actually pushed: breeze_origin AND a remote id', async () => {
@@ -650,12 +650,12 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
   });
 
   it('flags only the payment mapping under the partner\'s active connection (integration_id filter, Xero W01)', async () => {
-    resolveActiveConnectionIdMock.mockResolvedValue('conn-1');
+    resolveActiveConnectionRefMock.mockResolvedValue({ id: 'conn-1', provider: 'quickbooks' });
     queuePartialRefund();
 
     await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
 
-    expect(resolveActiveConnectionIdMock).toHaveBeenCalledWith(db, 'p1');
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledWith(db, 'p1');
     const where = lastStmtOn(accountingEntityMappings, 'update')!.where;
     const { sql, params } = dialect.sqlToQuery(where as SQL);
     expect(sql).toContain('"accounting_entity_mappings"."integration_id" = $');
@@ -665,7 +665,7 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
   });
 
   it('skips the divergence flag, without throwing, when the partner has no accounting connection', async () => {
-    resolveActiveConnectionIdMock.mockResolvedValue(null);
+    resolveActiveConnectionRefMock.mockResolvedValue(null);
     queuePartialRefund();
 
     await expect(reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 }))

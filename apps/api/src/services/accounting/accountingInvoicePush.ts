@@ -46,7 +46,7 @@
  * context, exactly like `markInvoiceMappingErrorInOwnContext` does for Phase 2.
  */
 
-import { and, eq, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, isNull, notInArray, or } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../../db';
 import { accountingEntityMappings, invoiceLines, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
@@ -68,7 +68,8 @@ import {
 } from './accountingProviderError';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
-  INVOICE_REMOTE_DELETED_ERROR,
+  INVOICE_REMOTE_DELETED_MARKERS,
+  isInvoiceRemoteDeletedMarker,
   type AccountingEntityMapping as AccountingEntityMappingSeam,
   type AccountingInvoiceLineMapping,
   type AccountingInvoiceLinePayload,
@@ -233,7 +234,7 @@ async function loadInvoiceMappingIsRemoteDeleted(
 ): Promise<boolean> {
   const invoiceMappingRows = await loadMappingRowsForType(partnerId, integrationId, 'invoice');
   const existing = invoiceMappingRows.find((m) => m.breezeEntityId === invoiceId) ?? null;
-  return existing?.lastError === INVOICE_REMOTE_DELETED_ERROR;
+  return isInvoiceRemoteDeletedMarker(existing?.lastError);
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +320,7 @@ async function persistInvoicePreflightErrorInOwnContext(
             eq(accountingEntityMappings.partnerId, partnerId),
             or(
               isNull(accountingEntityMappings.lastError),
-              ne(accountingEntityMappings.lastError, INVOICE_REMOTE_DELETED_ERROR),
+              notInArray(accountingEntityMappings.lastError, [...INVOICE_REMOTE_DELETED_MARKERS]),
             ),
           ))
           .returning();
@@ -503,7 +504,7 @@ async function upsertInvoiceMappingPending(params: {
           eq(accountingEntityMappings.partnerId, params.partnerId),
           or(
             isNull(accountingEntityMappings.lastError),
-            ne(accountingEntityMappings.lastError, INVOICE_REMOTE_DELETED_ERROR),
+            notInArray(accountingEntityMappings.lastError, [...INVOICE_REMOTE_DELETED_MARKERS]),
           ),
         ))
         .returning();
@@ -522,7 +523,7 @@ async function upsertInvoiceMappingPending(params: {
             eq(accountingEntityMappings.id, params.existing.id),
             eq(accountingEntityMappings.partnerId, params.partnerId),
           ));
-        if (recheck[0]?.lastError === INVOICE_REMOTE_DELETED_ERROR) {
+        if (isInvoiceRemoteDeletedMarker(recheck[0]?.lastError)) {
           throw new AccountingInvoicePushError(
             'remote_deleted',
             409,
@@ -731,7 +732,7 @@ function buildInvoicePayload(
     dueDate: inv.dueDate ?? null,
     customerRef: {
       id: customerRemoteId,
-      syncToken: customerSyncToken ?? undefined,
+      remoteVersion: customerSyncToken ?? undefined,
     },
     currencyCode: inv.currencyCode,
     subtotal: inv.subtotal,
@@ -890,7 +891,7 @@ export async function pushInvoiceToAccounting(
     lineMappings.push({
       invoiceLineId: line.id,
       remoteItemRef: itemMapping && itemMapping.remoteEntityId
-        ? { id: itemMapping.remoteEntityId, syncToken: itemMapping.remoteSyncToken ?? undefined }
+        ? { id: itemMapping.remoteEntityId, remoteVersion: itemMapping.remoteSyncToken ?? undefined }
         : null,
     });
   }
@@ -910,7 +911,7 @@ export async function pushInvoiceToAccounting(
     // upsertInvoiceMappingPending below would otherwise clear the marker
     // (`lastError: null`) and let the push through, re-creating the invoice
     // in QuickBooks.
-    if (existingInvoiceMapping?.lastError === INVOICE_REMOTE_DELETED_ERROR) {
+    if (isInvoiceRemoteDeletedMarker(existingInvoiceMapping?.lastError)) {
       throw new AccountingInvoicePushError(
         'remote_deleted',
         409,
@@ -960,7 +961,7 @@ export async function pushInvoiceToAccounting(
       mappingId: mappingRow.id,
       partnerId,
       remoteEntityId: result.id,
-      remoteSyncToken: result.syncToken ?? null,
+      remoteSyncToken: result.remoteVersion ?? null,
       remoteDocNumber,
       syncStatus: variance.syncStatus,
     }));
@@ -1099,7 +1100,7 @@ export async function voidInvoiceInAccounting(
     // would then overwrite (clobber) this EXACT marker with a generic
     // QuickBooks error message, silently undoing the guard
     // `pushInvoiceToAccounting` relies on to refuse to resurrect the invoice.
-    if (mappingRow.lastError === INVOICE_REMOTE_DELETED_ERROR) return null;
+    if (isInvoiceRemoteDeletedMarker(mappingRow.lastError)) return null;
 
     const inv = await loadOwnedInvoice(invoiceId, partnerId);
     return { conn, mappingRow, inv };
@@ -1156,11 +1157,11 @@ export async function voidInvoiceInAccounting(
   // error, and the stale token is self-healing anyway (`pushInvoice` and
   // `voidInvoice` both re-read on 5010). Skipped entirely when the response
   // carried no token, so a tokenless reply cannot NULL out a good one.
-  if (voidResult.syncToken && voidResult.syncToken !== mappingRow.remoteSyncToken) {
+  if (voidResult.remoteVersion && voidResult.remoteVersion !== mappingRow.remoteSyncToken) {
     try {
       const rows = await runInDbContext(() => db
         .update(accountingEntityMappings)
-        .set({ remoteSyncToken: voidResult.syncToken, updatedAt: new Date() })
+        .set({ remoteSyncToken: voidResult.remoteVersion, updatedAt: new Date() })
         .where(and(
           eq(accountingEntityMappings.id, mappingRow.id),
           eq(accountingEntityMappings.partnerId, partnerId),
