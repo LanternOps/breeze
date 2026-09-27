@@ -59,5 +59,8 @@ describe('Sidebar section headings — colour contrast (#7157)', () => {
     // The fix uses the full-opacity token instead.
     expect(button?.className).not.toMatch(/text-muted-foreground\/70/);
     expect(button?.className).toMatch(/\btext-muted-foreground\b/);
+    // Hover must stay brighter than the (now full-opacity) resting state —
+    // otherwise hovering a heading would be a visual no-op.
+    expect(button?.className).toMatch(/hover:text-foreground\b/);
   });
 });
