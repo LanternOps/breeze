@@ -91,13 +91,28 @@ export function parseHasAuthenticodeSignature(buffer: Buffer): boolean | null {
   return size > 0;
 }
 
+/**
+ * A 2xx status alone doesn't prove the origin honored the Range request — an
+ * origin that ignores Range headers answers with a plain 200 and the FULL
+ * body, which for a ~60 MB binary is exactly the download-per-check-request
+ * this design exists to avoid. Only 206 Partial Content is trusted; anything
+ * else (including a full 200) is treated as a failed fetch.
+ */
+function isPartialContentResponse(res: Response): boolean {
+  return res.status === 206;
+}
+
 async function fetchGithubHeaderBytes(): Promise<Buffer | null> {
-  const url = getGithubAgentUrl(SUPPORT_AGENT_OS, SUPPORT_AGENT_ARCH);
   try {
+    const url = getGithubAgentUrl(SUPPORT_AGENT_OS, SUPPORT_AGENT_ARCH);
     const res = await fetch(url, { headers: { Range: `bytes=0-${HEADER_BYTES - 1}` } });
-    if (!res.ok || !res.body) return null;
+    if (!isPartialContentResponse(res) || !res.body) {
+      console.error(`[windows-agent-signing] GitHub header fetch returned non-partial status ${res.status}`);
+      return null;
+    }
     return Buffer.from(await res.arrayBuffer());
-  } catch {
+  } catch (err) {
+    console.error('[windows-agent-signing] GitHub header fetch failed:', err);
     return null;
   }
 }
@@ -106,7 +121,10 @@ async function fetchS3HeaderBytes(): Promise<Buffer | null> {
   try {
     const url = await getPresignedUrl(`agent/${SUPPORT_AGENT_FILENAME}`);
     const res = await fetch(url, { headers: { Range: `bytes=0-${HEADER_BYTES - 1}` } });
-    if (!res.ok || !res.body) return null;
+    if (!isPartialContentResponse(res) || !res.body) {
+      console.error(`[windows-agent-signing] S3 header fetch returned non-partial status ${res.status}`);
+      return null;
+    }
     return Buffer.from(await res.arrayBuffer());
   } catch (err) {
     if (!isS3NotFound(err)) {
@@ -122,7 +140,14 @@ function fetchLocalHeaderBytes(): Buffer | null {
   let fd: number;
   try {
     fd = openSync(filePath, 'r');
-  } catch {
+  } catch (err) {
+    // ENOENT (binary not built/published yet) is the expected steady state on
+    // a fresh self-host checkout — anything else (EACCES, EMFILE/ENFILE) is a
+    // real host problem worth a log line rather than a silent "unsigned".
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error(`[windows-agent-signing] local header open failed at ${filePath}:`, err);
+    }
     return null;
   }
   try {
