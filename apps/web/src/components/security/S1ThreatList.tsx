@@ -20,6 +20,7 @@ import {
   DataCard,
   CardField,
 } from "../shared/ResponsiveTable";
+import { FilterSelect } from "../shared/FilterSelect";
 const severityBadge: Record<string, string> = {
   low: "bg-blue-500/20 text-blue-700 border-blue-500/30",
   medium: "bg-yellow-500/20 text-yellow-800 border-yellow-500/40",
@@ -247,11 +248,11 @@ export default function S1ThreatList() {
             />
           </div>
           <div className="flex flex-wrap gap-2">
-            <select
+            <FilterSelect
+              label={t("securityS1ThreatList.severityFilterLabel")}
               data-testid="s1-filter-severity"
               value={severityFilter}
               onChange={(event) => setSeverityFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">
                 {t("securityS1ThreatList.allSeverities")}
@@ -262,12 +263,12 @@ export default function S1ThreatList() {
               <option value="critical">
                 {t("securityS1ThreatList.critical")}
               </option>
-            </select>
-            <select
+            </FilterSelect>
+            <FilterSelect
+              label={t("securityS1ThreatList.statusFilterLabel")}
               data-testid="s1-filter-status"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">
                 {t("securityS1ThreatList.allStatuses")}
@@ -282,7 +283,7 @@ export default function S1ThreatList() {
               <option value="resolved">
                 {t("securityS1ThreatList.resolved")}
               </option>
-            </select>
+            </FilterSelect>
             <div className="flex flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <input

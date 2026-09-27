@@ -224,7 +224,9 @@
     "searchPlaceholder": "Search automations...",
     "filters": {
       "allTriggers": "All Triggers",
-      "allStatus": "All Status"
+      "allStatus": "All Status",
+      "triggerLabel": "Trigger",
+      "statusLabel": "Status"
     },
     "trigger": {
       "schedule": "Schedule",

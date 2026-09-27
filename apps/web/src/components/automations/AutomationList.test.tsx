@@ -88,6 +88,15 @@ describe('AutomationList managed automations', () => {
   });
 });
 
+describe('AutomationList filter selects accessible name (#7156)', () => {
+  it('gives the trigger and status filter selects a real accessible name', () => {
+    render(<AutomationList automations={[baseAutomation]} />);
+
+    expect(screen.getByRole('combobox', { name: 'Trigger' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
 describe('AutomationList controlled trigger filter (#5288)', () => {
   it('honours a controlled triggerFilter prop and reports select changes', () => {
     const onChange = vi.fn();

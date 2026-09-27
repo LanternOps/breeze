@@ -90,6 +90,15 @@ describe('PatchList CVE chips', () => {
   });
 });
 
+describe('PatchList filter selects accessible name (#7156)', () => {
+  it('gives the severity and status filter selects a real accessible name', () => {
+    render(<PatchList patches={[]} />);
+
+    expect(screen.getByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Approval status' })).toBeInTheDocument();
+  });
+});
+
 describe('PatchList severity (#3758)', () => {
   it('renders an Unrated badge with a will-not-auto-approve note for a null-severity patch', () => {
     const patch = makePatch({

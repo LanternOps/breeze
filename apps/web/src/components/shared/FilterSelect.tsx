@@ -6,6 +6,8 @@ export interface FilterSelectProps extends SelectHTMLAttributes<HTMLSelectElemen
    *  the visible filter row still communicates purpose via layout/icons, but
    *  every filter control needs a real accessible name (axe `select-name`). */
   label: string;
+  /** Test id forwarded to the underlying <select> for e2e selectors. */
+  'data-testid'?: string;
 }
 
 /**
@@ -26,7 +28,7 @@ export function FilterSelect({ label, id, className, children, ...selectProps }:
       <select
         id={selectId}
         className={cn(
-          'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
+          'h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
           className
         )}
         {...selectProps}

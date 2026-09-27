@@ -405,6 +405,8 @@
     "actions": "Actions",
     "active": "Active",
     "all": "all",
+    "severityFilterLabel": "Severity",
+    "statusFilterLabel": "Status",
     "allSeverities": "All severities",
     "allStatuses": "All statuses",
     "critical": "Critical",

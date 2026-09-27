@@ -20,6 +20,7 @@ import {
   MoreHorizontal,
   Bot} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 
 export type TriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
 export type AutomationStatus = 'idle' | 'running' | 'success' | 'failed';
@@ -215,32 +216,34 @@ export default function AutomationList({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={t('automationList.filters.triggerLabel')}
             value={triggerFilter}
             onChange={event => {
               setTriggerFilter(event.target.value as TriggerFilter);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('automationList.filters.allTriggers')}</option>
             <option value="schedule">{t('automationList.trigger.schedule')}</option>
             <option value="event">{t('automationList.trigger.event')}</option>
             <option value="webhook">{t('automationList.trigger.webhook')}</option>
             <option value="manual">{t('automationList.trigger.manual')}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t('automationList.filters.statusLabel')}
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
+            className="w-full sm:w-32"
           >
             <option value="all">{t('automationList.filters.allStatus')}</option>
             <option value="enabled">{t('common:states.enabled')}</option>
             <option value="disabled">{t('common:states.disabled')}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

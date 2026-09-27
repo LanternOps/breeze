@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { FilterSelect } from '../shared/FilterSelect';
 import { usePatchSelection } from './usePatchSelection';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low' | 'unrated';
@@ -461,13 +462,14 @@ export default function PatchList({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={t('patchList.filters.severityLabel')}
             value={severityFilter}
             onChange={event => {
               setSeverityFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('patchList.filters.allSeverities')}</option>
             <option value="critical">{t('patchList.severity.critical')}</option>
@@ -475,21 +477,22 @@ export default function PatchList({
             <option value="moderate">{t('patchList.severity.moderate')}</option>
             <option value="low">{t('patchList.severity.low')}</option>
             <option value="unrated">{t('patchList.severity.unrated')}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t('patchList.filters.statusLabel')}
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('patchList.filters.allStatus')}</option>
             <option value="pending">{t('patchList.approval.pending')}</option>
             <option value="approved">{t('patchList.approval.approved')}</option>
             <option value="declined">{t('patchList.approval.declined')}</option>
             <option value="deferred">{t('patchList.approval.deferred')}</option>
-          </select>
+          </FilterSelect>
           <button
             type="button"
             onClick={() => setShowMoreFilters(prev => !prev)}
@@ -509,13 +512,14 @@ export default function PatchList({
           </button>
           {showMoreFilters && (
             <>
-              <select
+              <FilterSelect
+                label={t('patchList.filters.sourceLabel')}
                 value={sourceFilter}
                 onChange={event => {
                   setSourceFilter(event.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+                className="w-full sm:w-40"
               >
                 <option value="all">{t('patchList.filters.allSources')}</option>
                 {availableSources.map(source => (
@@ -523,14 +527,15 @@ export default function PatchList({
                     {source}
                   </option>
                 ))}
-              </select>
-              <select
+              </FilterSelect>
+              <FilterSelect
+                label={t('patchList.filters.osLabel')}
                 value={osFilter}
                 onChange={event => {
                   setOsFilter(event.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
+                className="w-full sm:w-32"
               >
                 <option value="all">{t('patchList.filters.allOs')}</option>
                 {availableOs.map(os => (
@@ -538,7 +543,7 @@ export default function PatchList({
                     {os}
                   </option>
                 ))}
-              </select>
+              </FilterSelect>
             </>
           )}
         </div>
