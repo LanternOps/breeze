@@ -92,6 +92,7 @@ export function toRecoverySummary(row: BareMetalRecoveryRow) {
     recoveryTokenId: row.recoveryTokenId,
     identity: row.identity,
     status: row.status,
+    platform: row.platform ?? null,
     executingDeviceId: row.executingDeviceId ?? null,
     drExecutionId: row.drExecutionId ?? null,
     drGroupId: row.drGroupId ?? null,

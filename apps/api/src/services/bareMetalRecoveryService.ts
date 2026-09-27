@@ -228,6 +228,7 @@ export async function createBareMetalRecovery(input: {
       bareMetalReasons: backupSnapshots.bareMetalReasons,
       referencedFiles: backupJobs.referencedFiles,
       storageIdentity: backupSnapshots.storageIdentity,
+      layoutManifest: backupSnapshots.layoutManifest, // new — source of `platform`
     })
     .from(backupSnapshots)
     .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
@@ -275,6 +276,7 @@ export async function createBareMetalRecovery(input: {
       // it authenticates nothing on its own.
       nonceHash: hashRecoveryNonce(generateRecoveryNonce()),
       status: 'created',
+      platform: resolveSnapshotPlatform(snapshot.layoutManifest),
       ...(input.target ? { target: input.target } : {}),
       createdBy: input.createdBy,
       executingDeviceId: input.executingDeviceId ?? null,
@@ -299,6 +301,16 @@ export async function createBareMetalRecovery(input: {
   });
 
   return { row, code: formatRecoveryCode(code) };
+}
+
+/** resolveSnapshotPlatform reads layout_manifest.platform defensively: an
+ * absent manifest, an absent platform field, or a value outside the known
+ * set all resolve to null rather than throwing — older snapshots captured
+ * before the layout package shipped `platform` must still create a recovery. */
+export function resolveSnapshotPlatform(layoutManifest: unknown): 'linux' | 'windows' | null {
+  if (!layoutManifest || typeof layoutManifest !== 'object') return null;
+  const platform = (layoutManifest as { platform?: unknown }).platform;
+  return platform === 'linux' || platform === 'windows' ? platform : null;
 }
 
 /**

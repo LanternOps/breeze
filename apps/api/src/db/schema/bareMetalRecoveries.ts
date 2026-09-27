@@ -44,6 +44,7 @@ export const bareMetalRecoveries = pgTable('bare_metal_recoveries', {
   drGroupId: uuid('dr_group_id').references(() => drPlanGroups.id, { onDelete: 'set null' }),
   /** The Linux helper host running the rebuild engine; NULL for boot-media recoveries. */
   executingDeviceId: uuid('executing_device_id').references(() => devices.id, { onDelete: 'set null' }),
+  platform: text('platform'), // 'linux' | 'windows' | null — copied from the source snapshot's layout.Platform at create time
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   mediaBootedAt: timestamp('media_booted_at', { withTimezone: true }),
