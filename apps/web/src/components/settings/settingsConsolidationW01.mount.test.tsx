@@ -66,6 +66,11 @@ describe('W01 placement — every moved/mounted module renders from its new shel
 
   it('PartnerBillingSettingsPage mounts Defaults/Documents/Connections and the Connections tab reaches accounting/catalog/distributors links', async () => {
     render(<I18nextProvider i18n={i18n}><PartnerBillingSettingsPage /></I18nextProvider>);
+    // The tab row is the shared OverflowTabs component (#7148), which measures
+    // button widths via `offsetWidth` — jsdom always reports 0, collapsing
+    // every tab but the first behind "More" (see computeVisible in
+    // OverflowTabs.tsx) — so Connections is reached through it in tests.
+    await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
     await userEvent.click(await screen.findByTestId('billing-settings-tab-connections'));
     expect(await screen.findByTestId('billing-connections-accounting-link')).toBeInTheDocument();
     expect(screen.getByTestId('billing-connections-catalog-link')).toBeInTheDocument();

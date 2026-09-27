@@ -27,4 +27,18 @@ describe('DeviceClassSegment', () => {
     fireEvent.click(screen.getByTestId('device-class-segment-network'));
     expect(onChange).toHaveBeenCalledWith('network');
   });
+
+  // #7148: at 390px this 4-segment row overflowed and the 4th segment ("Manual")
+  // was cut to "M". Labels collapse to icon-only below `sm`, kept accessible
+  // via aria-label since the hidden label text is excluded from the a11y tree.
+  it('collapses labels to icon-only below sm, with an accessible name on every button', () => {
+    render(<DeviceClassSegment value="all" counts={counts} onChange={() => {}} />);
+    for (const id of ['all', 'agent', 'network', 'manual']) {
+      const btn = screen.getByTestId(`device-class-segment-${id}`);
+      expect(btn).toHaveAttribute('aria-label');
+      const label = btn.querySelector('span.hidden.sm\\:inline');
+      expect(label).not.toBeNull();
+      expect(label?.textContent).toBe(btn.getAttribute('aria-label'));
+    }
+  });
 });

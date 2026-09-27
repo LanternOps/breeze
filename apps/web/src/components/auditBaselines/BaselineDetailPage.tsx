@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { ArrowLeft, Eye, BarChart3, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
 import type { Baseline } from './BaselineFormModal';
 import BaselineOverviewTab from './BaselineOverviewTab';
 import BaselineComplianceTab from './BaselineComplianceTab';
@@ -117,28 +118,16 @@ export default function BaselineDetailPage({ baselineId }: Props) {
         </div>
       </div>
 
-      <div className="flex gap-1 rounded-lg border bg-muted/40 p-1">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                'flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-background text-foreground shadow-xs'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {t(/* i18n-dynamic */ `auditBaselinesBaselineDetailPage.tabs.${tab.labelKey}`)}
-            </button>
-          );
-        })}
-      </div>
+      <OverflowTabs
+        tabs={tabs.map((tab): OverflowTab => ({
+          id: tab.id,
+          label: t(/* i18n-dynamic */ `auditBaselinesBaselineDetailPage.tabs.${tab.labelKey}`),
+          icon: <tab.icon className="h-4 w-4" />,
+        }))}
+        activeTab={activeTab}
+        onTabChange={(id) => setActiveTab(id as TabId)}
+        testIdPrefix="baseline-detail-tab-"
+      />
 
       {activeTab === 'overview' && (
         <BaselineOverviewTab baseline={baseline} onUpdated={fetchBaseline} />

@@ -153,6 +153,27 @@ function clearHash() {
   history.replaceState(null, '', window.location.pathname);
 }
 
+// #7148: the tab row is now the shared OverflowTabs component, which
+// measures button widths via `offsetWidth` — jsdom always reports 0, against
+// a `clientWidth` of 0 that collapses to "fits 1 tab" (see computeVisible in
+// OverflowTabs.tsx) — so every tab but the first ('mine') ends up behind
+// "More" in tests. `openMore` opens it idempotently (won't re-toggle closed
+// on a retried `waitFor`), and `selectTicketsTab` opens it if needed before
+// clicking a tab that isn't already visible.
+function openMore() {
+  const more = screen.queryByTestId('tickets-tab-more');
+  if (more && more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+}
+
+async function selectTicketsTab(id: string) {
+  let el = screen.queryByTestId(`tickets-tab-${id}`);
+  if (!el || el.getAttribute('role') !== 'tab') {
+    openMore();
+    el = await screen.findByTestId(`tickets-tab-${id}`);
+  }
+  fireEvent.click(el);
+}
+
 describe('TicketsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -177,7 +198,7 @@ describe('TicketsPage', () => {
 
     await screen.findByTestId('ticket-row-tk-healthy');
 
-    fireEvent.click(screen.getByTestId('tickets-tab-breaching'));
+    await selectTicketsTab('breaching');
 
     await waitFor(() => {
       expect(ticketFetchUrls().at(-1)).toContain('slaState=breaching');
@@ -197,6 +218,7 @@ describe('TicketsPage', () => {
     await screen.findByTestId('ticket-row-tk-healthy');
 
     await waitFor(() => {
+      openMore();
       expect(screen.getByTestId('tickets-tab-breaching')).toHaveTextContent('5');
     });
   });
@@ -439,7 +461,7 @@ describe('TicketsPage', () => {
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
       expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('2 selected');
 
-      fireEvent.click(screen.getByTestId('tickets-tab-unassigned'));
+      await selectTicketsTab('unassigned');
 
       await waitFor(() => {
         expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
@@ -471,7 +493,7 @@ describe('TicketsPage', () => {
       fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
 
-      fireEvent.click(screen.getByTestId('tickets-tab-unassigned'));
+      await selectTicketsTab('unassigned');
       await waitFor(() => {
         expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
       });
@@ -491,7 +513,7 @@ describe('TicketsPage', () => {
       fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
 
-      fireEvent.click(screen.getByTestId('tickets-tab-unassigned'));
+      await selectTicketsTab('unassigned');
       await screen.findByTestId('ticket-row-tk-breach');
 
       fireEvent.click(screen.getByTestId('tickets-bulk-select-all'));
@@ -798,13 +820,71 @@ describe('TicketsPage', () => {
     });
   });
 
+  // #7148: at 390px the tab row overflowed by 23px, and at 1024px the fixed
+  // w-56 search box (sharing the tabs' flex row) was cut off by 94px. Tabs
+  // moved onto the shared OverflowTabs component; the search box moved to
+  // its own row below the tabs (full-width on mobile, right-aligned at lg+).
+  describe('tab row overflow (#7148)', () => {
+    it('renders the tabs as an OverflowTabs tablist and the search box on its own row', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      expect(screen.getByRole('tablist')).toBeInTheDocument();
+      expect(screen.getByTestId('tickets-tab-mine')).toHaveAttribute('role', 'tab');
+
+      const search = screen.getByTestId('tickets-search-input');
+      expect(search.className).toContain('w-full');
+      expect(search.className).toContain('lg:w-56');
+      // The search box's row is not the tablist's row.
+      expect(search.closest('[role="tablist"]')).toBeNull();
+    });
+
+    // Code review (#7233): OverflowTabs' `count` prop renders via CountBadge,
+    // which (a) hides on a falsy count and (b) always uses the amber
+    // "needs attention" token — right for the Review queue's pending count,
+    // wrong for these five plain informational counts (which used to render
+    // as muted text, including "0", before this fix). Confirm the plain
+    // counts still show via the label text, not the alert-styled badge.
+    it('shows plain informational tab counts (including zero) as label text, not an alert badge', async () => {
+      mockListApi([healthy], { stats: { data: { open: 3, unassigned: 1, mine: 0, breached: 1 } } });
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tickets-tab-mine')).toHaveTextContent('0');
+      });
+      expect(screen.getByTestId('tickets-tab-mine').querySelector('[class*="warning"]')).toBeNull();
+
+      openMore();
+      expect(screen.getByTestId('tickets-tab-open')).toHaveTextContent('3');
+      expect(screen.getByTestId('tickets-tab-open').querySelector('[class*="warning"]')).toBeNull();
+    });
+
+    // #7233 review: with the active tab collapsed behind "More" (jsdom always
+    // measures 0-width, so only the first tab — 'mine' — stays visible), the
+    // trigger must relabel to the active tab, matching the pattern already
+    // asserted for billing settings (PartnerBillingSettingsPage.test.tsx).
+    it('relabels the "More" trigger to the active tab when it is collapsed', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      // Default active tab is 'open', which starts collapsed behind "More".
+      expect(screen.getByTestId('tickets-tab-more')).toHaveTextContent('All open');
+
+      await selectTicketsTab('unassigned');
+      expect(screen.getByTestId('tickets-tab-more')).toHaveTextContent('Unassigned');
+    });
+  });
+
   describe('inbound review queue tab', () => {
     it('hides the Review queue tab when the queue probe is forbidden (non-admin)', async () => {
       mockListApi([healthy]); // default: probe 403s
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
       // Give the probe a tick to resolve before asserting absence.
-      await waitFor(() => expect(screen.getByTestId('tickets-tab-open')).toBeInTheDocument());
+      await waitFor(() => { openMore(); expect(screen.getByTestId('tickets-tab-open')).toBeInTheDocument(); });
       expect(screen.queryByTestId('tickets-tab-review')).toBeNull();
     });
 
@@ -812,15 +892,18 @@ describe('TicketsPage', () => {
       mockListApi([healthy], { reviewTotal: 3 });
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
+      openMore();
       await screen.findByTestId('tickets-tab-review');
-      expect(screen.getByTestId('tickets-tab-review-badge')).toHaveTextContent('3');
+      expect(screen.getByTestId('tickets-tab-review-count')).toHaveTextContent('3');
     });
 
     it('omits the badge when there is nothing pending', async () => {
       mockListApi([healthy], { reviewTotal: 0 });
       render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      openMore();
       await screen.findByTestId('tickets-tab-review');
-      expect(screen.queryByTestId('tickets-tab-review-badge')).toBeNull();
+      expect(screen.queryByTestId('tickets-tab-review-count')).toBeNull();
     });
 
     it('selecting the Review queue tab swaps in the review pane and hides the ticket filters', async () => {
@@ -828,7 +911,7 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
 
-      fireEvent.click(await screen.findByTestId('tickets-tab-review'));
+      await selectTicketsTab('review');
 
       await screen.findByTestId('tickets-review-pane');
       expect(screen.getByTestId('inbound-review-queue-mock')).toBeInTheDocument();
@@ -860,6 +943,7 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
+      openMore();
       expect(screen.getByTestId('tickets-tab-archived')).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
@@ -904,7 +988,7 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      fireEvent.click(screen.getByTestId('tickets-tab-archived'));
+      await selectTicketsTab('archived');
 
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('deleted=only');
