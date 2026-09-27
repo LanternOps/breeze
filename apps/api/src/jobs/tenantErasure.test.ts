@@ -17,6 +17,8 @@ const {
   orgStateRows,
   actorStateRows,
   capturedWorkerProcessor,
+  markStaleMock,
+  rebuildMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
   getJobMock: vi.fn(),
@@ -29,6 +31,8 @@ const {
   capturedWorkerProcessor: {
     current: null as null | ((job: unknown) => Promise<unknown>),
   },
+  markStaleMock: vi.fn(),
+  rebuildMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -79,6 +83,11 @@ vi.mock('../services/tenantCascade', () => ({
 
 vi.mock('../services/auditService', () => ({
   createAuditLog: (...args: unknown[]) => createAuditLogMock(...(args as [])),
+}));
+
+vi.mock('../services/fixMemory/store', () => ({
+  markFixMemoryStaleForOrgErasure: (...a: unknown[]) => markStaleMock(...(a as [])),
+  rebuildFixMemory: (...a: unknown[]) => rebuildMock(...(a as [])),
 }));
 
 vi.mock('../db', () => ({
@@ -214,6 +223,49 @@ describe('tenantErasure worker', () => {
       totalRowsDeleted: 2,
       jobId: 'tenant-erasure-org-xyz',
     });
+  });
+
+  it('marks partner fix memory stale BEFORE the cascade and rebuilds it after', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    rebuildMock.mockResolvedValue({ identities: 1 });
+    createTenantErasureWorker();
+    await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    expect(markStaleMock).toHaveBeenCalledWith('org-xyz');
+    expect(markStaleMock.mock.invocationCallOrder[0]!).toBeLessThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
+    expect(rebuildMock).toHaveBeenCalledWith({ partnerId: 'partner-1' });
+    expect(rebuildMock.mock.invocationCallOrder[0]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('a failed rebuild does not fail the erasure (the request persisted by markStale keeps rows stale; the sweeper retries)', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    rebuildMock.mockRejectedValue(new Error('lock timeout'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createTenantErasureWorker();
+    const result = await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    err.mockRestore();
+    expect(result).toMatchObject({ totalRowsDeleted: 2 });
+  });
+
+  /**
+   * Controller carry-forward (Task 12 review, durability gap): an outcome of
+   * the erasing org could count into a fix_memory identity created between
+   * the pre-cascade mark and the cascade's deletes, one the pre-cascade mark
+   * never saw. eraseOrgWithFixMemory re-marks (idempotently) right before the
+   * post-cascade rebuild to stay consistent with the store's re-arm contract,
+   * and the rebuild itself (not this second mark) is what actually catches a
+   * newly-created row, since it recomputes every fix_memory row the partner
+   * has. This test pins the ORDER: markStale runs a second time strictly
+   * between the cascade and the rebuild.
+   */
+  it('re-marks the org between the cascade and the rebuild, closing the mark-to-cascade race window', async () => {
+    markStaleMock.mockResolvedValueOnce('partner-1').mockResolvedValueOnce(null);
+    rebuildMock.mockResolvedValue({ identities: 1 });
+    createTenantErasureWorker();
+    await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    expect(markStaleMock).toHaveBeenCalledTimes(2);
+    expect(markStaleMock.mock.calls[1]).toEqual(['org-xyz']);
+    expect(markStaleMock.mock.invocationCallOrder[1]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
+    expect(markStaleMock.mock.invocationCallOrder[1]!).toBeLessThan(rebuildMock.mock.invocationCallOrder[0]!);
   });
 
   it.each([

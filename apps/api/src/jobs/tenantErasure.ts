@@ -34,6 +34,7 @@ import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, users } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import { markFixMemoryStaleForOrgErasure, rebuildFixMemory } from '../services/fixMemory/store';
 
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
@@ -93,6 +94,68 @@ export async function enqueueTenantErasure(
     },
     '[TenantErasure]',
   );
+}
+
+/**
+ * AI Suggested Fixes W1 (spec "Erasure"). Three steps:
+ *  1. BEFORE the org's outcomes are deleted, stale-mark the partner fix memory
+ *     it contributed to AND persist a durable rebuild request (the org id in
+ *     fix_memory.rebuild_pending_org_ids). The rows drop out of "proven" at once.
+ *  2. Cascade.
+ *  3. Rebuild.
+ * A failure to mark aborts before any row is deleted. The request is removed
+ * only by a rebuild that saw this org's organizations row already gone before
+ * it read contributions, so a sweeper rebuild that races the cascade cannot
+ * satisfy it. A failed step-3 rebuild does not fail the erasure: the rows stay
+ * stale and requested, and jobs/fixOutcomeWorker.ts retries them every sweep.
+ * Exported so the real-Postgres merge and erasure proofs run exactly this.
+ * `hooks.rebuild` is a test seam only.
+ *
+ * Durability gap (Task 12 review carry-forward): an outcome of this org could
+ * count into a fix_memory identity CREATED between step 1's mark and step 2's
+ * deletes — one step 1 never saw, since it only flags rows that already
+ * existed. Step 3 is what actually closes this even without a marker:
+ * rebuildFixMemory recomputes every fix_memory row the partner has (not just
+ * flagged ones), so a newly-created row is still caught by the identity union
+ * it builds from the fix_memory table itself, once it recomputes from the
+ * post-cascade fix_outcomes (this org's rows already gone). The re-mark below,
+ * run right before step 3, is a no-op for THIS org today — the cascade already
+ * deleted its organizations row, so the lookup markFixMemoryStaleForOrgErasure
+ * depends on finds nothing — but it is cheap, matches the store's documented
+ * contract (a request "survives" any rebuild that has not yet seen the org's
+ * organizations row gone), and costs nothing if cascade ordering ever changes.
+ * It does not, by itself, close the one remaining sliver: this org's very
+ * first-ever contribution landing in the race window AND step 3 then failing
+ * — that combination leaves no existing fix_memory row to flag, so the
+ * sweeper has nothing to pick up for that partner. Closing that fully needs a
+ * partner-level durability marker independent of any fix_memory row, which is
+ * a store-schema change out of this task's scope.
+ */
+export async function eraseOrgWithFixMemory(
+  orgId: string,
+  performedBy: string,
+  performedByEmail?: string,
+  hooks: { rebuild?: typeof rebuildFixMemory } = {},
+) {
+  const rebuild = hooks.rebuild ?? rebuildFixMemory;
+  const markStale = () =>
+    runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
+  const fixMemoryPartnerId = await markStale();
+  const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
+  if (fixMemoryPartnerId) {
+    // See the durability-gap note above: no-op for this org today, kept cheap
+    // and consistent with the store's re-arm contract.
+    await markStale().catch(() => null);
+    try {
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => rebuild({ partnerId: fixMemoryPartnerId }), 'tenantErasure.fixMemoryRebuild'));
+    } catch (rebuildErr) {
+      console.error(`[TenantErasure] fix-memory rebuild failed for partner of org ${orgId}; the persisted rebuild request keeps it stale and the sweeper will retry`, rebuildErr);
+      captureException(rebuildErr);
+    }
+  }
+  return stats;
 }
 
 export function createTenantErasureWorker(): Worker {
@@ -187,7 +250,7 @@ export function createTenantErasureWorker(): Worker {
       }
 
       try {
-        const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
+        const stats = await eraseOrgWithFixMemory(orgId, performedBy, performedByEmail);
         return { ...stats, jobId: job.id };
       } catch (err) {
         // A precondition refusal (e.g. an active legal hold): cascadeDeleteOrg
