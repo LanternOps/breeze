@@ -87,6 +87,17 @@ describe('AgreementTemplateEditor', () => {
     await waitFor(() => expect(api.publishTemplateVersion).toHaveBeenCalledWith('tpl-1', 'ver-draft'));
   });
 
+  it('pairs the preview prose class with dark:prose-invert so text stays readable in dark mode (#7177)', async () => {
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
+
+    fireEvent.click(screen.getByTestId('template-preview-toggle'));
+
+    const preview = await screen.findByTestId('template-preview');
+    expect(preview).toHaveClass('prose');
+    expect(preview).toHaveClass('dark:prose-invert');
+  });
+
   it('blocks Publish while the body has un-saved edits and never destroys the typed text', async () => {
     render(<AgreementTemplateEditor templateId="tpl-1" />);
     await screen.findByTestId('agreement-template-editor');

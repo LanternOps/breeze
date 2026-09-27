@@ -407,7 +407,7 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
           </div>
           {showPreview ? (
             <div
-              className="prose prose-sm max-w-none rounded-md border bg-background p-3"
+              className="prose prose-sm dark:prose-invert max-w-none rounded-md border bg-background p-3"
               data-testid="template-preview"
               dangerouslySetInnerHTML={{ __html: previewHtml }}
             />
