@@ -68,7 +68,9 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   'routes/pam.ts': ['reason', 'duration_minutes', 'assurance_level', 'factor'],
   'routes/remediationSuggestions.ts': ['triggerSource', 'remediationSuggestionId', 'sourceType', 'sourceId', 'scriptId'],
   'services/aiToolsPam.ts': ['subjectUsername', 'reason', 'triggerSource', 'pamRuleId', 'pamRuleName', 'durationMinutes'],
-  'services/approvals/decideApprovalRequest.ts': ['source', 'approval_request_id', 'reason'],
+  'services/approvals/decideApprovalRequest.ts': [
+    'source', 'approval_request_id', 'reason', 'assurance_downgraded_grace', 'required_assurance_level',
+  ],
   'services/pamToolActionGovernance.ts': ['tool_name', 'risk_tier', 'execution_id', 'pam_rule_id', 'pam_rule_name'],
   // Writes via raw SQL, not Drizzle: session_started / session_ended.
   'services/pamActuationResult.ts': ['actuationId', 'generation'],

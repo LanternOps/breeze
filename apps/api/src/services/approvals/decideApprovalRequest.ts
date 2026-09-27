@@ -395,23 +395,6 @@ async function resolveGrantSession(
 }
 
 /**
- * Audit fields for an approve that was allowed below its required assurance
- * floor because the partner is not enforcing approver assurance (step-up
- * design: grace downgrades are flagged explicitly). Empty when the decision
- * met its floor, so the field is only ever present when it is true. The key
- * style follows the payload it is spread into.
- */
-function graceDowngradeAuditDetails(
-  assurance: AssuranceDecision,
-  style: 'camel' | 'snake',
-): Record<string, boolean | number> {
-  if (!assurance.graceDowngrade) return {};
-  return style === 'camel'
-    ? { assuranceDowngradedGrace: true, requiredAssuranceLevel: assurance.requiredLevel }
-    : { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel };
-}
-
-/**
  * #5601: redeem a presented grant into the assurance its original ceremony
  * achieved, or `null` (→ the caller's 403) on any failure.
  *
@@ -1376,7 +1359,11 @@ export async function decideApprovalRequest(
                   source: 'mobile_approval',
                   approval_request_id: updated.id,
                   ...(status === 'denied' && reason ? { reason } : {}),
-                  ...graceDowngradeAuditDetails(assurance, 'snake'),
+                  // Inline literal, not a helper spread: the elevation_audit
+                  // writer inventory (pamAuditExport) reads these keys statically.
+                  ...(assurance.graceDowngrade
+                    ? { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel }
+                    : {}),
                 },
                 occurredAt: now,
               });
@@ -1597,7 +1584,9 @@ export async function decideApprovalRequest(
         ...(supervisedSelfApproval ? { approvalMethod: 'supervised_self' as const } : {}),
         // Approved below the required floor because the partner is not
         // enforcing approver assurance (off, or inside its grace window).
-        ...graceDowngradeAuditDetails(assurance, 'camel'),
+        ...(assurance.graceDowngrade
+          ? { assuranceDowngradedGrace: true, requiredAssuranceLevel: assurance.requiredLevel }
+          : {}),
         // #5601: a redeemed row keeps the honest level/factor above (they
         // describe a real ceremony), so THIS is the only thing that says a
         // second ceremony did not happen. Emitted only on reuse, so a fresh
