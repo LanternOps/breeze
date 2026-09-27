@@ -42,4 +42,16 @@ describe('Breadcrumbs (#7178 mobile overflow)', () => {
     const list = screen.getByRole('list');
     expect(list.className).toMatch(/\bmin-w-0\b/);
   });
+
+  it('truncates a middle crumb with no href too (the plain-span branch, not just the linked-anchor branch)', () => {
+    const itemsWithUnlinkedMiddle = [
+      { label: 'Settings', href: '/settings' },
+      { label: 'Organizations' }, // no href, but not the last item
+      { label: 'Default Site' },
+    ];
+    render(<Breadcrumbs items={itemsWithUnlinkedMiddle} />);
+    const middleCrumb = screen.getByText('Organizations');
+    expect(middleCrumb.tagName).toBe('SPAN');
+    expect(middleCrumb.className).toMatch(/\btruncate\b/);
+  });
 });
