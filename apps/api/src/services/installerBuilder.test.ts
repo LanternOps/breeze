@@ -52,6 +52,7 @@ function signedReleaseManifest(
   assetName: string,
   assetBuffer: Buffer,
   assetOverrides: Record<string, unknown> = {},
+  manifestOverrides: Record<string, unknown> = {},
 ) {
   return signedReleaseManifestEntries([
     {
@@ -61,10 +62,13 @@ function signedReleaseManifest(
       platformTrust: 'windows-authenticode-required',
       ...assetOverrides,
     },
-  ]);
+  ], manifestOverrides);
 }
 
-function signedReleaseManifestEntries(assets: Record<string, unknown>[]) {
+function signedReleaseManifestEntries(
+  assets: Record<string, unknown>[],
+  manifestOverrides: Record<string, unknown> = {},
+) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicDer = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
   const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString('base64');
@@ -73,6 +77,7 @@ function signedReleaseManifestEntries(assets: Record<string, unknown>[]) {
     repository: 'lanternops/breeze',
     release: 'v1.2.3',
     assets,
+    ...manifestOverrides,
   }));
 
   return {
@@ -625,6 +630,132 @@ describe('fetchVerifiedMacosPkg', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// A hosted install runs BINARY_SOURCE=local with a binaries volume populated
+// from a separately built and signed hosted release. That volume's manifest
+// is the hosted build's manifest, so its `repository` (and release tag) are
+// NOT the public GitHub repository. For the local source the trust anchor is
+// the manifest's Ed25519 signature against the configured keys — the same
+// contract binarySync applies when registering agent binaries from the local
+// manifest — plus the per-asset entry, size/sha256 and edition checks. The
+// repository/release pins belong to the GitHub source only.
+describe('local source: hosted build manifest', () => {
+  const originalEnv = process.env;
+  const identity = 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)';
+  const hostedManifest = { repository: 'example-org/hosted-build', release: 'v9.9.9-hosted' };
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-local-hosted-'));
+    __resetVerifiedMacosPkgCache();
+    __resetVerifiedHelperInstallerCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+    __resetVerifiedMacosPkgCache();
+    __resetVerifiedHelperInstallerCache();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function stage(args: {
+    assetName: string;
+    servedBytes: Buffer;
+    signed: { manifest: Buffer; signature: Buffer; publicKey: string };
+    trustedPublicKey?: string;
+    edition?: string;
+  }) {
+    const binaryDir = join(root, 'bin');
+    mkdirSync(binaryDir, { recursive: true });
+    writeFileSync(join(binaryDir, args.assetName), args.servedBytes);
+    writeFileSync(join(root, 'release-artifact-manifest.json'), args.signed.manifest);
+    writeFileSync(join(root, 'release-artifact-manifest.json.ed25519'), args.signed.signature);
+    process.env = {
+      ...originalEnv,
+      BINARY_SOURCE: 'local',
+      BINARY_VERSION: '1.2.3',
+      BINARY_EDITION: args.edition ?? 'hosted',
+      AGENT_BINARY_DIR: binaryDir,
+      HELPER_BINARY_DIR: binaryDir,
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: args.trustedPublicKey ?? args.signed.publicKey,
+    };
+    delete process.env.S3_BUCKET;
+    delete process.env.S3_ACCESS_KEY;
+    delete process.env.S3_SECRET_KEY;
+  }
+
+  const helper = {
+    label: 'helper installer',
+    assetName: HELPER_FILENAMES.linux!,
+    entry: { platformTrust: 'none', edition: 'hosted' },
+    fetch: () => fetchVerifiedHelperInstaller('linux'),
+  };
+  const macosPkg = {
+    label: 'macOS pkg',
+    assetName: 'breeze-agent-darwin-arm64.pkg',
+    entry: {
+      platformTrust: 'macos-developer-id-notarization-required',
+      edition: 'hosted',
+      signingIdentity: identity,
+      signingTeamId: 'D8W6N2JYMA',
+    },
+    fetch: () => fetchVerifiedMacosPkg('arm64'),
+  };
+
+  describe.each([helper, macosPkg])('$label', (target) => {
+    it('serves an asset from a correctly signed manifest whose repository is not the public repository', async () => {
+      const asset = Buffer.from(`hosted-${target.assetName}`);
+      const signed = signedReleaseManifest(target.assetName, asset, target.entry, hostedManifest);
+      stage({ assetName: target.assetName, servedBytes: asset, signed });
+
+      const result = await target.fetch();
+      expect(result.buffer).toEqual(asset);
+      expect(result.artifact).toMatchObject({
+        assetName: target.assetName,
+        repository: hostedManifest.repository,
+        edition: 'hosted',
+      });
+    });
+
+    it('refuses a manifest signed by a key that is not trusted', async () => {
+      const asset = Buffer.from(`hosted-${target.assetName}`);
+      const signed = signedReleaseManifest(target.assetName, asset, target.entry, hostedManifest);
+      const untrusted = signedReleaseManifest(target.assetName, asset, target.entry, hostedManifest);
+      stage({
+        assetName: target.assetName,
+        servedBytes: asset,
+        signed,
+        trustedPublicKey: untrusted.publicKey,
+      });
+
+      await expect(target.fetch()).rejects.toThrow(/signature/i);
+    });
+
+    it('refuses an asset whose manifest edition differs from BINARY_EDITION', async () => {
+      const asset = Buffer.from(`hosted-${target.assetName}`);
+      const signed = signedReleaseManifest(
+        target.assetName,
+        asset,
+        { ...target.entry, edition: 'self-host' },
+        hostedManifest,
+      );
+      stage({ assetName: target.assetName, servedBytes: asset, signed });
+
+      await expect(target.fetch()).rejects.toThrow(/edition mismatch/);
+    });
+
+    it('refuses same-size bytes whose sha256 differs from the signed entry', async () => {
+      const authorized = Buffer.from(`hosted-${target.assetName}`);
+      const substituted = Buffer.from(authorized.toString('utf8').replace('hosted', 'evil!!'));
+      expect(substituted.length).toBe(authorized.length);
+      const signed = signedReleaseManifest(target.assetName, authorized, target.entry, hostedManifest);
+      stage({ assetName: target.assetName, servedBytes: substituted, signed });
+
+      await expect(target.fetch()).rejects.toThrow(/digest mismatch/);
+    });
   });
 });
 
