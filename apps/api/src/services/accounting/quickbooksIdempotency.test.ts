@@ -8,6 +8,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+// Xero W01: the rate-limit call slot is a passthrough here (limiter has its own suite).
+vi.mock('./accountingRateLimit', () => ({
+  withProviderCallSlot: (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn(),
+}));
 import { quickbooksProvider } from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 

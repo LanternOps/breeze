@@ -179,6 +179,9 @@ const QBO_CARRIED_FIELDS = ['body', 'qboFaultCode', 'qboFaultMessage', 'qboPayme
 function classifyQbo(err: unknown, status: number | undefined, fault: QboFault): AccountingProviderErrorKind {
   const e = (err ?? {}) as { qboError?: unknown; message?: unknown; body?: unknown };
   if (e.qboError === 'invalid_grant' || (status === 400 && /invalid_grant/i.test(String(e.message ?? '')))) return 'reauth';
+  // Xero W01: throttling is a delay, not a failure. Checked before every
+  // fault-code row, so a 429 is never mistaken for a stale/not-found verdict.
+  if (status === 429) return 'rate_limited';
   if (isQboPaymentLinkedRefusal(err)) return 'payment_linked';
   if (fault.code === '5010' || (fault.message && /Stale Object/i.test(fault.message))) return 'stale_version';
   if (fault.code === '610' || (fault.message && /Object Not Found/i.test(fault.message))) return 'not_found';
@@ -204,6 +207,9 @@ export function qboErrorToProviderError(err: unknown, operation: string): Accoun
     operation,
     message: err instanceof Error ? err.message : String(err),
     httpStatus: status,
+    // `qboRequest` attaches the parsed `Retry-After` to a 429; 60s (Intuit's
+    // throttle window) covers a 429 that reached here without one.
+    retryAfterMs: typeof e.retryAfterMs === 'number' ? e.retryAfterMs : (status === 429 ? 60_000 : undefined),
     providerCode: fault.code ?? undefined,
     providerMessage: fault.message ?? undefined,
     logBody: typeof e.body === 'string' ? e.body : undefined,

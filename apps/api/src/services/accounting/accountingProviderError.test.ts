@@ -39,7 +39,7 @@ describe('qboErrorToProviderError (QBO boundary)', () => {
     // invalid_grant must NOT become a forced reauth disconnect.
     [raw({ status: 503 }, 'upstream 503 mentioning invalid_grant'), 'transient'],
     [raw({ status: 400 }, 'invalid_grant: token revoked'), 'reauth'],
-    [raw({ status: 429 }), 'transient'],   // W01c changes this row to rate_limited
+    [raw({ status: 429 }), 'rate_limited'],
     [raw({ status: 503 }), 'transient'],
     [new Error('fetch failed'), 'transient'],
   ])('%# classifies', (err, kind) => {
@@ -54,6 +54,18 @@ describe('qboErrorToProviderError (QBO boundary)', () => {
     expect(t.logBody).toBe('b');
     expect(t.telemetryTags).toEqual({ qbo_fault_code: '6000' });
     expect((t as unknown as { qboFaultCode: string }).qboFaultCode).toBe('6000'); // QBO-aware readers unchanged
+  });
+
+  it('a 429 carries the Retry-After qboRequest attached, else waits 60s; a non-429 carries none', () => {
+    expect(qboErrorToProviderError(raw({ status: 429, retryAfterMs: 30_000 }), 'op').retryAfterMs).toBe(30_000);
+    expect(qboErrorToProviderError(raw({ status: 429 }), 'op').retryAfterMs).toBe(60_000);
+    expect(qboErrorToProviderError(raw({ status: 503 }), 'op').retryAfterMs).toBeUndefined();
+  });
+
+  it('a 429 is rate_limited even when its body parses as a stale/not-found fault; reauth still wins', () => {
+    expect(qboErrorToProviderError(raw({ status: 429, qboFaultCode: '5010' }), 'op').kind).toBe('rate_limited');
+    expect(qboErrorToProviderError(raw({ status: 429, qboFaultCode: '610' }), 'op').kind).toBe('rate_limited');
+    expect(qboErrorToProviderError(raw({ status: 429, qboError: 'invalid_grant' }), 'op').kind).toBe('reauth');
   });
 
   it('is idempotent on an already-translated error', () => {

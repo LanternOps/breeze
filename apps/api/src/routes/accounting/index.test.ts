@@ -174,6 +174,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
+import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
@@ -512,6 +513,22 @@ describe('accounting routes', () => {
   it('callback still connects when the QBO Preferences fetch fails (non-fatal capture)', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
     mocks.fetchRealmSettings.mockRejectedValueOnce(new Error('qbo 403'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the Preferences fetch is refused by the accounting rate limiter (Xero W01)', async () => {
+    // fetchRealmSettings takes the connection's call slot; a refusal is a
+    // rate_limited AccountingProviderError, which the non-fatal capture must
+    // absorb exactly like any other failed capture.
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 5_000,
+    }));
 
     const res = await runCallback(app);
 

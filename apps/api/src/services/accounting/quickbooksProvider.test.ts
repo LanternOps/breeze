@@ -3,10 +3,15 @@ import { createHmac } from 'crypto';
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+const { slotMock } = vi.hoisted(() => ({
+  slotMock: vi.fn((_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn()),
+}));
+vi.mock('./accountingRateLimit', () => ({ withProviderCallSlot: slotMock }));
 import {
   quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, mapQboCdcPayment, QBO_PREFERENCES_TIMEOUT_MS,
-  QBO_CDC_CURSOR_SLACK_MS,
+  QBO_CDC_CURSOR_SLACK_MS, parseRetryAfterMs,
 } from './quickbooksProvider';
+import { AccountingProviderError } from './accountingProviderError';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { AccountingPaymentPayload } from './types';
 import { isQboPaymentLinkedRefusal } from './quickbooksFault';
@@ -1681,5 +1686,184 @@ describe('mapQboCdcPayment PrivateNote marker', () => {
       Line: [{ Amount: 50, LinkedTxn: [{ TxnId: '145', TxnType: 'Invoice' }] }],
     }, conn());
     expect(line[0]!.breezePaymentId).toBeNull();
+  });
+});
+
+describe('rate limiting (Xero W01)', () => {
+  it('every API call goes through the connection\'s call slot with the QBO limits', async () => {
+    mockFetchJsonOnce({ QueryResponse: { Customer: [] } });
+    await quickbooksProvider.listRemoteCustomers(conn());
+    expect(slotMock).toHaveBeenCalledWith('quickbooks', quickbooksProvider.limits.rate, 'c1', expect.any(Function));
+  });
+
+  it('a 429 is rate_limited with Retry-After honoured', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }));
+    const err = await quickbooksProvider.listRemoteCustomers(conn()).catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 30_000, status: 429 });
+  });
+
+  it('a 429 without Retry-After waits 60s', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('{}', { status: 429 }));
+    const err = await quickbooksProvider.listRemoteCustomers(conn()).catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 60_000 });
+  });
+});
+
+describe('rate limiting — slot coverage, refusal pass-through and catch audit (Xero W01, Task 13)', () => {
+  const refusal = () => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (concurrency)',
+    message: 'Accounting provider rate limit reached (concurrency); retrying automatically', retryAfterMs: 2_000,
+  });
+  const prefsBody = { Preferences: { CurrencyPrefs: { HomeCurrency: { value: 'CAD' }, MultiCurrencyEnabled: true } } };
+  const passthrough = (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn();
+  const customer = { organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD' };
+  const staleFault = { Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } };
+
+  afterEach(() => {
+    slotMock.mockReset();
+    slotMock.mockImplementation(passthrough);
+  });
+
+  it('fetchRealmSettings (its own fetch, not qboRequest) also takes the call slot', async () => {
+    slotMock.mockClear();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify(prefsBody), { status: 200 }));
+    await quickbooksProvider.fetchRealmSettings(conn());
+    expect(slotMock).toHaveBeenCalledTimes(1);
+    expect(slotMock).toHaveBeenCalledWith('quickbooks', quickbooksProvider.limits.rate, 'c1', expect.any(Function));
+  });
+
+  it('a limiter refusal on fetchRealmSettings rejects as rate_limited without calling Intuit', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    slotMock.mockImplementationOnce(async () => { throw refusal(); });
+    const err = await quickbooksProvider.fetchRealmSettings(conn()).catch((e) => e);
+    expect(err).toBeInstanceOf(AccountingProviderError);
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 2_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('the token endpoint (exchangeCode / refresh) stays OUTSIDE the slot', async () => {
+    slotMock.mockClear();
+    const tokenBody = { access_token: 'a', refresh_token: 'r', expires_in: 3600, x_refresh_token_expires_in: 8_640_000 };
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(tokenBody), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(tokenBody), { status: 200 }));
+    await quickbooksProvider.exchangeCode('code', 'realm123');
+    await quickbooksProvider.refresh('r');
+    expect(slotMock).not.toHaveBeenCalled();
+  });
+
+  it('a limiter refusal passes through the boundary unchanged (same instance, not re-classified)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = refusal();
+    slotMock.mockImplementationOnce(async () => { throw r; });
+    const err = await quickbooksProvider.listRemoteCustomers(conn()).catch((e) => e);
+    expect(err).toBe(r);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('slots are leaf-level: one per HTTP round trip, never nested (mapped push that re-reads a stale SyncToken)', async () => {
+    let depth = 0;
+    let maxDepth = 0;
+    slotMock.mockReset();
+    slotMock.mockImplementation(async (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => {
+      depth += 1;
+      maxDepth = Math.max(maxDepth, depth);
+      try { return await fn(); } finally { depth -= 1; }
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(staleFault, 400))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { SyncToken: '9' } }))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '145', SyncToken: '10' } }));
+    await quickbooksProvider.pushInvoice(
+      conn(), invoicePayload({ mapping: { remoteEntityId: '145', remoteSyncToken: '3' } }) as never, [],
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(slotMock).toHaveBeenCalledTimes(3);
+    expect(maxDepth).toBe(1);
+  });
+
+  // P5 catch audit: the CDC overflow backfill catch was the one catch that
+  // turned ANY error into a fallback (`overflowed: true`, CDC rows returned).
+  it('a limiter refusal during the CDC overflow backfill propagates instead of degrading to overflowed', async () => {
+    captureExceptionMock.mockClear();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(
+      cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]),
+    ));
+    slotMock
+      .mockImplementationOnce(passthrough)
+      .mockImplementationOnce(async () => { throw refusal(); });
+    const err = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z')).catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 2_000 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a QBO 429 during the CDC overflow backfill propagates as rate_limited', async () => {
+    captureExceptionMock.mockClear();
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }])))
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '12' } }));
+    const err = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z')).catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited', retryAfterMs: 12_000, status: 429 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a limiter refusal on the stale-token re-read of a mapped Customer propagates (no second write)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(staleFault, 400));
+    slotMock
+      .mockImplementationOnce(passthrough)
+      .mockImplementationOnce(async () => { throw refusal(); });
+    const err = await quickbooksProvider.upsertCustomer(conn(), customer, { remoteEntityId: '12', remoteSyncToken: '7' })
+      .catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a limiter refusal on deletePayment is never read as already_absent', async () => {
+    slotMock.mockImplementationOnce(async () => { throw refusal(); });
+    const err = await quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }).catch((e) => e);
+    expect(err).toMatchObject({ kind: 'rate_limited' });
+  });
+
+  // Defence in depth: the 610/5010 detectors fall back to regexing the stored
+  // body, so a throttle reply that happened to mention either must still be a
+  // throttle — never `already_absent`, never a SyncToken re-read.
+  it('a 429 whose body mentions 610 / 5010 is still rate_limited (no already_absent, no re-read)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }, 429));
+    const del = await quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', remoteVersion: '3' }).catch((e) => e);
+    expect(del).toMatchObject({ kind: 'rate_limited', status: 429 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValueOnce(jsonResponse(staleFault, 429));
+    const up = await quickbooksProvider.upsertCustomer(conn(), customer, { remoteEntityId: '12', remoteSyncToken: '7' })
+      .catch((e) => e);
+    expect(up).toMatchObject({ kind: 'rate_limited', status: 429 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseRetryAfterMs', () => {
+  it.each([
+    [null, null],
+    ['', null],
+    ['30', 30_000],
+    ['0', 0],
+    ['1.5', 1_500],
+    ['-5', null],
+    ['soon', null],
+  ])('%j -> %j', (header, expected) => {
+    expect(parseRetryAfterMs(header)).toBe(expected);
+  });
+
+  it('reads an HTTP-date as the wait until then, clamping a past date to 0', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-26T12:00:00.000Z'));
+      expect(parseRetryAfterMs('Sat, 26 Sep 2026 12:00:45 GMT')).toBe(45_000);
+      expect(parseRetryAfterMs('Sat, 26 Sep 2026 11:00:00 GMT')).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

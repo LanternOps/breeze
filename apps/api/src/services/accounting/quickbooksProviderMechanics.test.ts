@@ -13,6 +13,10 @@ vi.mock('../../config/env', () => ({
   get QBO_ENVIRONMENT() { return envState.environment; },
 }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+// Xero W01: the rate-limit call slot is a passthrough here (limiter has its own suite).
+vi.mock('./accountingRateLimit', () => ({
+  withProviderCallSlot: (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn(),
+}));
 
 import { mapQboCdcPayment, quickbooksProvider } from './quickbooksProvider';
 import { buildPaymentPrivateNote } from './accountingPaymentMarker';
