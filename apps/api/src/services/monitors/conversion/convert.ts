@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withDbAccessContext } from '../../../db';
-import { escalationPolicies, organizations, partners, sites, deviceGroups, devices, deviceGroupMemberships, notificationRoutingRules, notificationChannels, configPolicyAssignments, alerts, alertRules, alertTemplates, automations, configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks, configPolicyMonitoringSettings, configPolicyMonitoringWatches, configPolicyMonitors, configurationPolicies, monitorConversions, monitorConversionOutputs, monitorDefinitions } from '../../../db/schema';
+import { escalationPolicies, organizations, partners, sites, deviceGroups, devices, deviceGroupMemberships, alerts, alertRules, alertTemplates, automations, configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks, configPolicyMonitoringSettings, configPolicyMonitoringWatches, configPolicyMonitors, configurationPolicies, monitorConversions, monitorConversionOutputs, monitorDefinitions } from '../../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../../middleware/auth';
 import { getMonitorConversionPreviewQueue, previewJobKey } from '../../../jobs/monitorConversionPreviewWorker';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
@@ -22,7 +22,7 @@ import { computeEquivalence, applyProposalInTx, type EquivalenceProposal, signat
 import { resolveDeviceIdsForPolicy, resolveLegacyBaseline, type DbExecutor } from './legacyBaseline';
 import { loadPolicySources, type PolicySources } from './loadSources';
 import { canonical, mapStandaloneRule, monitorSignature, mapAutomationResponses, mapInlineRule, mapWatch, mergeResponseProposals, previewHash, sha, type MappingResult } from './mapping';
-import { authorizePreview, previewFreshness, previewScopeHash, snapshotPreviewAccess } from './previewScope';
+import { authorizePreview, conversionDeviceColumns, ownerAxisInputs, previewFreshness, previewScopeHash, snapshotPreviewAccess } from './previewScope';
 import { missingConversionPrerequisites } from './prerequisites';
 import { EQUIVALENCE_JOB_THRESHOLD, type ConversionPreviewItem, type PolicyConversionPreview, type PolicyConversionPreviewPending, type PolicyConversionPreviewFailed, type ConversionSourceTable, type PartnerConversionPreview } from './types';
 
@@ -666,18 +666,15 @@ async function templateGroupPreviewInTx(templateId: string, auth: AuthContext, t
   const orgs = await tx.select().from(organizations).where(template.orgId
     ? eq(organizations.id, template.orgId) : eq(organizations.partnerId, template.partnerId!)).orderBy(organizations.id);
   const orgIds = orgs.map((o) => o.id);
-  const deviceRows = orgIds.length ? await tx.select().from(devices).where(inArray(devices.orgId, orgIds)).orderBy(devices.id) : [];
+  // Conversion-relevant columns only: whole rows carry heartbeat telemetry (see conversionDeviceColumns).
+  const deviceRows = orgIds.length ? await tx.select(conversionDeviceColumns).from(devices).where(inArray(devices.orgId, orgIds)).orderBy(devices.id) : [];
   const deviceIds = deviceRows.map((d) => d.id);
   const memberships = deviceIds.length ? await tx.select().from(deviceGroupMemberships)
     .where(inArray(deviceGroupMemberships.deviceId, deviceIds)).orderBy(deviceGroupMemberships.deviceId, deviceGroupMemberships.groupId) : [];
-  // RLS-scoped rows bind delivery, assignment and definition edits, including empty target scopes.
-  const routes = await tx.select().from(notificationRoutingRules).orderBy(notificationRoutingRules.id);
-  const channels = await tx.select().from(notificationChannels).orderBy(notificationChannels.id);
-  const escalations = await tx.select().from(escalationPolicies).orderBy(escalationPolicies.id);
-  const policies = await tx.select().from(configurationPolicies).orderBy(configurationPolicies.id);
-  const assignments = await tx.select().from(configPolicyAssignments).orderBy(configPolicyAssignments.id);
-  const links = await tx.select().from(configPolicyFeatureLinks).orderBy(configPolicyFeatureLinks.id);
-  const definitions = await tx.select().from(monitorDefinitions).orderBy(monitorDefinitions.id);
+  // Delivery, assignment and definition rows on this group's owner axis bind the preview, including
+  // empty target scopes. Explicitly scoped: under system scope RLS would admit every tenant's rows.
+  const partnerIds = [...new Set([template.partnerId, ...orgs.map((o) => o.partnerId)].filter((id): id is string => !!id))];
+  const { routes, channels, escalation: escalations, policies, assignments, links, definitions } = await ownerAxisInputs(orgIds, partnerIds, tx);
   const signatureMaps = new Map<string, Map<string, string>>();
   const policySignatures = async (deviceId: string, executor: DbExecutor) => new Map([
     ...await signatureMapForLegacy(deviceId, await resolveLegacyBaseline(deviceId, executor), executor),
