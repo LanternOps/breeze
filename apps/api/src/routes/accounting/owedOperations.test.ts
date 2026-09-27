@@ -131,12 +131,6 @@ vi.mock('../../jobs/accountingReconcileWorker', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: effects.audit }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
 
 import { accountingRoutes } from './index';
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const reg = vi.hoisted(() => ({
@@ -17,6 +17,14 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   resolveActiveConnectionRef: reg.resolveActiveConnectionRef,
 }));
 import { listProvidersHandler, providerGateResponse } from './providerGate';
+
+// clearMocks is false project-wide, so a queued mockReturnValueOnce that a test
+// never actually consumes (e.g. requireConfigured:false short-circuits before
+// calling configError()) would otherwise leak into a later test. Reset to the
+// configured-by-default baseline before every test.
+beforeEach(() => {
+  reg.qbo.configError.mockReset().mockReturnValue(null);
+});
 
 function run(provider: 'quickbooks' | 'xero', cap: 'connect' | 'invoicePush', opts?: { requireConfigured?: boolean }) {
   const app = new Hono();
@@ -47,7 +55,9 @@ describe('providerGateResponse', () => {
     expect(await res.json()).toEqual({ error: 'QuickBooks OAuth is not configured on this instance', code: 'provider_not_configured' });
   });
   it('requireConfigured:false lets an unconfigured provider through (DB-only routes)', async () => {
-    reg.qbo.configError.mockReturnValueOnce('QuickBooks OAuth is not configured on this instance');
+    // requireConfigured:false short-circuits before configError() is ever called,
+    // so this is never consumed — mockReturnValue (not -Once) makes that explicit.
+    reg.qbo.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
     expect((await run('quickbooks', 'connect', { requireConfigured: false })).status).toBe(200);
   });
   it('requireConfigured:false still refuses an unregistered provider', async () => {

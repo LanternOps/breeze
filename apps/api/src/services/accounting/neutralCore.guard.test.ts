@@ -68,8 +68,13 @@ describe('neutral accounting core (Xero W01)', () => {
   });
 
   it('no core file names QuickBooks in code', () => {
+    const files = ROOTS.flatMap(walk);
+    // Guard against a vacuous pass: if ROOTS ever resolves to an empty/near-empty
+    // file list (e.g. a bad path after a directory move), the loop below would
+    // trivially succeed with zero failures. ~191 files exist today.
+    expect(files.length).toBeGreaterThan(50);
     const failures: string[] = [];
-    for (const file of ROOTS.flatMap(walk)) {
+    for (const file of files) {
       const rel = relative(SRC, file);
       if (EXEMPT(rel) || ALLOWLIST[rel]) continue;
       for (const v of findViolations(readFileSync(file, 'utf8'), file)) failures.push(`${rel}: ${v}`);

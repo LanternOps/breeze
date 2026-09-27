@@ -98,13 +98,6 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
 }));
 
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
-
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     c.set('auth', {

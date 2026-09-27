@@ -1785,7 +1785,7 @@
       ]
     },
     {
-      "pattern": "apps/api/src/services/accounting/quickbooksCustomerImport.ts",
+      "pattern": "apps/api/src/services/accounting/accountingCustomerImport.ts",
       "docs": [
         "features/integrations.mdx"
       ]

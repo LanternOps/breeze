@@ -169,13 +169,6 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
-
 import { accountingRoutes } from './index';
 import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
 import { withAuthDbAccessContext } from '../../middleware/auth';

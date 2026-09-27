@@ -192,9 +192,9 @@ export async function resolveActiveConnection(
  * decrypts. Any future filter added to `resolveActiveConnection` (W02's
  * pending_tenant exclusion) must be mirrored here too.
  *
- * Exported as the public id+provider read for callers that never need tokens
- * (e.g. a route that only stamps `.id`/`.provider` on a response, or a
- * conflict check that only compares providers) — using it instead of
+ * Exported as the public id+provider+status read for callers that never need
+ * tokens (e.g. a route that only stamps `.id`/`.provider`/`.status` on a
+ * response, or a conflict check that only compares providers) — using it instead of
  * `resolveActiveConnection` means a rotated/retired encryption key can never
  * abort a path that was going to ignore the decrypted columns anyway.
  */
