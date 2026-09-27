@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test, { afterEach } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   REQUIRED_RELEASE_IMAGES,
   collectReleaseImageMetadata,
+  collectReleaseImageSet,
   verifyReleaseImageManifest,
 } from './release-image-manifest.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const scratch = [];
 afterEach(() => {
@@ -112,4 +117,175 @@ test('collector rejects missing, extra, duplicate, malformed, and invalid reposi
     if (mutation === 'malformed') writeFileSync(join(directory, '0.json'), '{');
     assert.throws(() => collectReleaseImageMetadata({ directory, sourceCommit }));
   }
+});
+
+// ── Server-only releases: release kind, carried binaries, provenance ─────────
+const baseCommit = 'b'.repeat(40);
+
+function serverOnlyFields(overrides = {}) {
+  const binaries = images().find((image) => image.name === 'binaries');
+  return {
+    releaseKind: 'server-only',
+    binariesRelease: 'v1.2.0',
+    binariesSourceCommit: baseCommit,
+    carriedImages: [{ ...binaries, fromRelease: 'v1.2.0', fromSourceCommit: baseCommit }],
+    ...overrides,
+  };
+}
+
+function verifyKind(fixture, requireKind) {
+  return verifyReleaseImageManifest({
+    manifestBytes: fixture.manifest,
+    signatureBytes: fixture.signature,
+    publicKeys: fixture.publicKeys,
+    expectedRepository: 'lanternops/breeze',
+    expectedRelease: 'v1.2.3',
+    requiredImages: [],
+    requireKind,
+  });
+}
+
+test('an absent releaseKind is a full release; an explicit full release verifies unchanged', () => {
+  assert.equal(verifyKind(signedManifest(), 'full').releaseKind, 'full');
+  assert.equal(verifyKind(signedManifest({ releaseKind: 'full' }), 'full').releaseKind, 'full');
+  assert.equal(verifyKind(signedManifest({ releaseKind: 'full' }), 'any').releaseKind, 'full');
+  assert.equal(verifyFixture(signedManifest({ releaseKind: 'full' })).images.length, 7);
+});
+
+test('a server-only manifest verifies and exposes its binaries pairing', () => {
+  const verified = verifyKind(signedManifest(serverOnlyFields()), 'server-only');
+  assert.equal(verified.releaseKind, 'server-only');
+  assert.equal(verified.binariesRelease, 'v1.2.0');
+  assert.equal(verified.binariesSourceCommit, baseCommit);
+  assert.equal(verified.carriedImages.length, 1);
+  // Existing callers that do not ask for a kind still accept it.
+  assert.equal(verifyFixture(signedManifest(serverOnlyFields())).images.length, 7);
+});
+
+test('--require-kind refuses the other kind', () => {
+  assert.throws(() => verifyKind(signedManifest(serverOnlyFields()), 'full'), /release kind server-only, expected full/u);
+  assert.throws(() => verifyKind(signedManifest(), 'server-only'), /release kind full, expected server-only/u);
+  assert.throws(() => verifyKind(signedManifest(), 'partial'), /invalid required release kind/u);
+});
+
+test('refuses malformed server-only and full kind fields', () => {
+  const binaries = images().find((image) => image.name === 'binaries');
+  const cases = [
+    [{ releaseKind: 'agent-only' }, /releaseKind is invalid/u],
+    [serverOnlyFields({ binariesRelease: undefined }), /binariesRelease must be a stable release tag/u],
+    [serverOnlyFields({ binariesRelease: 'v1.2.0-rc.1' }), /binariesRelease must be a stable release tag/u],
+    [serverOnlyFields({ binariesRelease: 'v1.2.3' }), /binariesRelease must differ from release/u],
+    [serverOnlyFields({ binariesSourceCommit: 'nope' }), /binariesSourceCommit is invalid/u],
+    [serverOnlyFields({ carriedImages: [] }), /carriedImages must list the carried binaries image/u],
+    [serverOnlyFields({ carriedImages: [{ ...binaries, digest: digest('f'), fromRelease: 'v1.2.0', fromSourceCommit: baseCommit }] }), /carriedImages\[0\] does not match images/u],
+    [serverOnlyFields({ carriedImages: [{ ...binaries, fromRelease: 'v1.1.0', fromSourceCommit: baseCommit }] }), /carriedImages\[0\] provenance does not match/u],
+    [serverOnlyFields({ carriedImages: [{ ...images()[0], fromRelease: 'v1.2.0', fromSourceCommit: baseCommit }] }), /only the binaries image may be carried/u],
+    [{ releaseKind: 'full', binariesRelease: 'v1.2.0' }, /full release must not carry/u],
+    [{ carriedImages: [] }, /full release must not carry/u],
+  ];
+  for (const [overrides, expected] of cases) {
+    assert.throws(() => verifyKind(signedManifest(overrides), 'any'), expected, JSON.stringify(overrides));
+  }
+});
+
+function metadataDirectory(records) {
+  const directory = mkdtempSync(join(tmpdir(), 'release-image-carried-'));
+  scratch.push(directory);
+  records.forEach((record) => writeFileSync(join(directory, `${record.name}.json`), JSON.stringify(record)));
+  return directory;
+}
+
+function carriedRecords({ carriedName = 'binaries', recordCommit = baseCommit, fromCommit = baseCommit } = {}) {
+  return images().map((image) => (image.name === carriedName
+    ? { ...image, sourceCommit: recordCommit, carriedFromRelease: 'v1.2.0', carriedFromSourceCommit: fromCommit }
+    : { ...image, sourceCommit }));
+}
+
+test('collector preserves carried-binaries provenance for a server-only release', () => {
+  const directory = metadataDirectory(carriedRecords());
+  const collected = collectReleaseImageSet({ directory, sourceCommit, releaseKind: 'server-only', carriedSourceCommit: baseCommit });
+  assert.equal(collected.images.length, 7);
+  assert.ok(collected.images.every((image) => Object.keys(image).sort().join(',') === 'digest,name,repository'),
+    'images[] entries keep their exact shape');
+  const binaries = images().find((image) => image.name === 'binaries');
+  assert.deepEqual(collected.carried, [{
+    name: 'binaries',
+    repository: binaries.repository,
+    digest: binaries.digest,
+    fromRelease: 'v1.2.0',
+    fromSourceCommit: baseCommit,
+  }]);
+});
+
+test('collector refuses carried records outside the server-only binaries rule', () => {
+  const cases = [
+    [carriedRecords(), 'full', undefined, /carried image record .* is only allowed in a server-only release/u],
+    [carriedRecords({ carriedName: 'api' }), 'server-only', baseCommit, /only the binaries image may be carried/u],
+    [carriedRecords({ recordCommit: sourceCommit }), 'server-only', baseCommit, /carried binaries sourceCommit must be the base commit/u],
+    [carriedRecords({ fromCommit: 'c'.repeat(40) }), 'server-only', baseCommit, /carried binaries sourceCommit must be the base commit/u],
+    [carriedRecords(), 'server-only', 'c'.repeat(40), /carried binaries sourceCommit must be the base commit/u],
+    [carriedRecords(), 'server-only', undefined, /carried source commit is invalid/u],
+    [images().map((image) => ({ ...image, sourceCommit })), 'server-only', baseCommit, /server-only release must carry the binaries image/u],
+    [carriedRecords(), 'partial', baseCommit, /release kind is invalid/u],
+  ];
+  for (const [records, releaseKind, carriedSourceCommit, expected] of cases) {
+    const directory = metadataDirectory(records);
+    assert.throws(
+      () => collectReleaseImageSet({ directory, sourceCommit, releaseKind, carriedSourceCommit }),
+      expected,
+      `${releaseKind} ${carriedSourceCommit}`,
+    );
+  }
+});
+
+test('collectReleaseImageMetadata keeps its full-release contract', () => {
+  const directory = metadataDirectory(carriedRecords());
+  assert.throws(() => collectReleaseImageMetadata({ directory, sourceCommit }), /only allowed in a server-only release/u);
+});
+
+test('CLI: record writes carried provenance, collect writes the carried list, verify prints the kind', () => {
+  const work = mkdtempSync(join(tmpdir(), 'release-image-cli-'));
+  scratch.push(work);
+  const cli = (...args) => spawnSync('node', [join(HERE, 'release-image-manifest.mjs'), ...args], { encoding: 'utf8', env: { ...process.env } });
+  const binaries = images().find((image) => image.name === 'binaries');
+
+  const recorded = cli('record', '--name', 'binaries', '--repository', binaries.repository, '--digest', binaries.digest,
+    '--source-commit', baseCommit, '--carried-from-release', 'v1.2.0', '--carried-from-source-commit', baseCommit,
+    '--output', join(work, 'binaries.json'));
+  assert.equal(recorded.status, 0, recorded.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(work, 'binaries.json'), 'utf8')), {
+    ...binaries, sourceCommit: baseCommit, carriedFromRelease: 'v1.2.0', carriedFromSourceCommit: baseCommit,
+  });
+  const halfCarried = cli('record', '--name', 'binaries', '--repository', binaries.repository, '--digest', binaries.digest,
+    '--source-commit', baseCommit, '--carried-from-release', 'v1.2.0', '--output', join(work, 'x.json'));
+  assert.notEqual(halfCarried.status, 0);
+
+  for (const image of images().filter((entry) => entry.name !== 'binaries')) {
+    writeFileSync(join(work, `${image.name}.json`), JSON.stringify({ ...image, sourceCommit }));
+  }
+  const collected = cli('collect', '--directory', work, '--source-commit', sourceCommit, '--release-kind', 'server-only',
+    '--carried-source-commit', baseCommit, '--carried-output', join(work, 'carried.out'), '--output', join(work, 'images.out'));
+  assert.equal(collected.status, 0, collected.stderr);
+  assert.equal(JSON.parse(readFileSync(join(work, 'images.out'), 'utf8')).length, 7);
+  assert.equal(JSON.parse(readFileSync(join(work, 'carried.out'), 'utf8'))[0].fromRelease, 'v1.2.0');
+
+  const withoutCarriedOutput = cli('collect', '--directory', work, '--source-commit', sourceCommit, '--release-kind', 'server-only',
+    '--carried-source-commit', baseCommit, '--output', join(work, 'images2.out'));
+  assert.notEqual(withoutCarriedOutput.status, 0, 'server-only collect must not silently drop carry provenance');
+
+  const fixture = signedManifest(serverOnlyFields());
+  writeFileSync(join(work, 'm.json'), fixture.manifest);
+  writeFileSync(join(work, 'm.json.ed25519'), fixture.signature);
+  const verified = spawnSync('node', [join(HERE, 'release-image-manifest.mjs'), 'verify', '--manifest', join(work, 'm.json'),
+    '--signature', join(work, 'm.json.ed25519'), '--expected-repository', repository, '--expected-release', 'v1.2.3',
+    '--require-kind', 'server-only', '--output', join(work, 'identity.json')], {
+    encoding: 'utf8',
+    env: { ...process.env, RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: fixture.publicKeys },
+  });
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.match(verified.stdout, /server-only release v1\.2\.3 pairs with binaries v1\.2\.0/u);
+  const identity = JSON.parse(readFileSync(join(work, 'identity.json'), 'utf8'));
+  assert.equal(identity.releaseKind, 'server-only');
+  assert.equal(identity.sourceCommit, sourceCommit);
+  assert.ok(Array.isArray(identity.assets));
 });
