@@ -324,7 +324,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'RAID arrays, physical disks, cache batteries, hardware collector health and reliability score inputs',
     definition: {
       name: 'get_device_hardware_health',
-      description: 'Get current hardware health, components, collectors, optional recent events, and (with includeReliability) the reliability score\'s factor breakdown and top hardware offenders — the actual inputs behind a device\'s reliability score, so an explanation is grounded in real events instead of guessed causes.',
+      description: 'Get current hardware health, components, collectors, optional recent events, and (with includeReliability) the reliability score\'s factor breakdown and top hardware offenders — the real inputs behind the score, so an explanation is grounded in actual events, not guessed causes.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -333,7 +333,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           includeReliability: {
             type: 'boolean',
             default: false,
-            description: 'Include the reliability score, its per-factor drivers (crashes/hangs/service failures/hardware/uptime), and the top hardware offenders (source + event count) behind the last 30 days\' hardware factor. Use this before explaining or diagnosing a device\'s reliability score.'
+            description: 'Include the reliability score\'s per-factor drivers and top 30-day hardware offenders. Use before explaining or diagnosing reliability.'
           }
         },
         required: ['deviceId']
