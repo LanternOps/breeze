@@ -687,12 +687,6 @@ describe('local source: hosted build manifest', () => {
     delete process.env.S3_SECRET_KEY;
   }
 
-  const helper = {
-    label: 'helper installer',
-    assetName: HELPER_FILENAMES.linux!,
-    entry: { platformTrust: 'none', edition: 'hosted' },
-    fetch: () => fetchVerifiedHelperInstaller('linux'),
-  };
   const macosPkg = {
     label: 'macOS pkg',
     assetName: 'breeze-agent-darwin-arm64.pkg',
@@ -705,7 +699,10 @@ describe('local source: hosted build manifest', () => {
     fetch: () => fetchVerifiedMacosPkg('arm64'),
   };
 
-  describe.each([helper, macosPkg])('$label', (target) => {
+  // The Helper installer is NOT an agent-family asset: it is built only by the
+  // public release and is edition-neutral, so it never verifies against this
+  // root (hosted) manifest — see 'local source: Helper installer manifest'.
+  describe.each([macosPkg])('$label', (target) => {
     it('serves an asset from a correctly signed manifest whose repository is not the public repository', async () => {
       const asset = Buffer.from(`hosted-${target.assetName}`);
       const signed = signedReleaseManifest(target.assetName, asset, target.entry, hostedManifest);
@@ -755,6 +752,206 @@ describe('local source: hosted build manifest', () => {
       stage({ assetName: target.assetName, servedBytes: substituted, signed });
 
       await expect(target.fetch()).rejects.toThrow(/digest mismatch/);
+    });
+  });
+});
+
+// The Breeze Assist (Helper) installers are built ONLY by the public release
+// and are byte-identical for both editions; the public release manifest lists
+// them with `edition: "self-host"`. A hosted binaries volume carries the
+// hosted build's manifest at its root (agent family only, edition "hosted"),
+// so the Helper must verify against the official release manifest pair staged
+// in the Helper's OWN directory, with edition pinned to "self-host" whatever
+// BINARY_EDITION says — and must never fall back to the hosted root manifest.
+describe('local source: Helper installer manifest', () => {
+  const originalEnv = process.env;
+  const os = 'linux';
+  const assetName = HELPER_FILENAMES[os]!;
+  const officialRelease = { repository: 'lanternops/breeze', release: 'v1.2.3' };
+  const hostedRelease = { repository: 'example-org/hosted-build', release: 'v1.2.3-hosted' };
+  let root: string;
+  let agentDir: string;
+  let helperDir: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-local-helper-manifest-'));
+    agentDir = join(root, 'agent');
+    helperDir = join(root, 'helper');
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(helperDir, { recursive: true });
+    __resetVerifiedHelperInstallerCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+    __resetVerifiedHelperInstallerCache();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writePair(dir: string, signed: { manifest: Buffer; signature: Buffer }) {
+    writeFileSync(join(dir, 'release-artifact-manifest.json'), signed.manifest);
+    writeFileSync(join(dir, 'release-artifact-manifest.json.ed25519'), signed.signature);
+  }
+
+  function setEnv(edition: 'hosted' | 'self-host', trustedKeys: string[]) {
+    process.env = {
+      ...originalEnv,
+      BINARY_SOURCE: 'local',
+      BINARY_VERSION: '1.2.3',
+      BINARY_EDITION: edition,
+      AGENT_BINARY_DIR: agentDir,
+      HELPER_BINARY_DIR: helperDir,
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: trustedKeys.join(','),
+    };
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.S3_BUCKET;
+    delete process.env.S3_ACCESS_KEY;
+    delete process.env.S3_SECRET_KEY;
+  }
+
+  // Hosted layout: hosted manifest at the volume root (agent family only),
+  // official release manifest in helper/.
+  function stageHosted(args: {
+    servedBytes?: Buffer;
+    official?: { manifest: Buffer; signature: Buffer; publicKey: string } | null;
+    officialEntry?: Record<string, unknown>;
+    hostedCoversHelper?: boolean;
+    trustOfficialKey?: boolean;
+  } = {}) {
+    const asset = Buffer.from('official-helper-appimage');
+    const official = args.official === undefined
+      ? signedReleaseManifest(assetName, asset, {
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+        ...args.officialEntry,
+      }, officialRelease)
+      : args.official;
+    const hostedAssets: Record<string, unknown>[] = [{
+      name: 'breeze-agent-linux-amd64',
+      sha256: createHash('sha256').update('agent').digest('hex'),
+      size: 5,
+      platformTrust: 'none',
+      edition: 'hosted',
+    }];
+    if (args.hostedCoversHelper) {
+      hostedAssets.push({
+        name: assetName,
+        sha256: createHash('sha256').update(args.servedBytes ?? asset).digest('hex'),
+        size: (args.servedBytes ?? asset).length,
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+      });
+    }
+    const hosted = signedReleaseManifestEntries(hostedAssets, hostedRelease);
+    writeFileSync(join(helperDir, assetName), args.servedBytes ?? asset);
+    writePair(root, hosted);
+    if (official) writePair(helperDir, official);
+    const keys = [hosted.publicKey];
+    if (official && args.trustOfficialKey !== false) keys.push(official.publicKey);
+    setEnv('hosted', keys);
+    return { asset, official, hosted };
+  }
+
+  describe('hosted layout (BINARY_EDITION=hosted)', () => {
+    it('serves the Helper verified against the official manifest in its own directory', async () => {
+      const { asset } = stageHosted();
+
+      const result = await fetchVerifiedHelperInstaller(os);
+      expect(result.buffer).toEqual(asset);
+      expect(result.artifact).toMatchObject({
+        assetName,
+        repository: officialRelease.repository,
+        edition: 'self-host',
+      });
+    });
+
+    it('refuses when the Helper directory has no manifest pair, even if the hosted root manifest lists the asset', async () => {
+      stageHosted({ official: null, hostedCoversHelper: true });
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/manifest pair is not staged/i);
+    });
+
+    it('refuses when only the manifest (no signature) is staged in the Helper directory', async () => {
+      stageHosted();
+      rmSync(join(helperDir, 'release-artifact-manifest.json.ed25519'));
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/manifest pair/i);
+    });
+
+    it('refuses a Helper entry whose edition is not self-host', async () => {
+      stageHosted({ officialEntry: { edition: 'hosted' } });
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/edition mismatch/);
+    });
+
+    it('refuses a Helper entry with no edition claim', async () => {
+      stageHosted({ officialEntry: { edition: undefined } });
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/edition mismatch/);
+    });
+
+    it('refuses same-size tampered bytes', async () => {
+      const asset = Buffer.from('official-helper-appimage');
+      const tampered = Buffer.from('official-helper-EVILimage');
+      const official = signedReleaseManifest(assetName, asset, {
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+      }, officialRelease);
+      stageHosted({ official, servedBytes: Buffer.from(tampered.subarray(0, asset.length)) });
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/size|digest mismatch/);
+    });
+
+    it('refuses when the Helper-directory manifest is signed by a key that is not trusted', async () => {
+      stageHosted({ trustOfficialKey: false });
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/signature/i);
+    });
+  });
+
+  describe('self-host layout (BINARY_EDITION=self-host)', () => {
+    it('serves the Helper against the official manifest staged at the binaries root (unchanged layout)', async () => {
+      const asset = Buffer.from('official-helper-appimage');
+      const official = signedReleaseManifest(assetName, asset, {
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+      }, officialRelease);
+      writeFileSync(join(helperDir, assetName), asset);
+      writePair(root, official);
+      setEnv('self-host', [official.publicKey]);
+
+      await expect(fetchVerifiedHelperInstaller(os)).resolves.toMatchObject({ buffer: asset });
+    });
+
+    it('prefers a manifest pair staged in the Helper directory itself', async () => {
+      const asset = Buffer.from('official-helper-appimage');
+      const official = signedReleaseManifest(assetName, asset, {
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+      }, officialRelease);
+      // A root manifest that does NOT cover the Helper: if the lookup picked
+      // it over the Helper-directory pair this would fail as absent.
+      const other = signedReleaseManifestEntries([], officialRelease);
+      writeFileSync(join(helperDir, assetName), asset);
+      writePair(helperDir, official);
+      writePair(root, other);
+      setEnv('self-host', [official.publicKey, other.publicKey]);
+
+      await expect(fetchVerifiedHelperInstaller(os)).resolves.toMatchObject({ buffer: asset });
+    });
+
+    it('still refuses tampered bytes', async () => {
+      const asset = Buffer.from('official-helper-appimage');
+      const official = signedReleaseManifest(assetName, asset, {
+        platformTrust: 'release-workflow-produced',
+        edition: 'self-host',
+      }, officialRelease);
+      writeFileSync(join(helperDir, assetName), Buffer.from('official-helper-EVILimage').subarray(0, asset.length));
+      writePair(root, official);
+      setEnv('self-host', [official.publicKey]);
+
+      await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(/digest mismatch/);
     });
   });
 });
