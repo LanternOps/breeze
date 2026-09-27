@@ -671,7 +671,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           },
           payload: {
             type: 'object',
-            description: 'Command-specific parameters — see level/logName for event_logs_query, name for service control, processName/pid for kill_process, path for file ops.',
+            description: 'Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.',
             properties: {
               level: { type: ['string', 'number'], description: 'event_logs_query: severity — critical, error, warning, information (or "info"), verbose, or level number 1-5.' },
             },

@@ -133,22 +133,25 @@ export const executeCommandPayloadSchema = z.object({
   // start_service / stop_service / restart_service
   name: z.string().max(255).describe('start/stop/restart_service: the Windows service name.').optional(),
   serviceName: z.string().max(255).describe('Alias for name in service control commands.').optional(),
-  // kill_process
-  processName: z.string().max(255).describe('kill_process: process name to terminate (alternative to pid).').optional(),
-  pid: z.number().int().describe('kill_process: process ID to terminate.').optional(),
+  // kill_process — the agent (agent/internal/remote/tools/processes.go
+  // KillProcess) only ever reads `pid`; `processName` is display-only, used
+  // for the approval-prompt headline (aiGuardrails.ts), and does nothing on
+  // its own — sending it without `pid` silently fails to kill anything.
+  processName: z.string().max(255).describe('kill_process: display label only (for the approval prompt); pid is required to actually kill it.').optional(),
+  pid: z.coerce.number().int().describe('kill_process: process ID to terminate (required).').optional(),
   // file_list / file_read
   path: z.string().max(4096).describe('file_list/file_read: filesystem path.').optional(),
   // event_logs_query / event_logs_list
   logName: z.string().max(255).describe('event_logs_query/list: Windows log name, e.g. "System" (default System).').optional(),
   level: z.union([
     z.enum(['critical', 'error', 'warning', 'information', 'info', 'verbose']),
-    z.number().int().min(1).max(5),
+    z.coerce.number().int().min(1).max(5),
   ]).describe('event_logs_query: severity filter — critical, error, warning, information (or "info"), verbose, or level number 1-5.').optional(),
   source: z.string().max(255).describe('event_logs_query: filter by event source/provider name.').optional(),
-  eventId: z.number().int().describe('event_logs_query: filter by numeric event ID.').optional(),
+  eventId: z.coerce.number().int().describe('event_logs_query: filter by numeric event ID.').optional(),
   query: z.string().max(2000).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
-  page: z.number().int().min(1).optional(),
-  limit: z.number().int().min(1).max(500).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
 }).passthrough();
 
 export const executeCommandShape = {
@@ -160,7 +163,7 @@ export const executeCommandShape = {
     'event_logs_list', 'event_logs_query',
   ]),
   payload: executeCommandPayloadSchema
-    .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, processName/pid for kill_process, path for file ops.')
+    .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.')
     .optional(),
 };
 

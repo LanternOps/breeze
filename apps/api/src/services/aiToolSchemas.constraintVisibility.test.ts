@@ -68,6 +68,37 @@ describe('execute_command / event_logs_query level (#7130 case 1)', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a numeric-string level/eventId (the agent\'s own ParsePayloadInt accepts numeric strings)', () => {
+    expect(
+      validateToolInput('execute_command', {
+        deviceId: TEST_UUID,
+        commandType: 'event_logs_query',
+        payload: { level: '3', eventId: '4624' },
+      }),
+    ).toEqual({ success: true });
+  });
+
+  it('still accepts kill_process/list_processes keys the payload schema does not name explicitly (passthrough)', () => {
+    // The typed keys above only cover event_logs_query/service/file ops; other
+    // commandTypes (list_processes' search/sortBy/sortDesc, kill_process's
+    // force) must keep flowing through untyped rather than being dropped or
+    // rejected by a schema that only knows about the documented cases.
+    expect(
+      validateToolInput('execute_command', {
+        deviceId: TEST_UUID,
+        commandType: 'list_processes',
+        payload: { search: 'chrome', sortBy: 'cpu', sortDesc: true },
+      }),
+    ).toEqual({ success: true });
+    expect(
+      validateToolInput('execute_command', {
+        deviceId: TEST_UUID,
+        commandType: 'kill_process',
+        payload: { pid: 1234, processName: 'notepad.exe', force: true },
+      }),
+    ).toEqual({ success: true });
+  });
+
   it('documents that list_processes cpuPercent is per-core, not per-machine', () => {
     // No zod constraint expresses this (it describes an OUTPUT field the Go
     // agent computes as 100*cpuSeconds/wallSeconds, i.e. 100% == one core) —
