@@ -61,7 +61,10 @@ describe('enrichFromCatalog', () => {
     expect(out.matchedCatalogId).toBe('cat-firefox');
   });
 
-  it('preserves agent-provided severity when it is not unknown', async () => {
+  it('always applies the catalog severity on a hit, ignoring an agent-reported severity', async () => {
+    // `severity` is classification, not identity: a curated match confirms
+    // WHAT the package is, not how severe this particular agent thinks it is.
+    // Only the catalog's own `defaultSeverity` may classify a shared row.
     const out = await enrichFromCatalog({
       source: 'third_party',
       packageId: 'Mozilla.Firefox',
@@ -69,7 +72,7 @@ describe('enrichFromCatalog', () => {
       vendor: null,
       severity: 'critical',
     });
-    expect(out.severity).toBe('critical');
+    expect(out.severity).toBe('important');
     expect(out.title).toBe('Mozilla Firefox');
   });
 

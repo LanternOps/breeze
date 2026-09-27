@@ -2,6 +2,7 @@
 set -euo pipefail
 
 AGENT_BINARY="/usr/local/bin/breeze-agent"
+AGENT_BINARY_TRUSTED="/Library/Breeze/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
 BACKUP_BINARY="/usr/local/bin/breeze-backup"
 
@@ -63,6 +64,7 @@ breeze_remove_auxiliary() {
     /Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist \
     /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-desktop-helper \
     /usr/local/bin/breeze-backup \
+    /Library/Breeze/bin/breeze-watchdog /Library/Breeze/bin/breeze-backup \
     "/Library/Application Support/Breeze/agent.sock" || return 1
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1
@@ -78,7 +80,7 @@ uninstall_macos() {
   breeze_stop_watchdog || return 1
   breeze_stop_helpers || return 1
   breeze_bootout system/com.breeze.agent || return 1
-  rm -f /Library/LaunchDaemons/com.breeze.agent.plist "$AGENT_BINARY" || return 1
+  rm -f /Library/LaunchDaemons/com.breeze.agent.plist "$AGENT_BINARY" "$AGENT_BINARY_TRUSTED" || return 1
   breeze_remove_auxiliary || return 1
 
   echo "Breeze Agent uninstalled."

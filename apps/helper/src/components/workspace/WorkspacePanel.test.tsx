@@ -212,7 +212,7 @@ it('Browse tab shows only Project/Doc type chips, and selecting one re-issues th
   // filters — see Finding 2 in WorkspacePanel.tsx), so the first Browse entry
   // after mount always re-fetches once, regardless of a preset browsePath.
   await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(1));
-  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', '');
+  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', '', 'todd');
 
   fireEvent.pointerDown(within(chipRow).getByRole('button', { name: 'Project' }), { button: 0 });
   // Menu item, not FileTable's own "Henderson Water Main Replacement" cell.
@@ -221,7 +221,7 @@ it('Browse tab shows only Project/Doc type chips, and selecting one re-issues th
 
   expect(useWorkspaceStore.getState().filters.project).toBe('Henderson Water Main Replacement');
   await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(2));
-  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', '');
+  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', '', 'todd');
 });
 
 // Regression test for the debounce-effect's `tab` dependency re-arming a
@@ -421,7 +421,7 @@ it('re-fetches Browse on return when a shared filter changed while off the tab',
   // after mount re-fetches once even though a folder was already loaded.
   fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
   await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(1));
-  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', 'docs');
+  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', 'docs', 'todd');
 
   // Leave Browse, then change the shared filters.project slice from another tab.
   fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
@@ -433,7 +433,7 @@ it('re-fetches Browse on return when a shared filter changed while off the tab',
   // Return to Browse: the filter changed, so the current folder must re-fetch.
   fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
   await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(2));
-  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', 'docs');
+  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', 'docs', 'todd');
 });
 
 // Regression test for Finding 1 (verification review, asymmetric browse
@@ -521,5 +521,5 @@ it('remounting the panel with a filter set after the last fetch re-fetches Brows
   render(<WorkspacePanel onClose={() => {}} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
 
-  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', 'docs'));
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', 'docs', 'todd'));
 });

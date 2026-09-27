@@ -1,11 +1,19 @@
 import { Hono } from 'hono';
 import { createHash } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+import { gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceChangeLog } from '../../db/schema';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitChangesSchema } from './schemas';
+import { getRedis } from '../../services/redis';
+import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
+import { envInt } from '../../utils/envInt';
+
+// Async gunzip: a synchronous inflate blocks the event loop for every OTHER
+// agent's request for the duration of the decompression.
+const gunzipAsync = promisify(gunzip);
 
 export const changesRoutes = new Hono();
 
@@ -13,6 +21,25 @@ changesRoutes.use('*', requireAgentRole);
 
 const MAX_CHANGES_BODY_BYTES = parseInt(process.env.CHANGE_INGEST_MAX_BODY_BYTES || String(5 * 1024 * 1024), 10);
 const MAX_CHANGES_GZIP_OUTPUT_BYTES = parseInt(process.env.CHANGE_INGEST_MAX_DECOMPRESSED_BYTES || String(10 * 1024 * 1024), 10);
+
+/**
+ * Daily per-device / per-org row+byte ingest budgets — same gap and same fix
+ * shape as `logs.ts`/`eventlogs.ts`: the 200-row-per-batch insert chunking and
+ * the up-to-`CHANGE_INGEST_MAX_ITEMS` (50,000 default) per-request schema cap
+ * bound a single request, but nothing bounds how many requests a day a device
+ * or org can push, and this route has no per-minute request-rate limiter at
+ * all (unlike logs/eventlogs). Config-change volume from a legitimate agent is
+ * driven by the 15-minute inventory cadence (`sendConfigurationChanges` in
+ * `agent/internal/heartbeat/heartbeat.go`) and is normally tiny — real
+ * endpoint config churn, not a firehose — so these defaults are sized to
+ * comfortably absorb a burst (e.g. catching up after being offline) while
+ * still capping a misbehaving agent credential well below what the
+ * per-request cap alone would otherwise admit indefinitely.
+ */
+const AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY = envInt('AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY', 500_000);
+const AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY = envInt('AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY', 200 * 1024 * 1024);
+const AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY = envInt('AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY', 5_000_000);
+const AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY = envInt('AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY', 2 * 1024 * 1024 * 1024);
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [k: string]: JsonValue };
@@ -72,7 +99,7 @@ changesRoutes.put('/:id/changes', async (c) => {
 
     const encoding = c.req.header('content-encoding')?.toLowerCase() ?? '';
     const decoded = encoding.includes('gzip')
-      ? gunzipSync(raw, { maxOutputLength: MAX_CHANGES_GZIP_OUTPUT_BYTES })
+      ? await gunzipAsync(raw, { maxOutputLength: MAX_CHANGES_GZIP_OUTPUT_BYTES })
       : raw;
 
     if (decoded.length > MAX_CHANGES_GZIP_OUTPUT_BYTES) {
@@ -131,6 +158,45 @@ changesRoutes.put('/:id/changes', async (c) => {
       afterValue: change.afterValue ?? null,
       details: change.details ?? null
     });
+  }
+
+  // Daily row/byte ingest budget, checked before the batch is written — same
+  // shape as logs.ts/eventlogs.ts. Bytes are the stored row shape (post-dedup),
+  // not the wire payload, since that's what actually lands on disk.
+  if (rows.length > 0) {
+    const batchBytes = Buffer.byteLength(JSON.stringify(rows), 'utf-8');
+    const redis = getRedis();
+    const [deviceQuota, orgQuota] = await Promise.all([
+      checkAndConsumeIngestQuota({
+        redis,
+        prefix: 'agent_changes',
+        scope: 'device',
+        id: device.id,
+        rows: rows.length,
+        bytes: batchBytes,
+        maxRows: AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY,
+        maxBytes: AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY,
+      }),
+      checkAndConsumeIngestQuota({
+        redis,
+        prefix: 'agent_changes',
+        scope: 'org',
+        id: device.orgId,
+        rows: rows.length,
+        bytes: batchBytes,
+        maxRows: AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY,
+        maxBytes: AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY,
+      }),
+    ]);
+
+    if (!deviceQuota.allowed || !orgQuota.allowed) {
+      console.warn(
+        `[Changes] Daily ingest budget exceeded for device ${device.id} org ${device.orgId} `
+        + `(device rows=${deviceQuota.rowsUsed} bytes=${deviceQuota.bytesUsed}, `
+        + `org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) — dropping ${rows.length} row(s)`,
+      );
+      return c.json({ error: 'Daily change ingest budget exceeded', count: 0, dropped: rows.length }, 429);
+    }
   }
 
   let inserted = 0;

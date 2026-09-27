@@ -209,6 +209,48 @@ describe('integration compatibility routes', () => {
       );
     });
 
+    // Same origin-binding contract as credentialOriginBinding.ts:
+    // a masked credential must not be decrypted and forwarded to a
+    // destination this same request just changed.
+    it('refuses to resolve a masked credential when the URL origin changed from the stored value', async () => {
+      const save = await app.request('/integrations/monitoring', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ grafana: { enabled: true, url: 'https://grafana.example.test', apiKey: 'stored-secret-key' } }),
+      });
+      expect(save.status).toBe(200);
+      safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+
+      const res = await testCall({
+        provider: 'grafana',
+        config: { enabled: true, url: 'https://other-origin.example', apiKey: '********' },
+      });
+      expect(res.status).toBe(400);
+      expect(safeFetchMock).not.toHaveBeenCalled();
+      const text = await res.text();
+      expect(text).not.toContain('stored-secret-key');
+    });
+
+    it('allows a URL change when a fresh, unmasked credential is supplied in the same request', async () => {
+      const save = await app.request('/integrations/monitoring', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ grafana: { enabled: true, url: 'https://grafana.example.test', apiKey: 'stored-secret-key' } }),
+      });
+      expect(save.status).toBe(200);
+      safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+
+      const res = await testCall({
+        provider: 'grafana',
+        config: { enabled: true, url: 'https://new-grafana.example.test', apiKey: 'freshly-typed-key' },
+      });
+      expect(res.status).toBe(200);
+      expect(safeFetchMock).toHaveBeenCalledWith(
+        'https://new-grafana.example.test/api/org',
+        expect.objectContaining({ headers: { Authorization: 'Bearer freshly-typed-key' } }),
+      );
+    });
+
     it('refuses a masked credential with nothing stored instead of testing a placeholder', async () => {
       const res = await testCall({
         provider: 'opsGenie',

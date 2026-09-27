@@ -6,6 +6,7 @@ import type { ScriptProposalDetailDto, ScriptProposalReviewFindingDto } from '@b
 import {
   loadProposalRow, loadLatestReview, loadProposalExecutions, loadProposalDevices, loadProposalRequesterUserId,
 } from './queries';
+import { scopeDeviceIdsToCaller } from '../aiToolsSiteScope';
 
 export type ProposalReadDenial = 'not_found' | 'forbidden';
 
@@ -35,6 +36,14 @@ function projectFindings(raw: unknown): ScriptProposalReviewFindingDto[] {
  *   - the caller is the proposal's requester (derived — see
  *     loadProposalRequesterUserId), or
  *   - the caller STILL holds approvals:decide for that org.
+ *
+ * The caller's site/exact-device ceiling (`scopeDeviceIdsToCaller`, the same
+ * intersection the sibling AI read `getScriptProposalForPrincipal` applies —
+ * see `scriptProposals/proposals.ts`) is then intersected with the proposal's
+ * target device ids. A site-restricted caller with zero overlap fails closed
+ * the same way an out-of-org caller does; a partial overlap narrows the
+ * returned device/execution lists to the visible subset, so hidden-site
+ * hostnames and statuses are not returned.
  */
 export async function loadScriptProposalDetail(
   auth: AuthContext,
@@ -55,14 +64,24 @@ export async function loadScriptProposalDetail(
   const isRequester = requesterId !== null && requesterId === auth.user.id;
   if (!canDecide && !isRequester) return { ok: false, reason: 'forbidden' };
 
+  // Fail closed when a site- or exact-device-restricted caller's ceiling has
+  // zero overlap with the proposal's targets: a live approvals:decide grant or
+  // requester status is org-scoped, not site-scoped, so it does not by itself
+  // entitle the caller to hidden-site devices.
+  const scopedDeviceIds = await scopeDeviceIdsToCaller(auth, proposal.orgId, proposal.targetDeviceIds);
+  if (scopedDeviceIds !== null && scopedDeviceIds.length === 0) return { ok: false, reason: 'forbidden' };
+  const visibleDeviceIds = scopedDeviceIds ?? (proposal.targetDeviceIds ?? []);
+
   const canWriteScripts = hasPermission(perms!, PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action);
   const mfaOk = hasSatisfiedMfa(auth);
 
   const [review, executions, devices] = await Promise.all([
     loadLatestReview(proposalId, proposal.orgId),
     loadProposalExecutions(proposalId),
-    loadProposalDevices(proposal.targetDeviceIds ?? []),
+    loadProposalDevices(visibleDeviceIds),
   ]);
+  const visibleSet = new Set(visibleDeviceIds);
+  const scopedExecutions = scopedDeviceIds === null ? executions : executions.filter((e) => visibleSet.has(e.deviceId));
 
   const verdict = (review?.verdict ?? {}) as { findings?: unknown; blastRadius?: unknown };
   const verificationResult = (proposal.verificationResult ?? null) as
@@ -82,7 +101,7 @@ export async function loadScriptProposalDetail(
         id: proposal.id, status: proposal.status, language: proposal.language, content: proposal.content,
         contentDigest: proposal.contentDigest, goal: proposal.goal, expectedEffect: proposal.expectedEffect,
         rollbackNote: proposal.rollbackNote ?? null, verification: proposal.verification, runAs: proposal.runAs,
-        timeoutSeconds: proposal.timeoutSeconds, targetDeviceIds: proposal.targetDeviceIds ?? [],
+        timeoutSeconds: proposal.timeoutSeconds, targetDeviceIds: visibleDeviceIds,
         basicHits: proposal.basicHits ?? [], strictHits: proposal.strictHits ?? [],
         touchClasses: proposal.touchClasses ?? [], riskTier: proposal.riskTier ?? null, revision: proposal.revision,
         acknowledgedPatterns: proposal.acknowledgedPatterns ?? [],
@@ -104,7 +123,7 @@ export async function loadScriptProposalDetail(
           }
         : null,
       devices: devices.map((d) => ({ id: d.id, hostname: d.hostname, osType: d.osType ?? null, status: d.status })),
-      executions: executions.map((e) => ({
+      executions: scopedExecutions.map((e) => ({
         id: e.id, deviceId: e.deviceId, deviceHostname: e.hostname ?? null, status: e.status,
         exitCode: e.exitCode ?? null,
         startedAt: e.startedAt?.toISOString() ?? null, completedAt: e.completedAt?.toISOString() ?? null,

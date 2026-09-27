@@ -1,14 +1,102 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
-import { fetchVerifiedMacosPkg } from '../../services/installerBuilder';
+import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 
 export const downloadRoutes = new Hono();
+
+// This whole route prefix (/api/v1/agents/) is exempted from the global rate
+// limiter (it assumes agent-auth's own per-agent limiting applies, which
+// does not cover any of these unauthenticated download routes — see
+// AGENT_AUTH_SKIP_ID_SEGMENTS) and there is no Caddy rate_limit on it
+// either, so every route below must carry its own per-IP bound. Fails
+// CLOSED on Redis errors — a Redis outage must not thereby disable the
+// limiter on a public endpoint.
+//
+// One bucket PER ROUTE (keyed on `logTag`, e.g. `agent-download`,
+// `install-script-download`), not one shared bucket across every route. A
+// single office/site rollout behind one NAT IP legitimately calls several of
+// these routes back-to-back (install.sh, then the agent binary, then
+// watchdog/backup), so a shared bucket means the busiest route (typically
+// install.sh, hit once per machine) uses up capacity meant for every other route's
+// legitimate traffic on the same IP. None of these routes carry an
+// enrollment/download key or any other form of caller identity to key on
+// instead — they are deliberately unauthenticated (see each route's own
+// comment for why) — so per-route-per-IP is the finest-grained bucketing
+// available without adding auth to routes that intentionally have none.
+//
+// Sizing: an earlier 120/min shared bucket 429'd a normal single-site mass
+// rollout (as few as ~20-60 machines starting installs in the same minute
+// already drew 429s; hundreds rejected the vast majority of their requests).
+// A realistic large single-site rollout is bounded in the hundreds of machines (not
+// unbounded) and a real machine's install traffic for ANY ONE of these
+// routes is 1 request, so the target is "a few hundred machines' worth of
+// the SAME route from one IP within a few minutes succeeds, sustained
+// higher-than-that traffic on that IP+route does not." 600 requests / 300s
+// (5 min) per route per IP: comfortably covers a ~500-machine rollout
+// bursting through in a few minutes (the limiter is a sliding window, so the
+// full 600 can land in the rollout's first seconds), while a sustained flood
+// is still capped at an average of 120 req/min indefinitely — an order of
+// magnitude above any real single-site rollout's sustained rate, but still a
+// hard, non-negotiable ceiling per IP per route.
+export const PUBLIC_AGENT_DOWNLOAD_IP_LIMIT = 600;
+export const PUBLIC_AGENT_DOWNLOAD_IP_WINDOW_SECONDS = 300;
+
+/**
+ * Shared low-level limiter: checks `bucketKey` against `limit`/`windowSeconds`,
+ * failing CLOSED (503) on a missing or errored Redis client. Every public,
+ * unauthenticated download route below builds its own `bucketKey` (its own
+ * namespace, so one route's traffic never shares capacity with another's)
+ * and calls this.
+ */
+async function enforceDownloadRateLimit(
+  c: Context,
+  bucketKey: string,
+  logTag: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<Response | null> {
+  try {
+    const { getRedis } = await import('../../services');
+    const { rateLimiter } = await import('../../services/rate-limit');
+    const redis = getRedis();
+    if (!redis) {
+      console.error(`[${logTag}] rate-limit unavailable: redis client missing`);
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const rateResult = await rateLimiter(redis, bucketKey, limit, windowSeconds);
+    if (!rateResult.allowed) {
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+    }
+    return null;
+  } catch (err) {
+    console.error(
+      `[${logTag}] rate-limit check failed (failing closed):`,
+      err instanceof Error ? err.message : err,
+    );
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+}
+
+async function enforcePublicAgentDownloadRateLimit(
+  c: Context,
+  logTag: string,
+): Promise<Response | null> {
+  const ip = getTrustedClientIp(c, 'unknown');
+  return enforceDownloadRateLimit(
+    c,
+    `public-agent-download:${logTag}:${rateLimitIpKey(ip)}`,
+    logTag,
+    PUBLIC_AGENT_DOWNLOAD_IP_LIMIT,
+    PUBLIC_AGENT_DOWNLOAD_IP_WINDOW_SECONDS,
+  );
+}
 
 // ============================================
 // Shared component-binary download handler
@@ -62,6 +150,9 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // the param keys at the type level the way it does for the inline
     // `.get('/download/:os/:arch', ...)` routes this replaced — every
     // registered path always includes :os/:arch, so this is safe at runtime.
+    const rateLimited = await enforcePublicAgentDownloadRateLimit(c, config.logTag);
+    if (rateLimited) return rateLimited;
+
     const os = c.req.param('os') as string;
     const arch = c.req.param('arch') as string;
 
@@ -317,6 +408,9 @@ registerComponentDownloadRoute({
 // hand out bytes that don't match it. BINARY_SOURCE=github deployments get a
 // 404 here and auto edition migration stays inert.
 downloadRoutes.get('/download/windows/amd64/msi', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'agent-msi-download');
+  if (rateLimited) return rateLimited;
+
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const filePath = join(binaryDir, 'breeze-agent.msi');
 
@@ -376,10 +470,34 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
     return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
   }
 
+  // This whole route prefix (/api/v1/agents/) is exempted from the global
+  // rate limiter (it assumes agent-auth's own per-agent limiting applies,
+  // which does not cover this unauthenticated route — see
+  // AGENT_AUTH_SKIP_ID_SEGMENTS) and there is no Caddy rate_limit on it
+  // either, so this route must carry its own per-IP bound. Own bucket
+  // namespace (`public-pkg-download`, distinct from `public-agent-download`),
+  // same re-derived sizing as the other download routes above — a macOS
+  // fleet rollout behind shared NAT is exposed to the identical over-block
+  // risk the other routes were re-sized for.
+  const ip = getTrustedClientIp(c, 'unknown');
+  const rateLimited = await enforceDownloadRateLimit(
+    c,
+    `public-pkg-download:${rateLimitIpKey(ip)}`,
+    'pkg-download',
+    PUBLIC_AGENT_DOWNLOAD_IP_LIMIT,
+    PUBLIC_AGENT_DOWNLOAD_IP_WINDOW_SECONDS,
+  );
+  if (rateLimited) return rateLimited;
+
   const filename = `breeze-agent-darwin-${arch}.pkg`;
   try {
     const { buffer, artifact } = await fetchVerifiedMacosPkg(arch as 'amd64' | 'arm64');
-    return new Response(new Uint8Array(buffer), {
+    // Stream the cached artifact instead of copying it into a fresh
+    // Uint8Array per request — `buffer` is a shared, process-lifetime cache
+    // entry (fetchVerifiedMacosPkg), so N concurrent slow readers previously
+    // held N full-size duplicate copies in memory for the socket-drain
+    // duration. Readable.from(buffer) reads the same underlying memory.
+    return new Response(Readable.toWeb(Readable.from(buffer)) as ReadableStream, {
       status: 200,
       headers: {
         'Content-Type': 'application/octet-stream',
@@ -409,19 +527,63 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
 });
 
 // ============================================
-// Helper Binary Download (public, no auth)
+// Helper (Tauri desktop app) Installer Download (public, no auth)
 // ============================================
+// Deliberately NOT folded into registerComponentDownloadRoute like the
+// agent/watchdog/backup/user-helper routes below: those binaries are each
+// independently checksum- or signature-verified downstream (install.sh, or
+// the agent's own Ed25519-pinned self-updater), so a dumb-pipe serve is safe
+// there. The Helper installer has no such downstream check — no client-side
+// updater/signature-pin mechanism exists for it — so this route is the only
+// place its bytes are ever verified. Same shape as the .pkg route above:
+// verify against the signed release manifest, refuse to serve on any
+// mismatch rather than falling back to unverified bytes.
+downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
+  // Public and unauthenticated like every other route in this file, so it
+  // carries the same per-route-per-IP bound (see
+  // enforcePublicAgentDownloadRateLimit). Checked before any verified fetch.
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'helper-download');
+  if (rateLimited) return rateLimited;
 
-registerComponentDownloadRoute({
-  path: '/download/helper/:os/:arch',
-  logTag: 'helper-download',
-  s3Prefix: 'helper',
-  entityLabel: 'Helper binary',
-  component: 'helper',
-  filenameFor: (os) => HELPER_FILENAMES[os],
-  invalidOsMessage: (os) => `No helper binary available for OS: ${os}`,
-  githubUrlFor: (os, _arch, version) => getGithubHelperUrl(os, version),
-  binaryDir: () => resolve(process.env.HELPER_BINARY_DIR || './agent/bin'),
+  const os = c.req.param('os');
+  const arch = c.req.param('arch');
+
+  if (!VALID_OS.has(os)) {
+    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
+  }
+  if (!VALID_ARCH.has(arch)) {
+    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
+  }
+
+  const filename = HELPER_FILENAMES[os];
+  if (!filename) {
+    return c.json({ error: 'Invalid OS', message: `No helper binary available for OS: ${os}` }, 400);
+  }
+
+  try {
+    const { buffer, artifact } = await fetchVerifiedHelperInstaller(os);
+    return new Response(new Uint8Array(buffer), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': String(buffer.length),
+        'Cache-Control': 'no-store',
+        'X-Breeze-Artifact-SHA256': artifact.sha256,
+        'X-Breeze-Release': artifact.release,
+      },
+    });
+  } catch (err) {
+    console.error(`[helper-download] Refusing to serve unverified installer ${filename}:`, err);
+    return c.json(
+      {
+        error: 'Installer unavailable',
+        message: 'The Helper installer could not be verified. Retry later or contact your administrator.',
+      },
+      503,
+      { 'Retry-After': '30' },
+    );
+  }
 });
 
 // ============================================
@@ -519,6 +681,9 @@ function resolveInstallScriptServerUrl(requestUrl: string): string | null {
 }
 
 downloadRoutes.get('/install.sh', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'install-script-download');
+  if (rateLimited) return rateLimited;
+
   const serverUrl = resolveInstallScriptServerUrl(c.req.url);
   if (!serverUrl) {
     return c.json(
@@ -538,7 +703,10 @@ downloadRoutes.get('/install.sh', async (c) => {
   });
 });
 
-downloadRoutes.get('/uninstall.sh', async () => {
+downloadRoutes.get('/uninstall.sh', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'uninstall-script-download');
+  if (rateLimited) return rateLimited;
+
   return new Response(generateUninstallScript(), {
     status: 200,
     headers: {
@@ -553,6 +721,7 @@ function generateUninstallScript(): string {
 set -euo pipefail
 
 AGENT_BINARY="/usr/local/bin/breeze-agent"
+AGENT_BINARY_TRUSTED="/Library/Breeze/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
 BACKUP_BINARY="/usr/local/bin/breeze-backup"
 
@@ -614,6 +783,7 @@ breeze_remove_auxiliary() {
     /Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist \\
     /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-desktop-helper \\
     /usr/local/bin/breeze-backup \\
+    /Library/Breeze/bin/breeze-watchdog /Library/Breeze/bin/breeze-backup \\
     "/Library/Application Support/Breeze/agent.sock" || return 1
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1
@@ -629,7 +799,7 @@ uninstall_macos() {
   breeze_stop_watchdog || return 1
   breeze_stop_helpers || return 1
   breeze_bootout system/com.breeze.agent || return 1
-  rm -f /Library/LaunchDaemons/com.breeze.agent.plist "$AGENT_BINARY" || return 1
+  rm -f /Library/LaunchDaemons/com.breeze.agent.plist "$AGENT_BINARY" "$AGENT_BINARY_TRUSTED" || return 1
   breeze_remove_auxiliary || return 1
 
   echo "Breeze Agent uninstalled."
@@ -1000,14 +1170,7 @@ if [[ "\$OS" == "darwin" ]]; then
 
   # Enroll agent
   info "Enrolling agent with Breeze server..."
-  ENROLL_ARGS=(enroll)
-  # The token is mandatory and already validated above as non-empty, so append
-  # it unconditionally — there is no token-less enroll path.
-  ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-  ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
-  if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-    ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
-  fi
+  ENROLL_ARGS=(enroll --server "\$BREEZE_SERVER")
   if [[ -n "\$BREEZE_SITE_ID" ]]; then
     ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
   fi
@@ -1015,7 +1178,13 @@ if [[ "\$OS" == "darwin" ]]; then
     ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
   fi
 
-  if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
+  # The enrollment token and secret are handed to the agent through its
+  # environment rather than its command line: any other local account can
+  # read a process's argv (e.g. /proc/*/cmdline on Linux, ps on macOS), but
+  # not another user's environment. Scoped with a VAR=value prefix so it only
+  # applies to this one invocation, never exported into this shell.
+  if ! BREEZE_AGENT_ENROLLMENT_KEY="\$BREEZE_ENROLL_TOKEN" BREEZE_AGENT_ENROLLMENT_SECRET="\$BREEZE_ENROLLMENT_SECRET" \
+      "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
     fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
   fi
   success "Agent enrolled successfully"
@@ -1162,14 +1331,7 @@ success "Config directory ready"
 
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."
-ENROLL_ARGS=(enroll)
-# The token is mandatory and already validated above as non-empty, so append
-# it unconditionally — there is no token-less enroll path.
-ENROLL_ARGS+=("\$BREEZE_ENROLL_TOKEN")
-ENROLL_ARGS+=(--server "\$BREEZE_SERVER")
-if [[ -n "\$BREEZE_ENROLLMENT_SECRET" ]]; then
-  ENROLL_ARGS+=(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET")
-fi
+ENROLL_ARGS=(enroll --server "\$BREEZE_SERVER")
 if [[ -n "\$BREEZE_SITE_ID" ]]; then
   ENROLL_ARGS+=(--site-id "\$BREEZE_SITE_ID")
 fi
@@ -1177,7 +1339,13 @@ if [[ -n "\$BREEZE_DEVICE_ROLE" ]]; then
   ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
 fi
 
-if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
+# The enrollment token and secret are handed to the agent through its
+# environment rather than its command line: any other local account can read
+# a process's argv (e.g. /proc/*/cmdline, world-readable on Linux) but not
+# another user's environment. Scoped with a VAR=value prefix so it only
+# applies to this one invocation, never exported into this shell.
+if ! BREEZE_AGENT_ENROLLMENT_KEY="\$BREEZE_ENROLL_TOKEN" BREEZE_AGENT_ENROLLMENT_SECRET="\$BREEZE_ENROLLMENT_SECRET" \
+    "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
   fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
 fi
 success "Agent enrolled successfully"

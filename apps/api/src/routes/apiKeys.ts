@@ -405,6 +405,18 @@ apiKeyRoutes.post(
     // Generate the API key
     const { fullKey, keyPrefix, keyHash } = generateApiKey();
 
+    // This route only ever mints human-delegated keys (principalType
+    // defaults to 'human'; service-principal keys are minted through
+    // routes/partnerServicePrincipals.ts and never carry a creator epoch).
+    // Snapshot the creator's LIVE credential-state epochs from the request's
+    // own access token — authMiddleware already validated aep/mep against
+    // users.auth_epoch/mfa_epoch for this exact request, so they are
+    // current as of mint time. A password change/reset (which bumps
+    // auth_epoch) or an MFA factor change (which bumps mfa_epoch) after this
+    // moment must invalidate this key — enforced in apiKeyAuthMiddleware.
+    const creatorAuthEpoch = typeof auth.token?.aep === 'number' ? auth.token.aep : null;
+    const creatorMfaEpoch = typeof auth.token?.mep === 'number' ? auth.token.mep : null;
+
     // Create the API key record
     const [apiKey] = await db
       .insert(apiKeys)
@@ -417,7 +429,9 @@ apiKeyRoutes.post(
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         rateLimit: data.rateLimit,
         createdBy: auth.user.id,
-        status: 'active'
+        status: 'active',
+        creatorAuthEpoch,
+        creatorMfaEpoch,
       })
       .returning();
 

@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockDb, ctxState, queueMock } = vi.hoisted(() => ({
+const { mockDb, ctxState, queueMock, neSpy } = vi.hoisted(() => ({
   mockDb: {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn()
   },
+  neSpy: vi.fn(),
   // Tracks DB-access-context depth + an ordered event log so a test can prove
   // the monitor scheduler READS inside a context but ENQUEUES outside one (#1105).
   ctxState: { depth: 0, events: [] as string[] },
@@ -51,6 +52,22 @@ vi.mock('../db', () => ({
   }
 }));
 
+// Plain-string mocked schema columns below cannot round-trip through a real
+// drizzle SQL compiler, so the only way to prove a predicate like
+// `ne(organizations.type, 'quick_support')` is actually emitted is to spy on
+// the drizzle-orm helper call itself rather than inspect the resulting SQL
+// tree (mirrors monitorScriptWorker.test.ts).
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    ne: ((...args: Parameters<typeof actual.ne>) => {
+      neSpy(...args);
+      return actual.ne(...args);
+    }) as typeof actual.ne,
+  };
+});
+
 vi.mock('../db/schema', () => ({
   networkMonitors: {
     id: 'networkMonitors.id',
@@ -64,7 +81,8 @@ vi.mock('../db/schema', () => ({
   },
   organizations: {
     id: 'organizations.id',
-    partnerId: 'organizations.partnerId'
+    partnerId: 'organizations.partnerId',
+    type: 'organizations.type'
   },
   networkMonitorResults: {
     monitorId: 'networkMonitorResults.monitorId'
@@ -123,6 +141,7 @@ vi.mock('../services/alertService', () => ({
 }));
 
 import { db } from '../db';
+import { organizations } from '../db/schema';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert, createSourcedAlert } from '../services/alertService';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
@@ -890,6 +909,19 @@ describe('partner-wide network monitors (#5291 W04)', () => {
     for (const call of queueMock.add.mock.calls as any[]) {
       expect(call[1].monitorId).toBe('m-partner');
     }
+  });
+
+  it('excludes the hidden quick_support org from the partner-wide org enumeration', async () => {
+    neSpy.mockClear();
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResolved([
+        { id: 'm-partner', orgId: null, partnerId: 'p1', pollingInterval: 60, lastChecked: null },
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResolved([{ id: 'org-a', partnerId: 'p1' }]) as any);
+
+    await processScheduler();
+
+    expect(neSpy).toHaveBeenCalledWith(organizations.type, 'quick_support');
   });
 
   it('still enqueues exactly one job for an org-owned monitor', async () => {

@@ -120,6 +120,7 @@ vi.mock('./backupSnapshotStorage', () => ({
     })();
   },
   fetchBackupObjectText: (...args: unknown[]) => fetchBackupObjectTextMock(...(args as [])),
+  MANIFEST_FETCH_MAX_BYTES: 200 * 1024 * 1024,
 }));
 
 const applyBackupCommandResultToJobMock = vi.fn();

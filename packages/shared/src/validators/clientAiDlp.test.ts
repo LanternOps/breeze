@@ -93,9 +93,31 @@ describe('validateDlpPattern — ReDoS guards', () => {
     ['(a+)+$', 'nested_quantifier'],
     ['(\\d{2,})*', 'nested_quantifier'],
     ['(x*)+', 'nested_quantifier'],
+    ['(a?)*b', 'nested_quantifier'],
     ['(abc)\\1', 'backreference_not_allowed'],
+    // RE2 (the engine that actually scans messages — apps/api's and
+    // ee/workspace's dlpRegexEngine.ts) can't compile lookaround. Rejecting
+    // it here too gives the same error instantly in the browser-side
+    // policy editor instead of only once the pattern reaches RE2.
+    ['(?=E)EMP-\\d+', 'lookaround_not_allowed'],
+    ['E(?!X)MP-\\d+', 'lookaround_not_allowed'],
+    ['(?<=E)MP-\\d+', 'lookaround_not_allowed'],
+    ['(?<!X)MP-\\d+', 'lookaround_not_allowed'],
     ['[unclosed', 'invalid_regex'],
     ['a'.repeat(DLP_MAX_PATTERN_LENGTH + 1), 'pattern_too_long'],
+    // Alternation-overlap catastrophic-backtracking shapes: no single atom
+    // is doubly-quantified (the nested-quantifier heuristic can't see
+    // these), but the repeated group's branches overlap, so the engine can
+    // still partition a run of input across repetitions in exponentially
+    // many ways.
+    ['(a|aa)+c', 'ambiguous_alternation'],
+    ['(a|ab)*c', 'ambiguous_alternation'],
+    ['(x|xy){2,}', 'ambiguous_alternation'],
+    ['(a|a)*b', 'ambiguous_alternation'],
+    // Caught by the pre-existing nested-quantifier heuristic (the inner `*`
+    // sits directly before the outer-quantified `)`), not the new check —
+    // still rejected either way.
+    ['(.*)*', 'nested_quantifier'],
   ];
   it.each(rejected)('rejects %s (%s)', (pattern, reason) => {
     const v = validateDlpPattern(pattern);
@@ -103,8 +125,29 @@ describe('validateDlpPattern — ReDoS guards', () => {
     if (!v.ok) expect(v.reason).toBe(reason);
   });
 
-  const accepted = ['EMP-\\d{6}', '\\bACME-[A-Z]{2}\\d{4}\\b', '(colou?r){1,3}', 'invoice #?\\d+'];
+  const accepted = [
+    'EMP-\\d{6}',
+    '\\bACME-[A-Z]{2}\\d{4}\\b',
+    '(colou?r){1,3}',
+    'invoice #?\\d+',
+    // Alternation is fine when it isn't quantified, or when the branches
+    // don't overlap under quantification.
+    '(cat|dog)+',
+    '(foo|bar)',
+    // A named group is not a lookaround — `(?<name>` must not trip the
+    // lookbehind check just because it starts with `(?<`.
+    '(?<code>EMP-\\d{6})',
+  ];
   it.each(accepted)('accepts %s', (pattern) => {
     expect(validateDlpPattern(pattern)).toEqual({ ok: true });
+  });
+
+  it('rejects the catastrophic (a|aa)+c pattern that a probe-only heuristic accepts', () => {
+    // Confirms the structural ambiguous-alternation check catches this
+    // shape independent of probe-string length/luck: the probes alone
+    // (24-25 chars) don't happen to trigger the blowup at that length, but
+    // the pattern is still exponential well within its 512-char schema
+    // budget.
+    expect(validateDlpPattern('(a|aa)+c')).toEqual({ ok: false, reason: 'ambiguous_alternation' });
   });
 });

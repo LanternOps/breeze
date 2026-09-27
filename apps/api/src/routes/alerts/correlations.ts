@@ -5,11 +5,12 @@ import { and, desc, eq, gte, inArray, or, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
-import { requirePermission, requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope, type AuthContext as FullAuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { latestVerdictForGroup, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { RESOLVABLE_ALERT_STATUSES } from '../../services/alertService';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
+import { canReadSensitiveEventLogCategory } from '../../services/eventLogSensitivity';
 import { publishEvent } from '../../services/eventBus';
 import { captureException } from '../../services/sentry';
 import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from '../../services/mlFeedbackEmitters';
@@ -786,7 +787,7 @@ alertCorrelationRoutes.post(
   requireAlertRead,
   zValidator('param', groupIdParamSchema),
   async (c) => {
-    const auth = c.get('auth') as AuthContext;
+    const auth = c.get('auth') as FullAuthContext;
     const { groupId } = c.req.valid('param');
     const parsedBody = explainGroupSchema.safeParse(await parseOptionalExplainBody(c));
     if (!parsedBody.success) {
@@ -807,6 +808,7 @@ alertCorrelationRoutes.post(
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
+    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
     const rca = await buildAlertCorrelationRca({
       orgId: group.orgId,
       groupId: group.id,
@@ -814,6 +816,7 @@ alertCorrelationRoutes.post(
       alerts: groupAlerts,
       windowHours: body.windowHours,
       maxEvidenceItems: body.maxEvidenceItems,
+      canReadSensitiveCategory,
     });
 
     writeRouteAudit(c, {

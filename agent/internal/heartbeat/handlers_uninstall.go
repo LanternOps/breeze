@@ -11,6 +11,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 func init() {
@@ -186,6 +187,27 @@ func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
 	return strings.Join(lines, "\n")
 }
 
+// resolveTrustedOrLegacyBinaryPath mirrors watchdogBinaryPath()'s
+// stat-then-fallback pattern (internal/heartbeat/watchdog_install_unix.go):
+// prefer the trusted directory, but fall back to the legacy install
+// location for a host where the executable-trust migration never ran (or
+// hasn't fired yet — it is currently warn-only). Without this, a remote
+// uninstall on such a host unconditionally targets the trusted path and
+// leaves the real, legacy-path binary behind as an orphaned file. statFn is
+// injected for testing; production passes a real stat.
+func resolveTrustedOrLegacyBinaryPath(name string, statFn func(path string) error) string {
+	trusted := securefs.TrustedExecutableDir + "/" + name
+	if statFn(trusted) == nil {
+		return trusted
+	}
+	return securefs.LegacyExecutableDir + "/" + name
+}
+
+func statExists(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+
 // prepareSelfUninstallDarwin neutralizes the watchdog in-process, then hands
 // helper jobs, package artifacts and optional config removal to a detached shell.
 func prepareSelfUninstallDarwin(removeConfig bool) error {
@@ -194,10 +216,10 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 		watchdogLabel    = "com.breeze.watchdog"
 		plistDst         = "/Library/LaunchDaemons/com.breeze.agent.plist"
 		watchdogPlistDst = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
-		binaryPath       = "/usr/local/bin/breeze-agent"
-		watchdogBinary   = "/usr/local/bin/breeze-watchdog"
 		configDir        = "/Library/Application Support/Breeze"
 	)
+	binaryPath := resolveTrustedOrLegacyBinaryPath("breeze-agent", statExists)
+	watchdogBinary := resolveTrustedOrLegacyBinaryPath("breeze-watchdog", statExists)
 
 	// Watchdog FIRST — it must be gone before anything stops the agent, or it
 	// may respawn/reinstall the agent mid-teardown.

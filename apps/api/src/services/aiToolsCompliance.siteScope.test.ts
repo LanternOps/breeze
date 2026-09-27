@@ -121,6 +121,10 @@ describe('get_compliance_status — site narrowing', () => {
   it('site-restricted caller does NOT receive compliance records for a device in a forbidden site', async () => {
     let statusScanRan = false;
     mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols === undefined) {
+        // getPolicyWithOrgCheck: select() with no column projection.
+        return chain([{ id: 'pol-1', orgId: 'org-1', partnerId: null }]);
+      }
       if (isDeviceResolverSelect(cols)) {
         return { from: () => ({ where: () => Promise.resolve([{ id: 'd-siteB', siteId: 'site-B' }]) }) };
       }
@@ -140,6 +144,9 @@ describe('get_compliance_status — site narrowing', () => {
 
   it('unrestricted caller reads compliance status normally (no regression)', async () => {
     mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols === undefined) {
+        return chain([{ id: 'pol-1', orgId: 'org-1', partnerId: null }]);
+      }
       if (cols && typeof cols === 'object' && 'count' in (cols as object) && 'status' in (cols as object)) {
         return chain([{ status: 'compliant', count: 1 }]); // breakdown
       }
@@ -154,6 +161,22 @@ describe('get_compliance_status — site narrowing', () => {
     expect(parsed.showing).toBe(1);
     expect(parsed.total).toBe(1);
     expect(parsed.breakdown).toEqual({ compliant: 1 });
+  });
+
+  it('policyId belonging to an inaccessible org returns "policy not found" without reading compliance rows (mirrors getPolicyWithOrgCheck routes/policyManagement/compliance.ts:624)', async () => {
+    let complianceRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols === undefined) {
+        return chain([{ id: 'pol-cross', orgId: 'org-OTHER', partnerId: null }]);
+      }
+      complianceRan = true;
+      return chain([]);
+    });
+    const auth = { ...makeAuth(undefined), canAccessOrg: (orgId: string) => orgId === 'org-1' };
+    const r = await handlerFor('get_compliance_status')({ policyId: 'pol-cross' }, auth);
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toMatch(/policy not found/i);
+    expect(complianceRan).toBe(false);
   });
 });
 

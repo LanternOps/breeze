@@ -33,6 +33,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/securefs"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
@@ -238,9 +239,20 @@ var runCmd = &cobra.Command{
 var enrollCmd = &cobra.Command{
 	Use:   "enroll [enrollment-key]",
 	Short: "Enroll this device with the Breeze server",
-	Args:  cobra.ExactArgs(1),
+	Long: `Enroll this device with the Breeze server.
+
+The enrollment key may be given positionally (visible in this process's own
+command line to any local user who can list processes — kept only for manual,
+interactive use and backward compatibility) or, preferably, via the
+BREEZE_AGENT_ENROLLMENT_KEY environment variable, which install.sh and the
+other unattended install paths use so the key never appears in argv.`,
+	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		enrollDevice(args[0])
+		key := ""
+		if len(args) == 1 {
+			key = args[0]
+		}
+		enrollDevice(key)
 	},
 }
 
@@ -815,7 +827,26 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Windows and when the dirs are already hardened. Skipped in support mode:
 	// an unelevated throwaway client has no business re-ACLing ProgramData.
 	if !cfg.SupportMode {
-		config.EnforceProgramDataTreePermissions()
+		treeResult, err := config.EnforceProgramDataTreePermissions()
+		if err != nil {
+			// A logs/data directory that is still a link after this pass
+			// would send everything written there to wherever it points.
+			// Nothing below may run until it is a real directory.
+			log.Error("refusing to start: an agent ProgramData directory is a link that could not be replaced", "error", err.Error())
+			// Flush so the refusal reaches agent_logs, bounded like the
+			// shutdown flush so an unreachable server cannot hold the
+			// service start open.
+			runWithTimeout("log shipper flush", shipperFlushBudget, logging.StopShipper)
+			return nil, err
+		}
+		if treeResult.LinkReplaced(config.LogDir()) {
+			// The log file opened above was reached through the link that
+			// was just replaced; reopen it in the real directory and record
+			// the replacement there too.
+			initLogging(cfg)
+			log.Warn("reopened the agent log after replacing linked ProgramData directories with real ones; earlier lines from this start were written to the former link target",
+				"replaced", strings.Join(treeResult.Replaced, ", "))
+		}
 	}
 
 	// Load mTLS client certificate if configured
@@ -879,6 +910,14 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// IPC to a helper that does not exist.
 	cfg.IsService = isWindowsService() && !cfg.SupportMode
 	cfg.IsHeadless = isHeadless() && !cfg.SupportMode
+
+	// Only the installed agent (service manager + canonical agent.yaml, never
+	// Quick Support) manages machine-wide state it shares with other Breeze
+	// processes on this host, such as the Breeze Assist install.
+	cfg.IsInstalledAgent = resolveIsInstalledAgent(cfg.SupportMode, runningUnderServiceManager(cfg),
+		config.ActiveConfigFile(), filepath.Join(config.ConfigDir(), "agent.yaml"))
+	log.Info("run mode resolved", "service", cfg.IsService, "installedAgent", cfg.IsInstalledAgent,
+		"supportMode", cfg.SupportMode, "configFile", config.ActiveConfigFile())
 
 	// Ensure SAS (Ctrl+Alt+Del) policy allows services to generate it.
 	// Only relevant on Windows when running as a service.
@@ -1105,11 +1144,75 @@ func logPAMActuatorStrategy(l *slog.Logger, configured string) {
 	}
 }
 
+// osExecutableFn and verifyTrustedExecutableOwnerFn are package-level vars so
+// tests can exercise verifyOwnExecutableTrustedIfPrivileged's branching
+// without needing to run the test binary as root.
+var (
+	osExecutableFn                 = os.Executable
+	verifyTrustedExecutableOwnerFn = securefs.VerifyTrustedExecutableOwner
+	geteuidFn                      = os.Geteuid
+)
+
+// verifyOwnExecutableTrustedIfPrivileged reports (but, see
+// enforceExecutableTrustAtStartup, does not currently enforce) when this
+// process is running as root/SYSTEM (a LaunchDaemon or systemd unit, not an
+// interactive dev/test run) but its own executable — or the directory
+// containing it — is not root-owned and free of group/other write access.
+// Nothing else in the install or startup path verified that before this
+// process execed; see securefs.VerifyTrustedExecutableOwner. Only evaluated
+// when actually privileged: an unprivileged `go test`/`go run`/manual build
+// under a developer's own uid must not be blocked by this.
+func verifyOwnExecutableTrustedIfPrivileged() error {
+	if geteuidFn() != 0 {
+		return nil
+	}
+	self, err := osExecutableFn()
+	if err != nil {
+		return fmt.Errorf("resolve own executable path: %w", err)
+	}
+	// Intentionally NOT filepath.EvalSymlinks'd: VerifyTrustedExecutableOwner
+	// itself refuses a symlinked final path component, and resolving it here
+	// first would erase exactly that signal.
+	return verifyTrustedExecutableOwnerFn(filepath.Clean(self))
+}
+
+// enforceExecutableTrustAtStartup gates whether
+// verifyOwnExecutableTrustedIfPrivileged's failure actually refuses to
+// start, versus just being logged. It is false for this release: on a
+// fleet where /usr/local/bin has been chowned by a package manager (the
+// Homebrew-on-Intel-macOS shape this check exists to catch), no installer
+// or self-updater in this release repairs that directory's ownership, so
+// fail-closed here would strand any already-affected host with no remote
+// recovery path the moment it next restarts. Flip this to true only once
+// the install/updater migration to securefs.TrustedExecutableDir has run
+// on the fleet for at least one release and telemetry from the warning
+// below shows it is safe to enforce.
+const enforceExecutableTrustAtStartup = false
+
+// reportExecutableTrustWarning logs an executable-trust check failure
+// loudly — through the same logger that feeds the agent's shipped log
+// stream, so it is visible server-side (searchable via agent logs) even
+// though enforceExecutableTrustAtStartup keeps this from blocking startup.
+func reportExecutableTrustWarning(err error) {
+	msg := "executable trust check failed at startup; continuing because " +
+		"enforcement is not yet enabled for this release"
+	fmt.Fprintf(os.Stderr, "Breeze agent: %s: %v\n", msg, err)
+	log.Warn(msg, "error", err.Error())
+}
+
 // runAgent starts the main agent run loop. The heartbeat module handles:
 // - Periodic heartbeat calls to the API endpoint
 // - Receiving pending commands from the server via heartbeat response
 // - Executing commands and reporting results back to the server
 func runAgent() {
+	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
+		reportExecutableTrustWarning(err)
+		if enforceExecutableTrustAtStartup {
+			os.Exit(1)
+		}
+	}
+	maybeMigrateLegacyInstall()
+
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
 	cacheMainProcessStartup(startup)
@@ -1337,7 +1440,20 @@ func gateEnrollPrimary(server string) error {
 	return hostpolicy.AllowedURL(server)
 }
 
+// resolveEnrollmentKey returns the positional key if given, else falls back
+// to BREEZE_AGENT_ENROLLMENT_KEY. An environment variable is not visible in
+// any process's argv, unlike a positional CLI argument — this is the
+// preferred delivery path for unattended installs and mirrors the existing
+// BREEZE_AGENT_ENROLLMENT_SECRET fallback used for the secret.
+func resolveEnrollmentKey(positional string) string {
+	if positional != "" {
+		return positional
+	}
+	return os.Getenv("BREEZE_AGENT_ENROLLMENT_KEY")
+}
+
 func enrollDevice(enrollmentKey string) {
+	enrollmentKey = resolveEnrollmentKey(enrollmentKey)
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
 	)
@@ -1381,6 +1497,12 @@ func enrollDevice(enrollmentKey string) {
 	if cfg.ServerURL == "" {
 		enrollError(catConfig,
 			"server URL required — pass --server or set it in config",
+			nil)
+	}
+
+	if enrollmentKey == "" {
+		enrollError(catConfig,
+			"enrollment key required — pass it positionally or set BREEZE_AGENT_ENROLLMENT_KEY",
 			nil)
 	}
 

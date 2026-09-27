@@ -6,7 +6,7 @@ import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { coerceS3EndpointUrl } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
@@ -134,6 +134,38 @@ function buildS3Client(config: {
           }
         : undefined,
   });
+}
+
+/**
+ * Presigned GET for ONE exact object key of an S3 backup destination, built
+ * with the same tenant-configuration client as the recovery download path.
+ * The key is used verbatim (the agent writes `snapshots/<id>/...` without any
+ * configured prefix; see backupSnapshotStorage.ts). The caller is responsible
+ * for authorizing the key and for bounding `expiresInSeconds` (clamped here to
+ * 1..300).
+ */
+export async function presignSnapshotObjectGet(args: {
+  providerConfig: Record<string, unknown>;
+  key: string;
+  expiresInSeconds: number;
+}): Promise<string> {
+  const providerConfig = asRecord(args.providerConfig);
+  const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
+  const region =
+    getStringValue(providerConfig, 'region')?.trim() ||
+    deriveS3RegionFromEndpoint(getStringValue(providerConfig, 'endpoint'));
+  if (!bucket || !region) {
+    throw new Error('Snapshot storage is misconfigured.');
+  }
+  const client = buildS3Client({
+    region,
+    endpoint: getStringValue(providerConfig, 'endpoint') ?? undefined,
+    accessKeyId: getStringValue(providerConfig, 'accessKey') || getStringValue(providerConfig, 'accessKeyId') || undefined,
+    secretAccessKey: getStringValue(providerConfig, 'secretKey') || getStringValue(providerConfig, 'secretAccessKey') || undefined,
+    sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
+  });
+  const expiresIn = Math.max(1, Math.min(300, Math.floor(args.expiresInSeconds)));
+  return (getSignedUrl as any)(client, new GetObjectCommand({ Bucket: bucket, Key: args.key }), { expiresIn });
 }
 
 function deriveRemoteStorageKey(

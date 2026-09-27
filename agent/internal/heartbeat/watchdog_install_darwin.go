@@ -24,7 +24,11 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 	}
 	defer func() { _ = os.Remove(tempPath) }()
 
-	if err := replaceWatchdogBinaryUnix(tempPath, watchdogBinaryPathUnix); err != nil {
+	dest, err := watchdogBinaryPath()
+	if err != nil {
+		return fmt.Errorf("resolve watchdog binary path: %w", err)
+	}
+	if err := replaceWatchdogBinaryUnix(tempPath, dest); err != nil {
 		return err
 	}
 

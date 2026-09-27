@@ -50,3 +50,22 @@ type ObjectMetadata struct {
 type MetadataReader interface {
 	GetObjectMetadata(remotePath string) (*ObjectMetadata, error)
 }
+
+// DownloadPlanner is optionally implemented by providers that authorize
+// object access in batches ahead of the downloads themselves (the brokered
+// storage-session provider). Callers hand over the ordered keys they are
+// about to download once the manifest is parsed; the provider may then
+// resolve a bounded window of upcoming keys per round trip instead of one
+// key per Download. Keys are passed verbatim. Purely an optimisation: a
+// provider that never receives a plan still serves every Download.
+type DownloadPlanner interface {
+	PrepareDownloads(keys []string)
+}
+
+// PrepareDownloads hands keys to provider when it implements DownloadPlanner
+// and is a no-op otherwise.
+func PrepareDownloads(provider BackupProvider, keys []string) {
+	if planner, ok := provider.(DownloadPlanner); ok && len(keys) > 0 {
+		planner.PrepareDownloads(keys)
+	}
+}

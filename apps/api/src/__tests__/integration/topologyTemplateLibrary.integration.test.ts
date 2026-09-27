@@ -21,6 +21,8 @@ function context(t: Awaited<ReturnType<typeof createTopologyTenant>>) {
     orgId: t.orgId,
     partnerId: t.partnerId,
     canAccessOrg: (id: string) => id === t.orgId,
+    // Template writes require a session that satisfied its MFA policy.
+    token: { mfa: true },
   } as AuthContext;
   const permissions = {
     permissions: [

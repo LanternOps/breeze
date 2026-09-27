@@ -42,6 +42,7 @@ import {
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
+import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import {
   buildAllowedPatchSources,
   buildAppRuleMap,
@@ -136,8 +137,12 @@ export async function evaluatePatchInstallEligibility(args: {
       status: devicePatches.status,
       externalId: patches.externalId,
       title: patches.title,
-      category: patches.category,
-      severity: patches.severity,
+      // Effective values: the shared, trusted classification when known, else
+      // THIS device's own reported severity/category (device_patches is
+      // already scoped to deviceId+orgId in the WHERE below, so this can
+      // never pull in another tenant's report) — see patchSeverityOverlay.ts.
+      category: EFFECTIVE_PATCH_CATEGORY_SQL,
+      severity: EFFECTIVE_PATCH_SEVERITY_SQL,
       releaseDate: patches.releaseDate,
       requiresReboot: patches.requiresReboot,
       source: patches.source,

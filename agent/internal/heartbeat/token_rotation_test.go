@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -228,16 +229,33 @@ func TestTokenRotationUpdatesHelperTokenInAgentYAML(t *testing.T) {
 
 	h.handleTokenRotation()
 
-	agentYAML, err := os.ReadFile(cfgPath)
+	// On Windows the Helper still reads agent.yaml directly (no narrower
+	// delivery exists there yet — see agent/internal/config/helpertoken_windows.go);
+	// on Unix the rotated token instead lands in the sibling, group-scoped
+	// helper_token.yaml (agent/internal/config/helpertoken_unix.go).
+	readPath := cfgPath
+	if runtime.GOOS != "windows" {
+		readPath = filepath.Join(filepath.Dir(cfgPath), "helper_token.yaml")
+	}
+	helperYAML, err := os.ReadFile(readPath)
 	if err != nil {
-		t.Fatalf("read agent.yaml: %v", err)
+		t.Fatalf("read %s: %v", readPath, err)
 	}
-	if !strings.Contains(string(agentYAML), "brz_staged_helper") {
-		t.Errorf("agent.yaml does not carry the rotated helper token — the Breeze Helper "+
-			"reads it from here and would 401 after the grace window:\n%s", agentYAML)
+	if !strings.Contains(string(helperYAML), "brz_staged_helper") {
+		t.Errorf("%s does not carry the rotated helper token — the Breeze Helper "+
+			"reads it from here and would 401 after the grace window:\n%s", readPath, helperYAML)
 	}
-	if strings.Contains(string(agentYAML), "brz_current_helper") {
-		t.Errorf("agent.yaml still carries the superseded helper token:\n%s", agentYAML)
+	if strings.Contains(string(helperYAML), "brz_current_helper") {
+		t.Errorf("%s still carries the superseded helper token:\n%s", readPath, helperYAML)
+	}
+	if runtime.GOOS != "windows" {
+		agentYAML, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("read agent.yaml: %v", err)
+		}
+		if strings.Contains(string(agentYAML), "helper_auth_token") {
+			t.Errorf("agent.yaml must not carry the helper token on this platform:\n%s", agentYAML)
+		}
 	}
 }
 

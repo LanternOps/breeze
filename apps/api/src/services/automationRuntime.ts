@@ -1124,6 +1124,25 @@ export interface AutomationSiteScopeCheck {
   outOfScopeDeviceIds: string[];
   /** True when the target set is org-wide/unbounded (rejected for restricted callers). */
   unbounded: boolean;
+  /**
+   * True when this check actually resolved a target set against a
+   * site-restricted caller (`perms.allowedSiteIds` was set). False for an
+   * unrestricted caller, where `targetDeviceIds` is always `[]` but that
+   * means "not resolved", not "resolved to zero devices" — a caller reusing
+   * `targetDeviceIds` must check this flag, not just array length.
+   */
+  restricted: boolean;
+  /**
+   * The full resolved target set this check was computed against (empty for
+   * an unbounded target, where no resolution was attempted, and for an
+   * unrestricted caller, where `restricted` is false). A caller that needs
+   * the target set AFTER this check (e.g. to bind a dispatch to it) should
+   * reuse this instead of re-resolving — group/filter membership can change
+   * between two independent resolutions of the same automation (TOCTOU), and
+   * Field-provenance exclusions are themselves computed fresh on every
+   * resolution, so two calls are not guaranteed to agree.
+   */
+  targetDeviceIds: string[];
 }
 
 /**
@@ -1143,17 +1162,17 @@ export async function checkAutomationTargetsWithinSiteScope(
 ): Promise<AutomationSiteScopeCheck> {
   // Unrestricted (partner/system/org-admin without a site allowlist): unaffected.
   if (!perms?.allowedSiteIds) {
-    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false, restricted: false, targetDeviceIds: [] };
   }
 
   const unbounded = isUnboundedOrgWideTarget(automation);
   if (unbounded) {
-    return { ok: false, outOfScopeDeviceIds: [], unbounded: true };
+    return { ok: false, outOfScopeDeviceIds: [], unbounded: true, restricted: true, targetDeviceIds: [] };
   }
 
   const targetDeviceIds = await resolveAutomationTargetDeviceIds(automation);
   if (targetDeviceIds.length === 0) {
-    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false, restricted: true, targetDeviceIds: [] };
   }
 
   const ownerOrgIds = await automationOwnerOrgIds(automation);
@@ -1168,7 +1187,7 @@ export async function checkAutomationTargetsWithinSiteScope(
     .filter((device) => !(typeof device.siteId === 'string' && canAccessSite(perms as UserPermissions, device.siteId)))
     .map((device) => device.id);
 
-  return { ok: outOfScopeDeviceIds.length === 0, outOfScopeDeviceIds, unbounded: false };
+  return { ok: outOfScopeDeviceIds.length === 0, outOfScopeDeviceIds, unbounded: false, restricted: true, targetDeviceIds };
 }
 
 function getExistingLogs(logs: unknown): AutomationLogEntry[] {

@@ -359,13 +359,13 @@ describe('POST /invoices/public/settle-return', () => {
 // archive: without this gate an archived tenant keeps taking card payments for
 // the whole retention window and then has the payment rows erased under it.
 describe('invoicesPublic org-lifecycle gate', () => {
-  const blocked = { orgId: ORG_ID, status: 'archived', blocked: true };
+  const blocked = { orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true };
 
   // vi.clearAllMocks() (global beforeEach) clears CALLS but not
   // implementations, so a mockResolvedValue set by one case would leak into
   // the next and quietly make the live-org case vacuous.
   beforeEach(() => {
-    vi.mocked(resolveOrgLinkGate).mockResolvedValue({ orgId: null, status: null, blocked: false });
+    vi.mocked(resolveOrgLinkGate).mockResolvedValue({ orgId: null, status: null, partnerStatus: null, blocked: false });
   });
 
   it('410s the customer view for an archived org', async () => {

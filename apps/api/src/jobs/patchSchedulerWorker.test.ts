@@ -76,6 +76,22 @@ vi.mock('../services/configPolicyPatching', () => ({
 }));
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
 
+// Field-provenance tiering (denylist option): `resolveDeviceIdsForAssignment`'s
+// `device_group` branch now gates through the shared execution-target field
+// provenance helper before resolving membership. Mocked here so the existing
+// tests below — which pin the exact join/where SQL of the membership query
+// itself — are unaffected; the gating behavior is covered by a dedicated
+// suite further down.
+const mockResolveExecutionSafeGroupIds = vi.fn(async (groupIds: string[]) => ({
+  allowedGroupIds: groupIds,
+  refusedGroups: [] as Array<{ id: string; refusedFields: string[] }>,
+}));
+const mockAuditRefusedExecutionGroups = vi.fn();
+vi.mock('../services/executionTargetGating', () => ({
+  resolveExecutionSafeGroupIds: (...args: [string[]]) => mockResolveExecutionSafeGroupIds(...args),
+  auditRefusedExecutionGroups: (...args: unknown[]) => mockAuditRefusedExecutionGroups(...args),
+}));
+
 import { __testOnly } from './patchSchedulerWorker';
 import { enqueuePatchJob, filterOrphanedJobIds } from './patchJobExecutor';
 import { captureException } from '../services/sentry';
@@ -298,6 +314,32 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('dev-x');
     expect(whereArgs).toContain('partner-123');
+  });
+
+  it('still resolves membership for a refused device_group (patch is protective, not gated), and still audits the refusal', async () => {
+    const { db } = await import('../db');
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
+      allowedGroupIds: [],
+      refusedGroups: [{ id: 'group-x', refusedFields: ['hostname'] }],
+    });
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      // A legitimate hostname-keyed patch ring (e.g. `SRV-*`) is still a real
+      // membership — patch is protective, so a refused group must still be
+      // resolved and the device must still receive its patch schedule.
+      where: vi.fn(() => Promise.resolve([{ deviceId: 'dev-legit' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', 'org-y', null);
+
+    expect(ids).toEqual(['dev-legit']);
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
+      'org-y',
+      'patch_schedule.execution_target_refused_agent_reported_fields',
+      [{ id: 'group-x', refusedFields: ['hostname'] }],
+    );
   });
 });
 

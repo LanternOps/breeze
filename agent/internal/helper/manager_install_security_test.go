@@ -31,7 +31,7 @@ func withInstallRecorder(t *testing.T) *installRecorder {
 
 func newInstallTestManager(t *testing.T, tmpDir string) *Manager {
 	t.Helper()
-	mgr := New(context.Background(), func() string { return "https://control.example.test" }, secmem.NewSecureString("tok"), "agent-1")
+	mgr := New(context.Background(), func() string { return "https://control.example.test" }, secmem.NewSecureString("tok"), "agent-1", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "missing-helper") // isInstalled() == false
 	mgr.sessionEnumerator = &mockEnumerator{}

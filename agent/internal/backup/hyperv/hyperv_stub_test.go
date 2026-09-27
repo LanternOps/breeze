@@ -29,7 +29,7 @@ func TestExportVM_ReturnsNotSupported(t *testing.T) {
 }
 
 func TestImportVM_ReturnsNotSupported(t *testing.T) {
-	result, err := ImportVM("/tmp/export", "test-vm", true)
+	result, err := ImportVM("/tmp/export", "test-vm")
 	if !errors.Is(err, ErrHyperVNotSupported) {
 		t.Errorf("expected ErrHyperVNotSupported, got %v", err)
 	}

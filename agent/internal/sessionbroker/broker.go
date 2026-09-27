@@ -2974,6 +2974,11 @@ func (b *Broker) computeAllowedHashes() map[string]struct{} {
 	return hashes
 }
 
+// helperBinaryInstallTrustedFn reports whether a helper binary's file and
+// directory can only be modified by administrators. It gates the on-miss
+// refresh in verifyPeerBinaryHash. Package-level so tests can substitute it.
+var helperBinaryInstallTrustedFn = helperBinaryInstallTrusted
+
 func (b *Broker) isAllowedBinaryHash(hash string) bool {
 	if hash == "" {
 		return false
@@ -3013,8 +3018,10 @@ func (b *Broker) allowedHashList() []string {
 // This does not widen trust: the peer is accepted only if its bytes hash to
 // the current bytes of a file at an allowlisted (admin-owned) path, which is
 // exactly what the startup snapshot establishes. There is no path-only
-// acceptance. The refresh is serialized and rate-limited so a peer that keeps
-// failing cannot force repeated full rehashing of the agent binaries.
+// acceptance. The refresh additionally requires the peer's binary and its
+// directory to be writable by administrators only (helperBinaryInstallTrustedFn).
+// The refresh is serialized and rate-limited so a peer that keeps failing
+// cannot force repeated full rehashing of the agent binaries.
 func (b *Broker) verifyPeerBinaryHash(peerPath string) (string, bool, error) {
 	peerHash, err := hashFileSHA256(peerPath)
 	if err != nil {
@@ -3024,6 +3031,21 @@ func (b *Broker) verifyPeerBinaryHash(peerPath string) (string, bool, error) {
 		return peerHash, true, nil
 	}
 	if !binaryPathMatchesAllowed(peerPath, b.helperPaths()) {
+		return peerHash, false, nil
+	}
+	// Refresh only when the binary and its directory can be changed by
+	// administrators alone (a per-machine install location). This is checked
+	// before the rate-limit slot is taken, so a peer in a looser location can
+	// neither trigger a rehash nor use up the window for a legitimate update.
+	resolved, err := filepath.EvalSymlinks(peerPath)
+	if err != nil {
+		return peerHash, false, nil
+	}
+	if err := helperBinaryInstallTrustedFn(resolved); err != nil {
+		log.Warn("helper binary changed since the allowlist was built, but its install location is not administrator-only; not refreshing",
+			"path", resolved,
+			"error", err.Error(),
+		)
 		return peerHash, false, nil
 	}
 	return peerHash, b.refreshAllowedHashesOnMiss(peerPath, peerHash), nil

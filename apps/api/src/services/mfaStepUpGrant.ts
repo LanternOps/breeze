@@ -55,6 +55,12 @@ export type StepUpOperation =
   // proof, bound to the org AND to the value being set, so a grant minted to
   // turn the lane ON cannot be replayed to widen something else.
   | 'ai_script_lane_grant'
+  // Partner-wide sibling of `ai_script_lane_grant`: raising the PARTNER
+  // ceiling (`unattended_allowed` and, while it is already true, any
+  // widening of tier/classes/rate/protected-resources/reviewerModel) fans
+  // out to every org under the partner that has opted in, so it gets the
+  // same fresh-MFA-plus-resource-binding treatment as the org-scope grant.
+  | 'ai_partner_script_ceiling_grant'
   // #5601: a "recent ceremony" credential for consecutive approval decides.
   // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
   // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
@@ -206,21 +212,65 @@ export function moveOrgResourceDigest(input: {
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
+/**
+ * The exact set of values a WIDENING transition on an already-enabled/-opted
+ * -in unattended lane touches. Bound into the resource digest so a grant
+ * minted to widen one set of fields cannot be replayed to save a DIFFERENT,
+ * wider set the operator never saw. `unattendedAllowedClasses` is sorted by
+ * the caller before hashing so member order never changes the digest.
+ */
+export interface ScriptLaneWideningDelta {
+  maxUnattendedRiskTier: string;
+  unattendedAllowedClasses: string[];
+  maxUnattendedPerHour: number;
+  protectedResourcesEmptied: boolean;
+  reviewerModel: string | null;
+  proposingEnabled: boolean;
+}
+
 /** Bind a factor-removal grant to one exact server-side passkey row. */
 /**
  * W04 (#5612): binds an `ai_script_lane_grant` to the org and the requested
  * value (`unattendedEnabled`), and to the lane-reset action when `reset` is
- * set. Same one-org-one-value shape as the maintenance digest.
+ * set. Same one-org-one-value shape as the maintenance digest. `widening`
+ * additionally binds a grant minted for a WIDENING save (tier/classes/rate/
+ * emptied protectedResources/reviewerModel/proposingEnabled changed while the
+ * lane is already enabled) to the exact wider values being persisted.
  */
 export function scriptLanePolicyResourceDigest(input: {
   orgId: string;
   unattendedEnabled: boolean;
   reset?: boolean;
+  widening?: ScriptLaneWideningDelta;
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     orgId: input.orgId,
     unattendedEnabled: input.unattendedEnabled,
     reset: input.reset === true,
+    widening: input.widening
+      ? { ...input.widening, unattendedAllowedClasses: [...input.widening.unattendedAllowedClasses].sort() }
+      : null,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Partner-wide sibling of {@link scriptLanePolicyResourceDigest}: binds an
+ * `ai_partner_script_ceiling_grant` to the partner and the requested
+ * `unattendedAllowed` value, plus the same widening-delta shape when the
+ * ceiling is already allowed and the save raises it further.
+ */
+export function partnerScriptCeilingResourceDigest(input: {
+  partnerId: string;
+  unattendedAllowed: boolean;
+  widening?: ScriptLaneWideningDelta;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    partnerId: input.partnerId,
+    unattendedAllowed: input.unattendedAllowed,
+    widening: input.widening
+      ? { ...input.widening, unattendedAllowedClasses: [...input.widening.unattendedAllowedClasses].sort() }
+      : null,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

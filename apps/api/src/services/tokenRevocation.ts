@@ -116,6 +116,25 @@ export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number)
   }
 }
 
+/**
+ * Millisecond-precision variant of `isUserTokenRevoked` for callers whose
+ * "issued at" value is a real Date/timestamp (e.g. a DB row's `createdAt`),
+ * not a JWT `iat`. `isUserTokenRevoked`'s default 1-second grace exists
+ * specifically for JWT `iat`, which is itself second-granular and needs
+ * slack to allow a same-second re-login; applying that same grace to a
+ * millisecond-precision timestamp lets a value created in the same UTC
+ * second as the revocation — even strictly before it — read as "created
+ * after," which is the wrong answer.
+ *
+ * This fails closed at the boundary instead: a timestamp in the same
+ * second as the revocation, or earlier, is treated as revoked. Only a
+ * timestamp in a later whole second is treated as issued after.
+ */
+export async function isTimestampRevoked(userId: string, createdAtMs: number): Promise<boolean> {
+  const boundSeconds = Math.floor(createdAtMs / 1000) - 1;
+  return isUserTokenRevoked(userId, boundSeconds);
+}
+
 export interface RevokeAllUserTokensOptions {
   /**
    * Unix seconds of the moment a REPLACEMENT session was minted for this user

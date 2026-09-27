@@ -107,7 +107,15 @@ async function loadIntentForAttempt(intentId: string): Promise<LoadedIntentForAt
 }
 
 interface LoadedRunAndAgent {
-  run: { id: string; agentId: string; orgId: string; deviceId: string | null; policySnapshot: AiAgentPolicySnapshot };
+  run: {
+    id: string;
+    agentId: string;
+    orgId: string;
+    deviceId: string | null;
+    policySnapshot: AiAgentPolicySnapshot;
+    /** See the check in `attemptPolicyDecision` below. */
+    modeAtStart: string;
+  };
   agent: { id: string; name: string; kind: AiAgentKind };
   partnerId: string;
   deviceSiteId: string | null;
@@ -144,6 +152,7 @@ async function loadRunAndAgent(
         orgId: aiAgentRuns.orgId,
         deviceId: aiAgentRuns.deviceId,
         policySnapshot: aiAgentRuns.policySnapshot,
+        modeAtStart: aiAgentRuns.modeAtStart,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -572,6 +581,21 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
     // adds its own creation-time mode check, as defense in depth.
     if (current.effective.mode !== 'act') {
       await degradeToHumanRequired(intentId, 'agent_mode_not_act', { mode: current.effective.mode });
+      return;
+    }
+
+    // The run's OWN admission-time mode, distinct from
+    // both the current live policy above and `run.policySnapshot.effective
+    // .mode` below. An anomaly- or ticket-triggered run is admitted with
+    // `modeAtStart: 'shadow'` even when the resolved policy's mode is 'act'
+    // (runService.ts's forced-shadow downgrade — "an unproven detector must
+    // never drive act mode"); `policySnapshot.effective.mode` still records
+    // the resolved 'act' mode unchanged, so neither of the checks above
+    // would catch a run that was never actually admitted as act. Checked
+    // here, at decide time, as the second enforcement point alongside
+    // `resolvePolicyDecisionState`'s creation-time check (intentService.ts).
+    if (run.modeAtStart !== 'act') {
+      await degradeToHumanRequired(intentId, 'agent_mode_not_act', { modeAtStart: run.modeAtStart });
       return;
     }
 

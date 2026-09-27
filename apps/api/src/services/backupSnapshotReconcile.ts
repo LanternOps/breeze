@@ -13,6 +13,7 @@ import {
   backupSnapshotRootPrefix,
   fetchBackupObjectText,
   iterateBackupObjectsUnderPrefix,
+  MANIFEST_FETCH_MAX_BYTES,
 } from './backupSnapshotStorage';
 
 /**
@@ -995,6 +996,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
         provider: config.provider,
         providerConfig: config.providerConfig,
         key: backupSnapshotManifestKey(entry.snapshotId),
+        maxBytes: MANIFEST_FETCH_MAX_BYTES,
       });
       result = manifestToCommandResult({
         snapshotId: entry.snapshotId,

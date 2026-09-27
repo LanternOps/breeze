@@ -634,18 +634,24 @@ export async function processRunScheduledReport(
     return;
   }
 
+  // A due schedule always renders the report and emails it off-platform
+  // (`resolveScheduledReportRecipients`, below) — the same bulk-export
+  // capability the interactive download/generate routes gate on, not a mere
+  // read. Re-authorizing the stamped execution principal against 'export'
+  // means a principal demoted below that permission stops the schedule
+  // instead of silently continuing to mail rendered rows out.
   let liveResult: LiveReportAuthorityResult;
   try {
     liveResult = owner.partnerId !== undefined
       ? await resolveLivePartnerReportAuthority(
           report.executionScopeUserId,
           owner.partnerId,
-          'read',
+          'export',
         )
       : await resolveLiveReportAuthority(
           report.executionScopeUserId,
           owner.orgId,
-          'read',
+          'export',
         );
   } catch (err) {
     reportScopeFailure('live_authority', err);

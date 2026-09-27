@@ -98,6 +98,43 @@ func TestAppSearchRunsBeforeLaunchConditionsInBothSequences(t *testing.T) {
 	}
 }
 
+// HardenProgramDataAcl must set an explicit, trusted owner (SYSTEM) on the
+// Breeze/data/logs ProgramData directories, not just their DACL. A user who
+// pre-creates one of these directories before the MSI runs stays its owner
+// (implicit WRITE_DAC) even after the DACL is replaced, since /inheritance:r
+// /grant:r alone never touches ownership.
+func TestHardenProgramDataAclSetsExplicitOwner(t *testing.T) {
+	wxs := readWxs(t)
+	re := regexp.MustCompile(`(?s)<CustomAction\s+Id="HardenProgramDataAcl"[^>]*ExeCommand="([^"]*)"`)
+	m := re.FindStringSubmatch(wxs)
+	if m == nil {
+		t.Fatal("expected a HardenProgramDataAcl CustomAction with an ExeCommand")
+	}
+	cmd := m[1]
+	// One /setowner per hardened directory (root, data, logs), each ahead of
+	// that directory's /inheritance:r /grant:r in the && chain, so a
+	// pre-created directory's owner is fixed before its DACL is trusted.
+	setOwnerCount := strings.Count(cmd, "/setowner *S-1-5-18")
+	if setOwnerCount < 3 {
+		t.Errorf("expected /setowner *S-1-5-18 (LocalSystem) on all 3 ProgramData directories, found %d occurrences in: %s", setOwnerCount, cmd)
+	}
+	for _, dirToken := range []string{"[ProgramDataBreezeDir]", "[ProgramDataBreezeDataDir]", "[ProgramDataBreezeLogsDir]"} {
+		setOwnerIdx := strings.Index(cmd, "icacls &quot;"+dirToken+".&quot; /setowner")
+		grantIdx := strings.Index(cmd, "icacls &quot;"+dirToken+".&quot; /inheritance:r")
+		if setOwnerIdx == -1 {
+			t.Errorf("%s: no /setowner icacls invocation found", dirToken)
+			continue
+		}
+		if grantIdx == -1 {
+			t.Errorf("%s: no /inheritance:r /grant:r icacls invocation found", dirToken)
+			continue
+		}
+		if setOwnerIdx > grantIdx {
+			t.Errorf("%s: /setowner must run before /inheritance:r /grant:r", dirToken)
+		}
+	}
+}
+
 // customConditions maps each <Custom Action="..."> in InstallExecuteSequence
 // to its Condition attribute ("" when unconditioned).
 func customConditions(t *testing.T, wxs string) map[string]string {
@@ -291,5 +328,49 @@ func TestBuildScriptLoadsUtilExtension(t *testing.T) {
 	}
 	if !strings.Contains(s, "extension add") {
 		t.Error("build-msi.ps1 must install WixToolset.Util.wixext (wix extension add) so callers need no extra setup step")
+	}
+}
+
+// A standard user can create C:\ProgramData\Breeze (and, inside it, data or
+// logs) before the MSI runs, including as a junction or symbolic link to a
+// folder the user owns. icacls on such a path changes only the link object,
+// so HardenProgramDataAcl must remove a pre-existing link (the link itself,
+// never its target) and create a real directory before setting the owner
+// and DACL. The root must be settled first so no child link can be
+// re-created under a root the user still controls.
+func TestHardenProgramDataAclReplacesPreexistingLinks(t *testing.T) {
+	wxs := readWxs(t)
+	re := regexp.MustCompile(`(?s)<CustomAction\s+Id="HardenProgramDataAcl"[^>]*ExeCommand="([^"]*)"`)
+	m := re.FindStringSubmatch(wxs)
+	if m == nil {
+		t.Fatal("expected a HardenProgramDataAcl CustomAction with an ExeCommand")
+	}
+	cmd := m[1]
+	q := func(tok string) string { return "&quot;" + tok + ".&quot;" }
+
+	prevGrant := -1
+	for _, dirToken := range []string{"[ProgramDataBreezeDir]", "[ProgramDataBreezeDataDir]", "[ProgramDataBreezeLogsDir]"} {
+		query := strings.Index(cmd, "fsutil reparsepoint query "+q(dirToken))
+		remove := strings.Index(cmd, "rmdir "+q(dirToken))
+		mkdir := strings.Index(cmd, "mkdir "+q(dirToken))
+		setOwner := strings.Index(cmd, "icacls "+q(dirToken)+" /setowner")
+		grant := strings.Index(cmd, "icacls "+q(dirToken)+" /inheritance:r")
+		if query == -1 || remove == -1 || mkdir == -1 || setOwner == -1 || grant == -1 {
+			t.Errorf("%s: expected a reparse-point query, rmdir, mkdir, /setowner and /grant:r, got query=%d rmdir=%d mkdir=%d setowner=%d grant=%d", dirToken, query, remove, mkdir, setOwner, grant)
+			continue
+		}
+		if !(query < remove && remove < mkdir && mkdir < setOwner && setOwner < grant) {
+			t.Errorf("%s: order must be query -> rmdir -> mkdir -> /setowner -> /grant:r, got %d %d %d %d %d", dirToken, query, remove, mkdir, setOwner, grant)
+		}
+		if query < prevGrant {
+			t.Errorf("%s: must be handled after the previous directory is fully hardened", dirToken)
+		}
+		prevGrant = grant
+	}
+	// Removing a link must never recurse into, or delete files in, its target.
+	for _, banned := range []string{"rmdir /s", "rd /s", "del "} {
+		if strings.Contains(strings.ToLower(cmd), banned) {
+			t.Errorf("HardenProgramDataAcl must not use %q: it would act on the link target", banned)
+		}
 	}
 }

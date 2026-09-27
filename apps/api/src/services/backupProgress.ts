@@ -8,6 +8,8 @@ import { backupJobs, devices, IN_FLIGHT_BACKUP_JOB_STATUSES } from '../db/schema
 import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../db/schema/backupConstants';
 import { UUID_REGEX } from '../utils/uuid';
 import { refreshDispatchedExpectation } from './agentWorkExpectation';
+import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
+import { captureException } from './sentry';
 
 /**
  * Payload shape emitted by the agent's `backup_progress` WS message
@@ -165,6 +167,7 @@ export async function applyBackupProgress(params: {
     .select({
       id: backupJobs.id,
       deviceId: backupJobs.deviceId,
+      orgId: backupJobs.orgId,
       agentId: devices.agentId,
       status: backupJobs.status,
     })
@@ -249,8 +252,33 @@ export async function applyBackupProgress(params: {
   // overwrites an earlier one. The UPDATE below is guarded on the job still
   // being in-flight, so this can never clobber an ID written by a terminal
   // result.
+  //
+  // Bind the agent authenticated above to the run it is executing; do NOT
+  // trust it to also be authoritative for the snapshot id it names. An
+  // unchecked id here would let this device adopt another device's (or, on a
+  // bucket shared across orgs, another org's) in-progress or completed
+  // snapshot — see findForeignSnapshotClaim. A conflict drops the id from
+  // this write (same "best-effort recovery metadata" treatment as an
+  // over-long id above) rather than failing the whole progress signal; the
+  // counters that keep the job alive must still land.
+  let snapshotIdDropped = parsed.snapshotIdDropped;
   if (progress.snapshotId !== undefined) {
-    updateSet.snapshotId = progress.snapshotId;
+    const conflict = await findForeignSnapshotClaim({
+      snapshotId: progress.snapshotId,
+      callerDeviceId: job.deviceId,
+      callerOrgId: job.orgId,
+    });
+    if (conflict) {
+      snapshotIdDropped = true;
+      const msg =
+        `[BackupProgress] Dropped snapshotId "${progress.snapshotId}" reported by device ` +
+        `${job.deviceId} for job ${job.id} — already claimed by device ${conflict.ownerDeviceId}` +
+        (conflict.crossOrg ? ' in a different org' : '') + '.';
+      console.warn(msg);
+      captureException(new Error(msg));
+    } else {
+      updateSet.snapshotId = progress.snapshotId;
+    }
   }
 
   const updated = await db
@@ -268,7 +296,7 @@ export async function applyBackupProgress(params: {
   // expectation's TTL: refresh it on every progress signal.
   await refreshDispatchedExpectation('backup', job.deviceId, job.id);
 
-  return parsed.snapshotIdDropped ? { applied: true, snapshotIdDropped: true } : { applied: true };
+  return snapshotIdDropped ? { applied: true, snapshotIdDropped: true } : { applied: true };
 }
 
 // --- non-terminal `command_result` guards ---------------------------------

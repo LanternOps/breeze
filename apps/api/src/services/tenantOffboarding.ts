@@ -1890,7 +1890,7 @@ export async function sweepOffboardingTenants(
       if (attempts > ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS) {
         // Exactly once: the candidate predicate excludes the row from here on.
         console.error(
-          `[tenantOffboarding] Archive purge for org ${org.id} has failed ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS} recovery attempts; giving up. The tenant is stuck in 'purging' — neither erased nor restorable — and needs manual investigation (most likely a table missing from CORE_ORG_CASCADE_DELETE_ORDER).`
+          `[tenantOffboarding] Archive purge for org ${org.id} has failed ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS} recovery attempts; giving up. The tenant is stuck in 'purging' — neither erased nor restorable — and needs manual investigation (most likely a table missing from CORE_ORG_CASCADE_DELETE_ORDER, or a backup snapshot under an active legal hold refusing the erasure each time — check the org's tenant.erasure.refused_legal_hold audit rows first).`
         );
         writeAuditEvent(requestLikeFromSnapshot({}), {
           orgId: null,

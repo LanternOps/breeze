@@ -549,6 +549,7 @@ type DispatchScanInputs =
   | { status: 'profile-missing' }
   | { status: 'invalid-agent' }
   | { status: 'no-agent' }
+  | { status: 'not-scheduled' }
   | {
       status: 'ok';
       profile: typeof discoveryProfiles.$inferSelect;
@@ -567,6 +568,21 @@ type DispatchScanInputs =
  * held (#1105).
  */
 async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<DispatchScanInputs> {
+  // The cancel route (routes/discovery.ts) can only best-effort remove the
+  // queued BullMQ job; a job already picked up for processing when cancel ran
+  // still reaches here. Re-read the row's live status instead of trusting the
+  // queue payload, so a cancelled job neither decrypts SNMP credentials nor
+  // dispatches to the agent, and its 'cancelled' status is not overwritten.
+  const [job] = await db
+    .select({ status: discoveryJobs.status })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, data.jobId))
+    .limit(1);
+  if (!job || job.status !== 'scheduled') {
+    console.log(`[DiscoveryWorker] Skipping dispatch for job ${data.jobId}: status is ${job?.status ?? 'missing'}, not 'scheduled'`);
+    return { status: 'not-scheduled' };
+  }
+
   const [profile] = await db
     .select()
     .from(discoveryProfiles)
@@ -695,6 +711,9 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   }
 
   // Phase 4 — job status flip to running: its own short system DB context.
+  // Conditional on 'scheduled' for the same reason as loadDispatchScanInputs'
+  // re-check above: a cancel that lands between that check and here must not
+  // be overwritten back to 'running' by this dispatch that already fired.
   await runWithSystemDbAccess(() =>
     db
       .update(discoveryJobs)
@@ -704,7 +723,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
         startedAt: new Date(),
         updatedAt: new Date()
       })
-      .where(eq(discoveryJobs.id, data.jobId))
+      .where(and(eq(discoveryJobs.id, data.jobId), eq(discoveryJobs.status, 'scheduled')))
   );
 
   console.log(`[DiscoveryWorker] Scan dispatched to agent ${agentId} for job ${data.jobId}`);
@@ -1617,6 +1636,10 @@ export async function cleanupSpeculativeTopologyLinks(
 }
 
 async function markJobFailed(jobId: string, error: string): Promise<void> {
+  // Conditional on status: a job the operator already cancelled (or one a
+  // concurrent worker attempt already resolved) must not be overwritten with
+  // 'failed' — that regression made an explicit cancel invisible in the UI
+  // and audit trail.
   await db
     .update(discoveryJobs)
     .set({
@@ -1625,7 +1648,7 @@ async function markJobFailed(jobId: string, error: string): Promise<void> {
       errors: { message: error },
       updatedAt: new Date()
     })
-    .where(eq(discoveryJobs.id, jobId));
+    .where(and(eq(discoveryJobs.id, jobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
 }
 
 /**

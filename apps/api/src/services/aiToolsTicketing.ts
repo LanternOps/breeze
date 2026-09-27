@@ -634,7 +634,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           isPublic: {
             type: 'boolean',
-            description: 'Comment visibility — false = internal note (default true)'
+            description: 'Comment visibility — true = customer-visible reply, requires explicit opt-in and approval (default false = internal note)'
           },
           assigneeId: {
             type: 'string',
@@ -805,11 +805,17 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           const result = await addAiTriageNote(String(input.ticketId), agentRunId, String(input.content), found.orgId);
           return JSON.stringify({ comment: result.comment });
         }
+        // Default private: a customer-visible reply must be explicitly
+        // requested (`isPublic: true`), not merely not-set-to-false. This
+        // matches the autonomous-agent branch above, which is always
+        // private regardless of `isPublic`. An explicit request for a
+        // public comment is escalated to a separate approval tier — see
+        // TIER3_INPUT_AWARE_ACTIONS in aiGuardrails.ts.
         const result = await addTicketComment(
           String(input.ticketId),
           {
             content: String(input.content),
-            isPublic: input.isPublic !== false
+            isPublic: input.isPublic === true
           },
           actor
         );

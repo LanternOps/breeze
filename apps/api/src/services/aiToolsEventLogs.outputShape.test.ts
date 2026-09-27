@@ -27,6 +27,15 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerEventLogTools } from './aiToolsEventLogs';
 
+// Not under test here: stub to devices:execute so pre-existing tests keep
+// exercising the same unrestricted path they did before the sensitivity gate.
+vi.mock('./eventLogSensitivity', () => ({
+  canReadSensitiveEventLogCategory: async () => true,
+  isSensitiveEventLogCategory: (c: string) => c === 'security',
+  SENSITIVE_EVENT_LOG_CATEGORY: 'security',
+  resolveVisibleCategories: (requested: unknown) => requested,
+}));
+
 function tools(): Map<string, AiTool> {
   const reg = new Map<string, AiTool>();
   registerEventLogTools(reg);

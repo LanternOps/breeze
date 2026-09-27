@@ -64,6 +64,15 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const PROTOCOL_VERSION = '2025-06-18';
 const MAX_LIST_PAGES = 50;
+/**
+ * Aggregate caps across every page of `tools/list`, on top of the existing
+ * per-page `MAX_LIST_PAGES` and `maxResponseBytes`. Those two only bound a
+ * single page in isolation; without a running total, a peer can still
+ * return an unbounded number of small pages that together persist a huge
+ * catalog and inflate every chat turn's tool-list payload.
+ */
+const MAX_TOOLS_PER_SOURCE = 500;
+const MAX_AGGREGATE_TOOL_BYTES = 2_097_152;
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -183,6 +192,7 @@ export class McpClient {
     const tools: McpToolListing[] = [];
     let cursor: string | undefined;
     let pages = 0;
+    let aggregateBytes = 0;
     for (;;) {
       pages += 1;
       if (pages > MAX_LIST_PAGES) {
@@ -192,7 +202,19 @@ export class McpClient {
         tools?: McpToolListing[];
         nextCursor?: string;
       };
-      tools.push(...(result.tools ?? []));
+      for (const tool of result.tools ?? []) {
+        tools.push(tool);
+        aggregateBytes += Buffer.byteLength(JSON.stringify(tool), 'utf8');
+        if (tools.length > MAX_TOOLS_PER_SOURCE) {
+          throw new McpClientError(`tools/list exceeded the ${MAX_TOOLS_PER_SOURCE}-tool aggregate cap`, 'too_large');
+        }
+        if (aggregateBytes > MAX_AGGREGATE_TOOL_BYTES) {
+          throw new McpClientError(
+            `tools/list exceeded the ${MAX_AGGREGATE_TOOL_BYTES}-byte aggregate tool-definition cap`,
+            'too_large'
+          );
+        }
+      }
       if (!result.nextCursor) break;
       cursor = result.nextCursor;
     }

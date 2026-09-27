@@ -19,7 +19,14 @@ interface EnrollmentKey {
   siteId: string | null;
   name: string;
   key?: string | null;
+  /**
+   * Redacted (null) by the API for a caller who lacks organizations:write —
+   * shortCode is an enrollment-capable secret, so a read-only role never
+   * receives its value. `hasShortLink` still reports whether the underlying
+   * link exists, so the row can distinguish "hidden" from "never created".
+   */
   shortCode?: string | null;
+  hasShortLink?: boolean;
   usageCount: number;
   maxUsage: number | null;
   expiresAt: string | null;
@@ -650,6 +657,13 @@ export default function EnrollmentKeyManager() {
                               )}
                             </button>
                           </div>
+                        ) : key.hasShortLink ? (
+                          <span
+                            className="text-xs text-muted-foreground italic"
+                            title={t('enrollmentKeys.shortCodeHidden')}
+                          >
+                            {t('enrollmentKeys.shortCodeHidden')}
+                          </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}

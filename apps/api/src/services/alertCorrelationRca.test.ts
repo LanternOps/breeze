@@ -137,6 +137,7 @@ const { dbMock, state, tables } = vi.hoisted(() => {
     if (predicate.op === 'lte') return new Date(left as any).getTime() <= new Date(predicate.val as any).getTime();
     if (predicate.op === 'and') return (predicate.args ?? []).every((arg) => evalPredicate(row, arg));
     if (predicate.op === 'or') return (predicate.args ?? []).some((arg) => evalPredicate(row, arg));
+    if (predicate.op === 'not') return !evalPredicate(row, predicate.args?.[0]);
     return true;
   };
 
@@ -216,10 +217,12 @@ vi.mock('drizzle-orm', () => ({
   inArray: (col: unknown, vals: unknown[]) => ({ op: 'inArray', col, vals }),
   isNull: (col: unknown) => ({ op: 'isNull', col }),
   lte: (col: unknown, val: unknown) => ({ op: 'lte', col, val }),
+  not: (arg: unknown) => ({ op: 'not', args: [arg] }),
   or: (...args: unknown[]) => ({ op: 'or', args }),
 }));
 
 vi.mock('../db', () => ({ db: dbMock }));
+vi.mock('./eventLogSensitivity', () => ({ SENSITIVE_EVENT_LOG_CATEGORY: 'security' }));
 vi.mock('../db/schema', () => ({
   agentLogs: tables.agentLogs,
   alertCorrelationMembers: tables.alertCorrelationMembers,
@@ -629,6 +632,150 @@ describe('alert correlation RCA evidence builder', () => {
     ]));
     expect(result.timeline).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'event_log:event-today' }),
+    ]));
+  });
+
+  it('keeps a quiet device evidence when a noisy sibling device floods the shared log evidence cap', async () => {
+    const NOISY_DEVICE = '33333333-3333-4333-8333-333333333333';
+    const QUIET_DEVICE = DEVICE_ID;
+    state.devices.push({ id: NOISY_DEVICE, orgId: ORG_ID, hostname: 'noisy-server', osType: 'windows' });
+    state.correlations = [];
+    state.linkedLogCorrelations = [];
+    state.context = [];
+    state.metricRollups = [];
+
+    // The noisy device alone posts more device_change rows than the overall
+    // evidence cap (10), all timestamped later than the quiet device's single
+    // row — a shared ORDER BY timestamp DESC LIMIT 10 would let it occupy
+    // every slot and drop the quiet device's evidence entirely.
+    state.changes = [
+      // Noisy device's rows come first in insertion order (the harness's
+      // SelectQuery does not itself re-sort — orderBy() is a stub — so a
+      // pre-fix shared query that just filters + slices would keep these and
+      // drop the quiet device's row below, exactly mirroring a real
+      // ORDER BY timestamp DESC LIMIT 10 where the noisy device's newer rows
+      // fill every slot).
+      ...Array.from({ length: 12 }, (_unused, index) => ({
+        id: `noisy-change-${index}`,
+        orgId: ORG_ID,
+        deviceId: NOISY_DEVICE,
+        // Each one minute later than the quiet device's row, all still inside
+        // the incident window.
+        timestamp: new Date(new Date('2026-06-18T11:30:00Z').getTime() + index * 60_000),
+        changeType: 'service',
+        changeAction: 'modified',
+        subject: `Noisy device change ${index}`,
+      })),
+      {
+        id: 'quiet-change',
+        orgId: ORG_ID,
+        deviceId: QUIET_DEVICE,
+        timestamp: new Date('2026-06-18T11:00:00Z'),
+        changeType: 'service',
+        changeAction: 'modified',
+        subject: 'Quiet device change',
+      },
+    ];
+    state.eventLogs = [];
+    state.agentLogs = [];
+
+    const result = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'group-fairness',
+      windowHours: 4,
+      maxEvidenceItems: 30,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: QUIET_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_2, orgId: ORG_ID, deviceId: NOISY_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:01:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, createdAt: new Date('2026-06-18T12:01:00Z'), partnerFeedXid: '1' },
+      ],
+    });
+
+    expect(result.timeline.find((item) => item.id === 'device_change:quiet-change')).toBeDefined();
+  });
+
+  it('excludes security-category event-log rows from RCA evidence for a caller without the sensitive-category permission', async () => {
+    state.eventLogs = [
+      {
+        id: 'event-security',
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        timestamp: new Date('2026-06-18T12:01:00Z'),
+        level: 'error',
+        category: 'security',
+        source: 'Microsoft-Windows-Security-Auditing',
+        eventId: '4625',
+        message: 'An account failed to log on. Account Name: jdoe',
+      },
+      {
+        id: 'event-system',
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        timestamp: new Date('2026-06-18T12:01:30Z'),
+        level: 'error',
+        category: 'system',
+        source: 'Service Control Manager',
+        eventId: '7031',
+        message: 'Service terminated unexpectedly',
+      },
+    ];
+
+    const withoutPermission = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'group-no-sensitive',
+      windowHours: 4,
+      maxEvidenceItems: 20,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+      ],
+      canReadSensitiveCategory: false,
+    });
+    expect(withoutPermission.timeline).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-security' }),
+    ]));
+    expect(withoutPermission.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-system' }),
+    ]));
+
+    const withPermission = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'group-sensitive',
+      windowHours: 4,
+      maxEvidenceItems: 20,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+      ],
+      canReadSensitiveCategory: true,
+    });
+    expect(withPermission.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-security' }),
+    ]));
+  });
+
+  it('defaults to excluding security-category rows when canReadSensitiveCategory is omitted (fail-closed)', async () => {
+    state.eventLogs = [{
+      id: 'event-security-default',
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      timestamp: new Date('2026-06-18T12:01:00Z'),
+      level: 'error',
+      category: 'security',
+      source: 'Microsoft-Windows-Security-Auditing',
+      eventId: '4625',
+      message: 'An account failed to log on. Account Name: jdoe',
+    }];
+
+    const result = await buildAlertCorrelationRca({
+      orgId: ORG_ID,
+      groupId: 'group-default',
+      windowHours: 4,
+      maxEvidenceItems: 20,
+      alerts: [
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+      ],
+    });
+
+    expect(result.timeline).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event_log:event-security-default' }),
     ]));
   });
 });

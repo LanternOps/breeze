@@ -5,6 +5,7 @@ const {
   captureExceptionMock,
   resolveLlmConfigMock,
   checkBudgetMock,
+  checkSystemAiRateLimitMock,
   reserveAiBudgetMock,
   releaseUnusedAiBudgetMock,
   getEffectiveAiBudgetMock,
@@ -12,6 +13,7 @@ const {
   captureExceptionMock: vi.fn(),
   resolveLlmConfigMock: vi.fn(),
   checkBudgetMock: vi.fn(),
+  checkSystemAiRateLimitMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetMock: vi.fn(),
   getEffectiveAiBudgetMock: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
@@ -34,6 +36,14 @@ vi.mock('../../db/schema', () => ({
   aiSessions: {
     id: 'aiSessions.id',
     deviceId: 'aiSessions.deviceId',
+    userId: 'aiSessions.userId',
+    clientUserId: 'aiSessions.clientUserId',
+    agentId: 'aiSessions.agentId',
+    status: 'aiSessions.status',
+    title: 'aiSessions.title',
+    turnCount: 'aiSessions.turnCount',
+    contextSnapshot: 'aiSessions.contextSnapshot',
+    createdAt: 'aiSessions.createdAt',
     updatedAt: 'aiSessions.updatedAt',
   },
   aiToolExecutions: {},
@@ -66,6 +76,7 @@ vi.mock('drizzle-orm', () => ({
   or: vi.fn((...args: unknown[]) => ({ or: args })),
   desc: vi.fn((...args: unknown[]) => ({ desc: args })),
   asc: vi.fn((...args: unknown[]) => ({ asc: args })),
+  isNull: vi.fn((...args: unknown[]) => ({ isNull: args })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings, values })),
 }));
 
@@ -103,12 +114,19 @@ vi.mock('../../services/aiInputSanitizer', () => ({
   sanitizeUserMessage: vi.fn(() => ({ sanitized: 'hello', flags: [] })),
 }));
 
-vi.mock('../../services/screenshotStorage', () => ({
-  storeScreenshot: vi.fn(),
-}));
+vi.mock('../../services/screenshotStorage', () => {
+  class ScreenshotTooLargeError extends Error {}
+  class ScreenshotQuotaExceededError extends Error {}
+  return {
+    storeScreenshot: vi.fn(),
+    ScreenshotTooLargeError,
+    ScreenshotQuotaExceededError,
+  };
+});
 
 vi.mock('../../services/aiCostTracker', () => ({
   checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
+  checkSystemAiRateLimit: (...args: unknown[]) => checkSystemAiRateLimitMock(...args),
   getRemainingBudgetUsd: vi.fn(),
 }));
 
@@ -171,6 +189,7 @@ import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
+import { storeScreenshot } from '../../services/screenshotStorage';
 
 const VALID_TOOL_DECL = {
   name: 'search_files',
@@ -413,7 +432,47 @@ describe('helper routes permission derivation', () => {
     expect(getOrCreateCall?.[8]).toBeUndefined();
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
     expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
+    // Org-axis AI rate limiter — the same ceiling technician chat enforces
+    // via checkAiRateLimit. Helper sessions are device-scoped with no acting
+    // user id, so this must be the org-only (no per-user bucket) form.
+    expect(checkSystemAiRateLimitMock).toHaveBeenCalledWith('org-1');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  it('429s a turn when the org-wide AI rate limit is exceeded', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    checkSystemAiRateLimitMock.mockResolvedValueOnce('Organization rate limit exceeded. Try again at 2026-01-01T00:00:00.000Z');
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            sdkSessionId: null,
+            model: 'claude-sonnet-4-5-20250929',
+            maxTurns: 50,
+            turnCount: 0,
+            status: 'active',
+            title: 'Existing title',
+            systemPrompt: 'stale extended helper prompt',
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
   });
 
   // #3127: under its real /api/v1 mount the message-send route is registered in
@@ -823,5 +882,346 @@ describe('helper client-declared session tools', () => {
 
     expect(res.status).toBe(404);
     expect(resolveClientDeclaredTool).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// Helper session ownership scoping
+//
+// ai_sessions is org-axis RLS only: a technician's device-bound session (userId
+// set) and a helper-created session (userId null, contextSnapshot.source =
+// 'helper') share the same org_id/device_id. Every helper session route must
+// add an app-layer predicate restricting reads/writes to sessions the helper
+// itself created, or a helper token for device A can reach a technician's
+// device-task session for the same device. These tests build the actual
+// `where(...)` predicate tree from the mocked eq/and/isNull/sql and evaluate
+// it against fixture rows, so they fail red on the pre-fix query (which never
+// added the extra predicate, so every row matched) and pass once the route
+// filters on it.
+// ============================================
+
+function conditionColumnKey(col: unknown): string {
+  return String(col).split('.').pop() ?? String(col);
+}
+
+type MockedCond =
+  | { eq: [unknown, unknown] }
+  | { and: MockedCond[] }
+  | { isNull: [unknown] }
+  | { sql: unknown; values: unknown[] }
+  | Record<string, unknown>;
+
+function conditionMatchesRow(cond: MockedCond, row: Record<string, unknown>): boolean {
+  if ('eq' in cond && Array.isArray((cond as { eq: unknown }).eq)) {
+    const [col, val] = (cond as { eq: [unknown, unknown] }).eq;
+    return row[conditionColumnKey(col)] === val;
+  }
+  if ('and' in cond && Array.isArray((cond as { and: unknown }).and)) {
+    return (cond as { and: MockedCond[] }).and.every((c) => conditionMatchesRow(c, row));
+  }
+  if ('isNull' in cond && Array.isArray((cond as { isNull: unknown }).isNull)) {
+    const [col] = (cond as { isNull: [unknown] }).isNull;
+    return row[conditionColumnKey(col)] == null;
+  }
+  if ('sql' in cond) {
+    // helperOwnedSessionConditions' contextSnapshot->>'source' = 'helper' check.
+    const snapshot = row.contextSnapshot as Record<string, unknown> | null | undefined;
+    return snapshot?.source === 'helper';
+  }
+  return true;
+}
+
+/** Session select that actually filters fixture rows against the route's built WHERE tree. */
+function mockFilteredSessionSelect(rows: Record<string, unknown>[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn((cond: MockedCond) => ({
+        limit: vi.fn().mockResolvedValue(rows.filter((r) => conditionMatchesRow(cond, r))),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows.filter((r) => conditionMatchesRow(cond, r))),
+        }),
+      })),
+    }),
+  } as never);
+}
+
+const HELPER_OWNED_SESSION = {
+  id: 'session-helper',
+  orgId: 'org-1',
+  deviceId: 'device-1',
+  userId: null,
+  status: 'active',
+  title: null,
+  turnCount: 0,
+  maxTurns: 50,
+  model: 'claude-sonnet-4-5-20250929',
+  sdkSessionId: null,
+  systemPrompt: 'helper prompt',
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  contextSnapshot: { source: 'helper', deviceId: 'device-1' },
+};
+
+// Same device, but created by a technician (device-task "Ask AI" session) —
+// this must stay unreachable through any helper-token route.
+const TECHNICIAN_SESSION_SAME_DEVICE = {
+  id: 'session-tech',
+  orgId: 'org-1',
+  deviceId: 'device-1',
+  userId: 'tech-user-1',
+  status: 'active',
+  title: 'Reliability panel session',
+  turnCount: 1,
+  maxTurns: 50,
+  model: 'claude-sonnet-4-5-20250929',
+  sdkSessionId: 'sdk-session-abc',
+  systemPrompt: 'technician prompt',
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  contextSnapshot: { pageContext: 'device-details' },
+};
+
+describe('helper session ownership scoping (cross-principal isolation)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolveLlmConfigMock.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-opus-4-6',
+      configId: 'config-1',
+      configVersion: 5,
+    });
+    app = new Hono();
+    app.route('/helper', helperRoutes);
+  });
+
+  it('reads messages for a session the helper itself created (same device, allowed)', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockResolvedValue([{ id: 'm1', role: 'user', content: 'hi', toolName: null, toolOutput: null, createdAt: new Date() }]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions/session-helper/messages', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('denies reading a technician device-task session transcript for the same device', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions/session-tech/messages', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('excludes the technician device-task session from the helper session list', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.map((s: { id: string }) => s.id)).toEqual(['session-helper']);
+  });
+
+  it('denies posting into a technician device-task session (turn resume by the helper)', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions/session-tech/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'planted instruction' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('denies closing a technician device-task session', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions/session-tech', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('denies flagging a technician device-task session', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions/session-tech/flag', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'suspicious' }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('denies posting a tool-result into a technician device-task session', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/chat/sessions/session-tech/tool-results', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId: 'tu-1', output: {} }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(resolveClientDeclaredTool).not.toHaveBeenCalled();
+  });
+
+  // Defense in depth: a session carrying ANY principal (agent run, portal
+  // client user) is never helper-owned, even if its snapshot claims
+  // source='helper'. The single-principal check constraint keeps userId null
+  // on these rows, so the userId predicate alone would not exclude them.
+  it.each([
+    ['AI-agent run session', { agentId: 'ai-agent-1' }],
+    ['portal client-user session', { clientUserId: 'portal-user-1' }],
+  ])('denies reading a %s bound to the same device even with a helper source stamp', async (_label, principal) => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([
+      { ...HELPER_OWNED_SESSION, id: 'session-principal', ...principal },
+    ]);
+
+    const res = await app.request('/helper/chat/sessions/session-principal/messages', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses to attach a screenshot to a technician device-task session', async () => {
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([HELPER_OWNED_SESSION, TECHNICIAN_SESSION_SAME_DEVICE]);
+
+    const res = await app.request('/helper/screenshots', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: 'aGVsbG8=', width: 10, height: 10,
+        sessionId: '00000000-0000-4000-8000-000000000002',
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(storeScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('attaches a screenshot to a session the helper itself created', async () => {
+    const helperSessionId = '00000000-0000-4000-8000-000000000001';
+    mockHelperAuthDevice();
+    mockFilteredSessionSelect([{ ...HELPER_OWNED_SESSION, id: helperSessionId }]);
+    vi.mocked(storeScreenshot).mockResolvedValueOnce({
+      id: 'shot-1', storageKey: 'k', sizeBytes: 5, expiresAt: new Date(),
+    } as never);
+
+    const res = await app.request('/helper/screenshots', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: 'aGVsbG8=', width: 10, height: 10, sessionId: helperSessionId }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(storeScreenshot).toHaveBeenCalledWith(expect.objectContaining({ sessionId: helperSessionId }));
+  });
+});
+
+describe('POST /helper/screenshots', () => {
+  let app: Hono;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/helper', helperRoutes);
+    const { getRedis } = await import('../../services');
+    vi.mocked(getRedis).mockReturnValue(null);
+  });
+
+  function postScreenshot(body: Record<string, unknown> = {}) {
+    return app.request('/helper/screenshots', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: 'dGVzdGltYWdl',
+        width: 100,
+        height: 100,
+        ...body,
+      }),
+    });
+  }
+
+  it('stores the screenshot and returns its metadata on success', async () => {
+    mockHelperAuthDevice();
+    const { storeScreenshot } = await import('../../services/screenshotStorage');
+    vi.mocked(storeScreenshot).mockResolvedValue({
+      id: 'shot-1',
+      storageKey: 'screenshots/org-1/device-1/shot-1.jpg',
+      width: 100,
+      height: 100,
+      sizeBytes: 9,
+      expiresAt: new Date('2026-01-02T00:00:00Z'),
+    });
+
+    const res = await postScreenshot();
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toEqual(expect.objectContaining({ id: 'shot-1', sizeBytes: 9 }));
+  });
+
+  it('rejects with 429 once the per-device rate limit is hit', async () => {
+    mockHelperAuthDevice();
+    const { getRedis, rateLimiter } = await import('../../services');
+    vi.mocked(getRedis).mockReturnValue({} as never);
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date() });
+    const { storeScreenshot } = await import('../../services/screenshotStorage');
+
+    const res = await postScreenshot();
+
+    expect(res.status).toBe(429);
+    expect(storeScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 413 when storeScreenshot reports an oversized image', async () => {
+    mockHelperAuthDevice();
+    const { storeScreenshot, ScreenshotTooLargeError } = await import('../../services/screenshotStorage');
+    vi.mocked(storeScreenshot).mockRejectedValue(new ScreenshotTooLargeError(2_000_000, 1_600_000));
+
+    const res = await postScreenshot();
+
+    expect(res.status).toBe(413);
+  });
+
+  it('rejects with 429 when storeScreenshot reports the device quota is exceeded', async () => {
+    mockHelperAuthDevice();
+    const { storeScreenshot, ScreenshotQuotaExceededError } = await import('../../services/screenshotStorage');
+    vi.mocked(storeScreenshot).mockRejectedValue(new ScreenshotQuotaExceededError('device-1', 'count'));
+
+    const res = await postScreenshot();
+
+    expect(res.status).toBe(429);
   });
 });

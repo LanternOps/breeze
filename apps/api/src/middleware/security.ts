@@ -128,6 +128,19 @@ interface SecurityMiddlewareOptions {
   cspConnectHosts?: string;
   /** Override PUBLIC_API_URL for testing. Defaults to process.env.PUBLIC_API_URL */
   publicApiUrl?: string;
+  /**
+   * Path prefix for which this middleware's own response headers
+   * (Content-Security-Policy, Report-To, Permissions-Policy) are skipped —
+   * used by the tunnel-http reverse-proxy route, which sets its own
+   * conflicting CSP on every response it returns and must not have this
+   * middleware's `frame-ancestors 'none'` CSP win on top of it.
+   *
+   * HTTP->HTTPS redirect and canonical-Host enforcement below are NOT part
+   * of this skip: they're a different concern (transport/Host validation,
+   * not response headers) and stay active for every path, including this
+   * prefix.
+   */
+  skipHeadersPathPrefix?: string;
 }
 
 /**
@@ -167,6 +180,7 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   const normalized = forceHttps?.trim().toLowerCase();
   const isForceHttps = normalized === 'true' || normalized === '1';
   const publicApiUrlRaw = options?.publicApiUrl ?? process.env.PUBLIC_API_URL;
+  const skipHeadersPathPrefix = options?.skipHeadersPathPrefix;
   // Parsed once at middleware setup, not per-request. When FORCE_HTTPS is true
   // but PUBLIC_API_URL is missing/unparsable, the redirect/reject logic below
   // is skipped entirely (config/validate.ts refuses production boot in that
@@ -243,16 +257,18 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
       }
     }
 
-    // --- Content Security Policy ---
-    c.header('Content-Security-Policy', cspValue);
+    if (!skipHeadersPathPrefix || !path.startsWith(skipHeadersPathPrefix)) {
+      // --- Content Security Policy ---
+      c.header('Content-Security-Policy', cspValue);
 
-    // --- Report-To (for CSP reporting) ---
-    if (reportToValue) {
-      c.header('Report-To', reportToValue);
+      // --- Report-To (for CSP reporting) ---
+      if (reportToValue) {
+        c.header('Report-To', reportToValue);
+      }
+
+      // --- Permissions-Policy ---
+      c.header('Permissions-Policy', permissionsPolicyValue);
     }
-
-    // --- Permissions-Policy ---
-    c.header('Permissions-Policy', permissionsPolicyValue);
 
     await next();
   };

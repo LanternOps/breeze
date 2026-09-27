@@ -201,6 +201,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // helperAuth device-token path; query pinned to the caller's own device via
   // eq(aiSessions.deviceId, device.id) (#2637 client-declared tool results).
   'routes/helper/index.ts:POST /chat/sessions/:id/tool-results',
+  // helperAuth device-token path: the optional sessionId ownership check is
+  // pinned to the token's own device (eq(aiSessions.deviceId, device.id)) and
+  // the screenshot is stored against device.id from the token, never a
+  // caller-supplied device selector.
+  'routes/helper/index.ts:POST /screenshots',
   'routes/tunnels.ts:GET /desktop-access',
   'routes/tunnels.ts:POST /downgrade-to-vnc',
   'routes/tunnels.ts:POST /upgrade-to-webrtc',

@@ -33,6 +33,7 @@ import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
 import { validateToolInput } from './aiToolSchemas';
 import { createC2cSyncJobIfIdle } from './c2cJobCreation';
 import { registerC2CTools } from './aiToolsC2C';
+import { maskSecret } from '../routes/c2c/helpers';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const CONFIG_ID = '22222222-2222-2222-2222-222222222222';
@@ -302,6 +303,33 @@ describe('aiToolsC2C handlers', () => {
     await toolMap.get('query_c2c_connections')!.handler({}, auth);
 
     expect(auth.orgCondition).toHaveBeenCalled();
+  });
+
+  it('masks clientId like the REST route (routes/c2c/connections.ts:232, maskSecret), never the raw value', async () => {
+    mockSelectSequence([[
+      {
+        id: 'conn-1',
+        provider: 'm365',
+        displayName: 'Tenant A',
+        tenantId: 'tenant-1',
+        clientId: 'abcd1234efgh5678',
+        hasClientSecret: true,
+        hasRefreshToken: true,
+        hasAccessToken: true,
+        tokenExpiresAt: new Date('2026-03-10T00:00:00Z'),
+        scopes: ['mail.read'],
+        status: 'connected',
+        lastSyncAt: new Date('2026-03-02T00:00:00Z'),
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-02T00:00:00Z'),
+      },
+    ]]);
+
+    const result = await toolMap.get('query_c2c_connections')!.handler({}, makeAuth());
+    const parsed = JSON.parse(result);
+
+    expect(parsed.connections[0].clientId).not.toBe('abcd1234efgh5678');
+    expect(parsed.connections[0].clientId).toBe(maskSecret('abcd1234efgh5678'));
   });
 
   it('safeHandler returns error JSON when the handler throws', async () => {

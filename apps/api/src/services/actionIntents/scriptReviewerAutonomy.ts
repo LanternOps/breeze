@@ -84,6 +84,16 @@ export interface ScriptReviewerAgentRun {
   agentId: string;
   /** The run's immutable start-of-run policy snapshot (`ai_agent_runs.policy_snapshot`). */
   policySnapshot: AiAgentPolicySnapshot | null;
+  /**
+   * The run's actual admission-time mode
+   * (`ai_agent_runs.mode_at_start`), distinct from `policySnapshot.effective
+   * .mode` — an anomaly- or ticket-triggered run is admitted with this
+   * forced to 'shadow' even when the resolved policy's mode is 'act'
+   * (runService.ts's forced-shadow downgrade). `checkAgentAuthority` below
+   * must refuse unless this reads 'act', or that downgrade is silently
+   * undone for the unattended script-review lane.
+   */
+  modeAtStart: string | null;
 }
 
 export interface ScriptReviewerAutonomyArgs {
@@ -211,6 +221,14 @@ async function checkAgentAuthority(
   // cannot acquire act authority by proposing a script.
   const snapshot = run.policySnapshot;
   if (snapshot?.effective?.mode !== 'act') return { ok: false };
+
+  // The run's ACTUAL admission-time mode must also have
+  // been 'act' — `snapshot.effective.mode` alone is not enough, since an
+  // anomaly- or ticket-triggered run is admitted with `modeAtStart: 'shadow'`
+  // even when the resolved policy's mode is 'act' (runService.ts's
+  // forced-shadow downgrade). Without this, that downgrade is silently
+  // undone the moment such a run proposes a script for this lane.
+  if (run.modeAtStart !== 'act') return { ok: false };
 
   // …AND the LIVE policy must still say so, for the SAME agent identity. A
   // demotion between run start and this call revokes (same rule
@@ -479,7 +497,7 @@ async function revalidateInSystemContext(
           agentId: evidence.agent.agentId,
           // The snapshot was act-mode at creation (that is how the grant was
           // made); the LIVE policy is what can have changed since.
-          policySnapshot: await readRunSnapshot(database, intent.requestingAgentRunId),
+          ...(await readRunSnapshot(database, intent.requestingAgentRunId)),
         },
         intent.arguments as Record<string, unknown>,
         device,
@@ -502,11 +520,17 @@ async function revalidateInSystemContext(
   }
 }
 
-async function readRunSnapshot(tx: LaneExecutor, runId: string): Promise<AiAgentPolicySnapshot | null> {
+async function readRunSnapshot(
+  tx: LaneExecutor,
+  runId: string,
+): Promise<{ policySnapshot: AiAgentPolicySnapshot | null; modeAtStart: string | null }> {
   const [run] = await tx
-    .select({ policySnapshot: aiAgentRuns.policySnapshot })
+    .select({ policySnapshot: aiAgentRuns.policySnapshot, modeAtStart: aiAgentRuns.modeAtStart })
     .from(aiAgentRuns)
     .where(eq(aiAgentRuns.id, runId))
     .limit(1);
-  return (run?.policySnapshot as AiAgentPolicySnapshot | null) ?? null;
+  return {
+    policySnapshot: (run?.policySnapshot as AiAgentPolicySnapshot | null) ?? null,
+    modeAtStart: run?.modeAtStart ?? null,
+  };
 }

@@ -172,6 +172,7 @@ import {
   updateFeatureLink as updateFeatureLinkMock,
 } from '../services/configurationPolicy';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { resolveMonitorsForDevice as resolveMonitorsForDeviceMock } from '../services/monitors/monitorResolver';
 import { evaluateConditions as evaluateConditionsMock } from '../services/alertConditions';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -826,6 +827,120 @@ describe('site scope on device-reading monitor routes', () => {
       expect(res.status).toBe(200);
       expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+/**
+ * Site-ceiling write gate (bind monitor-definition writes to a caller's
+ * site ceiling like every sibling org-wide governance object). A
+ * site-restricted org caller (`auth.allowedSiteIds` set, including `[]`)
+ * must be refused before any write, on every writer: create, update,
+ * delete, attach and detach — a monitor's compiled responses run as SYSTEM
+ * on every device the attaching policy reaches, with no site axis of its
+ * own to narrow that reach.
+ */
+describe('site-ceiling write gate on monitor-definition writers', () => {
+  const SITE_A = '88888888-8888-4888-8888-888888888888';
+  const ATTACHMENT_ID = '66666666-6666-4666-8666-666666666666';
+
+  it.each([
+    ['restricted to one site', [SITE_A]],
+    ['restricted to zero sites', []],
+  ])('POST /monitor-definitions denied 403, no create (%s)', async (_label, allowedSiteIds) => {
+    const res = await jsonRequest(
+      buildApp({ allowedSiteIds }),
+      'POST',
+      '',
+      validCreateBody(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(createMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /monitor-definitions/:id denied 403, no update', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+
+    const res = await jsonRequest(
+      buildApp({ allowedSiteIds: [SITE_A] }),
+      'PATCH',
+      `/${MONITOR_ID}`,
+      { name: 'Renamed' },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(updateMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /monitor-definitions/:id denied 403, no delete', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+
+    const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'DELETE', `/${MONITOR_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(deleteMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /monitor-definitions/:id/attachments denied 403, no attach', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+
+    const res = await jsonRequest(
+      buildApp({ allowedSiteIds: [SITE_A] }),
+      'POST',
+      `/${MONITOR_ID}/attachments`,
+      { configPolicyId: POLICY_ID },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    expect(getConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /monitor-definitions/:id/attachments createPolicyFor branch denied 403 too', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+
+    const res = await jsonRequest(
+      buildApp({ allowedSiteIds: [SITE_A] }),
+      'POST',
+      `/${MONITOR_ID}/attachments`,
+      { createPolicyFor: { level: 'site', targetId: SITE_A } },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /monitor-definitions/:id/attachments/:attachmentId denied 403, no detach', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+
+    const res = await jsonRequest(
+      buildApp({ allowedSiteIds: [SITE_A] }),
+      'DELETE',
+      `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`,
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    expect(getConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('an unrestricted org caller still succeeds (control)', async () => {
+    const created = monitorRow();
+    createMonitorDefinitionMock.mockResolvedValue(created);
+
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+
+    expect(res.status).toBe(201);
+    expect(createMonitorDefinitionMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -27,6 +27,7 @@ import { elevationRequestsRoutes } from './elevationRequests';
 import { processSampleRoutes } from './processSample';
 import { unifiTelemetryRoutes } from './unifiTelemetry';
 import { wingetBootstrapRoutes } from './wingetBootstrap';
+import { agentStorageSessionRoutes } from './storageSessions';
 
 export const agentRoutes = new Hono();
 
@@ -91,3 +92,4 @@ agentRoutes.route('/', elevationRequestsRoutes);
 agentRoutes.route('/', processSampleRoutes);
 agentRoutes.route('/', unifiTelemetryRoutes);
 agentRoutes.route('/', wingetBootstrapRoutes);
+agentRoutes.route('/', agentStorageSessionRoutes);

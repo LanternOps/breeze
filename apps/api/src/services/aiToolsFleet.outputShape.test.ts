@@ -4,14 +4,21 @@ import { expectDefaultPageFits, fixtureRow } from './aiToolOutputBudget.testkit'
 
 const dbMock = vi.hoisted(() => {
   let rows: unknown[] = [];
+  const paged = () => ({
+    orderBy: () => ({
+      limit: (n: number) => ({
+        offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
+      }),
+    }),
+  });
   const chain = () => ({
     innerJoin: () => ({
       where: () => ({
-        orderBy: () => ({
-          limit: (n: number) => ({
-            offset: (o: number) => Promise.resolve(rows.slice(o, o + n)),
-          }),
-        }),
+        ...paged(),
+        // Org-wide list groups by patch identity instead of selectDistinct
+        // (severity/category are now per-device-derived, so distinct rows
+        // can no longer collapse to one-per-patch on their own).
+        groupBy: () => paged(),
       }),
     }),
   });

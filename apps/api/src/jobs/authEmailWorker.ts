@@ -37,6 +37,49 @@ import { attachWorkerObservability } from './workerObservability';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
+// Bounds how often ONE account can have its reset link regenerated,
+// independent of how many distinct client addresses the requests arrive
+// from. Deliberately short relative to the 1-hour reset-token TTL — a
+// legitimate user who wants another link soon just waits out the window
+// rather than being locked out of recovery.
+const PASSWORD_RESET_COOLDOWN_SECONDS = 5 * 60;
+
+function passwordResetCooldownKey(userId: string): string {
+  return `reset-cooldown:${userId}`;
+}
+
+// Compare-and-delete (ioredis `eval` — a Redis server-side Lua script, not
+// JavaScript eval; the token comes in as ARGV, never interpolated into the
+// script). Releasing the cooldown claim on a failed send must only remove
+// the key if it still holds THIS attempt's token — a bare DEL would also
+// delete a newer claim that a concurrent/retried job had already installed
+// after this key's TTL happened to lapse, reopening the double-send window
+// the claim exists to close.
+const DELETE_IF_TOKEN_MATCHES_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+`;
+
+async function releasePasswordResetCooldown(
+  redis: ReturnType<typeof getRedis>,
+  userId: string,
+  claimToken: string,
+): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.eval(DELETE_IF_TOKEN_MATCHES_LUA, 1, passwordResetCooldownKey(userId), claimToken);
+  } catch (err) {
+    // Best-effort: if the release itself fails, the claim simply outlives
+    // its TTL and the account is throttled for up to the cooldown window —
+    // safe-direction failure, never a reason to swallow the original error
+    // that triggered the release.
+    console.error('[auth-email] failed to release password-reset cooldown claim:', err);
+  }
+}
+
 /**
  * Exported for unit test — the Worker below is a thin wrapper. Never throws for
  * an "account does not exist" outcome: that is a normal, expected result, not a
@@ -93,49 +136,86 @@ async function handlePasswordReset(email: string): Promise<void> {
     throw new Error('[auth-email] password-reset preconditions unavailable (redis/user)');
   }
 
-  const resetToken = nanoid(48);
-  const tokenHash = createHash('sha256').update(resetToken).digest('hex');
-
-  // SR2-08 envelope, unchanged from the old in-request path — advance the
-  // generation and bind the token to it plus the exact normalized address.
-  // Only the newest generation redeems (routes/auth/password.ts checks it).
-  const gen = await withSystemDbAccessContext(() =>
-    db.transaction(async (tx) => advanceUserEpochs(tx, eligibility.userId!, { passwordReset: true }))
+  // Per-user cooldown, keyed on the account rather than the requesting
+  // client. The only limiter on the request path (`forgot:<client>`) is keyed
+  // on IP/`/64`, so a requester controlling several source addresses can
+  // still drive unlimited accepted requests for one target — mail-flooding
+  // their inbox and superseding their legitimate reset link every time a new
+  // one lands. Claim the cooldown atomically (SET NX EX) BEFORE minting a new
+  // generation: a request that loses the claim is a normal, expected outcome
+  // (some other accepted request for this user already won the window), not
+  // an error or a retry — it simply does no further work, keeping the
+  // requester-visible response identical either way (the request path never
+  // observes this worker at all).
+  // Unique per-attempt token, not a constant sentinel: the release below is a
+  // compare-and-delete keyed on this value, so a stale/duplicate release can
+  // never remove a DIFFERENT attempt's claim (see `releasePasswordResetCooldown`).
+  const claimToken = nanoid(21);
+  const cooldownClaimed = await redis.set(
+    passwordResetCooldownKey(eligibility.userId),
+    claimToken,
+    'EX',
+    PASSWORD_RESET_COOLDOWN_SECONDS,
+    'NX',
   );
-  await redis.setex(
-    `reset:${tokenHash}`,
-    3600,
-    JSON.stringify({
-      userId: eligibility.userId,
-      passwordResetEpoch: gen.passwordResetEpoch,
-      email: normalizedEmail,
-    })
-  );
+  if (cooldownClaimed !== 'OK') {
+    console.warn('[auth-email] password reset for this account is within cooldown; skipping mail/epoch advance');
+    return;
+  }
 
-  const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
-  const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  try {
+    const resetToken = nanoid(48);
+    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
 
-  const emailService = getEmailService();
-  if (!emailService) {
-    // Observable + retryable without changing the (already-sent) public
-    // response. The reset artifact is already bound in Redis; a retry will
-    // re-send once mail is configured, and the older generation is superseded.
-    const err = new Error('[auth-email] email service not configured; password reset not sent');
-    captureException(err);
+    // SR2-08 envelope, unchanged from the old in-request path — advance the
+    // generation and bind the token to it plus the exact normalized address.
+    // Only the newest generation redeems (routes/auth/password.ts checks it).
+    const gen = await withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => advanceUserEpochs(tx, eligibility.userId!, { passwordReset: true }))
+    );
+    await redis.setex(
+      `reset:${tokenHash}`,
+      3600,
+      JSON.stringify({
+        userId: eligibility.userId,
+        passwordResetEpoch: gen.passwordResetEpoch,
+        email: normalizedEmail,
+      })
+    );
+
+    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+    const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+    const emailService = getEmailService();
+    if (!emailService) {
+      // Observable + retryable without changing the (already-sent) public
+      // response. The reset artifact is already bound in Redis; a retry will
+      // re-send once mail is configured, and the older generation is superseded.
+      const err = new Error('[auth-email] email service not configured; password reset not sent');
+      captureException(err);
+      throw err;
+    }
+    await emailService.sendPasswordReset({ to: eligibility.email, resetUrl, purpose: 'auth.password_reset' });
+
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: ANONYMOUS_ACTOR_ID,
+      action: 'user.password.reset.requested',
+      resourceType: 'user',
+      resourceId: eligibility.userId,
+      details: {},
+      result: 'success',
+    });
+  } catch (err) {
+    // A failure anywhere after the claim — most importantly a send failure —
+    // must not leave the cooldown held: BullMQ's retry would hit the still-
+    // claimed key, lose the NX race, and return silently (no mail, no error,
+    // no further retry — a swallowed job). Release (compare-and-delete, this
+    // attempt's token only) THEN re-throw so the retry actually runs.
+    await releasePasswordResetCooldown(redis, eligibility.userId, claimToken);
     throw err;
   }
-  await emailService.sendPasswordReset({ to: eligibility.email, resetUrl, purpose: 'auth.password_reset' });
-
-  await createAuditLog({
-    orgId: null,
-    actorType: 'system',
-    actorId: ANONYMOUS_ACTOR_ID,
-    action: 'user.password.reset.requested',
-    resourceType: 'user',
-    resourceId: eligibility.userId,
-    details: {},
-    result: 'success',
-  });
 }
 
 /**

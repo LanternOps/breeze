@@ -156,6 +156,59 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+// Minimal in-memory sliding-window Redis stand-in so `checkTurnCredentialMintRateLimit`
+// exercises the real `rateLimiter` service instead of the
+// global `__tests__/setup.ts` Redis mock, which stubs `pipeline()` but not the
+// `multi()` chain `rateLimiter` actually calls — leaving it fail closed.
+const turnMintZsets = vi.hoisted(() => new Map<string, number[]>());
+
+vi.mock('../services/redis', () => ({
+  getRedis: () => ({
+    multi() {
+      const key = { value: '' };
+      const ops: Array<() => unknown> = [];
+      const chain: any = {
+        zremrangebyscore(k: string, _min: unknown, max: number) {
+          key.value = k;
+          ops.push(() => {
+            const arr = turnMintZsets.get(k) ?? [];
+            turnMintZsets.set(k, arr.filter((score) => score > max));
+            return 0;
+          });
+          return chain;
+        },
+        zadd(k: string, score: number, _member: string) {
+          ops.push(() => {
+            const arr = turnMintZsets.get(k) ?? [];
+            arr.push(score);
+            turnMintZsets.set(k, arr);
+            return 1;
+          });
+          return chain;
+        },
+        zcard(k: string) {
+          ops.push(() => (turnMintZsets.get(k) ?? []).length);
+          return chain;
+        },
+        zrange(k: string, _s: number, _e: number, _w: string) {
+          ops.push(() => {
+            const arr = turnMintZsets.get(k) ?? [];
+            return arr.length ? ['member', String(arr[0])] : [];
+          });
+          return chain;
+        },
+        expire(_k: string, _t: number) {
+          ops.push(() => 1);
+          return chain;
+        },
+      };
+      chain.exec = () => Promise.resolve(ops.map((fn) => [null, fn()]));
+      return chain;
+    },
+    zrem: vi.fn().mockResolvedValue(1),
+  }),
+}));
+
 import { db } from '../db';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { sendCommandToAgent } from './agentWs';
@@ -281,6 +334,7 @@ describe('remote routes', () => {
     mockAuthState.partnerId = null;
     mockAuthState.accessibleOrgIds = ['org-123'];
     mockAuthState.allowedSiteIds = undefined;
+    turnMintZsets.clear();
     app = new Hono();
     app.route('/remote', remoteRoutes);
   });
@@ -624,6 +678,64 @@ describe('remote routes', () => {
       const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
 
       expect(res.status).toBe(400);
+    });
+
+    // a `disconnected` desktop session must not be able
+    // to mint fresh TURN credentials indefinitely after it has ended.
+    it('rejects a disconnected desktop session', async () => {
+      const session = {
+        id: SESSION_UUID,
+        type: 'desktop',
+        userId: 'user-123',
+        status: 'disconnected',
+        deviceId: DEVICE_UUID,
+        orgId: 'org-123',
+        iceCandidates: []
+      };
+      const device = {
+        id: DEVICE_UUID,
+        orgId: 'org-123',
+        status: 'online'
+      };
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+
+      const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.status).toBe('disconnected');
+    });
+
+    // the mint
+    // username carries a random per-call suffix, defeating coturn's
+    // username-keyed `user-quota`, so the API must bound the mint rate
+    // itself. Drives the real `rateLimiter` sliding window past
+    // `TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW` (default 30) for one user.
+    it('bounds how many TURN credential mints one caller can request', async () => {
+      const session = {
+        id: SESSION_UUID,
+        type: 'desktop',
+        userId: 'user-123',
+        status: 'active',
+        deviceId: DEVICE_UUID,
+        orgId: 'org-123',
+        iceCandidates: []
+      };
+      const device = {
+        id: DEVICE_UUID,
+        orgId: 'org-123',
+        status: 'online'
+      };
+
+      let lastStatus = 0;
+      for (let i = 0; i < 31; i += 1) {
+        vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+        const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
+        lastStatus = res.status;
+        if (res.status === 429) break;
+      }
+
+      expect(lastStatus).toBe(429);
     });
   });
 

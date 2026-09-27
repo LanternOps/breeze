@@ -30,6 +30,7 @@ import type { AiTool } from './aiTools';
 import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
 import { createC2cSyncJobIfIdle } from './c2cJobCreation';
 import { captureRecoveryAuthorizationSubject } from './recoveryAuthorizationSubject';
+import { maskSecret } from '../routes/c2c/helpers';
 
 type C2CHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -118,7 +119,10 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
         .orderBy(desc(c2cConnections.updatedAt))
         .limit(limit);
 
-      const connections = rows;
+      const connections = rows.map((row) => ({
+        ...row,
+        clientId: row.clientId ? maskSecret(row.clientId) : null,
+      }));
 
       return JSON.stringify({ connections, showing: connections.length });
     }),

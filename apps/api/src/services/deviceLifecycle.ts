@@ -41,7 +41,8 @@ export type DeviceLifecycleCode =
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
-  | 'STATE_CHANGED';
+  | 'STATE_CHANGED'
+  | 'BACKUP_PROTECTED';
 
 export class DeviceLifecycleError extends Error {
   constructor(
@@ -187,6 +188,42 @@ export const UNINSTALL_PENDING_MESSAGE =
   'An agent uninstall is still queued for this device. Wait for it to check in, or restore the device and remove it again choosing "Leave the agent installed".';
 
 /**
+ * Backup snapshots explicitly preserved — under legal hold, or inside their
+ * immutability window — must survive an ordinary device purge, the same way
+ * `deleteSnapshotRow` (jobs/backupRetention.ts) already refuses to delete
+ * them during normal retention cleanup. `deleteDeviceCascade`'s generic
+ * device-id cascade loop has no such check: it unconditionally deletes every
+ * `backup_snapshots`/`backup_snapshot_retirements` row for the device, so a
+ * hold placed for legal/compliance reasons on a device slated for removal was
+ * silently destroyed along with everything else. This predicate is the gate
+ * `purgeRemovedDevice` checks before entering that cascade.
+ *
+ * Deliberately scoped to the device-purge path only (this function, and its
+ * callers in jobs/quickSupportReaper.ts). Organization erasure
+ * (services/tenantCascade.ts) is a distinct code path that does not call
+ * `deleteDeviceCascade` or this predicate at all — it is the tenant's own
+ * request to delete everything, including held snapshots, and gating it the
+ * same way would silently break the erasure contract. That is a real policy
+ * tension (a legal hold arguably should also block org-level erasure) left
+ * as an open product question rather than resolved here.
+ */
+export const BACKUP_PROTECTED_MESSAGE =
+  'This device has a backup snapshot under legal hold or inside its immutability window. Release the hold, or wait for the window to expire, before purging the device.';
+
+export async function hasProtectedBackupSnapshots(tx: Tx, deviceId: string): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT id FROM backup_snapshots
+     WHERE device_id = ${deviceId}
+       AND (
+         legal_hold = true
+         OR (is_immutable = true AND immutable_until IS NOT NULL AND immutable_until > now())
+       )
+     LIMIT 1
+  `)) as unknown as Array<{ id: string }>;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+/**
  * Permanently delete a removed device and everything referencing it.
  *
  * Refuses (`UNINSTALL_PENDING`) while a `device_remove` uninstall is still
@@ -222,6 +259,10 @@ export async function purgeRemovedDevice(
 
   if (await hasPendingDeviceRemoveUninstall(tx, deviceId)) {
     throw new DeviceLifecycleError('UNINSTALL_PENDING', UNINSTALL_PENDING_MESSAGE);
+  }
+
+  if (await hasProtectedBackupSnapshots(tx, deviceId)) {
+    throw new DeviceLifecycleError('BACKUP_PROTECTED', BACKUP_PROTECTED_MESSAGE);
   }
 
   await deleteDeviceCascade(tx, deviceId);

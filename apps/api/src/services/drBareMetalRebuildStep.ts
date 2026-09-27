@@ -13,6 +13,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { backupSnapshots } from '../db/schema/backup';
 import type { DrDb } from './bareMetalRecoveryService';
+import { findCredentialShapedKeyPath } from './drStoredCredentialKeys';
 
 export const DR_STEP_BARE_METAL_REBUILD = 'BARE_METAL_REBUILD';
 export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR = '/var/lib/breeze/rebuild/out';
@@ -48,10 +49,26 @@ export function isBareMetalRebuildConfig(restoreConfig: unknown): boolean {
  * strict schema and stored NORMALISED (defaults applied). A plain
  * `z.union([strict, record])` would let an invalid BARE_METAL_REBUILD config
  * fall through to the open record, so the discrimination is explicit.
+ *
+ * No step may store credential material — a storage destination
+ * (`providerConfig`), a password, a key, a bearer token — anywhere in the
+ * config: the plan is long-lived tenant data, and its payload is copied into
+ * every command the step queues. Storage destinations are resolved from the
+ * step's snapshot when the command is delivered instead.
  */
 export const drRestoreConfigSchema = z
   .record(z.string(), z.any())
   .transform((config, ctx): Record<string, unknown> => {
+    const credentialPath = findCredentialShapedKeyPath(config);
+    if (credentialPath) {
+      ctx.addIssue({
+        code: 'custom',
+        path: credentialPath,
+        message:
+          'Credentials cannot be stored in a DR plan. Storage destinations are resolved from the step snapshot when the step runs.',
+      });
+      return z.NEVER;
+    }
     if (!isBareMetalRebuildConfig(config)) return config;
     const parsed = drBareMetalRebuildConfigSchema.safeParse(config);
     if (parsed.success) return parsed.data;

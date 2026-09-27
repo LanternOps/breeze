@@ -263,3 +263,10 @@ func extractSessionID(eventData uintptr) uint32 {
 	notif := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Pointer(eventData))
 	return notif.SessionID
 }
+
+// runningUnderServiceManager reports whether the Service Control Manager
+// started this process (cfg.IsService, from svc.IsWindowsService). A console
+// run or a scheduled task is not the service, even as SYSTEM.
+func runningUnderServiceManager(cfg *config.Config) bool {
+	return cfg.IsService
+}

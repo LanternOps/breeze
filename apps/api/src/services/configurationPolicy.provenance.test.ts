@@ -14,6 +14,12 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const })),
 }));
 
+// Field-provenance tiering (denylist option) — see configurationPolicy.baseline.test.ts.
+vi.mock('./executionTargetGating', () => ({
+  resolveExecutionSafeGroupIds: vi.fn(async (groupIds: string[]) => ({ allowedGroupIds: groupIds, refusedGroups: [] })),
+  auditRefusedExecutionGroups: vi.fn(),
+}));
+
 import { resolveEffectiveConfig } from './configurationPolicy';
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';

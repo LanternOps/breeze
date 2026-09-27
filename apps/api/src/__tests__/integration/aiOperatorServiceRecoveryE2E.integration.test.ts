@@ -109,6 +109,11 @@ async function seedTenant(): Promise<Tenant> {
   const requester = await createUser({
     partnerId: partner.id, orgId: org.id, email: `requester-${randomUUID()}@ope2e.test`,
   });
+  // Live org membership, not just the denormalized users.orgId column — the
+  // coordinator's requester-access recheck (advanceExecute) reads
+  // organization_users, same as the real admission-time check does.
+  const requesterRole = await createRole({ scope: 'organization', orgId: org.id });
+  await assignUserToOrganization(requester.id, org.id, requesterRole.id);
 
   const eligibleRole = await createRole({ scope: 'organization', orgId: org.id });
   await grantRolePermissions(eligibleRole.id, [PERMISSIONS.DEVICES_EXECUTE]);

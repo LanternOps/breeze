@@ -13,7 +13,8 @@ import type { createIngestJobsService } from '../services/ingestJobsService';
 import type { createIngestJobRunner } from '../services/ingestJobRunner';
 import { getOrgSettings, putOrgSettings, type DlpConfig } from '../services/orgSettingsService';
 import { isTransientIngestError } from '../services/ingestErrors';
-import { adminGate, type WorkspaceRouteEnv } from './adminGate';
+import { adminGate, WORKSPACE_RESOURCE, type WorkspaceRouteEnv } from './adminGate';
+import { DLP_MAX_CUSTOM_RULES, validateDlpPattern } from '@breeze/shared/validators';
 
 // Paths exempt from the content-enabled 404 gate below: the settings switch
 // itself, and (W3) the admin job API — job visibility (and the ability to
@@ -217,6 +218,41 @@ export function createContentRoutes(deps: ContentRouteDeps): Hono<WorkspaceRoute
     if (!parsed.success) {
       return c.json({ error: 'invalid request', details: parsed.error.issues }, 400);
     }
+    // Turning content extraction on, or touching the DLP config that gates
+    // what it exposes, is an execute-tier action — matching every other
+    // /content/* route — not a plain configuration write. workspace:write
+    // alone may still disable content (contentEnabled: false / omitted) or
+    // send a no-op PUT.
+    const changesContentGuardrails = parsed.data.contentEnabled === true || parsed.data.dlpConfig !== undefined;
+    if (changesContentGuardrails) {
+      const authorization = c.get('extensionAuthorization');
+      if (!authorization?.hasPermission(WORKSPACE_RESOURCE, 'execute') || !authorization.hasPermission('devices', 'execute')) {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+    }
+
+    // Reject at write time (not just the cheap re-check normalizeDlp applies
+    // on every read): a custom pattern is rejected outright if it exceeds the
+    // shared length cap, uses a backreference, matches the nested-quantifier
+    // heuristic, or fails the timed-probe check for catastrophic backtracking
+    // (packages/shared/src/validators/clientAiDlp.ts). This full check is
+    // write-only — it is not safe to run per-request on the ingest read path.
+    const customPatterns = parsed.data.dlpConfig?.customPatterns;
+    if (customPatterns) {
+      if (customPatterns.length > DLP_MAX_CUSTOM_RULES) {
+        return c.json({ error: `at most ${DLP_MAX_CUSTOM_RULES} custom DLP patterns are allowed` }, 400);
+      }
+      const invalid: Array<{ name: string; reason: string }> = [];
+      for (const p of customPatterns) {
+        const result = validateDlpPattern(p.pattern);
+        if (!result.ok) invalid.push({ name: p.name, reason: result.reason });
+      }
+      if (invalid.length > 0) {
+        return c.json({ error: 'one or more custom DLP patterns are unsafe or invalid', details: invalid }, 400);
+      }
+    }
+
+    const previousSettings = await getOrgSettings(deps.db, orgId);
     const settings = await putOrgSettings(deps.db, orgId, {
       ...(parsed.data.contentEnabled !== undefined ? { contentEnabled: parsed.data.contentEnabled } : {}),
       // Cast: the schema above validates shape only, not detector/action
@@ -233,7 +269,12 @@ export function createContentRoutes(deps: ContentRouteDeps): Hono<WorkspaceRoute
       action: 'workspace.content.settings_update',
       resourceType: 'workspace_org_settings',
       result: 'success',
-      details: { contentEnabled: settings.contentEnabled },
+      details: {
+        contentEnabled: settings.contentEnabled,
+        ...(parsed.data.dlpConfig !== undefined
+          ? { dlpConfigBefore: previousSettings.dlpConfig, dlpConfigAfter: settings.dlpConfig }
+          : {}),
+      },
     });
     return c.json(settings);
   });

@@ -31,6 +31,7 @@ import {
   devices,
   organizations,
   organizationUsers,
+  partners,
   partnerUsers,
   remoteSessions,
   userPasskeys,
@@ -39,7 +40,7 @@ import {
 import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
 import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
-import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
+import { checkRemoteAccess, resolveDesktopSessionPolicy } from './remoteAccessPolicy';
 import { getEffectiveMfaPolicy } from './mfaPolicy';
 import { remoteDesktopFenceRequired } from '../config/env';
 
@@ -102,7 +103,10 @@ export type RevocationReason =
   | 'membership_removed'
   | 'site_scope_lost'
   | 'mfa_required'
-  | 'hard_deadline';
+  | 'hard_deadline'
+  | 'org_suspended'
+  | 'partner_suspended'
+  | 'policy_denied';
 
 /** The lease block shipped to the agent inside the `start_desktop` payload. */
 export interface RevocationLeaseGrant {
@@ -191,8 +195,20 @@ export interface RevocationRecheckRow {
    * Whether the session's org is still a live org under the caller's partner.
    * Mirrors the partner-axis check in `resolveLiveEventAuthorization`: an
    * archived / soft-deleted / cross-partner org is not reachable any more.
+   * Applies to every caller, org-scoped or partner-scoped — org lifecycle is
+   * not conditional on which axis authorized the session.
    */
   sessionOrgUsable: boolean;
+  /**
+   * The session's owning organization's partner, read live. Matches
+   * `resolveRemoteWsLiveAuthority`'s owning-partner check: a suspended,
+   * churned or soft-deleted partner cannot retain remote-session authority
+   * through an otherwise-active organization.
+   */
+  partner: {
+    status: string;
+    deletedAt: Date | null;
+  };
 }
 
 /** Live statuses a lease may be renewed for. */
@@ -245,6 +261,7 @@ export function evaluateRevocationRecheck(
   nowMs: number,
   hardDeadlineMs: number,
   mfaRequired = false,
+  policyAllowed = true,
 ): RecheckVerdict {
   if (!row) return { ok: false, reason: 'session_ended' };
 
@@ -270,6 +287,16 @@ export function evaluateRevocationRecheck(
   if (device.orgId !== session.orgId) {
     return { ok: false, reason: 'membership_removed' };
   }
+  // Org and partner lifecycle apply to EVERY caller, org-scoped or
+  // partner-scoped alike — an admin suspending/deleting the org or
+  // downgrading the owning partner must reach an already-running P2P
+  // session, the same way it already reaches a fresh session start.
+  if (!row.sessionOrgUsable) {
+    return { ok: false, reason: 'org_suspended' };
+  }
+  if (row.partner.status !== 'active' || row.partner.deletedAt !== null) {
+    return { ok: false, reason: 'partner_suspended' };
+  }
 
   if (user.orgId !== null) {
     // Org-scoped user: the session's org must be their own org, and the
@@ -294,9 +321,7 @@ export function evaluateRevocationRecheck(
     ) {
       return { ok: false, reason: 'membership_removed' };
     }
-    if (!row.sessionOrgUsable) {
-      return { ok: false, reason: 'membership_removed' };
-    }
+    // sessionOrgUsable is already checked above for every caller.
   }
 
   // MFA per CURRENT policy. The force_mfa flip itself already advances
@@ -305,6 +330,14 @@ export function evaluateRevocationRecheck(
   // usable factor (e.g. every passkey deleted or disabled).
   if (mfaRequired && !user.mfaProtected) {
     return { ok: false, reason: 'mfa_required' };
+  }
+
+  // Live remote-access policy for the session's capability (webrtcDesktop /
+  // remoteTools), same enforcement point a fresh session start already goes
+  // through — an admin disabling the capability mid-session must end it, not
+  // just block new starts.
+  if (!policyAllowed) {
+    return { ok: false, reason: 'policy_denied' };
   }
 
   if (nowMs >= hardDeadlineMs) {
@@ -367,10 +400,13 @@ export async function loadRevocationRecheckRow(
               AND ${organizations.status} IN ('active', 'trial')
               AND ${organizations.deletedAt} IS NULL
           )`,
+          partnerStatus: partners.status,
+          partnerDeletedAt: partners.deletedAt,
         })
         .from(remoteSessions)
         .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
         .innerJoin(users, eq(remoteSessions.userId, users.id))
+        .innerJoin(partners, eq(partners.id, users.partnerId))
         .leftJoin(
           organizationUsers,
           and(
@@ -446,6 +482,10 @@ export async function loadRevocationRecheckRow(
             }
           : null,
         sessionOrgUsable: found.sessionOrgUsable === true,
+        partner: {
+          status: found.partnerStatus,
+          deletedAt: found.partnerDeletedAt ?? null,
+        },
       } satisfies RevocationRecheckRow;
     }),
   );
@@ -695,8 +735,8 @@ export async function renewRevocationLease(
   // The MFA policy is consulted ONLY for a factorless user whose session would
   // otherwise renew: a user holding a factor pays no extra queries, and a
   // session that is ending anyway never triggers the enrolment-grace grant.
+  let mfaRequired = false;
   if (verdict.ok && row && !row.user.mfaProtected) {
-    let mfaRequired: boolean;
     try {
       mfaRequired = await resolveLeaseMfaRequired(row);
     } catch (err) {
@@ -707,6 +747,16 @@ export async function renewRevocationLease(
       return { status: 'unavailable' };
     }
     verdict = evaluateRevocationRecheck(row, now, hardDeadline, mfaRequired);
+  }
+  // Same reasoning: only re-check remote-access policy for a session that is
+  // still otherwise renewable. `checkRemoteAccess` itself fails closed on a
+  // resolution error (denies rather than throwing), matching a fresh session
+  // start's admission gate — a mid-session policy disable/lease-renew race
+  // must never be more permissive than starting a brand-new session.
+  if (verdict.ok && row) {
+    const capability = row.session.type === 'desktop' ? 'webrtcDesktop' as const : 'remoteTools' as const;
+    const policy = await checkRemoteAccess(row.device.id, capability, { bypassCache: true });
+    verdict = evaluateRevocationRecheck(row, now, hardDeadline, mfaRequired, policy.allowed);
   }
   if (verdict.ok) {
     return {

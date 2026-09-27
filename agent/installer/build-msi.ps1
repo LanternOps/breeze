@@ -37,6 +37,7 @@ $installerPath = Join-Path $PSScriptRoot "breeze.wxs"
 $taskXmlPath = Join-Path $repoRoot "service\\windows\\breeze-agent-user-task.xml"
 $installUserHelperScriptPath = Join-Path $repoRoot "scripts\\install\\install-windows.ps1"
 $removeUserHelperScriptPath = Join-Path $PSScriptRoot "remove-windows-task.ps1"
+$enrollAgentScriptPath = Join-Path $PSScriptRoot "scripts\\enroll-agent.vbs"
 
 if ([string]::IsNullOrWhiteSpace($AgentExePath)) {
     $AgentExePath = Join-Path $repoRoot "breeze-agent-windows-amd64.exe"
@@ -81,6 +82,9 @@ if (-not (Test-Path $installUserHelperScriptPath)) {
 }
 if (-not (Test-Path $removeUserHelperScriptPath)) {
     throw "User helper uninstall script not found: $removeUserHelperScriptPath"
+}
+if (-not (Test-Path $enrollAgentScriptPath)) {
+    throw "Enroll-agent custom action script not found: $enrollAgentScriptPath"
 }
 
 $msiVersion = ($Version -replace '-.*$', '')
@@ -157,6 +161,7 @@ $wixArgs = @(
     "-d", "UserTaskXmlPath=$taskXmlPath",
     "-d", "InstallUserHelperScriptPath=$installUserHelperScriptPath",
     "-d", "RemoveUserHelperScriptPath=$removeUserHelperScriptPath",
+    "-d", "EnrollAgentScriptPath=$enrollAgentScriptPath",
     "-o", "$OutputPath"
 )
 

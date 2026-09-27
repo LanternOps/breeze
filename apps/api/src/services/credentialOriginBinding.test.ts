@@ -1,8 +1,77 @@
 import { describe, expect, it } from 'vitest';
 import {
+  destinationSetGainedMembers,
   urlOriginChanged,
   webhookOriginChangeWouldRetainAuthorization,
 } from './credentialOriginBinding';
+
+describe('destinationSetGainedMembers', () => {
+  it('is false when the set is unchanged', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], ['10.0.0.0/24'])).toBe(false);
+  });
+
+  it('is false for pure narrowing (removal only)', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24', '10.0.1.0/24'], ['10.0.0.0/24'])).toBe(false);
+  });
+
+  it('is false when narrowing to empty', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], [])).toBe(false);
+  });
+
+  it('is true when a member is added alongside an unchanged member', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], ['10.0.0.0/24', '10.0.1.0/24'])).toBe(true);
+  });
+
+  it('is true for a net change even when some entries are dropped (added and removed)', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24', '10.0.1.0/24'], ['10.0.0.0/24', '10.0.5.0/24'])).toBe(true);
+  });
+
+  it('treats a CIDR prefix widening as a different string and so a gain, even though it is a superset', () => {
+    // No CIDR-aware containment logic: '10.0.0.0/23' is not byte-identical to
+    // '10.0.0.0/24', so it is treated as a new member. This is the
+    // safe-by-construction direction (over-block, never under-block).
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], ['10.0.0.0/23'])).toBe(true);
+  });
+
+  it('treats a bare IP and its /32 form as different members (over-blocks, safe direction)', () => {
+    expect(destinationSetGainedMembers(['10.0.0.5'], ['10.0.0.5/32'])).toBe(true);
+  });
+
+  it('is false for a shuffled but identical set', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24', '10.0.1.0/24'], ['10.0.1.0/24', '10.0.0.0/24'])).toBe(false);
+  });
+
+  it('trims whitespace before comparing', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], [' 10.0.0.0/24 '])).toBe(false);
+    expect(destinationSetGainedMembers([' 10.0.0.0/24 '], ['10.0.0.0/24'])).toBe(false);
+  });
+
+  it('ignores duplicate entries in next that are already present', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24'], ['10.0.0.0/24', '10.0.0.0/24'])).toBe(false);
+  });
+
+  it('ignores duplicate entries in existing', () => {
+    expect(destinationSetGainedMembers(['10.0.0.0/24', '10.0.0.0/24'], ['10.0.0.0/24'])).toBe(false);
+  });
+
+  it('handles IPv6 addresses and CIDRs the same way as IPv4', () => {
+    expect(destinationSetGainedMembers(['2001:db8::/64'], ['2001:db8::/64'])).toBe(false);
+    expect(destinationSetGainedMembers(['2001:db8::/64'], ['2001:db8::/32'])).toBe(true);
+    expect(destinationSetGainedMembers(['2001:db8::/64', '2001:db8:1::/64'], ['2001:db8::/64'])).toBe(false);
+  });
+
+  it('is case-sensitive for hostnames (over-blocks on case difference, safe direction)', () => {
+    expect(destinationSetGainedMembers(['Printer.Local'], ['printer.local'])).toBe(true);
+  });
+
+  it('is false for an empty existing and empty next set', () => {
+    expect(destinationSetGainedMembers([], [])).toBe(false);
+  });
+
+  it('is true for any member when existing is empty', () => {
+    expect(destinationSetGainedMembers([], ['10.0.0.0/24'])).toBe(true);
+  });
+});
 
 describe('urlOriginChanged', () => {
   it.each([

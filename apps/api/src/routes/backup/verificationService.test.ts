@@ -241,7 +241,7 @@ describe('backup verification service', () => {
     expect(summary.verification.coveragePercent).toBe(0);
   });
 
-  it('includes the resolved provider + providerConfig in the dispatched verification command', async () => {
+  it('dispatches the verification command with a destination reference, never the stored credential', async () => {
     vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
       command: { id: 'cmd-verify-1', status: 'sent' } as any,
     });
@@ -259,10 +259,13 @@ describe('backup verification service', () => {
       'backup_verify',
       expect.objectContaining({
         provider: 's3',
-        providerConfig: expect.objectContaining({ bucket: 'breeze-backups' }),
+        providerConfigRef: { configId: 'cfg-s3-primary', orgId: 'org-123' },
       }),
       expect.objectContaining({ expectedOrgId: 'org-123' })
     );
+    const dispatched = vi.mocked(queueCommandForExecution).mock.calls.at(-1)![2] as Record<string, unknown>;
+    expect(dispatched).not.toHaveProperty('providerConfig');
+    expect(JSON.stringify(dispatched)).not.toContain('breeze-backups');
 
     const idx = backupVerifications.findIndex((v) => v.id === verification.id);
     if (idx >= 0) backupVerifications.splice(idx, 1);

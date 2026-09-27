@@ -35,6 +35,9 @@ vi.mock('../db/schema', () => ({
   devices: {},
   deviceSessions: {},
   approvalRequests: { id: 'id' },
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
+  patches: { severity: 'patches.severity', category: 'patches.category' },
 }));
 
 vi.mock('drizzle-orm', async (importOriginal) => ({

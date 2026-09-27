@@ -60,6 +60,9 @@ vi.mock('../services/portal/timezone', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   assetCheckouts: {},
   backupConfigs: {},
   backupJobs: {},

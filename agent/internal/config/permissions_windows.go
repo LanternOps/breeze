@@ -22,7 +22,16 @@ import (
 // tokens and mTLS keys live ONLY in secrets.yaml, which stays SYSTEM +
 // Administrators (never Users).
 const (
-	windowsConfigDirSDDL  = `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FRFX;;;BU)`
+	// windowsConfigDirSDDL carries an explicit O:SYG:SY owner/group prefix so
+	// every call to enforceConfigDirPermissions (every config/secret write,
+	// FixConfigPermissions, and the startup drift self-heal below) also
+	// repairs the directory's OWNER, not just its DACL. A plain DACL rewrite
+	// never touches an existing directory's owner, so a local principal who
+	// pre-created C:\ProgramData\Breeze before install/startup hardening ran
+	// would otherwise keep it — and its implicit WRITE_DAC, which survives
+	// any DACL this applies — forever. BUILTIN\Users keeps its intentional
+	// read+traverse ACE so the Breeze Helper can still read agent.yaml.
+	windowsConfigDirSDDL  = `O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FRFX;;;BU)`
 	windowsConfigFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)`
 	windowsSecretFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)`
 
@@ -30,13 +39,25 @@ const (
 	windowsAgentRunDirSDDL     = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 
 	// windowsProgramDataDirSDDL mirrors the MSI HardenProgramDataAcl action
-	// (icacls /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F):
-	// SYSTEM and Administrators get full control, container+object inheritable,
-	// the DACL is PROTECTED (no inheritance), and BUILTIN\Users gets NOTHING.
-	// Unlike the config dir — which intentionally grants Users read so the
-	// Breeze Helper can read agent.yaml — the logs/data trees must never be
-	// Users-readable or -writable.
-	windowsProgramDataDirSDDL = `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
+	// (icacls /setowner *S-1-5-18 && icacls /inheritance:r /grant:r
+	// *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F): SYSTEM owns the
+	// directory (O:SY — /grant:r alone never touches ownership, so a user
+	// who pre-created the directory would otherwise keep it and its implicit
+	// WRITE_DAC forever), SYSTEM and Administrators get full control,
+	// container+object inheritable, the DACL is PROTECTED (no inheritance),
+	// and BUILTIN\Users gets NOTHING. Unlike the config dir — which
+	// intentionally grants Users read so the Breeze Helper can read
+	// agent.yaml — the logs/data trees must never be Users-readable or
+	// -writable.
+	windowsProgramDataDirSDDL = `O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
+
+	// windowsProgramDataDirCreateSDDL is the descriptor a missing logs/data
+	// dir is created with. Same PROTECTED SYSTEM+Administrators-only DACL as
+	// windowsProgramDataDirSDDL; the owner is BUILTIN\Administrators because
+	// that is an owner both a LocalSystem service and an elevated
+	// administrator may assign at creation time (same reasoning as
+	// windowsConfigDirCreateSDDL). Either owner passes programDataDirACLDrifted.
+	windowsProgramDataDirCreateSDDL = `O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
 )
 
 const fileDeleteChildAccess = 0x00000040
@@ -548,29 +569,94 @@ func enforceProgramDataDirPermissions(path string) error {
 	return applyWindowsDACL(path, windowsProgramDataDirSDDL)
 }
 
+// createProgramDataDir creates a missing logs/data dir with its hardened
+// descriptor applied atomically by CreateDirectory, so there is no window in
+// which it carries the parent's inherited ACL. An existing path (including a
+// directory someone else created first) returns an error matching
+// os.ErrExist; the caller then verifies it like any pre-existing dir.
+func createProgramDataDir(path string) error {
+	return createMainAgentDirectory(path, windowsProgramDataDirCreateSDDL)
+}
+
 // programDataDirACLDrifted reports whether path still carries a BUILTIN\Users
 // allow ACE — the signature of the default ProgramData ACL, i.e. the MSI
 // hardening never ran or was blocked. A hardened dir grants only SYSTEM and
 // Administrators, so the presence of a Users ACE is the drift signal.
-func programDataDirACLDrifted(path string) (bool, error) {
-	usersSID, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+// programDataDirACLDrifted reports whether path's owner or DACL no longer
+// matches the hardened ProgramData shape. Two independent signals both count
+// as drift:
+//
+//  1. Untrusted owner — a directory owned by anyone other than LocalSystem or
+//     BUILTIN\Administrators. Ownership carries an implicit WRITE_DAC that
+//     survives a plain DACL rewrite, so a user who pre-created the directory
+//     before install/hardening ran keeps silent control over its permissions
+//     forever unless the owner itself is repaired. This is the primary
+//     signal: the classic "BUILTIN\Users ACE" case below is really just one
+//     symptom of an untrusted (Users-default-ACL) owner having created it.
+//  2. Any ACE beyond SYSTEM/Administrators — not just BUILTIN\Users. An
+//     untrusted owner could grant any principal, not only the
+//     well-known Users group, so the check is "everyone except SY/BA", not a
+//     Users-specific allowlist.
+//
+// configDirOwnerDrifted reports whether path (the ProgramData root, e.g.
+// C:\ProgramData\Breeze) is owned by anyone other than LocalSystem or
+// BUILTIN\Administrators. Unlike programDataDirACLDrifted below, it does NOT
+// treat extra ACEs as drift: the root intentionally grants BUILTIN\Users
+// read+traverse so the Breeze Helper can read agent.yaml, and flagging that
+// as drift would make the self-heal strip the Helper's own access. Ownership
+// is the narrower, always-wrong signal: a directory a local user pre-created
+// before install/hardening ran keeps its implicit WRITE_DAC — surviving any
+// DACL rewrite — until the owner itself is repaired.
+func configDirOwnerDrifted(path string) (bool, error) {
+	return ownerUntrusted(path)
+}
+
+func ownerUntrusted(path string) (bool, error) {
+	sd, err := windows.GetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
 	if err != nil {
-		return false, fmt.Errorf("create Users SID: %w", err)
+		return false, fmt.Errorf("get owner security info on %s: %w", path, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return false, fmt.Errorf("read owner on %s: %w", path, err)
+	}
+	return !trustedMainAgentOwner(owner), nil
+}
+
+func programDataDirACLDrifted(path string) (bool, error) {
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return false, fmt.Errorf("create System SID: %w", err)
+	}
+	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return false, fmt.Errorf("create Administrators SID: %w", err)
 	}
 	sd, err := windows.GetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
 	)
 	if err != nil {
 		return false, fmt.Errorf("get security info on %s: %w", path, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return false, fmt.Errorf("read owner on %s: %w", path, err)
+	}
+	if !trustedMainAgentOwner(owner) {
+		return true, nil
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
 		return false, fmt.Errorf("extract DACL on %s: %w", path, err)
 	}
 	if dacl == nil {
-		return false, nil
+		return true, nil
 	}
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
@@ -578,13 +664,23 @@ func programDataDirACLDrifted(path string) (bool, error) {
 			continue
 		}
 		aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if aceSID.Equals(usersSID) {
+		if !aceSID.Equals(systemSID) && !aceSID.Equals(adminsSID) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
+// applyWindowsDACL applies the DACL (and, when the SDDL carries an explicit
+// owner/group — e.g. windowsProgramDataDirSDDL's "O:SYG:SY" prefix — the
+// owner and group too) from sddl to path. Re-applying only the DACL, as this
+// used to do unconditionally, leaves a pre-existing directory's owner
+// unchanged: WRITE_DAC is implicit for the owner, so a user who pre-created
+// the directory before this ran would keep silent control over its
+// permissions even after a "hardened" DACL was written. SDDLs with no O:/G:
+// segment (windowsConfigDirSDDL, windowsConfigFileSDDL,
+// windowsSecretFileSDDL) are unaffected — their Owner()/Group() both come
+// back nil and only the DACL bit is set, exactly as before.
 func applyWindowsDACL(path, sddl string) error {
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
@@ -594,12 +690,22 @@ func applyWindowsDACL(path, sddl string) error {
 	if err != nil {
 		return fmt.Errorf("extract DACL: %w", err)
 	}
+	info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	var owner, group *windows.SID
+	if o, _, err := sd.Owner(); err == nil && o != nil {
+		owner = o
+		info |= windows.OWNER_SECURITY_INFORMATION
+	}
+	if g, _, err := sd.Group(); err == nil && g != nil {
+		group = g
+		info |= windows.GROUP_SECURITY_INFORMATION
+	}
 	if err := windows.SetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil,
-		nil,
+		info,
+		owner,
+		group,
 		dacl,
 		nil,
 	); err != nil {

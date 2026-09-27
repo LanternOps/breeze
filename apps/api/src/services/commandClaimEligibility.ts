@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { deviceCommands, users } from '../db/schema';
+import { deviceCommands } from '../db/schema';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -143,6 +143,9 @@ export type CommandRevalidationRow = {
   type: string;
   deviceId: string;
   payload: unknown;
+  /** Optional so revalidations that don't need requester identity (e.g. the
+   * existing network_diagnostic one) aren't forced to plumb it through. */
+  createdBy?: string | null;
 };
 
 /**
@@ -166,6 +169,7 @@ export const commandRevalidations: Record<string, CommandRevalidation> = {};
  */
 export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   'network_diagnostic',
+  'script',
 ]);
 
 export function registerCommandRevalidation(
@@ -221,6 +225,33 @@ export function __resetEligibilityFaultThrottleForTests(): void {
 }
 
 /**
+ * Is the command's requester still an active member of the device's tenant?
+ *
+ * NOT a plain `SELECT status FROM users`: on the heartbeat this runs inside the
+ * AGENT's org-scoped context (device org only, no partner-axis access), and
+ * `users` is dual-axis RLS — a partner-level technician (org_id NULL) is
+ * invisible there, so a direct select read every technician as inactive and
+ * cancelled their queued work. `breeze_command_requester_is_active` (migration
+ * 2026-11-05-101500) is a SECURITY DEFINER resolver that returns only a
+ * boolean: caller has access to the org, user active, same partner as the org,
+ * and still attached to the tenant (own org, partner membership, or org
+ * membership). Agent RLS on `users` stays as narrow as it was, and no second
+ * pooled connection is opened inside the claim transaction.
+ *
+ * Wrapped in a savepoint so a failure (e.g. the function missing on a DB that
+ * has not migrated) leaves the claim transaction usable and the caller can
+ * hold the row instead of aborting the whole heartbeat.
+ */
+async function resolveRequesterActive(tx: Tx, userId: string, orgId: string): Promise<boolean> {
+  return tx.transaction(async (sp) => {
+    const rows = (await sp.execute(
+      sql`SELECT public.breeze_command_requester_is_active(${userId}::uuid, ${orgId}::uuid) AS active`,
+    )) as unknown as Array<{ active: boolean | null }>;
+    return rows[0]?.active === true;
+  });
+}
+
+/**
  * Splits claim candidates into claimable / cancelled / held (#5128 §G).
  *
  * A queued command may be claimed days after it was requested, so the
@@ -258,7 +289,7 @@ export async function partitionClaimable(
   const claimable: ClaimCandidate[] = [];
   const cancelled: Array<{ id: string; reason: ClaimCancelReason }> = [];
   const held: Array<{ id: string; reason: ClaimHoldReason }> = [];
-  const requesterActive = new Map<string, boolean>();
+  const requesterActive = new Map<string, boolean | 'error'>();
 
   for (const row of rows) {
     // Checked FIRST, ahead of every cancel: see DRAIN_EXEMPT_TYPES above.
@@ -330,13 +361,32 @@ export async function partitionClaimable(
     if (row.createdBy) {
       let active = requesterActive.get(row.createdBy);
       if (active === undefined) {
-        const [u] = await tx
-          .select({ status: users.status })
-          .from(users)
-          .where(eq(users.id, row.createdBy))
-          .limit(1);
-        active = u?.status === 'active';
+        try {
+          active = await resolveRequesterActive(tx, row.createdBy, device.orgId);
+        } catch (e) {
+          // Same fail-closed contract as the trust check above: never deliver
+          // on an unresolved requester, never cancel on a fault — hold. The
+          // lookup ran inside its own savepoint, so the claim transaction is
+          // still usable for the rest of the batch.
+          console.error(
+            '[commandClaimEligibility] requester check failed; holding the command rather than delivering or cancelling it',
+            {
+              commandId: row.id,
+              deviceId: device.id,
+              type: row.type,
+              error: e instanceof Error ? e.message : String(e),
+            },
+          );
+          if (shouldReportEligibilityFault(device.id, Date.now())) {
+            captureException(e instanceof Error ? e : new Error(String(e)));
+          }
+          active = 'error';
+        }
         requesterActive.set(row.createdBy, active);
+      }
+      if (active === 'error') {
+        held.push({ id: row.id, reason: 'eligibility_check_failed' });
+        continue;
       }
       if (!active) {
         cancelled.push({ id: row.id, reason: 'requester_inactive' });
@@ -352,6 +402,7 @@ export async function partitionClaimable(
       type: row.type,
       deviceId: device.id,
       payload: row.payload,
+      createdBy: row.createdBy,
     });
     if (revalidation) {
       cancelled.push({ id: row.id, reason: revalidation });

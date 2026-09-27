@@ -91,3 +91,64 @@ it.each([
     portalTicketOwnership(user),
   )!));
 });
+
+it.each([
+  { name: 'portal login', contactId: null, submittedBy: LOGIN, requesterContactId: null },
+  { name: 'linked contact', contactId: CONTACT, submittedBy: null, requesterContactId: CONTACT },
+])('scopes the average first-response tile to tickets owned by the $name, not the whole org', async ({ contactId, submittedBy, requesterContactId }) => {
+  const user = { id: LOGIN, orgId: ORG, contactId };
+  // Own ticket answered fast, another contact's ticket in the same org
+  // answered slow — the org-wide average would be pulled toward the slow
+  // ticket if ownership were not applied.
+  const fixture = [
+    { orgId: ORG, submittedBy, requesterContactId, deletedAt: null, firstResponseMinutes: 10 },
+    { orgId: ORG, submittedBy: OTHER, requesterContactId: null, deletedAt: null, firstResponseMinutes: 1000 },
+  ];
+  let responseWhere: SQL | undefined;
+  state.select.mockImplementation((fields: Record<string, unknown>) => ({
+    from: () => ({
+      where: (where: SQL) => {
+        if (!('averageFirstResponseMinutes' in fields)) return Promise.resolve([]);
+        responseWhere = where;
+        const query = compile(where);
+        const bound = (column: string) => {
+          const match = query.sql.match(new RegExp(`"tickets"\\."${column}" = \\$(\\d+)`));
+          return match ? query.params[Number(match[1]) - 1] : undefined;
+        };
+        const login = bound('submitted_by');
+        const contact = bound('requester_contact_id');
+        const visible = fixture.filter((row) =>
+          row.orgId === bound('org_id') && row.deletedAt === null &&
+          (login === undefined && contact === undefined ||
+            row.submittedBy === login || row.requesterContactId === contact),
+        );
+        const minutesSum = visible.reduce((sum, row) => sum + row.firstResponseMinutes, 0);
+        return Promise.resolve([{
+          averageFirstResponseMinutes: visible.length ? minutesSum / visible.length : null,
+          sampleSize: visible.length,
+        }]);
+      },
+    }),
+  }));
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('portalAuth', {
+      user: { ...user, email: 'customer@example.com', name: 'Customer', receiveNotifications: true, status: 'active' },
+      token: 'token', authMethod: 'bearer', timezone: 'UTC',
+    });
+    await next();
+  });
+  app.route('/portal', portalDashboardRoutes);
+
+  const response = await app.request('/portal/dashboard');
+
+  expect(response.status).toBe(200);
+  // The tile must reflect only the viewing contact's own ticket (10 minutes),
+  // never the org-wide blend with the other contact's 1000-minute ticket.
+  expect(await response.json()).toMatchObject({
+    support: { averageFirstResponseMinutes: 10, sampleSize: 1 },
+  });
+  expect(responseWhere).toBeDefined();
+  const compiled = compile(responseWhere!);
+  expect(compiled.sql).toMatch(/"tickets"\."submitted_by" = |"tickets"\."requester_contact_id" = /);
+});

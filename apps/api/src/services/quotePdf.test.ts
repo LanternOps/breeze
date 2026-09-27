@@ -359,6 +359,35 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('IoT devices, NAS devices');
   });
 
+  it('omits a device-group/site stamp from the customer PDF once the line has drifted off its scoping org (id cleared, name kept for the internal editor)', async () => {
+    const pdf = await renderQuotePdf(
+      {
+        id: 'q-drift', quoteNumber: 'Q-DRIFT', currencyCode: 'USD', subtotal: '40.00', taxTotal: '0.00',
+        oneTimeTotal: '0.00', monthlyRecurringTotal: '40.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '0.00', total: '40.00',
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [
+        {
+          id: 'servers', blockId: 'b1', name: 'Servers', description: null, quantity: '1', unitPrice: '40',
+          lineTotal: '40.00', recurrence: 'monthly', contractLineType: 'per_device_group',
+          // Drifted stamp: deviceGroupId/siteId cleared by a retarget (org move),
+          // but the name columns are deliberately kept for the internal
+          // "re-select for this organization" chip — they must not reach the
+          // customer-facing document once the id is gone.
+          deviceGroupId: null, deviceGroupName: 'Old Org Servers', siteId: null, siteName: 'Old Org HQ',
+          includedQuantity: null, overageMode: null, overageUnitPrice: null,
+        },
+      ],
+      async () => null,
+      {},
+    );
+    const text = extractPdfText(pdf);
+    expect(text).toContain('Estimated quantity');
+    expect(text).not.toContain('Old Org Servers');
+    expect(text).not.toContain('Old Org HQ');
+  });
+
   it('produces a PDF buffer (heading + line_items block)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },

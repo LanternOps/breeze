@@ -18,10 +18,17 @@ import {
   automationPolicyCompliance,
 } from '../db/schema';
 import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { bumpApprovalGeneration } from './approvalGeneration';
+import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import {
+  willChangePamGovernedExecutableRules,
+  EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE,
+  type SoftwarePolicyExecutableGovernanceStored,
+  type SoftwarePolicyExecutableGovernancePatch,
+} from './softwarePolicyExecutableRulesAuthorization';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
@@ -32,6 +39,7 @@ import {
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { getPolicyWithOrgCheck } from '../routes/policyManagement/helpers';
 import {
   deviceScopeCondition,
   resolveSiteAllowedDeviceIds,
@@ -56,6 +64,52 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
 }
 
 
+
+const EXECUTABLE_RULES_MFA_REQUIRED_MESSAGE =
+  'MFA is required to change PAM executable allow/deny rules (rules.executable[]) on a software policy.';
+
+/**
+ * manage_software_policy (also served via MCP, same tool registry and
+ * handler) writes softwarePolicies directly without going through
+ * routes/softwarePolicies.ts, so the route's PAM-authority gate
+ * (`assertMayManageExecutableRules` in softwarePolicyExecutableRulesAuthorization.ts)
+ * does not run for AI/MCP callers on its own. Re-evaluate the same governance decision
+ * here, against the principal BEHIND the AI/MCP session — Tier 3 "requires
+ * approval" is a generic AI guardrail, not a pam.manage_policy check.
+ */
+async function assertAiCallerMayManageExecutableRules(
+  auth: AuthContext,
+  stored: SoftwarePolicyExecutableGovernanceStored | null,
+  patch: SoftwarePolicyExecutableGovernancePatch
+): Promise<string | null> {
+  if (!willChangePamGovernedExecutableRules(stored, patch)) return null;
+
+  // An autonomous ai_agent run has no role and no pam.manage_policy grant of
+  // its own; today it also fails the lookup below because its synthetic
+  // principal id is never a row in organization_users, but that is
+  // incidental to how getUserPermissions is implemented, not a guarantee.
+  // Deny explicitly, matching requireOrgAccess / checkPermissionRequirements.
+  if (isAiAgentPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;
+
+  const perms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+    scope: auth.scope,
+  });
+  if (!perms || !hasPermission(
+    perms,
+    PERMISSIONS.PAM_MANAGE_POLICY.resource,
+    PERMISSIONS.PAM_MANAGE_POLICY.action
+  )) {
+    return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;
+  }
+
+  if (!hasSatisfiedMfa(auth)) {
+    return EXECUTABLE_RULES_MFA_REQUIRED_MESSAGE;
+  }
+
+  return null;
+}
 
 export function registerComplianceTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -286,6 +340,16 @@ registerTool({
         return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
       }
 
+      // #5480: the same PAM-authority gate the HTTP route applies to
+      // rules.executable[]. This tool's create schema exposes no executable
+      // field today, so this is a no-op in practice — kept so create is
+      // covered the moment that changes, and to mirror the route exactly.
+      const createExecRulesDenied = await assertAiCallerMayManageExecutableRules(auth, null, {
+        mode: input.mode as string,
+        executable: (rules as { executable?: readonly unknown[] }).executable,
+      });
+      if (createExecRulesDenied) return JSON.stringify({ error: createExecRulesDenied });
+
       const [policy] = await db
         .insert(softwarePolicies)
         .values({
@@ -352,6 +416,19 @@ registerTool({
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
       }
+
+      // #5480: this tool has no field to set rules.executable[] directly, but
+      // it CAN switch `mode` on an existing policy that already carries
+      // executable rules set earlier through the HTTP route — the same change
+      // `assertMayManageExecutableRules` requires PAM authority for.
+      // Evaluated over the post-write merged state, same as the route.
+      const existingRulesForGate = (existing.rules ?? {}) as { executable?: readonly unknown[] };
+      const updateExecRulesDenied = await assertAiCallerMayManageExecutableRules(
+        auth,
+        { mode: existing.mode, executable: existingRulesForGate.executable },
+        { mode: typeof input.mode === 'string' ? input.mode : undefined, executable: undefined }
+      );
+      if (updateExecRulesDenied) return JSON.stringify({ error: updateExecRulesDenied });
 
       // Contract-A D4: AI callers may never arm software installation.
       if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
@@ -743,6 +820,15 @@ registerTool({
   handler: async (input, auth) => {
     const policyId = input.policyId as string;
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+
+    // Policy-org check, mirroring the REST route's
+    // getPolicyWithOrgCheck (routes/policyManagement/compliance.ts:624): a
+    // policyId the caller cannot access must not silently fall through to a
+    // device-filtered (but otherwise unchecked) compliance scan.
+    const policy = await getPolicyWithOrgCheck(policyId, auth);
+    if (!policy) {
+      return JSON.stringify({ error: 'Policy not found' });
+    }
 
     const conditions: SQL[] = [
       eq(automationPolicyCompliance.policyId, policyId),

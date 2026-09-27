@@ -10,6 +10,7 @@ const {
   runPostCommitCleanupMock,
   recordFailedLoginMock,
   enqueuePasswordResetRequestMock,
+  terminateUserRemoteSessionsMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK'),
@@ -26,6 +27,7 @@ const {
   })),
   recordFailedLoginMock: vi.fn(),
   enqueuePasswordResetRequestMock: vi.fn(async () => undefined),
+  terminateUserRemoteSessionsMock: vi.fn(async () => 0),
 }));
 
 vi.mock('../../db', () => ({
@@ -125,6 +127,11 @@ vi.mock('../../services/authLifecycle', async (importOriginal) => {
   };
 });
 
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateUserRemoteSessions: terminateUserRemoteSessionsMock,
+  TEARDOWN_FAILED: -1,
+}));
+
 vi.mock('./ssoPolicy', () => ({
   assertPasswordAuthAllowedBySso: vi.fn(async () => undefined),
   SsoPasswordAuthRequiredError: class SsoPasswordAuthRequiredError extends Error {
@@ -210,6 +217,8 @@ describe('password reset eligibility (#719)', () => {
     recordFailedLoginMock.mockReset();
     enqueuePasswordResetRequestMock.mockReset();
     enqueuePasswordResetRequestMock.mockResolvedValue(undefined);
+    terminateUserRemoteSessionsMock.mockReset();
+    terminateUserRemoteSessionsMock.mockResolvedValue(0);
     vi.mocked(db.transaction).mockReset();
     stubTransaction();
   });
@@ -569,6 +578,68 @@ describe('password reset eligibility (#719)', () => {
       expect(invalidatedInsideContext).toBe(true);
     });
 
+    it('terminates live remote-desktop/terminal/tunnel sessions for exactly the reset user, not any other account', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 1, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+      stubTransaction();
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      // Same containment call already made on suspend/role-change/
+      // membership-removal/MFA-change (routes/users.ts, mfaAssurance.ts) —
+      // password reset was the asymmetric gap.
+      expect(terminateUserRemoteSessionsMock).toHaveBeenCalledTimes(1);
+      expect(terminateUserRemoteSessionsMock).toHaveBeenCalledWith('u-1');
+      // Control: an unrelated user id never appears in this call.
+      expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalledWith('some-other-user');
+    });
+
+    it('surfaces a failed remote-session teardown in the audit details, without blocking the reset response (best-effort)', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 1, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+      stubTransaction();
+      // TEARDOWN_FAILED sentinel (-1) — the bulk disconnect itself failed.
+      terminateUserRemoteSessionsMock.mockResolvedValueOnce(-1);
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      // The password write already committed durably above; a teardown
+      // failure is reported, not blocking — same treatment as the admin
+      // MFA-reset route's `teardownFailed` audit field (routes/users.ts).
+      expect(res.status).toBe(200);
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'user.password.reset',
+          result: 'success',
+          details: expect.objectContaining({ teardownFailed: true }),
+        }),
+      );
+    });
+
     it('still returns success when runPostCommitCleanup reports a partial failure (best-effort)', async () => {
       const envelope = JSON.stringify({ userId: 'u-pending', passwordResetEpoch: 1, email: 'pending4@x.com' });
       getdelMock.mockResolvedValue(envelope);
@@ -751,6 +822,41 @@ describe('password reset eligibility (#719)', () => {
       // password change too, not just first-party JWTs — now via
       // runPostCommitCleanup.
       expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('terminates live remote-desktop/terminal/tunnel sessions for exactly the changing user, not any other account', async () => {
+      stubTransaction();
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      expect(terminateUserRemoteSessionsMock).toHaveBeenCalledTimes(1);
+      expect(terminateUserRemoteSessionsMock).toHaveBeenCalledWith('u-1');
+      // Control: an unrelated user id never appears in this call.
+      expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalledWith('some-other-user');
+    });
+
+    it('surfaces a failed remote-session teardown in the audit details, without blocking the change response (best-effort)', async () => {
+      stubTransaction();
+      terminateUserRemoteSessionsMock.mockResolvedValueOnce(-1);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'user.password.change',
+          result: 'success',
+          details: expect.objectContaining({ teardownFailed: true }),
+        }),
+      );
     });
 
     it('still returns success when runPostCommitCleanup reports a partial failure (best-effort)', async () => {

@@ -4,7 +4,8 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, asRecord, asString, asNumber } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, requireDevicesExecute, SITE_ACCESS_DENIED, asRecord, asString, asNumber } from './helpers';
+import { isDeniedRegistryTarget } from './sensitiveTargets';
 import {
   deviceIdParamSchema,
   registryQuerySchema,
@@ -200,6 +201,18 @@ registryRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    // Registry reads are privileged — require devices:execute, matching the
+    // AI tool path (see requireDevicesExecute for the parity rationale).
+    if (!(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, path)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEYS, {
       hive,
       path
@@ -245,6 +258,18 @@ registryRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    // Registry reads are privileged — require devices:execute, matching the
+    // AI tool path (see requireDevicesExecute for the parity rationale).
+    if (!(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, path)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_VALUES, {
       hive,
       path
@@ -288,6 +313,18 @@ registryRoutes.get(
     }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    // Registry reads are privileged — require devices:execute, matching the
+    // AI tool path (see requireDevicesExecute for the parity rationale).
+    if (!(await requireDevicesExecute(c, auth))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, path)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
     }
 
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_GET, {
@@ -347,6 +384,14 @@ registryRoutes.put(
     }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission. A write is strictly
+    // worse than a read, so this mutation route carries the same check the
+    // GET routes already apply.
+    if (isDeniedRegistryTarget(hive, path)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
     }
 
     const normalizedName = normalizeRegistryValueName(name);
@@ -418,6 +463,12 @@ registryRoutes.delete(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, path)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     const normalizedName = normalizeRegistryValueName(name);
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_DELETE, {
       hive,
@@ -480,6 +531,12 @@ registryRoutes.post(
       return c.json({ error: 'Invalid registry key path' }, 400);
     }
 
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, normalizedPath)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEY_CREATE, {
       hive,
       path: normalizedPath
@@ -537,6 +594,12 @@ registryRoutes.delete(
     const normalizedPath = path.replace(/\\+$/, '');
     if (!normalizedPath) {
       return c.json({ error: 'Invalid registry key path' }, 400);
+    }
+
+    // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+    // outright, regardless of the caller's permission.
+    if (isDeniedRegistryTarget(hive, normalizedPath)) {
+      return c.json({ error: 'Access to this registry path is not permitted', code: 'sensitive_path_denied' }, 403);
     }
 
     const result = await executeCommand(deviceId, CommandTypes.REGISTRY_KEY_DELETE, {

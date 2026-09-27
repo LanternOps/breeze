@@ -20,6 +20,19 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const })),
 }));
 
+// Field-provenance tiering (denylist option): the resolver gates device_group
+// memberships through the shared execution-target field-provenance helper
+// before matching device_group-level assignments. Mocked as a pass-through
+// by default here so this suite's fixed 4-call db.select() sequence (device,
+// org, group memberships, assignments join) is unaffected; a dedicated test
+// below overrides the mock to prove the gate is actually wired in.
+const mockResolveExecutionSafeGroupIds = vi.fn(async (groupIds: string[]) => ({ allowedGroupIds: groupIds, refusedGroups: [] as Array<{ id: string; refusedFields: string[] }> }));
+const mockAuditRefusedExecutionGroups = vi.fn();
+vi.mock('./executionTargetGating', () => ({
+  resolveExecutionSafeGroupIds: (...args: [string[]]) => mockResolveExecutionSafeGroupIds(...args),
+  auditRefusedExecutionGroups: (...args: unknown[]) => mockAuditRefusedExecutionGroups(...args),
+}));
+
 import { resolveEffectiveConfig } from './configurationPolicy';
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
@@ -155,5 +168,40 @@ describe('resolveEffectiveConfig includeBaseline', () => {
     expect(defaultNode).toBeTruthy();
     expect(defaultNode!.featureTypes).not.toContain('remote_access');
     expect(defaultNode!.featureTypes).toContain('patch');
+  });
+});
+
+describe('resolveEffectiveConfig — device_group membership gated by field provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveExecutionSafeGroupIds.mockImplementation(async (groupIds: string[]) => ({
+      allowedGroupIds: groupIds,
+      refusedGroups: [],
+    }));
+  });
+
+  it('calls the shared gate with the device\'s group memberships before matching device_group assignments', async () => {
+    mockResolverCalls([DEVICE], [ORG], [{ groupId: 'grp-1' }], []);
+
+    await resolveEffectiveConfig('dev-1', systemAuth);
+
+    expect(mockResolveExecutionSafeGroupIds).toHaveBeenCalledWith(['grp-1']);
+  });
+
+  it('audits and excludes a refused group from device_group-level assignment matching', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
+      allowedGroupIds: [],
+      refusedGroups: [{ id: 'grp-1', refusedFields: ['hostname'] }],
+    });
+    mockResolverCalls([DEVICE], [ORG], [{ groupId: 'grp-1' }], []);
+
+    const r = await resolveEffectiveConfig('dev-1', systemAuth);
+
+    expect(r).not.toBeNull();
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
+      'org-1',
+      'config_policy.execution_target_refused_agent_reported_fields',
+      [{ id: 'grp-1', refusedFields: ['hostname'] }],
+    );
   });
 });

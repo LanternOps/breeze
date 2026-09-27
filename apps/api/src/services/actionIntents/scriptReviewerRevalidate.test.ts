@@ -107,7 +107,13 @@ beforeEach(() => {
   mockRunCount.mockResolvedValue(0);
   mockScan.mockReturnValue({ touchedNames: { services: ['Spooler'], paths: [], registryKeys: [] } });
   runRows.length = 0;
-  runRows.push({ policySnapshot: { kind: 'patch', agentId: 'agent-1', effective: { ...LIVE_ACT.effective } } });
+  runRows.push({
+    policySnapshot: { kind: 'patch', agentId: 'agent-1', effective: { ...LIVE_ACT.effective } },
+    // Matches the snapshot's mode by default, like a
+    // real, never-forced-shadow run — the dedicated test below
+    // overrides this to diverge from the snapshot's mode.
+    modeAtStart: 'act',
+  });
 });
 
 describe('revalidateScriptReviewerEvidence', () => {
@@ -145,6 +151,22 @@ describe('revalidateScriptReviewerEvidence', () => {
   it('a protected resource was added that the script touches', async () => {
     mockPolicy.mockResolvedValue({ ...EFFECTIVE, protectedResources: { ...EMPTY_RESOURCES, services: ['Spooler'] } });
     await expect(revalidateScriptReviewerEvidence(INTENT)).resolves.toEqual({ ok: false, reason: 'protected_resource' });
+  });
+
+  it("the run's own modeAtStart is 'shadow' even though BOTH the snapshot's and the live policy's mode read 'act'", async () => {
+    // An anomaly- or ticket-triggered run is admitted against an agent
+    // whose resolved policy mode is 'act', with the run's OWN record
+    // (`modeAtStart`) forced to 'shadow' (runService.ts's forced-shadow
+    // downgrade) — the snapshot's `effective.mode` (read fresh here via
+    // `readRunSnapshot`) is left unchanged at 'act'. Neither the
+    // snapshot-mode nor the live-mode check catches this; only a direct
+    // `modeAtStart` read does.
+    runRows.length = 0;
+    runRows.push({
+      policySnapshot: { kind: 'patch', agentId: 'agent-1', effective: { ...LIVE_ACT.effective } },
+      modeAtStart: 'shadow',
+    });
+    await expect(revalidateScriptReviewerEvidence(AGENT_INTENT)).resolves.toEqual({ ok: false, reason: 'requester_unauthorized' });
   });
 
   it('the agent was demoted act -> shadow', async () => {

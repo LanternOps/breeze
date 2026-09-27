@@ -147,8 +147,9 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		)
 	}
 
-	// Download to temp directory
-	tempDir, err := os.MkdirTemp("", "breeze-sw-install-*")
+	// Download to a private per-download staging directory (hardened DACL on
+	// Windows — see createPrivateInstallDir).
+	tempDir, err := createPrivateInstallDir()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to create temp dir: %w", err), time.Since(startTime).Milliseconds())
 	}

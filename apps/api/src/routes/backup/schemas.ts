@@ -347,6 +347,17 @@ export const bmrRecoveryDownloadSchema = z.object({
   path: z.string().min(1).max(4096),
 });
 
+// Recovery-token-authenticated (not session-authenticated): the shipped
+// run-recovery.sh/.ps1 launch script only ever holds the plaintext recovery
+// token, the same credential /bmr/recover/authenticate already accepts —
+// there is no user session to gate this behind requirePermission the way
+// /bmr/signing-key and /bmr/media/:id/signature are.
+export const bmrRecoveryBinarySignatureSchema = z.object({
+  token: z.string().min(1),
+  platform: z.enum(['linux', 'windows']),
+  architecture: z.string().min(1).max(20),
+});
+
 // ── Bare-metal recovery schemas (W04a) ──────────────────────────────
 
 export const bmrRecoveryCreateSchema = z.object({

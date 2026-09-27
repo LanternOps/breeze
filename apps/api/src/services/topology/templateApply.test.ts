@@ -1,20 +1,85 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./siteConfiguration', () => ({
   loadTopologyConfiguration: vi.fn(),
   assertConfigurationEffects: vi.fn(),
 }));
+const { accessMock, authorityMock, storeMocks } = vi.hoisted(() => ({
+  accessMock: vi.fn(),
+  authorityMock: vi.fn(),
+  storeMocks: { applicationRows: vi.fn(), insertApplicationRow: vi.fn() },
+}));
+vi.mock('../../db', () => ({
+  db: {
+    execute: vi.fn().mockResolvedValue(undefined),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })),
+      })),
+    })),
+    insert: vi.fn(() => ({ values: vi.fn().mockResolvedValue(undefined) })),
+  },
+  withDbTransaction: vi.fn((fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+}));
+vi.mock('./access', async (orig) => ({
+  ...(await orig<object>()),
+  requireTopologySiteAccess: accessMock,
+}));
+vi.mock('./templateApplicationAuthority', async (orig) => ({
+  ...(await orig<object>()),
+  currentApplicationAuthority: authorityMock,
+}));
+vi.mock('./templateApplicationStore', async (orig) => ({
+  ...(await orig<object>()),
+  applicationRows: storeMocks.applicationRows,
+  insertApplicationRow: storeMocks.insertApplicationRow,
+}));
+vi.mock('../permissions', async (orig) => ({
+  ...(await orig<object>()),
+  getPermissionAuthorityVersion: vi.fn().mockResolvedValue('v1'),
+}));
 import {
   assertEffectCapabilities,
   summarizeTemplateApplication,
+  previewTopologyTemplateApplication,
+  applyTopologyTemplatePreview,
 } from './templateApply';
+import { TopologyError } from './access';
 import {
   applicationEffectDigest,
+  applicationHash,
   applicationId,
 } from './templateApplicationStore';
-import { PREVIEW_TTL_MS } from './templateApplicationTypes';
+import {
+  INTENT_EVENT,
+  PREVIEW_EVENT,
+  PREVIEW_TTL_MS,
+} from './templateApplicationTypes';
 import { freezeApplicationActor } from './templateApplicationAuthority';
 import type { AuthContext } from '../../middleware/auth';
 const id = '00000000-0000-4000-8000-000000000001';
+const org = '00000000-0000-4000-8000-000000000010';
+const site = '00000000-0000-4000-8000-000000000020';
+function requesterAuth(): AuthContext {
+  return {
+    principal: { kind: 'user_session' },
+    user: { id, email: 'operator@example.test' },
+    token: { aep: 1, mep: 1, mfa: true },
+    accessibleOrgIds: [org],
+    scope: 'organization',
+    orgId: org,
+    partnerId: null,
+    canAccessOrg: (candidate: string) => candidate === org,
+  } as unknown as AuthContext;
+}
+const permissions = { permissions: [], scope: 'organization', orgId: org } as never;
+beforeEach(() => {
+  accessMock.mockReset();
+  authorityMock.mockReset();
+  storeMocks.applicationRows.mockReset();
+  storeMocks.insertApplicationRow.mockReset().mockResolvedValue(undefined);
+});
 describe('application admission invariants', () => {
   it('rejects recurring activation instead of silently dropping it', async () => {
     await expect(
@@ -115,5 +180,115 @@ describe('application admission invariants', () => {
     expect(() =>
       freezeApplicationActor({ ...auth, principal: { kind: 'api_key' } }),
     ).toThrow();
+  });
+});
+describe('template application admission tier', () => {
+  it('admits preview at site write, not read', async () => {
+    const auth = requesterAuth();
+    accessMock.mockRejectedValue(
+      new TopologyError('topology_permission_denied', 403, 'denied'),
+    );
+    authorityMock.mockResolvedValue({ auth, permissions, version: 'v1' });
+    await expect(
+      previewTopologyTemplateApplication(auth, permissions, {
+        partnerVersionId: null,
+        orgVersionId: null,
+        sites: [
+          { siteId: site, expectedBindingRevision: '0', enableRecurring: false },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(TopologyError);
+    expect(accessMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      site,
+      'write',
+    );
+    expect(accessMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      site,
+      'read',
+    );
+  });
+  it('re-checks site write, not read, before journaling an apply intent', async () => {
+    const auth = requesterAuth();
+    const actor = freezeApplicationActor(auth);
+    const token = 'opaque-preview-token';
+    const tokenDigest = applicationHash(token);
+    const previewId = applicationId(actor.user.id, tokenDigest);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const effect = {
+      siteId: site,
+      expectedBindingRevision: '0',
+      expectedSettingsRevision: '0',
+      partnerVersionId: null,
+      orgVersionId: null,
+      overrides: { targets: {}, policies: {} },
+      resolvedDigest: 'a'.repeat(64),
+      templateRevisions: {},
+      enableRecurring: false,
+      operationId: previewId,
+    };
+    const preview = {
+      siteId: site,
+      expectedBindingRevision: '0',
+      effects: [],
+      errors: [],
+    };
+    const record = {
+      version: 1 as const,
+      requesterId: actor.user.id,
+      originalOrgId: org,
+      actor,
+      previewId,
+      tokenDigest,
+      permissionVersion: 'v1',
+      expiresAt,
+      effectDigest: applicationEffectDigest({
+        effect,
+        actor,
+        permissionVersion: 'v1',
+        expiresAt,
+      }),
+      effect,
+      preview,
+    };
+    storeMocks.applicationRows.mockImplementation(
+      (_aggId: string, _requesterId: string, eventKind: string) =>
+        Promise.resolve(
+          eventKind === INTENT_EVENT
+            ? []
+            : [
+                {
+                  id: 'row-1',
+                  orgId: org,
+                  siteId: site,
+                  aggregateId: previewId,
+                  eventKind: PREVIEW_EVENT,
+                  payload: record,
+                },
+              ],
+        ),
+    );
+    authorityMock.mockResolvedValue({ auth, permissions, version: 'v1' });
+    accessMock.mockRejectedValue(
+      new TopologyError('topology_permission_denied', 403, 'denied'),
+    );
+    await expect(
+      applyTopologyTemplatePreview(auth, permissions, token, 'same-intent'),
+    ).rejects.toMatchObject({ code: 'application_not_found' });
+    expect(accessMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      site,
+      'write',
+    );
+    expect(accessMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      site,
+      'read',
+    );
   });
 });

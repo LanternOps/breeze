@@ -9,6 +9,7 @@ import {
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
+import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './constants';
@@ -720,8 +721,9 @@ async function runBackupVerificationInternal(
     {
       snapshotId: agentSnapshotId,
       verificationType: input.verificationType,
-      provider: providerConfig.provider,
-      providerConfig: providerConfig.providerConfig,
+      // A reference only: the destination is resolved when the command is
+      // delivered, so it is never written to the command row.
+      ...backupReadCredentialPayload(backupJob.configId, input.orgId, providerConfig.provider),
     },
     { userId: input.requestedBy || undefined, expectedOrgId: input.orgId }
   );

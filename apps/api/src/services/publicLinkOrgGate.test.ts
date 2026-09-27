@@ -58,23 +58,23 @@ describe('isPublicLinkOrgStatusLive', () => {
 
 describe('resolveQuoteLinkOrgGate', () => {
   it('blocks when the quote resolves to an archived org', async () => {
-    dbResults.push([{ orgId: ORG_ID, status: 'archived' }]);
+    dbResults.push([{ orgId: ORG_ID, status: 'archived', partnerStatus: 'active' }]);
     const gate = await resolveQuoteLinkOrgGate(QUOTE_ID, [ORG_ID]);
-    expect(gate).toEqual({ orgId: ORG_ID, status: 'archived', blocked: true });
+    expect(gate).toEqual({ orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true });
   });
 
   it('does NOT block when the merge SURVIVOR org is still active', async () => {
     // Wave 2 continuity: the token names the merged-away loser, the row now
     // lives under the survivor, and the survivor's status is what gates.
-    dbResults.push([{ orgId: SURVIVOR_ORG_ID, status: 'active' }]);
+    dbResults.push([{ orgId: SURVIVOR_ORG_ID, status: 'active', partnerStatus: 'active' }]);
     const gate = await resolveQuoteLinkOrgGate(QUOTE_ID, [ORG_ID, SURVIVOR_ORG_ID]);
-    expect(gate).toEqual({ orgId: SURVIVOR_ORG_ID, status: 'active', blocked: false });
+    expect(gate).toEqual({ orgId: SURVIVOR_ORG_ID, status: 'active', partnerStatus: 'active', blocked: false });
   });
 
   it('leaves the gate OPEN when no quote row matched (404 stays a 404)', async () => {
     dbResults.push([]);
     const gate = await resolveQuoteLinkOrgGate(QUOTE_ID, [ORG_ID]);
-    expect(gate).toEqual({ orgId: null, status: null, blocked: false });
+    expect(gate).toEqual({ orgId: null, status: null, partnerStatus: null, blocked: false });
   });
 
   it('short-circuits without a query when there are no candidate orgs', async () => {
@@ -82,23 +82,52 @@ describe('resolveQuoteLinkOrgGate', () => {
     expect(gate.blocked).toBe(false);
     expect(dbResults).toHaveLength(0);
   });
+
+  it('blocks a quote under a live org whose partner was suspended for abuse', async () => {
+    // SEC: partner suspension never wrote organizations.status, so a public
+    // quote-accept token for a live org must ALSO check the owning partner.
+    dbResults.push([{ orgId: ORG_ID, status: 'active', partnerStatus: 'suspended' }]);
+    const gate = await resolveQuoteLinkOrgGate(QUOTE_ID, [ORG_ID]);
+    expect(gate.blocked).toBe(true);
+  });
+
+  it.each(['pending', 'churned', 'offboarding'])(
+    'blocks a live org whose partner is %s',
+    async (partnerStatus) => {
+      dbResults.push([{ orgId: ORG_ID, status: 'active', partnerStatus }]);
+      const gate = await resolveQuoteLinkOrgGate(QUOTE_ID, [ORG_ID]);
+      expect(gate.blocked).toBe(true);
+    },
+  );
 });
 
 describe('resolveOrgLinkGate', () => {
   it.each(['archived', 'purging', 'merging', 'suspended'])('blocks a %s org', async (status) => {
-    dbResults.push([{ id: ORG_ID, status }]);
+    dbResults.push([{ id: ORG_ID, status, partnerStatus: 'active' }]);
     expect((await resolveOrgLinkGate(ORG_ID)).blocked).toBe(true);
   });
 
-  it('admits an active org', async () => {
-    dbResults.push([{ id: ORG_ID, status: 'active' }]);
+  it('admits an active org with an active partner', async () => {
+    dbResults.push([{ id: ORG_ID, status: 'active', partnerStatus: 'active' }]);
     expect((await resolveOrgLinkGate(ORG_ID)).blocked).toBe(false);
   });
 
   it('reuses an already-system ambient context instead of escalating', async () => {
     ambient.current = { scope: 'system' };
-    dbResults.push([{ id: ORG_ID, status: 'active' }]);
+    dbResults.push([{ id: ORG_ID, status: 'active', partnerStatus: 'active' }]);
     expect((await resolveOrgLinkGate(ORG_ID)).status).toBe('active');
+  });
+
+  it('blocks an active org whose partner was suspended for abuse', async () => {
+    // SEC: this is the invoice /pay and /settle-return path — a partner
+    // suspension must reach here even though organizations.status is untouched.
+    dbResults.push([{ id: ORG_ID, status: 'active', partnerStatus: 'suspended' }]);
+    expect((await resolveOrgLinkGate(ORG_ID)).blocked).toBe(true);
+  });
+
+  it('admits again once a suspended partner is reactivated', async () => {
+    dbResults.push([{ id: ORG_ID, status: 'active', partnerStatus: 'active' }]);
+    expect((await resolveOrgLinkGate(ORG_ID)).blocked).toBe(false);
   });
 });
 

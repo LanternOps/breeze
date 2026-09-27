@@ -204,7 +204,4 @@ func runPS(command string) (string, error) {
 	return string(out), nil
 }
 
-// escapePSString escapes single quotes for PowerShell string literals.
-func escapePSString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
+// escapePSString and psQuote live in restore_identity.go (platform-neutral).

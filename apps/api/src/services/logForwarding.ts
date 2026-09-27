@@ -19,6 +19,13 @@ interface LogForwardingConfig {
   elasticsearchUsername?: string;
   elasticsearchPassword?: string;
   indexPrefix: string;
+  // True when this destination is the partner-wide one, which is shared by
+  // every org under that partner. A shared destination needs per-org index
+  // isolation so one org's first document of the day cannot fix a mapping
+  // that then rejects another org's documents (or embeds cross-org field
+  // names in one index). An org-owned destination is already single-tenant,
+  // so its index name is left unchanged for backward compatibility.
+  sharedAcrossOrgs?: boolean;
 }
 
 interface EventLogDocument {
@@ -76,7 +83,16 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
     // AAD must match the settings column that owns the selected credentials.
     elasticsearchApiKey: decryptForColumn(table, 'settings', forwarding.elasticsearchApiKey) ?? undefined,
     elasticsearchPassword: decryptForColumn(table, 'settings', forwarding.elasticsearchPassword) ?? undefined,
+    sharedAcrossOrgs: usePartner,
   };
+}
+
+// ES/OpenSearch index names must be lowercase and may not contain
+// \, /, *, ?, ", <, >, |, space, comma or #, and may not start with -, _ or +.
+// Org ids are UUIDs (already lowercase hex + hyphens), so this is a defensive
+// normalization rather than a required one.
+function indexSafeOrgSegment(orgId: string): string {
+  return orgId.toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/^[-_+]+/, '') || 'unknown';
 }
 
 function buildAuthHeader(config: LogForwardingConfig): string | undefined {
@@ -141,7 +157,12 @@ export async function bulkIndexToEndpoint(
   if (events.length === 0) return { indexed: 0, errors: 0 };
 
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
-  const indexName = `${config.indexPrefix}-${today}`;
+  // A shared (partner-wide) destination gets its own index per org so that
+  // one org's mapping (field types, dynamic keys under `details`) cannot
+  // collide with or poison another org's documents in the same index.
+  const indexName = config.sharedAcrossOrgs && orgId
+    ? `${config.indexPrefix}-org-${indexSafeOrgSegment(orgId)}-${today}`
+    : `${config.indexPrefix}-${today}`;
   const url = `${config.elasticsearchUrl.replace(/\/+$/, '')}/_bulk`;
   const orgSuffix = orgId ? ` org=${orgId}` : '';
 

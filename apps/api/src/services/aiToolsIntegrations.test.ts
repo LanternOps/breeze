@@ -431,3 +431,23 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     );
   });
 });
+
+// test_webhook's route (POST /webhooks/:id/test)
+// carries requireMfa() on top of organizations:write, and this file's own
+// documented invariant (aiGuardrails.ts, "MFA — what substitutes for the
+// routes' requireMfa()") says a tool mirroring a requireMfa() route must be
+// tier 3 if the route mutates. test_webhook sends a real outbound POST, so it
+// is tier 3. The supervised approval scope is asserted in
+// aiGuardrails.approvalScope.contract.test.ts (resolveApprovalScope),
+// which already carries the heavier import this module's light db mock can't.
+describe('test_webhook tier', () => {
+  let toolMap: Map<string, AiTool>;
+
+  beforeEach(() => {
+    toolMap = buildToolMap();
+  });
+
+  it('registers at tier 3, not tier 2', () => {
+    expect(toolMap.get('test_webhook')!.tier).toBe(3);
+  });
+});

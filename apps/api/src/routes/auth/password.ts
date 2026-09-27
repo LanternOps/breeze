@@ -37,6 +37,7 @@ import {
   revokeAllRefreshFamilies,
   runPostCommitCleanup,
 } from '../../services/authLifecycle';
+import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -277,6 +278,20 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // bare call matched 0 rows and silently left old sessions alive (#1375,
   // Sentry BREEZE-T). Wrap in a system context so the delete actually runs.
   await withSystemDbAccessContext(async () => invalidateAllUserSessions(userId));
+  // Kill any live remote-desktop/terminal/tunnel sessions immediately —
+  // revoking the JWT/refresh family alone does not touch viewer tokens or a
+  // live peer-to-peer WebRTC/terminal/tunnel stream, so without this a
+  // password reset (the standard incident-response containment action) would
+  // leave an already-open remote-control session live under the old
+  // credential. Mirrors
+  // the same call on suspend/role-change/membership-removal/MFA-change
+  // (routes/users.ts, services/mfaAssurance.ts). Best-effort like the
+  // sibling cleanup steps here — the password write above is already
+  // durably committed regardless of teardown outcome. Surfaced in the audit
+  // details below the same way the admin MFA-reset route surfaces it
+  // (routes/users.ts `teardownFailed`), not as a blocking response — the
+  // password itself already changed and durably committed.
+  const remoteTeardownResult = await terminateUserRemoteSessions(userId);
   // Post-commit cleanup (Redis JWT cutoff + permission-cache clear + MCP
   // OAuth grant sweep) — best-effort and independent per step; the durable
   // revocation above is already committed regardless of outcome here.
@@ -289,6 +304,7 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     action: 'user.password.reset',
     result: 'success',
     userId,
+    details: { teardownFailed: remoteTeardownResult === TEARDOWN_FAILED },
   });
 
   return c.json({ success: true, message: 'Password reset successfully' });
@@ -406,6 +422,12 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke current refresh token after password change:', error),
   );
+  // See /reset-password above — kill live remote-desktop/terminal/tunnel
+  // sessions so this containment action isn't asymmetric with suspend/role
+  // change/membership removal/MFA change, all of which already do this.
+  // Surfaced in the audit details, not as a blocking response — same
+  // treatment as /reset-password and the admin MFA-reset route.
+  const remoteTeardownResult = await terminateUserRemoteSessions(auth.user.id);
   // Post-commit cleanup (Redis JWT cutoff + permission-cache clear + MCP
   // OAuth grant sweep) — best-effort and independent per step; the durable
   // revocation above is already committed regardless of outcome here.
@@ -419,6 +441,7 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
+    details: { teardownFailed: remoteTeardownResult === TEARDOWN_FAILED },
   });
 
   return c.json({ success: true, message: 'Password changed successfully' });

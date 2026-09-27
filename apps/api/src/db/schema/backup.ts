@@ -409,6 +409,17 @@ export const backupSnapshots = pgTable(
     parentSnapshotIdIdx: index('backup_snapshots_parent_snapshot_id_idx').on(
       table.parentSnapshotId
     ),
+    // SEC follow-up: DB-enforced guarantee that two runs cannot claim the
+    // same snapshot id against the same storage destination, regardless of
+    // which org's RLS context the write runs under. See migration
+    // 2026-11-05-100300-backup-snapshots-storage-identity-snapshot-id-uq.sql
+    // for the scope rationale (storage_identity, not a bare global id) and
+    // the partial-index rationale (storageIdentity is nullable forever).
+    storageIdentitySnapshotIdUq: uniqueIndex(
+      'backup_snapshots_storage_identity_snapshot_id_uq'
+    ).on(table.storageIdentity, table.snapshotId).where(
+      sql`${table.storageIdentity} IS NOT NULL`
+    ),
   })
 );
 

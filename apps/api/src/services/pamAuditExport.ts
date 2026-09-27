@@ -59,7 +59,7 @@ export const PAM_AUDIT_EXPORT_SETTLE_SECONDS = 300;
  * new writer fails it until its keys are reviewed and listed here.
  */
 export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
-  'jobs/pamJobs.ts': ['cause', 'prior_status'],
+  'jobs/pamJobs.ts': ['cause', 'prior_status', 'cleanup'],
   'routes/agents/elevationRequests.ts': [
     'subject_username', 'target_executable_path', 'software_policy_id', 'default_unmatched_verdict',
     'pam_rule_id', 'pam_rule_name', 'rule_name', 'matched_field',
@@ -72,6 +72,11 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   'services/pamToolActionGovernance.ts': ['tool_name', 'risk_tier', 'execution_id', 'pam_rule_id', 'pam_rule_name'],
   // Writes via raw SQL, not Drizzle: session_started / session_ended.
   'services/pamActuationResult.ts': ['actuationId', 'generation'],
+  // Raw SQL: the 'denied' row for a path-targeted approval with no verifiable
+  // target hash sets reason/source. The scan reads every jsonb_build_object in
+  // the file, so it also lists this file's pam_actuations evidence keys
+  // (generation, cleanupCause); both are scalar.
+  'services/pamActuationLifecycle.ts': ['reason', 'source', 'generation', 'cleanupCause'],
 } as const satisfies Record<string, readonly string[]>;
 
 /**

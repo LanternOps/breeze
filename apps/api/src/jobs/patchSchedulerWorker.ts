@@ -26,6 +26,7 @@ import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
+import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from '../services/executionTargetGating';
 import {
   enqueuePatchJob,
   selectStaleScheduledJobIds,
@@ -504,6 +505,24 @@ async function resolveDeviceIdsForAssignment(
       // Requiring group.org_id = membership.org_id = device.org_id makes the
       // query reject it independently of the constraint. This worker runs under
       // a system DB context, so there is no RLS behind it to catch a miss.
+      //
+      // Field-provenance tiering (correction) — a device_group-level patch-schedule
+      // assignment can name a dynamic group whose rules key on an
+      // execution-refused agent-reported field (hostname, tags, deviceRole,
+      // custom.*, ...). Unlike the execution-gated paths (automation,
+      // remote_access, pam, ...), patch scheduling is PROTECTIVE per
+      // `CONFIG_POLICY_FEATURE_TRUST_TIER`: a device that misreports its own
+      // fields gains nothing from being MORE patched, and a legitimate hostname- or
+      // tag-keyed patch ring (a standard MSP pattern) must keep patching real
+      // devices even when the ring's own group is flagged. So membership is
+      // still resolved for a refused group — only the refusal is audited,
+      // matching `configurationPolicy.ts`'s tiered-drop treatment of
+      // protective feature types.
+      const { refusedGroups } = await resolveExecutionSafeGroupIds([assignmentTargetId]);
+      if (refusedGroups.length > 0) {
+        auditRefusedExecutionGroups(policyOrgId, 'patch_schedule.execution_target_refused_agent_reported_fields', refusedGroups);
+      }
+
       if (needsPartnerClamp) {
         const members = await db
           .select({ deviceId: deviceGroupMemberships.deviceId })

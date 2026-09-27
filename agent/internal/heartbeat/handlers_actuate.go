@@ -459,6 +459,7 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 		Password:           cred.Password,
 		TimeoutMs:          timeoutMs,
 		TargetPath:         target.Path,
+		TargetPathHash:     target.TargetHash,
 		CommandLine:        target.CommandLine,
 		SubjectUsername:    target.SubjectUsername,
 	})

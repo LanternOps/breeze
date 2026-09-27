@@ -592,12 +592,12 @@ describe('quotesPublic org-lifecycle gate', () => {
     (isQuoteAcceptJtiRevoked as ReturnType<typeof vi.fn>).mockResolvedValue(false);
     // clearAllMocks clears CALLS, not implementations — reset the gate to open
     // so a blocked case cannot leak forward and make a later case vacuous.
-    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({ orgId: null, status: null, blocked: false });
+    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({ orgId: null, status: null, partnerStatus: null, blocked: false });
   });
 
   it.each(ROUTES)('%s returns 410 when the quote resolves to an archived org', async (_name, path, init) => {
     vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
-      orgId: ORG_ID, status: 'archived', blocked: true,
+      orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true,
     });
 
     const res = await app().request(path, init);
@@ -612,7 +612,7 @@ describe('quotesPublic org-lifecycle gate', () => {
   it('keeps a merged-away quote working when the SURVIVOR org is live (Wave 2 continuity)', async () => {
     const SURVIVOR = '99999999-9999-4999-8999-999999999999';
     vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
-      orgId: SURVIVOR, status: 'active', blocked: false,
+      orgId: SURVIVOR, status: 'active', partnerStatus: 'active', blocked: false,
     });
     dbResults.push([{
       id: QUOTE_ID, orgId: SURVIVOR, partnerId: PARTNER_ID, status: 'sent',
@@ -631,7 +631,7 @@ describe('quotesPublic org-lifecycle gate', () => {
 
   it('gates on the RESOLVED org set, not the token claim (survivor ids are passed through)', async () => {
     vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
-      orgId: ORG_ID, status: 'archived', blocked: true,
+      orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true,
     });
     await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
     expect(resolveQuoteLinkOrgGate).toHaveBeenCalledWith(QUOTE_ID, [ORG_ID]);

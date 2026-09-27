@@ -4,11 +4,15 @@ package pamactuator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -47,12 +51,19 @@ type tokenLaunchActuator struct {
 	// launch: on the remote approve path consent.exe may already have timed
 	// out, and the launch itself does not depend on it being gone.
 	suppress func(context.Context) Result
+	// verifyTarget re-checks the target file immediately before launch and
+	// returns its canonical path plus a release func the caller must hold
+	// open through the launch. Defaults to pinAndVerifyTokenLaunchTarget.
+	// Swappable for tests so launcher-outcome tests don't need a real file on
+	// disk at the fixture's TargetPath.
+	verifyTarget func(path, expectedHash string) (string, func(), error)
 }
 
 func newTokenLaunchActuator() Actuator {
 	a := &tokenLaunchActuator{
 		launcher:        &winTokenLauncher{},
 		sessionResolver: resolveSubjectSession,
+		verifyTarget:    pinAndVerifyTokenLaunchTarget,
 	}
 	a.suppress = a.windowsActuator.Dismiss
 	return a
@@ -222,10 +233,31 @@ func (a *tokenLaunchActuator) Trigger(ctx context.Context, req Request) Result {
 			DetailMessage: "resolving interactive session: " + err.Error()}
 	}
 
+	// Re-verify the target immediately before launch and hold an exclusive
+	// (no-write, no-delete share) handle on it through the launch below. This
+	// closes the window between when the target was approved (hash pinned, if
+	// known) and when CreateProcessAsUser actually runs it, during which the
+	// file at req.TargetPath could otherwise have been replaced.
+	verify := a.verifyTarget
+	if verify == nil {
+		// Defensive default for actuators built directly (e.g. in tests)
+		// without going through newTokenLaunchActuator: fall back to the real
+		// verification rather than skipping it.
+		verify = pinAndVerifyTokenLaunchTarget
+	}
+	canonicalTarget, releaseTarget, err := verify(req.TargetPath, req.TargetPathHash)
+	if err != nil {
+		slog.Warn("pamactuator: token_launch target verification failed, refusing to launch",
+			"elevationRequestId", req.ElevationRequestID, "error", err.Error())
+		return Result{Success: false, Reason: "target_verification_failed",
+			DetailMessage: "verifying token_launch target: " + err.Error()}
+	}
+	defer releaseTarget()
+
 	out := a.launcher.Launch(ctx, launchParams{
 		Username:    req.Username,
 		Password:    req.Password,
-		TargetPath:  req.TargetPath,
+		TargetPath:  canonicalTarget,
 		CommandLine: req.CommandLine,
 		SessionID:   sess,
 	})
@@ -243,6 +275,64 @@ func (a *tokenLaunchActuator) Trigger(ctx context.Context, req Request) Result {
 		"elevationRequestId", req.ElevationRequestID, "pid", out.PID)
 	return Result{Success: true, Reason: "ok",
 		DetailMessage: "target launched elevated via CreateProcessAsUser"}
+}
+
+// pinAndVerifyTokenLaunchTarget opens path by its canonical (symlink-resolved)
+// form with a share mode that denies every other write/delete handle, so the
+// file identity cannot change between this check and the caller's launch.
+// When expectedHash is non-empty the file's SHA-256 must match it exactly, or
+// verification fails closed. The returned release func must be deferred by
+// the caller and kept alive through the launch.
+func pinAndVerifyTokenLaunchTarget(path, expectedHash string) (string, func(), error) {
+	if !filepath.IsAbs(path) {
+		return "", nil, errors.New("token_launch target path must be absolute")
+	}
+	canonical, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve token_launch target: %w", err)
+	}
+	canonicalPtr, err := windows.UTF16PtrFromString(canonical)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode token_launch target path: %w", err)
+	}
+	// FILE_SHARE_READ only (no FILE_SHARE_WRITE/DELETE): while this handle is
+	// open, no other process can open the same path for write or delete, so
+	// it cannot be replaced out from under a hash check that already passed.
+	handle, err := windows.CreateFile(canonicalPtr, windows.GENERIC_READ, windows.FILE_SHARE_READ,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("open token_launch target: %w", err)
+	}
+	file := os.NewFile(uintptr(handle), canonical)
+	var closeOnce sync.Once
+	release := func() { closeOnce.Do(func() { _ = file.Close() }) }
+
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		release()
+		return "", nil, errors.New("token_launch target must be a regular executable file")
+	}
+
+	if expectedHash != "" {
+		hasher := sha256.New()
+		if _, err := io.Copy(hasher, file); err != nil {
+			release()
+			return "", nil, fmt.Errorf("hash token_launch target: %w", err)
+		}
+		actual := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(strings.TrimSpace(expectedHash), actual) {
+			release()
+			return "", nil, errors.New("token_launch target SHA-256 does not match the approved value")
+		}
+	} else {
+		// No approval-time hash to pin against (e.g. the local ETW-driven
+		// flow). The open-handle share-deny above still prevents a swap
+		// between this check and launch, but a pre-existing swap ahead of
+		// this call cannot be detected without a reference hash.
+		slog.Warn("pamactuator: token_launch target has no approval-time hash to verify against; launching with an open-handle identity check only",
+			"path", canonical)
+	}
+	return canonical, release, nil
 }
 
 // activeConsoleSessionID returns the session id of the physical console. It

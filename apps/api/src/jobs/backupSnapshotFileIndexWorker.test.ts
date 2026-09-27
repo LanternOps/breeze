@@ -113,7 +113,11 @@ describe('worker processor', () => {
     await initializeBackupSnapshotFileIndexWorker();
     const processor = capturedProcessorHolder.current!;
     await expect(processor({ data: { snapshotDbId: 'x' } })).resolves.not.toThrow();
-    expect(withSystemDbAccessContextMock).toHaveBeenCalled();
+    // hydrateSnapshotFileIndex owns its own DB access context — the worker no
+    // longer wraps it in a second one (that redundant wrap held a pooled
+    // connection idle for the whole hydration, including the manifest fetch).
+    expect(hydrateMock).toHaveBeenCalledWith('x', { includeUnreferenced: false });
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
   });
 
   it('a non-retryable failed outcome logs to console.error instead of returning silently', async () => {
@@ -134,6 +138,19 @@ describe('worker processor', () => {
     await initializeBackupSnapshotFileIndexWorker();
     const processor = capturedProcessorHolder.current!;
     await expect(processor({ data: { snapshotDbId: 'x' } })).rejects.toThrow();
+  });
+
+  it.each([
+    ['brokered_read', true],
+    ['result_brokered_read', true],
+    ['result', false],
+    ['recovery_create', false],
+  ] as const)('reason %s hydrates unreferenced snapshots: %s', async (reason, includeUnreferenced) => {
+    hydrateMock.mockResolvedValueOnce({ status: 'skipped', reason: 'already_complete' });
+    await initializeBackupSnapshotFileIndexWorker();
+    const processor = capturedProcessorHolder.current!;
+    await processor({ data: { snapshotDbId: 'snap-db-1', reason } });
+    expect(hydrateMock).toHaveBeenCalledWith('snap-db-1', { includeUnreferenced });
   });
 
   it('a complete or skipped outcome completes the job', async () => {

@@ -210,6 +210,9 @@ vi.mock('../services/deviceUninstallDrain', () => ({
 }));
 
 vi.mock('../db/schema', async (importOriginal) => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   // routes/devices/actuateElevation.ts calls drizzle's alias(users, …) at
   // import time (#4913), which needs a real table, not a plain-object stub.
   users: (await importOriginal<typeof import('../db/schema')>()).users,

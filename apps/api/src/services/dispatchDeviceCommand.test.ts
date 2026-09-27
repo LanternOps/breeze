@@ -219,7 +219,8 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('runs the delivery refresher before decrypt on the enqueue-time push', async () => {
     selectReturning(deviceRow('online'));
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    const executedAt = new Date();
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
     sendMock.mockReturnValue(true);
     refreshMock.mockResolvedValue({ s3Key: 'k', downloadUrl: 'https://fresh.example' });
     await dispatchDeviceCommand({
@@ -227,7 +228,13 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
       type: 'software_install',
       payload: { s3Key: 'k', downloadUrl: 'https://stale.example' },
     });
-    expect(refreshMock).toHaveBeenCalledWith('software_install', { s3Key: 'k', downloadUrl: 'https://stale.example' });
+    // The refresher is told which command and claim it is preparing, so a
+    // refusal can expire exactly this claim and nothing else.
+    expect(refreshMock).toHaveBeenCalledWith(
+      'software_install',
+      { s3Key: 'k', downloadUrl: 'https://stale.example' },
+      { commandId: 'cmd-1', deviceId: DEVICE, type: 'software_install', claimedAt: executedAt },
+    );
     expect(decryptMock.mock.calls[0]![0]).toMatchObject({ payload: { downloadUrl: 'https://fresh.example' } });
   });
 

@@ -17,6 +17,22 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const })),
 }));
 
+// Field-provenance tiering — a device_group-level helper-permission
+// assignment grants technician/AI-chat capability to the on-device helper
+// (execution_gated per configFeatureTypes.ts). A device that self-selects into
+// a group via an agent-reported filter field must not be able to elevate its
+// own helper permission level. Mocked as a pass-through by default; a
+// dedicated test overrides it to prove the gate is wired in.
+const mockResolveExecutionSafeGroupIds = vi.fn(async (groupIds: string[]) => ({
+  allowedGroupIds: groupIds,
+  refusedGroups: [] as Array<{ id: string; refusedFields: string[] }>,
+}));
+const mockAuditRefusedExecutionGroups = vi.fn();
+vi.mock('./executionTargetGating', () => ({
+  resolveExecutionSafeGroupIds: (...args: [string[]]) => mockResolveExecutionSafeGroupIds(...args),
+  auditRefusedExecutionGroups: (...args: unknown[]) => mockAuditRefusedExecutionGroups(...args),
+}));
+
 import {
   resolveHelperPermissionLevelForDevice,
   deriveHelperPermissionLevelFromSettings,
@@ -92,6 +108,44 @@ describe('resolveHelperPermissionLevelForDevice', () => {
   it('falls back for an unknown device rather than throwing', async () => {
     queue([]); // no device row
     expect(await resolveHelperPermissionLevelForDevice('nope', 'basic')).toBe('basic');
+  });
+});
+
+describe('resolveHelperPermissionLevelForDevice — device_group gated by field provenance', () => {
+  beforeEach(() => {
+    joined.length = 0;
+    vi.mocked(db.select).mockReset();
+    mockResolveExecutionSafeGroupIds.mockImplementation(async (groupIds: string[]) => ({
+      allowedGroupIds: groupIds,
+      refusedGroups: [],
+    }));
+    mockAuditRefusedExecutionGroups.mockReset();
+  });
+
+  it('excludes a refused group\'s extended-permission assignment, falling back to the org-level default', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
+      allowedGroupIds: [],
+      refusedGroups: [{ id: 'grp-1', refusedFields: ['hostname'] }],
+    });
+    // device, org, group memberships, then the policy join — the device_group
+    // row must NOT win even though it is queued as the closer match.
+    queue(
+      [DEVICE],
+      [{ partnerId: 'ptr-1' }],
+      [{ groupId: 'grp-1' }],
+      [
+        { level: 'organization', assignmentPriority: 0, inlineSettings: { permissionLevel: 'basic' } },
+      ],
+    );
+
+    const level = await resolveHelperPermissionLevelForDevice('dev-1');
+
+    expect(level).toBe('basic');
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
+      'org-1',
+      'helper_permissions.execution_target_refused_agent_reported_fields',
+      [{ id: 'grp-1', refusedFields: ['hostname'] }],
+    );
   });
 });
 

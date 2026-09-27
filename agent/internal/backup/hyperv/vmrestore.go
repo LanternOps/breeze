@@ -26,30 +26,6 @@ type VMRestoreFromBackupConfig struct {
 	SwitchName string `json:"switchName,omitempty"`
 }
 
-// VMRestoreFromBackupResult holds the outcome of a VM restore from backup.
-type VMRestoreFromBackupResult struct {
-	VMName     string   `json:"vmName"`
-	NewVMID    string   `json:"newVmId"`
-	VHDXPath   string   `json:"vhdxPath"`
-	Status     string   `json:"status"` // completed, failed
-	DurationMs int64    `json:"durationMs"`
-	Warnings   []string `json:"warnings,omitempty"`
-	Error      string   `json:"error,omitempty"`
-}
-
-// vmRestoreManifest matches the snapshot manifest shape for deserialization.
-type vmRestoreManifest struct {
-	ID    string               `json:"id"`
-	Files []vmRestoreManifFile `json:"files"`
-	Size  int64                `json:"size"`
-}
-
-type vmRestoreManifFile struct {
-	SourcePath string `json:"sourcePath"`
-	BackupPath string `json:"backupPath"`
-	Size       int64  `json:"size"`
-}
-
 // RestoreAsVM creates a new Hyper-V Generation 2 VM from a backup snapshot.
 //
 // Steps:
@@ -102,6 +78,28 @@ func RestoreAsVM(
 		}
 	}
 
+	// Refuse an existing VM name and create the per-restore directory under
+	// the host's default VM path before anything is downloaded. The restored
+	// VM's disk and configuration live there, never under a temp directory.
+	dirName, err := newRestoreDirName(cfg.VMName)
+	if err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("vmrestore: %w", err)
+	}
+	restoreDir, err := prepareVMRestoreWith(runPS, cfg.VMName, "", dirName)
+	if err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("vmrestore: prepare restore: %w", err)
+	}
+	result.RestorePath = restoreDir
+	defer func() {
+		if result.Status != "completed" {
+			if rmErr := os.RemoveAll(restoreDir); rmErr != nil {
+				slog.Warn("vmrestore: failed to clean up restore directory", "dir", restoreDir, "error", rmErr.Error())
+			}
+		}
+	}()
+
 	// 1. Download manifest.
 	progress("downloading_manifest", 1, 7)
 	slog.Info("vmrestore: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
@@ -113,20 +111,15 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: manifest downloaded", "files", len(manifest.Files))
 
-	// 2. Create work directory and VHDX.
+	// 2. Create the VHDX inside the restore directory.
 	progress("creating_vhdx", 2, 7)
-	workDir, err := os.MkdirTemp("", "breeze-vmrestore-*")
-	if err != nil {
+	vhdDir := filepath.Join(restoreDir, "Virtual Hard Disks")
+	if err := os.MkdirAll(vhdDir, 0o750); err != nil {
 		result.Error = err.Error()
-		return result, fmt.Errorf("vmrestore: create work dir: %w", err)
+		return result, fmt.Errorf("vmrestore: create disk dir: %w", err)
 	}
-	defer func() {
-		if result.Status != "completed" {
-			os.RemoveAll(workDir)
-		}
-	}()
 
-	vhdxPath := filepath.Join(workDir, cfg.VMName+".vhdx")
+	vhdxPath := filepath.Join(vhdDir, safeFileStem(cfg.VMName)+".vhdx")
 	result.VHDXPath = vhdxPath
 	sizeBytes := diskSizeGB * 1024 * 1024 * 1024
 
@@ -174,8 +167,20 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: restoring files to volume", "target", targetRoot, "files", len(manifest.Files))
 
-	restoreWarnings := restoreFilesToVolume(manifest, provider, targetRoot)
-	result.Warnings = append(result.Warnings, restoreWarnings...)
+	tally := restoreManifestFiles(ctx, manifest.Files, provider, targetRoot)
+	result.FilesRestored = tally.Restored
+	result.FilesFailed = tally.Failed
+	result.BytesRestored = tally.Bytes
+	result.FailedFiles = tally.FailedFiles
+	result.Warnings = append(result.Warnings, tally.Warnings...)
+	if err := tally.err(); err != nil {
+		// No VM is created from a disk that is missing files; the deferred
+		// cleanup dismounts the disk and removes the restore directory.
+		result.Error = err.Error()
+		slog.Warn("vmrestore: file restore failed", "restored", tally.Restored, "failed", tally.Failed, "total", tally.Total)
+		return result, fmt.Errorf("vmrestore: %w", err)
+	}
+	slog.Info("vmrestore: files restored", "restored", tally.Restored, "bytes", tally.Bytes)
 
 	// 5. Inject Hyper-V enlightenment drivers.
 	progress("injecting_drivers", 5, 7)
@@ -209,13 +214,11 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: creating VM", "name", cfg.VMName, "memoryMB", memoryMB, "cpus", cpuCount)
 
-	if err := createAndConfigureVM(cfg.VMName, vhdxPath, memoryMB, cpuCount, cfg.SwitchName); err != nil {
+	newVMID, err := createAndConfigureVM(cfg.VMName, vhdxPath, restoreDir, memoryMB, cpuCount, cfg.SwitchName)
+	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("vmrestore: create VM: %w", err)
 	}
-
-	// Retrieve the new VM ID.
-	newVMID := getVMID(cfg.VMName)
 	result.NewVMID = newVMID
 	result.Status = "completed"
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -297,38 +300,6 @@ func dismountVHDX(vhdxPath string) error {
 	return nil
 }
 
-// restoreFilesToVolume downloads each file from the manifest and writes it to
-// the target volume.
-func restoreFilesToVolume(
-	manifest *vmRestoreManifest,
-	provider providers.BackupProvider,
-	targetRoot string,
-) []string {
-	var warnings []string
-
-	for _, file := range manifest.Files {
-		targetPath := filepath.Join(targetRoot, filepath.FromSlash(file.SourcePath))
-		cleaned := filepath.Clean(targetPath)
-		if !strings.HasPrefix(cleaned, filepath.Clean(targetRoot)+string(filepath.Separator)) && cleaned != filepath.Clean(targetRoot) {
-			warnings = append(warnings, fmt.Sprintf("path traversal blocked: %s", file.SourcePath))
-			continue
-		}
-
-		dir := filepath.Dir(targetPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			warnings = append(warnings, fmt.Sprintf("mkdir failed for %s: %s", dir, err.Error()))
-			continue
-		}
-
-		if err := provider.Download(file.BackupPath, targetPath); err != nil {
-			warnings = append(warnings, fmt.Sprintf("restore failed for %s: %s", file.SourcePath, err.Error()))
-			continue
-		}
-	}
-
-	return warnings
-}
-
 // injectHyperVDrivers uses DISM to add Hyper-V enlightenment drivers to a
 // mounted Windows image volume. This ensures the restored OS can boot on Hyper-V.
 func injectHyperVDrivers(targetRoot string) error {
@@ -367,55 +338,8 @@ func injectHyperVDrivers(targetRoot string) error {
 }
 
 // createAndConfigureVM creates a Generation 2 Hyper-V VM and configures it
-// with the specified resources.
-func createAndConfigureVM(vmName, vhdxPath string, memoryMB int64, cpuCount int, switchName string) error {
-	vmNameEsc := escapePSString(vmName)
-	vhdxPathEsc := escapePSString(vhdxPath)
-	memBytes := memoryMB * 1024 * 1024
-
-	// Create VM.
-	createCmd := fmt.Sprintf(
-		`New-VM -Name '%s' -Generation 2 -MemoryStartupBytes %d -VHDPath '%s'`,
-		vmNameEsc, memBytes, vhdxPathEsc,
-	)
-	if _, err := runPS(createCmd); err != nil {
-		return fmt.Errorf("New-VM: %w", err)
-	}
-
-	// Set CPU count.
-	cpuCmd := fmt.Sprintf(`Set-VM -Name '%s' -ProcessorCount %d`, vmNameEsc, cpuCount)
-	if _, err := runPS(cpuCmd); err != nil {
-		slog.Warn("vmrestore: failed to set CPU count", "error", err.Error())
-	}
-
-	// Connect network adapter to specified or default switch.
-	if switchName != "" {
-		netCmd := fmt.Sprintf(
-			`Connect-VMNetworkAdapter -VMName '%s' -SwitchName '%s'`,
-			vmNameEsc, escapePSString(switchName),
-		)
-		if _, err := runPS(netCmd); err != nil {
-			slog.Warn("vmrestore: failed to connect specified switch",
-				"switch", switchName, "error", err.Error())
-		}
-	} else {
-		// Try to find a default switch.
-		defaultSwitchCmd := `Get-VMSwitch | Select-Object -First 1 -ExpandProperty Name`
-		out, err := runPS(defaultSwitchCmd)
-		if err == nil {
-			defSwitch := strings.TrimSpace(out)
-			if defSwitch != "" {
-				netCmd := fmt.Sprintf(
-					`Connect-VMNetworkAdapter -VMName '%s' -SwitchName '%s'`,
-					vmNameEsc, escapePSString(defSwitch),
-				)
-				if _, err := runPS(netCmd); err != nil {
-					slog.Warn("vmrestore: failed to connect default switch",
-						"switch", defSwitch, "error", err.Error())
-				}
-			}
-		}
-	}
-
-	return nil
+// with the specified resources. It refuses a name that already exists and
+// returns the new VM's ID; all configuration is applied by that ID.
+func createAndConfigureVM(vmName, vhdxPath, vmPath string, memoryMB int64, cpuCount int, switchName string) (string, error) {
+	return createAndConfigureVMWith(runPS, vmName, vhdxPath, vmPath, memoryMB, cpuCount, switchName)
 }

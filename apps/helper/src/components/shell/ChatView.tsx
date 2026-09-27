@@ -6,6 +6,7 @@ import ChatFileCard, {
   openWorkspaceFile,
   type WorkspaceFileSummary,
 } from '../workspace/ChatFileCard';
+import { SafeMarkdownImage, SafeMarkdownLink } from '../../lib/safeMarkdown';
 
 // Extracted from App.tsx's default return (messages map, composer,
 // ThinkingIndicator). Reads the chat store directly, as App did. The composer
@@ -226,6 +227,10 @@ export default function ChatView({
                       components={{
                         p: ({ children }) => <p>{withCitations(children, fileResolutionMap, username)}</p>,
                         li: ({ children }) => <li>{withCitations(children, fileResolutionMap, username)}</li>,
+                        // AI-authored markdown images must never auto-load —
+                        // see lib/safeMarkdown.tsx for why.
+                        img: ({ src, alt }) => <SafeMarkdownImage src={src} alt={alt} />,
+                        a: ({ href, children }) => <SafeMarkdownLink href={href}>{children}</SafeMarkdownLink>,
                       }}
                     >
                       {msg.content}

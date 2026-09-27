@@ -660,13 +660,14 @@ function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
   );
 
   lines.push('');
+  // Same sanitizer as the default task turn below — see its comment.
   if (ctx.alert) {
-    lines.push(`Alert severity: ${ctx.alert.severity}`);
-    lines.push(`Alert: ${ctx.alert.title}`);
-    if (ctx.alert.message) lines.push(`Alert detail: ${ctx.alert.message}`);
+    lines.push(`Alert severity: ${sanitizeSweepText(ctx.alert.severity, 16)}`);
+    lines.push(`Alert: ${sanitizeSweepText(ctx.alert.title, 160) || 'untitled'}`);
+    if (ctx.alert.message) lines.push(`Alert detail: ${sanitizeSweepText(ctx.alert.message, 500)}`);
   }
   if (ctx.device) {
-    lines.push(`Target device: ${ctx.device.hostname} (${ctx.device.osType}, id ${ctx.device.id})`);
+    lines.push(`Target device: ${sanitizeSweepText(ctx.device.hostname, 255)} (${ctx.device.osType}, id ${ctx.device.id})`);
   }
   if (group) {
     lines.push(
@@ -1602,14 +1603,18 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
 
   lines.push(`Trigger: ${ctx.run.triggerKind}`);
 
+  // Same sanitizer the sweep/narrative/patch profiles already use for this
+  // exact data (alert title, device hostname): tenant-authored/endpoint-
+  // reported text, rendered single-line so it cannot add an extra line of
+  // task prompt (see `sanitizeSweepText`'s doc comment above).
   if (ctx.alert) {
-    lines.push(`Alert severity: ${ctx.alert.severity}`);
-    lines.push(`Alert: ${ctx.alert.title}`);
-    if (ctx.alert.message) lines.push(`Alert detail: ${ctx.alert.message}`);
+    lines.push(`Alert severity: ${sanitizeSweepText(ctx.alert.severity, 16)}`);
+    lines.push(`Alert: ${sanitizeSweepText(ctx.alert.title, 160) || 'untitled'}`);
+    if (ctx.alert.message) lines.push(`Alert detail: ${sanitizeSweepText(ctx.alert.message, 500)}`);
   }
 
   if (ctx.device) {
-    lines.push(`Target device: ${ctx.device.hostname} (${ctx.device.osType}, id ${ctx.device.id})`);
+    lines.push(`Target device: ${sanitizeSweepText(ctx.device.hostname, 255)} (${ctx.device.osType}, id ${ctx.device.id})`);
   } else if (!ctx.ticket) {
     // A ticket run is device-less by design (v1 has no device axis for
     // tickets — see runService.ts) and gets its own closing instruction

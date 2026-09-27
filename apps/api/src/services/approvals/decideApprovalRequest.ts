@@ -34,6 +34,7 @@ import {
   isAgentIntentDecideAuthorized,
   isOrgWideGovernanceIntent,
 } from '../actionIntents/intentApprovers';
+import { isSoleOperatorSelfApprovalForbidden } from '../actionIntents/selfApprovalPolicy';
 import { buildAuthContextForIntent } from '../actionIntents/actorContext';
 import {
   effectiveTargetDeviceId,
@@ -884,6 +885,28 @@ export async function decideApprovalRequest(
         // WebAuthn challenge. Gated to `approved` only — a deny stays available
         // in every case, since denying only cancels the action.
         if (linkedIntent.requestedByUserId === userId) {
+          // A PAM elevation intent can never be
+          // self-approved, even by a genuine sole operator. The fan-out never
+          // creates the requester-owned row for these; this refuses anyway.
+          if (isSoleOperatorSelfApprovalForbidden(linkedIntent.actionName)) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId: linkedIntent.id,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'approver_unauthorized',
+              actorId: userId,
+              details: { approvalId: existing.id, errorCode: 'self_approval_forbidden' },
+            });
+            return {
+              httpStatus: 403,
+              body: {
+                error: 'self_approval_forbidden',
+                message: 'This action needs an approver other than the person who requested it.',
+              },
+            };
+          }
           // Review finding #3: the SAME filters the fan-out applied
           // (intentService.ts) — not just the org-wide-governance ceiling, but
           // ALSO the STRICT-proposal `alsoRequire: scripts:write` narrowing
@@ -1186,7 +1209,7 @@ export async function decideApprovalRequest(
         lostRace: false;
         updated: typeof approvalRequests.$inferSelect;
         wonIntent: boolean;
-        enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null;
+        enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null;
       };
 
   let writeResult: DecideWriteResult;
@@ -1260,7 +1283,7 @@ export async function decideApprovalRequest(
           }
           const updated = casRows[0]!;
 
-          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
+          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null = null;
           if (updated.elevationRequestId) {
             const now = new Date();
             const expiresAt = status === 'approved'
@@ -1332,9 +1355,11 @@ export async function decideApprovalRequest(
                 decision: status,
                 expiresAt,
               });
-              enforcementStatus = actuation.desiredState === 'active'
-                ? 'pending_dispatch'
-                : 'cleanup_pending';
+              enforcementStatus = actuation.refusalReason
+                ? 'refused'
+                : actuation.desiredState === 'active'
+                  ? 'pending_dispatch'
+                  : 'cleanup_pending';
 
               await tx
                 .update(approvalRequests)

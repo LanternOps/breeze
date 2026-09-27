@@ -40,10 +40,19 @@ var rootCmd = &cobra.Command{
 	Use:   "breeze-backup",
 	Short: "Breeze RMM Backup Helper",
 	Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
-	Run:   func(cmd *cobra.Command, args []string) { runBackupHelper() },
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if protocolInfo {
+			return printProtocolInfo(cmd.OutOrStdout())
+		}
+		runBackupHelper()
+		return nil
+	},
 }
 
 var socketPath string
+
+// protocolInfo is set by --protocol-info.
+var protocolInfo bool
 
 // backupStopDrainTimeout bounds how long a targeted backup_stop waits for the
 // cancelled workload to unwind before replying. Pinned below the agent's
@@ -161,6 +170,7 @@ func (c *activeCommandCanceller) cancelAll() bool {
 
 func init() {
 	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
+	rootCmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
 
 	// Stable, parseable `breeze-backup --version` output, mirroring the
 	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
@@ -740,6 +750,14 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return ok(fmt.Sprintf(`{"stopped":%t,"drained":%t}`, stopped, drained))
 		}
 	}
+	// A restore-shaped command carrying a storage session is served through
+	// that session only — never through agent.yaml, a vault or a payload
+	// providerConfig — whether or not an agent.yaml manager exists.
+	if brokeredReadCommands[req.CommandType] {
+		if result, handled := executeBrokeredRead(req, mgr, conn, commandCanceller); handled {
+			return result
+		}
+	}
 	if req.CommandType == "backup_run" {
 		payloadMgr, err := managerFromBackupRunPayload(req.Payload)
 		if err != nil {
@@ -1015,9 +1033,23 @@ func marshalBackupRunResult(job *backup.BackupJob, err error) backupipc.BackupCo
 	return result
 }
 
+// failureBodyCarrier is a result whose body still travels with a failed
+// command: Success stays false and Stderr carries the reason, so the server
+// records the command and its restore job as failed, and the body adds the
+// counts (files restored and failed) to that failure.
+type failureBodyCarrier interface {
+	CarryResultOnFailure() bool
+}
+
 func marshalResult(v any, err error) backupipc.BackupCommandResult {
 	if err != nil {
-		return fail(err.Error())
+		result := fail(err.Error())
+		if carrier, ok := v.(failureBodyCarrier); ok && carrier.CarryResultOnFailure() {
+			if data, merr := json.Marshal(v); merr == nil {
+				result.Stdout = string(data)
+			}
+		}
+		return result
 	}
 	data, merr := json.Marshal(v)
 	if merr != nil {

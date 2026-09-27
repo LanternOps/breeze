@@ -275,6 +275,91 @@ describe('enrollment-key rotation revokes derived bootstrap authority', () => {
     }
   });
 
+  // A child minted by redeeming a public /s/:code short-link is stamped with
+  // sourceLinkKeyId/sourceLinkKeyGeneration directly against the parent link
+  // row — it never has a bootstrapTokenId at all, so it must be reached by a
+  // SEPARATE branch of the same rotation DELETE the bootstrap-token case
+  // above exercises. Seeds the child row directly (matching what
+  // publicShortLinkRoutes' GET /s/:code insert produces) rather than going
+  // through the full download route, to isolate this from installer
+  // signing/serving concerns.
+  runDb('revokes an unused short-link-derived child on rotation, preserving a claimed one', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const authToken = await mfaSatisfiedToken(env);
+    const unique = `${Date.now()}-${randomUUID()}`;
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const [parent] = await db
+        .insert(enrollmentKeys)
+        .values({
+          orgId: env.organization.id,
+          siteId: env.site.id,
+          name: `short-link rotation parent ${unique}`,
+          key: randomUUID(),
+          shortCode: `sl${unique}`.slice(0, 12),
+          maxUsage: 25,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          createdBy: env.user.id,
+        })
+        .returning({ id: enrollmentKeys.id, credentialGeneration: enrollmentKeys.credentialGeneration });
+
+      const [unusedChild] = await db
+        .insert(enrollmentKeys)
+        .values({
+          orgId: env.organization.id,
+          siteId: env.site.id,
+          name: `short-link unused child ${unique}`,
+          key: randomUUID(),
+          maxUsage: 1,
+          usageCount: 0,
+          sourceLinkKeyId: parent!.id,
+          sourceLinkKeyGeneration: parent!.credentialGeneration,
+        })
+        .returning({ id: enrollmentKeys.id });
+
+      const [claimedChild] = await db
+        .insert(enrollmentKeys)
+        .values({
+          orgId: env.organization.id,
+          siteId: env.site.id,
+          name: `short-link claimed child ${unique}`,
+          key: randomUUID(),
+          maxUsage: 1,
+          usageCount: 1,
+          sourceLinkKeyId: parent!.id,
+          sourceLinkKeyGeneration: parent!.credentialGeneration,
+        })
+        .returning({ id: enrollmentKeys.id });
+
+      return { parentId: parent!.id, unusedChildId: unusedChild!.id, claimedChildId: claimedChild!.id };
+    });
+
+    try {
+      const rotate = await makeApp().request(`/enrollment-keys/${seeded.parentId}/rotate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      expect(rotate.status).toBe(200);
+
+      const remainingChildren = await withSystemDbAccessContext(() =>
+        db
+          .select({ id: enrollmentKeys.id })
+          .from(enrollmentKeys)
+          .where(eq(enrollmentKeys.sourceLinkKeyId, seeded.parentId)),
+      );
+      expect(remainingChildren).toEqual([{ id: seeded.claimedChildId }]);
+    } finally {
+      await withSystemDbAccessContext(async () => {
+        await db.delete(enrollmentKeys).where(eq(enrollmentKeys.sourceLinkKeyId, seeded.parentId));
+        await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, seeded.parentId));
+      });
+    }
+  });
+
   runDb('cannot rotate or revoke another tenant\'s parent credential epoch', async () => {
     const caller = await setupTestEnvironment({ scope: 'organization' });
     const target = await setupTestEnvironment({ scope: 'organization' });

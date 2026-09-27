@@ -9,6 +9,12 @@ vi.mock('../db', () => ({
 vi.mock('./commandQueue', () => ({
   CommandTypes: { BACKUP_RESTORE: 'backup_restore' },
 }));
+// The org/cross-site restore authorization is covered by
+// aiToolsRestoreAuthorization.test.ts and aiToolsRestoreScope.integration.test.ts;
+// here it is stubbed so the select sequences below stay the handler's own.
+vi.mock('./aiToolsRestoreAuthorization', () => ({
+  authorizeAiRestore: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
@@ -108,7 +114,7 @@ describe('query_backups list_jobs — site narrowing (device-keyed jobs)', () =>
         return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-FORBIDDEN' }]) }) };
       }
       jobsRan = true;
-      return { from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'job-leak' }]) }) }) }) }) }) };
+      return { from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'job-unscoped' }]) }) }) }) }) }) };
     });
     const result = await handlerFor('query_backups')({ action: 'list_jobs' }, makeAuth(['site-A']));
     const parsed = JSON.parse(result);
@@ -123,6 +129,20 @@ describe('query_backups list_jobs — site narrowing (device-keyed jobs)', () =>
     const result = await handlerFor('query_backups')({ action: 'list_jobs' }, makeAuth(undefined));
     const parsed = JSON.parse(result);
     expect(parsed.showing).toBe(1);
+  });
+
+  it('fails closed (empty, no query) for a site-restricted caller whose org never resolves', async () => {
+    let jobsRan = false;
+    mockDb.select.mockImplementation(() => {
+      jobsRan = true;
+      return { from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'job-unscoped' }]) }) }) }) }) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: [] };
+    const result = await handlerFor('query_backups')({ action: 'list_jobs' }, auth);
+    const parsed = JSON.parse(result);
+    expect(parsed.showing).toBe(0);
+    expect(parsed.jobs).toEqual([]);
+    expect(jobsRan).toBe(false);
   });
 });
 
@@ -196,5 +216,15 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
     const result = await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1' }, makeAuth(undefined));
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
+    // Only a destination reference is queued; the stored credential is
+    // resolved when the command is delivered.
+    const { aiQueueCommandForExecution } = await import('./aiDispatch');
+    const queuedPayload = vi.mocked(aiQueueCommandForExecution).mock.lastCall![4] as Record<string, unknown>;
+    expect(queuedPayload).toMatchObject({
+      provider: 's3',
+      providerConfigRef: { configId: 'cfg-1', orgId: 'org-1' },
+    });
+    expect(queuedPayload).not.toHaveProperty('providerConfig');
+    expect(JSON.stringify(queuedPayload)).not.toContain('breeze-backups');
   });
 });

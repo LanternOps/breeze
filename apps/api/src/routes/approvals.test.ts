@@ -2371,6 +2371,42 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
   });
 
+  // Decide-side twin of the fan-out exclusion: even a sole operator (the
+  // only eligible approver) may not approve their own PAM elevation intent.
+  // The fan-out never creates the requester-owned row; this refuses anyway.
+  it('refuses a sole-operator self-approve of request_elevation (403 self_approval_forbidden)', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id, actionName: 'request_elevation' });
+    // Refused before the assurance ladder, so no L3 proof is ever consulted
+    // (and none can be burned). The module-default approver set is
+    // [TEST_USER] — a genuine sole operator.
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('self_approval_forbidden');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'approver_unauthorized',
+        actorId: TEST_USER.id,
+        details: expect.objectContaining({ errorCode: 'self_approval_forbidden' }),
+      }),
+    );
+  });
+
+  it('still allows a self-DENY of a request_elevation intent', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id, actionName: 'request_elevation' });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'changed my mind' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('refuses a self-approve BEFORE consuming an assurance proof (no WebAuthn challenge burned)', async () => {
     mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
     vi.mocked(resolveIntentApprovers).mockResolvedValueOnce([TEST_USER.id, 'other-approver']);

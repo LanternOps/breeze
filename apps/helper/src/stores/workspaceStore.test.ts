@@ -90,6 +90,12 @@ describe('buildSearchParams', () => {
     expect(params.toString()).toBe('q=x');
     expect(buildSearchParams('x').toString()).toBe('q=x');
   });
+
+  it('forwards helperUser when set, and omits it when absent/null', () => {
+    expect(buildSearchParams('x', {}, 'todd').get('helperUser')).toBe('todd');
+    expect(buildSearchParams('x', {}).has('helperUser')).toBe(false);
+    expect(buildSearchParams('x', {}, null).has('helperUser')).toBe(false);
+  });
 });
 
 describe('buildBrowseParams', () => {
@@ -112,6 +118,12 @@ describe('buildBrowseParams', () => {
     expect(params.get('docType')).toBe('easement');
     expect(params.has('ext')).toBe(false);
     expect(params.has('modifiedAfter')).toBe(false);
+  });
+
+  it('forwards helperUser when set, and omits it when absent/null', () => {
+    expect(buildBrowseParams('s1', '', {}, 'todd').get('helperUser')).toBe('todd');
+    expect(buildBrowseParams('s1', '', {}).has('helperUser')).toBe(false);
+    expect(buildBrowseParams('s1', '', {}, null).has('helperUser')).toBe(false);
   });
 });
 
@@ -383,16 +395,28 @@ describe('filing', () => {
     confidence: null, rationale: null, decidedProjectKey: null,
   };
 
-  it('loadFilings fills filings and projects', async () => {
+  it('loadFilings forwards helperUser as a query param', async () => {
     helperRequestMock
       .mockResolvedValueOnce(ok({ filings: [FILING] }))
       .mockResolvedValueOnce(ok({ projects: [{ key: '2023-041', label: 'Henderson Water Main Replacement' }] }));
-    await useWorkspaceStore.getState().loadFilings();
+    await useWorkspaceStore.getState().loadFilings('todd');
     expect(useWorkspaceStore.getState().filings).toHaveLength(1);
     expect(useWorkspaceStore.getState().projects[0].key).toBe('2023-041');
+    const url = new URL(helperRequestMock.mock.calls[0][1]);
+    expect(url.pathname).toBe('/api/v1/workspace/helper/filing');
+    expect(url.searchParams.get('helperUser')).toBe('todd');
   });
 
-  it('classifyEmail POSTs the id and swaps the row in place', async () => {
+  it('loadFilings omits helperUser param when null', async () => {
+    helperRequestMock
+      .mockResolvedValueOnce(ok({ filings: [] }))
+      .mockResolvedValueOnce(ok({ projects: [] }));
+    await useWorkspaceStore.getState().loadFilings(null);
+    const url = new URL(helperRequestMock.mock.calls[0][1]);
+    expect(url.searchParams.has('helperUser')).toBe(false);
+  });
+
+  it('classifyEmail POSTs the id + helperUser and swaps the row in place', async () => {
     useWorkspaceStore.setState({ filings: [FILING] });
     const suggested = {
       ...FILING, status: 'suggested', suggestedProjectKey: '2023-041',
@@ -400,12 +424,20 @@ describe('filing', () => {
       rationale: 'matched City of Fairoaks PO #4021',
     };
     helperRequestMock.mockResolvedValueOnce(ok({ filing: suggested }));
-    await useWorkspaceStore.getState().classifyEmail('e1');
+    await useWorkspaceStore.getState().classifyEmail('e1', 'todd');
     const [, url, init] = helperRequestMock.mock.calls[0];
     expect(url).toContain('/filing/classify');
-    expect(JSON.parse((init as { body: string }).body)).toEqual({ fileIndexId: 'e1' });
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ fileIndexId: 'e1', helperUser: 'todd' });
     expect(useWorkspaceStore.getState().filings[0].confidence).toBe('high');
     expect(useWorkspaceStore.getState().filingBusy).toBeNull();
+  });
+
+  it('classifyEmail omits helperUser from the body when null', async () => {
+    useWorkspaceStore.setState({ filings: [FILING] });
+    helperRequestMock.mockResolvedValueOnce(ok({ filing: FILING }));
+    await useWorkspaceStore.getState().classifyEmail('e1', null);
+    const [, , init] = helperRequestMock.mock.calls[0];
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ fileIndexId: 'e1' });
   });
 
   it('assignFiling posts projectKey + helperUser and surfaces failures', async () => {

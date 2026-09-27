@@ -57,6 +57,7 @@ vi.mock('../../services/auditService', () => ({
 
 vi.mock('./helpers', () => ({
   getDeviceWithOrgAndSiteCheck: getDeviceMock,
+  requireDevicesExecute: vi.fn().mockResolvedValue(true),
   SITE_ACCESS_DENIED: siteAccessDenied,
 }));
 

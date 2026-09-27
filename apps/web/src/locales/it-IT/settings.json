@@ -853,6 +853,7 @@
     "hideExpired": "Nascondi scadute",
     "deleteExpired": "Elimina scadute",
     "shortCode": "Codice breve",
+    "shortCodeHidden": "Nascosto — richiede l’autorizzazione di registrazione",
     "installerUsage": "Dispositivi del programma di installazione {{consumed}} / {{max}}",
     "installerUsageExpired": "Dispositivi del programma di installazione {{consumed}} / {{max}} (scaduto)",
     "installerUsageMixed": "Dispositivi del programma di installazione {{liveConsumed}} / {{liveMax}} attivi · {{expired}} scaduti",

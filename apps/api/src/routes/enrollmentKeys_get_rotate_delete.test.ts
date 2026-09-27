@@ -6,10 +6,16 @@ import { sql } from 'drizzle-orm';
 // request time — the route registers `requireMfa()` / `requirePermission()`
 // once at import time, so the returned middleware must re-check a gate on
 // every invocation rather than baking in a decision at registration.
-const { mfaGate, permissionGate, siteScope } = vi.hoisted(() => ({
+const { mfaGate, permissionGate, siteScope, shortCodeVisibilityGate } = vi.hoisted(() => ({
   mfaGate: { deny: false },
   permissionGate: { deny: false },
   siteScope: { allowedSiteIds: undefined as string[] | undefined },
+  // Controls whether the caller resolves as holding organizations:write —
+  // the permission the route requires to reveal an enrollment key's
+  // shortCode on a read response. Defaults to granted so the many
+  // pre-existing tests in this file (none of which assert on `shortCode`)
+  // are unaffected.
+  shortCodeVisibilityGate: { grantOrgsWrite: true },
 }));
 
 // `db.transaction` is mocked to invoke its callback with the SAME object, so a
@@ -42,6 +48,8 @@ vi.mock('../db/schema', () => ({
     key: 'enrollmentKeys.key',
     credentialGeneration: 'enrollmentKeys.credentialGeneration',
     bootstrapTokenId: 'enrollmentKeys.bootstrapTokenId',
+    sourceLinkKeyId: 'enrollmentKeys.sourceLinkKeyId',
+    sourceLinkKeyGeneration: 'enrollmentKeys.sourceLinkKeyGeneration',
     maxUsage: 'enrollmentKeys.maxUsage',
     usageCount: 'enrollmentKeys.usageCount',
     expiresAt: 'enrollmentKeys.expiresAt',
@@ -71,6 +79,10 @@ vi.mock('../middleware/auth', async () => ({
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
       allowedSiteIds: siteScope.allowedSiteIds,
+      // Real hasSatisfiedMfa (imported actual above) reads this — an
+      // MFA-satisfied session by default so the many pre-existing tests in
+      // this file exercise the same "trusted caller" shape as before.
+      token: { mfa: true },
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
@@ -96,6 +108,18 @@ vi.mock('../services/permissions', () => ({
     ORGS_READ: { resource: 'orgs', action: 'read' },
     ORGS_WRITE: { resource: 'orgs', action: 'write' },
   },
+  getUserPermissions: vi.fn(async () => ({
+    permissions: shortCodeVisibilityGate.grantOrgsWrite
+      ? ['orgs:read', 'orgs:write']
+      : ['orgs:read'],
+  })),
+  hasPermission: (
+    userPerms: { permissions: string[] },
+    resource: string,
+    action: string,
+  ) =>
+    userPerms.permissions.includes(`${resource}:${action}`) ||
+    userPerms.permissions.includes('*:*'),
 }));
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
@@ -294,6 +318,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
     mfaGate.deny = false;
     permissionGate.deny = false;
     siteScope.allowedSiteIds = undefined;
+    shortCodeVisibilityGate.grantOrgsWrite = true;
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
   });
@@ -319,6 +344,41 @@ describe('enrollment key routes — get, rotate, delete', () => {
       // Key with no installers → null, so the UI falls back to the key's own
       // counters (#2992).
       expect(body.installerTokens).toBeNull();
+    });
+
+    // A read-only caller (organizations:read only, no organizations:write)
+    // must not receive the enrollment link's shortCode: it is a bearer
+    // secret for the unauthenticated /s/:code self-enrollment endpoint.
+    it('redacts shortCode for a caller without organizations:write', async () => {
+      shortCodeVisibilityGate.grantOrgsWrite = false;
+      mockSelectFromWhereLimit([makeEnrollmentKey({ shortCode: 'A1B2C3D4E5' })]);
+      mockSelectFromWhereGroupBy([]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.shortCode).toBeNull();
+      expect(body.hasShortLink).toBe(true);
+    });
+
+    it('reveals shortCode for a caller with organizations:write', async () => {
+      shortCodeVisibilityGate.grantOrgsWrite = true;
+      mockSelectFromWhereLimit([makeEnrollmentKey({ shortCode: 'A1B2C3D4E5' })]);
+      mockSelectFromWhereGroupBy([]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.shortCode).toBe('A1B2C3D4E5');
+      expect(body.hasShortLink).toBe(true);
     });
 
     // #2992 — the detail route carries the same installer aggregate as the
@@ -651,6 +711,59 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
       expect(res.status).toBe(200);
       expect(assertTtlWithinCapMock).toHaveBeenCalledWith(ORG_ID, undefined);
+    });
+
+    // A link's shortCode is the public entry point at /s/:code and
+    // /i/:shortCode — rotating the key material without touching it leaves
+    // the old code live, and resetting usage_count to 0 hands it a fresh
+    // budget on top. Rotation must reallocate (or clear) the code so the
+    // old one stops resolving immediately.
+    it('reallocates the shortCode on rotate so the old link code stops resolving', async () => {
+      const existing = makeEnrollmentKey({ shortCode: 'OLDCODE123' });
+      mockSelectFromWhereLimit([existing]); // existing key fetch
+      mockSelectFromWhereLimit([]); // allocateShortCode's uniqueness probe
+
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            makeEnrollmentKey({ shortCode: 'NEWCODE456', credentialGeneration: 2 }),
+          ]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      mockRevokedDerivedKeys();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      const setArg = setSpy.mock.calls[0]![0];
+      expect(setArg.shortCode).toBeDefined();
+      expect(setArg.shortCode).not.toBe('OLDCODE123');
+    });
+
+    it('leaves shortCode null on rotate when the key never had a short link', async () => {
+      const existing = makeEnrollmentKey({ shortCode: null });
+      mockSelectFromWhereLimit([existing]);
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            makeEnrollmentKey({ shortCode: null, credentialGeneration: 2 }),
+          ]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      mockRevokedDerivedKeys();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+
+      expect(res.status).toBe(200);
+      const setArg = setSpy.mock.calls[0]![0];
+      expect(setArg.shortCode).toBeNull();
     });
   });
 

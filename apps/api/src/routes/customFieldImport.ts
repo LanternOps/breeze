@@ -7,6 +7,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { resolveImportPartnerId } from './importScope';
 import {
   commitCustomFieldDefinitionImport,
@@ -221,6 +222,11 @@ customFieldImportRoutes.post(
   zValidator('json', commitImportSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    // Same site-ceiling gate as the CRUD create route: a bulk backfill
+    // creates the same org-wide governance objects one row at a time.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const body = c.req.valid('json');
     const ctx = resolveDefinitionImportContext(auth, body);
     if ('error' in ctx) return c.json({ error: ctx.error }, ctx.status);

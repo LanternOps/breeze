@@ -124,6 +124,11 @@ const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
 // deciding whether they must escalate to a system context (see
 // getCurrentDbAccessContext + permissions.getUserPermissions).
 const dbContextMetaStorage = new AsyncLocalStorage<DbAccessContext>();
+// Work deferred until the OUTERMOST context's transaction has settled (see
+// runAfterDbContextExit). One list per outermost context; joined inner
+// contexts and savepoints share it.
+type AfterContextExitTask = { label: string; run: () => unknown };
+const afterContextExitStorage = new AsyncLocalStorage<AfterContextExitTask[]>();
 
 function getCurrentDb(): typeof baseDb {
   return dbContextStorage.getStore() ?? baseDb;
@@ -665,6 +670,62 @@ function reportHeldContextIfNeeded(input: {
   }
 }
 
+function reportAfterContextExitFailure(label: string, err: unknown): void {
+  console.warn(`[db] work deferred until after the transaction failed: ${label}`, {
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
+
+function startAfterContextExitTask(task: AfterContextExitTask): void {
+  runOutsideDbContext(() => {
+    try {
+      Promise.resolve(task.run()).catch((err: unknown) => reportAfterContextExitFailure(task.label, err));
+    } catch (err) {
+      reportAfterContextExitFailure(task.label, err);
+    }
+  });
+}
+
+/**
+ * Run `work` once the current DB access context's transaction has settled —
+ * committed or rolled back — and outside any context. Use it for queue/Redis
+ * or network round trips that a request or heartbeat transaction must not
+ * wait on while it holds its pooled connection (#1105): the transaction ends
+ * first, then the work starts.
+ *
+ * Fire-and-forget: the caller never waits for `work` and never sees its
+ * failure, which is logged with `label`. Work registered inside a joined inner
+ * context or a savepoint waits for the OUTERMOST context. With no context
+ * held, `work` starts immediately. `work` also runs when the transaction rolls
+ * back, so it must be safe to run either way (e.g. an idempotent queue
+ * request).
+ */
+export function runAfterDbContextExit(label: string, work: () => unknown): void {
+  const task = { label, run: work };
+  const pending = dbContextStorage.getStore() ? afterContextExitStorage.getStore() : undefined;
+  if (pending) {
+    pending.push(task);
+    return;
+  }
+  if (dbContextStorage.getStore()) {
+    // A context without a deferral list (the test-only context entry): start
+    // on the next turn, outside it.
+    setImmediate(() => startAfterContextExitTask(task));
+    return;
+  }
+  startAfterContextExitTask(task);
+}
+
+/** Runs an outermost context opener, then starts the work deferred inside it. */
+async function withAfterContextExit<T>(open: () => Promise<T>): Promise<T> {
+  const pending: AfterContextExitTask[] = [];
+  try {
+    return await afterContextExitStorage.run(pending, open);
+  } finally {
+    for (const task of pending.splice(0)) startAfterContextExitTask(task);
+  }
+}
+
 /**
  * An explicit isolation level forces a NEW top-level transaction, because
  * Drizzle savepoints ignore isolation options. That takes a SECOND pooled
@@ -720,7 +781,7 @@ export async function withDbAccessContext<T>(
   // serialization, and only when the tripwire is armed at all.
   const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
-  return withContextPrologueDeadline('withDbAccessContext', context, (deadline) =>
+  return withAfterContextExit(() => withContextPrologueDeadline('withDbAccessContext', context, (deadline) =>
     baseDb.transaction(async (tx) => {
       await applyAccessContextGucs(tx as unknown as GucExecutor, context, deadline);
       // Disarmed the instant the prologue lands: `fn` below is the caller's own
@@ -747,7 +808,7 @@ export async function withDbAccessContext<T>(
         });
       }
     }, options),
-  );
+  ));
 }
 
 /**
@@ -900,7 +961,7 @@ export async function withArchivedOrgReadContext<T>(
   // Captured at entry, before any await — see withDbAccessContext for why.
   const opener = warnMs > 0 ? new Error('withArchivedOrgReadContext opened here') : undefined;
 
-  return withContextPrologueDeadline('withArchivedOrgReadContext', context, (deadline) =>
+  return withAfterContextExit(() => withContextPrologueDeadline('withArchivedOrgReadContext', context, (deadline) =>
     baseDb.transaction(async (tx) => {
       const executor = tx as unknown as GucExecutor;
       // FIRST statement in the transaction. `SET TRANSACTION` may not follow a
@@ -927,7 +988,7 @@ export async function withArchivedOrgReadContext<T>(
         });
       }
     }),
-  );
+  ));
 }
 
 /**
@@ -995,12 +1056,13 @@ export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
  * Runs a function outside any active AsyncLocalStorage DB context,
  * ensuring `db` resolves to `baseDb` (the connection pool) rather
  * than a request-scoped transaction. Use this for long-lived background
- * tasks that outlive the originating HTTP request. Exits BOTH the tx-routing
- * store and the metadata store so a nested withSystemDbAccessContext opens a
- * genuinely fresh context and getCurrentDbAccessContext reflects reality.
+ * tasks that outlive the originating HTTP request. Exits the tx-routing
+ * store, the metadata store and the after-exit deferral list, so a nested
+ * withSystemDbAccessContext opens a genuinely fresh context (with its own
+ * deferral list) and getCurrentDbAccessContext reflects reality.
  */
 export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T => {
-  return dbContextStorage.exit(() => dbContextMetaStorage.exit(fn));
+  return dbContextStorage.exit(() => dbContextMetaStorage.exit(() => afterContextExitStorage.exit(fn)));
 };
 
 /**

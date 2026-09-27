@@ -5,6 +5,9 @@ import { deploymentInvites } from '../../db/schema';
 import {
   peekShortCode,
   redeemShortCode,
+  anonymousInstallerDistributionAllowed,
+  enforcePublicInstallerIpRateLimit,
+  checkInstallerSignSpend,
 } from '../../routes/enrollmentKeys';
 import {
   buildMacosInstallerZip,
@@ -182,6 +185,20 @@ export function mountInviteLandingRoutes(app: Hono): void {
       return c.text('Unsupported operating system.', 400);
     }
 
+    // Trust gate + rate limits — this route previously built and served a
+    // fully credentialed installer with neither, unlike its /s/:code and
+    // /public-download siblings.
+    const rateLimited = await enforcePublicInstallerIpRateLimit(c);
+    if (rateLimited) return rateLimited;
+
+    const peeked = await peekShortCode(shortCode);
+    if (!peeked) {
+      return c.text('This install link is invalid, expired, or already used.', 404);
+    }
+    if (!(await anonymousInstallerDistributionAllowed(peeked.orgId, 'invite-landing'))) {
+      return c.text('This install link is invalid, expired, or already used.', 404);
+    }
+
     if (osParam === 'linux') {
       // Linux installer isn't pre-built today. Point the recipient at
       // manual-install docs rather than 500ing or silently failing.
@@ -191,6 +208,9 @@ export function mountInviteLandingRoutes(app: Hono): void {
         501,
       );
     }
+
+    const signSpendDenied = await checkInstallerSignSpend(c, shortCode);
+    if (signSpendDenied) return signSpendDenied;
 
     const redeemed = await redeemShortCode(shortCode);
     if (!redeemed) {

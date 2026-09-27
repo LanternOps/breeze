@@ -245,6 +245,27 @@ describe('get_browser_security — read site narrowing', () => {
       expect(extensionQueryRan).toBe(false);
     });
   });
+
+  it('fails closed (empty, no query) for a site-restricted caller whose org never resolves', () => {
+    // auth.orgId is null (e.g. a partner/system-scoped token) and no input.orgId
+    // is supplied, so siteScopeOrgId is null and the site-narrowing branch used
+    // to be skipped entirely — falling through to an unfiltered query. Assert
+    // it now short-circuits to empty without running any select at all.
+    let anyQueryRan = false;
+    mockDb.select.mockImplementation(() => {
+      anyQueryRan = true;
+      return { from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }), where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) };
+    });
+
+    const auth = { ...makeAuth(['site-A']), orgId: null };
+    const handler = handlerFor('get_browser_security');
+    return handler({}, auth).then((result) => {
+      const parsed = JSON.parse(result);
+      expect(parsed.summary.total).toBe(0);
+      expect(parsed.extensions).toEqual([]);
+      expect(anyQueryRan).toBe(false);
+    });
+  });
 });
 
 describe('manage_browser_policy list — site read scope (audit §1.1)', () => {

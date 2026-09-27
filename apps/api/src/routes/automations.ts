@@ -223,10 +223,23 @@ async function verifyAutomationWebhookSignature(input: {
     return { ok: false, error: 'Invalid webhook signature', status: 401 };
   }
 
-  const replayNonce = input.eventIdHeader?.trim() || normalizedSignature;
-  const replayNonceHash = createHash('sha256').update(replayNonce).digest('hex');
-  const replayKey = `${input.automationId}:${replayNonceHash}`;
-  return reserveAutomationWebhookReplayNonce(replayKey, now);
+  // The replay key is always derived from the verified signature, never from a
+  // caller-supplied header alone — an unsigned event-id is not trustworthy as
+  // the sole dedup key, since a byte-identical resend can carry a fresh one.
+  const signatureNonceHash = createHash('sha256').update(normalizedSignature).digest('hex');
+  const signatureReplayKey = `${input.automationId}:${signatureNonceHash}`;
+  const signatureReservation = await reserveAutomationWebhookReplayNonce(signatureReplayKey, now);
+  if (!signatureReservation.ok) return signatureReservation;
+
+  const trimmedEventId = input.eventIdHeader?.trim();
+  if (trimmedEventId) {
+    const eventIdNonceHash = createHash('sha256').update(trimmedEventId).digest('hex');
+    const eventIdReplayKey = `${input.automationId}:${eventIdNonceHash}`;
+    const eventIdReservation = await reserveAutomationWebhookReplayNonce(eventIdReplayKey, now);
+    if (!eventIdReservation.ok) return eventIdReservation;
+  }
+
+  return { ok: true };
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -260,26 +273,42 @@ const requireValidRunId = requireUuidParam('runId', 'Automation run not found');
  * an automation (the only gate for unattended schedule/event triggers) and when
  * one is manually triggered (the resolved set may have drifted).
  *
- * Returns a 403 JSON response if the caller is site-restricted and the
- * automation's target set escapes their allowlist, otherwise null (proceed).
- * Unrestricted callers always pass.
+ * Returns `{ denied: <403 JSON response> }` if the caller is site-restricted
+ * and the automation's target set escapes their allowlist, otherwise
+ * `{ denied: null, targetDeviceIds }` (proceed) — `targetDeviceIds` is the
+ * exact target set this check resolved the automation against. A caller that
+ * dispatches a run right after this check (manual trigger) should pass that
+ * same list through as `boundDeviceIds` rather than letting the dispatch
+ * re-resolve independently: group/filter membership (and execution-target
+ * field-provenance exclusions) can change between two separate resolutions
+ * of the same automation, so two calls are not guaranteed to agree (TOCTOU).
+ * Unrestricted callers always pass, with an empty `targetDeviceIds` (the
+ * dispatch path resolves its own target set in that case, same as before).
  */
 async function enforceAutomationSiteScope(
   c: Context,
   automation: Parameters<typeof checkAutomationTargetsWithinSiteScope>[0],
-) {
+): Promise<{ denied: Response | null; targetDeviceIds: string[] | null }> {
   const perms = c.get('permissions') as UserPermissions | undefined;
   const result = await checkAutomationTargetsWithinSiteScope(automation, perms);
   if (!result.ok) {
     if (result.unbounded) {
-      return c.json(
-        { error: 'Site-restricted users cannot create or run automations that target all devices in the organization' },
-        403,
-      );
+      return {
+        denied: c.json(
+          { error: 'Site-restricted users cannot create or run automations that target all devices in the organization' },
+          403,
+        ),
+        targetDeviceIds: null,
+      };
     }
-    return c.json({ error: 'Access to one or more target sites denied' }, 403);
+    return { denied: c.json({ error: 'Access to one or more target sites denied' }, 403), targetDeviceIds: null };
   }
-  return null;
+  // `restricted` distinguishes "unrestricted caller, no resolution attempted"
+  // (targetDeviceIds should stay `null` so a dispatch caller falls back to
+  // its own resolution, exactly as before the field-provenance/TOCTOU fix) from "site-restricted
+  // caller whose resolved target legitimately came back empty" (`[]`, which
+  // must be bound as-is, not treated as "resolve your own").
+  return { denied: null, targetDeviceIds: result.restricted ? result.targetDeviceIds : null };
 }
 
 // Dual-ownership (#2133): an automation is org-owned (orgId set) or
@@ -1000,7 +1029,7 @@ automationRoutes.post(
 
     // Site scope on top: a site-restricted user must not stop a run spanning
     // sibling sites.
-    const siteScopeDenied = await enforceAutomationSiteScope(c, automation);
+    const { denied: siteScopeDenied } = await enforceAutomationSiteScope(c, automation);
     if (siteScopeDenied) {
       return siteScopeDenied;
     }
@@ -1305,7 +1334,7 @@ automationRoutes.post(
       // Site-scope gate: a site-restricted creator must not own an automation
       // whose resolvable target set escapes their allowlist. This is the only
       // gate for unattended schedule/event triggers (no caller context later).
-      const siteScopeDenied = await enforceAutomationSiteScope(c, {
+      const { denied: siteScopeDenied } = await enforceAutomationSiteScope(c, {
         orgId: owner.orgId,
         partnerId: owner.partnerId,
         conditions: data.conditions,
@@ -1491,7 +1520,7 @@ async function handleUpdateAutomation(c: Context) {
     // Site-scope gate: re-validate the post-update target set against the
     // caller's allowlist. Covers conditions/trigger changes that would widen
     // the target set beyond a site-restricted editor's sites.
-    const siteScopeDenied = await enforceAutomationSiteScope(c, {
+    const { denied: siteScopeDenied } = await enforceAutomationSiteScope(c, {
       ...automation,
       conditions: data.conditions !== undefined ? data.conditions : automation.conditions,
       trigger: updates.trigger !== undefined ? updates.trigger : automation.trigger,
@@ -1683,7 +1712,7 @@ async function triggerAutomationRun(
   // Site-scope gate: re-validate the *current* resolved target set. Protects
   // against a target set that drifted (new devices/sites) since creation, and
   // against an automation created before the user's sites were restricted.
-  const siteScopeDenied = await enforceAutomationSiteScope(c, automation);
+  const { denied: siteScopeDenied, targetDeviceIds: siteScopedTargetDeviceIds } = await enforceAutomationSiteScope(c, automation);
   if (siteScopeDenied) {
     return siteScopeDenied;
   }
@@ -1692,6 +1721,14 @@ async function triggerAutomationRun(
     automation,
     triggeredBy,
     details,
+    // Reuse the target set the site-scope check above already resolved
+    // instead of letting createAutomationRunRecord re-resolve independently
+    // (TOCTOU — see enforceAutomationSiteScope's doc comment). `null` means
+    // the caller was unrestricted and no resolution happened above, so
+    // createAutomationRunRecord falls back to its own resolution as before;
+    // an empty array is a real (possibly zero-device) resolved result and is
+    // bound as-is.
+    ...(siteScopedTargetDeviceIds !== null ? { boundDeviceIds: siteScopedTargetDeviceIds } : {}),
   });
 
   await enqueueAutomationRun(run.id, targetDeviceIds);

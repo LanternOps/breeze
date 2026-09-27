@@ -60,7 +60,7 @@ invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes,
     catch (err) { return handleServiceError(c, err); }
   });
 
-invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm,
+invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, scopes, writePerm, requireMfa(),
   zValidator('param', z.object({ orgId: z.string().guid() })),
   zValidator('json', orgBillingSettingsSchema),
   async (c, next) => {

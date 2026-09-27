@@ -44,6 +44,7 @@ vi.mock('../../db/schema', () => ({
     enabled: 'toolSourceTools.enabled',
     removedAt: 'toolSourceTools.removedAt',
     tier: 'toolSourceTools.tier',
+    reviewNeeded: 'toolSourceTools.reviewNeeded',
     lastError: 'toolSourceTools.lastError',
     updatedAt: 'toolSourceTools.updatedAt',
   },
@@ -55,7 +56,7 @@ vi.mock('./secrets', async (importOriginal) => {
 });
 
 import { credentialOriginFor, encryptToolSourceAuth } from './secrets';
-import { createToolSourceRow, resolveToolSourceOwner, toToolSourceDto, updateToolSourceRow } from './service';
+import { bulkToolsAction, createToolSourceRow, patchSourceTool, resolveToolSourceOwner, toToolSourceDto, updateToolSourceRow } from './service';
 
 function orgAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
@@ -269,6 +270,7 @@ describe('updateToolSourceRow', () => {
       authConfig: { token: 'tok_new' },
     } as unknown as Parameters<typeof updateToolSourceRow>[1]);
 
+    if ('error' in outcome) throw new Error(`expected success, got: ${outcome.error}`);
     expect(set).toHaveBeenCalledTimes(1);
     const updates = set.mock.calls[0]![0] as Record<string, unknown>;
     expect(updates.endpointUrl).toBe('https://new.example.com/mcp');
@@ -280,20 +282,67 @@ describe('updateToolSourceRow', () => {
     expect(outcome.discoveryTriggered).toBe(true);
   });
 
-  it('re-derives credentialOrigin on an endpoint-only change without touching the encrypted auth config', async () => {
+  it('re-derives credentialOrigin on a same-origin endpoint change without touching the encrypted auth config', async () => {
     const existing = makeExisting();
+    const set = mockUpdateChain({ ...existing, endpointUrl: 'https://old.example.com/mcp2' });
+
+    const outcome = await updateToolSourceRow(existing, {
+      endpointUrl: 'https://old.example.com/mcp2',
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    if ('error' in outcome) throw new Error(`expected success, got: ${outcome.error}`);
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.credentialOrigin).toBe('https://old.example.com');
+    expect(updates).not.toHaveProperty('authConfigEncrypted');
+    expect(updates).not.toHaveProperty('authFingerprint');
+    expect(encryptToolSourceAuth).not.toHaveBeenCalled();
+    expect(outcome.discoveryTriggered).toBe(true);
+  });
+
+  // Same origin-binding contract as credentialOriginBinding.ts: a
+  // stored credential must not silently follow an endpoint change to a new
+  // origin.
+  it('refuses an endpoint origin change that would carry the stored credential to the new origin', async () => {
+    const existing = makeExisting();
+
+    const outcome = await updateToolSourceRow(existing, {
+      endpointUrl: 'https://other-origin.example.com/mcp',
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    expect('error' in outcome).toBe(true);
+    if (!('error' in outcome)) throw new Error('expected a refusal');
+    expect(outcome.status).toBe(400);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an endpoint origin change when a fresh credential is supplied in the same request', async () => {
+    vi.mocked(encryptToolSourceAuth).mockReturnValue({ encrypted: 'ciphertext-2', fingerprint: 'fp-2' });
+    const existing = makeExisting();
+    const set = mockUpdateChain({ ...existing, endpointUrl: 'https://other-origin.example.com/mcp' });
+
+    const outcome = await updateToolSourceRow(existing, {
+      endpointUrl: 'https://other-origin.example.com/mcp',
+      authKind: 'bearer',
+      authConfig: { token: 'tok_fresh' },
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    if ('error' in outcome) throw new Error(`expected success, got: ${outcome.error}`);
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.endpointUrl).toBe('https://other-origin.example.com/mcp');
+    expect(updates.credentialOrigin).toBe('https://other-origin.example.com');
+  });
+
+  it('allows an endpoint origin change when there is no stored credential to protect', async () => {
+    const existing = makeExisting({ authKind: 'none', authConfigEncrypted: null, authFingerprint: null });
     const set = mockUpdateChain({ ...existing, endpointUrl: 'https://new.example.com/mcp' });
 
     const outcome = await updateToolSourceRow(existing, {
       endpointUrl: 'https://new.example.com/mcp',
     } as unknown as Parameters<typeof updateToolSourceRow>[1]);
 
+    if ('error' in outcome) throw new Error(`expected success, got: ${outcome.error}`);
     const updates = set.mock.calls[0]![0] as Record<string, unknown>;
-    expect(updates.credentialOrigin).toBe('https://new.example.com');
-    expect(updates).not.toHaveProperty('authConfigEncrypted');
-    expect(updates).not.toHaveProperty('authFingerprint');
-    expect(encryptToolSourceAuth).not.toHaveBeenCalled();
-    expect(outcome.discoveryTriggered).toBe(true);
+    expect(updates.endpointUrl).toBe('https://new.example.com/mcp');
   });
 
   it('leaves credentialOrigin and the encrypted auth config untouched when updating an unrelated field', async () => {
@@ -304,6 +353,7 @@ describe('updateToolSourceRow', () => {
       name: 'Renamed Hudu',
     } as unknown as Parameters<typeof updateToolSourceRow>[1]);
 
+    if ('error' in outcome) throw new Error(`expected success, got: ${outcome.error}`);
     expect(set).toHaveBeenCalledTimes(1);
     const updates = set.mock.calls[0]![0] as Record<string, unknown>;
     expect(updates.name).toBe('Renamed Hudu');
@@ -314,5 +364,94 @@ describe('updateToolSourceRow', () => {
     expect(updates).not.toHaveProperty('authFingerprint');
     expect(encryptToolSourceAuth).not.toHaveBeenCalled();
     expect(outcome.discoveryTriggered).toBe(false);
+  });
+});
+
+describe('patchSourceTool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeTool(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'tool-1',
+      sourceId: 'source-1',
+      removedAt: null,
+      lastError: null,
+      tier: 1,
+      enabled: false,
+      reviewNeeded: true,
+      ...overrides,
+    } as unknown as Parameters<typeof patchSourceTool>[0];
+  }
+
+  it('refuses a bare {enabled: true} patch on a tool still flagged reviewNeeded', async () => {
+    const outcome = await patchSourceTool(makeTool(), { enabled: true });
+
+    expect(outcome.ok).toBe(false);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('allows enabling a reviewNeeded tool when the same patch also sets a tier', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'tool-1', tier: 2, enabled: true, reviewNeeded: false }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const outcome = await patchSourceTool(makeTool(), { enabled: true, tier: 2 });
+
+    expect(outcome.ok).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.reviewNeeded).toBe(false);
+  });
+
+  it('still allows disabling a reviewNeeded tool (turning enabled off is never gated)', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'tool-1', tier: 1, enabled: false, reviewNeeded: true }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const outcome = await patchSourceTool(makeTool({ enabled: true }), { enabled: false });
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('allows enabling a tool that no longer needs review', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'tool-1', tier: 1, enabled: true, reviewNeeded: false }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const outcome = await patchSourceTool(makeTool({ reviewNeeded: false }), { enabled: true });
+
+    expect(outcome.ok).toBe(true);
+  });
+});
+
+describe('bulkToolsAction — enable_reads', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('excludes rows still flagged reviewNeeded from the enable-reads WHERE clause', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const returning = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    await bulkToolsAction('source-1', 'enable_reads');
+
+    expect(where).toHaveBeenCalledTimes(1);
+    const cond = where.mock.calls[0]![0];
+    const dialect = new PgDialect();
+    const q = dialect.sqlToQuery(cond);
+    expect(q.sql).toContain('is null');
+    expect(q.params).toContain('toolSourceTools.reviewNeeded');
+    // The value bound immediately after the reviewNeeded column reference
+    // must be `false` — a row still pending human review is excluded.
+    const idx = q.params.indexOf('toolSourceTools.reviewNeeded');
+    expect(q.params[idx + 1]).toBe(false);
   });
 });

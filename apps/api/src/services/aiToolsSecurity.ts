@@ -344,7 +344,12 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       // PII/credentials). Narrow every device-scoped read to the caller's site
       // allowlist; an empty allowed set → empty results.
       const orgId = getOrgId(auth);
-      const allowedDeviceIds = orgId ? await resolveSiteAllowedDeviceIds(orgId, auth) : null;
+      // Fail closed: a site-restricted caller whose org never
+      // resolves must not fall through to an unfiltered (org-wide) query.
+      const siteRestricted = Boolean(auth.allowedSiteIds || auth.allowedDeviceIds);
+      const allowedDeviceIds = orgId
+        ? await resolveSiteAllowedDeviceIds(orgId, auth)
+        : (siteRestricted ? [] : null);
       if (allowedDeviceIds !== null && allowedDeviceIds.length === 0) {
         if (view === 'scans') return JSON.stringify({ view: 'scans', totalReturned: 0, byStatus: {}, scans: [] });
         if (view === 'findings') return JSON.stringify({ view: 'findings', totalReturned: 0, findings: [] });
