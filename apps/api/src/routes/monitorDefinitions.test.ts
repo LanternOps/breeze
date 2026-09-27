@@ -273,6 +273,9 @@ describe('GET /monitor-definitions', () => {
     expect(body.data).toHaveLength(2);
     expect(body.data.find((r) => r.id === MONITOR_ID)).toMatchObject({ attachmentCount: 3 });
     expect(body.data.find((r) => r.id === 'other-id')).toMatchObject({ attachmentCount: 0 });
+    // The REST list is unpaged: no page argument reaches the service (#6735).
+    expect(listMonitorDefinitionsMock).toHaveBeenCalledTimes(1);
+    expect(listMonitorDefinitionsMock.mock.calls[0]).toHaveLength(2);
   });
 
   it('skips the count query and returns an empty list when there are no monitors', async () => {
