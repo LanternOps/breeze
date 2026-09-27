@@ -108,7 +108,7 @@ describe('supportTile', () => {
     state.wheres.length = 0;
   });
 
-  it('scopes the open count to ownership and keeps the response sample org-wide', async () => {
+  it('scopes both the open count and the response sample to ownership', async () => {
     state.rows.push(
       [{ openTickets: 4 }],
       [{ averageFirstResponseMinutes: 35, sampleSize: 2 }],
@@ -141,7 +141,8 @@ describe('supportTile', () => {
     expect(openQuery!.params).toContain(ORG_ID);
     expect(openQuery!.sql).toContain('"tickets"."submitted_by" =');
     expect(openQuery!.params).toContain('portal-user-1');
-    expect(responseQuery!.sql).not.toContain('submitted_by');
+    expect(responseQuery!.sql).toContain('"tickets"."submitted_by" =');
+    expect(responseQuery!.params).toContain('portal-user-1');
     expect(responseQuery!.params).toContain(ORG_ID);
   });
 });

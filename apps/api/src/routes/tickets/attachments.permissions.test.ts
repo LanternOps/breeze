@@ -134,7 +134,11 @@ describe('attachment routes permission + scope contract (W08 #3902)', () => {
     // exactly the middleware the router mounted.
     expect(permissionCalls).toEqual([
       [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],
-      // from-artifact (W05 #5716) — no new permission, deliberately.
+      // from-artifact (W05 #5716) — no coarse ai_agents:read gate: authorization
+      // is an OBJECT-LEVEL check inside the handler (findArtifactForAuth, the
+      // same helper GET /ai/artifacts/:id uses), not a standing permission —
+      // seeded technician roles hold tickets:write without ai_agents:read and
+      // must still be able to attach an artifact they can otherwise read.
       [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],
       [PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action],
       [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],

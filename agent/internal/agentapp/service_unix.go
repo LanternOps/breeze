@@ -124,3 +124,15 @@ func runAsService(cfgFile string) error {
 
 // ensureSASPolicy is a no-op on non-Windows platforms.
 func ensureSASPolicy() {}
+
+// runningUnderServiceManager reports whether the OS service manager started
+// this process: a LaunchDaemon on macOS (cfg.IsService, root with no console)
+// or, on Linux, a systemd unit running as root (systemd sets INVOCATION_ID for
+// every unit it starts; reconcileServiceUnitIfNeeded keys on the same signal).
+// Linux never sets cfg.IsService, so it cannot be used there.
+func runningUnderServiceManager(cfg *config.Config) bool {
+	if runtime.GOOS == "darwin" {
+		return cfg.IsService
+	}
+	return os.Geteuid() == 0 && os.Getenv("INVOCATION_ID") != ""
+}

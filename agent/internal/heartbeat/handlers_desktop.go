@@ -606,6 +606,27 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
+	// Consent gate — the same one `handleStartDesktop`'s non-broker path runs,
+	// and for the same reason (the viewer is untrusted; the agent is the only
+	// party positioned to ask the end user and to refuse before capture
+	// starts). This transport previously started capturing unconditionally,
+	// regardless of the device's consent/notify policy, because it never
+	// looked at (or was ever sent) a prompt block at all. "notify"-mode
+	// sessions are informational only here too, matching the WebRTC path —
+	// only "consent" mode blocks.
+	prompt := parseDesktopPrompt(cmd.Payload)
+	consentReason := ""
+	if prompt != nil && prompt.Mode == "consent" {
+		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, "")
+		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
+		consentReason = reason
+		if !proceed {
+			log.Info("remote stream session denied by consent gate",
+				"sessionId", sessionID, "reason", reason)
+			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
+		}
+	}
+
 	startSession := h.wsDesktopStart
 	if startSession == nil {
 		startSession = h.wsDesktopMgr.StartSession
@@ -619,11 +640,15 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
-	return tools.NewSuccessResult(map[string]any{
+	result := map[string]any{
 		"sessionId":    sessionID,
 		"screenWidth":  w,
 		"screenHeight": h2,
-	}, time.Since(start).Milliseconds())
+	}
+	if consentReason != "" {
+		result["consentReason"] = consentReason
+	}
+	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {

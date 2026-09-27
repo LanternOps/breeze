@@ -142,6 +142,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	// manifest order so failed files and warnings are reported
 	// deterministically.
 	files := snapshot.Files
+	providers.PrepareDownloads(provider, contentKeys(files))
 	outcomes := make([]fileCheckOutcome, len(files))
 	finished := 0
 	runFileChecks(runCtx, len(files), func(i int) {
@@ -440,6 +441,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	// race on a single file and fail each other's checks.
 	files := snapshot.Files
 	destPaths, pathErrs := testRestoreDestinations(restoreDir, files)
+	providers.PrepareDownloads(provider, contentKeys(files))
 
 	// Restore each file, several at once. Workers write only their own
 	// outcomes[i]; the tally walks outcomes in manifest order.

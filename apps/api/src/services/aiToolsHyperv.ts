@@ -16,11 +16,14 @@ import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import {
   resolveBackupWriteCommandDestination,
   resolveBackupProviderConfig,
   resolveBackupDestinationError,
 } from './backupProviderConfig';
+import { backupReadCredentialPayload, backupWriteCredentialPayload } from './backupCommandCredentials';
+import { normalizeStorageIdentity } from '../jobs/backupRetention';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -346,6 +349,10 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
           status: 'pending',
           type: 'manual',
           backupType: 'application',
+          // Stamped at creation, as the backup worker does at dispatch: the snapshot
+          // persisted from this job copies it, and restores of that snapshot are
+          // only served through a storage session when it is present.
+          storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig),
           createdAt: new Date(),
           updatedAt: new Date(),
         })
@@ -359,9 +366,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         {
           backupJobId: backupJob?.id,
           configId: resolvedConfig.configId,
-          provider: destination.provider,
-          providerConfig: destination.providerConfig,
-          storageEncryption: destination.storageEncryption,
+          // A reference only: resolved when the command is delivered.
+          ...backupWriteCredentialPayload(resolvedConfig.configId, vm.orgId, destination),
           vmName: vm.vmName,
           consistencyType,
         },
@@ -448,6 +454,13 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       if (metadata.backupKind !== 'hyperv_export') {
         return JSON.stringify({ error: 'Snapshot is not a Hyper-V export artifact' });
       }
+      // The host must be in the snapshot's org (a multi-org caller can reach
+      // both), and a host at another site than the backup source needs
+      // backup:cross_site_restore — the same check as POST /backup/hyperv/restore.
+      const restoreAuthorization = await authorizeAiRestore(auth, { snapshot, targetDeviceId: deviceId });
+      if (!restoreAuthorization.ok) {
+        return JSON.stringify({ error: restoreAuthorization.error, ...(restoreAuthorization.code ? { code: restoreAuthorization.code } : {}) });
+      }
 
       // D20b follow-up: the helper builds its read provider from THIS
       // command's own payload (restoreProviderForCommand), the same way the
@@ -474,8 +487,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
             typeof input.generateNewId === 'boolean'
               ? input.generateNewId
               : true,
-          provider: backupProviderConfig.provider,
-          providerConfig: backupProviderConfig.providerConfig,
+          ...backupReadCredentialPayload(snapshot.configId!, snapshot.orgId, backupProviderConfig.provider),
         },
         { userId: auth.user?.id }
       );

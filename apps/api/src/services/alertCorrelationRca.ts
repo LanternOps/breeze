@@ -1,6 +1,7 @@
-import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, not, or } from 'drizzle-orm';
 
 import { db } from '../db';
+import { SENSITIVE_EVENT_LOG_CATEGORY } from './eventLogSensitivity';
 import {
   agentLogs,
   alertCorrelationMembers,
@@ -121,6 +122,8 @@ interface BuildRcaOptions {
   alerts: AlertRow[];
   windowHours?: number;
   maxEvidenceItems?: number;
+  /** See eventLogSensitivity.ts. Defaults to false (excludes the sensitive category) when omitted. */
+  canReadSensitiveCategory?: boolean;
 }
 
 function toIso(value: Date): string {
@@ -131,6 +134,42 @@ function asDate(value: Date | string | null | undefined): Date {
   if (value instanceof Date) return value;
   const parsed = value ? new Date(value) : new Date();
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+/** Overall cap on rows contributed to the RCA timeline by each "log-shaped"
+ * evidence source (device changes, event logs, agent logs). Kept as one
+ * shared constant so the per-device split below stays proportional to it. */
+const RCA_LOG_EVIDENCE_OVERALL_CAP = 10;
+
+/**
+ * Fetch "log-shaped" RCA evidence (device changes, event logs, agent logs)
+ * fairly across the correlation group's devices, instead of one query
+ * ordered by an agent-reported timestamp with a single shared LIMIT.
+ *
+ * All three sources window on `timestamp`, which the agent sets — the only
+ * server-side floor is the incident window itself. A single device in the
+ * group posting at least `RCA_LOG_EVIDENCE_OVERALL_CAP` rows timestamped near
+ * the window's end could otherwise occupy every slot the shared
+ * `ORDER BY timestamp DESC LIMIT N` allows, crowding out every sibling
+ * device's evidence (and, since the timeline text feeds the root-cause
+ * candidate summaries, effectively let that one device author the "likely
+ * cause"). Capping PER DEVICE at the query layer — not just truncating the
+ * merged result — removes the incentive: no device's own volume can cost
+ * another device its fair share of the cap.
+ */
+async function fetchPerDeviceLogEvidence<T extends { timestamp: Date }>(
+  deviceIds: string[],
+  fetchForDevice: (deviceId: string, perDeviceCap: number) => Promise<T[]>,
+): Promise<T[]> {
+  if (deviceIds.length === 0) return [];
+  const perDeviceCap = Math.max(1, Math.ceil(RCA_LOG_EVIDENCE_OVERALL_CAP / deviceIds.length));
+  const rowsPerDevice = await Promise.all(
+    deviceIds.map((deviceId) => fetchForDevice(deviceId, perDeviceCap)),
+  );
+  return rowsPerDevice
+    .flat()
+    .sort((a, b) => asDate(b.timestamp).getTime() - asDate(a.timestamp).getTime())
+    .slice(0, RCA_LOG_EVIDENCE_OVERALL_CAP);
 }
 
 function clampConfidence(value: number): number {
@@ -704,47 +743,47 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         .limit(10)
     : [];
 
-  const changeRows = deviceIds.length > 0
-    ? await db
-        .select()
-        .from(deviceChangeLog)
-        .where(and(eq(deviceChangeLog.orgId, options.orgId), inArray(deviceChangeLog.deviceId, deviceIds), gte(deviceChangeLog.timestamp, windowStart), lte(deviceChangeLog.timestamp, windowEnd)))
-        .orderBy(desc(deviceChangeLog.timestamp))
-        .limit(10)
-    : [];
+  const changeRows = await fetchPerDeviceLogEvidence(deviceIds, (deviceId, perDeviceCap) =>
+    db
+      .select()
+      .from(deviceChangeLog)
+      .where(and(eq(deviceChangeLog.orgId, options.orgId), eq(deviceChangeLog.deviceId, deviceId), gte(deviceChangeLog.timestamp, windowStart), lte(deviceChangeLog.timestamp, windowEnd)))
+      .orderBy(desc(deviceChangeLog.timestamp))
+      .limit(perDeviceCap));
 
-  const eventRows = deviceIds.length > 0
-    ? await db
-        .select()
-        .from(deviceEventLogs)
-        .where(and(
-          eq(deviceEventLogs.orgId, options.orgId),
-          inArray(deviceEventLogs.deviceId, deviceIds),
-          inArray(deviceEventLogs.level, ['warning', 'error', 'critical']),
-          gte(deviceEventLogs.timestamp, windowStart),
-          lte(deviceEventLogs.timestamp, windowEnd)
-        ))
-        .orderBy(desc(deviceEventLogs.timestamp))
-        .limit(10)
-    : [];
+  const eventRows = await fetchPerDeviceLogEvidence(deviceIds, (deviceId, perDeviceCap) =>
+    db
+      .select()
+      .from(deviceEventLogs)
+      .where(and(
+        eq(deviceEventLogs.orgId, options.orgId),
+        eq(deviceEventLogs.deviceId, deviceId),
+        inArray(deviceEventLogs.level, ['warning', 'error', 'critical']),
+        gte(deviceEventLogs.timestamp, windowStart),
+        lte(deviceEventLogs.timestamp, windowEnd),
+        ...(options.canReadSensitiveCategory === true
+          ? []
+          : [not(eq(deviceEventLogs.category, SENSITIVE_EVENT_LOG_CATEGORY))])
+      ))
+      .orderBy(desc(deviceEventLogs.timestamp))
+      .limit(perDeviceCap));
 
   // Incident RCA is an explicit event-time investigation, unlike default log
   // recency views. Ingest clamps excessive future skew, while timestamp keeps
   // legitimate delayed/offline event chronology inside the requested window.
-  const agentLogRows = deviceIds.length > 0
-    ? await db
-        .select()
-        .from(agentLogs)
-        .where(and(
-          eq(agentLogs.orgId, options.orgId),
-          inArray(agentLogs.deviceId, deviceIds),
-          or(eq(agentLogs.level, 'warn'), eq(agentLogs.level, 'error')),
-          gte(agentLogs.timestamp, windowStart),
-          lte(agentLogs.timestamp, windowEnd)
-        ))
-        .orderBy(desc(agentLogs.timestamp))
-        .limit(10)
-    : [];
+  const agentLogRows = await fetchPerDeviceLogEvidence(deviceIds, (deviceId, perDeviceCap) =>
+    db
+      .select()
+      .from(agentLogs)
+      .where(and(
+        eq(agentLogs.orgId, options.orgId),
+        eq(agentLogs.deviceId, deviceId),
+        or(eq(agentLogs.level, 'warn'), eq(agentLogs.level, 'error')),
+        gte(agentLogs.timestamp, windowStart),
+        lte(agentLogs.timestamp, windowEnd)
+      ))
+      .orderBy(desc(agentLogs.timestamp))
+      .limit(perDeviceCap));
 
   const metricRows = deviceIds.length > 0
     ? await db

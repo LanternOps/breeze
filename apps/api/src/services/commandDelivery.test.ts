@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 process.env.APP_ENCRYPTION_KEY = process.env.APP_ENCRYPTION_KEY || 'test-app-encryption-key-for-vitest';
 
 const releaseClaimedCommandDeliveryMock = vi.fn(async () => undefined);
+const expireRefusedClaimedCommandDeliveryMock = vi.fn(async () => undefined);
 vi.mock('./commandDispatch', () => ({
   releaseClaimedCommandDelivery: (...args: unknown[]) =>
     releaseClaimedCommandDeliveryMock(...(args as [])),
+  expireRefusedClaimedCommandDelivery: (...args: unknown[]) =>
+    expireRefusedClaimedCommandDeliveryMock(...(args as [])),
 }));
 
 // #5128: the SHIPPED software_install refresher calls into S3. Mocked at the
@@ -354,6 +357,8 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
 });
 
 describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
+  const SW_CTX = { commandId: 'cmd-sw', deviceId: CLAIM_DEVICE, type: 'software_install', claimedAt };
+
   // Exercises the REAL refresher — the other suite replaces it with a fake, so
   // without this, dropping the isS3Configured() gate, changing the TTL, or
   // reading the wrong payload key would all ship undetected.
@@ -366,7 +371,7 @@ describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
 
   it('re-mints the download URL from the stored s3Key with a one-hour TTL', async () => {
     const refresher = deliveryRefreshers.software_install!;
-    const out = await refresher({ s3Key: 'installers/app.exe', downloadUrl: 'https://stale.example' });
+    const out = await refresher({ s3Key: 'installers/app.exe', downloadUrl: 'https://stale.example' }, SW_CTX);
 
     expect(getPresignedUrlMock).toHaveBeenCalledWith('installers/app.exe', 3600);
     expect(out.downloadUrl).toBe('https://fresh.example/installer?sig=new');
@@ -377,7 +382,7 @@ describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
   it('leaves the payload alone when there is no s3Key (EDR / stored-URL installers)', async () => {
     const refresher = deliveryRefreshers.software_install!;
     const payload = { downloadUrl: 'https://vendor.example/agent.msi' };
-    const out = await refresher(payload);
+    const out = await refresher(payload, SW_CTX);
 
     expect(getPresignedUrlMock).not.toHaveBeenCalled();
     expect(out).toEqual(payload);
@@ -387,7 +392,7 @@ describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
     isS3ConfiguredMock.mockReturnValue(false);
     const refresher = deliveryRefreshers.software_install!;
     const payload = { s3Key: 'installers/app.exe', downloadUrl: 'https://stale.example' };
-    const out = await refresher(payload);
+    const out = await refresher(payload, SW_CTX);
 
     expect(getPresignedUrlMock).not.toHaveBeenCalled();
     expect(out.downloadUrl).toBe('https://stale.example');
@@ -396,13 +401,157 @@ describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
   it('propagates a presign failure so the caller releases the row rather than delivering a stale URL', async () => {
     getPresignedUrlMock.mockRejectedValue(new Error('presign down'));
     const refresher = deliveryRefreshers.software_install!;
-    await expect(refresher({ s3Key: 'installers/app.exe' })).rejects.toThrow('presign down');
+    await expect(refresher({ s3Key: 'installers/app.exe' }, SW_CTX)).rejects.toThrow('presign down');
   });
 
   it('a non-string s3Key is ignored rather than passed to the signer', async () => {
     const refresher = deliveryRefreshers.software_install!;
-    const out = await refresher({ s3Key: 42, downloadUrl: 'https://stale.example' });
+    const out = await refresher({ s3Key: 42, downloadUrl: 'https://stale.example' }, SW_CTX);
     expect(getPresignedUrlMock).not.toHaveBeenCalled();
     expect(out.downloadUrl).toBe('https://stale.example');
+  });
+});
+
+describe('storage-destination delivery refreshers', () => {
+  const original = { ...deliveryRefreshers };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
+    __resetDeliveryRefreshersForTests();
+    Object.assign(deliveryRefreshers, original);
+  });
+
+  afterEach(() => {
+    __resetDeliveryRefreshersForTests();
+    Object.assign(deliveryRefreshers, original);
+  });
+
+  it('ships a refresher for every command type that reads a storage destination from its payload', () => {
+    for (const type of [
+      'backup_restore',
+      'backup_verify',
+      'backup_test_restore',
+      'mssql_backup',
+      'mssql_restore',
+      'mssql_verify',
+      'hyperv_backup',
+      'hyperv_restore',
+    ]) {
+      expect(typeof deliveryRefreshers[type], type).toBe('function');
+    }
+  });
+
+  it('routes the eight restore-shaped types through the storage-session refresher and writes through the destination refresher', async () => {
+    const { deliverBrokeredReadCommand } = await import('./backupStorageSessions');
+    const { materializeBackupStorageCredentials } = await import('./backupCommandCredentials');
+    for (const type of [
+      'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore',
+      'mssql_verify', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
+    ]) {
+      expect(deliveryRefreshers[type], type).toBe(deliverBrokeredReadCommand);
+    }
+    for (const type of ['mssql_backup', 'hyperv_backup']) {
+      expect(deliveryRefreshers[type], type).toBe(materializeBackupStorageCredentials);
+    }
+  });
+
+  it('hands the helper protocol this heartbeat reported to the refresher', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.backup_restore = async (p, ctx) => {
+      seen.push(ctx);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery(
+      [{ id: 'cmd-r', type: 'backup_restore', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt }],
+      { reportedBackupReadProtocolVersion: 1 },
+    );
+
+    expect(seen).toEqual([
+      { commandId: 'cmd-r', deviceId: CLAIM_DEVICE, type: 'backup_restore', claimedAt, reportedBackupReadProtocolVersion: 1 },
+    ]);
+  });
+
+  it('hands every refresher the identity of the command it is preparing', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.software_install = async (p, ctx) => {
+      seen.push(ctx);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-sw', type: 'software_install', deviceId: CLAIM_DEVICE, payload: { s3Key: 'k' }, executedAt: claimedAt },
+    ]);
+
+    expect(seen).toEqual([
+      { commandId: 'cmd-sw', deviceId: CLAIM_DEVICE, type: 'software_install', claimedAt },
+    ]);
+  });
+
+  it('delivers the refreshed storage destination on the claimed path', async () => {
+    deliveryRefreshers.backup_restore = async (p) => {
+      const { providerConfigRef: _ref, ...rest } = p;
+      return { ...rest, providerConfig: { bucket: 'b', secretKey: 'fresh-at-delivery' } };
+    };
+
+    const out = await prepareClaimedCommandsForDelivery([
+      {
+        id: 'cmd-restore',
+        type: 'backup_restore',
+        deviceId: CLAIM_DEVICE,
+        payload: { snapshotId: 's', provider: 's3', providerConfigRef: { configId: 'c', orgId: 'o' } },
+        executedAt: claimedAt,
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]!.payload).toEqual({
+      snapshotId: 's',
+      provider: 's3',
+      providerConfig: { bucket: 'b', secretKey: 'fresh-at-delivery' },
+    });
+  });
+
+  it('a refused delivery expires the claimed row instead of releasing it for another claim', async () => {
+    const { CommandDeliveryRefusedError } = await import('./commandDeliveryRefusal');
+    deliveryRefreshers.backup_restore = async () => {
+      throw new CommandDeliveryRefusedError('destination no longer resolves');
+    };
+
+    const out = await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-restore', type: 'backup_restore', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt },
+      { id: 'cmd-plain', type: 'script', deviceId: CLAIM_DEVICE, payload: { a: 1 }, executedAt: claimedAt },
+    ]);
+
+    expect(out.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(expireRefusedClaimedCommandDeliveryMock).toHaveBeenCalledWith(
+      'cmd-restore',
+      claimedAt,
+      'destination no longer resolves',
+    );
+  });
+
+  it('refreshPayloadForDelivery expires a refused claim on the enqueue-time push', async () => {
+    const { CommandDeliveryRefusedError } = await import('./commandDeliveryRefusal');
+    deliveryRefreshers.backup_restore = async () => {
+      throw new CommandDeliveryRefusedError('destination no longer resolves');
+    };
+
+    await expect(
+      refreshPayloadForDelivery('backup_restore', {}, {
+        commandId: 'cmd-push',
+        deviceId: CLAIM_DEVICE,
+        type: 'backup_restore',
+        claimedAt,
+      }),
+    ).resolves.toBeNull();
+
+    expect(expireRefusedClaimedCommandDeliveryMock).toHaveBeenCalledWith(
+      'cmd-push',
+      claimedAt,
+      'destination no longer resolves',
+    );
   });
 });

@@ -30,7 +30,7 @@ import {
   executionStatusEnum,
 } from '../db/schema';
 import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 // Type-only: the runtime import stays dynamic inside the handler.
@@ -47,6 +47,7 @@ import { scriptNeedsVariableScope } from './sourcedParameters';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { shrinkToJsonBudget } from './aiToolOutput';
 import { sha256Content } from './scriptVersions';
+import { isDeniedRegistryTarget } from '../routes/systemTools/sensitiveTargets';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -351,6 +352,20 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
   const deviceIds = input.deviceIds as string[];
   const results: Record<string, unknown> = {};
 
+  // run_script is Tier 3 and always requires approval
+  // (`requiresApproval: true`, see the module docstring) — the ONLY way an
+  // `ai_agent` principal ever reaches this branch (no `proposalId`, so not
+  // the reviewed-proposal path above) is act mode's manifest-matched
+  // unattended dispatch (`aiGuardrails.ts`'s `disposition: 'act'`): every
+  // other Tier-3 outcome for this principal either denies, or records a
+  // proposal that a human reviews before execution. The manifest
+  // (`actManifest.ts`) pins only `{scriptId, deviceIds}` — it never carries
+  // `runAs` or `targetSessionId`, so a model-chosen value for either here
+  // has no human review and no revalidation behind it at all. Ignore both
+  // for this principal; dispatch falls back to the SAVED script's own
+  // `runAs` (its `targetSessionId`, unset, already defaults to none).
+  const isUnattendedAgentDispatch = isAiAgentPrincipal(auth);
+
   // #4888 — an assistant-chosen run context clears the SAME gate a human
   // one does. Not a copy of the rules, the actual object the HTTP route
   // validates with (`POST /scripts/:id/execute`), so the enum ('elevated'
@@ -550,9 +565,10 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             createdBy: auth.user.id,
             // #4888 — undefined when the assistant did not choose one, in
             // which case dispatch falls back to `script.runAs` exactly as
-            // it always did.
-            runAs: runContext.data.runAs,
-            targetSessionId: runContext.data.targetSessionId,
+            // it always did. Undefined UNCONDITIONALLY for an unattended
+            // act-mode dispatch — see the comment above.
+            runAs: isUnattendedAgentDispatch ? undefined : runContext.data.runAs,
+            targetSessionId: isUnattendedAgentDispatch ? undefined : runContext.data.targetSessionId,
             // #5128 W4 — the AI run_script tool answers synchronously and
             // has no way to surface a later result, so it keeps the hard
             // offline rejection the `requireOnline` alias used to give it.
@@ -1657,6 +1673,16 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // tool's keyPath into hive + path so the payload matches what the agent
       // actually parses.
       const { hive, path } = splitRegistryKeyPath(input.keyPath as string);
+
+      // Deny SAM/SECURITY (and any LSA-secrets subkey under SECURITY)
+      // outright, regardless of the caller's permission — this tool
+      // does not go through routes/systemTools/registry.ts (it calls
+      // aiExecuteCommand directly), so it must carry its own copy of the
+      // same check the REST registry routes apply.
+      if (isDeniedRegistryTarget(hive, path)) {
+        return JSON.stringify({ error: 'Access to this registry path is not permitted' });
+      }
+
       const payload: Record<string, unknown> = { hive, path };
 
       if (input.valueName) payload.name = input.valueName;

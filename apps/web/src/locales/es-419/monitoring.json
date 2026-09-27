@@ -297,7 +297,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Sin respaldo exitoso",
-    "consecutive_failures": "Fallos consecutivos"
+    "consecutive_failures": "Fallos consecutivos",
+    "completed_with_errors": "Completado con errores de archivos"
   },
   "checkTypes": {
     "icmp_ping": "Ping ICMP",
@@ -438,9 +439,9 @@
       "review": "Revisar",
       "convertEverything": "Convertir todo…",
       "confirmTitle": "¿Convertir todas las reglas heredadas, vigilancias y automatizaciones activadas por alertas de todas sus políticas?",
-      "confirmBody": "{{rows}} en {{policies}} de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan para revisión o retiro manual en W05c; W05d convierte las restantes y retira las que no puede convertir.",
+      "confirmBody": "{{rows}} en {{policies}} de todo el partner. Las filas convertidas se retiran en su lugar. Las demás quedan ahora para revisión o retiro manual; una versión futura convierte las restantes y retira las que no puede convertir.",
       "confirmRun": "Convertir todo",
-      "convertedAll": "Se convirtieron {{converted}} filas en {{policies}} políticas; {{unconvertible}} no se pudieron convertir.",
+      "convertedAll": "Se convirtieron {{rows}} en {{policies}}; {{unconvertible}} no se pudieron convertir.",
       "errors": {
         "convertAll": "No se pudo convertir todo"
       }
@@ -511,7 +512,7 @@
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
       "reverted": "Revertido",
-      "deadline": "Deshacer no está disponible cuando W05d elimina el evaluador de origen."
+      "deadline": "Deshacer no está disponible cuando el retiro de alertas heredadas elimina el evaluador de origen."
     },
     "errorCodes": {
       "preview_stale": "La política cambió desde esta vista previa. Genera otra vista previa antes de convertir.",

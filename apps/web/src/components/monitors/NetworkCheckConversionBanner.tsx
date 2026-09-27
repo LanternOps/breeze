@@ -4,7 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
-import { conversionFriendly, conversionPaths, retireBody } from '../monitoring/conversion/conversionApi';
+import { conversionFriendly, conversionPaths, retireBody, unconvertibleReasonKeys } from '../monitoring/conversion/conversionApi';
 import ConversionLedger from '../monitoring/conversion/ConversionLedger';
 
 type Item = { sourceId: string; name: string; outcome: 'convertible' | 'unconvertible'; reason?: string; notes: string[]; openAlerts: number };
@@ -105,7 +105,12 @@ export default function NetworkCheckConversionBanner({ orgId, onConverted }: { o
               <span className="font-medium">{item.name}</span>
               <span className={item.outcome === 'convertible' ? 'text-success' : 'text-destructive'}>{t(/* i18n-dynamic */ `longTail.monitors.NetworkCheckConversionBanner.outcome.${item.outcome}`)}</span>
             </div>
-            {item.reason && <p className="mt-1 break-words text-xs text-destructive">{item.reason}</p>}
+            {item.reason && (
+              <p className="mt-1 break-words text-xs text-destructive">
+                {t(/* i18n-dynamic */ unconvertibleReasonKeys(item.reason))}{' '}
+                <code className="break-all text-xs">{item.reason}</code>
+              </p>
+            )}
             {item.notes.map((note, index) => <p key={index} className="mt-1 text-xs text-muted-foreground">{note}</p>)}
             <button type="button" data-testid={`network-check-retire-${item.sourceId}`} disabled={busy} onClick={() => void retire(item)} className="mt-2 rounded-md border px-3 py-1.5 hover:bg-muted disabled:opacity-60">{t('monitoring:conversion.retire')}</button>
           </li>)}

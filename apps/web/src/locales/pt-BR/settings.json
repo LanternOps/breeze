@@ -853,6 +853,7 @@
     "hideExpired": "Ocultar expiradas",
     "deleteExpired": "Excluir expiradas",
     "shortCode": "Código curto",
+    "shortCodeHidden": "Oculto — requer permissão de registro",
     "installerUsage": "Dispositivos do instalador {{consumed}} / {{max}}",
     "installerUsageExpired": "Dispositivos do instalador {{consumed}} / {{max}} (expirado)",
     "installerUsageMixed": "Dispositivos do instalador {{liveConsumed}} / {{liveMax}} ativos · {{expired}} expirados",
@@ -5557,7 +5558,9 @@
       "inviteSent": "Convite enviado para {{email}}",
       "copied": "Copiado!",
       "copyLink": "Copiar link",
-      "mfaReset": "MFA redefinida para {{email}}"
+      "mfaReset": "MFA redefinida para {{email}}",
+      "roleUpdated": "Função atualizada",
+      "orgAccessUpdated": "Acesso às organizações atualizado"
     },
     "resetMfa": {
       "title": "Redefinir MFA?",

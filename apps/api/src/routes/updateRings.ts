@@ -10,7 +10,7 @@ import {
   patches,
   devicePatches,
 } from '../db/schema';
-import { resolveRingDeviceCounts, resolveRingDeviceIds } from './updateRingsHelpers';
+import { resolveRingDeviceCountsWithWarnings, resolveRingDeviceIdsWithWarnings } from './updateRingsHelpers';
 import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -212,12 +212,18 @@ updateRingRoutes.get(
       .where(and(...conditions))
       .orderBy(asc(patchPolicies.ringOrder), asc(patchPolicies.createdAt));
 
-    const deviceCountMap = await resolveRingDeviceCounts(rings.map(r => r.id));
+    const deviceCountMap = await resolveRingDeviceCountsWithWarnings(rings.map(r => r.id));
 
-    const ringsWithCounts = rings.map(r => ({
-      ...r,
-      deviceCount: deviceCountMap.get(r.id) ?? 0,
-    }));
+    const ringsWithCounts = rings.map(r => {
+      const resolved = deviceCountMap.get(r.id);
+      return {
+        ...r,
+        deviceCount: resolved?.count ?? 0,
+        // Field-provenance tiering — visible alongside the audit entry when a device_group-level
+        // assignment was excluded for matching agent-reported fields.
+        ...(resolved?.warnings.length ? { warnings: resolved.warnings } : {}),
+      };
+    });
 
     return c.json({ data: ringsWithCounts });
   }
@@ -472,6 +478,45 @@ updateRingRoutes.get(
 
     const { page, limit, offset } = getPagination(query);
 
+    // Effective per-patch severity/category for THIS ring's own assigned
+    // device set (patchSeverityOverlay.ts): the trusted shared classification
+    // when known, else the most recently reported value from one of the
+    // ring's own devices. `patches.severity`/`.category` alone stay
+    // 'unknown'/NULL forever for microsoft/apple/linux/custom sources, which
+    // used to make a severity filter here silently exclude the majority of a
+    // Windows-heavy fleet's patch volume, AND made the displayed
+    // severity/category disagree with what patchEligibility.ts's
+    // auto-approval check actually sees for the same patch.
+    //
+    // This listing has no single device row (a ring's patch catalog spans
+    // every device the ring is assigned to), so the fallback is a correlated
+    // subquery scoped to `resolveRingDeviceIdsWithWarnings(id)` — the same device set
+    // already used below for approval-status scoping — rather than the flat
+    // per-row overlay fragment used where a query already joins one device's
+    // `device_patches` row directly.
+    const { deviceIds: ringDeviceIds } = await resolveRingDeviceIdsWithWarnings(id);
+    const ringDeviceIdListSql = ringDeviceIds.length > 0
+      ? sql`(${sql.join(ringDeviceIds.map((deviceId) => sql`${deviceId}`), sql`, `)})`
+      : sql`(NULL)`;
+    const effectiveSeveritySql = sql<string>`COALESCE(NULLIF(${patches.severity}::text, 'unknown'), (
+      SELECT "device_patches"."reported_severity"::text
+      FROM "device_patches"
+      WHERE "device_patches"."patch_id" = "patches"."id"
+        AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
+        AND "device_patches"."reported_severity" IS NOT NULL
+      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
+      LIMIT 1
+    ), 'unknown')::patch_severity`;
+    const effectiveCategorySql = sql<string | null>`COALESCE(${patches.category}, (
+      SELECT "device_patches"."reported_category"
+      FROM "device_patches"
+      WHERE "device_patches"."patch_id" = "patches"."id"
+        AND "device_patches"."device_id" IN ${ringDeviceIdListSql}
+        AND "device_patches"."reported_category" IS NOT NULL
+      ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
+      LIMIT 1
+    ))`;
+
     // Mirror GET /patches (patches/list.ts): track the source predicate
     // separately so the per-source counts ignore the source filter and the
     // chips always reflect the full breakdown of visible patches.
@@ -481,7 +526,7 @@ updateRingRoutes.get(
       sourcePredicate = eq(patches.source, query.source);
       conditions.push(sourcePredicate);
     }
-    if (query.severity) conditions.push(eq(patches.severity, query.severity));
+    if (query.severity) conditions.push(sql`${effectiveSeveritySql} = ${query.severity}`);
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -491,8 +536,8 @@ updateRingRoutes.get(
         title: patches.title,
         description: patches.description,
         source: patches.source,
-        severity: patches.severity,
-        category: patches.category,
+        severity: effectiveSeveritySql,
+        category: effectiveCategorySql,
         osTypes: patches.osTypes,
         // Same device-derived OS hint as GET /patches (list.ts): the most
         // recently checked device reporting this patch. Feeds inferPatchOs so
@@ -607,7 +652,10 @@ updateRingRoutes.get(
 
     // Resolve devices assigned to this ring via config-policy assignments.
     // A partner ring spans many orgs, so org-scoped device queries are incorrect.
-    const deviceIds = await resolveRingDeviceIds(id);
+    const { deviceIds, warnings } = await resolveRingDeviceIdsWithWarnings(id);
+    // Field-provenance tiering — visible alongside the audit entry when a device_group-level
+    // assignment was excluded for matching agent-reported fields.
+    const warningsField = warnings.length ? { warnings } : {};
 
     if (deviceIds.length === 0) {
       return c.json({
@@ -616,6 +664,7 @@ updateRingRoutes.get(
           ringName: ring.name,
           summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
           compliancePercent: 100,
+          ...warningsField,
         },
       });
     }
@@ -642,6 +691,7 @@ updateRingRoutes.get(
           summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
           compliancePercent: 100,
           approvedPatches: 0,
+          ...warningsField,
         },
       });
     }
@@ -681,6 +731,7 @@ updateRingRoutes.get(
         compliancePercent,
         approvedPatches: approvedPatchIds.length,
         totalDevices: deviceIds.length,
+        ...warningsField,
       },
     });
   }

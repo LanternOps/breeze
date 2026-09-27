@@ -35,3 +35,13 @@ var enforceSecretFilePermissions = enforceSecretFilePermissionsImpl
 func programDataDirACLDrifted(string) (bool, error) { return false, nil }
 
 func enforceProgramDataDirPermissions(string) error { return nil }
+
+// configDirOwnerDrifted mirrors programDataDirACLDrifted above: ownership
+// drift on the ProgramData root is a Windows-only concept, so this always
+// reports "clean" here. See permissions_drift.go.
+func configDirOwnerDrifted(string) (bool, error) { return false, nil }
+
+// createProgramDataDir has no hardened-create counterpart off Windows: a
+// missing logs/data dir is left for the code that owns it to create. See
+// permissions_drift.go.
+func createProgramDataDir(string) error { return errProgramDataDirCreateUnsupported }

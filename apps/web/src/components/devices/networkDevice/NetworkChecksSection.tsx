@@ -68,9 +68,10 @@ export function NetworkChecksSection({
       ) : (
         <ul className="divide-y text-sm">
           {checks.map((check) => {
-            const statusLabel = check.lastStatus
-              ? t(/* i18n-dynamic */ `networkDeviceDetailPage.checks.status.${check.lastStatus}`)
-              : t('networkDeviceDetailPage.checks.status.never');
+            const statusLabel =
+              check.lastStatus && check.lastStatus !== 'unknown'
+                ? t(/* i18n-dynamic */ `networkDeviceDetailPage.checks.status.${check.lastStatus}`)
+                : t('networkDeviceDetailPage.checks.status.never');
             const parts = [statusLabel];
             if (check.lastResponseMs !== null) parts.push(formatPing(check.lastResponseMs));
             if (check.lastChecked) parts.push(formatLastSeen(check.lastChecked, timezone));

@@ -5,6 +5,7 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES,
   patches,
 } from '../../db/schema';
+import { EFFECTIVE_PATCH_SEVERITY_SQL } from '../patchSeverityOverlay';
 
 export function portalMonthWindow(now: Date, timezone: string) {
   // Bind the anchor as an ISO string: Drizzle's postgres-js driver leaves
@@ -63,7 +64,9 @@ export async function patchesAppliedTile(
       .where(and(
         eq(devicePatches.orgId, orgId),
         inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES]),
-        eq(patches.severity, 'critical'),
+        // Effective severity: shared trusted classification when known, else
+        // this org's own device reports — services/patchSeverityOverlay.ts.
+        sql`${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical'`,
       )),
   ]);
 

@@ -341,6 +341,13 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * (`/api/v1/agents/<agentId>/pam/reconciliation-bindings`), which this single-
  * segment set cannot express — see SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS
  * below instead.
+ *
+ * `monitoring-results` is here because its per-result failure-counter loop
+ * (one Redis round trip pair per reported watch, plus an event publish) ran
+ * inside the request-long wrap, pinning a pooled connection idle-in-
+ * transaction for the whole loop. The handler now opens ONE short org-scoped
+ * context for the device read + insert and runs the Redis work after it has
+ * been released (see routes/agents/heartbeat.ts).
  */
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'heartbeat',
@@ -356,6 +363,7 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   // reaching for that second connection: the #6671 wedge shape.
   'unifi-telemetry',
   'unifi-collectors',
+  'monitoring-results',
 ]);
 
 /**

@@ -27,7 +27,7 @@ vi.mock('../db', () => {
   const insertValues = vi.fn(() => ({ returning: insertReturning }));
   const insertFn = vi.fn(() => ({ values: insertValues }));
 
-  const selectLimit = vi.fn();
+  const selectLimit = vi.fn().mockResolvedValue([{ count: 0, bytes: 0 }]);
   const selectWhere = vi.fn(() => ({ limit: selectLimit }));
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const selectFn = vi.fn(() => ({ from: selectFrom }));
@@ -74,7 +74,13 @@ vi.mock('../db/schema/ai', () => ({
   },
 }));
 
-import { storeScreenshot, getScreenshot, deleteExpiredScreenshots } from './screenshotStorage';
+import {
+  storeScreenshot,
+  getScreenshot,
+  deleteExpiredScreenshots,
+  ScreenshotTooLargeError,
+  ScreenshotQuotaExceededError,
+} from './screenshotStorage';
 import { db } from '../db';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
@@ -184,6 +190,58 @@ describe('screenshotStorage', () => {
       const expectedMax = Date.now() + 49 * 60 * 60 * 1000;
       expect(expiresAt.getTime()).toBeGreaterThan(expectedMin);
       expect(expiresAt.getTime()).toBeLessThan(expectedMax);
+    });
+
+    it('rejects an oversized image before touching the filesystem or DB', async () => {
+      // 1,600,001 bytes decoded — one byte over the default MAX_SCREENSHOT_BYTES.
+      const oversized = Buffer.alloc(1_600_001, 'a').toString('base64');
+
+      await expect(storeScreenshot({
+        deviceId: TEST_DEVICE_ID,
+        orgId: TEST_ORG_ID,
+        imageBase64: oversized,
+        width: 1920,
+        height: 1080,
+        capturedBy: 'helper',
+      })).rejects.toBeInstanceOf(ScreenshotTooLargeError);
+
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a new screenshot once the device is at its live-count quota', async () => {
+      mocks.selectLimit.mockResolvedValueOnce([{ count: 20, bytes: 1000 }]);
+
+      await expect(storeScreenshot({
+        deviceId: TEST_DEVICE_ID,
+        orgId: TEST_ORG_ID,
+        imageBase64: 'dGVzdGltYWdl',
+        width: 1920,
+        height: 1080,
+        capturedBy: 'helper',
+      })).rejects.toBeInstanceOf(ScreenshotQuotaExceededError);
+
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a new screenshot once the device is at its live-byte quota', async () => {
+      // Under the count quota (20) but the incoming image would push total
+      // live bytes over MAX_SCREENSHOT_BYTES_PER_DEVICE (20 * 1,600,000).
+      mocks.selectLimit.mockResolvedValueOnce([{ count: 5, bytes: 20 * 1_600_000 }]);
+
+      await expect(storeScreenshot({
+        deviceId: TEST_DEVICE_ID,
+        orgId: TEST_ORG_ID,
+        imageBase64: 'dGVzdGltYWdl',
+        width: 1920,
+        height: 1080,
+        capturedBy: 'helper',
+      })).rejects.toBeInstanceOf(ScreenshotQuotaExceededError);
+
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

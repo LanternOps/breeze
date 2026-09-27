@@ -613,4 +613,70 @@ describe('device custom-field VALUE import (real Postgres)', () => {
     expect(await storedValues(one)).toHaveLength(0);
     expect((await storedValues(two))[0]).toMatchObject({ valueText: 'AB-1' });
   });
+
+  runDb('an org-scoped caller sees the same linkCreated outcome whether or not a sibling org holds the identity', async () => {
+    // device_external_links_uniq keys on (partner_id, system,
+    // COALESCE(source_instance, ''), external_id) — the WHOLE partner, by
+    // design. A device in a SIBLING org (same partner, out of this caller's
+    // reach) already claimed 'shared-uid' via a prior import.
+    const world = await seedWorld();
+    const siblingTarget = await seedDevice({
+      orgId: world.orgA2, siteId: world.siteA2, hostname: 'claimed-sibling', serialNumber: 'sn-claimed-sibling',
+    });
+    await getTestDb().insert(deviceExternalLinks).values({
+      deviceId: siblingTarget,
+      orgId: world.orgA2,
+      partnerId: world.partnerA,
+      system: 'csv',
+      externalId: 'shared-uid',
+    });
+
+    const claimedDevice = await seedDevice({
+      orgId: world.orgA, siteId: world.siteA, hostname: 'org-a-claimed', serialNumber: 'sn-org-a-claimed',
+    });
+    const freeDevice = await seedDevice({
+      orgId: world.orgA, siteId: world.siteA, hostname: 'org-a-free', serialNumber: 'sn-org-a-free',
+    });
+
+    // Reach is ONE org of the partner — the shape an organization-scoped
+    // token actually carries.
+    const ctx: ValueImportContext = {
+      partnerId: world.partnerA,
+      accessibleOrgIds: [world.orgA],
+      allowedSiteIds: null,
+      mode: 'update',
+    };
+
+    const summary = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport(
+        [
+          // Guesses the identity a sibling org already holds — the DB insert
+          // conflicts and no-ops.
+          { hostname: 'org-a-claimed', externalSystem: 'csv', externalId: 'shared-uid', values: [] },
+          // Guesses an identity nobody holds — the DB insert actually lands.
+          { hostname: 'org-a-free', externalSystem: 'csv', externalId: 'unclaimed-uid', values: [] },
+        ] as CommitValueRowInput[],
+        ctx,
+        actor,
+      ),
+    );
+
+    expect(summary.errors).toEqual([]);
+    expect(summary.rows.map((r) => r.deviceId)).toEqual([claimedDevice, freeDevice]);
+    const [claimedRow, freeRow] = summary.rows;
+    // Both rows report the same linkCreated value, so the outcome says
+    // nothing about which externalIds a sibling org already holds.
+    expect(
+      claimedRow?.linkCreated,
+      'an org-scoped caller must see the SAME linkCreated outcome whether the identity was free or already claimed by a sibling org',
+    ).toBe(freeRow?.linkCreated);
+
+    // The conflicted row's write is still a real no-op: no link was minted
+    // under org A for an identity a sibling org already holds.
+    const claimedLinks = await getTestDb()
+      .select({ id: deviceExternalLinks.id })
+      .from(deviceExternalLinks)
+      .where(and(eq(deviceExternalLinks.deviceId, claimedDevice), eq(deviceExternalLinks.externalId, 'shared-uid')));
+    expect(claimedLinks).toHaveLength(0);
+  });
 });

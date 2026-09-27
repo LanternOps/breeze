@@ -30,8 +30,6 @@ type PamHandler = (
   auth: AuthContext,
   context?: ToolExecutionContext,
 ) => Promise<string>;
-type ElevationStatus = 'pending' | 'auto_approved' | 'denied';
-
 const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
 const DEFAULT_DURATION_MINUTES = 30;
 
@@ -144,51 +142,13 @@ async function loadEnabledPamRules(device: { orgId: string; siteId: string | nul
   return db.select().from(pamRules).where(and(...conditions));
 }
 
-function resolveDecision(
-  ruleMatch: PamRuleMatch | null,
-  requestedDurationMinutes: number,
-): {
-  status: ElevationStatus;
-  expiresAt: Date | null;
-  approvedAt: Date | null;
-  denialReason: string | null;
-  effectiveDurationMinutes: number;
-} {
-  const now = new Date();
-  const effectiveDurationMinutes = clampNumber(
-    ruleMatch?.approvalDurationMinutes ?? requestedDurationMinutes,
-    requestedDurationMinutes,
-    480,
-  );
-
-  if (ruleMatch?.verdict === 'auto_approve') {
-    return {
-      status: 'auto_approved',
-      approvedAt: now,
-      expiresAt: new Date(now.getTime() + effectiveDurationMinutes * 60_000),
-      denialReason: null,
-      effectiveDurationMinutes,
-    };
-  }
-  if (ruleMatch?.verdict === 'auto_deny') {
-    return {
-      status: 'denied',
-      approvedAt: null,
-      expiresAt: null,
-      denialReason: `Blocked by PAM rule "${ruleMatch.ruleName}"`,
-      effectiveDurationMinutes,
-    };
-  }
-  return { status: 'pending', approvedAt: null, expiresAt: null, denialReason: null, effectiveDurationMinutes };
-}
-
 function eventPayload(row: {
   id: string;
   deviceId: string;
   flowType: string;
   status: string;
   subjectUsername?: string;
-}, ruleMatch?: PamRuleMatch | null) {
+}, denyRule?: PamRuleMatch | null) {
   return {
     elevationRequestId: row.id,
     deviceId: row.deviceId,
@@ -196,7 +156,7 @@ function eventPayload(row: {
     status: row.status,
     ...(row.subjectUsername ? { subjectUsername: row.subjectUsername } : {}),
     triggerSource: 'brain',
-    ...(ruleMatch ? { pamRuleId: ruleMatch.ruleId } : {}),
+    ...(denyRule ? { pamRuleId: denyRule.ruleId } : {}),
   };
 }
 
@@ -212,7 +172,7 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'request_elevation',
-      description: 'Request a temporary PAM elevation for an OS/user account on a managed device.',
+      description: 'Request a temporary PAM elevation for an OS/user account on a managed device. The request is created pending (or denied when an auto-deny PAM rule matches); a PAM approver other than the requester must approve it.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -223,7 +183,7 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           subjectAdGroups: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Optional AD/local groups for PAM rule matching',
+            description: 'Optional AD/local groups for PAM rule matching (auto-deny rules apply; AI requests are never auto-approved — a PAM approver decides)',
           },
         },
         required: ['deviceId', 'subjectUsername', 'reason'],
@@ -244,6 +204,13 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
       const device = await loadDeviceWithAccess(deviceId, auth);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
 
+      // An AI-originated elevation request is never auto-approved: it is
+      // inserted `pending` and a PAM approver decides it through routes/pam.ts,
+      // whose maker/checker check refuses the requester (subjectUserId below).
+      // Same as routes/remediationSuggestions.ts, which also inserts pending.
+      // The subject username and AD groups come from the tool input, so an
+      // auto_approve verdict matched on them is not applied. An auto_deny
+      // verdict is applied, exactly as on the other elevation paths.
       const now = new Date();
       const durationMinutes = clampNumber(input.durationMinutes, DEFAULT_DURATION_MINUTES, 480);
       const rules = await loadEnabledPamRules(device, auth);
@@ -254,12 +221,12 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           : undefined,
         at: now,
       });
-      const decision = resolveDecision(ruleMatch, durationMinutes);
+      const denyRule = ruleMatch?.verdict === 'auto_deny' ? ruleMatch : null;
       const metadata = {
         triggerSource: 'brain',
         requestedByUserId: auth.user.id,
         requestedDurationMinutes: durationMinutes,
-        ...(ruleMatch ? { pamRuleId: ruleMatch.ruleId, pamRuleName: ruleMatch.ruleName } : {}),
+        ...(denyRule ? { pamRuleId: denyRule.ruleId, pamRuleName: denyRule.ruleName } : {}),
       };
 
       const [row] = await db
@@ -278,11 +245,11 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           subjectUserId: auth.user.id,
           subjectUsername,
           reason,
-          status: decision.status,
+          status: denyRule ? 'denied' : 'pending',
           requestedAt: now,
-          approvedAt: decision.approvedAt,
-          expiresAt: decision.expiresAt,
-          denialReason: decision.denialReason,
+          approvedAt: null,
+          expiresAt: null,
+          denialReason: denyRule ? `Blocked by PAM rule "${denyRule.ruleName}"` : null,
           metadata,
         })
         .returning({
@@ -308,19 +275,16 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           occurredAt: now,
         },
       ];
-      if (ruleMatch && (decision.status === 'auto_approved' || decision.status === 'denied')) {
+      if (denyRule) {
         auditRows.push({
           orgId: device.orgId,
           elevationRequestId: row.id,
-          eventType: decision.status,
+          eventType: 'denied',
           actor: 'policy',
           details: {
-            pamRuleId: ruleMatch.ruleId,
-            pamRuleName: ruleMatch.ruleName,
+            pamRuleId: denyRule.ruleId,
+            pamRuleName: denyRule.ruleName,
             triggerSource: 'brain',
-            ...(decision.status === 'auto_approved'
-              ? { durationMinutes: decision.effectiveDurationMinutes }
-              : {}),
           },
           occurredAt: now,
         });
@@ -335,20 +299,17 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           status: row.status,
           subjectUsername,
         },
-        ruleMatch,
+        denyRule,
       );
       await safePublish('elevation.requested', device.orgId, payload);
-      if (decision.status === 'auto_approved') {
-        await safePublish('elevation.auto_approved', device.orgId, payload);
-      } else if (decision.status === 'denied') {
+      if (denyRule) {
         await safePublish('elevation.denied', device.orgId, payload);
       }
 
       return JSON.stringify({
         elevationRequestId: row.id,
         status: row.status,
-        ...(row.expiresAt ? { expiresAt: toIso(row.expiresAt) } : {}),
-        ...(ruleMatch ? { pamRuleId: ruleMatch.ruleId } : {}),
+        ...(denyRule ? { pamRuleId: denyRule.ruleId } : {}),
       });
     }),
   });

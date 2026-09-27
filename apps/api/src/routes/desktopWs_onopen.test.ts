@@ -118,6 +118,12 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('./remote/helpers', () => ({
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
+  // Default: no consent/notify policy configured — matches the pre-existing
+  // fixture's implicit behavior (this route sent no prompt block at all
+  // before the fix). Individual tests override with mockResolvedValueOnce.
+  buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
+  CONSENT_PROMPT_PROTOCOL_VERSION: 1,
+  isConsentPromptCapable: vi.fn((v: number) => v === 1),
 }));
 
 vi.mock('../services/clientIp', () => ({
@@ -268,11 +274,18 @@ function setupSuccessfulValidation(options: {
   recheckPhase?: 'none' | 'pending' | 'confirmed';
   /** Generation the pre-publication re-read reports, to force a supersession. */
   recheckGeneration?: bigint;
+  /**
+   * Device-reported consent/notify prompt protocol version. Defaults to 1
+   * (capable) so tests that don't care about this capability keep exercising
+   * the normal successful-start path.
+   */
+  consentPromptProtocolVersion?: number;
 } = {}) {
   const {
     lockedPhase = 'none',
     recheckPhase = 'none',
     recheckGeneration = 1n,
+    consentPromptProtocolVersion = 1,
   } = options;
   const userId = nextUserId();
 
@@ -306,7 +319,8 @@ function setupSuccessfulValidation(options: {
     hostname: 'test-host',
     osType: 'windows',
     status: 'online',
-    orgId: 'org-test-1'
+    orgId: 'org-test-1',
+    consentPromptProtocolVersion
   };
 
   vi.mocked(db.select)
@@ -652,6 +666,96 @@ describe('desktopWs', () => {
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(true);
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, 'wrong-agent')).toBe(false);
       expect(getActiveDesktopSessionCount()).toBeGreaterThanOrEqual(1);
+    });
+
+    // This WS-fallback transport previously started streaming with no
+    // consent/notify prompt block at all — the agent's consent gate (the
+    // ONLY place consent is actually enforced; the server's job is just to
+    // resolve and ship the policy) had nothing to gate on regardless of the
+    // device's configured policy. Ships the block exactly as the two WebRTC
+    // start paths already do (buildRemoteSessionPromptPayload).
+    it('resolves and ships the consent/notify prompt block in the desktop_stream_start payload', async () => {
+      setupSuccessfulValidation();
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      const prompt = {
+        mode: 'consent' as const,
+        technicianName: 'A Technician',
+        consentUnavailableBehavior: 'block' as const,
+      };
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(prompt);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'prompt-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      expect(sendCommandToAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({
+          type: 'desktop_stream_start',
+          payload: expect.objectContaining({ prompt }),
+        }),
+      );
+    });
+
+    it('omits the prompt field entirely when the resolved policy is off (undefined)', async () => {
+      setupSuccessfulValidation();
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(undefined);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'no-prompt-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      const call = vi.mocked(sendCommandToAgent).mock.calls.find(
+        ([, cmd]: any[]) => cmd.type === 'desktop_stream_start',
+      );
+      expect(call).toBeDefined();
+      expect(call![1].payload).not.toHaveProperty('prompt');
+    });
+
+    // An agent build that predates the consent-gate feature silently ignores
+    // an unfamiliar `prompt` key (Go's JSON unmarshal into a known struct
+    // drops unknown fields) and streams unconditionally. When the resolved
+    // policy requires consent or notification, the server must refuse to
+    // start on such an agent rather than dispatch a prompt block it will not
+    // honor — unattended devices (policy mode 'off', no prompt block) are
+    // unaffected.
+    it('refuses to start when the device is not consent-prompt capable and the policy requires a prompt', async () => {
+      setupSuccessfulValidation({ consentPromptProtocolVersion: 0 });
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
+        mode: 'consent' as const,
+        technicianName: 'A Technician',
+        consentUnavailableBehavior: 'block' as const,
+      });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'old-agent-consent-required-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      expect(sendCommandToAgent).not.toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start' }),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"CONSENT_UPGRADE_REQUIRED"'),
+      );
+      expect(ws.close).toHaveBeenCalled();
+    });
+
+    it('still starts on a non-consent-prompt-capable agent when the resolved policy is off', async () => {
+      setupSuccessfulValidation({ consentPromptProtocolVersion: 0 });
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(undefined);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'old-agent-no-policy-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      expect(sendCommandToAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start' }),
+      );
     });
 
     // SEC-038 W02. A start refused by the fence must TELL the viewer why: a

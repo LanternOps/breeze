@@ -24,11 +24,21 @@ it('reviews both outcomes and converts only representable checks', async () => {
   fireEvent.click(screen.getByTestId('network-check-conversion-review'));
   expect(screen.getByText('Preserves history')).toBeInTheDocument();
   expect(screen.getByText('unconvertible:network_predicate_unsupported')).toBeInTheDocument();
+  expect(screen.getByText('conversion was refused; review the source')).toBeInTheDocument();
   fireEvent.click(screen.getByTestId('network-check-conversion-confirm'));
   await waitFor(() => expect(request).toHaveBeenCalledWith('/monitor-definitions/conversion/network-checks/convert', {
     method: 'POST', body: JSON.stringify({ orgId: 'org-1', previewHash: 'a'.repeat(64) }),
   }));
   await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+});
+
+it('uses the singular for exactly one pending network check', async () => {
+  request.mockImplementation(async (url) => {
+    if (String(url).includes('/ledger?')) return json({ items: [], nextCursor: null });
+    return json(preview([item]));
+  });
+  render(<NetworkCheckConversionBanner orgId="org-1" onConverted={vi.fn()} />);
+  expect(await screen.findByTestId('network-check-conversion-banner')).toHaveTextContent('1 network check needs review.');
 });
 
 it('converts all 501 checks without sending the capped sourceIds selection', async () => {

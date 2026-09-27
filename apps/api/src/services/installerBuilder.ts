@@ -7,11 +7,13 @@ import {
   getBinarySource,
   getGithubAgentPkgUrl,
   getGithubExpectedReleaseTag,
+  getGithubHelperUrl,
   getGithubInstallerAppUrl,
   getGithubRegularMsiUrl,
   getGithubReleaseArtifactManifestSignatureUrl,
   getGithubReleaseArtifactManifestUrl,
   getGithubReleaseRepository,
+  HELPER_FILENAMES,
 } from './binarySource';
 import {
   fetchVerifiedGithubReleaseArtifact,
@@ -334,15 +336,43 @@ export interface VerifiedMacosPackage {
   artifact: VerifiedReleaseArtifact;
 }
 
-function localReleaseManifestPaths(binaryDir: string): {
+interface LocalManifestPairPaths {
   manifestPath: string;
   signaturePath: string;
-} {
-  const root = dirname(resolve(binaryDir));
+}
+
+function manifestPairPathsIn(dir: string): LocalManifestPairPaths {
   return {
-    manifestPath: join(root, 'release-artifact-manifest.json'),
-    signaturePath: join(root, 'release-artifact-manifest.json.ed25519'),
+    manifestPath: join(dir, 'release-artifact-manifest.json'),
+    signaturePath: join(dir, 'release-artifact-manifest.json.ed25519'),
   };
+}
+
+function localReleaseManifestPaths(binaryDir: string): LocalManifestPairPaths {
+  return manifestPairPathsIn(dirname(resolve(binaryDir)));
+}
+
+// The Breeze Assist (Helper) installers are built only by the public release
+// and are byte-identical for both editions: the public release manifest lists
+// them with `edition: "self-host"`, and no hosted build ever re-signs or
+// re-lists them. They are therefore verified against the public release's own
+// manifest pair and edition, never against BINARY_EDITION.
+const HELPER_INSTALLER_EDITION = 'self-host';
+
+// Where the Helper's signed manifest pair may live, in lookup order:
+//   1. HELPER_BINARY_DIR itself — the hosted binaries image stages the public
+//      release's manifest pair here, because its volume ROOT carries the
+//      hosted build's own manifest (agent family only, edition "hosted").
+//   2. The parent of HELPER_BINARY_DIR — the documented self-host layout,
+//      where the one staged manifest at the root is the public release's.
+// A hosted deployment gets (1) only: its root manifest is the hosted build's,
+// which does not vouch for the Helper, so falling back to it would at best
+// fail as "absent" and at worst trust a hosted-signed entry for a
+// public-release asset.
+function helperInstallerManifestCandidates(helperBinaryDir: string): LocalManifestPairPaths[] {
+  const own = manifestPairPathsIn(resolve(helperBinaryDir));
+  if (getBinaryEdition() === 'hosted') return [own];
+  return [own, localReleaseManifestPaths(helperBinaryDir)];
 }
 
 async function readBoundedStream(
@@ -369,23 +399,36 @@ async function readBoundedStream(
   return Buffer.concat(chunks, size);
 }
 
-async function loadLocalManifestPair(binaryDir: string): Promise<{
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
+// Returns the first candidate whose manifest is present. A candidate whose
+// manifest is present but whose signature is missing is a half-staged pair —
+// refuse rather than skip past it to a lower-priority candidate.
+async function loadLocalManifestPair(candidates: LocalManifestPairPaths[]): Promise<{
   manifestBytes: Buffer;
   signatureBytes: Buffer;
 }> {
-  const paths = localReleaseManifestPaths(binaryDir);
-  try {
-    const [manifestBytes, signatureBytes] = await Promise.all([
-      readFile(paths.manifestPath),
-      readFile(paths.signaturePath),
-    ]);
-    return { manifestBytes, signatureBytes };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('Signed release manifest pair is not staged for local installers');
+  for (const paths of candidates) {
+    let manifestBytes: Buffer;
+    try {
+      manifestBytes = await readFile(paths.manifestPath);
+    } catch (err) {
+      if (isEnoent(err)) continue;
+      throw err;
     }
-    throw err;
+    try {
+      const signatureBytes = await readFile(paths.signaturePath);
+      return { manifestBytes, signatureBytes };
+    } catch (err) {
+      if (isEnoent(err)) {
+        throw new Error('Signed release manifest pair is incomplete: the signature is not staged');
+      }
+      throw err;
+    }
   }
+  throw new Error('Signed release manifest pair is not staged for local installers');
 }
 
 async function fetchVerifiedLocalArtifact(args: {
@@ -394,18 +437,37 @@ async function fetchVerifiedLocalArtifact(args: {
   s3Key?: string;
   expectedPlatformTrust: string;
   requireMacosPublisher: boolean;
+  /**
+   * Where to find the signed manifest pair, in lookup order. Defaults to the
+   * parent of the asset's directory (the binaries volume root).
+   */
+  manifestPairCandidates?: LocalManifestPairPaths[];
+  /** Required manifest edition. Defaults to BINARY_EDITION. */
+  expectedEdition?: string;
 }): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  const { manifestBytes, signatureBytes } = await loadLocalManifestPair(binaryDir);
-  const expectedRepository = getGithubReleaseRepository();
-  const expectedRelease = getGithubExpectedReleaseTag();
-  const expectedEdition = getBinaryEdition();
+  // The signed manifest pair is staged next to the asset it verifies — derive
+  // the lookup directory from the caller's own resolved `diskPath` rather
+  // than re-reading AGENT_BINARY_DIR here. Every caller already builds
+  // `diskPath` as `join(<their own binaryDir env var>, assetName)`; hardcoding
+  // AGENT_BINARY_DIR broke self-hosters who point HELPER_BINARY_DIR somewhere
+  // else, since the Helper's asset and manifest pair both live there.
+  const binaryDir = dirname(args.diskPath);
+  const { manifestBytes, signatureBytes } = await loadLocalManifestPair(
+    args.manifestPairCandidates ?? [localReleaseManifestPaths(binaryDir)],
+  );
+  // Local-source trust contract (same as binarySync's local manifest
+  // registration): the manifest's Ed25519 signature against the configured
+  // RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS is the trust anchor, then the asset
+  // entry, size/sha256, edition, platform trust and macOS publisher. The
+  // repository/release pins apply to the GitHub source only — a hosted
+  // install's binaries volume carries the hosted build's manifest, whose
+  // repository is not the public GitHub repository, so pinning it here
+  // refused every locally staged installer on hosted.
+  const expectedEdition = args.expectedEdition ?? getBinaryEdition();
   const selected = await verifyReleaseArtifactManifestAsset({
     assetName: args.assetName,
     manifestBytes,
     signatureBytes,
-    expectedRepository,
-    expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
     expectedEdition,
     requireMacosPublisher: args.requireMacosPublisher,
@@ -440,8 +502,6 @@ async function fetchVerifiedLocalArtifact(args: {
     assetBuffer: buffer,
     manifestBytes,
     signatureBytes,
-    expectedRepository,
-    expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
     expectedEdition,
     requireMacosPublisher: args.requireMacosPublisher,
@@ -497,10 +557,178 @@ async function fetchVerifiedMacosPkgUncached(
   return { buffer: result.buffer, artifact: result.verified };
 }
 
+// Helper (Tauri desktop app) installer — mirrors fetchVerifiedMacosPkg's
+// verified-fetch-plus-cache shape, extended to the Helper's three platforms.
+// Unlike the agent/watchdog/backup/user-helper binaries, the Helper has no
+// downstream integrity check of its own: no client-side updater/signature-pin
+// mechanism, and install.sh never runs against it (it's a desktop-app
+// installer a human downloads and runs directly). This is therefore the ONLY
+// place its bytes are ever checked against the signed release manifest before
+// being handed to a user — refuse to serve, rather than serve unverified, on
+// any manifest/signature/hash mismatch.
+const MAX_HELPER_INSTALLER_BYTES = 256 * 1024 * 1024;
+const VERIFIED_HELPER_INSTALLER_CACHE_MS = 5 * 60 * 1000;
+const verifiedHelperInstallerCache = new Map<
+  string,
+  { expiresAt: number; value: Promise<VerifiedMacosPackage> }
+>();
+
+export function __resetVerifiedHelperInstallerCache(): void {
+  verifiedHelperInstallerCache.clear();
+}
+
+export async function fetchVerifiedHelperInstaller(os: string): Promise<VerifiedMacosPackage> {
+  const cached = verifiedHelperInstallerCache.get(os);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = fetchVerifiedHelperInstallerUncached(os).catch((err) => {
+    verifiedHelperInstallerCache.delete(os);
+    throw err;
+  });
+  verifiedHelperInstallerCache.set(os, {
+    expiresAt: Date.now() + VERIFIED_HELPER_INSTALLER_CACHE_MS,
+    value,
+  });
+  return value;
+}
+
+async function fetchVerifiedHelperInstallerUncached(os: string): Promise<VerifiedMacosPackage> {
+  const assetName = HELPER_FILENAMES[os];
+  if (!assetName) throw new Error(`Unknown helper OS: ${os}`);
+
+  if (getBinarySource() === 'github') {
+    const result = await fetchVerifiedGithubReleaseArtifact({
+      assetName,
+      assetUrl: getGithubHelperUrl(os),
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedEdition: HELPER_INSTALLER_EDITION,
+      maxAssetBytes: MAX_HELPER_INSTALLER_BYTES,
+    });
+    assertGithubFetchableEdition({ assetName, edition: result.verified.edition });
+    return { buffer: result.buffer, artifact: result.verified };
+  }
+
+  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || './agent/bin');
+  const result = await fetchVerifiedLocalArtifact({
+    assetName,
+    diskPath: join(binaryDir, assetName),
+    s3Key: `helper/${assetName}`,
+    expectedPlatformTrust: '',
+    requireMacosPublisher: false,
+    manifestPairCandidates: helperInstallerManifestCandidates(binaryDir),
+    expectedEdition: HELPER_INSTALLER_EDITION,
+  });
+  return { buffer: result.buffer, artifact: result.verified };
+}
+
+// Callers (the authenticated /:id/installer/:platform route and the public
+// /s/:code and /i/:shortCode routes) all run this fetch under a held ambient
+// DB transaction — the request middleware pins one pooled connection
+// idle-in-transaction for the whole handler regardless of what the handler
+// itself awaits. A short TTL cache turns the common case (repeat downloads
+// of the same release) into a near-instant cache hit that never touches the
+// network while the connection is held, and the bounded fetch timeout below
+// caps the exposure on a cold cache or a trickling/hung origin.
+const REGULAR_MSI_FETCH_TIMEOUT_MS = 20_000;
+const REGULAR_MSI_CACHE_MS = 5 * 60 * 1000;
+let regularMsiCache: { expiresAt: number; value: Promise<Buffer> } | null = null;
+
+export function __resetRegularMsiCache(): void {
+  regularMsiCache = null;
+}
+
+// Unconditionally issues a fresh fetch and (re)anchors the cache's expiry to
+// now + REGULAR_MSI_CACHE_MS — used both by fetchRegularMsi() on a genuine
+// cache miss and by the background warmer below, which must force a fresh
+// fetch on every tick (not just when the existing entry has actually
+// expired) so the cache's expiry keeps rolling forward and never lapses
+// between ticks.
+function refreshRegularMsiCache(): Promise<Buffer> {
+  const value = fetchRegularMsiUncached().catch((err) => {
+    regularMsiCache = null;
+    throw err;
+  });
+  regularMsiCache = { expiresAt: Date.now() + REGULAR_MSI_CACHE_MS, value };
+  return value;
+}
+
 export async function fetchRegularMsi(): Promise<Buffer> {
+  if (regularMsiCache && regularMsiCache.expiresAt > Date.now()) {
+    return regularMsiCache.value;
+  }
+  return refreshRegularMsiCache();
+}
+
+// Every caller of fetchRegularMsi() (the authenticated /:id/installer/:platform
+// route and the public /s/:code and /i/:shortCode routes) runs it inside an
+// ambient DB transaction that request middleware opens BEFORE the route
+// handler itself runs — there is no point inside those handlers to do a
+// single-flight fetch "before entering the transactional section", because
+// the transaction is already open when the handler starts. Converting those
+// routes to a self-managed DB context would risk the FOR SHARE / rotate
+// linearizability contract in issueBootstrapTokenForKey, which is out of
+// scope for a mitigation pass.
+//
+// So instead: keep the cache warm from OUTSIDE any request, in the
+// background, so a request almost always lands on a cache hit rather than a
+// cache miss. This does not remove the fallback network fetch inside the
+// transaction (fetchRegularMsi still does that on a genuine cache miss —
+// e.g. the warmer hasn't completed its first refresh, or the last refresh
+// failed) — it shrinks how often that fallback is exercised under normal
+// operation, from "every REGULAR_MSI_CACHE_MS window, whichever request
+// lands first pays the cost" to "essentially never, unless the warmer
+// itself is failing."
+const REGULAR_MSI_WARM_SAFETY_MARGIN_MS = 30_000;
+let regularMsiWarmTimer: ReturnType<typeof setInterval> | null = null;
+
+function warmRegularMsiCache(): void {
+  // Forces a fresh fetch every tick (refreshRegularMsiCache, not
+  // fetchRegularMsi) — a still-valid cache entry would otherwise short-
+  // circuit this to a no-op, leaving the entry's expiry anchored to its
+  // ORIGINAL fetch time. Since setInterval ticks at a fixed cadence from
+  // start rather than from the cache's own last write, that would let the
+  // entry actually expire between two ticks that each believed the other
+  // had it covered.
+  refreshRegularMsiCache().catch((err) => {
+    console.error(
+      '[installer-builder] background MSI cache warm failed (next request falls back to its own fetch):',
+      err instanceof Error ? err.message : err,
+    );
+  });
+}
+
+/**
+ * Starts the background MSI cache warmer. Idempotent — safe to call more
+ * than once (e.g. from a boot sequence that could theoretically run twice);
+ * only the first call schedules a timer. Fires an immediate warm on start
+ * so the cache is populated before the first request arrives, then
+ * refreshes on an interval shorter than the cache TTL so a live entry is
+ * (re)fetched before it would go stale.
+ */
+export function startRegularMsiCacheWarmer(): void {
+  if (regularMsiWarmTimer) return;
+  warmRegularMsiCache();
+  const intervalMs = Math.max(1_000, REGULAR_MSI_CACHE_MS - REGULAR_MSI_WARM_SAFETY_MARGIN_MS);
+  regularMsiWarmTimer = setInterval(warmRegularMsiCache, intervalMs);
+  regularMsiWarmTimer.unref?.();
+}
+
+export function __stopRegularMsiCacheWarmer(): void {
+  if (regularMsiWarmTimer) {
+    clearInterval(regularMsiWarmTimer);
+    regularMsiWarmTimer = null;
+  }
+}
+
+async function fetchRegularMsiUncached(): Promise<Buffer> {
   if (getBinarySource() === 'github') {
     const url = getGithubRegularMsiUrl();
-    const resp = await fetch(url, { redirect: 'follow' });
+    const resp = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(REGULAR_MSI_FETCH_TIMEOUT_MS),
+    });
     if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
     // No expectedPlatformTrust here: the public self-host release ships this

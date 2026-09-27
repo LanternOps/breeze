@@ -14,6 +14,15 @@
  * source scan -- the only control this repo has a good record with. Code review
  * has caught registration-shaped omissions 0/5 times here; contract tests have
  * caught them 5/5.
+ *
+ * Every entry point here that reaches a device ALSO runs
+ * the per-device remote-tools policy (`services/aiRemoteToolsPolicy.ts`) for
+ * the command families the REST `/system-tools` routes gate, before anything
+ * is queued or sent. A refusal comes back through the entry point's existing
+ * refusal channel (`status:'failed'` / `error` / `ok:false`) or, where the
+ * result has none, as a thrown `RemoteToolsDisabledByPolicyError`. The
+ * contract test `aiRemoteToolsPolicy.contract.test.ts` fails if an exported
+ * entry point stops calling the check.
  */
 import {
   executeCommand,
@@ -38,6 +47,11 @@ import {
   type DispatchScriptInput,
   type DispatchScriptResult,
 } from './scriptDispatch';
+import {
+  assertAiRemoteToolsAllowed,
+  checkAiRemoteToolsPolicy,
+  REMOTE_TOOLS_DISABLED_BY_POLICY,
+} from './aiRemoteToolsPolicy';
 import type { AiOriginRef } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 
@@ -73,6 +87,8 @@ export async function aiExecuteCommand(
   options: Omit<ExecuteCommandOptions, 'aiOrigin'> = {},
 ): Promise<CommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  const policy = await checkAiRemoteToolsPolicy(deviceId, type);
+  if (!policy.allowed) return { status: 'failed', error: policy.error };
   return executeCommand(deviceId, type, payload, { ...options, aiOrigin });
 }
 
@@ -85,9 +101,10 @@ export async function aiExecuteCommandWithSystemPrecheck(
   payload: CommandPayload,
   options: Omit<Parameters<typeof executeCommandWithSystemPrecheck>[3], 'aiOrigin'>,
 ): Promise<CommandResult> {
-  return executeCommandWithSystemPrecheck(deviceId, type, payload, {
-    ...options, aiOrigin: requireAiOrigin(auth, toolName),
-  });
+  const aiOrigin = requireAiOrigin(auth, toolName);
+  const policy = await checkAiRemoteToolsPolicy(deviceId, type);
+  if (!policy.allowed) return { status: 'failed', error: policy.error };
+  return executeCommandWithSystemPrecheck(deviceId, type, payload, { ...options, aiOrigin });
 }
 
 export async function aiQueueCommandForExecution(
@@ -99,6 +116,8 @@ export async function aiQueueCommandForExecution(
   options: Omit<Parameters<typeof queueCommandForExecution>[3] & object, 'aiOrigin'> = {},
 ): Promise<QueueCommandForExecutionResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  const policy = await checkAiRemoteToolsPolicy(deviceId, type);
+  if (!policy.allowed) return { error: policy.error };
   return queueCommandForExecution(deviceId, type, payload, { ...options, aiOrigin });
 }
 
@@ -118,15 +137,23 @@ export async function aiQueueCommand(
   options: Omit<Parameters<typeof queueCommand>[4] & object, 'aiOrigin'> = {},
 ): Promise<QueuedCommand> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  await assertAiRemoteToolsAllowed(deviceId, type);
   return queueCommand(deviceId, type, payload, userId, { ...options, aiOrigin });
 }
+
+/** `dispatchDeviceCommand`'s result, plus the remote-tools policy refusal. */
+export type AiDispatchDeviceCommandResult =
+  | DispatchDeviceCommandResult
+  | { ok: false; code: typeof REMOTE_TOOLS_DISABLED_BY_POLICY; error: string };
 
 export async function aiDispatchDeviceCommand(
   auth: AiAuth,
   toolName: string,
   input: Omit<DispatchDeviceCommandInput, 'aiOrigin'>,
-): Promise<DispatchDeviceCommandResult> {
+): Promise<AiDispatchDeviceCommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  const policy = await checkAiRemoteToolsPolicy(input.deviceId, input.type);
+  if (!policy.allowed) return { ok: false, code: REMOTE_TOOLS_DISABLED_BY_POLICY, error: policy.error };
   return dispatchDeviceCommand({ ...input, aiOrigin });
 }
 
@@ -136,6 +163,9 @@ export async function aiDispatchScriptToDevice(
   input: Omit<DispatchScriptInput, 'aiOrigin' | 'principalActorId'>,
 ): Promise<DispatchScriptResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  // Remote-tools policy: NOT applied. This lane can only dispatch a `script`
+  // command (it has no `type` input), which the /system-tools routes do not
+  // gate either -- scripts have their own permission and approval model.
   // #5022 W01: `ai.script.executed` takes its actor from the authenticated
   // PRINCIPAL. For an autonomous run that principal is the agent, whose id is
   // an `ai_agents.id` -- legal in `audit_logs.actor_id` (no FK to `users`),
@@ -156,5 +186,8 @@ export async function aiInsertQueuedCommandInTransaction(
   tx: CommandQueueTx,
   input: Omit<QueuedCommandInput, 'aiOrigin'>,
 ): Promise<QueuedCommand> {
+  // Joins the caller's transaction context (the lookup is a plain read); only
+  // remote-tools command types reach the database at all.
+  await assertAiRemoteToolsAllowed(input.deviceId, input.type);
   return insertQueuedCommandInTransaction(tx, { ...input, aiOrigin: origin });
 }

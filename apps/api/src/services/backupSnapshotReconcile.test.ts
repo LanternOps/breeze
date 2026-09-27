@@ -120,6 +120,7 @@ vi.mock('./backupSnapshotStorage', () => ({
     })();
   },
   fetchBackupObjectText: (...args: unknown[]) => fetchBackupObjectTextMock(...(args as [])),
+  MANIFEST_FETCH_MAX_BYTES: 200 * 1024 * 1024,
 }));
 
 const applyBackupCommandResultToJobMock = vi.fn();
@@ -545,6 +546,17 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     oneManifest();
     fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
     queueSelects(baseSelects([claimingJob({ status: 'completed' })]));
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].source).toBe('reconcile');
+  });
+
+  it('adopts a half-written completed_with_errors job the same way (#5396)', async () => {
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(baseSelects([claimingJob({ status: 'completed_with_errors' })]));
 
     const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
 

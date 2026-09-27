@@ -1521,6 +1521,40 @@ describe('automations routes', () => {
 	    expect((await request()).status).toBe(409);
 	  });
 
+	  it('rejects a byte-identical signed webhook resend carrying a different event-id header', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: '11111111-1111-4111-8111-111111111111',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+	    const rawBody = JSON.stringify({ ping: true, id: 'resend-different-event-id' });
+	    const timestamp = String(Math.floor(Date.now() / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+	    const requestWith = (eventId: string) => app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': eventId,
+	      },
+	      body: rawBody
+	    });
+
+	    expect((await requestWith('event-original')).status).toBe(202);
+	    // Same signed request, resent with only the unsigned event-id header changed,
+	    // must still be caught as a duplicate delivery.
+	    expect((await requestWith('event-foreign-resend')).status).toBe(409);
+	  });
+
 	  it('returns 404 without querying the database for a malformed webhook automation id', async () => {
 	    const res = await app.request('/automations/webhooks/not-a-uuid', {
 	      method: 'POST',
@@ -1562,8 +1596,9 @@ describe('automations routes', () => {
 	  it('stores signed automation webhook replay nonces in Redis when available', async () => {
 	    const redis = {
 	      set: vi.fn()
-	        .mockResolvedValueOnce('OK')
-	        .mockResolvedValueOnce(null)
+	        .mockResolvedValueOnce('OK') // first request: signature-derived key
+	        .mockResolvedValueOnce('OK') // first request: event-id-derived key
+	        .mockResolvedValueOnce(null) // second request: signature-derived key (duplicate)
 	    };
 	    vi.mocked(getRedis).mockReturnValue(redis as any);
 	    vi.mocked(db.select).mockReturnValue({
@@ -2205,7 +2240,7 @@ describe('automations routes', () => {
         })
       })
     } as any);
-    const rawBody = JSON.stringify({ ping: true });
+    const rawBody = JSON.stringify({ ping: true, id: 'audit-1' });
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
 

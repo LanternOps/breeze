@@ -7,7 +7,11 @@ import { requireMfa, requirePermission, requireScope, type AuthContext } from '.
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { auditRetentionPolicySchema } from '@breeze/shared';
-import { getOrgAuditRetentionPolicy, upsertOrgAuditRetentionPolicy } from '../services/auditRetentionPolicyService';
+import {
+  AuditRetentionFloorError,
+  getOrgAuditRetentionPolicy,
+  upsertOrgAuditRetentionPolicy,
+} from '../services/auditRetentionPolicyService';
 
 // Admin read/write for an org's audit-log retention policy
 // (audit_retention_policies — issue #4633). Registered onto orgRoutes so it
@@ -70,7 +74,22 @@ export function registerOrgAuditRetentionSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
-      const data = await upsertOrgAuditRetentionPolicy(org.id, body.retentionDays);
+      const auth = c.get('auth') as AuthContext;
+      let data;
+      try {
+        // An org-scoped caller (the customer-side Org
+        // Admin) cannot shorten retention below the floor — see
+        // AUDIT_RETENTION_ORG_FLOOR_DAYS's doc comment. A partner- or
+        // system-scope caller on this same route is unaffected.
+        data = await upsertOrgAuditRetentionPolicy(org.id, body.retentionDays, {
+          enforceOrgFloor: auth.scope === 'organization',
+        });
+      } catch (err) {
+        if (err instanceof AuditRetentionFloorError) {
+          return c.json({ error: err.message }, 400);
+        }
+        throw err;
+      }
 
       writeRouteAudit(c, {
         orgId: org.id,

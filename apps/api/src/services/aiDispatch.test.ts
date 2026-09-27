@@ -13,10 +13,20 @@ vi.mock('./dispatchDeviceCommand', () => ({
 vi.mock('./scriptDispatch', () => ({
   dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: true, commandId: 'cmd-1' }),
 }));
+vi.mock('./remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization' })),
+  withSystemDbAccessContext: vi.fn((fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+}));
 
 import { executeCommandWithSystemPrecheck, executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { checkRemoteAccess } from './remoteAccessPolicy';
+import { getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   aiExecuteCommandWithSystemPrecheck,
   aiExecuteCommand,
@@ -28,12 +38,21 @@ import {
   requireAiOrigin,
   MissingAiOriginError,
 } from './aiDispatch';
+import {
+  REMOTE_TOOLS_COMMAND_TYPES,
+  REMOTE_TOOLS_DISABLED_BY_POLICY,
+  RemoteToolsDisabledByPolicyError,
+} from './aiRemoteToolsPolicy';
 
 const AGENT_ORIGIN = { kind: 'ai_agent' as const, agentRunId: 'run-1' };
 const withOrigin = { aiOrigin: AGENT_ORIGIN } as never;
 const withoutOrigin = {} as never;
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: true });
+  vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as never);
+});
 
 describe('aiDispatch adapter (#5022 W01)', () => {
   it('forwards the auth context origin into the dispatch options', async () => {
@@ -131,5 +150,107 @@ describe('aiDispatch adapter (#5022 W01)', () => {
     expect(queueCommand).not.toHaveBeenCalled();
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+});
+
+// The REST /system-tools routes refuse a device whose
+// remote_access policy disables remote tools (routes/systemTools/index.ts). The
+// AI dispatch door must refuse the same command types, at every entry point.
+describe('aiDispatch enforces the per-device remote-tools policy', () => {
+  const DENIED = { allowed: false, reason: 'Remote tools is disabled by policy "Locked"' };
+  const deny = () => vi.mocked(checkRemoteAccess).mockResolvedValue(DENIED);
+
+  it('covers the process, service, task, registry, file, event-log and startup-item families', () => {
+    for (const t of [
+      'list_processes', 'kill_process', 'list_services', 'restart_service', 'tasks_list', 'task_run',
+      'registry_get', 'registry_set', 'file_list', 'file_read', 'file_write', 'file_delete', 'file_mkdir',
+      'event_logs_query', 'manage_startup_item',
+    ]) {
+      expect(REMOTE_TOOLS_COMMAND_TYPES.has(t), t).toBe(true);
+    }
+    expect(REMOTE_TOOLS_COMMAND_TYPES.has('update_agent')).toBe(false);
+    expect(REMOTE_TOOLS_COMMAND_TYPES.has('script')).toBe(false);
+  });
+
+  it.each([...REMOTE_TOOLS_COMMAND_TYPES])('aiExecuteCommand refuses %s on a policy-denied device and never dispatches', async (type) => {
+    deny();
+    const result = await aiExecuteCommand(withOrigin, 'execute_command', 'dev-1', type, {});
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+    expect(result.error).toContain('Locked');
+    expect(checkRemoteAccess).toHaveBeenCalledWith('dev-1', 'remoteTools');
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('refuses at EVERY dispatch entry point, before any dispatch happens', async () => {
+    deny();
+
+    const sys = await aiExecuteCommandWithSystemPrecheck(withOrigin, 'disk_cleanup', 'dev-1', 'file_delete', {}, { expectedOrgId: 'org-1' });
+    expect(sys.status).toBe('failed');
+    expect(sys.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+
+    const queued = await aiQueueCommandForExecution(withOrigin, 'manage_services', 'dev-1', 'restart_service', {});
+    expect(queued.command).toBeUndefined();
+    expect(queued.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+
+    await expect(aiQueueCommand(withOrigin, 'manage_processes', 'dev-1', 'kill_process', {}))
+      .rejects.toBeInstanceOf(RemoteToolsDisabledByPolicyError);
+
+    const dispatched = await aiDispatchDeviceCommand(withOrigin, 'manage_registry', { deviceId: 'dev-1', type: 'registry_set' });
+    expect(dispatched.ok).toBe(false);
+    expect(dispatched.ok === false && dispatched.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+
+    await expect(aiInsertQueuedCommandInTransaction(AGENT_ORIGIN, {} as never, {
+      id: 'cmd-1', deviceId: 'dev-1', type: 'file_write' as never, payload: {}, createdBy: null,
+    })).rejects.toMatchObject({ code: REMOTE_TOOLS_DISABLED_BY_POLICY });
+
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    expect(insertQueuedCommandInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('matches the command type case-insensitively, so a casing variant cannot slip past', async () => {
+    deny();
+    const result = await aiExecuteCommand(withOrigin, 'execute_command', 'dev-1', 'KILL_PROCESS', {});
+    expect(result.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the policy lookup itself throws', async () => {
+    vi.mocked(checkRemoteAccess).mockRejectedValue(new Error('db down'));
+    const result = await aiExecuteCommand(withOrigin, 'manage_services', 'dev-1', 'stop_service', {});
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('dispatches normally when the policy allows remote tools', async () => {
+    await aiExecuteCommand(withOrigin, 'manage_services', 'dev-1', 'stop_service', {});
+    expect(checkRemoteAccess).toHaveBeenCalledWith('dev-1', 'remoteTools');
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves non-remote-tools command types (update_agent, script) untouched: no lookup, dispatched', async () => {
+    deny();
+    await aiExecuteCommand(withOrigin, 'update_agent', 'dev-1', 'update_agent', {});
+    await aiQueueCommandForExecution(withOrigin, 'run_script', 'dev-1', 'script', {});
+    expect(checkRemoteAccess).not.toHaveBeenCalled();
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('with NO ambient DB context (the context-free lane) resolves the policy under a short system context', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(null as never);
+    deny();
+    const result = await aiExecuteCommandWithSystemPrecheck(withOrigin, 'disk_cleanup', 'dev-1', 'file_delete', {}, { expectedOrgId: 'org-1' });
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(result.error).toContain(REMOTE_TOOLS_DISABLED_BY_POLICY);
+  });
+
+  it('with an ambient context JOINS it rather than opening a second connection', async () => {
+    await aiExecuteCommand(withOrigin, 'manage_services', 'dev-1', 'stop_service', {});
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

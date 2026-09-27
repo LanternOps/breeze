@@ -54,7 +54,7 @@ function recurrenceSuffix(recurrence: string | null | undefined): string {
   return '';
 }
 
-type DeviceSetLine = Pick<QuoteLine, 'contractLineType' | 'deviceRoles' | 'deviceGroupName' | 'siteName' | 'includedQuantity' | 'overageMode' | 'overageUnitPrice'>;
+type DeviceSetLine = Pick<QuoteLine, 'contractLineType' | 'deviceRoles' | 'deviceGroupId' | 'deviceGroupName' | 'siteId' | 'siteName' | 'includedQuantity' | 'overageMode' | 'overageUnitPrice'>;
 
 function deviceSetCustomerText(line: DeviceSetLine, currency: string, locale: string): string[] {
   if (!line.contractLineType || !['per_device', 'per_device_role', 'per_device_group', 'per_seat'].includes(line.contractLineType)) return [];
@@ -62,11 +62,15 @@ function deviceSetCustomerText(line: DeviceSetLine, currency: string, locale: st
   if (line.contractLineType === 'per_device_role') {
     set = (line.deviceRoles ?? []).map((r) => DEVICE_ROLE_NOUNS[r as BillableDeviceRole] ?? r).join(', ') || 'devices';
   } else if (line.contractLineType === 'per_device_group') {
-    set = `devices in “${line.deviceGroupName ?? ''}”`;
+    // deviceGroupName is kept even after a retarget clears deviceGroupId (it
+    // feeds the internal "re-select for this organization" drift chip) — only
+    // print the stamped name on the customer document while the id it
+    // describes still resolves in the current org.
+    set = line.deviceGroupId ? `devices in “${line.deviceGroupName ?? ''}”` : 'devices';
   } else if (line.contractLineType === 'per_seat') {
     set = 'seats';
   }
-  if (line.siteName) set = `${set} at ${line.siteName}`;
+  if (line.siteId && line.siteName) set = `${set} at ${line.siteName}`;
   const result = [`Estimated quantity — billed at the actual number of ${set} each billing period.`];
   if (line.includedQuantity != null && line.overageMode === 'bill' && line.overageUnitPrice != null) {
     result.push(`Includes ${Number(line.includedQuantity)}; additional units billed at ${formatMoneyForPdf(line.overageUnitPrice, currency, locale)} each.`);

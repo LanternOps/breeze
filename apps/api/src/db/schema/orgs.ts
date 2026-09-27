@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { ImpactWeightOverrides } from '@breeze/shared';
 
@@ -286,6 +286,25 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   // Plain uuid — the FK lives in SQL to avoid a circular import with
   // supportSessions.ts (which imports organizations from this file).
   supportSessionId: uuid('support_session_id'),
+  // Parent-lineage for a child key minted by redeeming a public /s/:code
+  // short-link (routes/enrollmentKeys.ts publicShortLinkRoutes). Distinct
+  // from bootstrapTokenId above, which links a child to the
+  // installer_bootstrap_tokens row that minted it (the MCP bootstrap /
+  // authenticated-installer path) — a /s/:code redemption mints its child
+  // directly against the parent link row, with no bootstrap-token row in
+  // between, so it carries no bootstrapTokenId at all. Nullable: only set
+  // for that one redemption path. Self-referencing FK, so it needs the lazy
+  // `(): AnyPgColumn =>` form (a plain `() =>` reference can't resolve a
+  // table to itself at module-eval time).
+  sourceLinkKeyId: uuid('source_link_key_id').references((): AnyPgColumn => enrollmentKeys.id, { onDelete: 'set null' }),
+  // Snapshot of the parent's credentialGeneration at the moment this child
+  // was minted. Rotating the parent bumps its own credentialGeneration;
+  // comparing this snapshot against the parent's CURRENT value at rotation
+  // time is what lets rotation find and revoke children minted from the
+  // superseded credential, the same pattern installerBootstrapTokens.
+  // parentCredentialGeneration already uses for bootstrap-token-derived
+  // children.
+  sourceLinkKeyGeneration: integer('source_link_key_generation'),
 });
 
 // Durable "loser merged into survivor" record (spec 2026-08-26). loser_org_id

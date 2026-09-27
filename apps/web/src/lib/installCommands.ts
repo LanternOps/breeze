@@ -74,14 +74,54 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   // of copied or impersonated system tools" (C0033C00-...) denies every open
   // of that copy, even to SYSTEM - the service is registered but can never
   // start (#5898).
+  //
+  // A fixed, predictable directory name (the old 'breeze-install') can be
+  // pre-created by any other local principal before this script runs, which
+  // silently adopts their directory (and its permissions) when combined with
+  // -Force. Use a fresh, randomly named directory instead, created without
+  // -Force so a pre-existing directory at that path is a hard error, then
+  // strip inherited permissions and grant only the invoking principal and
+  // SYSTEM (well-known SID, so this also holds when the one-liner itself is
+  // already running as SYSTEM, e.g. under PsExec -s or an MDM/RMM runner).
   const winStageDir =
-    `$d=Join-Path $env:TEMP 'breeze-install'; ` +
-    `New-Item -ItemType Directory -Force -Path $d | Out-Null; ` +
+    `$guid=[guid]::NewGuid().ToString('N'); ` +
+    `$d=Join-Path $env:TEMP "breeze-install-$guid"; ` +
+    `New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; ` +
+    `$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ` +
+    `icacls $d /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*\${sid}:(OI)(CI)F" | Out-Null; ` +
+    `if($LASTEXITCODE -ne 0){throw "Breeze: could not set restrictive permissions on the staging directory $d"}; ` +
     `$exe=Join-Path $d 'breeze-agent.exe'`;
   const winMzCheck =
     `$b=[IO.File]::ReadAllBytes($exe); ` +
     `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
     `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
+  // The MZ check only rules out a middlebox's HTML response; it does not
+  // prove the bytes are the genuine, untampered agent build. Mirror
+  // install.sh's own Linux verification: fetch the release's SHA-256 from
+  // the same trusted server (the public, unauthenticated agent-versions
+  // metadata endpoint) and require an exact match before the binary is ever
+  // invoked — a mismatched or unfetchable checksum fails closed. Self-hosted
+  // builds are not guaranteed to carry an Authenticode signature, so
+  // Get-AuthenticodeSignature is checked as a second, best-effort control:
+  // when a signature IS present it must be valid, but an unsigned binary is
+  // not rejected on that basis alone — the checksum check above is the
+  // control that always applies.
+  const winChecksumUrl =
+    `${apiUrl}/api/v1/agent-versions/latest?platform=windows&arch=amd64&component=agent`;
+  const winFetchChecksum =
+    `try{$meta=Invoke-RestMethod -Uri "${winChecksumUrl}" -UseBasicParsing}` +
+    `catch{throw "Breeze: could not fetch release integrity metadata from ${apiUrl} - refusing to install without a trusted checksum"}; ` +
+    `$expectedSha=[string]$meta.checksum; ` +
+    `if($expectedSha -notmatch '^[A-Fa-f0-9]{64}$')` +
+    `{throw "Breeze: release metadata did not include a valid SHA-256 checksum - refusing to install"}`;
+  const winVerifyChecksum =
+    `$actualSha=(Get-FileHash -Algorithm SHA256 -Path $exe).Hash; ` +
+    `if($actualSha.ToUpper() -ne $expectedSha.ToUpper())` +
+    `{throw "Breeze: downloaded agent binary checksum does not match the server's release metadata - refusing to install"}`;
+  const winVerifySignature =
+    `$sig=Get-AuthenticodeSignature $exe; ` +
+    `if($sig.Status -ne 'NotSigned' -and $sig.Status -ne 'Valid')` +
+    `{throw "Breeze: downloaded agent binary has an invalid or untrusted signature ($($sig.Status)) - refusing to install"}`;
   // Older Windows PowerShell 5.1 hosts (e.g. Windows Server 2016) can default
   // SecurityProtocol to Ssl3, Tls with no Tls12, which makes
   // Invoke-WebRequest fail before the agent is even downloaded ("Could not
@@ -102,8 +142,18 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   // (client-certificate selection, the Windows domain-trust failure). The
   // innermost message (UntrustedRoot, RemoteCertificateNameMismatch, ...) is
   // kept, because the cause may be a name mismatch or expiry, not the CA.
+  // GET /agent-versions/latest (above) and GET /agents/download/windows/amd64
+  // are two independent requests that each resolve "latest"/"promoted"
+  // separately at their own request time — a release promotion landing
+  // between the two calls could hand back bytes for a different release than
+  // the checksum was fetched for. Pin the download to the exact version the
+  // metadata call returned, the same way the codebase already pins this
+  // download route elsewhere (?version=, #5159), so the checksum and the
+  // bytes always come from one release.
+  const winDownloadUrl =
+    `${apiUrl}/api/v1/agents/download/windows/amd64?version=$([uri]::EscapeDataString($meta.version))`;
   const winDownload =
-    `try{Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile $exe}` +
+    `try{Invoke-WebRequest -Uri "${winDownloadUrl}" -OutFile $exe}` +
     `catch{if("$($_.Exception)" -match 'remote certificate is invalid|establish trust relationship for the SSL/TLS')` +
     `{throw "Breeze: this machine rejected the TLS certificate of ${apiUrl} ($($_.Exception.GetBaseException().Message)). ` +
     `If the server uses a self-signed or private-CA certificate, import its root CA into Cert:\\LocalMachine\\Root; ` +
@@ -113,9 +163,12 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `$ErrorActionPreference='Stop'; ` +
     `${winOsFloorCheck}; ` +
     `${winTlsCheck}; ` +
+    `${winFetchChecksum}; ` +
     `${winStageDir}; ` +
     `${winDownload}; ` +
     `${winMzCheck}; ` +
+    `${winVerifySignature}; ` +
+    `${winVerifyChecksum}; ` +
     `& $exe service install; ${winThrow('service install')}; ` +
     `& $exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
     `& $exe service start; ${winThrow('service start')}`;

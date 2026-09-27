@@ -13,6 +13,15 @@ vi.mock('../commandQueue', () => ({
 vi.mock('bullmq', () => ({ Queue: function Queue() { return { add: vi.fn() }; } }));
 vi.mock('../redis', () => ({ getBullMQConnection: () => ({}) }));
 
+// Defaults to the REAL implementation (matched/not_matched/error) for every
+// test below except the one that forces a timeout via mockResolvedValueOnce.
+const { testRegexWithTimeout } = vi.hoisted(() => ({ testRegexWithTimeout: vi.fn() }));
+vi.mock('./regexMatchTimeout', async () => {
+  const actual = await vi.importActual<typeof import('./regexMatchTimeout')>('./regexMatchTimeout');
+  testRegexWithTimeout.mockImplementation(actual.testRegexWithTimeout);
+  return { testRegexWithTimeout };
+});
+
 import { evaluateVerificationClaim, onUnattendedVerificationOutcome, registerUnattendedVerificationOutcomeHandler } from './verify';
 
 const device = { deviceId: 'd1', orgId: 'o1' };
@@ -52,6 +61,51 @@ describe('output_matches', () => {
   it('is unknown when the execution produced no output to match against', async () => {
     const r = await evaluateVerificationClaim({ kind: 'output_matches', regex: 'x' }, { ...ok, status: 'failed', stdout: null, stderr: null }, device, 'u1');
     expect(r.outcome).toBe('unknown');
+  });
+
+  it('bounds the matched haystack instead of scanning unbounded execution output', async () => {
+    // A marker at the very START of a payload far larger than any reasonable
+    // cap. Only the TAIL of stdout+stderr should be considered — matching the
+    // marker here proves the whole (multi-MB) string was fed to the regex
+    // engine with no bound.
+    const huge = 'MARKER' + 'x'.repeat(2_000_000);
+    const r = await evaluateVerificationClaim(
+      { kind: 'output_matches', regex: '^MARKER' },
+      { ...ok, stdout: huge, stderr: null },
+      device,
+      'u1',
+    );
+    expect(r.outcome).toBe('verification_failed');
+  });
+
+  it('is unknown for a stored pattern that fails the safety re-check (defence in depth for pre-existing rows)', async () => {
+    // Simulates a proposal authored before pattern-complexity validation
+    // existed at the schema layer — verify.ts must not trust the stored
+    // regex is safe just because it once passed authoring-time checks.
+    const r = await evaluateVerificationClaim(
+      { kind: 'output_matches', regex: '(a+)+$' },
+      ok,
+      device,
+      'u1',
+    );
+    expect(r.outcome).toBe('unknown');
+  });
+
+  it('is unknown, not a crash or a false failure, when the match-time execution bound trips', async () => {
+    // Exercises the genuine execution-time backstop (regexMatchTimeout.ts)
+    // rather than only the heuristic pre-check above: a pattern that
+    // somehow reaches match time and then runs too long must resolve to
+    // `unknown` with a distinct evidence reason, the same non-punitive
+    // posture as every other "couldn't evaluate this" branch here — never
+    // treated as a failed verification, and never left hanging the worker.
+    testRegexWithTimeout.mockResolvedValueOnce({ status: 'timeout' });
+    const r = await evaluateVerificationClaim(
+      { kind: 'output_matches', regex: 'Spooler started' },
+      ok,
+      device,
+      'u1',
+    );
+    expect(r).toEqual({ outcome: 'unknown', evidence: { reason: 'regex_match_timeout', regex: 'Spooler started' } });
   });
 });
 

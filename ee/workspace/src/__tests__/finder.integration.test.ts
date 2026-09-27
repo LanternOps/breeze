@@ -267,7 +267,9 @@ describe.sequential('workspace finder end-to-end integration', () => {
   });
 
   it('searches by name and rel_path, ranks name matches first, and leaks nothing', async () => {
-    const results = await asOrgA(({ files }) => files.search(orgA, device1, { q: 'henderson' }));
+    // Local-profile rows are only visible under a claimed owning profile; the
+    // seeded local rows sit under the `profile/` segment.
+    const results = await asOrgA(({ files }) => files.search(orgA, device1, { q: 'henderson', ownerUsername: 'profile' }));
     const ids = results.map((r) => r.id);
 
     // Name match, rel_path-only match, and device 1's own local row all hit.
@@ -291,10 +293,27 @@ describe.sequential('workspace finder end-to-end integration', () => {
   });
 
   it('scopes local-profile search rows to the calling device', async () => {
-    const asDevice2 = await asOrgA(({ files }) => files.search(orgA, device2, { q: 'henderson' }));
+    const asDevice2 = await asOrgA(({ files }) => files.search(orgA, device2, { q: 'henderson', ownerUsername: 'profile' }));
     const ids = asDevice2.map((r) => r.id);
     expect(ids).toContain(fileDev2Id);
     expect(ids).not.toContain(fileDev1Id);
+  });
+
+  it('returns no local-profile rows without an owner claim, or for a claim that only matches as a LIKE wildcard', async () => {
+    for (const ownerUsername of [undefined, '%', 'pr_file', 'PROFIL%']) {
+      const results = await asOrgA(({ files }) => files.search(orgA, device1, { q: 'henderson', ownerUsername }));
+      const ids = results.map((r) => r.id);
+      expect(ids).not.toContain(fileDev1Id);
+      // The org-visible smb rows are unaffected by the owner claim.
+      expect(ids).toContain(fileReportId);
+    }
+    for (const ownerUsername of ['%', 'pr_file']) {
+      expect(await asOrgA(({ files }) => files.browse(orgA, device1, localSourceId, 'profile', {}, [], ownerUsername)))
+        .toEqual([]);
+      expect(await asOrgA(({ activity }) => activity.record(orgA, {
+        fileIndexId: fileDev1Id, deviceId: device1, helperUser: ownerUsername, action: 'open',
+      }))).toEqual({ notFound: true });
+    }
   });
 
   it('honors search filters: sourceId, ext, and limit', async () => {
@@ -385,9 +404,9 @@ describe.sequential('workspace finder end-to-end integration', () => {
   });
 
   it('partitions local-profile browsing per device', async () => {
-    const dev1 = await asOrgA(({ files }) => files.browse(orgA, device1, localSourceId, 'profile'));
+    const dev1 = await asOrgA(({ files }) => files.browse(orgA, device1, localSourceId, 'profile', {}, [], 'profile'));
     expect(dev1.map((r) => r.id)).toEqual([fileDev1Id]);
-    const dev2 = await asOrgA(({ files }) => files.browse(orgA, device2, localSourceId, 'profile'));
+    const dev2 = await asOrgA(({ files }) => files.browse(orgA, device2, localSourceId, 'profile', {}, [], 'profile'));
     expect(dev2.map((r) => r.id)).toEqual([fileDev2Id]);
   });
 
@@ -434,24 +453,26 @@ describe.sequential('workspace finder end-to-end integration', () => {
       expect(await activity.record(orgA, {
         fileIndexId: fileReportId, deviceId: device1, helperUser: 'Front Desk', action: 'copy_path',
       })).toEqual({ recorded: true });
-      // A different label on the same device.
+      // A different label on the same device: the local-profile row is only
+      // reachable under its owning profile's label (`profile/...`).
       expect(await activity.record(orgA, {
-        fileIndexId: fileDev1Id, deviceId: device1, helperUser: 'Back Office', action: 'open',
+        fileIndexId: fileDev1Id, deviceId: device1, helperUser: 'profile', action: 'open',
       })).toEqual({ recorded: true });
     });
 
     const frontDesk = await asOrgA(({ activity }) => activity.recents(orgA, device1, 'Front Desk'));
     expect(frontDesk.map((r) => r.id)).toEqual([fileReportId]);
 
-    const backOffice = await asOrgA(({ activity }) => activity.recents(orgA, device1, 'Back Office'));
-    expect(backOffice.map((r) => r.id)).toEqual([fileDev1Id]);
+    const owner = await asOrgA(({ activity }) => activity.recents(orgA, device1, 'profile'));
+    expect(owner.map((r) => r.id)).toEqual([fileDev1Id]);
 
     const nobody = await asOrgA(({ activity }) => activity.recents(orgA, device1, 'Nobody'));
     expect(nobody).toEqual([]);
 
-    // Null label = all activity on this device, deduped per file.
+    // Null label = all activity on this device, deduped per file — but with
+    // no owner claim the local-profile row stays out; only smb rows remain.
     const all = await asOrgA(({ activity }) => activity.recents(orgA, device1, null));
-    expect(all.map((r) => r.id).sort()).toEqual([fileReportId, fileDev1Id].sort());
+    expect(all.map((r) => r.id)).toEqual([fileReportId]);
   });
 
   it('keeps recents device-scoped', async () => {

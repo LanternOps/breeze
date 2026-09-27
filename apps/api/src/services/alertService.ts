@@ -950,6 +950,15 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
   }
 
   // Get device's group memberships
+  //
+  // Execution-target field-provenance tiering — NOT gated by field provenance,
+  // deliberately. An alert rule only decides what gets REPORTED about this
+  // device (thresholds, severity, notification channel) — alertRules carries
+  // no script/automation action, so it grants no execution capability. A
+  // device that self-selects into a group via an agent-reported filter field
+  // can at most pick which alert rule evaluates it (self-evasion — quieter
+  // alerting for itself), never a lateral effect on another device or a code
+  // execution path. Accepted risk, tracked, not gated.
   const groupMemberships = await db
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)

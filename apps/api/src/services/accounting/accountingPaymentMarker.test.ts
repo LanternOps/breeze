@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BREEZE_PAYMENT_NOTE_PREFIX, buildPaymentPrivateNote, parseBreezePaymentMarker, paymentMappingRemoteId,
+  BREEZE_PAYMENT_NOTE_PREFIX, buildPaymentPrivateNote, isPartialRefundDivergenceMessage, parseBreezePaymentMarker,
+  partialRefundDivergenceMessage, paymentMappingRemoteId,
 } from './accountingPaymentMarker';
 
 const ID = '0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
@@ -38,5 +39,16 @@ describe('paymentMappingRemoteId (moved here from accountingPaymentPull.ts)', ()
     // mapping; the rest would collide on accounting_entity_mappings_remote_uniq.
     expect(paymentMappingRemoteId('181', '145')).toBe('181/145');
     expect(paymentMappingRemoteId('181', '146')).toBe('181/146');
+  });
+});
+
+describe('partialRefundDivergenceMessage is provider-labelled (Xero W01)', () => {
+  it('keeps the QuickBooks text byte-identical and labels other providers', () => {
+    expect(partialRefundDivergenceMessage('40.00', 'QuickBooks')).toBe(
+      'Refunded in Stripe, total 40.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)',
+    );
+    const xero = partialRefundDivergenceMessage('40.00', 'Xero');
+    expect(xero).toBe('Refunded in Stripe, total 40.00; record the refund in Xero (this Xero payment still shows the full amount)');
+    expect(isPartialRefundDivergenceMessage(xero)).toBe(true);
   });
 });

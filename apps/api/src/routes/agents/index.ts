@@ -28,6 +28,7 @@ import { processSampleRoutes } from './processSample';
 import { unifiTelemetryRoutes } from './unifiTelemetry';
 import { topologyAdjacencyRoutes } from './topologyAdjacency';
 import { wingetBootstrapRoutes } from './wingetBootstrap';
+import { agentStorageSessionRoutes } from './storageSessions';
 
 export const agentRoutes = new Hono();
 
@@ -93,3 +94,4 @@ agentRoutes.route('/', processSampleRoutes);
 agentRoutes.route('/', unifiTelemetryRoutes);
 agentRoutes.route('/', topologyAdjacencyRoutes);
 agentRoutes.route('/', wingetBootstrapRoutes);
+agentRoutes.route('/', agentStorageSessionRoutes);

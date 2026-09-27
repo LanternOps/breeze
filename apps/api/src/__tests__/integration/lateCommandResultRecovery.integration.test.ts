@@ -163,6 +163,7 @@ async function seedTimedOutRun(
       result: opts.commandResult ?? {
         status: 'timeout',
         error: 'Command timed out after 60000ms',
+        timedOutBy: 'server',
       },
     })
     .returning({ id: deviceCommands.id });
@@ -655,7 +656,7 @@ describe('#3607 late command result recovery', () => {
       // green for the wrong reason. Resetting isolates the guard being tested.
       await getTestDb()
         .update(deviceCommands)
-        .set({ status: 'failed', result: { status: 'timeout', error: 'reopened for replay' } })
+        .set({ status: 'failed', result: { status: 'timeout', error: 'reopened for replay', timedOutBy: 'server' } })
         .where(eq(deviceCommands.id, commandId));
 
       await sendWsResult(fx, commandId, {

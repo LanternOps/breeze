@@ -1942,19 +1942,17 @@
       },
       "reverseError": "Impossible d'annuler le paiement.",
       "reverseSuccess": "Paiement annulé",
-      "reverseInQuickbooksToo": "Annulez également ce paiement dans QuickBooks",
       "sendLink": "Envoyer le lien de paiement",
       "setUp": "Configurer",
       "shareLinkPrompt": "Partagez ce lien de paiement avec votre client :",
       "stripeNudge": "Connectez Stripe pour accepter les paiements par carte en ligne.",
       "title": "Paiements",
       "viaStripe": "via Stripe",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "via QuickBooks",
-      "inQuickbooks": "Dans QuickBooks",
-      "syncingToQuickbooks": "Synchronisation…",
-      "quickbooksSyncFailed": "Échec de la synchronisation QuickBooks",
-      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache; elle n'a donc pas pu être comparée à cette facture en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
+      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache; elle n'a donc pas pu être comparée à cette facture en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification.",
+      "inProvider": "Dans {{provider}}",
+      "syncingToProvider": "Synchronisation…",
+      "providerSyncFailed": "Échec de la synchronisation {{provider}}",
+      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}"
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -1994,22 +1992,22 @@
       "error": "Impossible de réinitialiser le lien"
     },
     "accountingSync": {
-      "title": "Synchronisation QuickBooks",
+      "title": "Synchronisation {{provider}}",
       "status": {
         "pending": "Pas encore envoyée",
         "synced": "Synchronisée",
         "error": "Échec de la synchronisation",
         "synced_with_tax_variance": "Synchronisée avec un écart de taxe"
       },
-      "taxVarianceHint": "QuickBooks a calculé un total de taxes différent. Comparez les deux enregistrements avant de clôturer la période.",
-      "docNumber": "Document QuickBooks nº {{docNumber}}",
+      "taxVarianceHint": "{{provider}} a calculé un total de taxes différent. Comparez les deux enregistrements avant de clôturer la période.",
+      "docNumber": "Document {{provider}} nº {{docNumber}}",
       "lastSynced": "Dernière synchronisation : {{when}}",
       "syncing": "Synchronisation…",
-      "push": "Envoyer vers QuickBooks",
-      "pushed": "Facture envoyée vers QuickBooks.",
-      "pushFailed": "Échec de l'envoi de la facture vers QuickBooks.",
-      "voidedHint": "Cette facture est annulée — il n'y a rien à envoyer vers QuickBooks.",
-      "remoteDeletedHint": "Cette facture a été supprimée dans QuickBooks. L'envoyer de nouveau créerait un doublon — réglez d'abord la situation dans QuickBooks."
+      "push": "Envoyer vers {{provider}}",
+      "pushed": "Facture envoyée vers {{provider}}.",
+      "pushFailed": "Échec de l'envoi de la facture vers {{provider}}.",
+      "voidedHint": "Cette facture est annulée — il n'y a rien à envoyer vers {{provider}}.",
+      "remoteDeletedHint": "Cette facture a été supprimée dans {{provider}}. L'envoyer de nouveau créerait un doublon — réglez d'abord la situation dans {{provider}}."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2070,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Annuler",
       "voidedVerb": "annulées",
-      "quickbooks": "Envoyer vers QuickBooks",
-      "quickbooksQueued": "{{enqueued}} en file d'attente pour QuickBooks",
-      "quickbooksQueuedPartial": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées",
-      "quickbooksQueuedFailed": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées, {{failed}} n'ont pas pu être mises en file d'attente",
-      "quickbooksFailed": "Échec de la mise en file d'attente de l'envoi QuickBooks. Réessayez."
+      "pushToProvider": "Envoyer vers {{provider}}",
+      "providerQueued": "{{enqueued}} en file d'attente pour {{provider}}",
+      "providerQueuedPartial": "{{enqueued}} en file d'attente pour {{provider}}, {{skipped}} ignorées",
+      "providerQueuedFailed": "{{enqueued}} en file d'attente pour {{provider}}, {{skipped}} ignorées, {{failed}} n'ont pas pu être mises en file d'attente",
+      "providerFailed": "Échec de la mise en file d'attente de l'envoi {{provider}}. Réessayez."
     },
     "bulkDelete": {
       "message": "Supprimer {{count}} facture(s) sélectionnée(s) ? Seules les factures DRAFT seront supprimées ; cette action est irréversible.",

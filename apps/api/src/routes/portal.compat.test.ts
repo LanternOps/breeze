@@ -60,6 +60,9 @@ vi.mock('../services/portal/timezone', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   assetCheckouts: {},
   backupConfigs: {},
   backupJobs: {},
@@ -88,7 +91,8 @@ vi.mock('../db/schema', () => ({
     updatedAt: 'portalUsers.updatedAt'
   },
   recoveryReadiness: {},
-  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'completed_with_errors', 'partial'],
+  DEGRADED_BACKUP_JOB_STATUSES: ['completed_with_errors', 'partial'],
   ticketComments: {},
   tickets: {}
 }));

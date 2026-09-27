@@ -18,17 +18,6 @@ type VMRestoreFromBackupConfig struct {
 	SwitchName string `json:"switchName,omitempty"`
 }
 
-// VMRestoreFromBackupResult holds the outcome of a VM restore from backup.
-type VMRestoreFromBackupResult struct {
-	VMName     string   `json:"vmName"`
-	NewVMID    string   `json:"newVmId"`
-	VHDXPath   string   `json:"vhdxPath"`
-	Status     string   `json:"status"`
-	DurationMs int64    `json:"durationMs"`
-	Warnings   []string `json:"warnings,omitempty"`
-	Error      string   `json:"error,omitempty"`
-}
-
 // RestoreAsVM is a stub for non-Windows platforms.
 func RestoreAsVM(
 	_ context.Context,

@@ -179,6 +179,16 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 	}
 
+	// Tell a batching provider which objects are coming, in order, so it
+	// can authorize them a window at a time rather than one per download.
+	pending := make([]SnapshotFile, 0, len(files))
+	for _, f := range files {
+		if !resumeState.CompletedFiles[f.BackupPath] {
+			pending = append(pending, f)
+		}
+	}
+	providers.PrepareDownloads(provider, contentKeys(pending))
+
 	if progressFn != nil {
 		progressFn("starting", 0, total, fmt.Sprintf("restoring %d files", total))
 	}
@@ -482,6 +492,18 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	return result, nil
+}
+
+// contentKeys returns the object keys of the entries that carry content,
+// in manifest order, for providers.PrepareDownloads.
+func contentKeys(files []SnapshotFile) []string {
+	keys := make([]string, 0, len(files))
+	for _, f := range files {
+		if f.HasContent() && f.BackupPath != "" {
+			keys = append(keys, f.BackupPath)
+		}
+	}
+	return keys
 }
 
 // downloadManifest fetches and parses the manifest for a snapshot.

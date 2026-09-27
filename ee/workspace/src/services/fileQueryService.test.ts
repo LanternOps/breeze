@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { WorkspaceDatabase } from '../hostTypes';
 import { workspaceSources } from '../schema/workspace';
 import { SHARED_DEVICE_KEY } from './runScope';
@@ -97,6 +99,29 @@ function sourceMatches(row: ReturnType<typeof sourceRow>, condition: unknown): b
   return true;
 }
 
+const dialect = new PgDialect();
+const OWNER_PREDICATE =
+  /(?:"device_key" = \$\d+|"deleted_at" is null) and "workspace_file_index"\."rel_path" ilike \$(\d+)/g;
+
+/** Postgres ILIKE semantics with backslash as the escape character. */
+function likeToRegExp(pattern: string): RegExp {
+  let source = '';
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i]!;
+    if (ch === '\\' && i + 1 < pattern.length) {
+      i += 1;
+      source += pattern[i]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (ch === '%') {
+      source += '.*';
+    } else if (ch === '_') {
+      source += '.';
+    } else {
+      source += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`, 'is');
+}
+
 /**
  * Emulates file-index predicates from what the service binds: a row is only
  * reachable when its sourceId and deviceKey were both bound (partition rule),
@@ -110,6 +135,18 @@ function fileMatches(row: ReturnType<typeof fileRow>, condition: unknown): boole
   if (!values.includes(row.deviceKey)) return false;
   if (text.includes('deleted_at') && text.includes('is null') && row.deletedAt) return false;
   if (values.includes(false) && row.isDir) return false;
+  // The owner-profile predicate (ownedByUsername) is a relPath ILIKE whose
+  // pattern is a bound parameter. Render the condition and apply Postgres
+  // LIKE semantics to that parameter (backslash is the escape character, the
+  // Postgres default and the one the service names explicitly), so a
+  // wildcard in the claimed username behaves here exactly as it would in the
+  // database. The search term's own `rel_path ilike` sits inside an OR after
+  // the partition and is not matched by this expression.
+  const rendered = dialect.sqlToQuery(condition as SQL);
+  for (const m of rendered.sql.matchAll(OWNER_PREDICATE)) {
+    const pattern = rendered.params[Number(m[1]) - 1];
+    if (typeof pattern !== 'string' || !likeToRegExp(pattern).test(row.relPath)) return false;
+  }
   return true;
 }
 
@@ -198,14 +235,70 @@ describe('fileQueryService', () => {
     });
 
     it('never returns another device\'s local-profile rows; local openPath is null', async () => {
-      const mine = fileRow({ sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID });
+      const mine = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'alice/Documents/b.pdf', parentPath: 'alice/Documents',
+      });
       const theirs = fileRow({
         id: UNKNOWN_ID, sourceId: LOCAL_SOURCE_ID, deviceId: OTHER_DEVICE_ID, deviceKey: OTHER_DEVICE_ID,
+        relPath: 'alice/Documents/b.pdf', parentPath: 'alice/Documents',
       });
       const { db } = makeDb([localSource], [mine, theirs]);
-      const results = await createFileQueryService(db).search(ORG_ID, DEVICE_ID, { q: 'b' });
+      const results = await createFileQueryService(db)
+        .search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: 'alice' });
       expect(results.map((r) => r.id)).toEqual([FILE_ID]);
       expect(results[0]?.openPath).toBeNull();
+    });
+
+    it('never returns local-profile rows without a claimed ownerUsername', async () => {
+      const mine = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'alice/Documents/b.pdf', parentPath: 'alice/Documents',
+      });
+      const { db } = makeDb([localSource], [mine]);
+      await expect(createFileQueryService(db).search(ORG_ID, DEVICE_ID, { q: 'b' }))
+        .resolves.toEqual([]);
+    });
+
+    it('does not return another OS user\'s local-profile rows on the SAME device to a differently-claimed caller', async () => {
+      const alice = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'alice/Documents/secret-b.pdf', parentPath: 'alice/Documents', name: 'secret-b.pdf',
+      });
+      const bob = fileRow({
+        id: UNKNOWN_ID, sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'bob/Documents/other-b.pdf', parentPath: 'bob/Documents', name: 'other-b.pdf',
+      });
+      const { db } = makeDb([localSource], [alice, bob]);
+      const results = await createFileQueryService(db)
+        .search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: 'bob' });
+      expect(results.map((r) => r.id)).toEqual([UNKNOWN_ID]);
+    });
+
+    it('treats LIKE wildcards in the claimed ownerUsername literally (search)', async () => {
+      const alice = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'alice/Documents/b.pdf', parentPath: 'alice/Documents',
+      });
+      const bob = fileRow({
+        id: UNKNOWN_ID, sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID,
+        relPath: 'bob/Documents/b.pdf', parentPath: 'bob/Documents',
+      });
+      const { db } = makeDb([localSource], [alice, bob]);
+      const service = createFileQueryService(db);
+      await expect(service.search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: '%' })).resolves.toEqual([]);
+      await expect(service.search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: 'a_ice' })).resolves.toEqual([]);
+      // Control: the literal owner still sees their own rows.
+      const own = await service.search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: 'alice' });
+      expect(own.map((r) => r.id)).toEqual([FILE_ID]);
+    });
+
+    it('binds an escaped owner pattern with an explicit ESCAPE clause', async () => {
+      const { db, captured } = makeDb([localSource], []);
+      await createFileQueryService(db).search(ORG_ID, DEVICE_ID, { q: 'b', ownerUsername: 'a_%\\x' });
+      const rendered = dialect.sqlToQuery(captured.fileWheres[0] as SQL);
+      expect(rendered.sql).toMatch(/"rel_path" ilike \$\d+ escape '\\'/);
+      expect(rendered.params).toContain('a\\_\\%\\\\x/%');
     });
 
     it('clamps the limit to 1..100 and defaults to 25', async () => {
@@ -281,17 +374,55 @@ describe('fileQueryService', () => {
       expect(order[1]).toContain('asc');
     });
 
-    it('scopes local-profile browsing to the calling device', async () => {
+    it('scopes local-profile browsing to the calling device and the claimed owner', async () => {
       const mine = fileRow({
-        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID, parentPath: '',
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID, parentPath: 'alice',
+        relPath: 'alice/b.pdf',
       });
       const theirs = fileRow({
         id: UNKNOWN_ID, sourceId: LOCAL_SOURCE_ID, deviceId: OTHER_DEVICE_ID,
-        deviceKey: OTHER_DEVICE_ID, parentPath: '',
+        deviceKey: OTHER_DEVICE_ID, parentPath: 'alice', relPath: 'alice/b.pdf',
       });
       const { db } = makeDb([localSource], [mine, theirs]);
-      const entries = await createFileQueryService(db).browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, '');
+      const entries = await createFileQueryService(db)
+        .browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'alice', {}, [], 'alice');
       expect(entries.map((e) => e.id)).toEqual([FILE_ID]);
+    });
+
+    it('returns [] browsing a local-profile source without a claimed ownerUsername', async () => {
+      const mine = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID, parentPath: 'alice',
+        relPath: 'alice/b.pdf',
+      });
+      const { db } = makeDb([localSource], [mine]);
+      await expect(createFileQueryService(db).browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'alice'))
+        .resolves.toEqual([]);
+    });
+
+    it('does not browse into another OS user\'s local-profile rows on the same device', async () => {
+      const bob = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID, parentPath: 'bob',
+        relPath: 'bob/b.pdf',
+      });
+      const { db } = makeDb([localSource], [bob]);
+      await expect(createFileQueryService(db)
+        .browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'bob', {}, [], 'alice'))
+        .resolves.toEqual([]);
+    });
+
+    it('treats LIKE wildcards in the claimed ownerUsername literally (browse)', async () => {
+      const alice = fileRow({
+        sourceId: LOCAL_SOURCE_ID, deviceId: DEVICE_ID, deviceKey: DEVICE_ID, parentPath: 'alice',
+        relPath: 'alice/b.pdf',
+      });
+      const { db } = makeDb([localSource], [alice]);
+      const service = createFileQueryService(db);
+      await expect(service.browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'alice', {}, [], '%'))
+        .resolves.toEqual([]);
+      await expect(service.browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'alice', {}, [], 'a_ice'))
+        .resolves.toEqual([]);
+      const own = await service.browse(ORG_ID, DEVICE_ID, LOCAL_SOURCE_ID, 'alice', {}, [], 'alice');
+      expect(own.map((e) => e.id)).toEqual([FILE_ID]);
     });
 
     it('returns [] for a hidden or unknown source without touching the file index', async () => {

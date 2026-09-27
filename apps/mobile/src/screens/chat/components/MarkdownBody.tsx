@@ -4,6 +4,7 @@ import Markdown, { type RenderRules } from 'react-native-markdown-display';
 
 import { useApprovalTheme, fontFamily, radii, spacing } from '../../../theme';
 import { parseMarkdownTable, toDisplayRows } from './markdownTable';
+import { isSafeHttpUrl } from './safeMarkdownLinks';
 import { sanitizeStreamingMarkdown } from './streamingMarkdown';
 
 interface Props {
@@ -214,6 +215,22 @@ export function MarkdownBody({ content, streaming }: Props) {
   const rules: RenderRules = useMemo(
     () => ({
       hr: () => null,
+      // Model-authored markdown images must never auto-load — the library's
+      // default `image` rule renders a live `<Image>` unconditionally on
+      // mount, which would fire a GET for any URL the model streams
+      // (including one carrying exfiltrated data in its query string). Render
+      // the label as inert text for a safe http(s) source (no fetch without a
+      // tap — RN has no click-through-link primitive the way web's `<a>`
+      // does) and drop unsafe sources (`javascript:`, `data:`, …) entirely.
+      image: (node) => {
+        const { src, alt } = node.attributes as { src?: string; alt?: string };
+        if (!isSafeHttpUrl(src)) return null;
+        return (
+          <Text key={node.key} style={styles.body}>
+            {alt || src}
+          </Text>
+        );
+      },
       table: (node) => {
         const parsed = parseMarkdownTable(node);
         const { rows, showLabels } = toDisplayRows(parsed);
@@ -248,7 +265,7 @@ export function MarkdownBody({ content, streaming }: Props) {
         );
       },
     }),
-    [tableStyles],
+    [tableStyles, styles],
   );
 
   return (
@@ -256,7 +273,7 @@ export function MarkdownBody({ content, streaming }: Props) {
       style={styles}
       rules={rules}
       mergeStyle={false}
-      onLinkPress={() => true}
+      onLinkPress={(url) => isSafeHttpUrl(url)}
     >
       {displayContent}
     </Markdown>

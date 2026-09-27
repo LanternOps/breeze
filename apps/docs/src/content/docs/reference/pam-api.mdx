@@ -177,6 +177,30 @@ Ends an active elevation early.
 
 ---
 
+
+## Elevation audit export
+
+**v0.118.0+.** `GET /pam/elevation-audit/export` exports the elevation audit ledger for one organization, one page per request, as CSV or JSON Lines. Each row is one audit event with its request context: site, device, subject, target and decision.
+
+It needs `devices:read` and `audit:export`, plus MFA according to your MFA policy. It accepts user sessions only, not API keys.
+
+| Query parameter | Required | Description |
+|---|---|---|
+| `from`, `to` | yes | ISO 8601 timestamps with offset. `from` must be before `to`; the window may be at most 366 days. |
+| `orgId` | partner and system callers | The organization to export. An organization caller exports its own organization. |
+| `format` | no | `csv` (default) or `jsonl`. |
+| `siteId`, `deviceId`, `elevationRequestId`, `eventType` | no | Narrow the export. An unknown `eventType` returns `400`. |
+| `limit` | no | Rows per page, 1–1000 (default 1000). |
+| `cursor` | no | The `X-Next-Cursor` value from the previous page. |
+
+Keep requesting pages with `cursor` set to `X-Next-Cursor` while `X-Has-More` is `true`. The window is fully exported only once `X-Window-Complete` is `true`: the newest few minutes of events are held back until they settle (`X-Settled-Through`), so resume from `X-Next-Cursor` later to pick them up. Because the cursor always marks the resume position, a SIEM can also use it to follow the ledger. Other response headers: `X-Row-Count` and `X-Export-Schema-Version`.
+
+<Aside type="note">
+  Request columns show each request's current state, not its state when the event was recorded. The export shows what the ledger holds at the time of the request.
+</Aside>
+
+---
+
 ## Rules
 
 | Method | Path | Description |

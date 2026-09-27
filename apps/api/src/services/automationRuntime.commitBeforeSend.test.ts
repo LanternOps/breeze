@@ -29,6 +29,10 @@ const {
   recordActionDispatchMock,
   reconcileRunMock,
   seedActionResultsMock,
+  claimActionDispatchMock,
+  claimActionDispatchesMock,
+  stampClaimedActionOutcomeMock,
+  readActionStateMock,
   cancelScriptExecutionMock,
   deliverCancelCommandMock,
   captureExceptionMock,
@@ -40,6 +44,10 @@ const {
   recordActionDispatchMock: vi.fn(),
   reconcileRunMock: vi.fn(),
   seedActionResultsMock: vi.fn(),
+  claimActionDispatchMock: vi.fn(),
+  claimActionDispatchesMock: vi.fn(),
+  stampClaimedActionOutcomeMock: vi.fn(),
+  readActionStateMock: vi.fn(),
   cancelScriptExecutionMock: vi.fn(),
   deliverCancelCommandMock: vi.fn(),
   captureExceptionMock: vi.fn(),
@@ -114,6 +122,10 @@ vi.mock('./automationActionResults', () => ({
   recordAutomationActionDispatch: recordActionDispatchMock,
   reconcileAutomationRun: reconcileRunMock,
   seedAutomationActionResults: seedActionResultsMock,
+  claimAutomationActionDispatch: claimActionDispatchMock,
+  claimAutomationActionDispatches: claimActionDispatchesMock,
+  stampClaimedAutomationActionOutcome: stampClaimedActionOutcomeMock,
+  readAutomationActionState: readActionStateMock,
 }));
 
 vi.mock('./scriptCancellation', () => ({
@@ -222,6 +234,14 @@ beforeEach(() => {
   recordActionDispatchMock.mockResolvedValue(true);
   reconcileRunMock.mockResolvedValue(undefined);
   seedActionResultsMock.mockResolvedValue(undefined);
+  claimActionDispatchMock.mockResolvedValue({ kind: 'claimed' });
+  claimActionDispatchesMock.mockImplementation(async (input: { deviceIds: readonly string[] }) => ({
+    runCancelled: false,
+    claimed: [...new Set(input.deviceIds)].sort(),
+    alreadyClaimed: new Map(),
+  }));
+  stampClaimedActionOutcomeMock.mockResolvedValue(true);
+  readActionStateMock.mockResolvedValue(null);
   executeMock.mockResolvedValue([]);
   selectMock.mockImplementation(() => ({
     from: vi.fn().mockReturnValue({

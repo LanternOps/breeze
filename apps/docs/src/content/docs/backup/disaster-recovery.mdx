@@ -56,6 +56,10 @@ Every recovery group has one step type, which determines how its devices are res
 | Bare-metal recover (boot media) | Boots the device from [Breeze recovery media](/backup/bare-metal-recovery/#recover-from-breeze-recovery-media) and enters a recovery code. |
 | Bare-metal rebuild (rebuild engine) | Runs the [rebuild engine](/backup/bare-metal-recovery/#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) against a Linux rebuild host. See [Bare-metal rebuild step](#bare-metal-rebuild-step) below. |
 
+<Aside type="caution" title="Steps never store credentials (v0.118.0+)">
+  A step's restore settings cannot include a recovery token or storage credentials. Breeze resolves the storage destination from the snapshot when the step runs. Saving a step that includes one is rejected. Steps saved on an earlier release that stored one **fail when they run**; the v0.118.0 upgrade removes those keys, so open each such step and save it again.
+</Aside>
+
 #### Bare-metal rebuild step
 
 The **bare-metal rebuild** step type behaves differently depending on the execution type:

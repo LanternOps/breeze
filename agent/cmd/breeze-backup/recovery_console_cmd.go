@@ -168,8 +168,32 @@ func readRecoveryConsoleLockHolder(path string) (int, error) {
 // breeze-recovery.service runs on the recovery media (W04b) — see
 // agent/recovery-media/config/includes.chroot/etc/systemd/system/
 // breeze-recovery.service.
+// recoveryBakedServerFile and recoveryBakedTrustPinFile are written into the
+// recovery media chroot at build time by agent/recovery-media/build.sh's
+// --server-url and --trust-pin flags (optional — empty/missing on a build
+// that didn't supply them, which is every build today until the release
+// pipeline is updated to pass them). A baked-in value is trusted the same
+// way the --server flag already is: it did not come from the unauthenticated
+// kernel cmdline. Vars (not consts) so tests can point them at a scratch
+// file.
+var (
+	recoveryBakedServerFile   = "/etc/breeze-recovery-server"
+	recoveryBakedTrustPinFile = "/etc/breeze-recovery-trust-pin"
+)
+
+// readBakedRecoveryConfig reads an optional single-line trusted value baked
+// into the recovery media chroot at build time. Missing file or blank
+// content both mean "not configured" — returns "".
+func readBakedRecoveryConfig(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 func newRecoveryConsoleCommand() *cobra.Command {
-	var server, cmdlinePath string
+	var server, cmdlinePath, trustPin string
 	var allowHost, unattended bool
 
 	cmd := &cobra.Command{
@@ -192,11 +216,28 @@ func newRecoveryConsoleCommand() *cobra.Command {
 				return rebuild.ErrUnsupportedHost
 			}
 
+			// --server (explicit flag) wins over a value baked into this
+			// media at build time, which in turn wins over anything read
+			// off the kernel cmdline — see recoveryconsole.Console.promptServer
+			// for how an unauthenticated cmdline value is handled instead
+			// (a labeled, confirm-only suggestion, never a silent trust).
+			effectiveServer := server
+			if effectiveServer == "" {
+				effectiveServer = readBakedRecoveryConfig(recoveryBakedServerFile)
+			}
+			effectivePin := trustPin
+			if effectivePin == "" {
+				effectivePin = readBakedRecoveryConfig(recoveryBakedTrustPinFile)
+			}
+			if effectivePin != "" {
+				bmr.SetExpectedServerCertPin(effectivePin)
+			}
+
 			c := &recoveryconsole.Console{
 				IO:            recoveryconsole.NewTerminalIO(os.Stdin, cmd.OutOrStdout()),
 				Cmdline:       string(raw),
 				AllowHost:     allowHost,
-				DefaultServer: server,
+				DefaultServer: effectiveServer,
 				Deps: recoveryconsole.Deps{
 					Exchange: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
 						return bmr.ExchangeRecoveryCode(ctx, server, code, version)
@@ -224,10 +265,11 @@ func newRecoveryConsoleCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (default: breeze.server= on the kernel cmdline, else prompted)")
+	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (default: baked into this media at build time, else breeze.server= on the kernel cmdline as an unverified suggestion, else prompted)")
 	cmd.Flags().StringVar(&cmdlinePath, "kernel-cmdline", "/proc/cmdline", "kernel cmdline file (tests)")
 	cmd.Flags().BoolVar(&allowHost, "allow-host", false, "run outside recovery media (development only)")
 	cmd.Flags().BoolVar(&unattended, "unattended", false, "reserved")
+	cmd.Flags().StringVar(&trustPin, "trust-pin", "", "expected base64 SHA-256 SPKI pin(s) of the recovery server's TLS certificate chain — comma-separated for a set; prefer pinning the issuing CA, not the leaf, so it survives certificate rotation (default: baked into this media at build time)")
 	return cmd
 }
 

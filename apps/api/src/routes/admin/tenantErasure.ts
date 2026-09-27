@@ -29,6 +29,7 @@ import { requireMfa } from '../../middleware/auth';
 import { enqueueTenantErasure } from '../../jobs/tenantErasure';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { hasActiveLegalHoldSnapshots, LEGAL_HOLD_ACTIVE_MESSAGE } from '../../services/tenantCascade';
 
 export const tenantErasureRoutes = new Hono();
 
@@ -73,6 +74,33 @@ tenantErasureRoutes.post(
 
     if (!org) {
       return c.json({ error: 'org not found' }, 404);
+    }
+
+    // Fast-path precondition check so the admin gets an immediate, actionable
+    // refusal instead of discovering it minutes later when the queued job
+    // (which re-checks this itself, see cascadeDeleteOrg) skips silently.
+    // This is a convenience check, not the enforcement point — the worker's
+    // own check is what actually protects every erasure entry point.
+    if (await hasActiveLegalHoldSnapshots(orgId)) {
+      await createAuditLog({
+        orgId: null,
+        actorType: 'user',
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'tenant.erasure.refused_legal_hold',
+        resourceType: 'organization',
+        resourceId: orgId,
+        resourceName: org.name,
+        details: { reason: 'LEGAL_HOLD_ACTIVE' },
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+        result: 'failure',
+        errorMessage: LEGAL_HOLD_ACTIVE_MESSAGE,
+      });
+      return c.json(
+        { error: LEGAL_HOLD_ACTIVE_MESSAGE, code: 'LEGAL_HOLD_ACTIVE' as const },
+        409,
+      );
     }
 
     const enqueued = await enqueueTenantErasure({

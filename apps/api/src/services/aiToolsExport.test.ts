@@ -221,6 +221,19 @@ describe('export_dataset', () => {
     expect(parsed.error).toBe('unknown_dataset');
   });
 
+  it('returns a clean error instead of the generic export_failed path when the pager refuses on the sensitive-category gate', async () => {
+    const { SensitiveEventLogAccessError } = await import('./eventLogSensitivity');
+    sanitizeThrownToolError.mockClear();
+    createPager.mockResolvedValue(() => { throw new SensitiveEventLogAccessError(); });
+    const tool = getTool();
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs' }, auth,
+      { runTargets: [], stagedBytesRemaining: 1_000_000 },
+    ));
+    expect(parsed.error).toBe('sensitive_category_forbidden');
+    expect(sanitizeThrownToolError).not.toHaveBeenCalled();
+  });
+
   it('does not silently resolve an ambiguous multi-org auth to the device-page write default (#6675)', async () => {
     const tool = getTool();
     const partnerAuthWithWriteDefault = {

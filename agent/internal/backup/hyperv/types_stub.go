@@ -62,11 +62,14 @@ type BackupResult struct {
 
 // RestoreResult holds the outcome of a Hyper-V VM import.
 type RestoreResult struct {
-	VMName     string `json:"vmName"`
-	NewVMID    string `json:"newVmId"`
-	Status     string `json:"status"`
-	DurationMs int64  `json:"durationMs"`
-	Error      string `json:"error,omitempty"`
+	VMName  string `json:"vmName"`
+	NewVMID string `json:"newVmId"`
+	// RestorePath is the directory the imported VM's configuration and disks
+	// were copied into.
+	RestorePath string `json:"restorePath,omitempty"`
+	Status      string `json:"status"`
+	DurationMs  int64  `json:"durationMs"`
+	Error       string `json:"error,omitempty"`
 	// Warnings carries non-fatal notes, e.g. a free-space check that could
 	// not run (#5460).
 	Warnings []string `json:"warnings,omitempty"`

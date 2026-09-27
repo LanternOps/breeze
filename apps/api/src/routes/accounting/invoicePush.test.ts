@@ -25,23 +25,29 @@ const {
   const listRemoteItemsMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
   const selectMock = vi.fn();
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingInvoicePushError extends Error {
     code: string;
-    status: number;
-    constructor(code: string, status: number, message: string) {
+    status: 404 | 409 | 429 | 502;
+    retryAfterMs?: number;
+    constructor(code: string, status: 404 | 409 | 429 | 502, message: string, opts: { retryAfterMs?: number } = {}) {
       super(message);
       this.code = code;
       this.status = status;
+      this.retryAfterMs = opts.retryAfterMs;
       this.name = 'AccountingInvoicePushError';
     }
   }
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingMappingError extends Error {
     code: string;
-    status: number;
-    constructor(code: string, status: number, message: string) {
+    status: 404 | 409 | 429 | 502;
+    retryAfterMs?: number;
+    constructor(code: string, status: 404 | 409 | 429 | 502, message: string, opts: { retryAfterMs?: number } = {}) {
       super(message);
       this.code = code;
       this.status = status;
+      this.retryAfterMs = opts.retryAfterMs;
       this.name = 'AccountingMappingError';
     }
   }
@@ -89,13 +95,34 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     listRemoteCustomers: listRemoteCustomersMock,
     listRemoteItems: listRemoteItemsMock,
   })),
+  // Only QuickBooks is a registered provider today (Xero W01 capability gate).
+  providerSupports: (id: string, cap: string) => providerSupportsMock(id, cap),
+  accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : `UNKNOWN_PROVIDER:${id}`),
+  // Xero W01 route gate: only QuickBooks is registered, configured and capable.
+  findAccountingProvider: (id: string) => (id === 'quickbooks'
+    ? { provider: 'quickbooks', displayName: 'QuickBooks', configError: () => null } : null),
+}));
+
+// Xero W01: push-bulk resolves the partner's ONE connection before enqueueing
+// (each job carries its id). Defaults to a connected QuickBooks row so the
+// existing bulk tests drive exactly the path they always did.
+const { resolveActiveConnectionRefMock, providerSupportsMock } = vi.hoisted(() => ({
+  resolveActiveConnectionRefMock: vi.fn(),
+  providerSupportsMock: vi.fn(),
+}));
+// Honours the capability argument (QuickBooks supports everything) so the
+// per-route capability table can deny exactly one capability.
+const defaultProviderSupports = (id: string, _cap: string) => id === 'quickbooks';
+vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>()),
+  resolveActiveConnectionRef: resolveActiveConnectionRefMock,
 }));
 
 // Not exercised by these tests, but imported transitively by routes/accounting/index.ts.
-vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
-  listQuickbooksCustomersAnnotated: vi.fn(),
-  importQuickbooksCustomers: vi.fn(),
-  QbImportError: class QbImportError extends Error {
+vi.mock('../../services/accounting/accountingCustomerImport', () => ({
+  listAccountingCustomersAnnotated: vi.fn(),
+  importAccountingCustomers: vi.fn(),
+  AccountingImportError: class AccountingImportError extends Error {
     code: string;
     status: number;
     constructor(m: string, c: string, s: number) {
@@ -145,14 +172,8 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
-
 import { accountingRoutes } from './index';
+import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
 import { withAuthDbAccessContext } from '../../middleware/auth';
 
 /**
@@ -200,12 +221,40 @@ function pushOutcome(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks', status: 'connected' });
   authState.scope = 'partner';
   authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
   // The enqueue helper reports whether the queue ACCEPTED the job; the bulk
   // route counts on that, so the default must be a real acceptance.
   enqueueAccountingInvoicePushMock.mockResolvedValue(true);
+  providerSupportsMock.mockImplementation(defaultProviderSupports);
+});
+
+// Xero W01 review: pin the capability EACH route in this file gates on (plan
+// Task 15, "Route -> capability map"). The provider is registered and
+// configured but lacks exactly that capability: the route must answer 409
+// capability_unavailable and must have asked for that exact capability.
+describe('per-route capability gate (Xero W01)', () => {
+  it.each([
+    ['POST /:provider/invoices/:invoiceId/push', 'invoicePush', `/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' }],
+    ['POST /:provider/invoices/push-bulk', 'invoicePush', '/accounting/quickbooks/invoices/push-bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceIds: [INVOICE_ID] }),
+    }],
+    ['GET /:provider/remote-candidates', 'mapping', '/accounting/quickbooks/remote-candidates?entityType=org&q=Acme', undefined],
+  ] as const)('%s answers 409 capability_unavailable without %s', async (_route, capability, url, init) => {
+    providerSupportsMock.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+    const res = await app().request(url, init);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(providerSupportsMock).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+    expect(pushInvoiceToAccountingMock).not.toHaveBeenCalled();
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
@@ -218,7 +267,8 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     const res = await pushInvoice();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ syncStatus: 'synced', docNumber: '1042', taxVarianceCents: 0, totalVarianceCents: 5000 });
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function));
+    // The URL's :provider is the push target (Xero W01): never "whatever is connected now".
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function), { provider: 'quickbooks' });
     await expectAuthContextRunner(pushInvoiceToAccountingMock.mock.calls[0]![2]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -263,7 +313,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
   });
 
   it('502 pass-through for a genuine QuickBooks failure', async () => {
-    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('quickbooks_error', 502, 'QuickBooks returned an error'));
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('provider_error', 502, 'QuickBooks returned an error'));
     const res = await pushInvoice();
     expect(res.status).toBe(502);
   });
@@ -295,7 +345,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     pushInvoiceToAccountingMock.mockResolvedValue(pushOutcome());
     const res = await pushInvoice(INVOICE_ID, `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, expect.any(Function));
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, expect.any(Function), { provider: 'quickbooks' });
   });
 
   it('system scope without an explicit partnerId is rejected (400) before calling the coordinator', async () => {
@@ -337,9 +387,9 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ enqueued: 2, skipped: 1, failed: 0 });
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledTimes(2);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1');
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1');
-    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', 'c1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1', 'c1');
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1', 'c1');
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -407,7 +457,49 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     });
     const res = await pushBulk([INVOICE_ID], `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, 'c1');
+  });
+
+  // Xero W01 capability gate (spec: routes return 409 capability_unavailable).
+  it('resolves the partner connection ONCE per request and stamps its id on every job', async () => {
+    selectMock.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
+    });
+    const res = await pushBulk([INVOICE_ID, INVOICE_ID_2]);
+    expect(res.status).toBe(200);
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledTimes(1);
+    expect(resolveActiveConnectionRefMock).toHaveBeenCalledWith(expect.anything(), 'p1');
+    expect(enqueueAccountingInvoicePushMock.mock.calls.map((call) => call[2])).toEqual(['c1', 'c1']);
+  });
+
+  it('409 capability_unavailable when the connected provider is not the one in the URL', async () => {
+    resolveActiveConnectionRefMock.mockResolvedValue({ id: 'c-x', partnerId: 'p1', provider: 'xero', status: 'connected' });
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }) });
+    const res = await pushBulk([INVOICE_ID]);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+  });
+
+  it('409 capability_unavailable when the connected provider cannot push invoices', async () => {
+    providerSupportsMock.mockReturnValueOnce(false);
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }) });
+    const res = await pushBulk([INVOICE_ID]);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(providerSupportsMock).toHaveBeenCalledWith('quickbooks', 'invoicePush');
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
+  });
+
+  it('with NO connection at all keeps the 200 response shape and enqueues nothing (every owned id is skipped)', async () => {
+    resolveActiveConnectionRefMock.mockResolvedValue(null);
+    selectMock.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
+    });
+    const res = await pushBulk([INVOICE_ID, INVOICE_ID_2, INVOICE_ID_FOREIGN]);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enqueued: 0, skipped: 3, failed: 0 });
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
   });
 });
 
@@ -419,12 +511,13 @@ describe('GET /accounting/:provider/remote-candidates', () => {
   it('threads the query through to listRemoteCustomers for entityType=org', async () => {
     resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
     listRemoteCustomersMock.mockResolvedValue([
-      { id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD', syncToken: '0' },
+      { id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD', remoteVersion: '0' },
     ]);
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
-    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks', expect.any(Function));
+    // Xero W01: the route's :provider is the connection target.
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', { provider: 'quickbooks' }, expect.any(Function));
     await expectAuthContextRunner(resolveConnectionAndTokenMock.mock.calls[0]![2]);
     expect(listRemoteCustomersMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Acme');
     expect(listRemoteItemsMock).not.toHaveBeenCalled();
@@ -432,7 +525,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
 
   it('threads the query through to listRemoteItems for entityType=catalog_item', async () => {
     resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
-    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', syncToken: '0' }]);
+    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', remoteVersion: '0' }]);
     const res = await getCandidates('?entityType=catalog_item&q=Widget');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1' }] });
@@ -480,5 +573,67 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     const res = await getCandidates(`?entityType=org&partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(403);
     expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+// Xero W01 Task 14: a throttled call answers 429 with Retry-After (whole
+// seconds, rounded up) instead of 502/500.
+describe('rate limiting answers 429 with Retry-After (Xero W01)', () => {
+  it('a throttled manual push answers 429 with Retry-After', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(
+      new AccountingInvoicePushError('rate_limited', 429, 'QuickBooks is rate limiting requests; push again if this does not clear shortly', { retryAfterMs: 30_000 }),
+    );
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    // The invoice-push body shape is `{ error: code, message }` (unchanged).
+    expect(await res.json()).toEqual({ error: 'rate_limited', message: 'QuickBooks is rate limiting requests; push again if this does not clear shortly' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('rounds a sub-second Retry-After UP, never to 0', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('rate_limited', 429, 'throttled', { retryAfterMs: 1_200 }));
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.headers.get('Retry-After')).toBe('2');
+  });
+
+  it('a non-throttle error carries no Retry-After', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('provider_error', 502, 'QuickBooks returned an error'));
+    const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(res.headers.get('Retry-After')).toBeNull();
+  });
+
+  it('a throttled token refresh on remote-candidates answers 429 with Retry-After (mapping error shape)', async () => {
+    resolveConnectionAndTokenMock.mockRejectedValue(new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 60_000 }));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('60');
+    expect(await res.json()).toEqual({ error: 'QuickBooks is rate limiting requests; try again shortly', code: 'rate_limited' });
+  });
+
+  it('a RAW provider throttle from the direct remote-candidates call answers 429, not a 500', async () => {
+    resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
+    listRemoteCustomersMock.mockRejectedValue(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', httpStatus: 429, retryAfterMs: 5_000,
+    }));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org&q=Acme');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual({ error: 'QuickBooks is rate limiting requests; try again shortly', code: 'rate_limited' });
+  });
+
+  it.each([
+    ['local', 'Breeze is pacing requests to QuickBooks; try again shortly'],
+    ['limiter_unavailable', 'Breeze could not reach its rate limiter; try again shortly'],
+  ] as const)('a RAW %s throttle on remote-candidates is worded as Breeze\'s, never the provider\'s (F1)', async (throttleSource, error) => {
+    resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
+    listRemoteCustomersMock.mockRejectedValue(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 5_000, throttleSource,
+    }));
+    const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org&q=Acme');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual({ error, code: 'rate_limited' });
   });
 });

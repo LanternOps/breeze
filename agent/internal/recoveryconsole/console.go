@@ -135,10 +135,16 @@ var holdAfterPower = func() {
 // operator-facing failure short of that is handled inline (printed, and the
 // [r]etry/[s]hell/[p]oweroff menu offered).
 func (c *Console) Run(ctx context.Context) error {
-	media, ci, answers := ParseKernelCmdline(c.Cmdline)
+	media, ciRequested, answers := ParseKernelCmdline(c.Cmdline)
 	if !media && !c.AllowHost {
 		return errors.New("refusing to run: this is not recovery media (no breeze.media=1 on the kernel cmdline); pass --allow-host for development")
 	}
+	// breeze.ci=1 comes from the same unauthenticated kernel cmdline as
+	// every other breeze.* token — see buildflags.go's doc comment. Only
+	// a build that was explicitly linked as CI/test recovery media ever
+	// honors it; every other build treats ciRequested as inert and falls
+	// through to the normal interactive, https-required flow below.
+	ci := ciRequested && unattendedCmdlineAllowed()
 
 	// powerAndHold calls c.power(action) and then permanently suppresses
 	// the deferred lock release below, regardless of whether Power itself
@@ -434,16 +440,54 @@ func (c *Console) power(action string) error {
 
 func (c *Console) promptServer(ci bool, answers Answers) (string, error) {
 	if ci {
-		return answers.Server, nil
+		// Reaching this branch at all already requires
+		// unattendedCmdlineAllowed() (see Console.Run) — a production
+		// build never gets here regardless of the cmdline. Within a
+		// CI/test build, the plaintext exception still requires the
+		// operator's own explicit breeze.insecure=1 token, the same one
+		// the interactive path below requires — breeze.ci=1 alone is not
+		// itself a reason to skip the scheme check.
+		server := strings.TrimSpace(answers.Server)
+		if !strings.HasPrefix(server, "https://") && !answers.Insecure {
+			return "", fmt.Errorf("ci server URL must start with https:// (set breeze.insecure=1 on a CI/test build to allow plaintext)")
+		}
+		return server, nil
+	}
+	// breeze.insecure=1 is only ever honored on the ci=1 unattended path
+	// above (ParseKernelCmdline's own doc comment already says this token
+	// is "only meaningful when ci is true"). This interactive branch is
+	// reached only when ci is false, so it must never look at
+	// answers.Insecure — that field is populated straight from the
+	// unauthenticated kernel cmdline, and an operator sitting at this
+	// prompt gets no other confirmation that "insecure" was ever
+	// requested. https:// is required here unconditionally.
+	trustedDefault := c.DefaultServer
+	cmdlineDefault := strings.TrimSpace(answers.Server)
+	if trustedDefault != "" && cmdlineDefault != "" && trustedDefault != cmdlineDefault {
+		c.IO.Print(
+			"WARNING: the boot cmdline suggests a different server (%s) than the one baked into this recovery media (%s). "+
+				"Using the media's own server unless you type a different URL below.\n",
+			cmdlineDefault, trustedDefault,
+		)
 	}
 	for {
-		def := c.DefaultServer
-		if def == "" {
-			def = answers.Server
-		}
+		def := trustedDefault
 		prompt := "Breeze server URL: "
-		if def != "" {
+		switch {
+		case def != "":
+			// A build-time (or --server flag) default is a value this
+			// binary/media was configured with, not something read off an
+			// unauthenticated kernel cmdline — safe to pre-fill silently.
 			prompt = fmt.Sprintf("Breeze server URL [%s]: ", def)
+		case cmdlineDefault != "":
+			// No trusted default exists, so the only candidate is the
+			// unauthenticated breeze.server= boot cmdline value. Pre-fill
+			// it as a SUGGESTION only, and label it as such so the
+			// operator knows accepting it (pressing Enter) means trusting
+			// unauthenticated boot configuration, not a value this media
+			// was built or launched with.
+			def = cmdlineDefault
+			prompt = fmt.Sprintf("Breeze server URL [%s — from boot cmdline, unverified; confirm or type a different URL]: ", def)
 		}
 		line, err := c.IO.ReadLine(prompt)
 		if err != nil {
@@ -457,8 +501,8 @@ func (c *Console) promptServer(ci bool, answers Answers) (string, error) {
 			c.IO.Print("A server URL is required.\n")
 			continue
 		}
-		if !strings.HasPrefix(line, "https://") && !answers.Insecure {
-			c.IO.Print("Server URL must start with https:// (or boot with breeze.insecure=1).\n")
+		if !strings.HasPrefix(line, "https://") {
+			c.IO.Print("Server URL must start with https://.\n")
 			continue
 		}
 		return line, nil

@@ -1,12 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockDb, dispatchMock, resolveMonitorsMock, txState } = vi.hoisted(() => ({
+const { mockDb, dispatchMock, resolveMonitorsMock, txState, neSpy, eqSpy } = vi.hoisted(() => ({
   mockDb: { select: vi.fn() },
   dispatchMock: vi.fn(),
   resolveMonitorsMock: vi.fn(),
   // How many system transactions are open right now (#3445).
   txState: { depth: 0 },
+  neSpy: vi.fn(),
+  eqSpy: vi.fn(),
 }));
+
+// Plain-string mocked schema columns below cannot round-trip through a real
+// drizzle SQL compiler (no Column/Table shape for PgDialect to read), so the
+// only way to prove a predicate like `ne(organizations.type, 'quick_support')`
+// is actually emitted is to spy on the drizzle-orm helper call itself rather
+// than inspect the resulting SQL tree.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    ne: ((...args: Parameters<typeof actual.ne>) => {
+      neSpy(...args);
+      return actual.ne(...args);
+    }) as typeof actual.ne,
+    eq: ((...args: Parameters<typeof actual.eq>) => {
+      eqSpy(...args);
+      return actual.eq(...args);
+    }) as typeof actual.eq,
+  };
+});
 
 vi.mock('../db', () => ({
   db: mockDb,
@@ -41,6 +63,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     partnerId: 'organizations.partnerId',
+    type: 'organizations.type',
   },
   devices: {
     id: 'devices.id',
@@ -51,6 +74,7 @@ vi.mock('../db/schema', () => ({
     hostname: 'devices.hostname',
     siteId: 'devices.siteId',
     customFields: 'devices.customFields',
+    isEphemeral: 'devices.isEphemeral',
   },
   scriptExecutions: {
     monitorId: 'scriptExecutions.monitorId',
@@ -391,5 +415,38 @@ describe('processScriptMonitorTick', () => {
 
     expect(dispatchMock).not.toHaveBeenCalled();
     expect(result).toEqual({ monitorsConsidered: 0, devicesConsidered: 0, dispatched: 0, skipped: 0, errors: 0 });
+  });
+
+  it('excludes the hidden quick_support org from a partner-wide script monitor fan-out', async () => {
+    neSpy.mockClear();
+    setupDb(
+      new Map<TableRef, unknown[]>([
+        [monitorDefinitions, [makeMonitorRow({ orgId: null, partnerId: 'partner-1' })]],
+        [organizations, [{ id: ORG_ID }]],
+        [devices, [makeDeviceRow()]],
+        [scriptExecutions, []],
+        [scripts, [makeScriptRow()]],
+      ]),
+    );
+
+    await processScriptMonitorTick();
+
+    expect(neSpy).toHaveBeenCalledWith(organizations.type, 'quick_support');
+  });
+
+  it('excludes ephemeral (Quick Support) devices from the candidate device query', async () => {
+    eqSpy.mockClear();
+    setupDb(
+      new Map<TableRef, unknown[]>([
+        [monitorDefinitions, [makeMonitorRow()]],
+        [devices, [makeDeviceRow()]],
+        [scriptExecutions, []],
+        [scripts, [makeScriptRow()]],
+      ]),
+    );
+
+    await processScriptMonitorTick();
+
+    expect(eqSpy).toHaveBeenCalledWith(devices.isEphemeral, false);
   });
 });

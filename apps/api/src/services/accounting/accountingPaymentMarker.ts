@@ -91,9 +91,11 @@ export function paymentMappingRemoteId(remotePaymentId: string, remoteInvoiceId:
  */
 const PARTIAL_REFUND_DIVERGENCE_PREFIX = 'Refunded in Stripe, total ';
 
-export function partialRefundDivergenceMessage(totalRefunded: string): string {
-  return `${PARTIAL_REFUND_DIVERGENCE_PREFIX}${totalRefunded}; record the refund in QuickBooks `
-    + '(this QuickBooks payment still shows the full amount)';
+/** `label` is the provider's display name (`accountingProviderDisplayName`); the
+ *  QuickBooks text is byte-identical to what production rows already hold. */
+export function partialRefundDivergenceMessage(totalRefunded: string, label: string): string {
+  return `${PARTIAL_REFUND_DIVERGENCE_PREFIX}${totalRefunded}; record the refund in ${label} `
+    + `(this ${label} payment still shows the full amount)`;
 }
 
 /**

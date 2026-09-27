@@ -20,6 +20,7 @@ import { getRedis } from '../redis';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
 import { STATS_WINDOW_DAYS, loadAllPartnerSendingWindowStats } from './deliveryStats';
 import { SendingDomainPolicyError, assertSendingDomainAllowed } from './domainPolicy';
+import { generateOwnershipToken } from './dnsOwnershipProof';
 import { readProviderKeyProbe } from './keyProbe';
 import { getEmailDomainProvider } from './providerRegistry';
 
@@ -256,6 +257,24 @@ export async function createSendingDomain(input: { partnerId: string; domain: st
     throw new SendingDomainServiceError('domain_unavailable', DOMAIN_UNAVAILABLE_MESSAGE, 409);
   }
 
+  // Refuse while a release row still names this domain: the provider handle
+  // it references may still exist (release can retry for a while, or get
+  // stuck and need operator intervention — sendingDomainsWorker.ts,
+  // MAX_RELEASE_ATTEMPTS). Creating a new row for the same name here would
+  // race provisioning against release, and if release loses, provisioning
+  // finds the not-yet-deleted object and — same as any other pre-existing
+  // provider object — now refuses to adopt it rather than reusing it, but
+  // failing the create up front gives a clear, immediate answer instead of a
+  // create that is silently guaranteed to fail moments later.
+  const pendingRelease = await db
+    .select({ id: emailProviderDomainReleases.id })
+    .from(emailProviderDomainReleases)
+    .where(eq(emailProviderDomainReleases.domain, domain))
+    .limit(1);
+  if (pendingRelease.length > 0) {
+    throw new SendingDomainServiceError('domain_unavailable', DOMAIN_UNAVAILABLE_MESSAGE, 409);
+  }
+
   // `onConflictDoNothing` rather than catch-23505: a unique violation raised on
   // the request's own withDbAccessContext transaction ABORTS it even when
   // caught, and the mapped 409 then surfaces as a 500 at commit (utils/pgErrors.ts:42,
@@ -268,6 +287,10 @@ export async function createSendingDomain(input: { partnerId: string; domain: st
       domain,
       provider: requireProvider().id,
       providerRegion: config.region,
+      // Issued unconditionally at creation, spec-of-this-fix: a self-service
+      // DNS-TXT proof of ownership, consumed only if provision() later finds
+      // a pre-existing provider object for this domain (domainSync.ts).
+      ownershipVerifyToken: generateOwnershipToken(),
       status: 'provisioning',
       statusChangedAt: new Date(),
       nextCheckAt: new Date(),

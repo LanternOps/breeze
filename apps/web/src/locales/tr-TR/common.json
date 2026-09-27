@@ -979,11 +979,13 @@
         "notConverted": "Dönüştürülmedi"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} ağ denetimi inceleme bekliyor.",
+        "pending_one": "{{count}} ağ denetimi inceleme bekliyor.",
+        "pending_other": "{{count}} ağ denetimi inceleme bekliyor.",
         "review": "Dönüşümü incele",
         "title": "Ağ denetimi dönüşümü",
         "convert": "{{count}} öğeyi dönüştür",
-        "converted": "{{count}} ağ denetimi dönüştürüldü",
+        "converted_one": "{{count}} ağ denetimi dönüştürüldü",
+        "converted_other": "{{count}} ağ denetimi dönüştürüldü",
         "failed": "Ağ denetimleri dönüştürülemedi",
         "outcome": {
           "convertible": "Dönüştürülebilir",

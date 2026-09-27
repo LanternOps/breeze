@@ -45,7 +45,13 @@ func TestMain(m *testing.M) {
 // stops restricting to Interactive Users, that is a security change and must be
 // a deliberate edit here, not a side effect of a test helper.
 func TestPipeSecurityOverrideIsTestOnly(t *testing.T) {
-	const want = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)"
+	// The IU access mask (0x0012019b) is FILE_READ_DATA | FILE_WRITE_DATA |
+	// FILE_READ_EA | FILE_WRITE_EA | FILE_READ_ATTRIBUTES |
+	// FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE — deliberately not
+	// GENERIC_WRITE, whose FILE_APPEND_DATA bit is reinterpreted on a named
+	// pipe as FILE_CREATE_PIPE_INSTANCE (the right to add an additional
+	// server instance to an already-listening pipe).
+	const want = "O:SYG:SYD:P(A;;GA;;;SY)(A;;0x0012019b;;;IU)"
 	if pipeSecurity != want {
 		t.Fatalf("production pipe SDDL = %q, want %q", pipeSecurity, want)
 	}

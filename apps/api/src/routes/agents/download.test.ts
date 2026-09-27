@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchVerifiedMacosPkgMock } = vi.hoisted(() => ({
+const { fetchVerifiedMacosPkgMock, fetchVerifiedHelperInstallerMock } = vi.hoisted(() => ({
   fetchVerifiedMacosPkgMock: vi.fn(),
+  fetchVerifiedHelperInstallerMock: vi.fn(),
 }));
 
 vi.mock('../../services/installerBuilder', () => ({
   fetchVerifiedMacosPkg: fetchVerifiedMacosPkgMock,
+  fetchVerifiedHelperInstaller: fetchVerifiedHelperInstallerMock,
 }));
 
 vi.mock('../../services/s3Storage', () => ({
@@ -33,6 +35,18 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
+const { rateLimiterMock } = vi.hoisted(() => ({
+  rateLimiterMock: vi.fn(async (..._args: unknown[]) => ({ allowed: true, remaining: 19, resetAt: new Date() })),
+}));
+
+vi.mock('../../services', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../../services/rate-limit', () => ({
+  rateLimiter: (...args: unknown[]) => rateLimiterMock(...args),
+}));
+
 vi.mock('../../services/promotedAgentVersion', () => ({
   // Default: no promoted row, so every pre-existing test keeps exercising the
   // historical env-resolved redirect path unchanged.
@@ -55,6 +69,14 @@ import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubH
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
+// File-scoped so every describe block below gets a permissive default for
+// the .pkg route's per-IP rate limiter, regardless of describe nesting or an
+// earlier block's vi.restoreAllMocks().
+beforeEach(() => {
+  rateLimiterMock.mockReset();
+  rateLimiterMock.mockImplementation(async () => ({ allowed: true, remaining: 19, resetAt: new Date() }));
+});
+
 describe('public agent binary downloads', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
   const originalHelperDir = process.env.HELPER_BINARY_DIR;
@@ -63,7 +85,11 @@ describe('public agent binary downloads', () => {
     process.env.AGENT_BINARY_DIR = '/tmp/breeze-secret-agent-binaries';
     process.env.HELPER_BINARY_DIR = '/tmp/breeze-secret-helper-binaries';
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     fetchVerifiedMacosPkgMock.mockRejectedValue(new Error('package unavailable'));
+    fetchVerifiedHelperInstallerMock.mockRejectedValue(new Error('installer unavailable'));
+    rateLimiterMock.mockReset();
+    rateLimiterMock.mockImplementation(async () => ({ allowed: true, remaining: 19, resetAt: new Date() }));
   });
 
   afterEach(() => {
@@ -87,17 +113,22 @@ describe('public agent binary downloads', () => {
     );
   });
 
-  it('does not disclose HELPER_BINARY_DIR in public 404 responses', async () => {
+  it('does not disclose the underlying failure in a public helper-installer 503 response', async () => {
+    // Helper no longer streams from HELPER_BINARY_DIR/S3 directly — it always
+    // goes through the manifest-verified fetch (fetchVerifiedHelperInstaller),
+    // same as the .pkg route. See the dedicated describe block below for the
+    // full verified-fetch behavior; this just pins that a rejection is
+    // sanitized like every other privileged-artifact failure.
+    fetchVerifiedHelperInstallerMock.mockRejectedValue(new Error('digest mismatch at /private/path'));
+
     const res = await downloadRoutes.request('/download/helper/linux/amd64');
     const body = await res.text();
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(503);
     expect(body).not.toContain('/tmp/breeze-secret-helper-binaries');
     expect(body).not.toContain('HELPER_BINARY_DIR');
-    expect(console.warn).toHaveBeenCalledWith(
-      '[helper-download] Local binary missing',
-      { filename: 'breeze-desktop-helper-linux-amd64' },
-    );
+    expect(body).not.toContain('digest mismatch');
+    expect(body).not.toContain('/private/path');
   });
 
   it('does not disclose AGENT_BINARY_DIR in public watchdog 404 responses', async () => {
@@ -315,7 +346,7 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     );
   });
 
-  it('serves watchdog, user-helper and helper from their own promoted rows', async () => {
+  it('serves watchdog and user-helper from their own promoted rows', async () => {
     const watchdog = await downloadRoutes.request('/download/watchdog/windows/amd64');
     expect(watchdog.headers.get('location')).toBe(
       `https://github.test/releases/download/v${PROMOTED_VERSION}/breeze-watchdog-windows-amd64`,
@@ -328,14 +359,10 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     );
     expect(getPromotedComponentVersion).toHaveBeenCalledWith('user-helper', 'windows', 'amd64');
 
-    // The helper builder is per-OS, but its promoted row is still looked up
-    // per (os, arch) — HELPER_TARGETS registers darwin/amd64 and darwin/arm64
-    // as separate rows pointing at the same .dmg.
-    const helper = await downloadRoutes.request('/download/helper/darwin/arm64');
-    expect(helper.headers.get('location')).toBe(
-      `https://github.test/releases/download/v${PROMOTED_VERSION}/breeze-helper-darwin`,
-    );
-    expect(getPromotedComponentVersion).toHaveBeenCalledWith('helper', 'darwin', 'arm64');
+    // Helper (the Tauri desktop app) is deliberately NOT in this promoted-row
+    // redirect family any more — it now always goes through the manifest-
+    // verified fetch (fetchVerifiedHelperInstaller), same as the .pkg route.
+    // See the dedicated helper-download describe block below.
   });
 
   it('falls back to the env-resolved version when no promoted row exists', async () => {
@@ -480,7 +507,6 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
   it.each([
     ['watchdog', '/download/watchdog/linux/amd64', 'linux', 'amd64', 'breeze-watchdog-linux-amd64'],
     ['backup', '/download/backup/linux/amd64', 'linux', 'amd64', 'breeze-backup-linux-amd64'],
-    ['helper', '/download/helper/darwin/arm64', 'darwin', 'arm64', 'breeze-helper-darwin'],
     ['user-helper', '/download/user-helper/windows/amd64', 'windows', 'amd64', 'breeze-user-helper-windows-amd64'],
   ])(
     'pins the %s route to the requested version, resolved for ITS OWN component',
@@ -490,10 +516,6 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
       // neighbour's component) would resolve the wrong row in production and
       // still produce a correct-looking Location here.
       vi.mocked(getRegisteredComponentVersion).mockClear();
-      vi.mocked(getGithubHelperUrl).mockImplementation(
-        (o: string, version?: string) =>
-          `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-helper-${o}`,
-      );
       vi.mocked(getGithubUserHelperUrl).mockImplementation(urlFor('user-helper'));
 
       const res = await downloadRoutes.request(`${path}?version=${PINNED_VERSION}`);
@@ -629,7 +651,6 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
 
   it.each([
     ['agent', '/download/linux/amd64', '[agent-download]'],
-    ['helper', '/download/helper/linux/amd64', '[helper-download]'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]'],
@@ -648,7 +669,6 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
 
   it.each([
     ['agent', '/download/linux/amd64', '[agent-download]', 'NotFound'],
-    ['helper', '/download/helper/linux/amd64', '[helper-download]', 'NoSuchKey'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]', 'NotFound'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]', 'NotFound'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]', 'NotFound'],
@@ -775,6 +795,146 @@ describe('public agent .pkg downloads — per-arch serving', () => {
     expect(body).not.toContain('digest mismatch');
     expect(body).not.toContain('/private/path');
   });
+
+  // This route is exempt from the global limiter (the whole
+  // /api/v1/agents/ prefix is skipped) and had no route-level limiter of
+  // its own — an anonymous caller could pull the cached (up to
+  // MAX_MACOS_INSTALLER_BYTES) package as fast as the network allowed.
+  it('rate-limits the public .pkg download per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
+
+    expect(res.status).toBe(429);
+    expect(fetchVerifiedMacosPkgMock).not.toHaveBeenCalled();
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('public-pkg-download:'),
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
+  it('fails closed (503) when Redis is unavailable for the rate limiter', async () => {
+    const { getRedis } = await import('../../services');
+    vi.mocked(getRedis).mockReturnValueOnce(null);
+
+    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
+
+    expect(res.status).toBe(503);
+    expect(fetchVerifiedMacosPkgMock).not.toHaveBeenCalled();
+  });
+
+  // Serving `new Uint8Array(buffer)` copies the whole (shared, cached)
+  // artifact into a fresh buffer per response. Streaming the same
+  // underlying bytes must still deliver byte-identical content to the
+  // client — this pins that the switch to Readable.from(buffer) didn't
+  // change what's on the wire.
+  it('streams the cached artifact rather than duplicating it, with identical bytes on the wire', async () => {
+    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
+    expect(res.status).toBe(200);
+    expect(res.body).not.toBeNull();
+    const body = await res.text();
+    expect(body).toBe('AMD64-PKG-BODY');
+    expect(res.headers.get('content-length')).toBe(String(Buffer.byteLength('AMD64-PKG-BODY')));
+  });
+});
+
+describe('public Helper installer downloads — manifest-verified serving', () => {
+  // Filenames the test-wide binarySource mock (top of file) assigns
+  // HELPER_FILENAMES — deliberately NOT the real production names, so
+  // assertions here match what the route actually looks up in this suite.
+  const MOCK_HELPER_FILENAMES: Record<string, string> = {
+    linux: 'breeze-desktop-helper-linux-amd64',
+    darwin: 'breeze-desktop-helper-darwin',
+    windows: 'breeze-desktop-helper-windows.exe',
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fetchVerifiedHelperInstallerMock.mockClear();
+    fetchVerifiedHelperInstallerMock.mockImplementation(async (os: string) => {
+      const buffer = Buffer.from(`${os.toUpperCase()}-HELPER-BODY`);
+      return {
+        buffer,
+        artifact: {
+          assetName: MOCK_HELPER_FILENAMES[os],
+          sha256: 'b'.repeat(64),
+          size: buffer.length,
+          release: 'v1.2.3',
+          repository: 'lanternops/breeze',
+          platformTrust: null,
+          intendedUse: null,
+          edition: 'self-host',
+          signingIdentity: null,
+          signingTeamId: null,
+        },
+      };
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fetchVerifiedHelperInstallerMock.mockReset();
+  });
+
+  it('rejects invalid OS/arch before ever calling the verified fetch', async () => {
+    const badOs = await downloadRoutes.request('/download/helper/solaris/amd64');
+    expect(badOs.status).toBe(400);
+    const badArch = await downloadRoutes.request('/download/helper/linux/sparc');
+    expect(badArch.status).toBe(400);
+    expect(fetchVerifiedHelperInstallerMock).not.toHaveBeenCalled();
+  });
+
+  it('serves manifest-verified bytes with the artifact headers, not a redirect', async () => {
+    const res = await downloadRoutes.request('/download/helper/darwin/amd64');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.get('content-disposition')).toContain(MOCK_HELPER_FILENAMES.darwin);
+    expect(res.headers.get('x-breeze-artifact-sha256')).toBe('b'.repeat(64));
+    expect(await res.text()).toBe('DARWIN-HELPER-BODY');
+    expect(fetchVerifiedHelperInstallerMock).toHaveBeenCalledWith('darwin');
+  });
+
+  it('serves the OS-appropriate installer for windows and linux too', async () => {
+    const win = await downloadRoutes.request('/download/helper/windows/amd64');
+    expect(win.status).toBe(200);
+    expect(win.headers.get('content-disposition')).toContain(MOCK_HELPER_FILENAMES.windows);
+
+    const linux = await downloadRoutes.request('/download/helper/linux/amd64');
+    expect(linux.status).toBe(200);
+    expect(linux.headers.get('content-disposition')).toContain(MOCK_HELPER_FILENAMES.linux);
+  });
+
+  it('fails closed (503) with a sanitized body when manifest verification fails — the core regression guard', async () => {
+    // The route verifies the hash/manifest at serve time: any verification
+    // failure refuses to serve rather than falling back to unverified bytes.
+    fetchVerifiedHelperInstallerMock.mockRejectedValue(new Error('digest mismatch at /private/path'));
+
+    const res = await downloadRoutes.request('/download/helper/darwin/amd64');
+    const body = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect(body).not.toContain('digest mismatch');
+    expect(body).not.toContain('/private/path');
+  });
+
+  it('never falls back to a GitHub redirect or S3 presign for the helper installer', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(isS3Configured).mockReturnValue(true);
+
+    const res = await downloadRoutes.request('/download/helper/darwin/amd64');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(isS3Configured).mockReturnValue(false);
+  });
 });
 
 describe('GET /install.sh — generated installer script', () => {
@@ -871,16 +1031,31 @@ describe('GET /install.sh — generated installer script', () => {
 
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
-    // Argument parser handles --token and forwards it to `enroll` as the
-    // positional enrollment key (the flow the Add Device UI uses).
+    // Argument parser handles --token; the script's own $BREEZE_ENROLL_TOKEN
+    // variable then carries it (the flow the Add Device UI uses).
     expect(script).toContain('--token)');
-    expect(script.match(/ENROLL_ARGS=\(enroll\)/g)).toHaveLength(2);
-    // The token and conditional secret must be appended in BOTH the darwin
-    // and linux branches — a single match means one platform lost enrollment.
-    expect(script.match(/ENROLL_ARGS\+=\("\$BREEZE_ENROLL_TOKEN"\)/g)).toHaveLength(2);
+    expect(script.match(/ENROLL_ARGS=\(enroll --server "\$BREEZE_SERVER"\)/g)).toHaveLength(2);
+    // The token and secret must never be appended to ENROLL_ARGS (argv) — see
+    // the next assertion — and the enroll invocation that consumes them via
+    // environment variables must appear in BOTH the darwin and linux
+    // branches — a single match means one platform lost enrollment.
+    expect(script).not.toContain('ENROLL_ARGS+=("$BREEZE_ENROLL_TOKEN")');
+    expect(script).not.toContain('--enrollment-secret "$BREEZE_ENROLLMENT_SECRET"');
     expect(
-      script.match(/ENROLL_ARGS\+=\(--enrollment-secret "\$BREEZE_ENROLLMENT_SECRET"\)/g),
+      script.match(
+        /BREEZE_AGENT_ENROLLMENT_KEY="\$BREEZE_ENROLL_TOKEN" BREEZE_AGENT_ENROLLMENT_SECRET="\$BREEZE_ENROLLMENT_SECRET"/g,
+      ),
     ).toHaveLength(2);
+  });
+
+  it('never places the enrollment token or secret in the enroll command argv', async () => {
+    const script = await fetchScript();
+    // The token/secret must reach breeze-agent only via environment
+    // variables scoped to the enroll invocation, never as CLI arguments —
+    // another local account can read a process's argv but not its
+    // environment.
+    expect(script).not.toMatch(/ENROLL_ARGS\+=\(\s*"\$BREEZE_ENROLL_TOKEN"/);
+    expect(script).not.toMatch(/ENROLL_ARGS\+=\(--enrollment-secret/);
   });
 
   it('requires the enrollment token, treating --enrollment-secret as a supplement', async () => {
@@ -1390,5 +1565,83 @@ describe('raw agent MSI download', () => {
     expect(res.status).toBe(404);
     expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
     expect(body).not.toContain('AGENT_BINARY_DIR');
+  });
+});
+
+describe('per-IP rate limiting on the remaining unauthenticated agent/helper download routes', () => {
+  beforeEach(() => {
+    rateLimiterMock.mockReset();
+    rateLimiterMock.mockImplementation(async () => ({ allowed: true, remaining: 19, resetAt: new Date() }));
+  });
+
+  it('rate-limits the agent component download per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(429);
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('public-agent-download:'),
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
+  it('rate-limits the watchdog component download per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+
+    expect(res.status).toBe(429);
+  });
+
+  it('rate-limits the helper installer download per client IP, before any verified fetch', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+    fetchVerifiedHelperInstallerMock.mockClear();
+
+    const res = await downloadRoutes.request('/download/helper/darwin/amd64');
+
+    expect(res.status).toBe(429);
+    expect(fetchVerifiedHelperInstallerMock).not.toHaveBeenCalled();
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('public-agent-download:helper-download:'),
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
+  it('rate-limits the raw MSI download per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/download/windows/amd64/msi');
+
+    expect(res.status).toBe(429);
+  });
+
+  it('rate-limits install.sh per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/install.sh');
+
+    expect(res.status).toBe(429);
+  });
+
+  it('rate-limits uninstall.sh per client IP', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await downloadRoutes.request('/uninstall.sh');
+
+    expect(res.status).toBe(429);
+  });
+
+  it('fails closed (503) when Redis is unavailable for the component download limiter', async () => {
+    const { getRedis } = await import('../../services');
+    vi.mocked(getRedis).mockReturnValueOnce(null);
+
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(503);
   });
 });

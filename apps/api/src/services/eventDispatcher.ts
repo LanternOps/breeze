@@ -35,17 +35,27 @@ export interface ClientEntry {
   filter?: (event: Record<string, unknown>) => boolean;
 }
 
+const LIVE_CHANNEL_PATTERN = `${STREAM_PREFIX}:live:*`;
+const LIVE_CHANNEL_PREFIX = `${STREAM_PREFIX}:live:`;
+
 class EventDispatcher {
   private clients = new Map<string, Set<ClientEntry>>();
-  private subscribers = new Map<string, Redis>();
+  // ONE Redis connection per process, shared across every subscribed org —
+  // not one connection per org (that doesn't scale: a large partner with
+  // org-access-all holds one client per org it can see, and Redis has a
+  // shared server-wide `maxclients`; enough orgs on enough replicas exhausts
+  // it for every tenant, not just the one that grew). `PSUBSCRIBE` on the
+  // live-channel pattern and route by the channel name in the `pmessage`
+  // payload instead — org fan-out moves entirely into this process's memory.
+  private sharedSubscriber: Redis | null = null;
   private stopped = false;
 
   register(orgId: string, client: ClientEntry): void {
     if (!this.clients.has(orgId)) {
       this.clients.set(orgId, new Set());
-      this.subscribeToOrg(orgId);
     }
     this.clients.get(orgId)!.add(client);
+    this.ensureSharedSubscriber();
   }
 
   unregister(orgId: string, client: ClientEntry): void {
@@ -54,44 +64,59 @@ class EventDispatcher {
     orgClients.delete(client);
     if (orgClients.size === 0) {
       this.clients.delete(orgId);
-      this.unsubscribeFromOrg(orgId);
     }
+    // Deliberately does NOT tear the shared subscriber down when `clients`
+    // goes empty: with a single process-wide connection there is no
+    // per-org resource to reclaim, and the old per-org churn (subscribe on
+    // every first client, unsubscribe on every last) is exactly what used to
+    // multiply connections under org-access-all fan-out. It closes only in
+    // `shutdown()`.
   }
 
-  private subscribeToOrg(orgId: string): void {
-    if (this.subscribers.has(orgId) || this.stopped) return;
+  /**
+   * Lazily create and PSUBSCRIBE the one shared connection. Safe to call on
+   * every `register()` — a no-op once the connection exists.
+   */
+  private ensureSharedSubscriber(): void {
+    if (this.sharedSubscriber || this.stopped) return;
 
     const url = resolveRedisUrl();
     const sub = new Redis(url, {
       ...REDIS_CLIENT_BASE_OPTIONS,
       maxRetriesPerRequest: 3,
     });
+    this.sharedSubscriber = sub;
 
-    sub.subscribe(`${STREAM_PREFIX}:live:${orgId}`, (err) => {
+    // ioredis re-issues an active connection's subscriptions automatically
+    // on reconnect (it tracks them client-side), so a transient Redis blip
+    // does not need explicit resubscribe logic here — only the initial
+    // failure path below does, since that's before ioredis has anything to
+    // remember.
+    sub.psubscribe(LIVE_CHANNEL_PATTERN, (err, count) => {
       if (err) {
-        console.error(`[EventDispatcher] Failed to subscribe to org ${orgId}, removing dead subscriber:`, err.message);
-        this.subscribers.delete(orgId);
+        console.error('[EventDispatcher] Failed to psubscribe to live event channels, will retry on next register():', err.message);
+        // Unlike the old per-org subscriber map, there is no per-org
+        // `clients` entry to strand: leaving `sharedSubscriber` set to this
+        // (subscribe-failed) connection would silently swallow every org's
+        // events until process restart, so clear it and let the next
+        // register() try again on a fresh connection.
+        this.sharedSubscriber = null;
         sub.quit().catch(() => {});
+        return;
       }
+      console.log(`[EventDispatcher] Subscribed to ${count} live event channel pattern(s)`);
     });
 
-    sub.on('message', (_channel: string, message: string) => {
+    sub.on('pmessage', (_pattern: string, channel: string, message: string) => {
+      if (!channel.startsWith(LIVE_CHANNEL_PREFIX)) return;
+      const orgId = channel.slice(LIVE_CHANNEL_PREFIX.length);
+      if (!orgId) return;
       this.dispatch(orgId, message);
     });
 
     sub.on('error', (err: Error) => {
-      console.error(`[EventDispatcher] Redis subscriber error for org ${orgId}:`, err.message);
+      console.error('[EventDispatcher] Shared Redis subscriber error:', err.message);
     });
-
-    this.subscribers.set(orgId, sub);
-  }
-
-  private unsubscribeFromOrg(orgId: string): void {
-    const sub = this.subscribers.get(orgId);
-    if (!sub) return;
-    sub.unsubscribe().catch((err: Error) => console.warn(`[EventDispatcher] Failed to unsubscribe org ${orgId}:`, err.message));
-    sub.quit().catch((err: Error) => console.warn(`[EventDispatcher] Failed to quit Redis for org ${orgId}:`, err.message));
-    this.subscribers.delete(orgId);
   }
 
   private dispatch(orgId: string, rawMessage: string): void {
@@ -147,11 +172,12 @@ class EventDispatcher {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const [, sub] of this.subscribers) {
-      sub.unsubscribe().catch((err: Error) => console.warn('[EventDispatcher] Shutdown unsubscribe error:', err.message));
+    const sub = this.sharedSubscriber;
+    this.sharedSubscriber = null;
+    if (sub) {
+      sub.punsubscribe().catch((err: Error) => console.warn('[EventDispatcher] Shutdown punsubscribe error:', err.message));
       sub.quit().catch((err: Error) => console.warn('[EventDispatcher] Shutdown quit error:', err.message));
     }
-    this.subscribers.clear();
     this.clients.clear();
   }
 }

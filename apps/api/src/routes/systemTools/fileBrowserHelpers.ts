@@ -9,6 +9,7 @@
  * the shared one it now is, not as file-browser-private.
  */
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { ERROR_CODES } from '@breeze/shared';
 import {
   DEVICE_UNREACHABLE_ERROR,
   type CommandResult,
@@ -55,13 +56,13 @@ export function isCommandFailure(result: CommandResult): boolean {
  * semantics.
  */
 export type CommandFailureKind =
-  | 'device_unreachable'
-  | 'device_offline'
-  | 'agent_timeout'
-  | 'path_not_found'
-  | 'path_conflict'
-  | 'agent_command_rejected'
-  | 'agent_execution_failed';
+  | typeof ERROR_CODES.DEVICE_UNREACHABLE
+  | typeof ERROR_CODES.DEVICE_OFFLINE
+  | typeof ERROR_CODES.AGENT_TIMEOUT
+  | typeof ERROR_CODES.PATH_NOT_FOUND
+  | typeof ERROR_CODES.PATH_CONFLICT
+  | typeof ERROR_CODES.AGENT_COMMAND_REJECTED
+  | typeof ERROR_CODES.AGENT_EXECUTION_FAILED;
 
 export type CommandFailure = {
   kind: CommandFailureKind;
@@ -169,10 +170,10 @@ export function classifyCommandFailure(
 
   if (raw === DEVICE_UNREACHABLE_ERROR) {
     return {
-      kind: 'device_unreachable',
+      kind: ERROR_CODES.DEVICE_UNREACHABLE,
       message: DEVICE_UNREACHABLE_ERROR,
       status: 503,
-      code: 'device_unreachable',
+      code: ERROR_CODES.DEVICE_UNREACHABLE,
     };
   }
 
@@ -182,12 +183,12 @@ export function classifyCommandFailure(
   // the user retries a delete that may already have happened.
   if (result.status === 'timeout' || /timed out|did not complete/i.test(raw)) {
     return {
-      kind: 'agent_timeout',
+      kind: ERROR_CODES.AGENT_TIMEOUT,
       message: opts.mutating
         ? "The device didn't respond in time. The operation may have completed — refresh to verify before retrying."
         : "The device didn't respond in time. This usually means a brief network issue. Please try again.",
       status: 503,
-      code: 'agent_timeout',
+      code: ERROR_CODES.AGENT_TIMEOUT,
       ...(opts.mutating ? { unverified: true as const } : {}),
     };
   }
@@ -210,7 +211,7 @@ export function classifyCommandFailure(
     //
     // Keep the clean copy for the genuinely-offline case (the raw string's
     // ", cannot execute command" tail is internal noise), and name the real
-    // state otherwise. `code` stays `device_offline` either way: it is the
+    // state otherwise. `code` stays `DEVICE_OFFLINE` either way: it is the
     // machine-readable "device would not take the command" discriminant, and
     // callers branch on it, not on the prose.
     //
@@ -222,38 +223,38 @@ export function classifyCommandFailure(
     // of this function is where genuinely unclassified text belongs.
     const deviceState = /^Device is (\w+), cannot execute command$/i.exec(raw)?.[1]?.toLowerCase();
     return {
-      kind: 'device_offline',
+      kind: ERROR_CODES.DEVICE_OFFLINE,
       message:
         deviceState && deviceState !== 'offline'
           ? `The device is ${deviceState} and cannot run commands.`
           : 'The device is offline.',
       status: 503,
-      code: 'device_offline',
+      code: ERROR_CODES.DEVICE_OFFLINE,
     };
   }
 
   if (matchesAny(NOT_FOUND_PATTERNS, raw)) {
-    return { kind: 'path_not_found', message: raw, status: 404, code: 'path_not_found' };
+    return { kind: ERROR_CODES.PATH_NOT_FOUND, message: raw, status: 404, code: ERROR_CODES.PATH_NOT_FOUND };
   }
 
   if (matchesAny(CONFLICT_PATTERNS, raw)) {
-    return { kind: 'path_conflict', message: raw, status: 409, code: 'path_conflict' };
+    return { kind: ERROR_CODES.PATH_CONFLICT, message: raw, status: 409, code: ERROR_CODES.PATH_CONFLICT };
   }
 
   if (matchesAny(REFUSAL_PATTERNS, raw)) {
     return {
-      kind: 'agent_command_rejected',
+      kind: ERROR_CODES.AGENT_COMMAND_REJECTED,
       message: raw,
       status: 422,
-      code: 'agent_command_rejected',
+      code: ERROR_CODES.AGENT_COMMAND_REJECTED,
     };
   }
 
   return {
-    kind: 'agent_execution_failed',
+    kind: ERROR_CODES.AGENT_EXECUTION_FAILED,
     message: raw,
     status: 500,
-    code: 'agent_execution_failed',
+    code: ERROR_CODES.AGENT_EXECUTION_FAILED,
   };
 }
 
@@ -367,7 +368,7 @@ export function auditErrorMessage(result: CommandResult): string | undefined {
   // Gated on isCommandFailure so classification never runs on a COMPLETED
   // command: the prose test would otherwise tag a successful command whose
   // output merely mentions "timed out" as unverified.
-  if (isCommandFailure(result) && classifyCommandFailure(result).kind === 'agent_timeout') {
+  if (isCommandFailure(result) && classifyCommandFailure(result).kind === ERROR_CODES.AGENT_TIMEOUT) {
     return `[unverified] ${result.error || 'Command timed out — agent state not confirmed.'}`;
   }
   return result.error || undefined;

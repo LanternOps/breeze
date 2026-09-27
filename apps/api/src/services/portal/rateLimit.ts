@@ -24,6 +24,19 @@ export const PORTAL_RATE_LIMIT_REDIS_KEYS = {
   block: (key: string) => `portal:rl:block:${key}`,
 };
 
+/**
+ * Account-scoped rate-limit key for a pre-auth portal identifier lookup
+ * (login, forgot-password). Keyed on the normalized email ALONE. At the point
+ * this key is built, any caller-supplied `orgId` is still unvalidated — no DB
+ * lookup has run — so folding it into the key let a fresh, syntactically
+ * valid `orgId` on every request always miss the bucket, defeating the
+ * account-scoped brake while the sibling IP-keyed bucket stayed unaffected.
+ * Both callers of this helper must use it identically.
+ */
+export function portalAccountRateLimitKey(prefix: 'login' | 'forgot', normalizedEmail: string): string {
+  return `portal:${prefix}:account:${normalizedEmail}`;
+}
+
 export const portalRateLimitBuckets = new Map<string, {
   count: number;
   resetAtMs: number;

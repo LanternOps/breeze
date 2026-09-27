@@ -1,14 +1,14 @@
 /**
  * Reading Intuit's `Fault` envelope off a failed QuickBooks response.
  *
- * A DEPENDENCY-FREE LEAF, for the same reason `accountingPaymentMarker.ts` is
- * one: both sides of the edge need it and neither may import the other. The
- * provider PARSES a fault (to classify 610/5010 and to attach the fields), and
- * the provider-neutral coordinators READ the attached fields (to tag Sentry and
- * to name the failure on the mapping card). Putting this in
- * `quickbooksProvider.ts` would make those coordinators import a provider
- * implementation; putting it in `types.ts` would put runtime code in a
- * types-only module.
+ * QUICKBOOKS-ONLY SINCE XERO W01. The provider PARSES a fault (to classify
+ * 610/5010 and to attach the fields), and `qboErrorToProviderError` below
+ * translates the attached fields into the provider-neutral
+ * `AccountingProviderError` at the provider's boundary. The coordinators no
+ * longer read any of these fields: they read `kind`, `providerMessage`,
+ * `logBody` and `telemetryTags` off the neutral error instead. Only the
+ * provider and this translator read the `qbo*` fields. The one import this
+ * module takes is `accountingProviderError.ts`, itself a leaf.
  *
  * WHY THE PARSE HAPPENS BEFORE TRUNCATION. `qboRequest` stores `body` truncated
  * to 500 characters, which is right for storage — a QBO fault body can carry an
@@ -25,6 +25,8 @@
  * short fault CLASS ("Stale Object Error", "Business Validation Error"), which
  * is what makes a failure recognisable without leaking its contents.
  */
+
+import { AccountingProviderError, type AccountingProviderErrorKind } from './accountingProviderError';
 
 /** The fields worth carrying off a QuickBooks fault. */
 export interface QboFault {
@@ -171,9 +173,65 @@ export function isQboPaymentLinkedRefusal(err: unknown): boolean {
   return typeof e.body === 'string' && bodySaysPaymentLinked(e.body);
 }
 
+/** Fields QBO-aware code (the provider, this module, and quickbooksProvider.test.ts) still reads. */
+const QBO_CARRIED_FIELDS = ['body', 'qboFaultCode', 'qboFaultMessage', 'qboPaymentLinked', 'qboError'] as const;
+
+function classifyQbo(err: unknown, status: number | undefined, fault: QboFault): AccountingProviderErrorKind {
+  const e = (err ?? {}) as { qboError?: unknown; message?: unknown; body?: unknown };
+  if (e.qboError === 'invalid_grant' || (status === 400 && /invalid_grant/i.test(String(e.message ?? '')))) return 'reauth';
+  // Xero W01: throttling is a delay, not a failure. Checked before every
+  // fault-code row, so a 429 is never mistaken for a stale/not-found verdict.
+  if (status === 429) return 'rate_limited';
+  if (isQboPaymentLinkedRefusal(err)) return 'payment_linked';
+  if (fault.code === '5010' || (fault.message && /Stale Object/i.test(fault.message))) return 'stale_version';
+  if (fault.code === '610' || (fault.message && /Object Not Found/i.test(fault.message))) return 'not_found';
+  if (status === 400 && typeof e.body === 'string' && /Duplicate Document Number/i.test(e.body)) return 'duplicate_doc_number';
+  if (status === 400) return 'validation';
+  return 'transient';
+}
+
 /**
- * `(HTTP 400: Business Validation Error)` — the parenthetical both coordinators
- * append to an operator-visible sync failure.
+ * THE QuickBooks boundary (Xero W01): every public QuickbooksProvider method
+ * rethrows through this. Message and status are preserved verbatim, and the
+ * QBO-specific fields are carried along for QBO-aware readers. The core reads
+ * `kind` and the neutral fields only (to be enforced by neutralCore.guard.test.ts in W01d).
+ */
+export function qboErrorToProviderError(err: unknown, operation: string): AccountingProviderError {
+  if (err instanceof AccountingProviderError) return err;
+  const e = (err && typeof err === 'object' ? err : {}) as Record<string, unknown>;
+  const status = typeof e.status === 'number' ? e.status : undefined;
+  const fault = qboFaultOf(err);
+  const kind = classifyQbo(err, status, fault);
+  const translated = new AccountingProviderError({
+    kind,
+    provider: 'quickbooks',
+    operation,
+    message: err instanceof Error ? err.message : String(err),
+    httpStatus: status,
+    // `qboRequest` attaches the parsed `Retry-After` to a 429; 60s (Intuit's
+    // throttle window) covers a 429 that reached here without one.
+    retryAfterMs: typeof e.retryAfterMs === 'number' ? e.retryAfterMs : (status === 429 ? 60_000 : undefined),
+    // Only a 429 classifies rate_limited here, so it is always Intuit's own
+    // throttle. Breeze's limiter refusals never reach this line: they are
+    // already an AccountingProviderError and return unchanged above.
+    throttleSource: kind === 'rate_limited' ? 'provider' : undefined,
+    providerCode: fault.code ?? undefined,
+    providerMessage: fault.message ?? undefined,
+    logBody: typeof e.body === 'string' ? e.body : undefined,
+    telemetryTags: { qbo_fault_code: fault.code ?? 'none' },
+    cause: err,
+  });
+  for (const key of QBO_CARRIED_FIELDS) {
+    if (e[key] !== undefined) Object.assign(translated, { [key]: e[key] });
+  }
+  return translated;
+}
+
+/**
+ * `(HTTP 400: Business Validation Error)` — the parenthetical appended to an
+ * operator-visible sync failure. Since Xero W01 the coordinators produce it
+ * through the neutral `providerFaultSuffix` (`accountingProviderError.ts`),
+ * which is byte-identical for a translated QuickBooks error.
  *
  * Status alone told an operator only that something was rejected; the fault
  * class is what separates "the customer is not mapped" from "the token is

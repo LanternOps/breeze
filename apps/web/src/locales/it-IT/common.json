@@ -979,11 +979,13 @@
         "notConverted": "Non convertito"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} controlli di rete da esaminare.",
+        "pending_one": "{{count}} controllo di rete da esaminare.",
+        "pending_other": "{{count}} controlli di rete da esaminare.",
         "review": "Esamina conversione",
         "title": "Conversione dei controlli di rete",
         "convert": "Converti {{count}}",
-        "converted": "{{count}} controlli di rete convertiti",
+        "converted_one": "{{count}} controllo di rete convertito",
+        "converted_other": "{{count}} controlli di rete convertiti",
         "failed": "Impossibile convertire i controlli di rete",
         "outcome": {
           "convertible": "Convertibile",

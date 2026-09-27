@@ -207,6 +207,15 @@ describe('workspace helper routes', () => {
       expect(fileQueryService.search).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, { q: 'x' }, []);
     });
 
+    it('forwards helperUser as the local-profile owner claim', async () => {
+      const { app, fileQueryService } = makeHarness();
+      const res = await app.request('/search?q=x&helperUser=alice', authed);
+      expect(res.status).toBe(200);
+      expect(fileQueryService.search).toHaveBeenCalledWith(
+        ORG_ID, DEVICE_ID, { q: 'x', helperUser: 'alice', ownerUsername: 'alice' }, [],
+      );
+    });
+
     it('rejects a missing q with 400', async () => {
       const { app, fileQueryService } = makeHarness();
       const res = await app.request('/search', authed);
@@ -323,6 +332,18 @@ describe('workspace helper routes', () => {
       return app;
     }
 
+    it('rejects a helperUser carrying a path separator or LIKE wildcard on every filing route', async () => {
+      const app = makeFilingApp(true);
+      for (const bad of ['%', 'a/b', 'a\\b']) {
+        const list = await app.request(`/filing?helperUser=${encodeURIComponent(bad)}`, authed);
+        expect(list.status).toBe(400);
+        const classify = await app.request('/filing/classify', postActivity({ fileIndexId: FILE_ID, helperUser: bad }));
+        expect(classify.status).toBe(400);
+        const assign = await app.request(`/filing/${FILE_ID}/assign`, postActivity({ projectKey: '2023-041', helperUser: bad }));
+        expect(assign.status).toBe(400);
+      }
+    });
+
     it('404s every filing route when content is disabled', async () => {
       const app = makeFilingApp();
       for (const [method, path, body] of [
@@ -353,7 +374,7 @@ describe('workspace helper routes', () => {
         body: JSON.stringify({ fileIndexId: FILE_ID }),
       });
       expect(classify.status).toBe(200);
-      expect(filingService.classify).toHaveBeenCalledWith(ORG_ID, FILE_ID, []);
+      expect(filingService.classify).toHaveBeenCalledWith(ORG_ID, FILE_ID, [], DEVICE_ID, undefined);
 
       const assign = await app.request(`/filing/${FILE_ID}/assign`, {
         method: 'POST',
@@ -361,7 +382,9 @@ describe('workspace helper routes', () => {
         body: JSON.stringify({ projectKey: '2025-012', helperUser: 'Front desk' }),
       });
       expect(assign.status).toBe(200);
-      expect(filingService.assign).toHaveBeenCalledWith(ORG_ID, FILE_ID, '2025-012', 'Front desk', []);
+      expect(filingService.assign).toHaveBeenCalledWith(
+        ORG_ID, FILE_ID, '2025-012', 'Front desk', [], DEVICE_ID, 'Front desk',
+      );
 
       const projects = await app.request('/content/projects', authed);
       expect((await projects.json()).projects).toHaveLength(1);
@@ -555,7 +578,7 @@ describe('workspace helper routes', () => {
       const b = await app.request('/filing', asB);
       expect(b.status).toBe(404);
       expect(filingService.list).toHaveBeenCalledTimes(1);
-      expect(filingService.list).toHaveBeenCalledWith(ORG_ID, []);
+      expect(filingService.list).toHaveBeenCalledWith(ORG_ID, [], DEVICE_ID, undefined);
     });
   });
 
@@ -565,7 +588,16 @@ describe('workspace helper routes', () => {
       const res = await app.request(`/browse?sourceId=${SOURCE_ID}`, authed);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ entries: [file()] });
-      expect(fileQueryService.browse).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, SOURCE_ID, '', {}, []);
+      expect(fileQueryService.browse).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, SOURCE_ID, '', {}, [], undefined);
+    });
+
+    it('forwards helperUser as the local-profile owner claim', async () => {
+      const { app, fileQueryService } = makeHarness();
+      const res = await app.request(`/browse?sourceId=${SOURCE_ID}&helperUser=alice`, authed);
+      expect(res.status).toBe(200);
+      expect(fileQueryService.browse).toHaveBeenCalledWith(
+        ORG_ID, DEVICE_ID, SOURCE_ID, '', {}, [], 'alice',
+      );
     });
 
     it('passes parentPath through', async () => {
@@ -576,7 +608,7 @@ describe('workspace helper routes', () => {
       );
       expect(res.status).toBe(200);
       expect(fileQueryService.browse).toHaveBeenCalledWith(
-        ORG_ID, DEVICE_ID, SOURCE_ID, 'clients/henderson', {}, [],
+        ORG_ID, DEVICE_ID, SOURCE_ID, 'clients/henderson', {}, [], undefined,
       );
     });
 
@@ -591,7 +623,7 @@ describe('workspace helper routes', () => {
       expect(await res.json()).toEqual({ entries: [file()] });
       expect(fileQueryService.browse).toHaveBeenCalledWith(
         ORG_ID, DEVICE_ID, SOURCE_ID, '',
-        { project: 'Henderson Water Main Replacement', docType: 'easement' }, [],
+        { project: 'Henderson Water Main Replacement', docType: 'easement' }, [], undefined,
       );
     });
 
@@ -639,14 +671,15 @@ describe('workspace helper routes', () => {
         department: [{ ...file(), lastActivityAt: '2026-07-13T09:00:00.000Z' }],
       });
       expect(activityService.recents).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, null, undefined, []);
-      expect(activityService.departmentRecent).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, undefined, []);
+      expect(activityService.departmentRecent).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, undefined, [], undefined);
     });
 
-    it('filters recents by the helperUser label when provided', async () => {
+    it('filters recents by the helperUser label when provided, and forwards it as departmentRecent\'s ownerUsername', async () => {
       const { app, activityService } = makeHarness();
       const res = await app.request(`/recents?helperUser=${encodeURIComponent('Dana K')}`, authed);
       expect(res.status).toBe(200);
       expect(activityService.recents).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, 'Dana K', undefined, []);
+      expect(activityService.departmentRecent).toHaveBeenCalledWith(ORG_ID, DEVICE_ID, undefined, [], 'Dana K');
     });
 
     it('rejects an oversized helperUser with 400', async () => {
@@ -771,6 +804,39 @@ describe('workspace helper routes', () => {
       expect(res.status).toBe(201);
       expect(await res.json()).toEqual({ recorded: true });
       expect(log).toHaveBeenCalledWith('error', expect.stringContaining('audit write failed'));
+    });
+  });
+
+  describe('helperUser owner-claim charset', () => {
+    // helperUser becomes the first rel_path segment a local_profile row must
+    // sit under, so it must never carry a LIKE wildcard or a path separator.
+    // Real profile names (spaces, dots, hyphens, underscores, apostrophes,
+    // non-ASCII letters) must keep working.
+    const BAD = ['%', 'a%', 'a/b', 'a\\b', 'a\u0000b', 'tab\there'];
+    const GOOD = ['alice', 'a_ice', 'Dana K', 'john.CONTOSO.000', "o'brien", 'J\u00fcrgen M\u00fcller', 'first-last'];
+
+    it.each(BAD)('rejects %j on search, browse, recents and activity with 400', async (bad) => {
+      const { app, fileQueryService, activityService } = makeHarness();
+      const enc = encodeURIComponent(bad);
+      expect((await app.request(`/search?q=x&helperUser=${enc}`, authed)).status).toBe(400);
+      expect((await app.request(`/browse?sourceId=${SOURCE_ID}&helperUser=${enc}`, authed)).status).toBe(400);
+      expect((await app.request(`/recents?helperUser=${enc}`, authed)).status).toBe(400);
+      expect((await app.request('/activity', postActivity({
+        fileIndexId: FILE_ID, action: 'open', helperUser: bad,
+      }))).status).toBe(400);
+      expect(fileQueryService.search).not.toHaveBeenCalled();
+      expect(fileQueryService.browse).not.toHaveBeenCalled();
+      expect(activityService.recents).not.toHaveBeenCalled();
+      expect(activityService.record).not.toHaveBeenCalled();
+    });
+
+    it.each(GOOD)('accepts the real profile name %j', async (good) => {
+      const { app, fileQueryService } = makeHarness();
+      const res = await app.request(`/search?q=x&helperUser=${encodeURIComponent(good)}`, authed);
+      expect(res.status).toBe(200);
+      expect(fileQueryService.search).toHaveBeenCalledWith(
+        ORG_ID, DEVICE_ID, { q: 'x', helperUser: good, ownerUsername: good }, [],
+      );
     });
   });
 });

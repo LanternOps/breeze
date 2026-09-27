@@ -81,6 +81,19 @@ async function seedRestore(orgId: string) {
     INSERT INTO restore_jobs (org_id, snapshot_id, device_id, restore_type, command_id)
     VALUES (${orgId}, ${snapshot!.id as string}, ${deviceId}, 'full', ${command!.id as string}) RETURNING id
   `);
+  // A brokered storage session for the same command: erased with the org,
+  // untouched for the other org.
+  await db.execute(sql`
+    INSERT INTO backup_storage_sessions (
+      org_id, command_id, device_id, source_device_id, snapshot_id, config_id, storage_identity,
+      use_file_index, token_hash, generation, max_calls, max_resolved_objects, expires_at, deadline,
+      rate_calls_available, rate_objects_available, rate_refilled_at
+    ) VALUES (
+      ${orgId}, ${command!.id as string}, ${deviceId}, ${deviceId}, ${snapshot!.id as string}, ${config!.id as string},
+      'local::/restore-fixture', true, ${crypto.randomUUID().replace(/-/g, '').padEnd(64, '0')}, 1, 10, 10,
+      now() + interval '5 minutes', now() + interval '30 minutes', 10, 10, now()
+    )
+  `);
   return { restoreId: restore!.id as string, commandId: command!.id as string };
 }
 
@@ -707,8 +720,12 @@ describe('tenant export + erasure round-trip (live DB)', () => {
 
     expect(await rowCount(db, 'restore_jobs', orgA)).toBe(1);
     expect(await rowCount(db, 'restore_jobs', orgB)).toBe(1);
+    expect(await rowCount(db, 'backup_storage_sessions', orgA)).toBe(1);
+    expect(await rowCount(db, 'backup_storage_sessions', orgB)).toBe(1);
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
     expect(await rowCount(db, 'restore_jobs', orgA)).toBe(0);
+    expect(await rowCount(db, 'backup_storage_sessions', orgA)).toBe(0);
+    expect(await rowCount(db, 'backup_storage_sessions', orgB)).toBe(1);
     expect(stats.tablesDeleted.restore_jobs).toBe(1);
     expect([...(await db.execute(sql`SELECT id FROM device_commands WHERE id = ${restoreA.commandId}`))]).toEqual([]);
     expect([...(await db.execute(sql`SELECT command_id FROM restore_jobs WHERE id = ${restoreB.restoreId}`))])

@@ -50,9 +50,15 @@ vi.mock('./quotePay', () => ({
   createQuotePayLink: vi.fn().mockResolvedValue({ url: 'https://pay.example.test/session' }),
 }));
 
+vi.mock('./auditEvents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./auditEvents')>();
+  return { ...actual, writeAuditEvent: vi.fn() };
+});
+
 import { registerQuoteTools } from './aiToolsQuotes';
 import * as quoteService from './quoteService';
 import * as quoteLifecycle from './quoteLifecycle';
+import * as auditEvents from './auditEvents';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { QuoteServiceError } from './quoteTypes';
@@ -259,10 +265,18 @@ describe('manage_quotes', () => {
 
   it('re-throws non-service errors from service actions', async () => {
     const err = new Error('database unavailable');
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce({
+      quote: { id: 'quote-1', status: 'sent' },
+      blocks: [],
+      lines: [],
+    } as never);
     vi.mocked(quoteLifecycle.declineQuoteByActor).mockRejectedValueOnce(err);
 
     await expect(
-      getTool().handler({ action: 'decline', quoteId: 'quote-1', reason: 'Too expensive' }, auth),
+      getTool().handler(
+        { action: 'decline', quoteId: 'quote-1', reason: 'Too expensive', method: 'verbal', reference: 'call on 2026-09-20' },
+        auth,
+      ),
     ).rejects.toBe(err);
   });
 
@@ -270,6 +284,135 @@ describe('manage_quotes', () => {
     const out = await getTool().handler({ action: 'nope' }, auth);
 
     expect(JSON.parse(out)).toHaveProperty('error');
+  });
+});
+
+// Decline-on-behalf parity with
+// routes/quotes/lifecycle.ts POST /:id/decline-on-behalf (:253-275): the same
+// sent/viewed pre-check with the same QUOTE_NOT_DECLINABLE code and message,
+// method/reference required, and the same quote.declined_on_behalf audit row.
+describe('manage_quotes decline', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('on a draft quote returns QUOTE_NOT_DECLINABLE and never calls declineQuoteByActor', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce({
+      quote: { id: 'quote-1', status: 'draft', orgId: 'org-1' },
+      blocks: [],
+      lines: [],
+    } as never);
+
+    const out = await getTool().handler(
+      { action: 'decline', quoteId: 'quote-1', method: 'verbal', reference: 'call on 2026-09-20' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'This quote was never sent, so there is no customer decline to record — delete the draft instead',
+      code: 'QUOTE_NOT_DECLINABLE',
+    });
+    expect(quoteLifecycle.declineQuoteByActor).not.toHaveBeenCalled();
+  });
+
+  it('on an accepted quote returns the generic QUOTE_NOT_DECLINABLE message', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce({
+      quote: { id: 'quote-1', status: 'accepted', orgId: 'org-1' },
+      blocks: [],
+      lines: [],
+    } as never);
+
+    const out = await getTool().handler(
+      { action: 'decline', quoteId: 'quote-1', method: 'verbal', reference: 'call on 2026-09-20' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: "Only a sent or viewed quote can be declined on the customer's behalf (this one is accepted)",
+      code: 'QUOTE_NOT_DECLINABLE',
+    });
+    expect(quoteLifecycle.declineQuoteByActor).not.toHaveBeenCalled();
+  });
+
+  it('without method/reference returns a validation error', async () => {
+    const out = await getTool().handler({ action: 'decline', quoteId: 'quote-1' }, auth);
+
+    expect(JSON.parse(out)).toHaveProperty('code', 'VALIDATION_ERROR');
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
+    expect(quoteLifecycle.declineQuoteByActor).not.toHaveBeenCalled();
+  });
+
+  it('rejects an out-of-range method (zod enum) before ever reading the quote', async () => {
+    const out = await getTool().handler(
+      { action: 'decline', quoteId: 'quote-1', method: 'carrier_pigeon', reference: 'note' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toHaveProperty('code', 'VALIDATION_ERROR');
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
+    expect(quoteLifecycle.declineQuoteByActor).not.toHaveBeenCalled();
+  });
+
+  it('a valid decline on a sent quote calls declineQuoteByActor and writes a quote.declined_on_behalf audit event', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce({
+      quote: { id: 'quote-1', status: 'sent', orgId: 'org-1' },
+      blocks: [],
+      lines: [],
+    } as never);
+    vi.mocked(quoteLifecycle.declineQuoteByActor).mockResolvedValueOnce({
+      id: 'quote-1',
+      status: 'declined',
+      orgId: 'org-1',
+    } as never);
+
+    const out = await getTool().handler(
+      {
+        action: 'decline',
+        quoteId: 'quote-1',
+        method: 'email',
+        reference: 'email from customer 2026-09-20',
+        reason: 'Too expensive',
+      },
+      auth,
+    );
+
+    expect(quoteLifecycle.declineQuoteByActor).toHaveBeenCalledWith('quote-1', 'Too expensive', actor, 'msp');
+    expect(JSON.parse(out)).toEqual({ id: 'quote-1', status: 'declined', orgId: 'org-1' });
+
+    expect(auditEvents.writeAuditEvent).toHaveBeenCalledTimes(1);
+    const [, event] = vi.mocked(auditEvents.writeAuditEvent).mock.calls[0]!;
+    expect(event).toMatchObject({
+      orgId: 'org-1',
+      action: 'quote.declined_on_behalf',
+      resourceType: 'quote',
+      resourceId: 'quote-1',
+      result: 'success',
+      details: {
+        method: 'email',
+        reference: 'email from customer 2026-09-20',
+        reason: 'Too expensive',
+      },
+      actorId: 'u-1',
+    });
+  });
+
+  it('accepts a viewed quote (not just sent)', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce({
+      quote: { id: 'quote-1', status: 'viewed', orgId: 'org-1' },
+      blocks: [],
+      lines: [],
+    } as never);
+    vi.mocked(quoteLifecycle.declineQuoteByActor).mockResolvedValueOnce({
+      id: 'quote-1',
+      status: 'declined',
+      orgId: 'org-1',
+    } as never);
+
+    const out = await getTool().handler(
+      { action: 'decline', quoteId: 'quote-1', method: 'verbal', reference: 'call' },
+      auth,
+    );
+
+    expect(quoteLifecycle.declineQuoteByActor).toHaveBeenCalled();
+    expect(JSON.parse(out)).toEqual({ id: 'quote-1', status: 'declined', orgId: 'org-1' });
   });
 });
 

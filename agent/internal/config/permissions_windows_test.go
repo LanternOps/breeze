@@ -28,19 +28,50 @@ func TestWindowsConfigDACLGrantsUsersRead(t *testing.T) {
 	if strings.Contains(windowsSecretFileSDDL, "BU") || strings.Contains(windowsSecretFileSDDL, "IU") {
 		t.Errorf("secrets.yaml DACL must NOT grant Users/Interactive access: %s", windowsSecretFileSDDL)
 	}
-	// All three must be PROTECTED (D:P) so inherited ACEs can't widen access.
+	// All three must be PROTECTED so inherited ACEs can't widen access. The
+	// config dir SDDL carries an explicit O:SYG:SY owner/group prefix ahead
+	// of the D:P DACL (see TestConfigDirSDDLCarriesTrustedOwner below); the
+	// other two have no owner segment, so their DACL starts the string.
 	for name, sddl := range map[string]string{
 		"dir":     windowsConfigDirSDDL,
 		"config":  windowsConfigFileSDDL,
 		"secrets": windowsSecretFileSDDL,
 	} {
-		if !strings.HasPrefix(sddl, "D:P") {
-			t.Errorf("%s DACL must be PROTECTED (D:P prefix): %s", name, sddl)
+		if !strings.Contains(sddl, "D:P") {
+			t.Errorf("%s DACL must be PROTECTED (D:P present): %s", name, sddl)
 		}
 		// Every DACL string must parse as a valid security descriptor.
 		if _, err := windows.SecurityDescriptorFromString(sddl); err != nil {
 			t.Errorf("%s DACL does not parse: %v", name, err)
 		}
+	}
+}
+
+// TestConfigDirSDDLCarriesTrustedOwner locks in the fix for the ProgramData
+// ROOT owner drift gap: enforceConfigDirPermissions used to re-apply only a
+// DACL (windowsConfigDirSDDL had no O:/G: segment), so a local principal who
+// pre-created C:\ProgramData\Breeze before install/hardening ran kept its
+// implicit WRITE_DAC forever — every subsequent DACL rewrite left the owner
+// untouched. The SDDL must now carry an explicit trusted owner/group prefix,
+// same as windowsProgramDataDirSDDL, while still granting BUILTIN\Users its
+// intentional read+traverse ACE (the Helper reads agent.yaml through it).
+func TestConfigDirSDDLCarriesTrustedOwner(t *testing.T) {
+	if !strings.HasPrefix(windowsConfigDirSDDL, "O:SYG:SYD:P") {
+		t.Errorf("config dir SDDL must set an explicit SYSTEM owner/group ahead of a PROTECTED DACL (O:SYG:SYD:P prefix): %s", windowsConfigDirSDDL)
+	}
+	sd, err := windows.SecurityDescriptorFromString(windowsConfigDirSDDL)
+	if err != nil {
+		t.Fatalf("config dir SDDL does not parse: %v", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		t.Fatalf("read owner: %v", err)
+	}
+	if !trustedMainAgentOwner(owner) {
+		t.Errorf("config dir SDDL owner must be LocalSystem or BUILTIN\\Administrators, got %v", owner)
+	}
+	if !strings.Contains(windowsConfigDirSDDL, ";BU)") {
+		t.Error("adding the owner prefix must not drop BUILTIN\\Users' read+traverse ACE")
 	}
 }
 

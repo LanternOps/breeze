@@ -9,6 +9,7 @@ import {
   organizations,
 } from '../db/schema';
 import type { HelperPermissionLevel } from './helperToolFilter';
+import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 
 const DEFAULT_HELPER_PERMISSION_LEVEL: HelperPermissionLevel = 'standard';
 
@@ -57,7 +58,19 @@ export async function resolveHelperPermissionLevelForDevice(
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((row) => row.groupId);
+  const rawGroupIds = groupRows.map((row) => row.groupId);
+
+  // Field-provenance tiering — this resolver is a standalone
+  // reader (it does not go through configurationPolicy.ts's tiered gate),
+  // and the 'helper' feature type is entirely execution_gated (grants
+  // technician/AI-chat capability to the on-device helper). A device that
+  // self-selects into a group via an agent-reported filter field must not be
+  // able to elevate its own helper permission level, so refused groups are
+  // dropped before the assignment match, same as the other execution paths.
+  const { allowedGroupIds: groupIds, refusedGroups } = await resolveExecutionSafeGroupIds(rawGroupIds);
+  if (refusedGroups.length > 0) {
+    auditRefusedExecutionGroups(device.orgId, 'helper_permissions.execution_target_refused_agent_reported_fields', refusedGroups);
+  }
 
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId))!,

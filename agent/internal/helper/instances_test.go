@@ -76,7 +76,7 @@ func newSweepManager(t *testing.T, f *fakeHelperProcs) (*Manager, string) {
 	stopHelperLegacyFunc = func() {}
 	installFakeProcs(t, f)
 
-	mgr := New(context.Background(), nil, nil, "")
+	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
 	helperBinary := filepath.Join(tmpDir, "breeze-helper")
 	if err := os.WriteFile(helperBinary, []byte("bin"), 0755); err != nil {

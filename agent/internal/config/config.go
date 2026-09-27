@@ -275,6 +275,17 @@ type Config struct {
 	// daemon, systemd service, etc.). Desktop commands route through IPC when set.
 	IsHeadless bool `mapstructure:"-"`
 
+	// IsInstalledAgent is a runtime flag set when this process is the host's
+	// installed Breeze agent: started by the OS service manager (Windows SCM,
+	// macOS LaunchDaemon, Linux systemd as root), running from the canonical
+	// agent.yaml under ConfigDir(), and not a Quick Support client. Only that
+	// process owns machine-wide artifacts shared with other Breeze processes on
+	// the host (the Breeze Assist package, its autostart entry and its
+	// per-session state). A foreground `run`, a second build pointed at another
+	// config file, or a Quick Support client must leave those alone.
+	// Runtime-only, never read from disk.
+	IsInstalledAgent bool `mapstructure:"-"`
+
 	// SupportMode marks this process as an ephemeral Quick Support client:
 	// enrolled into a throwaway temp workspace, serving one remote-desktop
 	// session, then self-destructing. It gates off everything a disposable
@@ -741,9 +752,10 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
 	viper.Set("hp_warranty_collection_enabled", cfg.HPWarrantyCollectionEnabled)
 	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
-	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
-	// bearer tokens are persisted below in root-only secrets.yaml.
-	if cfg.HelperAuthToken != "" {
+	// Windows only: the helper-scoped token still goes into agent.yaml (see
+	// secretKeyAllowedInAgentYAML). On Unix it is written below to its own
+	// group-scoped file instead, via writeHelperTokenFile.
+	if runtime.GOOS == "windows" && cfg.HelperAuthToken != "" {
 		viper.Set("helper_auth_token", cfg.HelperAuthToken)
 	}
 
@@ -843,6 +855,20 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 		func(p *PersistedCredentials) string { return p.WatchdogAuthToken })
 	setCredential(secretKeyHelperAuthToken, cfg.HelperAuthToken,
 		func(p *PersistedCredentials) string { return p.HelperAuthToken })
+
+	// Unix only (no-op on Windows): also persist the helper token to its own
+	// group-scoped file, using the same "prefer in-memory, else preserve
+	// what's on disk" resolution as setCredential above so a save triggered
+	// while cfg.HelperAuthToken happens to be blank (e.g. it was zeroed after
+	// startup, per applyRotatedCredentials) never wipes out a real token.
+	helperToken := cfg.HelperAuthToken
+	if helperToken == "" && credsOnDisk != nil {
+		helperToken = credsOnDisk.HelperAuthToken
+	}
+	if err := writeHelperTokenFileFor(cfgPath, helperToken); err != nil {
+		return fmt.Errorf("writing helper token file: %w", err)
+	}
+
 	setCredential(secretKeyPendingAuthToken, cfg.PendingAuthToken,
 		func(p *PersistedCredentials) string { return p.PendingAuthToken })
 	setCredential(secretKeyPendingWatchdogAuthToken, cfg.PendingWatchdogAuthToken,
@@ -1038,10 +1064,21 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 }
 
 // secretKeyAllowedInAgentYAML lists keys that look secret by suffix rules but
-// must remain in agent.yaml. The Breeze Helper ("Breeze Assist") runs as the
-// logged-in user and reads agent.yaml directly; it needs helper_auth_token.
-var secretKeyAllowedInAgentYAML = map[string]bool{
-	"helper_auth_token": true,
+// must remain in agent.yaml.
+//
+// helper_auth_token is allowed here ONLY on Windows, where the Breeze Helper
+// ("Breeze Assist") runs as the logged-in user and reads agent.yaml directly
+// because no narrower delivery exists there yet. On Unix it is delivered via
+// a separate, breeze-group-scoped helper_token.yaml instead (see
+// helpertoken_unix.go) and must NOT also land in the world-readable
+// agent.yaml, so it is intentionally excluded from this map on that
+// platform — see isSecretYAMLKey.
+var secretKeyAllowedInAgentYAML = map[string]bool{}
+
+func init() {
+	if runtime.GOOS == "windows" {
+		secretKeyAllowedInAgentYAML["helper_auth_token"] = true
+	}
 }
 
 // isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.
@@ -1097,12 +1134,7 @@ func FixConfigPermissions() {
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		if err := migrateInlineSecretsToSecretFile(cfgPath); err != nil {
-			log.Warn("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
-		}
-		if err := enforceConfigFilePermissions(cfgPath); err != nil {
-			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
-		}
+		fixAgentYAMLPermissions(cfgPath)
 	}
 	// Secrets file must remain root-only.
 	sPath := secretsFilePath()
@@ -1110,6 +1142,84 @@ func FixConfigPermissions() {
 		if err := enforceSecretFilePermissions(sPath); err != nil {
 			log.Warn("Failed to fix secrets file permissions", "path", sPath, "error", err.Error())
 		}
+	}
+	seedHelperTokenFileFromSecretsIfMissing(cfgPath)
+	reapplyHelperTokenFilePermissionsFor(cfgPath)
+}
+
+// fixAgentYAMLPermissions is the path-parameterized core of
+// FixConfigPermissions' agent.yaml handling (split out so it can be tested
+// against a temp directory instead of the real, OS-specific config
+// directory). migrateInlineSecretsToSecretFile can fail partway through —
+// e.g. a Windows rename blocked by a concurrent open of agent.yaml — and
+// previously that error was only logged, after which the caller
+// unconditionally loosened agent.yaml to the Helper-readable mode (0644 /
+// BU:FR) regardless of whether inline secret material was still in it. This
+// re-checks the file on disk after the migration attempt (success or not)
+// and only loosens permissions when it is verifiably clear of secret keys;
+// otherwise it locks the file down to the same restrictive mode as
+// secrets.yaml until a later, successful migration can loosen it.
+func fixAgentYAMLPermissions(cfgPath string) {
+	if err := migrateInlineSecretsToSecretFile(cfgPath); err != nil {
+		log.Warn("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
+	}
+	hasInline, err := agentYAMLHasInlineSecrets(cfgPath)
+	if err != nil {
+		log.Warn("Failed to verify agent.yaml is clear of inline secrets; leaving it locked down", "path", cfgPath, "error", err.Error())
+		hasInline = true
+	}
+	if hasInline {
+		log.Warn("agent.yaml still contains inline secret material after migration; leaving it locked down instead of widening its permissions", "path", cfgPath)
+		if err := enforceSecretFilePermissions(cfgPath); err != nil {
+			log.Warn("Failed to lock down config file permissions", "path", cfgPath, "error", err.Error())
+		}
+		return
+	}
+	if err := enforceConfigFilePermissions(cfgPath); err != nil {
+		log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
+	}
+}
+
+// agentYAMLHasInlineSecrets reports whether cfgPath still contains any key
+// that migrateInlineSecretsToSecretFile is meant to have moved out (see
+// isSecretYAMLKey). A read or parse error is reported as "has secrets" (the
+// caller fails closed) rather than silently treated as clean.
+func agentYAMLHasInlineSecrets(cfgPath string) (bool, error) {
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return false, err
+	}
+	var cfgValues map[string]any
+	if err := yaml.Unmarshal(data, &cfgValues); err != nil {
+		return false, err
+	}
+	for key, value := range cfgValues {
+		if isSecretYAMLKey(key) && !isEmptyYAMLValue(value) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// seedHelperTokenFileFromSecretsIfMissing handles the upgrade case: an
+// existing install's helper_auth_token was inline in agent.yaml, and the
+// migration above (isSecretYAMLKey-driven, shared with every other secret
+// key) has just moved it into secrets.yaml — the correct destination for
+// every other secret, but not the group-readable one the Helper needs. If
+// the dedicated helper token file doesn't exist yet, seed it from whatever
+// secrets.yaml now holds. No-op on Windows (writeHelperTokenFile there is a
+// no-op) and on a fresh install (SaveTo already writes the file directly, so
+// it already exists by the time this runs).
+func seedHelperTokenFileFromSecretsIfMissing(cfgPath string) {
+	if _, err := os.Stat(helperTokenFilePathFor(cfgPath)); err == nil {
+		return // already present — nothing to seed
+	}
+	creds, err := readPersistedCredentialsAt(cfgPath)
+	if err != nil || creds == nil || creds.HelperAuthToken == "" {
+		return
+	}
+	if err := writeHelperTokenFileFor(cfgPath, creds.HelperAuthToken); err != nil {
+		log.Warn("failed to seed helper token file from secrets", "error", err.Error())
 	}
 }
 

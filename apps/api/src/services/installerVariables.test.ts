@@ -173,4 +173,246 @@ describe('resolveInstallerVariables', () => {
     expect(r.silentInstallArgs).toBe('msiexec /i "{file}" /qn KEY=ABC-999');
     expect(r.unresolved).toEqual([]);
   });
+
+  // A custom-field value lands verbatim in the argv the agent splits from
+  // silentInstallArgs. A value containing whitespace can smuggle in an
+  // entire extra flag: a value of `X TRANSFORMS=\\host\share\t.mst`
+  // becomes a second, unintended argv element once substituted into an
+  // unquoted template.
+  it('fails a device whose custom-field value would inject a new argv token', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      device: {
+        ...ctx.device,
+        customFields: { lic: 'X TRANSFORMS=\\\\host\\share\\t.mst' },
+      },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      '/qn LICENSEKEY={{device.customField.lic}}',
+      injectingCtx,
+    );
+    expect(r.silentInstallArgs).toBe('/qn LICENSEKEY={{device.customField.lic}}');
+    expect(r.unresolved).toEqual(['{{device.customField.lic}}']);
+  });
+
+  it('fails a device whose custom-field value would break out of template quoting', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      device: {
+        ...ctx.device,
+        customFields: { lic: 'abc" /X /evil="1' },
+      },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      'msiexec /qn LICENSEKEY="{{device.customField.lic}}"',
+      injectingCtx,
+    );
+    expect(r.unresolved).toEqual(['{{device.customField.lic}}']);
+  });
+
+  it('still substitutes a safe custom-field value into silentInstallArgs', () => {
+    const r = resolveInstallerVariables(
+      null,
+      '/qn LICENSEKEY={{device.customField.license_key}}',
+      ctx,
+    );
+    expect(r.silentInstallArgs).toBe('/qn LICENSEKEY=ABC-999');
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it('does not apply the argv charset restriction to the download URL', () => {
+    // org.name ("Acme Corp") has a space and is a built-in field, not a
+    // device-writable custom field — the argv restriction targets custom
+    // fields specifically and must not break existing URL templates.
+    const r = resolveInstallerVariables(
+      'https://dl/{{org.name}}/app.msi',
+      null,
+      ctx,
+    );
+    expect(r.downloadUrl).toBe('https://dl/Acme Corp/app.msi');
+    expect(r.unresolved).toEqual([]);
+  });
+});
+
+describe('resolveInstallerVariables — org.name / site.name in silentInstallArgs', () => {
+  it('quotes a safe org.name value substituted into silentInstallArgs (names legitimately contain spaces)', () => {
+    const r = resolveInstallerVariables(
+      null,
+      '/qn CUSTOMER={{org.name}}',
+      ctx,
+    );
+    expect(r.silentInstallArgs).toBe('/qn CUSTOMER="Acme Corp"');
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it('quotes a safe site.name value substituted into silentInstallArgs', () => {
+    const r = resolveInstallerVariables(
+      null,
+      '/qn SITE={{site.name}}',
+      ctx,
+    );
+    expect(r.silentInstallArgs).toBe('/qn SITE="HQ"');
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it('fails a device whose site.name would inject a new argv token and break out of quoting', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      site: { ...ctx.site, name: '" /quiet INSTALLDIR=C:\\evil' },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      'msiexec /qn CUSTOMER={{site.name}}',
+      injectingCtx,
+    );
+    expect(r.unresolved).toEqual(['{{site.name}}']);
+  });
+
+  it('fails a device whose org.name contains a literal double quote', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      org: { ...ctx.org, name: 'Acme "Corp"' },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      '/qn CUSTOMER={{org.name}}',
+      injectingCtx,
+    );
+    expect(r.unresolved).toEqual(['{{org.name}}']);
+  });
+
+  it('fails a device whose org.name ends in a trailing backslash (would sit directly before the closing quote)', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      org: { ...ctx.org, name: 'Acme Corp\\' },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      '/qn CUSTOMER={{org.name}}',
+      injectingCtx,
+    );
+    expect(r.unresolved).toEqual(['{{org.name}}']);
+  });
+
+  it('still allows org.name unquoted/unrestricted in downloadUrl (not argv-safe)', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      org: { ...ctx.org, name: 'Acme "Corp"' },
+    };
+    const r = resolveInstallerVariables(
+      'https://dl/{{org.name}}/app.msi',
+      null,
+      injectingCtx,
+    );
+    expect(r.downloadUrl).toBe('https://dl/Acme "Corp"/app.msi');
+    expect(r.unresolved).toEqual([]);
+  });
+});
+
+// Ported verbatim from `splitCommandLine` in
+// agent/internal/remote/tools/software_install.go:823 so these tests assert
+// against the agent's real argv-splitting semantics rather than a guess at
+// them. Any drift between this port and the Go source should be caught by
+// keeping the two side by side and diffing on review, not by a shared
+// import (the API and the agent are different languages/build systems).
+function splitCommandLine(s: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let inQuote = false;
+  for (const ch of s) {
+    if (ch === '"') {
+      inQuote = !inQuote;
+    } else if (ch === ' ' && !inQuote) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+describe('resolveInstallerVariables — org.name/site.name quote-aware substitution (2026-09-25 follow-up)', () => {
+  it('quotes an unquoted template so the name stays one argv element', () => {
+    const r = resolveInstallerVariables(null, 'msiexec /qn CUSTOMER={{org.name}}', ctx);
+    expect(r.silentInstallArgs).toBe('msiexec /qn CUSTOMER="Acme Corp"');
+    expect(splitCommandLine(r.silentInstallArgs!)).toEqual([
+      'msiexec',
+      '/qn',
+      'CUSTOMER=Acme Corp',
+    ]);
+  });
+
+  it('does not re-quote a template that already wraps the token in quotes', () => {
+    const r = resolveInstallerVariables(null, 'msiexec /qn TRANSFORMS="{{org.name}}"', ctx);
+    // Must NOT be `""Acme Corp""` — that double-quote pair cancels out under
+    // splitCommandLine and reintroduces the space-breaks-argv bug.
+    expect(r.silentInstallArgs).toBe('msiexec /qn TRANSFORMS="Acme Corp"');
+    expect(splitCommandLine(r.silentInstallArgs!)).toEqual([
+      'msiexec',
+      '/qn',
+      'TRANSFORMS=Acme Corp',
+    ]);
+  });
+
+  it('does not re-quote a template that wraps site.name in quotes', () => {
+    const r = resolveInstallerVariables(null, 'msiexec /qn SITE="{{site.name}}"', {
+      ...ctx,
+      site: { ...ctx.site, name: 'North Office' },
+    });
+    expect(r.silentInstallArgs).toBe('msiexec /qn SITE="North Office"');
+    expect(splitCommandLine(r.silentInstallArgs!)).toEqual([
+      'msiexec',
+      '/qn',
+      'SITE=North Office',
+    ]);
+  });
+
+  it('handles a name containing an apostrophe the same way whether the template pre-quotes it or not', () => {
+    const apostropheCtx: InstallerVariableContext = {
+      ...ctx,
+      org: { ...ctx.org, name: "O'Brien's Shop" },
+    };
+    const unquoted = resolveInstallerVariables(
+      null,
+      'msiexec /qn CUSTOMER={{org.name}}',
+      apostropheCtx,
+    );
+    expect(unquoted.silentInstallArgs).toBe('msiexec /qn CUSTOMER="O\'Brien\'s Shop"');
+    expect(splitCommandLine(unquoted.silentInstallArgs!)).toEqual([
+      'msiexec',
+      '/qn',
+      "CUSTOMER=O'Brien's Shop",
+    ]);
+
+    const preQuoted = resolveInstallerVariables(
+      null,
+      'msiexec /qn CUSTOMER="{{org.name}}"',
+      apostropheCtx,
+    );
+    expect(preQuoted.silentInstallArgs).toBe('msiexec /qn CUSTOMER="O\'Brien\'s Shop"');
+    expect(splitCommandLine(preQuoted.silentInstallArgs!)).toEqual([
+      'msiexec',
+      '/qn',
+      "CUSTOMER=O'Brien's Shop",
+    ]);
+  });
+
+  it('still rejects a quote-breakout value inside a pre-quoted template', () => {
+    const injectingCtx: InstallerVariableContext = {
+      ...ctx,
+      org: { ...ctx.org, name: 'Acme " /quiet INSTALLDIR=C:\\evil' },
+    };
+    const r = resolveInstallerVariables(
+      null,
+      'msiexec /qn CUSTOMER="{{org.name}}"',
+      injectingCtx,
+    );
+    expect(r.unresolved).toEqual(['{{org.name}}']);
+  });
 });

@@ -472,7 +472,9 @@ it.each(['organization', 'system'] as const)('observation failure rolls back dec
 it('independent login resolves only a unique existing binding in its own org', async () => {
   const upn = 'observed@example.com';
   const principal = { sid: 'S-1-5-21-987', username: 'alex', upn };
-  await sys(() => db.update(b).set({ upnSnapshot: upn }).where(sql`${b.id} IN (${ba}::uuid, ${bb}::uuid)`));
+  // ba starts with no os principal on file so this is a legitimate first observation.
+  await sys(() => db.update(b).set({ upnSnapshot: upn, osPrincipal: null }).where(eq(b.id, ba)));
+  await sys(() => db.update(b).set({ upnSnapshot: upn }).where(eq(b.id, bb)));
   await withDbAccessContext(org(A), () => observeSessionPrincipal(A, 'host', 'alex', principal));
   expect((await sys(() => db.select().from(b).where(eq(b.id, ba))))[0]!.osPrincipal).toBe(principal.sid);
   expect((await sys(() => db.select().from(b).where(eq(b.id, bb))))[0]!.osPrincipal).toBe('sid:collision');
@@ -485,6 +487,29 @@ it('independent login resolves only a unique existing binding in its own org', a
   await withDbAccessContext(org(A), () => observeSessionPrincipal(A, 'host', 'alex', principal));
   expect((await sys(() => db.select().from(b).where(eq(b.id, ba))))[0]!.osPrincipal).toBeNull();
   expect((await sys(() => db.select().from(b).where(eq(b.id, ba2))))[0]!.osPrincipal).toBeNull();
+});
+
+it('independent login never overwrites an already-observed os principal and quarantines a conflicting claim instead of revoking established bindings', async () => {
+  const upn = 'observed2@example.com';
+  const principal = { sid: 'S-1-5-21-501', username: 'alex', upn };
+  // ba already carries a directory_sync os principal distinct from what this login reports.
+  await sys(() => db.update(b).set({ upnSnapshot: upn, osPrincipal: 'sid:established', source: 'directory_sync' }).where(eq(b.id, ba)));
+  await withDbAccessContext(org(A), () => observeSessionPrincipal(A, 'host', 'alex', principal));
+  // A self-reported session must never rewrite identity evidence already on file for this contact.
+  expect((await sys(() => db.select().from(b).where(eq(b.id, ba))))[0]!).toMatchObject({ osPrincipal: 'sid:established', source: 'directory_sync' });
+
+  // Now target a distinct, still-unset binding (ba2, same org, a DIFFERENT contact from ba)
+  // whose reported principal collides with ba's established os principal.
+  const upn2 = 'observed3@example.com';
+  const principal2 = { sid: 'S-1-5-21-502', username: 'sam', upn: upn2 };
+  await sys(() => db.update(b).set({ upnSnapshot: upn2, osPrincipal: null }).where(eq(b.id, ba2)));
+  await sys(() => db.update(b).set({ osPrincipal: principal2.sid, source: 'directory_sync' }).where(eq(b.id, ba)));
+  await withDbAccessContext(org(A), () => observeSessionPrincipal(A, 'host', 'sam', principal2));
+  // The established binding (ba, a different contact) must survive unrevoked, and its grants intact.
+  expect((await sys(() => db.select().from(b).where(eq(b.id, ba))))[0]!).toMatchObject({ revokedAt: null, osPrincipal: principal2.sid });
+  // The new claim (ba2) must not be silently accepted either — it stays unset, quarantined for review.
+  expect((await sys(() => db.select().from(b).where(eq(b.id, ba2))))[0]!).toMatchObject({ osPrincipal: null, revokedAt: null });
+  expect(await sys(() => db.select().from(auditLogs).where(and(eq(auditLogs.resourceId, ba2), eq(auditLogs.action, 'caller_verification.binding_observation_quarantined'))))).toHaveLength(1);
 });
 
 it('directory search returns W04 data envelope and enforces real route authorization', async () => {

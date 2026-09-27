@@ -16,6 +16,8 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { deriveDeclaredProject } from '../content/projects';
 import { STRONG_TYPES, type CrosswalkService } from './crosswalkService';
 import { visibleSourcePredicateSql } from './visibility';
+import { SHARED_DEVICE_KEY } from './runScope';
+import { ownerRelPathPattern } from './ownerPath';
 
 export interface FilingRecord {
   fileIndexId: string;
@@ -46,6 +48,24 @@ function displayEntity(type: string, valueNorm: string): string {
   return valueNorm;
 }
 
+/**
+ * Partition predicate atop the shared visibility rule (visibility.ts): smb
+ * rows are org-visible with no extra restriction (same as
+ * fileQueryService/activityService's smb branch). local-profile rows require
+ * BOTH the calling device id and the caller-claimed owning profile — mirrors
+ * fileQueryService.ownedByUsername. Every caller of this service today
+ * (client.ts's Entra-authenticated add-in pane; helper.ts's filing routes
+ * before this scoping was threaded through) had no owner claim to offer, so
+ * missing either half fails closed: local-profile rows are excluded
+ * entirely, never shown for every profile on the device.
+ */
+function partitionPredicateSql(deviceId?: string, ownerUsername?: string) {
+  const localBranch = (deviceId && ownerUsername)
+    ? sql`(s.kind = 'local_profile' AND fi.device_key = ${deviceId} AND fi.rel_path ILIKE ${ownerRelPathPattern(ownerUsername)} ESCAPE '\\')`
+    : sql`(s.kind = 'local_profile' AND false)`;
+  return sql`((s.kind = 'smb_share' AND fi.device_key = ${SHARED_DEVICE_KEY}) OR ${localBranch})`;
+}
+
 export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
   const d = db;
 
@@ -59,6 +79,7 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
    */
   async function unfiledEmails(
     orgId: string, groupIds: string[] = [], fileIndexId?: string,
+    deviceId?: string, ownerUsername?: string,
   ): Promise<Array<{
     id: string; rel_path: string; name: string; email_meta: FilingRecord['emailMeta'];
   }>> {
@@ -73,6 +94,7 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
         AND fi.ext = 'eml'
         ${fileIndexId === undefined ? sql`` : sql`AND fi.id = ${fileIndexId}`}
         AND ${visibleSourcePredicateSql(sql, groupIds)}
+        AND ${partitionPredicateSql(deviceId, ownerUsername)}
       ORDER BY fi.rel_path
     `) as unknown as Array<{
       id: string; rel_path: string; name: string; email_meta: FilingRecord['emailMeta'];
@@ -81,9 +103,13 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
   }
 
   /** One unfiled, visible email; null when unknown, tombstoned, hidden by the
-   * caller's group claims, not an .eml, or already filed under a project path. */
-  async function unfiledEmail(orgId: string, fileIndexId: string, groupIds: string[]) {
-    return (await unfiledEmails(orgId, groupIds, fileIndexId))[0] ?? null;
+   * caller's group claims, not an .eml, already filed under a project path,
+   * or (local-profile only) outside the calling device / claimed owner. */
+  async function unfiledEmail(
+    orgId: string, fileIndexId: string, groupIds: string[],
+    deviceId?: string, ownerUsername?: string,
+  ) {
+    return (await unfiledEmails(orgId, groupIds, fileIndexId, deviceId, ownerUsername))[0] ?? null;
   }
 
   async function filingRowsFor(orgId: string, fileIds: string[]): Promise<Map<string, Record<string, unknown>>> {
@@ -123,8 +149,10 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
   }
 
   return {
-    async list(orgId: string, groupIds: string[] = []): Promise<FilingRecord[]> {
-      const emails = await unfiledEmails(orgId, groupIds);
+    async list(
+      orgId: string, groupIds: string[] = [], deviceId?: string, ownerUsername?: string,
+    ): Promise<FilingRecord[]> {
+      const emails = await unfiledEmails(orgId, groupIds, undefined, deviceId, ownerUsername);
       const filings = await filingRowsFor(orgId, emails.map((e) => e.id));
       return emails.map((e) => toRecord(e, filings.get(e.id)));
     },
@@ -134,8 +162,10 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
      * conditions as `classify` — unknown, tombstoned, hidden, not an .eml, or
      * already filed under a project path — and never creates a row.
      */
-    async get(orgId: string, fileIndexId: string, groupIds: string[] = []): Promise<FilingRecord | null> {
-      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
+    async get(
+      orgId: string, fileIndexId: string, groupIds: string[] = [], deviceId?: string, ownerUsername?: string,
+    ): Promise<FilingRecord | null> {
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds, deviceId, ownerUsername);
       if (!email) return null;
       const filings = await filingRowsFor(orgId, [fileIndexId]);
       return toRecord(email, filings.get(fileIndexId));
@@ -145,8 +175,10 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
      * Classify one unfiled email. Returns null when the file is unknown,
      * tombstoned, hidden, not an email, or not unfiled (404 at the route).
      */
-    async classify(orgId: string, fileIndexId: string, groupIds: string[] = []): Promise<FilingRecord | null> {
-      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
+    async classify(
+      orgId: string, fileIndexId: string, groupIds: string[] = [], deviceId?: string, ownerUsername?: string,
+    ): Promise<FilingRecord | null> {
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds, deviceId, ownerUsername);
       if (!email) return null;
 
       // Deterministic entity order: strongest lead types first, then value —
@@ -221,6 +253,7 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
             WHERE e.org_id = ${orgId}
               AND fi.deleted_at IS NULL
               AND ${visibleSourcePredicateSql(sql, groupIds)}
+              AND ${partitionPredicateSql(deviceId, ownerUsername)}
               AND e.entity_type IN ('person', 'org')
               AND e.value_norm = ANY(${'{' + names.map((n) => `"${n.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',') + '}'}::text[])
               AND en.declared_project_key IS NOT NULL
@@ -290,8 +323,10 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
       projectKey: string,
       decidedLabel: string | null,
       groupIds: string[] = [],
+      deviceId?: string,
+      ownerUsername?: string,
     ): Promise<FilingRecord | null> {
-      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds, deviceId, ownerUsername);
       if (!email) return null;
       const project = (await d.execute(sql`
         SELECT project_key FROM workspace_projects
@@ -316,6 +351,7 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
               AND fi.org_id = ${orgId}
               AND fi.deleted_at IS NULL
               AND ${visibleSourcePredicateSql(sql, groupIds)}
+              AND ${partitionPredicateSql(deviceId, ownerUsername)}
           )
         RETURNING file_index_id
       `) as unknown as Array<{ file_index_id: string }>;

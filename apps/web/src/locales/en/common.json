@@ -979,11 +979,13 @@
         "notConverted": "Not converted"
       },
       "NetworkCheckConversionBanner": {
-        "pending": "{{count}} network checks need review.",
+        "pending_one": "{{count}} network check needs review.",
+        "pending_other": "{{count}} network checks need review.",
         "review": "Review conversion",
         "title": "Network check conversion",
         "convert": "Convert {{count}}",
-        "converted": "Converted {{count}} network checks",
+        "converted_one": "Converted {{count}} network check",
+        "converted_other": "Converted {{count}} network checks",
         "failed": "Could not convert network checks",
         "outcome": {
           "convertible": "Convertible",

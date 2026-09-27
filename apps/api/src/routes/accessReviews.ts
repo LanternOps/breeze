@@ -21,6 +21,7 @@ import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } fro
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
+import { assertCanManageTarget } from '../services/roleAssignment';
 
 export const accessReviewRoutes = new Hono();
 
@@ -454,6 +455,82 @@ accessReviewRoutes.post(
     // this from RLS-filtered organization rows (including an empty set).
     if (scopeContext.scope === 'partner' && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: 'Full partner organization access required' }, 403);
+    }
+
+    // Same rank + scope gate every other cross-user mutation in routes/users.ts
+    // applies (DELETE /:id, POST /:id/mfa/reset, POST /:id/role):
+    // `PATCH /:id/items/:itemId` lets any USERS_WRITE holder mark an item
+    // 'revoked' with no rank/site check of its own, so this completion step
+    // is the only place left to stop a lower-ranked or site-restricted
+    // reviewer from revoking a higher-ranked or out-of-reach admin's access.
+    // Checked against each target's CURRENT membership (not the roleId
+    // captured on the review item at creation time, which can be stale) and
+    // BEFORE the apply transaction, so one unauthorized item fails the whole
+    // completion — never a partial apply.
+    if (uniqueRevokedUserIds.length > 0) {
+      const targetsById = new Map<
+        string,
+        { roleId: string; roleIsSystem: boolean; siteIds?: string[] | null }
+      >();
+
+      if (scopeContext.scope === 'partner') {
+        const rows = await db
+          .select({
+            userId: partnerUsers.userId,
+            roleId: roles.id,
+            roleIsSystem: roles.isSystem
+          })
+          .from(partnerUsers)
+          .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
+          .where(
+            and(
+              eq(partnerUsers.partnerId, scopeContext.partnerId),
+              inArray(partnerUsers.userId, uniqueRevokedUserIds)
+            )
+          );
+        for (const row of rows) {
+          targetsById.set(row.userId, { roleId: row.roleId, roleIsSystem: row.roleIsSystem });
+        }
+      } else {
+        const rows = await db
+          .select({
+            userId: organizationUsers.userId,
+            roleId: roles.id,
+            roleIsSystem: roles.isSystem,
+            siteIds: organizationUsers.siteIds
+          })
+          .from(organizationUsers)
+          .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
+          .where(
+            and(
+              eq(organizationUsers.orgId, scopeContext.orgId),
+              inArray(organizationUsers.userId, uniqueRevokedUserIds)
+            )
+          );
+        for (const row of rows) {
+          targetsById.set(row.userId, {
+            roleId: row.roleId,
+            roleIsSystem: row.roleIsSystem,
+            siteIds: row.siteIds
+          });
+        }
+      }
+
+      for (const userId of uniqueRevokedUserIds) {
+        const target = targetsById.get(userId);
+        // Membership already gone (e.g. removed by a concurrent request) —
+        // the delete below is a no-op for this id, nothing to authorize.
+        if (!target) continue;
+
+        const manageError = await assertCanManageTarget(c, auth, scopeContext, {
+          roleId: target.roleId,
+          isSystem: target.roleIsSystem,
+          siteIds: target.siteIds
+        });
+        if (manageError) {
+          return c.json({ error: `Cannot complete review: ${manageError}` }, 403);
+        }
+      }
     }
 
     // Task 9: this is a MULTI-user mutation revoking OTHER users' access.

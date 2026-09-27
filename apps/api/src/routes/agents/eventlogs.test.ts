@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   select: vi.fn(),
   insert: vi.fn(),
   rateLimiter: vi.fn(),
+  checkAndConsumeIngestQuota: vi.fn(),
   getDeviceEventLogSettings: vi.fn(),
   enqueueLogForwarding: vi.fn(),
   getOrgForwardingConfig: vi.fn(),
@@ -56,6 +57,10 @@ vi.mock('../../services/redis', () => ({
 
 vi.mock('../../services/rate-limit', () => ({
   rateLimiter: mocks.rateLimiter,
+}));
+
+vi.mock('../../services/ingestQuota', () => ({
+  checkAndConsumeIngestQuota: mocks.checkAndConsumeIngestQuota,
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -178,6 +183,7 @@ describe('agent event log routes', () => {
       resetAt: new Date('2026-05-02T13:00:00.000Z'),
     });
     mocks.getOrgForwardingConfig.mockResolvedValue({ endpoint: 'https://logs.example.com' });
+    mocks.checkAndConsumeIngestQuota.mockResolvedValue({ allowed: true, rowsUsed: 1, bytesUsed: 100 });
   });
 
   afterEach(() => {
@@ -232,6 +238,42 @@ describe('agent event log routes', () => {
     // The removed `rawData` field must not resurface in the forward payload.
     const forwarded = mocks.enqueueLogForwarding.mock.calls[0]?.[0];
     expect(forwarded.events[0]).not.toHaveProperty('rawData');
+  });
+
+  it('drops the batch with 429 once the per-device daily byte budget is exceeded', async () => {
+    mockDeviceLookup();
+    const values = mockInsertSuccess();
+    mocks.checkAndConsumeIngestQuota.mockResolvedValueOnce({
+      allowed: false,
+      rowsUsed: 1,
+      bytesUsed: 3 * 1024 * 1024 * 1024,
+    });
+
+    const res = await app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(values).not.toHaveBeenCalled();
+  });
+
+  it('drops the batch with 429 once the per-org daily row/byte budget is exceeded', async () => {
+    mockDeviceLookup();
+    const values = mockInsertSuccess();
+    mocks.checkAndConsumeIngestQuota
+      .mockResolvedValueOnce({ allowed: true, rowsUsed: 1, bytesUsed: 100 }) // device check
+      .mockResolvedValueOnce({ allowed: false, rowsUsed: 2_000_100, bytesUsed: 100 }); // org check
+
+    const res = await app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(values).not.toHaveBeenCalled();
   });
 
   it('runs the rate limiter and the forwarding enqueue with NO DB context open (#6097 / #1105)', async () => {

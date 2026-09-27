@@ -23,6 +23,13 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ conditions }),
   eq: (left: unknown, right: unknown) => ({ left, right }),
 }));
+// The remote-tools policy check has its own suites
+// (aiDispatch.test.ts, systemCleanup.aiOrigin.test.ts); allow it here.
+vi.mock('./aiRemoteToolsPolicy', () => ({
+  REMOTE_TOOLS_DISABLED_BY_POLICY: 'REMOTE_TOOLS_DISABLED_BY_POLICY',
+  checkAiRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+  assertAiRemoteToolsAllowed: vi.fn(async () => undefined),
+}));
 vi.mock('./commandQueue', () => ({
   queueCommandForExecutionWithSystemPrecheck: seam.queue,
   CommandTypes: { SYSTEM_CLEANUP_LIST: 'system_cleanup_list', SYSTEM_CLEANUP_RUN: 'system_cleanup_run' },

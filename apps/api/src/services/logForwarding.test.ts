@@ -306,7 +306,7 @@ describe('organization forwarding destination resolution', () => {
 
   it('uses the enabled partner destination even when the org has its own', async () => {
     prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, { eventLogs: partnerConfig });
-    expect(await getOrgForwardingConfig(orgId)).toEqual(partnerConfig);
+    expect(await getOrgForwardingConfig(orgId)).toEqual({ ...partnerConfig, sharedAcrossOrgs: true });
     expect(decryptForColumn).not.toHaveBeenCalledWith('organizations', 'settings', 'org-key');
   });
 
@@ -340,6 +340,37 @@ describe('organization forwarding destination resolution', () => {
       headers: expect.objectContaining({ authorization: 'ApiKey org-key' }),
     }));
     expect(decryptForColumn).toHaveBeenCalledWith('organizations', 'settings', 'org-key');
+  });
+
+  it('routes two orgs on a shared partner destination to distinct indices', async () => {
+    const otherOrgId = '00000000-0000-4000-8000-000000000003';
+    prime({}, { eventLogs: partnerConfig });
+
+    await bulkIndexEvents(orgId, [event]);
+    const firstIndexName = JSON.parse(
+      (safeFetchMock.mock.calls[0]![1]!.body as string).split('\n')[0]!,
+    ).index._index;
+
+    safeFetchMock.mockClear();
+    await bulkIndexEvents(otherOrgId, [event]);
+    const secondIndexName = JSON.parse(
+      (safeFetchMock.mock.calls[0]![1]!.body as string).split('\n')[0]!,
+    ).index._index;
+
+    expect(firstIndexName).not.toBe(secondIndexName);
+    expect(firstIndexName).toContain(orgId);
+    expect(secondIndexName).toContain(otherOrgId);
+  });
+
+  it('keeps a single-tenant org-owned index name unchanged (backward compatible)', async () => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, {});
+
+    await bulkIndexEvents(orgId, [event]);
+
+    const indexName = JSON.parse(
+      (safeFetchMock.mock.calls[0]![1]!.body as string).split('\n')[0]!,
+    ).index._index;
+    expect(indexName).toMatch(/^breeze-logs-\d{4}\.\d{2}\.\d{2}$/);
   });
 
   it('pins the elevated partner read to the live org relationship', async () => {

@@ -224,17 +224,81 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
     // Identity: `version` drives the version pin/block rules in
     // `patchApprovalEvaluator`, so agent scan data may only FILL it.
     expect(row?.version).toBe('121.0');
-    // Severity is raise-only on the agent path — 'low' cannot lower 'critical'
-    // for every other tenant reading this shared row.
-    expect(row?.severity).toBe('critical');
-    // Operational: refreshed, exactly as the legitimate rescan flow needs.
+    // `Mozilla.Firefox` is a curated third-party catalog entry (seed migration
+    // 2026-05-13-c), so the catalog's own defaults classify this row — NOT
+    // either device's reported 'critical'/'security' or 'low'/'application'.
+    // Neither agent report can move it either way once the catalog has set it.
+    expect(row?.severity).toBe('important');
     expect(row?.category).toBe('application');
+    // Genuinely operational columns keep refreshing.
     expect(row?.requiresReboot).toBe(false);
     expect(row?.description).toBe('Rewritten description');
     // The per-device observed available version DOES advance — it lives on the
     // tenant-scoped device_patches row, one value per device.
     expect((await getDevicePatchRow(first.id, externalId))?.availableVersion).toBe('121.0');
     expect((await getDevicePatchRow(second.id, externalId))?.availableVersion).toBe('122.0');
+  });
+
+  runDb('never lets an agent report originate or move classification on an uncurated row', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const first = await insertDevice(env.organization.id, env.site.id);
+    const second = await insertDevice(env.organization.id, env.site.id);
+    // Deliberately NOT a seeded third-party catalog package, and a source the
+    // catalog lookup skips entirely (`enrichFromCatalog` only ever queries the
+    // catalog for `source === 'third_party'`) — this row has no trusted
+    // classification source at all, so it must stay 'unknown'/NULL forever,
+    // no matter what either device claims.
+    const externalId = `itest.uncurated.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const firstRes = await putJson(
+      mountRoutes(env.organization.id, first.agentId),
+      env.organization.id,
+      `/agents/${first.agentId}/patches/pending`,
+      {
+        source: 'microsoft',
+        patches: [{
+          name: 'Uncurated Update',
+          source: 'microsoft',
+          externalId,
+          packageId: `KB${externalId}`,
+          version: '1.0',
+          // A wrong first report claiming maximum
+          // severity — this must NOT land on the shared row.
+          severity: 'critical',
+          category: 'security',
+        }],
+      },
+    );
+    expect(firstRes.status).toBe(200);
+
+    const afterFirst = await getPatchRow(externalId);
+    expect(afterFirst?.severity).toBe('unknown');
+    expect(afterFirst?.category).toBeNull();
+
+    // A second device reports the SAME row with a different (also untrusted)
+    // classification — still must not move it.
+    const secondRes = await putJson(
+      mountRoutes(env.organization.id, second.agentId),
+      env.organization.id,
+      `/agents/${second.agentId}/patches/pending`,
+      {
+        source: 'microsoft',
+        patches: [{
+          name: 'Uncurated Update',
+          source: 'microsoft',
+          externalId,
+          packageId: `KB${externalId}`,
+          version: '1.1',
+          severity: 'low',
+          category: 'application',
+        }],
+      },
+    );
+    expect(secondRes.status).toBe(200);
+
+    const afterSecond = await getPatchRow(externalId);
+    expect(afterSecond?.severity).toBe('unknown');
+    expect(afterSecond?.category).toBeNull();
   });
 
   runDb('does not blank operational columns when a later scan simply omits them', async () => {
@@ -266,9 +330,12 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
 
     const row = await getPatchRow(externalId);
     expect(row?.description).toBe('Security fix');
-    expect(row?.category).toBe('security');
+    // `AcmeCorp.InternalTool` has no catalog entry, so classification is
+    // never set from either scan's agent-reported severity/category — it
+    // stays neutral regardless of what the agent claims or how many scans run.
+    expect(row?.category).toBeNull();
     expect(row?.requiresReboot).toBe(true);
-    expect(row?.severity).toBe('critical');
+    expect(row?.severity).toBe('unknown');
     // The shared catalog version is fill-only, so the rescan cannot move it.
     expect(row?.version).toBe('2.55.0');
     // The one thing the sparser scan did report still lands — on the

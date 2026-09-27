@@ -56,6 +56,8 @@ import { resolvePartnerOrgReach } from '../services/partnerOrgSelection';
 import { stripOrgLifecycleInternalSettings } from '../services/orgSettingsInternalKeys';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { isEncryptedSecret } from '../services/secretCrypto';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
@@ -1851,6 +1853,29 @@ orgRoutes.patch(
   },
 );
 
+/** Thrown inside the create-organization transaction to roll back an insert
+ *  that a concurrent create pushed past `partner.maxOrganizations` — mirrors
+ *  the identically-named class in `routes/partnerApi/provisioning.ts`. */
+class OrgQuotaExceededError extends Error {
+  constructor(readonly cap: number) {
+    super('partner organization quota exceeded');
+    this.name = 'OrgQuotaExceededError';
+  }
+}
+
+/** Same tally `routes/partnerApi/provisioning.ts` uses for the same cap. */
+async function countPartnerOrganizations(partnerId: string): Promise<number> {
+  const [tally] = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(organizations)
+    .where(and(
+      eq(organizations.partnerId, partnerId),
+      isNull(organizations.deletedAt),
+      ne(organizations.type, 'quick_support'),
+    ));
+  return tally?.value ?? 0;
+}
+
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
@@ -1875,12 +1900,27 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   }
 
   const [partnerRow] = await db
-    .select({ currencyCode: partners.currencyCode })
+    .select({ currencyCode: partners.currencyCode, maxOrganizations: partners.maxOrganizations })
     .from(partners)
     .where(and(eq(partners.id, targetPartnerId), isNull(partners.deletedAt)))
     .limit(1);
   if (!partnerRow) {
     return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  // Same cap `POST /partner-api/organizations` already enforces
+  // (partners.maxOrganizations, NULL = unlimited) — this human-facing route
+  // had no quota at all, so a partner (or an org member with org-access-all
+  // creating orgs) had no ceiling on how many orgs — and therefore how many
+  // event-WS Redis subscriptions and how much other per-org fan-out — a
+  // single partner could accumulate. Fast-path pre-check only; racy by
+  // construction like the slug check just below, and backed the same way —
+  // see the post-insert recount inside `insertOrganization()`.
+  if (partnerRow.maxOrganizations != null) {
+    const orgCount = await countPartnerOrganizations(targetPartnerId);
+    if (orgCount >= partnerRow.maxOrganizations) {
+      return c.json({ error: 'Organization quota reached for this partner' }, 409);
+    }
   }
 
   // #3967 — refuse a duplicate slug with a 409 before inserting. Backed by the
@@ -1925,6 +1965,19 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       if (created[0] && data.billingContact) {
         await syncBillingContactRow(db, created[0].id, data.billingContact, auth.user?.id ?? null);
       }
+      // Race-free quota enforcement, same trick `POST /partner-api/organizations`
+      // uses: the insert's own AFTER trigger takes the partner discovery lock
+      // EXCLUSIVE, so a concurrent same-partner org insert serializes on it
+      // until COMMIT — by the time a second transaction's insert returns, the
+      // first one's row is already visible to this READ COMMITTED recount.
+      // Over the cap after the real insert -> throw, which rolls this whole
+      // transaction (including the insert we just made) back.
+      if (created[0] && partnerRow.maxOrganizations != null) {
+        const recount = await countPartnerOrganizations(insertValues.partnerId);
+        if (recount > partnerRow.maxOrganizations) {
+          throw new OrgQuotaExceededError(partnerRow.maxOrganizations);
+        }
+      }
       return created;
     })
   );
@@ -1936,6 +1989,10 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   try {
     [organization] = await insertOrganization();
   } catch (error) {
+    if (error instanceof OrgQuotaExceededError) {
+      // The transaction (including the over-cap insert) has already rolled back.
+      return c.json({ error: 'Organization quota reached for this partner' }, 409);
+    }
     if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
       // Only reachable when a concurrent write claimed the slug between the
       // pre-check and this statement. Logged because a spike here means the
@@ -2241,6 +2298,10 @@ function lifecycleFrozenMessage(status: string | null | undefined): string | und
   return (LIFECYCLE_FROZEN_ORG_STATUSES as Record<string, string | undefined>)[status];
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 /**
  * The org's CURRENT status, read under a system context because a frozen org is
  * outside every request's accessible set. Only called when a status write was
@@ -2437,6 +2498,37 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.settings !== undefined) {
     const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
     if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+
+    // Same origin-binding contract as credentialOriginBinding.ts:
+    // this write replaces `settings` WHOLESALE, and the settings editor
+    // round-trips the stored `eventLogs.elasticsearchApiKey`/`Password`
+    // ciphertext unchanged whenever the operator saves the category without
+    // retyping the credential — including a save that only edits
+    // `elasticsearchUrl`. Refuse a request that carries the stored
+    // ciphertext forward to a new destination origin; require the
+    // credential to be re-entered instead.
+    const incomingEventLogs = isPlainRecord(data.settings) ? data.settings.eventLogs : undefined;
+    if (isPlainRecord(incomingEventLogs) && typeof incomingEventLogs.elasticsearchUrl === 'string') {
+      const [currentOrg] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, id))
+        .limit(1);
+      const storedEventLogs = isPlainRecord(currentOrg?.settings) ? currentOrg.settings.eventLogs : undefined;
+      const storedUrl = isPlainRecord(storedEventLogs) ? storedEventLogs.elasticsearchUrl : undefined;
+
+      if (typeof storedUrl === 'string' && urlOriginChanged(storedUrl, incomingEventLogs.elasticsearchUrl)) {
+        const carriesStoredSecret = ['elasticsearchApiKey', 'elasticsearchPassword'].some((field) => {
+          const value = incomingEventLogs[field];
+          return typeof value === 'string' && isEncryptedSecret(value);
+        });
+        if (carriesStoredSecret) {
+          return c.json({
+            error: 'Changing the log-forwarding destination requires re-entering the API key or password',
+          }, 400);
+        }
+      }
+    }
 
     // This write replaces `settings` WHOLESALE, so a client payload naming a
     // lifecycle-internal key would become that key's stored value. Strip them

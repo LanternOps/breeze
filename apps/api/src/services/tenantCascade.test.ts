@@ -18,6 +18,8 @@ const mockState = vi.hoisted(() => ({
   artifactKeyRows: [] as Array<{ blob_key: string }>,
   /** when set, the artifact key SELECT rejects with this instead of returning rows. */
   artifactKeyError: null as unknown,
+  /** rows the legal-hold precheck SELECT returns (default: none, i.e. no hold). */
+  legalHoldRows: [] as Array<{ id: string }>,
 }));
 
 function sqlToText(q: unknown): string {
@@ -55,6 +57,11 @@ vi.mock('../db', () => ({
       // Topological query: if it asks for FK edges, return those.
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
+      }
+      // Legal-hold precheck — a plain SELECT, not a DELETE, so it must not
+      // consume a queued rowCount response. Default: no hold in effect.
+      if (text.includes('legal_hold')) {
+        return Promise.resolve(mockState.legalHoldRows ?? []);
       }
       // SET LOCAL statements don't consume the queue (they're bookkeeping
       // for the audit_logs DELETE bypass).
@@ -136,6 +143,7 @@ import {
   getOrgCascadeDeleteOrder,
   cascadeDeleteOrg,
   topologicalCascadeOrder,
+  TenantCascadeRefusalError,
   __testOnly,
 } from './tenantCascade';
 import { db } from '../db';
@@ -270,7 +278,49 @@ describe('cascadeDeleteOrg', () => {
     mockState.executeResponses = [];
     mockState.executedSql = [];
     mockState.fkEdges = [];
+    mockState.legalHoldRows = [];
     vi.mocked(db.execute).mockClear();
+    createAuditLogMock.mockClear();
+  });
+
+  it('refuses erasure while a backup snapshot is under legal hold, before deleting anything', async () => {
+    mockState.legalHoldRows = [{ id: 'snap-1' }];
+
+    await expect(
+      cascadeDeleteOrg(
+        '00000000-0000-0000-0000-000000000001',
+        '00000000-0000-0000-0000-000000000002',
+        'admin@example.com',
+      ),
+    ).rejects.toThrow(TenantCascadeRefusalError);
+
+    // No DELETE statement of any kind was issued.
+    expect(mockState.executedSql.some((text) => /^\s*delete/i.test(text))).toBe(false);
+    // The refusal itself is audited.
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.refused_legal_hold',
+        result: 'failure',
+        resourceId: '00000000-0000-0000-0000-000000000001',
+      }),
+    );
+  });
+
+  it('proceeds normally when no backup snapshot is under legal hold', async () => {
+    mockState.legalHoldRows = [];
+    mockState.executeResponses = [];
+
+    const stats = await cascadeDeleteOrg(
+      '00000000-0000-0000-0000-000000000001',
+      '00000000-0000-0000-0000-000000000002',
+    );
+
+    expect(stats.orgId).toBe('00000000-0000-0000-0000-000000000001');
+    expect(
+      (createAuditLogMock.mock.calls as unknown as Array<[{ action?: string }]>).some(
+        ([arg]) => arg?.action === 'tenant.erasure.refused_legal_hold',
+      ),
+    ).toBe(false);
   });
 
   it('issues a DELETE for every cascade table plus the audit + cleanup SQL', async () => {

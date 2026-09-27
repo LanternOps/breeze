@@ -244,7 +244,7 @@ function accountingSystem(provider: string): 'quickbooks' | 'xero' {
 /**
  * `organization_external_links.system` values that belong to the accounting
  * vocabulary (written by the QuickBooks/Xero customer import — see
- * services/accounting/quickbooksCustomerImport.ts's `externalSystem: PROVIDER`,
+ * services/accounting/accountingCustomerImport.ts's `externalSystem: conn.provider`,
  * read back by accountingMappingService.ts). loadAccounting already reports
  * the real mapping for these under accounting:read (or withholds it entirely
  * without that grant); an "external identity" fallback must never also claim

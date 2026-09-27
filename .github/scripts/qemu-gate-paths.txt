@@ -29,6 +29,7 @@ agent/internal/backup/layout/
 agent/internal/backup/mssql/
 agent/internal/backup/providers/
 agent/internal/backup/rebuild/
+agent/internal/backup/storagesession/
 agent/internal/backup/systemstate/
 agent/internal/backup/vss/
 agent/internal/backup/wingpt/
@@ -39,6 +40,7 @@ agent/internal/hostpolicy/
 agent/internal/httputil/
 agent/internal/ipc/
 agent/internal/logging/
+agent/internal/mtls/
 agent/internal/recoveryconsole/
 agent/internal/secmem/
 agent/internal/securefs/

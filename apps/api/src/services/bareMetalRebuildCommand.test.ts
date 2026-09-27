@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { queueCommandForExecutionMock, createAuditLogAsyncMock, encryptMock } = vi.hoisted(() => ({
+const { queueCommandForExecutionMock, queueCommandForExecutionWithSystemPrecheckMock, createAuditLogAsyncMock, encryptMock } = vi.hoisted(() => ({
   queueCommandForExecutionMock: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
+  queueCommandForExecutionWithSystemPrecheckMock: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
   createAuditLogAsyncMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(async () => undefined),
   encryptMock: vi.fn((_type: string, payload: Record<string, unknown>) => ({ ...payload, token: 'enc:' + String(payload.token) })),
 }));
 
 vi.mock('./commandQueue', () => ({
   queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
+  queueCommandForExecutionWithSystemPrecheck: (...args: unknown[]) => queueCommandForExecutionWithSystemPrecheckMock(...(args as [])),
 }));
 vi.mock('./auditService', () => ({
   createAuditLogAsync: (entry: Record<string, unknown>) => createAuditLogAsyncMock(entry),
@@ -19,7 +21,7 @@ vi.mock('./sensitiveCommandPayload', async (importOriginal) => {
 
 import { CommandTypes } from './commandTypes';
 import { TERMINAL_PAYLOAD_STRIP_KEYS, hasSensitivePayload } from './sensitiveCommandPayload';
-import { bareMetalRebuildPayloadSchema, queueBareMetalRebuild } from './bareMetalRebuildCommand';
+import { bareMetalRebuildPayloadSchema, queueBareMetalRebuild, queueBareMetalRebuildWithSystemPrecheck } from './bareMetalRebuildCommand';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const HOST_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -117,6 +119,38 @@ describe('queueBareMetalRebuild', () => {
 
     expect(out).toEqual({ command: null, error: 'Device is offline' });
     expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsyncMock.mock.calls[0]![0]).toMatchObject({ action: 'bmr.rebuild.command', result: 'failure', errorMessage: 'Device is offline' });
+  });
+});
+
+// #242 hardening: the no-ambient-context variant used by drExecutionService's
+// post-commit DR dispatcher. Same contract as queueBareMetalRebuild, routed
+// through queueCommandForExecutionWithSystemPrecheck instead.
+describe('queueBareMetalRebuildWithSystemPrecheck', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queueCommandForExecutionWithSystemPrecheckMock.mockResolvedValue({ command: { id: 'cmd-1', status: 'sent' } });
+  });
+
+  it('dispatches via the with-system-precheck path, never the ambient one', async () => {
+    const out = await queueBareMetalRebuildWithSystemPrecheck({ orgId: ORG_ID, hostDeviceId: HOST_ID, payload: validPayload, userId: USER_ID });
+
+    expect(out).toEqual({ command: { id: 'cmd-1', status: 'sent' }, error: null });
+    expect(queueCommandForExecutionWithSystemPrecheckMock).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const [deviceId, type, payload, options] = queueCommandForExecutionWithSystemPrecheckMock.mock.calls[0]!;
+    expect(deviceId).toBe(HOST_ID);
+    expect(type).toBe('bare_metal_rebuild');
+    expect(payload).toMatchObject({ recoveryId: RECOVERY_ID, token: `enc:${validPayload.token}` });
+    expect(options).toEqual({ userId: USER_ID, expectedOrgId: ORG_ID });
+  });
+
+  it('propagates a dispatch error and still audits the failure', async () => {
+    queueCommandForExecutionWithSystemPrecheckMock.mockResolvedValue({ error: 'Device is offline' });
+
+    const out = await queueBareMetalRebuildWithSystemPrecheck({ orgId: ORG_ID, hostDeviceId: HOST_ID, payload: validPayload });
+
+    expect(out).toEqual({ command: null, error: 'Device is offline' });
     expect(createAuditLogAsyncMock.mock.calls[0]![0]).toMatchObject({ action: 'bmr.rebuild.command', result: 'failure', errorMessage: 'Device is offline' });
   });
 });

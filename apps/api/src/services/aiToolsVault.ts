@@ -95,6 +95,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       // Site axis: a site-restricted caller may only see vaults for devices in
       // their allowed sites (RLS does NOT enforce site). Narrow to that set.
       const orgId = getOrgId(auth);
+      // Fail closed: a site-restricted caller whose org never
+      // resolves must not fall through to an unfiltered query.
+      if (auth.allowedSiteIds && !orgId) {
+        return JSON.stringify({ vaults: [], showing: 0 });
+      }
       if (auth.allowedSiteIds && orgId) {
         const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
         if (!allowed || allowed.length === 0) {

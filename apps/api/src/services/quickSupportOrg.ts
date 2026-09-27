@@ -1,7 +1,32 @@
 import { ensureDefaultProfile } from './billingProfileService';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { organizations, partners, sites } from '../db/schema';
+import { devices, organizations, partners, sites } from '../db/schema';
+
+/**
+ * Excludes the hidden per-partner 'quick_support' org from a query over
+ * `organizations` — for a partner-wide fan-out (monitors, automations,
+ * config policies, …), its devices are a stranger's own machine mid support
+ * session, never fleet the partner authored unattended work against.
+ */
+export function excludeQuickSupportOrgs(): SQL {
+  return ne(organizations.type, 'quick_support');
+}
+
+/**
+ * Excludes ephemeral (Quick Support session) devices from a query over
+ * `devices`. Defense in depth alongside `excludeQuickSupportOrgs` — every
+ * ephemeral device lives in the hidden quick_support org, so this only
+ * matters when a caller queries devices without first excluding that org.
+ */
+export function excludeEphemeralDevices(): SQL {
+  return eq(devices.isEphemeral, false);
+}
+
+/** True when an already-loaded org row is the hidden per-partner quick_support org. */
+export function isQuickSupportOrgType(type: string | null | undefined): boolean {
+  return type === 'quick_support';
+}
 
 /**
  * Resolve (creating on first use) the hidden 'quick_support' organization for a

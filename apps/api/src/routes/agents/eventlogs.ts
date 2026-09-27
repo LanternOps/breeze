@@ -7,12 +7,31 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentIngestSubmission } from '../metrics';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
+import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { submitEventLogsSchema } from './schemas';
 import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { captureException } from '../../services/sentry';
+import { envInt } from '../../utils/envInt';
+
+/**
+ * `settings.rateLimitPerHour` (default 12,000/device/hour) already bounds
+ * per-device ROW volume, but not bytes (a row can be up to ~67.5KB — 2000
+ * char message + 64KB details — so the row cap alone still admits ~19GB/day
+ * from one device) and not an ORG-wide aggregate across its whole fleet.
+ * These close both gaps.
+ */
+const AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY = envInt(
+  'AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY',
+  2 * 1024 * 1024 * 1024,
+);
+const AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY = envInt('AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY', 2_000_000);
+const AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY = envInt(
+  'AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY',
+  10 * 1024 * 1024 * 1024,
+);
 
 const LEVEL_ORDER: Record<string, number> = {
   info: 0,
@@ -216,6 +235,47 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       details: mergeEventDetails(event.details, normalized)
     };
   });
+
+  // Daily per-device byte and per-org row+byte ingest budget, checked before
+  // the batch is written — outside any held DB context, same as the rate
+  // limiter above.
+  {
+    const eventBatchBytes = Buffer.byteLength(JSON.stringify(rows), 'utf-8');
+    const quotaRedis = getRedis();
+    const [deviceQuota, orgQuota] = await Promise.all([
+      checkAndConsumeIngestQuota({
+        redis: quotaRedis,
+        prefix: 'event_logs',
+        scope: 'device',
+        id: deviceId,
+        rows: rows.length,
+        bytes: eventBatchBytes,
+        // Row volume is already bounded by settings.rateLimitPerHour above;
+        // only bytes need a fresh daily ceiling here.
+        maxRows: Number.POSITIVE_INFINITY,
+        maxBytes: AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY,
+      }),
+      checkAndConsumeIngestQuota({
+        redis: quotaRedis,
+        prefix: 'event_logs',
+        scope: 'org',
+        id: deviceOrgId,
+        rows: rows.length,
+        bytes: eventBatchBytes,
+        maxRows: AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY,
+        maxBytes: AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY,
+      }),
+    ]);
+
+    if (!deviceQuota.allowed || !orgQuota.allowed) {
+      console.warn(
+        `[EventLogs] Daily ingest budget exceeded for device ${deviceId} org ${deviceOrgId} `
+        + `(device bytes=${deviceQuota.bytesUsed}, org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) `
+        + `— dropping ${rows.length} row(s)`,
+      );
+      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length }, 429);
+    }
+  }
 
   // Key matching the device_event_logs_dedup_idx axes (deviceId is constant
   // per request) so forwarding can be gated on rows that actually inserted.

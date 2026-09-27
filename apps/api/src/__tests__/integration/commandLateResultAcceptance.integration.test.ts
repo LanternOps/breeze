@@ -93,7 +93,9 @@ async function seedTimedOutRestartService(
       payload: { name: opts.serviceName ?? 'spooler' },
       status: 'failed',
       completedAt: new Date(),
-      result: { status: 'timeout', error: 'Command timed out after 30000ms' },
+      // What waitForCommandResult writes at its deadline, including the
+      // server-only `timedOutBy` marker the reopen predicate requires.
+      result: { status: 'timeout', error: 'Command timed out after 30000ms', timedOutBy: 'server' },
     })
     .returning({ id: deviceCommands.id });
   if (!command) throw new Error('seedTimedOutRestartService: no command');

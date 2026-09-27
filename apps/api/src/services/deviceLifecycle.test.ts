@@ -37,6 +37,7 @@ const DEV = '11111111-1111-4111-8111-111111111111';
 interface Script {
   lockRow?: Record<string, unknown> | null;
   pendingUninstall?: boolean;
+  protectedBackupSnapshot?: boolean;
   updatedRow?: Record<string, unknown>;
 }
 
@@ -66,6 +67,10 @@ function makeTx(script: Script) {
       if (text.includes('self_uninstall')) {
         calls.push('pending-check');
         return script.pendingUninstall ? [{ id: 'cmd' }] : [];
+      }
+      if (text.includes('backup_snapshots')) {
+        calls.push('backup-hold-check');
+        return script.protectedBackupSnapshot ? [{ id: 'snap' }] : [];
       }
       if (text.includes('set_config')) {
         calls.push('restore-lock-timeout');
@@ -225,6 +230,29 @@ describe('purgeRemovedDevice', () => {
     // The inverse order against a concurrent Remove (which locks devices then
     // writes device_commands) is a textbook AB-BA deadlock (40P01).
     expect(calls.indexOf('lock')).toBeLessThan(calls.indexOf('pending-check'));
+  });
+
+  it('refuses while the device has a backup snapshot under legal hold or immutability', async () => {
+    const { tx } = makeTx({
+      lockRow: { id: DEV, status: 'decommissioned', link_group_id: null },
+      protectedBackupSnapshot: true,
+    });
+    await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({
+      code: 'BACKUP_PROTECTED',
+      status: 409,
+    });
+    expect(deleteDeviceCascade).not.toHaveBeenCalled();
+  });
+
+  it('checks for a protected backup snapshot only AFTER the pending-uninstall check', async () => {
+    const { tx, calls } = makeTx({
+      lockRow: { id: DEV, status: 'decommissioned', link_group_id: null },
+      protectedBackupSnapshot: true,
+    });
+    await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({ code: 'BACKUP_PROTECTED' });
+    expect(calls.indexOf('pending-check')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('backup-hold-check')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('pending-check')).toBeLessThan(calls.indexOf('backup-hold-check'));
   });
 
   it('cascades and dissolves the link group when eligible', async () => {

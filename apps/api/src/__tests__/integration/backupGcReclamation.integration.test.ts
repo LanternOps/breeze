@@ -390,3 +390,66 @@ runDb('scenario 8b: a retirement swept less than 30 days ago is NOT pruned', asy
   );
   expect(rows).toHaveLength(1);
 });
+
+runDb('scenario 9: a second org sharing the same physical storage identity can never defer another org\'s reclamation, and neither org\'s sweep ever deletes the other\'s live objects', async () => {
+  const uniqueA = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a`;
+  const uniqueB = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-b`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-cross-org-'));
+
+  // Both orgs' configs resolve to the SAME physical path (`root`) -- the
+  // exact shape a cross-org storage-identity collision describes: config create validates shape
+  // only, so nothing stops a second, unrelated org from registering the same
+  // physical location. Org B's device is on a pre-server-base helper
+  // version, which is what makes its identity's OWN reclamation defer to
+  // the legacy "every listed manifest is a root" algorithm. Each org is
+  // seeded in its OWN withSystemDbAccessContext call (not one shared
+  // transaction) -- partner export locking requires every partner lock in a
+  // transaction to be acquired before any organization lock, which two
+  // interleaved seedOrgDeviceConfig calls in one transaction would violate;
+  // this is an artifact of the test's own two-seed shape, unrelated to the
+  // fix under test.
+  const seedA = await withSystemDbAccessContext(() => seedOrgDeviceConfig(uniqueA, root, '0.112.0'));
+  const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(uniqueB, root, '0.1.0'));
+
+  await withSystemDbAccessContext(async () => {
+    // Org A: a long-retired snapshot with one exclusively-its-own file --
+    // ordinary reclamation should sweep it clean this run.
+    await writeAged(root, 'snapshots/A-RETIRED/manifest.json', 20 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [
+      { backupPath: 'snapshots/A-RETIRED/files/only-in-a.dat' },
+    ] }));
+    await writeAged(root, 'snapshots/A-RETIRED/files/only-in-a.dat', 20 * 24 * 60 * 60 * 1000);
+    await db.insert(backupSnapshotRetirements).values({
+      orgId: seedA.orgId, configId: seedA.configId, deviceId: seedA.deviceId,
+      snapshotId: 'A-RETIRED', storageIdentity: seedA.identity, backupType: 'file', reason: 'expired',
+      retiredAt: new Date(),
+    });
+
+    // Org B: a live, retained snapshot -- must never be touched by org A's
+    // (or anyone else's) sweep, however old.
+    await writeAged(root, 'snapshots/B-LIVE/manifest.json', 20 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [
+      { backupPath: 'snapshots/B-LIVE/files/b.dat' },
+    ] }));
+    await writeAged(root, 'snapshots/B-LIVE/files/b.dat', 20 * 24 * 60 * 60 * 1000);
+    await insertSnapshotRow({ ...seedB, snapshotId: 'B-LIVE', identity: seedB.identity });
+  });
+
+  expect(seedA.identity).toBe(seedB.identity); // sanity: genuinely one shared physical identity
+
+  await sweepUnreferencedBackupObjects();
+
+  const remaining = await listAll(root);
+
+  // Org A's retirement was reclaimed -- proves org B's legacy-helper device
+  // never deferred or blocked org A's OWN identity group. Pre-fix, one
+  // shared (un-org-scoped) identity group meant B's device deferred BOTH
+  // orgs' reclamation to the legacy "every listed manifest is a root"
+  // algorithm, and A-RETIRED would still be present here.
+  expect(remaining).not.toContain('snapshots/A-RETIRED/files/only-in-a.dat');
+  expect(remaining).not.toContain('snapshots/A-RETIRED/manifest.json');
+
+  // Org B's live snapshot is completely untouched -- proves org A's
+  // independent sweep of the SAME physical bucket never treats another
+  // org's objects as its own to reclaim.
+  expect(remaining).toContain('snapshots/B-LIVE/manifest.json');
+  expect(remaining).toContain('snapshots/B-LIVE/files/b.dat');
+});

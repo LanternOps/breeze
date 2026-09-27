@@ -60,11 +60,21 @@ export function worstBackupStatus(
  * of the union.
  */
 export function mapBackupJobStatus(
-  jobStatus: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'partial' | null,
+  jobStatus:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'completed_with_errors'
+    | 'failed'
+    | 'cancelled'
+    | 'partial'
+    | null,
 ): ExternalBackupStatus {
   switch (jobStatus) {
     case 'completed':
       return 'completed';
+    // #5396: a restore point with file failures under the partial threshold.
+    case 'completed_with_errors':
     case 'partial':
       return 'completed_with_errors';
     case 'failed':

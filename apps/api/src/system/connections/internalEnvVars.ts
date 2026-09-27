@@ -12,14 +12,34 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ABUSE_SIGNAL_OVERRIDES: 'abuse heuristic weight overrides',
   // AGENT_*
   AGENT_BINARY_DIR: 'filesystem path',
+  AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
+  AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
+  AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
+  AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
+  AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_LOG_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
+  AGENT_LOG_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_LOG_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
+  AGENT_LOG_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_LOG_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   AGENT_LOG_RETENTION_DAYS: 'data retention window',
   AGENT_LOG_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AGENT_ORG_RATE_LIMIT_MAX: 'rate limit knob',
   AGENT_ORG_RATE_LIMIT_PER_DEVICE: 'rate limit knob',
   AGENT_ORG_RATE_LIMIT_PER_MIN: 'rate limit knob',
+  AGENT_ROLLBACK_DENYLISTED_VERSIONS: 'agent rollback safety list',
+  AGENT_ROLLBACK_MIN_VERSION: 'agent rollback safety floor',
   AGENT_TOKEN_ROTATION_MAX_AGE_DAYS: 'agent token rotation window',
+  AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
+  AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
+  AGENT_WS_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
+  AGENT_WS_MESSAGE_BUDGET_CLOSE_THRESHOLD: 'agent WS message budget knob',
+  AGENT_WS_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
+  AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
+  AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
   // AI_*
   AI_COMPUTE_PRICE_MULTIPLIER: 'AI billing price multiplier',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
@@ -186,6 +206,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
+  HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
+  HELPER_SCREENSHOT_RATE_WINDOW_SECONDS: 'rate limit knob',
   // HTTPS_*
   HTTPS_PROXY: 'egress proxy passthrough',
   // HTTP_*
@@ -221,6 +243,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   LOGIN_ACCOUNT_LOCKOUT_MAX: 'rate limit knob',
   LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: 'rate limit knob',
   // LOG_*
+  LOG_FORWARDING_MAX_JOB_BYTES: 'log forwarding queue bound',
+  LOG_FORWARDING_MAX_PENDING_PER_ORG: 'log forwarding queue bound',
+  LOG_FORWARDING_MAX_WAITING_GLOBAL: 'log forwarding queue bound',
   LOG_LEVEL: 'logging verbosity',
   // M365_*
   M365_SYNC_CONCURRENCY: 'worker throughput knob',
@@ -327,6 +352,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
   // PROVISION_*
   PROVISION_HANDLE_TTL_MINUTES: 'timing knob',
+  // PUBLIC_*
+  PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES: 'public download key TTL cap',
   // READINESS_*
   READINESS_CACHE_TTL_MS: 'timing knob',
   READINESS_PROBE_TIMEOUT_MS: 'timing knob',
@@ -364,6 +391,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // S3_*
   S3_PRESIGN_TTL: 'timing knob',
   // SCREENSHOT_*
+  SCREENSHOT_MAX_BYTES: 'screenshot size cap',
+  SCREENSHOT_MAX_BYTES_PER_DEVICE: 'screenshot storage quota knob',
+  SCREENSHOT_MAX_PER_DEVICE: 'screenshot storage quota knob',
   SCREENSHOT_STORAGE_DIR: 'filesystem path',
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
@@ -416,6 +446,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SYNTHETIC_TEST_TOKEN: 'synthetic monitor secret (names only)',
   // TD_*
   TD_SYNNEX_DIGITAL_BRIDGE_TIMEOUT_MS: 'timing knob',
+  // TENANT_*
+  TENANT_TOOL_MAX_IN_FLIGHT_PER_ORG: 'tenant tool in-flight cap',
   // TICKET_*
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
@@ -425,6 +457,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // TRUST_*
   TRUST_ACTION_TOKEN_SECRET: 'hosted partner-trust secret (names only)',
   // TURN_*
+  TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW: 'rate limit knob',
+  TURN_CREDENTIAL_MINT_WINDOW_SECONDS: 'rate limit knob',
   TURN_CREDENTIAL_TTL_SECONDS: 'timing knob',
   // UNINSTALL_*
   UNINSTALL_INTENT_DECOMMISSION_HOURS: 'timing knob',

@@ -290,6 +290,7 @@ export default function UsersPage() {
               body: JSON.stringify({ roleId: values.roleId })
             }),
           errorFallback: t('usersPage.errors.updateRole'),
+          successMessage: t('usersPage.toasts.roleUpdated'),
           onUnauthorized: handleSessionExpired,
         });
         // The role is committed. Record it so that if the org-access call
@@ -316,6 +317,7 @@ export default function UsersPage() {
               )
             }),
           errorFallback: t('usersPage.errors.updateOrgAccess'),
+          successMessage: t('usersPage.toasts.orgAccessUpdated'),
           onUnauthorized: handleSessionExpired,
         });
       }

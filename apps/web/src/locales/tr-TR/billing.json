@@ -1942,19 +1942,17 @@
       },
       "reverseError": "Ödeme geri alınamadı.",
       "reverseSuccess": "Ödeme geri alındı",
-      "reverseInQuickbooksToo": "Bu ödemeyi QuickBooks’ta da iptal edin",
       "sendLink": "Ödeme bağlantısını gönder",
       "setUp": "Kurulum",
       "shareLinkPrompt": "Bu ödeme bağlantısını müşterinizle paylaşın:",
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "QuickBooks aracılığıyla",
-      "inQuickbooks": "QuickBooks'ta",
-      "syncingToQuickbooks": "Eşitleniyor…",
-      "quickbooksSyncFailed": "QuickBooks eşitlemesi başarısız oldu",
-      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
+      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
+      "inProvider": "{{provider}}'ta",
+      "syncingToProvider": "Eşitleniyor…",
+      "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
+      "reverseInProviderToo": "Bu ödemeyi {{provider}}’ta da iptal edin"
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
@@ -1994,22 +1992,22 @@
       "error": "Bağlantı sıfırlanamadı"
     },
     "accountingSync": {
-      "title": "QuickBooks eşitlemesi",
+      "title": "{{provider}} eşitlemesi",
       "status": {
         "pending": "Henüz gönderilmedi",
         "synced": "Eşitlendi",
         "error": "Eşitleme başarısız",
         "synced_with_tax_variance": "Vergi farkıyla eşitlendi"
       },
-      "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
-      "docNumber": "QuickBooks belgesi {{docNumber}}",
+      "taxVarianceHint": "{{provider}} farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
+      "docNumber": "{{provider}} belgesi {{docNumber}}",
       "lastSynced": "Son eşitleme: {{when}}",
       "syncing": "Eşitleniyor…",
-      "push": "QuickBooks'a gönder",
-      "pushed": "Fatura QuickBooks'a gönderildi.",
-      "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
-      "voidedHint": "Bu fatura iptal edildi — QuickBooks'a gönderilecek bir şey yok.",
-      "remoteDeletedHint": "Bu fatura QuickBooks'ta silindi. Yeniden göndermek bir kopya oluşturur — önce QuickBooks'ta çözün."
+      "push": "{{provider}}'a gönder",
+      "pushed": "Fatura {{provider}}'a gönderildi.",
+      "pushFailed": "Fatura {{provider}}'a gönderilemedi.",
+      "voidedHint": "Bu fatura iptal edildi — {{provider}}'a gönderilecek bir şey yok.",
+      "remoteDeletedHint": "Bu fatura {{provider}}'ta silindi. Yeniden göndermek bir kopya oluşturur — önce {{provider}}'ta çözün."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2070,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Geçersiz",
       "voidedVerb": "geçersiz kılındı",
-      "quickbooks": "QuickBooks'a gönder",
-      "quickbooksQueued": "{{enqueued}} kayıt QuickBooks kuyruğunda",
-      "quickbooksQueuedPartial": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı",
-      "quickbooksQueuedFailed": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
-      "quickbooksFailed": "QuickBooks gönderimi kuyruğa alınamadı. Yeniden deneyin."
+      "pushToProvider": "{{provider}}'a gönder",
+      "providerQueued": "{{enqueued}} kayıt {{provider}} kuyruğunda",
+      "providerQueuedPartial": "{{enqueued}} kayıt {{provider}} kuyruğunda, {{skipped}} atlandı",
+      "providerQueuedFailed": "{{enqueued}} kayıt {{provider}} kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
+      "providerFailed": "{{provider}} gönderimi kuyruğa alınamadı. Yeniden deneyin."
     },
     "bulkDelete": {
       "message": "Seçilen {{count}} fatura(lar) silinsin mi? Yalnızca TASLAK faturalar silinecektir; bu geri alınamaz.",

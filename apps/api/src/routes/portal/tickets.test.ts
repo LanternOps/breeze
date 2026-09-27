@@ -80,6 +80,9 @@ vi.mock('../../db', () => ({
 // instead of a column reference (`$1 = $2`), which asserts nothing about which
 // column was filtered on.
 vi.mock('../../db/schema', async () => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
+  devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   tickets: (await vi.importActual<typeof import('../../db/schema/portal')>('../../db/schema/portal')).tickets,
   ticketComments: {
     id: 'id', ticketId: 'ticketId', authorName: 'authorName',

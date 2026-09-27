@@ -1,4 +1,5 @@
 import { decryptForColumn, decryptSecret, encryptSecret } from './secretCrypto';
+import { destinationSetGainedMembers } from './credentialOriginBinding';
 
 export const MASKED_SNMP_SECRET = '********';
 
@@ -141,4 +142,87 @@ export function maskSnmpCredentials(value: unknown): unknown {
     }
   }
   return masked;
+}
+
+function collectSecretLeaves(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.flatMap(collectSecretLeaves);
+  if (!isRecord(value)) return [];
+  const leaves: unknown[] = [];
+  for (const [key, entry] of Object.entries(value)) {
+    if (SECRET_FIELD_NAMES.has(key)) {
+      if (Array.isArray(entry)) leaves.push(...entry);
+      else leaves.push(entry);
+    } else {
+      leaves.push(...collectSecretLeaves(entry));
+    }
+  }
+  return leaves;
+}
+
+/**
+ * Same origin-binding contract as credentialOriginBinding.ts, applied to a discovery profile's
+ * effective probe destination instead of a single HTTP origin. A masked or
+ * simply omitted `snmpCommunities`/`snmpCredentials` field must not carry the
+ * org's live SNMP secrets forward when the destination changes in any of
+ * three ways this route allows in one PATCH:
+ *
+ *  - `subnets` WIDENS (an added or changed subnet is a host the caller has
+ *    never proven it should receive those secrets on);
+ *  - `excludeIps` NARROWS (removing — or clearing — a previously-excluded
+ *    entry un-walls a host that already sits inside an approved subnet, the
+ *    same effective widening as adding a subnet, just from the other side);
+ *  - `siteId` changes at all (the stored subnets are relative, private-range
+ *    strings with no site binding of their own; the site picks which
+ *    physical LAN an agent probes them on, so ANY site move sends the same
+ *    secrets to a different network, not just a widened one).
+ *
+ * `destinationSetGainedMembers` treats a subnets update that only removes
+ * entries as unchanged, since it sends the secret nowhere new; for
+ * `excludeIps` the "gained" direction is inverted — the arguments are swapped
+ * so a member present in the OLD exclusion list but missing from the NEW one
+ * counts as a gain (a host the destination now reaches that it didn't
+ * before), while adding more exclusions is a narrowing, mirroring the
+ * `subnets` treatment.
+ *
+ * `mergeEncryptSnmpCommunities` retains a stored value positionally for any
+ * masked array entry; leaving the field out of the patch entirely leaves the
+ * stored column untouched. `mergeEncryptSnmpCredentials` retains a stored
+ * leaf only for a KEY present in the patch and masked — a key the patch omits
+ * is dropped, not retained, so an omitted `snmpCredentials` field is unsafe
+ * (the whole column is untouched) while an omitted leaf WITHIN a provided
+ * object is not (that leaf clears). Both are covered below by comparing
+ * "was a stored secret retained" against "column untouched or masked-echoed".
+ */
+export function subnetChangeWouldRetainSnmpSecrets(params: {
+  existingSubnets: readonly string[] | null | undefined;
+  nextSubnets: readonly string[] | undefined;
+  existingExcludeIps: readonly string[] | null | undefined;
+  nextExcludeIps: readonly string[] | undefined;
+  siteChanged: boolean;
+  existingCommunities: readonly string[] | null | undefined;
+  nextCommunities: readonly string[] | undefined;
+  existingCredentials: unknown;
+  nextCredentials: unknown;
+}): boolean {
+  const {
+    existingSubnets, nextSubnets, existingExcludeIps, nextExcludeIps, siteChanged,
+    existingCommunities, nextCommunities, existingCredentials, nextCredentials,
+  } = params;
+
+  const subnetsWidened = nextSubnets !== undefined
+    && destinationSetGainedMembers(existingSubnets ?? [], nextSubnets);
+  const excludeIpsNarrowed = nextExcludeIps !== undefined
+    && destinationSetGainedMembers(nextExcludeIps, existingExcludeIps ?? []);
+
+  if (!subnetsWidened && !excludeIpsNarrowed && !siteChanged) return false;
+
+  const hasStoredCommunities = (existingCommunities ?? []).some((value) => Boolean(value));
+  const communitiesRetained = hasStoredCommunities
+    && (nextCommunities === undefined || nextCommunities.some(isMaskedSnmpSecret));
+
+  const hasStoredCredentials = collectSecretLeaves(existingCredentials).some((leaf) => typeof leaf === 'string' && leaf.length > 0);
+  const credentialsRetained = hasStoredCredentials
+    && (nextCredentials === undefined || collectSecretLeaves(nextCredentials).some((leaf) => isMaskedSnmpSecret(leaf)));
+
+  return communitiesRetained || credentialsRetained;
 }

@@ -3619,3 +3619,34 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
 export async function buildOnedriveHelperConfigUpdate(deviceId: string): Promise<OnedriveConfigUpdate | null> {
   return resolveDeviceOnedriveSettings(deviceId);
 }
+
+// Roles that dynamic-group filters and attribute-targeted automations most
+// often use to select higher-trust deployment targets (server/DC-style
+// groups, secret-bearing scripts). `deviceRole` is agent-reported and, when
+// `deviceRoleSource` is still 'auto', accepted from the heartbeat with no
+// server-side verification — see shouldAutoApplyAgentReportedDeviceRole.
+export const PRIVILEGED_AGENT_ROLE_TARGETS: ReadonlySet<string> = new Set(['server']);
+
+/**
+ * Whether an agent-reported `deviceRole` may be written straight to the
+ * device row while `deviceRoleSource` is still 'auto' (no admin has pinned
+ * the role by hand).
+ *
+ * Every field an agent reports over heartbeat is self-reported. Since
+ * dynamic groups and automation/script targeting filter on `deviceRole`, an
+ * unconditional auto-write would let a workstation's own report move it into
+ * a privileged role (e.g. `server`) and pull in whatever that role's groups
+ * grant — secret-bearing scripts, elevated policies. A flip INTO a
+ * privileged role therefore isn't auto-applied; the caller should instead
+ * leave the stored role untouched and audit-log the claim so an admin can
+ * review and confirm it explicitly (e.g. by pinning the role by hand).
+ * Flips between non-privileged roles, and any change while the role is
+ * already privileged, remain auto-applied as before.
+ */
+export function shouldAutoApplyAgentReportedDeviceRole(
+  currentRole: string | null | undefined,
+  reportedRole: string,
+): boolean {
+  if (!PRIVILEGED_AGENT_ROLE_TARGETS.has(reportedRole)) return true;
+  return currentRole === reportedRole;
+}

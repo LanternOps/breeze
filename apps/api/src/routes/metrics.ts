@@ -263,6 +263,13 @@ const backupDispatchFailuresTotal = new Counter({
   registers: [register]
 });
 
+const backupReadDispatchesTotal = new Counter({
+  name: 'breeze_backup_read_dispatch_total',
+  help: 'Restore-shaped backup command deliveries by command type, mode (brokered storage session or legacy storage destination) and reason',
+  labelNames: ['command_type', 'mode', 'reason'] as const,
+  registers: [register]
+});
+
 const backupVerificationSkipsTotal = new Counter({
   name: 'breeze_backup_verification_skips_total',
   help: 'Scheduled backup verification skips by verification type and reason',
@@ -830,6 +837,14 @@ function recordBackupDispatchFailureMetric(operation: string, reason: string, co
   }, safeCount);
 }
 
+function recordBackupReadDispatchMetric(commandType: string, mode: string, reason: string, count = 1): void {
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (safeCount === 0) return;
+  backupReadDispatchesTotal
+    .labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(mode, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
 function recordBackupVerificationSkipMetric(
   verificationType: string,
   reason: string,
@@ -1010,6 +1025,7 @@ function bindMetricsRecorders(): void {
     onCommandTimeout: recordBackupCommandTimeoutMetric,
     onVerificationResult: recordBackupVerificationResultMetric,
     onLowReadinessDevices: setLowReadinessDevicesMetric,
+    onReadDispatch: recordBackupReadDispatchMetric,
   });
 
   setAnomalyMetricsRecorder({

@@ -24,16 +24,6 @@ type InstantBootConfig struct {
 	WorkDir    string `json:"workDir,omitempty"`
 }
 
-// InstantBootResult holds the outcome of an instant boot operation.
-type InstantBootResult struct {
-	VMName               string `json:"vmName"`
-	NewVMID              string `json:"newVmId"`
-	Status               string `json:"status"` // completed, failed
-	BootTimeMs           int64  `json:"bootTimeMs"`
-	BackgroundSyncActive bool   `json:"backgroundSyncActive"`
-	Error                string `json:"error,omitempty"`
-}
-
 // bootCriticalPatterns lists path patterns that must be present for a
 // Windows VM to boot. Files matching these prefixes are downloaded first
 // during instant boot.
@@ -105,6 +95,34 @@ func InstantBoot(
 		}
 	}
 
+	// Refuse an existing VM name before anything is downloaded. Without an
+	// explicit work directory, the VM's disks go in a per-restore directory
+	// under the host's default VM path rather than a temp directory.
+	workDir := cfg.WorkDir
+	createdWorkDir := false
+	if workDir == "" {
+		dirName, err := newRestoreDirName(cfg.VMName)
+		if err != nil {
+			result.Error = err.Error()
+			return result, fmt.Errorf("instantboot: %w", err)
+		}
+		if workDir, err = prepareVMRestoreWith(runPS, cfg.VMName, "", dirName); err != nil {
+			result.Error = err.Error()
+			return result, fmt.Errorf("instantboot: prepare restore: %w", err)
+		}
+		createdWorkDir = true
+	} else if err := requireVMNameFreeWith(runPS, cfg.VMName); err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: %w", err)
+	}
+	defer func() {
+		if createdWorkDir && result.Status == "failed" {
+			if rmErr := os.RemoveAll(workDir); rmErr != nil {
+				slog.Warn("instantboot: failed to clean up restore directory", "dir", workDir, "error", rmErr.Error())
+			}
+		}
+	}()
+
 	// 1. Download manifest.
 	progress("downloading_manifest", 1, 8)
 	slog.Info("instantboot: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
@@ -123,19 +141,11 @@ func InstantBoot(
 		"total", len(manifest.Files),
 	)
 
-	// 3. Create work directory.
+	// 3. Create base VHDX in the work directory.
 	progress("creating_vhdx", 2, 8)
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir, err = os.MkdirTemp("", "breeze-instantboot-*")
-		if err != nil {
-			result.Error = err.Error()
-			return result, fmt.Errorf("instantboot: create work dir: %w", err)
-		}
-	}
 
 	// 4. Create base VHDX.
-	baseVHDX := filepath.Join(workDir, cfg.VMName+"-base.vhdx")
+	baseVHDX := filepath.Join(workDir, safeFileStem(cfg.VMName)+"-base.vhdx")
 	sizeBytes := diskSizeGB * 1024 * 1024 * 1024
 
 	slog.Info("instantboot: creating base VHDX", "path", baseVHDX, "sizeGB", diskSizeGB)
@@ -173,31 +183,14 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: restoring boot-critical files", "count", len(bootFiles))
 
-	var criticalFailures []string
-	for _, file := range bootFiles {
-		targetPath := filepath.Join(targetRoot, filepath.FromSlash(file.SourcePath))
-		cleaned := filepath.Clean(targetPath)
-		if !strings.HasPrefix(cleaned, filepath.Clean(targetRoot)+string(filepath.Separator)) && cleaned != filepath.Clean(targetRoot) {
-			slog.Warn("instantboot: path traversal blocked", "file", file.SourcePath)
-			criticalFailures = append(criticalFailures, file.SourcePath)
-			continue
-		}
-		dir := filepath.Dir(targetPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			slog.Warn("instantboot: mkdir failed", "dir", dir, "error", err.Error())
-			criticalFailures = append(criticalFailures, file.SourcePath)
-			continue
-		}
-		if err := provider.Download(file.BackupPath, targetPath); err != nil {
-			slog.Warn("instantboot: download failed", "file", file.SourcePath, "error", err.Error())
-			criticalFailures = append(criticalFailures, file.SourcePath)
-		}
-	}
-	if len(criticalFailures) > 0 {
+	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot)
+	result.Warnings = append(result.Warnings, bootTally.Warnings...)
+	if bootTally.Failed > 0 {
+		// A VM missing boot-critical files is not booted, and nothing is left
+		// behind: the deferred cleanup removes the restore directory.
 		dismountVHDX(baseVHDX)
-		result.Status = "degraded"
-		result.Error = fmt.Sprintf("failed to download %d boot-critical files: %v", len(criticalFailures), criticalFailures)
-		return result, nil
+		result.Error = fmt.Sprintf("failed to restore %d of %d boot-critical files: %v", bootTally.Failed, bootTally.Total, bootTally.FailedFiles)
+		return result, fmt.Errorf("instantboot: %s", result.Error)
 	}
 
 	// 7. Create boot configuration.
@@ -227,7 +220,7 @@ func InstantBoot(
 		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
 		return result, ctx.Err()
 	}
-	diffVHDX := filepath.Join(workDir, cfg.VMName+"-diff.vhdx")
+	diffVHDX := filepath.Join(workDir, safeFileStem(cfg.VMName)+"-diff.vhdx")
 	slog.Info("instantboot: creating differencing VHDX", "diff", diffVHDX, "parent", baseVHDX)
 
 	diffCmd := fmt.Sprintf(
@@ -247,13 +240,21 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: creating and starting VM")
 
-	if err := createAndConfigureVM(cfg.VMName, diffVHDX, memoryMB, cpuCount, ""); err != nil {
+	newVMID, err := createAndConfigureVM(cfg.VMName, diffVHDX, workDir, memoryMB, cpuCount, "")
+	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("instantboot: create VM: %w", err)
 	}
+	result.NewVMID = newVMID
+	// The registered VM now owns the directory; never remove it from here on.
+	createdWorkDir = false
 
-	// Start the VM.
-	startCmd := fmt.Sprintf(`Start-VM -Name '%s'`, escapePSString(cfg.VMName))
+	// Start the VM that was just created (by ID, never by name).
+	startCmd, err := startVMByIDScript(newVMID)
+	if err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: start VM: %w", err)
+	}
 	if _, err := runPS(startCmd); err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("instantboot: start VM: %w", err)
@@ -261,21 +262,7 @@ func InstantBoot(
 
 	bootTime := time.Since(start).Milliseconds()
 	result.BootTimeMs = bootTime
-	result.NewVMID = getVMID(cfg.VMName)
 	result.Status = "completed"
-
-	// 11. Launch background goroutine for remaining files.
-	if len(remainingFiles) > 0 {
-		result.BackgroundSyncActive = true
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("instantboot: background sync panicked", "error", fmt.Sprintf("%v", r))
-				}
-			}()
-			backgroundSync(ctx, cfg.VMName, baseVHDX, diffVHDX, remainingFiles, provider)
-		}()
-	}
 
 	slog.Info("instantboot: VM booted",
 		"vmName", cfg.VMName,
@@ -284,13 +271,18 @@ func InstantBoot(
 		"remainingFiles", len(remainingFiles),
 	)
 
+	// 11. Sync the remaining files before returning. The command's context is
+	// cancelled and its storage session revoked as soon as this returns, so
+	// the sync runs inside the command, bounded by its run budget.
+	runBackgroundSync(ctx, result, filepath.Join(workDir, "sync-staging"), remainingFiles, provider)
+
 	return result, nil
 }
 
 // classifyFiles separates manifest files into boot-critical and remaining.
 func classifyFiles(files []vmRestoreManifFile) (bootCritical, remaining []vmRestoreManifFile) {
 	for _, f := range files {
-		if isBootCritical(f.SourcePath) {
+		if isBootCritical(restoreEntryPath(f)) {
 			bootCritical = append(bootCritical, f)
 		} else {
 			remaining = append(remaining, f)
@@ -328,74 +320,4 @@ func configureBootLoader(driveLetter string) error {
 		return fmt.Errorf("bcdboot: %w", err)
 	}
 	return nil
-}
-
-// backgroundSync downloads remaining (non-boot-critical) files after the VM
-// has booted. It writes files to a sync staging directory alongside the base
-// VHDX. A merge into the base can be done later when the VM is stopped.
-func backgroundSync(
-	ctx context.Context,
-	vmName, baseVHDX, diffVHDX string,
-	files []vmRestoreManifFile,
-	provider providers.BackupProvider,
-) {
-	syncDir := filepath.Join(filepath.Dir(baseVHDX), "sync-staging")
-	if err := os.MkdirAll(syncDir, 0o755); err != nil {
-		slog.Error("instantboot: failed to create sync staging dir",
-			"dir", syncDir, "error", err.Error())
-		return
-	}
-
-	slog.Info("instantboot: background sync started",
-		"vmName", vmName,
-		"files", len(files),
-		"syncDir", syncDir,
-	)
-
-	synced := 0
-	failed := 0
-	for _, file := range files {
-		if ctx.Err() != nil {
-			slog.Info("instantboot: background sync cancelled", "vmName", vmName, "synced", synced)
-			return
-		}
-		targetPath := filepath.Join(syncDir, filepath.FromSlash(file.SourcePath))
-		cleaned := filepath.Clean(targetPath)
-		if !strings.HasPrefix(cleaned, filepath.Clean(syncDir)+string(filepath.Separator)) && cleaned != filepath.Clean(syncDir) {
-			slog.Warn("instantboot: sync path traversal blocked", "file", file.SourcePath)
-			failed++
-			continue
-		}
-		dir := filepath.Dir(targetPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			slog.Warn("instantboot: sync mkdir failed", "dir", dir, "error", err.Error())
-			failed++
-			continue
-		}
-		if err := provider.Download(file.BackupPath, targetPath); err != nil {
-			slog.Warn("instantboot: sync download failed",
-				"file", file.SourcePath, "error", err.Error())
-			failed++
-			continue
-		}
-		synced++
-	}
-
-	slog.Info("instantboot: background sync completed",
-		"vmName", vmName,
-		"synced", synced,
-		"failed", failed,
-		"syncDir", syncDir,
-	)
-
-	// Write a manifest of synced files for later merge.
-	manifestPath := filepath.Join(syncDir, "sync-manifest.txt")
-	var sb strings.Builder
-	for _, file := range files {
-		sb.WriteString(file.SourcePath)
-		sb.WriteString("\n")
-	}
-	if err := os.WriteFile(manifestPath, []byte(sb.String()), 0o644); err != nil {
-		slog.Warn("instantboot: failed to write sync manifest", "error", err.Error())
-	}
 }

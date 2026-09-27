@@ -13,6 +13,7 @@ import {
 } from "../db/schema/installerBootstrapTokens";
 import {
   authMiddleware,
+  hasSatisfiedMfa,
   requireMfa,
   requirePermission,
   requireScope,
@@ -23,7 +24,12 @@ import { userRateLimit } from "../middleware/userRateLimit";
 import { randomBytes } from "crypto";
 import { createAuditLogAsync } from "../services/auditService";
 import { ANONYMOUS_ACTOR_ID } from "../services/auditEvents";
-import { PERMISSIONS } from "../services/permissions";
+import {
+  PERMISSIONS,
+  getUserPermissions,
+  hasPermission,
+  type UserPermissions,
+} from "../services/permissions";
 import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enrollmentKeySecurity";
 import {
   getTrustedClientIp,
@@ -131,6 +137,20 @@ const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = getDefaultEnrollmentKeyTtlMinutes();
 const CHILD_ENROLLMENT_KEY_TTL_MINUTES = envInt(
   "CHILD_ENROLLMENT_KEY_TTL_MINUTES",
   60 * 24 * 30,
+);
+
+// A child minted by redeeming a public /s/:code short-link is a transport
+// container for ONE anonymous install, not a long-lived credential — unlike
+// the general CHILD_ENROLLMENT_KEY_TTL_MINUTES default above (30 days), it
+// has no business surviving for weeks. clampTtlToCap only ever narrows the
+// TTL down to the partner's configured cap, so a partner with a loose or
+// unset cap would otherwise still hand out a 30-day-lived download key —
+// exactly the window an already-redeemed, not-yet-consumed key stays valid
+// for even after its parent link is rotated (rotation revocation narrows
+// that further, but a hard ceiling here bounds it independent of rotation).
+const PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES = envInt(
+  "PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES",
+  60 * 24,
 );
 
 // Parent keys that are within this window of expiry are refused as installer
@@ -596,11 +616,56 @@ const installerLinkSchema = z.object({
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
+// `shortCode` is an enrollment-capable secret: anyone who can read it can
+// hit the unauthenticated `/s/:code` route and self-service enroll a fully
+// credentialed, auto-admitted device (see canRevealShortCode below). Callers
+// that already went through the same gate this route requires for minting
+// one (ORGS_WRITE + MFA — the create/rotate routes) pass `true` directly;
+// read-only callers get it redacted to a boolean presence flag instead.
 export function sanitizeEnrollmentKey(
   enrollmentKey: typeof enrollmentKeys.$inferSelect,
+  canRevealShortCode: boolean,
 ) {
-  const { key, keySecretHash, credentialGeneration, ...safeRecord } = enrollmentKey;
-  return safeRecord;
+  const { key, keySecretHash, credentialGeneration, shortCode, ...safeRecord } =
+    enrollmentKey;
+  return {
+    ...safeRecord,
+    shortCode: canRevealShortCode ? shortCode : null,
+    hasShortLink: shortCode != null,
+  };
+}
+
+/**
+ * Gate for revealing `shortCode` on a read response. Mirrors the permission
+ * the enrollment-key create/rotate/installer-distribution routes already
+ * require (`organizations:write` + MFA-when-policy-requires-it) — a caller
+ * who could not mint or manage a short-lived enrollment link should not be
+ * able to read one off an existing key either (SEC finding: read-only roles
+ * holding only `organizations:read` could self-service enroll a fully
+ * credentialed device via a key's short code).
+ *
+ * Prefers permissions already resolved earlier in the middleware chain
+ * (`requirePermission` sets `c.get('permissions')`) and only re-resolves
+ * when that is unavailable.
+ */
+async function canRevealShortCode(c: Context, auth: AuthContext): Promise<boolean> {
+  if (!hasSatisfiedMfa(auth)) return false;
+
+  let userPerms = c.get("permissions") as UserPermissions | undefined;
+  if (!userPerms) {
+    userPerms = (await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+      scope: auth.scope,
+    })) ?? undefined;
+  }
+  if (!userPerms) return false;
+
+  return hasPermission(
+    userPerms,
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  );
 }
 
 /**
@@ -989,9 +1054,11 @@ enrollmentKeyRoutes.get(
       c,
     );
 
+    const revealShortCode = await canRevealShortCode(c, auth);
+
     return c.json({
       data: keyList.map((keyRecord) => ({
-        ...sanitizeEnrollmentKey(keyRecord),
+        ...sanitizeEnrollmentKey(keyRecord, revealShortCode),
         installerTokens: installerUsage.get(keyRecord.id) ?? null,
       })),
       pagination: { page, limit, total },
@@ -1147,7 +1214,10 @@ enrollmentKeyRoutes.post(
 
     return c.json(
       {
-        ...sanitizeEnrollmentKey(enrollmentKey),
+        // Caller already passed requirePermission(ORGS_WRITE) + requireMfa()
+        // to reach this route, so it is the one that just minted this key's
+        // short code (if any) — reveal unconditionally.
+        ...sanitizeEnrollmentKey(enrollmentKey, true),
         key: rawKey,
       },
       201,
@@ -1325,9 +1395,10 @@ enrollmentKeyRoutes.get(
     // decide (#3034) — there is no per-key branch left for the two to disagree
     // about.
     const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id], c);
+    const revealShortCode = await canRevealShortCode(c, auth);
 
     return c.json({
-      ...sanitizeEnrollmentKey(enrollmentKey),
+      ...sanitizeEnrollmentKey(enrollmentKey, revealShortCode),
       installerTokens: installerUsage.get(enrollmentKey.id) ?? null,
     });
   },
@@ -1390,6 +1461,14 @@ enrollmentKeyRoutes.post(
     const maxUsage =
       data.maxUsage !== undefined ? data.maxUsage : existingKey.maxUsage;
 
+    // Rotation invalidates the OLD shortCode: an /s/ or /i/ code must stop
+    // resolving once the key is rotated, and must not inherit the usageCount
+    // reset below. Reallocate a fresh code for link rows so the link keeps
+    // working under a new code; rows with no short link stay null.
+    const nextShortCode = existingKey.shortCode
+      ? await allocateShortCode()
+      : existingKey.shortCode;
+
     const [rotatedKey] = await db
       .update(enrollmentKeys)
       .set({
@@ -1398,6 +1477,7 @@ enrollmentKeyRoutes.post(
         usageCount: 0,
         expiresAt,
         maxUsage,
+        shortCode: nextShortCode,
       })
       .where(eq(enrollmentKeys.id, keyId))
       .returning();
@@ -1410,17 +1490,28 @@ enrollmentKeyRoutes.post(
     // enrollment key. Revoking only the token would leave that child as a
     // working old-credential capability. Delete only unused children from old
     // epochs; a concurrently claimed child is preserved by usage_count = 0.
+    // Two independent lineages feed into this: bootstrap-token-derived
+    // children (installer_bootstrap_tokens.parent_enrollment_key_id) and
+    // /s/:code short-link-derived children (enrollment_keys.source_link_key_id
+    // — stamped directly against this parent, with no bootstrap-token row in
+    // between). Rotation revokes unused children from both lineages.
     const revokedDerivedKeys = await db
       .delete(enrollmentKeys)
       .where(
         and(
           eq(enrollmentKeys.usageCount, 0),
-          sql`${enrollmentKeys.bootstrapTokenId} in (
-            select ${installerBootstrapTokens.id}
-            from ${installerBootstrapTokens}
-            where ${installerBootstrapTokens.parentEnrollmentKeyId} = ${keyId}
-              and ${installerBootstrapTokens.parentCredentialGeneration} < ${rotatedKey.credentialGeneration}
-          )`,
+          or(
+            sql`${enrollmentKeys.bootstrapTokenId} in (
+              select ${installerBootstrapTokens.id}
+              from ${installerBootstrapTokens}
+              where ${installerBootstrapTokens.parentEnrollmentKeyId} = ${keyId}
+                and ${installerBootstrapTokens.parentCredentialGeneration} < ${rotatedKey.credentialGeneration}
+            )`,
+            and(
+              eq(enrollmentKeys.sourceLinkKeyId, keyId),
+              lt(enrollmentKeys.sourceLinkKeyGeneration, rotatedKey.credentialGeneration),
+            ),
+          ),
         ),
       )
       .returning({ id: enrollmentKeys.id });
@@ -1443,7 +1534,9 @@ enrollmentKeyRoutes.post(
     });
 
     return c.json({
-      ...sanitizeEnrollmentKey(rotatedKey),
+      // Caller already passed requirePermission(ORGS_WRITE) + requireMfa()
+      // to reach this route.
+      ...sanitizeEnrollmentKey(rotatedKey, true),
       key: rawKey,
     });
   },
@@ -2334,6 +2427,48 @@ enrollmentKeyRoutes.post(
 // Public routes (no auth middleware)
 // ============================================
 
+// Shared per-IP rate limit for every public/unauthenticated installer-serving
+// route (`/s/:code`, `/public-download/:platform`, and the MCP invite
+// landing `/i/:shortCode/download/:os`). Factored out so a new public
+// download route can't ship without it. Fails CLOSED on Redis errors — an
+// a Redis outage must not thereby disable the limiter.
+// 10 requests per minute per (trusted) client IP.
+export async function enforcePublicInstallerIpRateLimit(
+  c: Context,
+): Promise<Response | null> {
+  const ip = getTrustedClientIp(c, "unknown");
+  try {
+    const { getRedis } = await import("../services");
+    const { rateLimiter } = await import("../services/rate-limit");
+    const redis = getRedis();
+    if (!redis) {
+      console.error(
+        "[public-installer] rate-limit unavailable: redis client missing",
+      );
+      return c.json({ error: "Service temporarily unavailable" }, 503);
+    }
+    const rateResult = await rateLimiter(
+      redis,
+      `public-installer:${rateLimitIpKey(ip)}`,
+      10,
+      60,
+    );
+    if (!rateResult.allowed) {
+      return c.json(
+        { error: "Too many requests. Please try again later." },
+        429,
+      );
+    }
+    return null;
+  } catch (err) {
+    console.error(
+      "[public-installer] rate-limit check failed (failing closed):",
+      err instanceof Error ? err.message : err,
+    );
+    return c.json({ error: "Service temporarily unavailable" }, 503);
+  }
+}
+
 // checkInstallerSignSpend gates the (expensive) installer-signing path with
 // a per-(short-code OR enrollment-key id) bucket, on top of the per-IP cap
 // applied separately by callers. Without this, an attacker rotating source
@@ -2639,9 +2774,9 @@ async function serveInstaller(
 
 export const publicEnrollmentRoutes = new Hono();
 
-async function anonymousInstallerDistributionAllowed(
+export async function anonymousInstallerDistributionAllowed(
   orgId: string,
-  route: "public-download" | "short-link",
+  route: "public-download" | "short-link" | "invite-landing",
 ): Promise<boolean> {
   if (partnerTrustMode() === "off") return true;
 
@@ -2811,7 +2946,10 @@ publicShortLinkRoutes.get("/:code", async (c) => {
     // chosen input, so this short-link download must not hand out a child
     // key longer-lived than the partner allows just because it uses the
     // server-constant default.
-    const cappedTtlMinutes = await clampTtlToCap(row.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES);
+    const cappedTtlMinutes = Math.min(
+      await clampTtlToCap(row.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES),
+      PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES,
+    );
 
     const [downloadKey] = await db
       .insert(enrollmentKeys)
@@ -2825,6 +2963,11 @@ publicShortLinkRoutes.get("/:code", async (c) => {
         expiresAt: freshChildExpiresAt(cappedTtlMinutes),
         createdBy: null,
         installerPlatform: row.installerPlatform,
+        // Parent lineage (fix round, #2776 lineage follow-up): lets rotation
+        // find and revoke this child if the parent link is rotated before
+        // it's consumed — see the DELETE below in the /:id/rotate handler.
+        sourceLinkKeyId: row.id,
+        sourceLinkKeyGeneration: row.credentialGeneration,
       })
       .returning();
 

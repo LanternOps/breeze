@@ -7,24 +7,35 @@ import { aiScriptLaneState, type AiScriptLaneStateRow } from '../../db/schema/ai
 import { aiScriptPolicies, type AiScriptPolicyRow } from '../../db/schema/aiScriptPolicies';
 import { ENABLE_2FA } from '../auth/schemas';
 import { zValidator } from '../../lib/validation';
-import { authMiddleware, hasSatisfiedMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { getUserEpochs } from '../../services/authEpochs';
 import { createAuditLogAsync } from '../../services/auditService';
-import { consumeStepUpGrant, scriptLanePolicyResourceDigest, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
+import { consumeStepUpGrant, scriptLanePolicyResourceDigest, type ScriptLaneWideningDelta, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { PERMISSIONS, userCanDecideApprovals } from '../../services/permissions';
 import { resolveEffectiveScriptPolicy, resolvePartnerCeiling, type EffectiveScriptPolicy } from '../../services/scriptProposals/policy';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 
 /**
  * AI script authoring W04 (#5612): the ORG GRANT half of the unattended lane
  * policy (spec §4.1 `ai_script_policies`), and the per-org lane circuit.
  *
  * Reading needs `ai_agents:read` (the same surface as the rest of Settings →
- * AI). Writing anything needs `ai_agents:write`. Flipping `unattended_enabled`
- * TO TRUE additionally needs `approvals:decide`, a satisfied MFA claim, and —
- * when 2FA is enabled — a fresh `ai_script_lane_grant` step-up grant bound to
- * `{ orgId, unattendedEnabled: true }`, mirroring act-mode enablement.
- * Turning it OFF needs no step-up: reducing authority is never gated behind a
- * second factor. Resetting an open lane is the same privileged transition.
+ * AI). Writing anything needs `ai_agents:write` AND a satisfied MFA claim
+ * (`requireMfa()` — org-wide AI-execution governance is not a claim-optional
+ * surface, even for a save that does not touch the lane). Flipping
+ * `unattended_enabled` TO TRUE, and any WIDENING save while it is already
+ * true (raising tier/classes/rate, emptying protectedResources, or changing
+ * reviewerModel/proposingEnabled), additionally needs `approvals:decide` and
+ * — when 2FA is enabled — a fresh `ai_script_lane_grant` step-up grant bound
+ * to the exact values being saved, mirroring act-mode enablement. Turning it
+ * OFF, or only tightening an already-enabled lane, needs no step-up: reducing
+ * authority is never gated behind a second factor. Resetting an open lane is
+ * the same privileged transition.
+ *
+ * A site-restricted (or exact-device-ceiled) caller may never touch this
+ * object at all (`canMutateOrgWideGovernance`): the lane and its policy
+ * reach every device in the org regardless of site, so there is nothing for
+ * a site ceiling to narrow.
  *
  * Every value is tighten-only against the effective partner ceiling; storing
  * a wider value would make the saved row lie about what is in force and
@@ -104,18 +115,94 @@ function toLaneStateDto(row: AiScriptLaneStateRow | undefined): ScriptLaneStateD
   };
 }
 
+function protectedResourcesEmpty(pr: { services: string[]; paths: string[]; registryKeys: string[]; deviceTags: string[] } | null | undefined): boolean {
+  if (!pr) return true;
+  return pr.services.length === 0 && pr.paths.length === 0 && pr.registryKeys.length === 0 && pr.deviceTags.length === 0;
+}
+
+/** The row's actual column defaults (aiScriptPolicies schema) — the implicit
+ * baseline for a grant that has never been saved before. */
+const GRANT_SCHEMA_DEFAULTS = {
+  maxUnattendedRiskTier: 'low' as const,
+  unattendedAllowedClasses: [] as string[],
+  maxUnattendedPerHour: 0,
+  protectedResources: { services: [] as string[], paths: [] as string[], registryKeys: [] as string[], deviceTags: [] as string[] },
+  reviewerModel: null as string | null,
+  proposingEnabled: true,
+};
+
 /**
- * The privileged-transition gate shared by "enable" and "reset": approvals:decide
- * on the caller's resolved permissions, a satisfied MFA claim, and (under 2FA)
- * a consumed, resource-bound step-up grant. Returns a response to send, or
- * null when the caller may proceed.
+ * The full effective grant values this request will persist, regardless of
+ * whether they count as a "widening" relative to `existing` — used to bind
+ * an ENABLING save's step-up grant to the exact tier/classes/rate/
+ * reviewerModel/proposingEnabled it is arming, not just the boolean. Falls
+ * back to the row's real column defaults when there is no existing row
+ * (first-ever save for this org).
+ */
+function effectiveGrantValues(
+  existing: AiScriptPolicyRow | undefined,
+  body: z.infer<typeof orgUpdateSchema>,
+): ScriptLaneWideningDelta {
+  const base = existing ?? GRANT_SCHEMA_DEFAULTS;
+  return {
+    maxUnattendedRiskTier: body.maxUnattendedRiskTier ?? base.maxUnattendedRiskTier,
+    unattendedAllowedClasses: body.unattendedAllowedClasses ?? base.unattendedAllowedClasses,
+    maxUnattendedPerHour: body.maxUnattendedPerHour ?? base.maxUnattendedPerHour,
+    protectedResourcesEmptied: protectedResourcesEmpty(body.protectedResources ?? base.protectedResources),
+    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : base.reviewerModel,
+    proposingEnabled: body.proposingEnabled ?? base.proposingEnabled,
+  };
+}
+
+/**
+ * True when `body`, applied on top of `existing`, WIDENS the org grant while
+ * it is (or remains) enabled: raises the tier/classes/rate above the row's
+ * own prior value, empties a previously non-empty protectedResources,
+ * changes reviewerModel, or turns proposingEnabled on. `existing` values —
+ * never the partner ceiling — are the comparison baseline: the ceiling check
+ * above already stops anything above the ceiling; this is about what the
+ * operator who last saved THIS row actually saw and approved.
+ */
+function computeWidening(
+  existing: AiScriptPolicyRow,
+  body: z.infer<typeof orgUpdateSchema>,
+): ScriptLaneWideningDelta | null {
+  const tierWidened = body.maxUnattendedRiskTier !== undefined
+    && riskTierRank(body.maxUnattendedRiskTier) > riskTierRank(existing.maxUnattendedRiskTier);
+  const classesWidened = body.unattendedAllowedClasses !== undefined
+    && body.unattendedAllowedClasses.some((cl) => !existing.unattendedAllowedClasses.includes(cl));
+  const rateWidened = body.maxUnattendedPerHour !== undefined && body.maxUnattendedPerHour > existing.maxUnattendedPerHour;
+  const protectedResourcesEmptied = body.protectedResources !== undefined
+    && !protectedResourcesEmpty(existing.protectedResources)
+    && protectedResourcesEmpty(body.protectedResources);
+  const reviewerModelChanged = body.reviewerModel !== undefined && body.reviewerModel !== existing.reviewerModel;
+  const proposingWidened = body.proposingEnabled === true && existing.proposingEnabled !== true;
+
+  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !reviewerModelChanged && !proposingWidened) {
+    return null;
+  }
+  return {
+    maxUnattendedRiskTier: body.maxUnattendedRiskTier ?? existing.maxUnattendedRiskTier,
+    unattendedAllowedClasses: body.unattendedAllowedClasses ?? existing.unattendedAllowedClasses,
+    maxUnattendedPerHour: body.maxUnattendedPerHour ?? existing.maxUnattendedPerHour,
+    protectedResourcesEmptied,
+    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : existing.reviewerModel,
+    proposingEnabled: body.proposingEnabled ?? existing.proposingEnabled,
+  };
+}
+
+/**
+ * The privileged-transition gate shared by "enable", "widen" and "reset":
+ * approvals:decide on the caller's resolved permissions, a satisfied MFA
+ * claim, and (under 2FA) a consumed, resource-bound step-up grant. Returns a
+ * response to send, or null when the caller may proceed.
  */
 async function requireLaneGrant(
   c: Context,
   auth: AuthContext,
   orgId: string,
   stepUpGrant: string | undefined,
-  resource: { unattendedEnabled: boolean; reset?: boolean },
+  resource: { unattendedEnabled: boolean; reset?: boolean; widening?: ScriptLaneWideningDelta },
 ) {
   const perms = c.get('permissions');
   if (!perms || !userCanDecideApprovals(perms)) {
@@ -170,12 +257,16 @@ aiScriptPolicyRoutes.put(
   '/script-policy',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action),
+  requireMfa(),
   zValidator('query', orgQuerySchema),
   zValidator('json', orgUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveTargetOrgId(auth, c.req.valid('query').orgId);
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const body = c.req.valid('json');
 
     // Checked against the PARTNER CEILING, never the effective merge: the
@@ -193,10 +284,29 @@ aiScriptPolicyRoutes.put(
       return c.json({ error: 'above_partner_ceiling', field: 'maxUnattendedPerHour' }, 422);
     }
 
+    const [existing] = await db.select().from(aiScriptPolicies).where(eq(aiScriptPolicies.orgId, orgId)).limit(1);
+
     // Enabling is the privileged transition. Disabling is not.
     if (body.unattendedEnabled === true) {
-      const denied = await requireLaneGrant(c, auth, orgId, body.stepUpGrant, { unattendedEnabled: true });
+      // Bind the FULL effective parameter set being saved in this same
+      // request — not just the boolean — so "disable then re-enable wider"
+      // (or a first enable straight at the widest allowed values) goes through
+      // the same value-binding the widen branch below already has.
+      const widening = effectiveGrantValues(existing, body);
+      const denied = await requireLaneGrant(c, auth, orgId, body.stepUpGrant, { unattendedEnabled: true, widening });
       if (denied) return denied;
+    } else if (existing && (body.unattendedEnabled ?? existing.unattendedEnabled)) {
+      // The lane is already enabled (and stays enabled by this save): any
+      // WIDENING of what it may do is the same privileged transition as
+      // enabling it in the first place.
+      const widening = computeWidening(existing, body);
+      if (widening) {
+        const denied = await requireLaneGrant(c, auth, orgId, body.stepUpGrant, {
+          unattendedEnabled: existing.unattendedEnabled,
+          widening,
+        });
+        if (denied) return denied;
+      }
     }
 
     const { stepUpGrant: _grant, ...columns } = body;

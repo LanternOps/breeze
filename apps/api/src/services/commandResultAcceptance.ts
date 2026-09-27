@@ -88,6 +88,16 @@ export function commandAcceptsAgentResultCondition(): SQL {
       eq(deviceCommands.status, 'failed'),
       notInArray(deviceCommands.type, [...TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES]),
       sql`${deviceCommands.result}->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}`,
+      // `timedOutBy` is stamped ONLY by the server-side writers (the wait
+      // deadline, the stale reaper, the verification-timeout check) — never
+      // by buildStoredCommandResult, which copies just status/exitCode/
+      // stdout/stderr/durationMs/error from the agent's own payload. Without
+      // this an agent could report its OWN `status:'timeout'` (a value the
+      // commandResultSchema allows) and produce a row indistinguishable from
+      // a genuine server timeout, then send a second, later frame that this
+      // same predicate would accept as a "rescued" result — reopening a row
+      // the agent itself chose to leave reopenable.
+      sql`${deviceCommands.result}->>'timedOutBy' IS NOT NULL`,
     ),
     and(
       eq(deviceCommands.status, 'completed'),
@@ -112,10 +122,13 @@ export function commandAcceptsAgentResult(
 ): boolean {
   if (!status) return true;
   if ((ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(status)) return true;
-  const resultStatus = (result as Record<string, unknown> | null | undefined)?.status;
+  const resultRecord = result as Record<string, unknown> | null | undefined;
+  const resultStatus = resultRecord?.status;
   if (
     status === 'failed' &&
     resultStatus === SERVER_TIMEOUT_RESULT_STATUS &&
+    // See the SQL twin: only a server-side writer ever sets this key.
+    resultRecord?.timedOutBy != null &&
     !(TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES as readonly string[]).includes(type ?? '')
   ) {
     return true;
@@ -129,4 +142,26 @@ export function commandAcceptsAgentResult(
     return true;
   }
   return false;
+}
+
+/**
+ * `status: 'timeout'` is a value `commandResultSchema` lets the AGENT report
+ * for its own run's outcome — and it is also the literal string
+ * {@link SERVER_TIMEOUT_RESULT_STATUS} the server writes to mark a row
+ * reopenable after ITS OWN timeout. Storing the agent's value verbatim made
+ * the two indistinguishable by that string alone (the `timedOutBy` marker
+ * above closes that), and separately mislabels a definite agent-side failure
+ * as some other, ambiguous state — several readers already treat
+ * `result.status === 'timeout'` as "not really finished yet" for UX purposes
+ * that only make sense for the server's own provisional marker.
+ *
+ * Both `buildStoredCommandResult` implementations (agentWs.ts's WS ingest and
+ * agents/commands.ts's REST twin) call this before persisting the agent's
+ * reported status, so an agent can never itself produce the literal value the
+ * reopen predicate keys on.
+ */
+export function collapseAgentReportedTimeoutStatus(
+  status: 'completed' | 'failed' | 'timeout',
+): 'completed' | 'failed' {
+  return status === 'timeout' ? 'failed' : status;
 }

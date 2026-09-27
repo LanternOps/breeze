@@ -5,12 +5,13 @@ import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
 import {
   authMiddleware,
+  hasSatisfiedMfa,
   requirePermission,
   requireScope,
   type AuthContext,
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
@@ -32,6 +33,7 @@ import {
   isPortalSelfServiceLocked,
   isSystemManagedReportDefinition,
   partnerOwnedReportVisibility,
+  reportConfigEmailRecipients,
   partnerWideListTarget,
   systemPartnerWideListArm,
   PORTAL_SELF_SERVICE_REPORT,
@@ -112,6 +114,31 @@ const PARTNER_WIDE_DENIED = 'partner_wide_denied' as const;
 const AUDIENCE_DENIED = 'audience_denied' as const;
 /** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
 const OWNERSHIP_IMMUTABLE = 'ownership_immutable' as const;
+
+/**
+ * A scheduled report with email recipients delivers a rendered export off
+ * the platform on a timer, with no per-run confirmation — the same bulk
+ * output `reports:export` already gates on the interactive download and
+ * generate paths (`runs.ts`, `generate.ts`). Setting or changing those
+ * recipients on the definition needs the same permission plus a
+ * fresh-MFA session, not just `reports:write`.
+ */
+const RECIPIENTS_NEED_EXPORT_AND_MFA = {
+  error:
+    'Setting or changing email recipients on a report requires the export permission and an MFA-verified session',
+} as const;
+
+function recipientExportGateFails(
+  config: unknown,
+  permissions: UserPermissions | undefined,
+  auth: AuthContext,
+): boolean {
+  if (reportConfigEmailRecipients(config).length === 0) return false;
+  if (!permissions || !hasPermission(permissions, PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action)) {
+    return true;
+  }
+  return !hasSatisfiedMfa(auth);
+}
 
 type DefinitionListScopeResult =
   | { ok: true; tenantCondition?: SQL<unknown>; definitionScopePredicate: SQL<unknown> }
@@ -553,6 +580,10 @@ coreRoutes.post(
     const data = c.req.valid('json');
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
+    if (recipientExportGateFails(data.config, permissions, auth)) {
+      return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
+    }
+
     // #3198 W01 — a partner-owned definition. partner_id is ALWAYS the
     // caller's own token partner; `data.orgId` and any client-supplied partner
     // id are never read on this branch.
@@ -712,6 +743,10 @@ coreRoutes.put(
     // never an update. `ownerScope` never reaches here (schema: z.never()).
     const { orgId: bodyOrgId, ownerScope: _ownerScope, ...data } = c.req.valid('json');
     const permissions = c.get('permissions') as UserPermissions | undefined;
+
+    if (data.config !== undefined && recipientExportGateFails(data.config, permissions, auth)) {
+      return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
+    }
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);

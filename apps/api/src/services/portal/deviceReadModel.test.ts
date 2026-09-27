@@ -155,6 +155,14 @@ describe('deviceReadModel', () => {
       expect(query.params).toContain(ORG_ID);
     }
 
+    // #5396: the device list's "last backup" is the newest restore point, so a
+    // completed_with_errors run (a restore point with file failures) counts.
+    const lastBackup = dialect.sqlToQuery(projection.lastBackupAt as SQL);
+    for (const status of ['completed', 'completed_with_errors', 'partial']) {
+      expect(`${lastBackup.sql} ${JSON.stringify(lastBackup.params)}`).toContain(`${status}`);
+    }
+    expect(lastBackup.params).toContain('completed_with_errors');
+
     const scopedJoinSql = [
       '"security_status"."org_id" =',
       '"device_warranty"."org_id" =',

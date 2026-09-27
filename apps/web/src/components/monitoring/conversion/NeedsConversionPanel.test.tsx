@@ -99,12 +99,20 @@ it('shows missing prerequisites even when the blocked preview has no items', asy
     fetchWithAuth.mockResolvedValue(json({ data: { conversionId: 'retire-1' } }));
     render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
     const row = await screen.findByTestId('conversion-item-src-1');
-    expect(row.textContent).toMatch(/nests condition groups/i);
+    expect(row.textContent).toMatch(/nested condition group/i);
     fireEvent.click(screen.getByTestId('conversion-retire-src-1'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
       '/monitor-definitions/conversion/retire',
       { method: 'POST', body: JSON.stringify({ sourceTable: 'config_policy_alert_rules', sourceId: 'src-1', reason: 'unconvertible:nested_group' }) },
     ));
+  });
+
+  it('resolves an unconvertible reason code the panel-local reasons map does not know, without printing the raw token', async () => {
+    fetchPolicyPreview.mockResolvedValue(preview({ items: [item({ outcome: 'unconvertible', reason: 'unconvertible:custom_condition', proposed: [] })] }));
+    render(<NeedsConversionPanel policyId="pol-1" hasLegacyRows onChanged={vi.fn()} />);
+    const row = await screen.findByTestId('conversion-item-src-1');
+    expect(row.textContent).not.toMatch(/unconvertible:custom_condition/);
+    expect(row.textContent).toMatch(/custom condition/i);
   });
 
   it('refuses to convert while the equivalence check reports deltas, and lists them', async () => {

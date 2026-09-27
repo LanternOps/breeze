@@ -6,7 +6,12 @@ const shared = vi.hoisted(() => ({
   closeMock: vi.fn(),
   workerProcessor: undefined as undefined | ((job: any) => Promise<unknown>),
   reconcileMock: vi.fn(),
+  dispatchPendingMock: vi.fn(),
   now: 1_900_000_000_000,
+  // Order-tracking spy for the pool-double-hold regression test: records
+  // when the ambient system context is open/closed relative to when
+  // dispatchDrPendingWork runs.
+  events: [] as string[],
 }));
 
 vi.mock('bullmq', () => ({
@@ -34,12 +39,20 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../db', () => ({
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    shared.events.push('ctx:enter');
+    try {
+      return await fn();
+    } finally {
+      shared.events.push('ctx:exit');
+    }
+  }),
   assertOutsideHeldDbContext: vi.fn(),
 }));
 
 vi.mock('../services/drExecutionService', () => ({
   reconcileDrExecution: shared.reconcileMock,
+  dispatchDrPendingWork: shared.dispatchPendingMock,
 }));
 
 import {
@@ -56,6 +69,11 @@ describe('dr execution queueing', () => {
     shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
     shared.workerProcessor = undefined;
     shared.reconcileMock.mockReset();
+    shared.dispatchPendingMock.mockReset();
+    shared.dispatchPendingMock.mockImplementation(async () => {
+      shared.events.push('dispatchDrPendingWork');
+    });
+    shared.events = [];
     vi.spyOn(Date, 'now').mockReturnValue(shared.now);
     await shutdownDrExecutionWorker();
   });
@@ -111,6 +129,7 @@ describe('dr execution queueing', () => {
     shared.reconcileMock.mockResolvedValue({
       execution: { id: 'exec-1', status: 'running' },
       nextDelayMs: 10_000,
+      pending: [],
     });
     await expect(processDrExecutionReconcileJob({
       id: 'dr-execution-exec-1',
@@ -133,6 +152,7 @@ describe('dr execution queueing', () => {
     shared.reconcileMock.mockResolvedValue({
       execution: { id: 'exec-1', status: 'failed', authorizationState: 'denied' },
       nextDelayMs: null,
+      pending: [],
     });
     await expect(processDrExecutionReconcileJob({
       id: 'dr-execution-exec-1',
@@ -152,5 +172,57 @@ describe('dr execution queueing', () => {
   it('rejects malformed DR execution jobs before enqueueing', async () => {
     await expect(enqueueDrExecutionReconcile('')).rejects.toThrow();
     expect(shared.addMock).not.toHaveBeenCalled();
+  });
+
+  // #242 pool-double-hold regression: dispatch must never run while the
+  // reconcile tick's ambient system context is still open — that shape held
+  // two pooled connections at once and produced #2417 and #6671.
+  it('dispatches pending work only after the reconcile transaction has closed', async () => {
+    const moveToDelayed = vi.fn().mockResolvedValue(undefined);
+    shared.reconcileMock.mockResolvedValue({
+      execution: { id: 'exec-1', status: 'running' },
+      nextDelayMs: 10_000,
+      pending: [{ kind: 'command', groupId: 'g1', groupName: 'Tier 1', deviceId: 'device-1', commandType: 'vm_restore_from_backup', payload: {}, expectedOrgId: 'org-1' }],
+    });
+
+    await expect(processDrExecutionReconcileJob({
+      id: 'dr-execution-exec-1',
+      name: 'reconcile-execution',
+      token: 'worker-token',
+      data: {
+        type: 'reconcile-execution',
+        executionId: 'exec-1',
+        meta: { actorType: 'system', actorId: null, source: 'test' },
+      },
+      moveToDelayed,
+    } as any)).rejects.toBeInstanceOf(DelayedError);
+
+    expect(shared.events).toEqual(['ctx:enter', 'ctx:exit', 'dispatchDrPendingWork']);
+    expect(shared.dispatchPendingMock).toHaveBeenCalledWith('exec-1', [
+      expect.objectContaining({ deviceId: 'device-1' }),
+    ]);
+  });
+
+  it('dispatches nothing when the tick recorded no pending work (e.g. a rolled-back/lost CAS tick)', async () => {
+    const moveToDelayed = vi.fn().mockResolvedValue(undefined);
+    shared.reconcileMock.mockResolvedValue({
+      execution: { id: 'exec-1', status: 'running' },
+      nextDelayMs: 2_000,
+      pending: [],
+    });
+
+    await expect(processDrExecutionReconcileJob({
+      id: 'dr-execution-exec-1',
+      name: 'reconcile-execution',
+      token: 'worker-token',
+      data: {
+        type: 'reconcile-execution',
+        executionId: 'exec-1',
+        meta: { actorType: 'system', actorId: null, source: 'test' },
+      },
+      moveToDelayed,
+    } as any)).rejects.toBeInstanceOf(DelayedError);
+
+    expect(shared.dispatchPendingMock).not.toHaveBeenCalled();
   });
 });

@@ -587,6 +587,10 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // a mandatory pinned effect digest and live re-authorization at release. It
   // is not policy-decidable and has no unattended grant.
   'diagnose_connectivity',
+  // Real outbound POST to a human-configured
+  // URL, and its route requires MFA — see the registry-tier comment beside
+  // aiToolsIntegrations.ts's test_webhook registration.
+  'test_webhook',
 ]);
 
 /**
@@ -599,6 +603,13 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // A customer-visible ticket reply is a different class of act from an
+  // internal note — the note stays at the tool's base Tier 2 (auto-execute
+  // + audit), but an AI-composed comment that will be shown to the ticket
+  // requester needs a human to have actually looked at it first. Only the
+  // INPUT (`isPublic`) says which one a given call is, so it cannot be
+  // classified by (tool, action) alone in the static tables.
+  'manage_tickets:comment',
   // RMM-QA-176 D9: a 'maintenance' feature link is the canonical
   // monitoring-suppression source, so authoring one is a different class of
   // act from authoring any other link — but only the INPUT says which it is,
@@ -643,6 +654,12 @@ export function isInputAwareTier3(
   action: string | undefined,
   input: Record<string, unknown>,
 ): boolean {
+  if (toolName === 'manage_tickets' && action === 'comment') {
+    // Mirrors the handler's own default (aiToolsTicketing.ts): only an
+    // EXPLICIT `isPublic: true` requests a customer-visible reply. Absent or
+    // `false` stays an internal note at the tool's base Tier 2.
+    return input.isPublic === true;
+  }
   if (toolName !== 'manage_policy_feature_link') return false;
   if (action !== 'add' && action !== 'update') return false;
   return (
@@ -845,7 +862,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_catalog: {
     create_item: { resource: 'catalog', action: 'write' },
     update_item: { resource: 'catalog', action: 'write' },
-    archive_item: { resource: 'catalog', action: 'write' },
+    // Matches POST /catalog/items/:id/archive
+    // (routes/catalog/catalog.ts:24,75 — `deletePerm`, i.e. catalog:delete).
+    archive_item: { resource: 'catalog', action: 'delete' },
     set_org_price: { resource: 'catalog', action: 'write' },
     remove_org_price: { resource: 'catalog', action: 'write' },
     set_bundle_components: { resource: 'catalog', action: 'write' },
@@ -913,8 +932,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     move_line: { resource: 'quotes', action: 'write' },
     reorder_lines: { resource: 'quotes', action: 'write' },
     send: { resource: 'quotes', action: 'send' },
-    decline: { resource: 'quotes', action: 'write' },
-    create_pay_link: { resource: 'quotes', action: 'write' },
+    // Recording the customer's decision (however it
+    // came in) is the same authority whichever way they answered: matches
+    // accept-on-behalf and the route's own gate (routes/quotes/lifecycle.ts:
+    // 30, 253-254 — decline-on-behalf is `acceptPerm`, i.e. quotes:accept).
+    decline: { resource: 'quotes', action: 'accept' },
+    // No staff REST twin for THIS action; the matching
+    // staff authority is POST /invoices/:id/pay-link (routes/invoices/stripe.ts:
+    // 19,26), gated on invoices:send. A Stripe checkout session is created on
+    // the partner's connected account, same as that route. `quotes:read` extra
+    // below because the handler still has to read the quote to resolve it.
+    create_pay_link: { resource: 'invoices', action: 'send' },
   },
   // GET orgContacts.ts /organizations/:id/contacts: PERMISSIONS.ORGS_READ.
   // GET remediationSuggestions.ts /: PERMISSIONS.DEVICES_READ.
@@ -1258,7 +1286,15 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // surfaces on `organizations:*` and `backup:*` rather than the device grants
   // the data's shape suggests (2026-09-17 audit §2.5 — one decision, nine
   // tools). Route evidence is cited per line.
-  query_backups: { resource: 'organizations', action: 'read' },   // routes/backup/jobs.ts:61
+  // Per-action map: list_configs mirrors routes/backup/configs.ts:232
+  // (backup:read), list_jobs mirrors routes/backup/jobs.ts:61 (organizations:read),
+  // list_policies mirrors routes/configurationPolicies/crud.ts's GET / (devices:read).
+  // Bound in aiGuardrails.routeBinding.contract.test.ts.
+  query_backups: {
+    list_configs: { resource: 'backup', action: 'read' },
+    list_jobs: { resource: 'organizations', action: 'read' },
+    list_policies: { resource: 'devices', action: 'read' },
+  },
   get_backup_status: { resource: 'organizations', action: 'read' },   // routes/backup/jobs.ts:147
   browse_snapshots: { resource: 'backup', action: 'read' },   // routes/backup/snapshots.ts:200, 273
   trigger_backup: { resource: 'devices', action: 'execute' },
@@ -1299,11 +1335,15 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_sla_breaches: { resource: 'organizations', action: 'read' },
   get_sla_compliance_report: { resource: 'organizations', action: 'read' },
   configure_backup_sla: { resource: 'organizations', action: 'write' },
-  query_dr_plans: { resource: 'organizations', action: 'read' },
-  get_dr_plan_details: { resource: 'organizations', action: 'read' },
-  get_dr_execution_status: { resource: 'organizations', action: 'read' },
+  // Route requires devices:read (routes/dr.ts:34-37, requireDrRead); the
+  // tool matches it (aiGuardrails.routeBinding.contract.test.ts).
+  query_dr_plans: { resource: 'devices', action: 'read' },
+  get_dr_plan_details: { resource: 'devices', action: 'read' },
+  get_dr_execution_status: { resource: 'devices', action: 'read' },
   execute_dr_plan: { resource: 'devices', action: 'execute' },
-  manage_dr_plan: { resource: 'organizations', action: 'write' },
+  // Mirrors routes/dr.ts:38 (requireDrWrite = devices:write) on every plan and
+  // group write.
+  manage_dr_plan: { resource: 'devices', action: 'write' },
   // Monitoring tools — RBAC mappings
   query_monitors: { resource: 'devices', action: 'read' },
   manage_monitors: {
@@ -1315,9 +1355,19 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
+  // query_webhooks keeps devices:read though REST GET /webhooks (routes/
+  // webhooks.ts) carries no requirePermission of its own (requireScope only)
+  // — the tool requires more than the route; see the routeBinding UNBOUND entry.
   query_webhooks: { resource: 'devices', action: 'read' },
-  query_psa_status: { resource: 'devices', action: 'read' },
-  test_webhook: { resource: 'devices', action: 'write' },
+  // Route requires organizations:read (routes/psa.ts:435); the tool matches
+  // it (aiGuardrails.routeBinding.contract.test.ts).
+  query_psa_status: { resource: 'organizations', action: 'read' },
+  // Matches POST /webhooks/:id/test
+  // (routes/webhooks.ts:683-684 — organizations:write, plus requireMfa();
+  // see the MFA note beside TOOL_EXTRA_PERMISSIONS). The tool is tier 3
+  // supervised (TIER3_SUPERVISED_TOOLS) because the route mutates and
+  // requires MFA.
+  test_webhook: { resource: 'organizations', action: 'write' },
   // Agent version & remote session tools
   query_agent_versions: { resource: 'devices', action: 'read' },
   trigger_agent_upgrade: { resource: 'devices', action: 'execute' },
@@ -1418,10 +1468,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Registration-debt payoff: RBAC entries for tools that were registered in
   // aiTools but had no TOOL_PERMISSIONS entry (legacyPermissionGaps in
   // aiToolsRegistryParity.test.ts). See that file's history for context.
-  // Incidents (analogy: manage_dr_plan/sync_huntress_data org-write; get_dr_plan_details org-read)
   create_incident: { resource: 'organizations', action: 'write' },
-  get_incident_timeline: { resource: 'organizations', action: 'read' },
-  generate_incident_report: { resource: 'organizations', action: 'read' },
+  // Route requires alerts:read (routes/incidents.ts:37, requireIncidentRead),
+  // matching list_incidents above (aiGuardrails.routeBinding.contract.test.ts).
+  get_incident_timeline: { resource: 'alerts', action: 'read' },
+  generate_incident_report: { resource: 'alerts', action: 'read' },
   // Device-execute (analogy: s1_isolate_device, execute_command; collect_evidence includes
   // screenshot => privileged extraction like take_screenshot)
   execute_containment: { resource: 'devices', action: 'execute' },
@@ -1618,6 +1669,13 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     // rewrites tenant ownership of the ticket and every child row, so the
     // organizations grant is the real authority being exercised.
     move_org: [{ resource: 'organizations', action: 'write' }],
+  },
+  manage_quotes: {
+    // create_pay_link's primary grant is invoices:send
+    // (the Stripe-session authority, matching POST /invoices/:id/pay-link);
+    // the handler also reads the quote by id to resolve the converted invoice
+    // (createQuotePayLink → quotePay.ts), so quotes:read is required too.
+    create_pay_link: [{ resource: 'quotes', action: 'read' }],
   },
   manage_invoices: {
     // SEC-145 — materializing a contract line reads the contract, so the
@@ -2584,6 +2642,36 @@ function serviceNameFromPayload(payload: Record<string, unknown>): string | null
   return nonEmptyText(payload.name !== undefined ? payload.name : payload.serviceName);
 }
 
+/** `alice@acme.example` -> `acme.example`. Null for a value with no `@`-domain. */
+function emailDomain(value: string): string | null {
+  const at = value.lastIndexOf('@');
+  return at === -1 || at === value.length - 1 ? null : value.slice(at + 1).toLowerCase();
+}
+
+/**
+ * Flags a destination address whose domain differs from the workspace
+ * mailbox the Google tool call is acting on. `sourceEmail` (the tool's
+ * `userEmail`/`ownerEmail` argument) is used as a stand-in for the connected
+ * Google workspace's verified/primary domain: `buildApprovalDescription` and
+ * `checkGuardrails` are synchronous and run without any org/connection
+ * context (one caller, `mcpServer.ts`'s pre-execution tier check, has no
+ * loaded session at all), so this cannot look up the real, DB-stored
+ * `google_workspace_connections.customer_domain` for the org without turning
+ * this call chain async — out of scope for a display-string fix. Both sides
+ * of the comparison are therefore caller-suppliable tool arguments, not a
+ * server-verified domain, so the label below is worded as a heuristic rather
+ * than a confirmed-external flag. Display-only: does not block or alter the
+ * call. Domain-locking these tools outright using verified connection data
+ * is a possible future hardening.
+ */
+function externalDestinationFlag(sourceEmail: string | null, destEmail: string | null): string {
+  if (!sourceEmail || !destEmail) return '';
+  const sourceDomain = emailDomain(sourceEmail);
+  const destDomain = emailDomain(destEmail);
+  if (!sourceDomain || !destDomain || sourceDomain === destDomain) return '';
+  return ' (different domain from source mailbox)';
+}
+
 /**
  * #5173: `execute_command`'s headline used to be the raw call signature
  * ('Execute "kill_process" command on device 74e15ef8...') for every
@@ -2926,6 +3014,56 @@ function buildApprovalDescription(
         }
       } else parts.push(`Organizations: ${action}`);
       break;
+
+    // These four tools grant mail
+    // forwarding/delegation or calendar visibility to an arbitrary external
+    // address. Previously they had no case here, so the always-visible web
+    // headline AND the mobile takeover/push title (buildActionLabel reads
+    // this `description` as its `reason`) both fell through to the bare
+    // tool name with zero destination information. The exact destination
+    // now appears in the headline on every surface, flagged distinctly when
+    // its domain differs from the mailbox being acted on.
+    case 'google_set_forwarding': {
+      const userEmail = nonEmptyText(input.userEmail);
+      const forwardTo = nonEmptyText(input.forwardTo);
+      parts.push(
+        `Forward mail from ${userEmail ?? 'unknown mailbox'} to ${forwardTo ?? 'unknown address'}` +
+        externalDestinationFlag(userEmail, forwardTo)
+      );
+      break;
+    }
+
+    case 'google_disable_forwarding': {
+      const userEmail = nonEmptyText(input.userEmail);
+      parts.push(`Disable mail forwarding for ${userEmail ?? 'unknown mailbox'}`);
+      if (input.removeAddress === true) {
+        const forwardTo = nonEmptyText(input.forwardTo);
+        if (forwardTo) {
+          parts.push(`and remove forwarding address ${forwardTo}${externalDestinationFlag(userEmail, forwardTo)}`);
+        }
+      }
+      break;
+    }
+
+    case 'google_add_mail_delegate': {
+      const userEmail = nonEmptyText(input.userEmail);
+      const delegateEmail = nonEmptyText(input.delegateEmail);
+      parts.push(
+        `Grant ${delegateEmail ?? 'unknown address'} delegate access to ${userEmail ?? 'unknown mailbox'}'s mailbox` +
+        externalDestinationFlag(userEmail, delegateEmail)
+      );
+      break;
+    }
+
+    case 'google_share_calendar': {
+      const ownerEmail = nonEmptyText(input.ownerEmail);
+      const shareWithEmail = nonEmptyText(input.shareWithEmail);
+      parts.push(
+        `Share ${ownerEmail ?? 'unknown'}'s calendar with ${shareWithEmail ?? 'unknown address'}` +
+        externalDestinationFlag(ownerEmail, shareWithEmail)
+      );
+      break;
+    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

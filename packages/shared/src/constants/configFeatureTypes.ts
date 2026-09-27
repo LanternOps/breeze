@@ -63,3 +63,81 @@ export type RetiredConfigFeatureType = typeof RETIRED_CONFIG_FEATURE_TYPES[numbe
 export function isRetiredConfigFeatureType(value: unknown): value is RetiredConfigFeatureType {
   return typeof value === 'string' && (RETIRED_CONFIG_FEATURE_TYPES as readonly string[]).includes(value);
 }
+
+/**
+ * Execution-target field-provenance tiering — classifies every feature type by what a device
+ * gains from its own assignment for a `device_group`-level policy it only
+ * qualifies for because the group's rules key on a high-value agent-reported
+ * field, e.g. `hostname`/`tags`/`custom.*` (see `apps/api/src/services/
+ * executionTargetGating.ts`: such a group is refused as an execution target
+ * because the device's own report decides its membership).
+ *
+ * The test is "does this feature grant the device a capability it does not
+ * already have on itself," not "does this feature
+ * execute/install/deliver something." Conflating the two would
+ * misclassify `patch`/`backup` as execution_gated.
+ *
+ * - `protective` — the feature only RESTRICTS or DETECTS on the device it
+ *   applies to, or delivers nothing the device doesn't already have on
+ *   itself (hardening, DNS/firewall posture,
+ *   peripheral/USB control, monitoring, compliance/vulnerability/
+ *   sensitive-data scanning, log collection, alert-rule thresholds,
+ *   informational lifecycle/warranty state, patch ring/schedule metadata,
+ *   backup profile/destination references). Dropping the assignment for a
+ *   refused group would silently turn a real protection OFF (or silently
+ *   stop real patching/backups) for a device that never asked to be
+ *   excluded, so these feature types are NEVER gated: they keep
+ *   applying regardless of which fields the group's rules match on.
+ * - `execution_gated` — the feature GRANTS the device a capability it does
+ *   not already have on itself (runs automations or scripts,
+ *   elevates privilege, opens a remote-access session, delivers a
+ *   credential/secret, delivers admin-authored package content that may
+ *   embed secrets, or suppresses detection while it runs). A device that
+ *   self-selects into a group assigned one of these is picking up something
+ *   it was never meant to have; falling back to "no grant" is the safe
+ *   default, so these stay behind the execution-target gate.
+ *
+ * A `Record<ConfigFeatureType, …>` (not a partial map) so the compiler forces
+ * a classification decision the moment a new feature type is added —
+ * `configFeatureTypes.test.ts` in `@breeze/shared` additionally asserts this
+ * at runtime for callers that only see the type erased.
+ */
+export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protective' | 'execution_gated'> = {
+  // execution_gated — installs/deploys software, runs code, elevates
+  // privilege, opens remote access, or delivers a credential/secret.
+  software_policy: 'execution_gated', // can deliver arbitrary admin-authored package/script content, which may embed secrets — unlike patch's fixed vendor-update payload
+  automation: 'execution_gated', // executes scripts/automations on the device
+  remote_access: 'execution_gated', // grants WebRTC/VNC/remote-tools session capability
+  pam: 'execution_gated', // privileged elevation rules
+  onedrive_helper: 'execution_gated', // delivers OneDrive helper library-mapping/credential config
+  helper: 'execution_gated', // Breeze Assist technician/AI-chat capability grants on the device
+  maintenance: 'execution_gated', // grants suppression of alerting/monitoring for the window — capability to evade detection, not merely a restriction
+
+  // protective — restricts the device or only detects/reports; never grants a
+  // capability, so a dropped assignment can only ever leave the device MORE
+  // exposed to normal baseline behavior, never less.
+  security: 'protective', // hardening/DNS-filtering/firewall posture — restricts only
+  compliance: 'protective', // compliance scan evaluation (remediation dispatch is a separate, already-gated path — see policyEvaluationService.ts)
+  event_log: 'protective', // log collection tuning — detection/forensics only
+  sensitive_data: 'protective', // sensitive-data discovery scanning — detection only
+  peripheral_control: 'protective', // USB/peripheral device control — restricts only ("not enforced" = peripherals unrestricted, the unsafe direction)
+  vulnerability: 'protective', // vulnerability correlation/scanning — detection only
+  device_lifecycle: 'protective', // informational lifecycle status — no execution capability
+  monitors: 'protective', // monitor definitions — detection only
+  hardware_monitoring: 'protective', // RAID/disk-health collection — detection only
+  warranty: 'protective', // informational warranty alerts — no execution capability
+  // A device that self-selects into a group
+  // gains nothing new from patch/backup that it doesn't already have as an
+  // already-controlled device, so dropping either for a refused group only
+  // creates a silent-regression risk (unpatched/unbacked-up real fleets).
+  patch: 'protective', // resolves to ring/schedule metadata only — no credential delivered; dropping it silently unpatches real hostname/tag-ringed fleets
+  backup: 'protective', // resolves to a backup-profile/destination REFERENCE, not storage credentials — dropping it silently stops backups for real hostname/tag-keyed groups
+};
+
+export const EXECUTION_GATED_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set(
+  CONFIG_FEATURE_TYPES.filter((ft) => CONFIG_POLICY_FEATURE_TRUST_TIER[ft] === 'execution_gated'),
+);
+
+export function isExecutionGatedFeatureType(featureType: ConfigFeatureType): boolean {
+  return CONFIG_POLICY_FEATURE_TRUST_TIER[featureType] === 'execution_gated';
+}

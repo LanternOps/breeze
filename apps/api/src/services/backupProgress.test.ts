@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const refreshDispatchedExpectationMock = vi.fn();
+const findForeignSnapshotClaimMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -13,6 +14,7 @@ vi.mock('../db/schema', () => ({
   backupJobs: {
     id: 'backupJobs.id',
     deviceId: 'backupJobs.deviceId',
+    orgId: 'backupJobs.orgId',
     status: 'backupJobs.status',
     transferredSize: 'backupJobs.transferredSize',
     totalSize: 'backupJobs.totalSize',
@@ -34,6 +36,13 @@ vi.mock('./agentWorkExpectation', () => ({
   refreshDispatchedExpectation: (...args: unknown[]) =>
     refreshDispatchedExpectationMock(...(args as [])),
 }));
+
+vi.mock('./backupSnapshotOwnership', () => ({
+  findForeignSnapshotClaim: (...args: unknown[]) =>
+    findForeignSnapshotClaimMock(...(args as [])),
+}));
+
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
 import {
@@ -74,6 +83,7 @@ describe('applyBackupProgress', () => {
     vi.resetAllMocks();
     resetUnmatchedBackupProgressCache();
     refreshDispatchedExpectationMock.mockResolvedValue(true);
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
   });
 
   it('applies progress fields for a running job with the owning agent', async () => {
@@ -191,7 +201,7 @@ describe('applyBackupProgress', () => {
   it('persists the snapshot id reported mid-run', async () => {
     vi.mocked(db.select).mockReturnValue(
       selectChain([
-        { id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' },
+        { id: 'job-1', deviceId: 'device-1', orgId: 'org-1', agentId: 'agent-1', status: 'running' },
       ]) as any
     );
     vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
@@ -212,6 +222,47 @@ describe('applyBackupProgress', () => {
     expect(updateCall.set).toHaveBeenCalledWith(
       expect.objectContaining({ snapshotId: 'snapshot-20260801T101500Z-a1b2c3d4' })
     );
+    expect(findForeignSnapshotClaimMock).toHaveBeenCalledWith({
+      snapshotId: 'snapshot-20260801T101500Z-a1b2c3d4',
+      callerDeviceId: 'device-1',
+      callerOrgId: 'org-1',
+    });
+  });
+
+  // SEC follow-up: a snapshot id already claimed by another device (or, on a
+  // bucket shared across orgs, another org) must not be adopted mid-run — the
+  // counters still apply so the job stays alive, but the id itself is dropped.
+  it('drops a snapshot id already claimed by another device', async () => {
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([
+        { id: 'job-1', deviceId: 'device-1', orgId: 'org-1', agentId: 'agent-1', status: 'running' },
+      ]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+    findForeignSnapshotClaimMock.mockResolvedValue({
+      ownerDeviceId: 'device-2',
+      ownerOrgId: 'org-1',
+      crossOrg: false,
+    });
+
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: {
+        phase: 'uploading',
+        current: 1000,
+        total: 5000,
+        snapshotId: 'snapshot-20260801T101500Z-a1b2c3d4',
+      },
+    });
+
+    expect(result).toEqual({ applied: true, snapshotIdDropped: true });
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
+    const setArg = updateCall.set.mock.calls[0][0];
+    expect(setArg).not.toHaveProperty('snapshotId');
+    // The counters that keep the job alive must still land even though the
+    // snapshot id was refused.
+    expect(setArg.transferredSize).toBe(1000);
   });
 
   it('leaves snapshotId untouched on the pre-snapshot keepalive frames', async () => {

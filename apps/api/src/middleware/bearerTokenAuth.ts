@@ -18,6 +18,7 @@ import { oauthClientBlocks, oauthGrants, organizations, partnerUsers, users } fr
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { activeGrantCondition } from '../oauth/grantStatus';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from './mcpTenantToolSelfManagedContext';
 
 interface OAuthApiKeyContext {
   id: string;
@@ -497,6 +498,16 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
         await resolvePartnerAccessibleOrgIds(payload.partner_id, payload.sub),
         clientIdClaim,
       );
+
+  // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: set only by
+  // mcpAuthMiddleware, only for an MCP tools/call request already known to
+  // target a tenant (BYO MCP) tool. Every DB read/write on that path manages
+  // its own short context, so the ambient wrap below is skipped rather than
+  // pinning a pooled connection across the tool's outbound call.
+  if (c.get(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY) === true) {
+    await next();
+    return;
+  }
 
   await withDbAccessContext(
     payload.org_id

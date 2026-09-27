@@ -444,4 +444,35 @@ describe('tier-3 approval scope classification', () => {
     const tier2 = checkGuardrails('manage_patches', { action: 'approve' });
     expect(tier2.approvalScope).toBeUndefined();
   });
+
+  it('manage_tickets comment escalates to tier 3 supervised only when isPublic is explicitly true', () => {
+    const publicComment = checkGuardrails('manage_tickets', { action: 'comment', ticketId: 't1', content: 'hi', isPublic: true });
+    expect(publicComment.tier).toBe(3);
+    expect(publicComment.approvalScope).toBe('supervised');
+
+    const privateComment = checkGuardrails('manage_tickets', { action: 'comment', ticketId: 't1', content: 'hi', isPublic: false });
+    expect(privateComment.tier).toBe(2);
+    expect(privateComment.approvalScope).toBeUndefined();
+
+    const defaultedComment = checkGuardrails('manage_tickets', { action: 'comment', ticketId: 't1', content: 'hi' });
+    expect(defaultedComment.tier).toBe(2);
+    expect(defaultedComment.approvalScope).toBeUndefined();
+  });
+
+  it('manage_tickets:comment is input-aware: exempt from the static per-action tables', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_tickets:comment')).toBe(true);
+    expect(TIER3_ACTIONS.manage_tickets ?? []).not.toContain('comment');
+  });
+
+  // test_webhook's route (POST /webhooks/:id/test, routes/webhooks.ts:683-684)
+  // carries requireMfa() on top of organizations:write, and it mutates (a real
+  // outbound POST). Per this module's documented MFA rule, a tool mirroring a
+  // mutating requireMfa() route is tier 3. TIER3_SUPERVISED_TOOLS membership
+  // alone is covered by the whole-tool registry-tier assertion above; this
+  // pins the end-to-end resolution explicitly.
+  it('test_webhook is tier 3 and resolves to the supervised approval scope', () => {
+    expect(getToolTier('test_webhook')).toBe(3);
+    expect(resolveApprovalScope('test_webhook', undefined, {})).toBe('supervised');
+    expect(TIER3_SUPERVISED_TOOLS.has('test_webhook')).toBe(true);
+  });
 });

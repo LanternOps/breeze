@@ -114,6 +114,16 @@ Use this mode on Windows and macOS, on Linux machines whose layout is not bare-m
 
 Once a token exists, download the recovery bundle (the helper binary and a launch script) for the target platform from the **Recovery Bootstrap** tab. Bootable media is no longer built per token; use the release ISO described above.
 
+### Recovery bundle signing
+
+**v0.118.0+.** Before it runs the helper binary, a recovery bundle's launch script downloads that binary's signature from your Breeze server (authenticated with the recovery token) and checks it with `minisign`. It checks against the public key written into the bundle when it was built, never a key fetched at run time. The script refuses to run the helper when:
+
+- the bundle was built without recovery signing configured on the server, so it carries no key;
+- `minisign` (or, on Linux and macOS, `curl`) is not installed on the recovery machine;
+- the server has no signature for the binary, or the signature does not match.
+
+To build bundles that run, set `RECOVERY_SIGNING_PRIVATE_KEY` and `RECOVERY_SIGNING_PUBLIC_KEY` on the API, and make a `minisign` binary available to it (see [Environment Variables → Backup](/deploy/environment/#backup-enterprise-agent-backup)). **Rebuild bundles you downloaded before upgrading to v0.118.0**, and install `minisign` on the machine you recover.
+
 <Aside type="danger">
   Recovery tokens are shown only once at creation time. Store the token securely and use it promptly. If lost, generate a new one.
 </Aside>
@@ -128,7 +138,7 @@ Once a token exists, download the recovery bundle (the helper binary and a launc
 
 <Steps>
 1. Get the target machine to a booted OS by installing one normally.
-2. Download and extract the recovery bundle for the target platform/architecture, then run the launch script (`run-recovery.sh` / `run-recovery.ps1`) or the binary directly:
+2. Install `minisign` (and `curl` on Linux and macOS) on the target machine; the launch script needs it to [verify the helper](#recovery-bundle-signing). Download and extract the recovery bundle for the target platform/architecture, then run the launch script (`run-recovery.sh` / `run-recovery.ps1`) or the binary directly:
    ```
    breeze-backup bmr-recover --token <recovery-token> --server <breeze-server-url>
    ```

@@ -6,7 +6,7 @@ import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
-import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
+import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
@@ -1560,6 +1560,51 @@ describe('discovery routes', () => {
       expect(body.status).toBe('cancelled');
     });
 
+    // The worker enqueues the dispatch job under `discovery-dispatch-${jobId}`
+    // (discoveryWorker.ts enqueueDiscoveryScan), never the bare row id. A
+    // cancel that removes the bare id is always a no-op: the queued dispatch
+    // still fires, and the worker's unconditional status write flips
+    // 'cancelled' back to 'running'.
+    it('removes the queued dispatch job under its prefixed BullMQ id, not the bare job id', async () => {
+      usePartnerAuth();
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: JOB_ID, orgId: ORG_A, status: 'scheduled' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: JOB_ID,
+              orgId: ORG_A,
+              status: 'cancelled',
+              createdAt: new Date('2026-05-18T00:00:00.000Z'),
+              scheduledAt: null,
+              startedAt: null,
+              completedAt: new Date('2026-05-18T00:01:00.000Z')
+            }])
+          })
+        })
+      } as any);
+
+      const removeSpy = vi.fn(async () => {});
+      vi.mocked(getDiscoveryQueue).mockReturnValueOnce({ remove: removeSpy } as any);
+
+      const res = await app.request(`/discovery/jobs/${JOB_ID}/cancel?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(removeSpy).toHaveBeenCalledWith(`discovery-dispatch-${JOB_ID}`);
+      expect(removeSpy).not.toHaveBeenCalledWith(JOB_ID);
+    });
+
     it('denies cancelling against an org the partner cannot access', async () => {
       usePartnerAuth();
 
@@ -2946,6 +2991,261 @@ describe('discovery routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PATCH /profiles/:id SNMP credential origin binding', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const PROFILE_ID = '00000000-0000-0000-0000-000000000030';
+    const SITE = '00000000-0000-0000-0000-0000000000b1';
+
+    function setAuth() {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG,
+          partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG,
+          accessibleOrgIds: null,
+        });
+        c.set('permissions', {});
+        return next();
+      });
+    }
+
+    beforeEach(() => {
+      setAuth();
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.update).mockReset();
+      vi.mocked(db.transaction).mockReset();
+    });
+
+    const limitSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+
+    function mockProfileLookup(profile: any) {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect(profile ? [profile] : []));
+    }
+
+    function mockProfileUpdate(updatedRow: any) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updatedRow]) }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return setSpy;
+    }
+
+    const patch = (body: unknown) => app.request(`/discovery/profiles/${PROFILE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    const existingProfileWithSecrets = {
+      id: PROFILE_ID,
+      orgId: ORG,
+      siteId: SITE,
+      subnets: ['10.0.1.0/24', '10.0.2.0/24'],
+      snmpCommunities: ['enc:v1:mock-community'],
+      snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'enc:v1:mock-auth' },
+    };
+
+    it('refuses an added subnet that leaves stored SNMP communities untouched', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+
+      const res = await patch({ subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'] });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a widened subnet set that echoes masked SNMP credentials back', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+
+      const res = await patch({
+        subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'],
+        snmpCommunities: ['********'],
+        snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: '********' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a changed (not just added) subnet under the same widening rule', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+
+      // Drops 10.0.2.0/24 but ALSO introduces 10.0.5.0/24 — a net change, not
+      // a pure narrowing, so it must still require fresh secrets.
+      const res = await patch({ subnets: ['10.0.1.0/24', '10.0.5.0/24'] });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a widened subnet set when fresh SNMP secrets are supplied', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'] });
+
+      const res = await patch({
+        subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'],
+        snmpCommunities: ['fresh-community'],
+        snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'fresh-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows a widened subnet set when the stored secrets are explicitly cleared', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'] });
+
+      const res = await patch({
+        subnets: ['10.0.1.0/24', '10.0.2.0/24', '10.0.3.0/24'],
+        snmpCommunities: [],
+        snmpCredentials: null,
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows narrowing subnets (removal only) without touching stored secrets', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, subnets: ['10.0.1.0/24'] });
+
+      const res = await patch({ subnets: ['10.0.1.0/24'] });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows a profile update that never touches subnets, even with stored secrets present', async () => {
+      mockProfileLookup(existingProfileWithSecrets);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, name: 'Renamed' });
+
+      const res = await patch({ name: 'Renamed' });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    const existingProfileWithSecretsAndExclusions = {
+      ...existingProfileWithSecrets,
+      excludeIps: ['10.0.1.5', '10.0.1.6'],
+    };
+
+    it('refuses removing an excluded IP that un-walls a host inside an already-approved subnet', async () => {
+      mockProfileLookup(existingProfileWithSecretsAndExclusions);
+
+      const res = await patch({ excludeIps: ['10.0.1.6'] });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses clearing excludeIps entirely while stored SNMP secrets are left untouched', async () => {
+      mockProfileLookup(existingProfileWithSecretsAndExclusions);
+
+      const res = await patch({ excludeIps: [] });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows removing an excluded IP when fresh SNMP secrets are supplied', async () => {
+      mockProfileLookup(existingProfileWithSecretsAndExclusions);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecretsAndExclusions, excludeIps: ['10.0.1.6'] });
+
+      const res = await patch({
+        excludeIps: ['10.0.1.6'],
+        snmpCommunities: ['fresh-community'],
+        snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'fresh-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows widening excludeIps (adding more exclusions) without touching stored secrets', async () => {
+      mockProfileLookup(existingProfileWithSecretsAndExclusions);
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecretsAndExclusions, excludeIps: ['10.0.1.5', '10.0.1.6', '10.0.1.7'] });
+
+      const res = await patch({ excludeIps: ['10.0.1.5', '10.0.1.6', '10.0.1.7'] });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('refuses a bare siteId move while stored SNMP secrets are left untouched', async () => {
+      const OTHER_SITE = '00000000-0000-0000-0000-0000000000c2';
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([existingProfileWithSecrets]));
+
+      const res = await patch({ siteId: OTHER_SITE });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a siteId move when fresh SNMP secrets are supplied', async () => {
+      const OTHER_SITE = '00000000-0000-0000-0000-0000000000c2';
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfileWithSecrets]))
+        .mockReturnValueOnce(limitSelect([{ id: OTHER_SITE }]));
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, siteId: OTHER_SITE });
+
+      const res = await patch({
+        siteId: OTHER_SITE,
+        snmpCommunities: ['fresh-community'],
+        snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'fresh-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows a siteId move when stored secrets are explicitly cleared', async () => {
+      const OTHER_SITE = '00000000-0000-0000-0000-0000000000c2';
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([existingProfileWithSecrets]))
+        .mockReturnValueOnce(limitSelect([{ id: OTHER_SITE }]));
+      const setSpy = mockProfileUpdate({ ...existingProfileWithSecrets, siteId: OTHER_SITE });
+
+      const res = await patch({ siteId: OTHER_SITE, snmpCommunities: [], snmpCredentials: null });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
+    });
+
+    it('allows a siteId move without stored secrets untouched when no secrets are stored', async () => {
+      const OTHER_SITE = '00000000-0000-0000-0000-0000000000c2';
+      const noSecretsProfile = { ...existingProfileWithSecrets, snmpCommunities: [], snmpCredentials: null };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitSelect([noSecretsProfile]))
+        .mockReturnValueOnce(limitSelect([{ id: OTHER_SITE }]));
+      const setSpy = mockProfileUpdate({ ...noSecretsProfile, siteId: OTHER_SITE });
+
+      const res = await patch({ siteId: OTHER_SITE });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalled();
     });
   });
 });

@@ -86,6 +86,14 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   // all, so this check cannot be folded into the site one.
   if (auth.allowedDeviceIds
     && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return null;
+  // Helper device axis: a Helper-authenticated caller (routes/helper/*, the
+  // tray app) is pinned to its OWN device the same way an exact-device AI run
+  // is pinned to `allowedDeviceIds` above. The site-axis check below is not
+  // enough on its own — a Helper session carries no `allowedSiteIds`
+  // restriction, so without this it could read (Tier 1 `get`) any org-wide or
+  // sibling-device alert by UUID.
+  if (auth.helperDeviceId
+    && (!alert.deviceId || alert.deviceId !== auth.helperDeviceId)) return null;
   // A topology policy alert is owned by its topology site (M3-D6): the site
   // axis follows that site, never the origin device's current one.
   if (alert.topologySiteId) {

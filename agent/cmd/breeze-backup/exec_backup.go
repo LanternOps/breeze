@@ -422,22 +422,35 @@ func managerFromProviderPayload(payload json.RawMessage) (*backup.BackupManager,
 // preserved: when a vault provider is configured it still wraps the resolved
 // primary via NewFallbackProvider, whether the primary came from the payload
 // or from mgr.
-func restoreProviderForCommand(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) (providers.BackupProvider, error) {
+//
+// A payload carrying a storageSession is served through that session ONLY:
+// no vault wrapping, no agent.yaml manager, no providerConfig. Any session
+// problem is returned as an error. The returned release func (never nil)
+// must be called when the command is done.
+func restoreProviderForCommand(ctx context.Context, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) (providers.BackupProvider, func(), error) {
+	noop := func() {}
+	session, err := storageSessionProvider(ctx, payload)
+	if err != nil {
+		return nil, noop, err
+	}
+	if session != nil {
+		return session, session.Close, nil
+	}
 	payloadProvider, err := restoreProviderFromPayload(payload)
 	if err != nil {
-		return nil, err
+		return nil, noop, err
 	}
 	if payloadProvider == nil {
-		return resolveRestoreProvider(mgr, vaultState), nil
+		return resolveRestoreProvider(mgr, vaultState), noop, nil
 	}
 	if vaultState != nil {
 		if vaultMgr := vaultState.Get(); vaultMgr != nil {
 			if vaultProvider := vaultMgr.GetProvider(); vaultProvider != nil {
-				return providers.NewFallbackProvider(vaultProvider, payloadProvider), nil
+				return providers.NewFallbackProvider(vaultProvider, payloadProvider), noop, nil
 			}
 		}
 	}
-	return payloadProvider, nil
+	return payloadProvider, noop, nil
 }
 
 func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerRef) providers.BackupProvider {
@@ -467,10 +480,11 @@ func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager, vault
 }
 
 func execBackupRestoreWithProgress(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
-	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
 	}
+	defer releaseProvider()
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}
@@ -543,10 +557,11 @@ func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultS
 // counts and a `partial`/`failed` status — the API reads the verification
 // body only from a completed command. conn may be nil.
 func execBackupVerifyContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
-	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
 	}
+	defer releaseProvider()
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}
@@ -568,10 +583,11 @@ func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, v
 // execBackupTestRestoreContext runs a backup_test_restore; see
 // execBackupVerifyContext for the budget and progress behaviour.
 func execBackupTestRestoreContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
-	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
 	}
+	defer releaseProvider()
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}

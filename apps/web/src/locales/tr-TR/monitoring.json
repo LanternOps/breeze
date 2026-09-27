@@ -297,7 +297,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Başarılı yedekleme yok",
-    "consecutive_failures": "Ardışık hatalar"
+    "consecutive_failures": "Ardışık hatalar",
+    "completed_with_errors": "Dosya hatalarıyla tamamlandı"
   },
   "checkTypes": {
     "icmp_ping": "ICMP ping testi",
@@ -438,9 +439,9 @@
       "review": "İncele",
       "convertEverything": "Tümünü dönüştür…",
       "confirmTitle": "Tüm ilkelerinizdeki her eski kural, izleme ve uyarıyla tetiklenen otomasyon dönüştürülsün mü?",
-      "confirmBody": "İş ortağının tümünde {{policies}}de {{rows}}. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri W05c’de inceleme veya elle emekliye ayırma için kalır; W05d kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
+      "confirmBody": "İş ortağının tümünde {{policies}}de {{rows}}. Dönüştürülen satırlar yerinde emekliye ayrılır. Diğerleri şimdi inceleme veya elle emekliye ayırma için kalır; gelecekteki bir sürüm kalanları dönüştürür ve dönüştürülemeyenleri emekliye ayırır.",
       "confirmRun": "Tümünü dönüştür",
-      "convertedAll": "{{policies}} ilkede {{converted}} satır dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
+      "convertedAll": "{{policies}}de {{rows}} dönüştürüldü; {{unconvertible}} dönüştürülemedi.",
       "errors": {
         "convertAll": "Tümü dönüştürülemedi"
       }
@@ -511,7 +512,7 @@
       "empty": "Dönüştürme geçmişi yok.",
       "system": "Sistem",
       "reverted": "Geri alındı",
-      "deadline": "W05d kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
+      "deadline": "Eski uyarıların emekliye ayrılması kaynak değerlendiriciyi kaldırdıktan sonra geri alma kullanılamaz."
     },
     "errorCodes": {
       "preview_stale": "İlke bu önizlemeden sonra değişti. Dönüştürmeden önce yeniden önizleyin.",

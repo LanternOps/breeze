@@ -161,6 +161,7 @@ const STEP_UP_OPERATIONS = [
   'device_maintenance',
   'device_move_org',
   'ai_script_lane_grant',
+  'ai_partner_script_ceiling_grant',
   'topology_arm',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
@@ -203,10 +204,30 @@ export const moveOrgStepUpResource = z.object({
 // happily accept a rollback-shaped body under operation:'device_maintenance'.
 // AI script authoring W04 (#5612): the unattended-lane grant / reset binding.
 // One org, one value — mirrors scriptLanePolicyResourceDigest exactly.
+// `widening` is present only for a WIDENING save (tier/classes/rate/emptied
+// protectedResources/reviewerModel/proposingEnabled) on an already-enabled
+// lane, so the grant is bound to the exact wider values shown to the
+// operator, not just the boolean flip.
+const scriptLaneWideningResource = z.object({
+  maxUnattendedRiskTier: z.enum(['low', 'medium']),
+  unattendedAllowedClasses: z.array(z.string()),
+  maxUnattendedPerHour: z.number().int().min(0).max(100),
+  protectedResourcesEmptied: z.boolean(),
+  reviewerModel: z.string().nullable(),
+  proposingEnabled: z.boolean(),
+});
 export const scriptLaneStepUpResource = z.object({
   orgId: z.string().uuid(),
   unattendedEnabled: z.boolean(),
   reset: z.boolean().optional(),
+  widening: scriptLaneWideningResource.optional(),
+});
+// Partner-wide sibling: raising the PARTNER ceiling (`unattendedAllowed`) is
+// the same class of action, fanned out to every opted-in org under it.
+export const partnerScriptCeilingStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  unattendedAllowed: z.boolean(),
+  widening: scriptLaneWideningResource.optional(),
 });
 // Topology M3 arm binding — mirrors topologyArmResourceDigest exactly.
 export const topologyArmStepUpResource = z.object({
@@ -214,7 +235,7 @@ export const topologyArmStepUpResource = z.object({
   action: z.enum(['arm_policy', 'arm_telemetry']),
   subjectId: z.string().uuid(),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource, topologyArmStepUpResource]);
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

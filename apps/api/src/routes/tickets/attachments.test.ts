@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const {
   authRef, getScopedTicketOr404Mock, dbSelectMock, dbInsertReturningMock,
   selectColumnArgs, insertedValues, putBytesMock, deleteBytesMock, auditMock, rateLimitAllowed,
-  openBytesMock, dbRowMock, deletedRowIds, dbEventOrder, resolveArtifactMock,
+  openBytesMock, dbRowMock, deletedRowIds, dbEventOrder, findArtifactForAuthMock,
 } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -25,7 +25,7 @@ const {
   putBytesMock: vi.fn(),
   deleteBytesMock: vi.fn(),
   openBytesMock: vi.fn(),
-  resolveArtifactMock: vi.fn(),
+  findArtifactForAuthMock: vi.fn(),
   dbRowMock: vi.fn(),
   deletedRowIds: [] as unknown[],
   // Side effects recorded from INSIDE the request, so orderings are observable.
@@ -113,7 +113,7 @@ vi.mock('../../services/auditService', () => ({ createAuditLogAsync: auditMock }
 // Execution plane W05 (spec §6.3) — the from-artifact attach route resolves the
 // handle through this; its own coverage is artifactService.test.ts.
 vi.mock('../../services/artifacts/artifactService', () => ({
-  resolveArtifact: resolveArtifactMock,
+  findArtifactForAuth: findArtifactForAuthMock,
   openArtifactStream: vi.fn(),
 }));
 
@@ -527,7 +527,7 @@ describe('POST /tickets/:id/attachments/from-artifact', () => {
   }
 
   beforeEach(() => {
-    resolveArtifactMock.mockResolvedValue({
+    findArtifactForAuthMock.mockResolvedValue({
       id: ART,
       orgId: 'org-1',
       runId: RUN,
@@ -568,20 +568,39 @@ describe('POST /tickets/:id/attachments/from-artifact', () => {
     });
   });
 
-  it('404s a handle that does not resolve in the ticket org, without saying why', async () => {
-    resolveArtifactMock.mockResolvedValue(null);
+  it('404s a handle the caller cannot read (object-level check, same as GET /ai/artifacts/:id), without saying why', async () => {
+    // findArtifactForAuth is the CANONICAL read route's own authorization
+    // helper — a null here means the caller is not authorized to read this
+    // specific artifact under that route's own scoping, not merely that the
+    // row is missing.
+    findArtifactForAuthMock.mockResolvedValue(null);
     const res = await attach();
     expect(res.status).toBe(404);
     expect((await res.json()).code).toBe('ARTIFACT_NOT_FOUND');
     expect(insertedValues).toHaveLength(0);
   });
 
-  it('resolves the handle against the TICKET org, not the caller org', async () => {
-    // A partner-scope tech can reach many orgs; the artifact must belong to the
-    // org whose ticket is being written, or a sibling org's file lands on this
-    // customer's ticket. `authRef` is partner-scoped with orgId null here.
+  it('resolves the handle through the caller\'s own auth context (object-level check)', async () => {
+    // findArtifactForAuth(handle, auth) is the SAME helper the canonical
+    // GET /ai/artifacts/:id route uses — the caller must be able to read this
+    // specific artifact under their own org-axis scoping, not merely hold a
+    // coarse tickets:write permission.
     await attach();
-    expect(resolveArtifactMock).toHaveBeenCalledWith(ART, { orgId: 'org-1' });
+    expect(findArtifactForAuthMock).toHaveBeenCalledWith(ART, authRef.current);
+  });
+
+  it('refuses an artifact whose own org does not match the ticket org, even though the caller can read it', async () => {
+    // A partner-scope tech can reach many orgs; findArtifactForAuth alone only
+    // proves the CALLER may read the artifact somewhere — the artifact must
+    // ALSO belong to the ticket's own org, or a sibling org's file lands on
+    // this customer's ticket (independent of the caller's own org breadth).
+    findArtifactForAuthMock.mockResolvedValue({
+      id: ART, orgId: 'org-OTHER', runId: RUN, name: 'x.csv', contentType: 'text/csv', bytes: 1, sha256: SHA,
+    });
+    const res = await attach();
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('ARTIFACT_NOT_FOUND');
+    expect(insertedValues).toHaveLength(0);
   });
 
   it('refuses to attach to a deleted ticket', async () => {
@@ -590,13 +609,13 @@ describe('POST /tickets/:id/attachments/from-artifact', () => {
     });
     const res = await attach();
     expect(res.status).toBe(409);
-    expect(resolveArtifactMock).not.toHaveBeenCalled();
+    expect(findArtifactForAuthMock).not.toHaveBeenCalled();
   });
 
   it('rejects a non-uuid handle before touching the artifact service', async () => {
     const res = await attach('not-a-uuid');
     expect(res.status).toBe(400);
-    expect(resolveArtifactMock).not.toHaveBeenCalled();
+    expect(findArtifactForAuthMock).not.toHaveBeenCalled();
   });
 });
 

@@ -58,6 +58,7 @@ import { scriptKind } from '../services/monitors/kinds/script';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { assertQueueJobName } from '../services/bullmqValidation';
+import { excludeEphemeralDevices, excludeQuickSupportOrgs } from '../services/quickSupportOrg';
 import { withQueueMeta, type QueueActorMeta } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
@@ -111,10 +112,15 @@ async function resolveCandidateOrgIds(monitor: {
     return [];
   }
 
+  // Exclude the hidden per-partner 'quick_support' org: its devices are a
+  // stranger's own machine mid support-session, not fleet the partner's
+  // library of monitor probes is authored against. Mirrors
+  // automationWorker.ts's/featureConfigResolver.ts's identical partner-wide
+  // fan-out exclusion.
   const rows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(eq(organizations.partnerId, monitor.partnerId));
+    .where(and(eq(organizations.partnerId, monitor.partnerId), excludeQuickSupportOrgs()));
 
   if (rows.length > PARTNER_FANOUT_ORG_LIMIT) {
     console.error(
@@ -217,7 +223,11 @@ export async function processScriptMonitorTick(): Promise<ScriptMonitorTickResul
           customFields: devices.customFields,
         })
         .from(devices)
-        .where(inArray(devices.orgId, orgIds));
+        // Defense in depth alongside the quick_support org exclusion above:
+        // an ephemeral (Quick Support session) device must never be a
+        // candidate for an unattended monitor probe, same exclusion
+        // automationWorker.ts/featureConfigResolver.ts apply.
+        .where(and(inArray(devices.orgId, orgIds), excludeEphemeralDevices()));
 
       for (const device of deviceRows) {
         result.devicesConsidered++;

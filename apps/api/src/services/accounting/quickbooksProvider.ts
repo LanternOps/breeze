@@ -1,9 +1,11 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
-import { parseQboFault, qboFaultOf } from './quickbooksFault';
+import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
+import { withProviderCallSlot } from './accountingRateLimit';
 import { captureException } from '../sentry';
-import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
+import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import type {
   AccountingCustomerPayload,
   AccountingDeletePaymentPayload,
@@ -11,6 +13,7 @@ import type {
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
   AccountingItemPayload,
+  AccountingPaymentMethod,
   AccountingPaymentPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
@@ -27,7 +30,7 @@ import type {
   RemoteItem,
   RemoteRef,
 } from './types';
-import type { AccountingConnection } from './accountingConnectionService';
+import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import { parseBreezePaymentMarker } from './accountingPaymentMarker';
 
 const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
@@ -68,6 +71,36 @@ export const QBO_CDC_CURSOR_SLACK_MS = 5 * 60 * 1000;
  * cursor rather than pretending the window was drained.
  */
 export const QBO_CDC_QUERY_MAX_PAGES = 50;
+
+/**
+ * QuickBooks PaymentMethod name -> Breeze `payment_method` enum.
+ *
+ * Only the names QuickBooks ships as realm defaults are mapped. Everything else
+ * — including plausible-looking rails like "ACH", "Wire" or "Direct Debit" — is
+ * `other` ON PURPOSE: `bank_transfer` is never INFERRED from a free-text name a
+ * QBO admin can rename at will, because mis-labelling the rail on a money row is
+ * worse than an honest `other`.
+ */
+export const QBO_PAYMENT_METHOD_NAMES: Record<string, AccountingPaymentMethod> = {
+  cash: 'cash',
+  check: 'check',
+  cheque: 'check',
+  'credit card': 'card',
+  card: 'card',
+  'debit card': 'card',
+  visa: 'card',
+  mastercard: 'card',
+  'master card': 'card',
+  amex: 'card',
+  'american express': 'card',
+  discover: 'card',
+  'diners club': 'card',
+};
+
+export function mapQboPaymentMethod(name: string | null): AccountingPaymentMethod {
+  if (typeof name !== 'string') return 'other';
+  return QBO_PAYMENT_METHOD_NAMES[name.trim().toLowerCase()] ?? 'other';
+}
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -246,8 +279,9 @@ export function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnecti
     amountMinor: toMinorUnits(line.Amount ?? 0, currency),
     currency,
     txnDate: raw.TxnDate ?? '',
-    remotePaymentSyncToken: raw.SyncToken ?? null,
+    remotePaymentVersion: raw.SyncToken ?? null,
     paymentMethodName: raw.PaymentMethodRef?.name ?? null,
+    method: mapQboPaymentMethod(raw.PaymentMethodRef?.name ?? null),
     paymentRefNum: raw.PaymentRefNum ?? null,
     // Anchored whole-note match only — an operator-authored note that merely
     // mentions a Breeze id must never claim a Breeze payment row.
@@ -273,8 +307,35 @@ function qboFaultBody(err: unknown): string {
     : '';
 }
 
+/**
+ * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
+ * Returns null when absent or unreadable (a negative delta included), so the
+ * caller picks its own default.
+ */
+export function parseRetryAfterMs(header: string | null): number | null {
+  if (!header || !header.trim()) return null;
+  if (/^\s*-?\d+(?:\.\d+)?\s*$/.test(header)) {
+    const seconds = Number(header);
+    return seconds >= 0 ? Math.ceil(seconds * 1000) : null;
+  }
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}
+
+/**
+ * A throttle: the limiter refused the call slot, or Intuit answered 429. Every
+ * internal retry/fallback below (5010 re-read, 610 already-absent, the CDC
+ * backfill's `overflowed` degradation) must let it PROPAGATE to the boundary,
+ * where it becomes a delayed retry — never read it as a fault verdict.
+ */
+function isQboRateLimited(err: unknown): boolean {
+  if (err instanceof AccountingProviderError) return err.kind === 'rate_limited';
+  return !!err && typeof err === 'object' && (err as { status?: unknown }).status === 429;
+}
+
 /** QBO fault 610 — the object does not exist (already deleted, or never was). */
 function isQboObjectNotFound(err: unknown): boolean {
+  if (isQboRateLimited(err)) return false;
   const fault = qboFaultOf(err);
   if (fault.code === '610') return true;
   if (fault.message && /Object Not Found/i.test(fault.message)) return true;
@@ -286,6 +347,7 @@ function isQboObjectNotFound(err: unknown): boolean {
 
 /** QBO fault 5010 — the object exists but our SyncToken is behind. */
 function isQboStaleObject(err: unknown): boolean {
+  if (isQboRateLimited(err)) return false;
   const fault = qboFaultOf(err);
   if (fault.code === '5010') return true;
   if (fault.message && /Stale Object/i.test(fault.message)) return true;
@@ -397,7 +459,7 @@ export function mapQboCustomer(raw: QboRawCustomer): RemoteCustomer {
     active: raw.Active,
     billAddr: mapQboAddress(raw.BillAddr),
     shipAddr: mapQboAddress(raw.ShipAddr),
-    syncToken: raw.SyncToken,
+    remoteVersion: raw.SyncToken,
     currencyCode: raw.CurrencyRef?.value || undefined,
   };
 }
@@ -411,7 +473,7 @@ function mapRemoteItem(raw: QboRawItem): RemoteItem {
     type: raw.Type,
     unitPrice: raw.UnitPrice,
     active: raw.Active,
-    syncToken: raw.SyncToken,
+    remoteVersion: raw.SyncToken,
   };
 }
 
@@ -448,6 +510,40 @@ interface QboTokenResponse {
 
 export class QuickbooksProvider implements AccountingProvider {
   readonly provider = 'quickbooks' as const;
+  readonly displayName = 'QuickBooks';
+  readonly capabilities = {
+    connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+  } as const;
+
+  readonly limits = {
+    paymentRefMax: 21, // QBO REJECTS a PaymentRefNum over 21 chars
+    rate: {
+      perConnection: { limit: 500, windowSeconds: 60 }, // Intuit: 500 req/min per realm per app
+      maxConcurrentPerConnection: 10, // Intuit: 10 concurrent per realm per app
+      appWide: null,
+      dailyPerConnection: null,
+    },
+  } as const satisfies AccountingProvider['limits'];
+
+  readonly paymentMarker = {
+    // PrivateNote holds the marker ALONE; PaymentRefNum keeps the reference.
+    embed: (_reference: string | null, marker: string): string => marker,
+    extract: parseBreezePaymentMarker,
+  };
+
+  connectEnvironment(): AccountingEnvironment {
+    return QBO_ENVIRONMENT as AccountingEnvironment;
+  }
+
+  configError(): string | null {
+    if (!QBO_CLIENT_ID || !QBO_CLIENT_SECRET || !QBO_REDIRECT_URI || !QBO_ENVIRONMENT) {
+      return 'QuickBooks OAuth is not configured on this instance';
+    }
+    if (QBO_ENVIRONMENT !== 'sandbox' && QBO_ENVIRONMENT !== 'production') {
+      return 'QBO_ENVIRONMENT must be sandbox or production';
+    }
+    return null;
+  }
 
   buildAuthUrl(state: string): string {
     const url = new URL(QBO_AUTH_URL);
@@ -459,18 +555,101 @@ export class QuickbooksProvider implements AccountingProvider {
     return url.toString();
   }
 
+  // ---------------------------------------------------------------------------
+  // THE BOUNDARY (Xero W01). Every public async method below is a one-line
+  // wrapper that rethrows through `qboErrorToProviderError`, so callers only
+  // ever see the provider-neutral `AccountingProviderError`. The `*Raw` bodies
+  // are unchanged: their internal retries (5010 SyncToken re-read, 610
+  // already-absent, Duplicate-DocNumber fallback) still run on RAW QBO errors
+  // first. A method that needs another public method's behaviour internally
+  // must call its `*Raw` variant, never the wrapped one.
+  //
+  // `fetchRealmSettings` keeps `'fetchRealmSettings'` as its operation: that is
+  // the name its sanitized `preferencesError` has always carried on `operation`.
+  // ---------------------------------------------------------------------------
+
+  /** Translate at the boundary; internal retries (5010 re-read, DocNumber fallback) run on raw errors first. */
+  private async boundary<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw qboErrorToProviderError(err, operation);
+    }
+  }
+
   async exchangeCode(code: string, realmId: string): Promise<ConnectionTokens> {
-    return this.requestTokens('authorization_code', { code, realmId });
+    return this.boundary('QuickBooks token exchange', () => this.exchangeCodeRaw(code, realmId));
   }
 
   async refresh(refreshToken: string): Promise<ConnectionTokens> {
+    return this.boundary('QuickBooks token refresh', () => this.refreshRaw(refreshToken));
+  }
+
+  async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
+    return this.boundary('QuickBooks customer query', () => this.listRemoteCustomersRaw(conn));
+  }
+
+  async listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]> {
+    return this.boundary('QuickBooks item query', () => this.listRemoteItemsRaw(conn, query));
+  }
+
+  async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
+    return this.boundary('fetchRealmSettings', () => this.fetchRealmSettingsRaw(conn));
+  }
+
+  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+    return this.boundary('QuickBooks income account query', () => this.listRemoteIncomeAccountsRaw(conn));
+  }
+
+  async upsertCustomer(conn: AccountingConnection, customer: AccountingCustomerPayload, mapping: AccountingEntityMapping | null): Promise<RemoteRef> {
+    return this.boundary('QuickBooks customer upsert', () => this.upsertCustomerRaw(conn, customer, mapping));
+  }
+
+  async upsertItem(conn: AccountingConnection, item: AccountingItemPayload, mapping: AccountingEntityMapping | null): Promise<RemoteRef> {
+    return this.boundary('QuickBooks item upsert', () => this.upsertItemRaw(conn, item, mapping));
+  }
+
+  async pushInvoice(conn: AccountingConnection, invoice: AccountingInvoicePayload, lineMappings: readonly AccountingInvoiceLineMapping[]): Promise<InvoicePushResult> {
+    return this.boundary('QuickBooks invoice push', () => this.pushInvoiceRaw(conn, invoice, lineMappings));
+  }
+
+  async voidInvoice(conn: AccountingConnection, invoice: AccountingVoidInvoicePayload, mapping: AccountingEntityMapping): Promise<InvoiceVoidResult> {
+    return this.boundary('QuickBooks invoice void', () => this.voidInvoiceRaw(conn, invoice, mapping));
+  }
+
+  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+    return this.boundary('QuickBooks payment create', () => this.createPaymentRaw(conn, payment));
+  }
+
+  async deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> {
+    return this.boundary('QuickBooks payment delete', () => this.deletePaymentRaw(conn, payment));
+  }
+
+  /**
+   * QuickBooks change data capture. The returned `cursor` is the instant the
+   * CDC window ends. QBO's `/cdc` answers only for the last
+   * `QBO_CDC_LOOKBACK_DAYS` (30) days, so a stored cursor older than that is
+   * clamped to the floor (the skipped range is reported, never silently
+   * dropped), and an entity the CDC response truncated is backfilled through
+   * the paging `/query` endpoint — `overflowed` is set when that backfill
+   * could not drain it.
+   */
+  async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
+    return this.boundary('QuickBooks change data capture', () => this.reconcileChangesRaw(conn, sinceCursor));
+  }
+
+  private async exchangeCodeRaw(code: string, realmId: string): Promise<ConnectionTokens> {
+    return this.requestTokens('authorization_code', { code, realmId });
+  }
+
+  private async refreshRaw(refreshToken: string): Promise<ConnectionTokens> {
     return this.requestTokens('refresh_token', { refreshToken, realmId: '' });
   }
 
   // NOTE: assumes `conn.accessToken` is already a VALID token. Callers must
   // resolve it via getValidAccessToken(db, conn) first (which refreshes +
   // persists rotation) — this method stays pure HTTP and issues no DB queries.
-  async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
+  private async listRemoteCustomersRaw(conn: AccountingConnection): Promise<RemoteCustomer[]> {
     const customers: RemoteCustomer[] = [];
     let startPosition = 1;
 
@@ -491,7 +670,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return customers;
   }
 
-  async listRemoteItems(conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> {
+  private async listRemoteItemsRaw(conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> {
     const items: RemoteItem[] = [];
     let startPosition = 1;
     for (;;) {
@@ -512,58 +691,65 @@ export class QuickbooksProvider implements AccountingProvider {
   // NOTE: like listRemoteCustomers, this assumes `conn.accessToken` is already
   // valid and issues no DB queries. The fetch runs OUTSIDE any DB context so a
   // QBO round-trip never holds a pooled connection (#1105 class).
-  async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
+  private async fetchRealmSettingsRaw(conn: AccountingConnection): Promise<RealmSettings> {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
-    const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
-    // An explicit controller rather than AbortSignal.timeout so the timer is
-    // cleared on the normal path and the abort reason is a sanitized error.
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(preferencesError(null, 'timed out')),
-      QBO_PREFERENCES_TIMEOUT_MS,
-    );
-    let response: Response;
-    try {
-      response = await runOutsideDbContext(() =>
-        fetch(url, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${conn.accessToken}`,
-            Accept: 'application/json',
-          },
-          signal: controller.signal,
-        })
+    // Preferences is an API call on the realm, so it takes the same call slot
+    // as `qboRequest` (Xero W01). A refusal throws `rate_limited` before any
+    // fetch; the OAuth callback's capture is non-fatal, so it treats that like
+    // any other failed capture. The abort budget starts inside the slot and so
+    // times the Intuit round trip only.
+    return withProviderCallSlot('quickbooks', this.limits.rate, conn.id, async () => {
+      const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
+      // An explicit controller rather than AbortSignal.timeout so the timer is
+      // cleared on the normal path and the abort reason is a sanitized error.
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(preferencesError(null, 'timed out')),
+        QBO_PREFERENCES_TIMEOUT_MS,
       );
-    } finally {
-      clearTimeout(timer);
-    }
+      let response: Response;
+      try {
+        response = await runOutsideDbContext(() =>
+          fetch(url, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${conn.accessToken}`,
+              Accept: 'application/json',
+            },
+            signal: controller.signal,
+          })
+        );
+      } finally {
+        clearTimeout(timer);
+      }
 
-    if (!response.ok) {
-      // Sanitized, unlike listRemoteCustomers. The body is never read — but it
-      // must still be discarded, or undici holds the connection open until GC.
-      await response.body?.cancel().catch(() => {});
-      throw preferencesError(response.status, 'failed');
-    }
+      if (!response.ok) {
+        // Sanitized, unlike listRemoteCustomers. The body is never read — but it
+        // must still be discarded, or undici holds the connection open until GC.
+        await response.body?.cancel().catch(() => {});
+        throw preferencesError(response.status, 'failed');
+      }
 
-    // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
-    // from an unguarded .json() embeds a snippet of that body in its message —
-    // which the OAuth callback would hand straight to captureException, defeating
-    // the sanitization above.
-    let parsed: QboRawPreferences;
-    try {
-      parsed = await response.json() as QboRawPreferences;
-    } catch {
-      throw preferencesError(response.status, 'returned a non-JSON body');
-    }
-    return {
-      homeCurrency: mapQboHomeCurrency(parsed),
-      multiCurrencyEnabled: mapQboMultiCurrencyEnabled(parsed),
-    };
+      // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
+      // from an unguarded .json() embeds a snippet of that body in its message —
+      // which the OAuth callback would hand straight to captureException, defeating
+      // the sanitization above.
+      let parsed: QboRawPreferences;
+      try {
+        parsed = await response.json() as QboRawPreferences;
+      } catch {
+        throw preferencesError(response.status, 'returned a non-JSON body');
+      }
+      return {
+        homeCurrency: mapQboHomeCurrency(parsed),
+        multiCurrencyEnabled: mapQboMultiCurrencyEnabled(parsed),
+      };
+    });
   }
 
-  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+  private async listRemoteIncomeAccountsRaw(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
     const accounts: RemoteIncomeAccount[] = [];
     let startPosition = 1;
     for (;;) {
@@ -581,7 +767,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return accounts;
   }
 
-  async upsertCustomer(
+  private async upsertCustomerRaw(
     conn: AccountingConnection,
     customer: AccountingCustomerPayload,
     mapping: AccountingEntityMapping | null,
@@ -619,14 +805,14 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
     return {
       id: parsed.Customer.Id,
-      syncToken: parsed.Customer.SyncToken,
+      remoteVersion: parsed.Customer.SyncToken,
       currencyCode: parsed.Customer.CurrencyRef?.value || undefined,
       billAddr: mapQboAddress(parsed.Customer.BillAddr),
       shipAddr: mapQboAddress(parsed.Customer.ShipAddr),
     };
   }
 
-  async upsertItem(
+  private async upsertItemRaw(
     conn: AccountingConnection,
     item: AccountingItemPayload,
     mapping: AccountingEntityMapping | null,
@@ -657,7 +843,7 @@ export class QuickbooksProvider implements AccountingProvider {
       readSyncToken: (id) => this.readEntitySyncToken(conn, 'Item', id),
     });
     if (!parsed.Item?.Id) throw new Error('QuickBooks item response was missing an Id');
-    return { id: parsed.Item.Id, syncToken: parsed.Item.SyncToken };
+    return { id: parsed.Item.Id, remoteVersion: parsed.Item.SyncToken };
   }
 
   /**
@@ -726,7 +912,7 @@ export class QuickbooksProvider implements AccountingProvider {
     return token;
   }
 
-  async pushInvoice(
+  private async pushInvoiceRaw(
     conn: AccountingConnection,
     invoice: AccountingInvoicePayload,
     lineMappings: readonly AccountingInvoiceLineMapping[],
@@ -846,7 +1032,7 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!parsed.Invoice?.Id) throw new Error('QuickBooks invoice response was missing an Id');
     return {
       id: parsed.Invoice.Id,
-      syncToken: parsed.Invoice.SyncToken,
+      remoteVersion: parsed.Invoice.SyncToken,
       docNumber: parsed.Invoice.DocNumber,
       remoteTaxTotal: parsed.Invoice.TxnTaxDetail?.TotalTax != null ? String(parsed.Invoice.TxnTaxDetail.TotalTax) : null,
       remoteTotal: parsed.Invoice.TotalAmt != null ? String(parsed.Invoice.TotalAmt) : null,
@@ -892,16 +1078,17 @@ export class QuickbooksProvider implements AccountingProvider {
    * live revision". Production disproved that on 2026-09-06: with a live
    * revision QuickBooks still refused, because the invoice was settled by a
    * QuickBooks Payment. That refusal is a business RULE, so it is classified
-   * terminal by the coordinator (`isQboPaymentLinkedRefusal`) rather than
-   * retried; this method deliberately does not translate it, so the fault
-   * fields reach `voidInvoiceInAccounting` intact.
+   * terminal by the coordinator rather than retried. This body deliberately
+   * does not handle it: the public wrapper's boundary classifies it
+   * `payment_linked` (`isQboPaymentLinkedRefusal`, in `qboErrorToProviderError`)
+   * and `voidInvoiceInAccounting` branches on that kind.
    *
    * A NULL stored token is likewise not a refusal any more. An adopted or
    * re-owned invoice mapping can legitimately carry none, and throwing left an
    * operator with no route to a QuickBooks void but doing it by hand; the live
    * revision is simply read first.
    */
-  async voidInvoice(
+  private async voidInvoiceRaw(
     conn: AccountingConnection,
     _invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
@@ -913,7 +1100,7 @@ export class QuickbooksProvider implements AccountingProvider {
         'QuickBooks invoice void',
         { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: syncToken }) },
       );
-      return { syncToken: parsed.Invoice?.SyncToken ?? null };
+      return { remoteVersion: parsed.Invoice?.SyncToken ?? null };
     };
 
     if (!mapping.remoteSyncToken) {
@@ -927,7 +1114,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
   }
 
-  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+  private async createPaymentRaw(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
     // Idempotency key, exactly as pushInvoice's create path uses (`:663-678`):
     // QBO recognizes the same `requestid` for a rolling 24h window and returns
     // the ORIGINAL response rather than creating again, so a retry after a lost
@@ -961,7 +1148,7 @@ export class QuickbooksProvider implements AccountingProvider {
           TotalAmt: Number(payment.amount),
           TxnDate: payment.txnDate,
           ...(payment.reference ? { PaymentRefNum: payment.reference } : {}),
-          PrivateNote: payment.privateNote,
+          PrivateNote: this.paymentMarker.embed(payment.reference, payment.marker),
           Line: [{
             Amount: Number(payment.amount),
             LinkedTxn: [{ TxnId: payment.remoteInvoiceId, TxnType: 'Invoice' }],
@@ -977,14 +1164,14 @@ export class QuickbooksProvider implements AccountingProvider {
       },
     );
     if (!parsed.Payment?.Id) throw new Error('QuickBooks payment response was missing an Id');
-    return { id: parsed.Payment.Id, syncToken: parsed.Payment.SyncToken };
+    return { id: parsed.Payment.Id, remoteVersion: parsed.Payment.SyncToken };
   }
 
-  async deletePayment(
+  private async deletePaymentRaw(
     conn: AccountingConnection,
     payment: AccountingDeletePaymentPayload,
   ): Promise<PaymentDeleteResult> {
-    let syncToken = payment.syncToken;
+    let syncToken = payment.remoteVersion;
     // No token held (an adoption that never read one) — fetch one before trying.
     if (syncToken === null) {
       const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
@@ -1059,7 +1246,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
   }
 
-  async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
+  private async reconcileChangesRaw(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
     const now = new Date();
     const epoch = new Date(0);
     const lookbackFloor = new Date(now.getTime() - QBO_CDC_LOOKBACK_DAYS * 24 * 3600_000);
@@ -1215,6 +1402,11 @@ export class QuickbooksProvider implements AccountingProvider {
           `QuickBooks ${entity} change backfill query`,
         );
       } catch (err) {
+        // A throttle is not a failed backfill: degrading it to `overflowed`
+        // would report a Sentry error and hold the cursor on every busy
+        // minute. It propagates, and the boundary turns it into a delayed
+        // retry of the whole reconcile (the cursor is untouched either way).
+        if (isQboRateLimited(err)) throw err;
         // Sanitized by qboRequest (status only, never a fault body). Reported,
         // not rethrown: the CDC rows we already have are still worth applying,
         // and `overflowed` is what stops the cursor from advancing past them.
@@ -1273,53 +1465,64 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
-    const response = await runOutsideDbContext(() => fetch(
-      `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
-      {
-        ...init,
-        headers: {
-          Authorization: `Bearer ${conn.accessToken}`,
-          Accept: 'application/json',
-          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-          ...init.headers,
+    // One call slot per HTTP round trip (Xero W01). Leaf-level on purpose:
+    // callers that issue several requests (paging, 5010 re-read) take one slot
+    // per request and never hold one while waiting for another, which would
+    // deadlock at the per-connection concurrency cap.
+    return withProviderCallSlot('quickbooks', this.limits.rate, conn.id, async () => {
+      const response = await runOutsideDbContext(() => fetch(
+        `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
+        {
+          ...init,
+          headers: {
+            Authorization: `Bearer ${conn.accessToken}`,
+            Accept: 'application/json',
+            ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+            ...init.headers,
+          },
         },
-      },
-    ));
-    const text = await response.text();
-    if (!response.ok) {
-      const error = new Error(`${operation} failed with ${response.status}`);
-      // The fault is read off the FULL text and carried as its own fields;
-      // `body` stays truncated for storage. Classifying on the truncated body
-      // was the bug: a fault whose `code` sat behind a long `Detail` read as
-      // "not a stale object", so the SyncToken re-read never fired and the write
-      // failed permanently on a fault designed to be retried.
-      const fault = parseQboFault(text);
-      Object.assign(error, {
-        status: response.status,
-        body: text.slice(0, 500),
-        qboFaultCode: fault.code ?? undefined,
-        qboFaultMessage: fault.message ?? undefined,
-        // Boolean only — derived from the FULL text for the same reason the
-        // code is, since Intuit states this reason in the `Detail` that
-        // truncation drops. The Detail text itself is never carried (#5180).
-        qboPaymentLinked: fault.paymentLinked === true ? true : undefined,
-      });
-      // Server log only — `body` can carry Intuit's `Detail`, which names the
-      // offending customer/amount. It never reaches Sentry (scrubbed) or a
-      // mapping card (only the fault CLASS does).
-      console.error(
-        `[quickbooksProvider] ${operation} failed`,
-        `status=${response.status}`,
-        `faultCode=${fault.code ?? 'none'}`,
-        `body=${text.slice(0, 500)}`,
-      );
-      throw error;
-    }
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new Error(`${operation} returned invalid JSON`);
-    }
+      ));
+      const text = await response.text();
+      if (!response.ok) {
+        const error = new Error(`${operation} failed with ${response.status}`);
+        // The fault is read off the FULL text and carried as its own fields;
+        // `body` stays truncated for storage. Classifying on the truncated body
+        // was the bug: a fault whose `code` sat behind a long `Detail` read as
+        // "not a stale object", so the SyncToken re-read never fired and the write
+        // failed permanently on a fault designed to be retried.
+        const fault = parseQboFault(text);
+        Object.assign(error, {
+          status: response.status,
+          body: text.slice(0, 500),
+          qboFaultCode: fault.code ?? undefined,
+          qboFaultMessage: fault.message ?? undefined,
+          // Boolean only — derived from the FULL text for the same reason the
+          // code is, since Intuit states this reason in the `Detail` that
+          // truncation drops. The Detail text itself is never carried (#5180).
+          qboPaymentLinked: fault.paymentLinked === true ? true : undefined,
+          // Xero W01: throttling is a delay, not a failure. Intuit usually omits
+          // Retry-After on 429; 60s is its documented throttle window.
+          retryAfterMs: response.status === 429
+            ? parseRetryAfterMs(response.headers.get('retry-after')) ?? 60_000
+            : undefined,
+        });
+        // Server log only — `body` can carry Intuit's `Detail`, which names the
+        // offending customer/amount. It never reaches Sentry (scrubbed) or a
+        // mapping card (only the fault CLASS does).
+        console.error(
+          `[quickbooksProvider] ${operation} failed`,
+          `status=${response.status}`,
+          `faultCode=${fault.code ?? 'none'}`,
+          `body=${text.slice(0, 500)}`,
+        );
+        throw error;
+      }
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new Error(`${operation} returned invalid JSON`);
+      }
+    });
   }
 
   private async requestTokens(
@@ -1348,6 +1551,25 @@ export class QuickbooksProvider implements AccountingProvider {
     );
 
     const text = await response.text();
+    if (response.status === 429) {
+      // A throttled token endpoint often answers with an empty or HTML body, so
+      // a 429 must not depend on JSON.parse to be recognised: without a status
+      // the boundary would classify the SyntaxError as a plain transient. Every
+      // other status keeps the historical parse-first order below.
+      let throttled: QboTokenResponse = {};
+      try {
+        throttled = text ? JSON.parse(text) as QboTokenResponse : {};
+      } catch {
+        // Not JSON — the status alone classifies it.
+      }
+      const err = new Error(throttled.error_description || throttled.error || 'QuickBooks token request failed with 429');
+      Object.assign(err, {
+        status: 429,
+        qboError: throttled.error,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')) ?? 60_000,
+      });
+      throw err;
+    }
     const parsed = text ? JSON.parse(text) as QboTokenResponse : {};
     if (!response.ok) {
       const err = new Error(parsed.error_description || parsed.error || `QuickBooks token request failed with ${response.status}`);

@@ -510,6 +510,10 @@ function makeRunRow(overrides?: Record<string, unknown>) {
     agentId: AGENT_ID,
     orgId: ORG_ID,
     deviceId: DEVICE_ID,
+    // Mirrors `policySnapshot.effective.mode` by default, like a real,
+    // never-forced-shadow run row — `agentRunRowWithMode` below keeps the
+    // two in sync unless a test explicitly diverges them.
+    modeAtStart: 'shadow',
     policySnapshot: {
       schemaVersion: 1,
       agentId: AGENT_ID,
@@ -551,7 +555,10 @@ function queueAgentContext(opts?: { run?: Record<string, unknown>; agent?: Recor
  * `'shadow'` (the wave-3b baseline every OTHER test in this file relies on).
  */
 function agentRunRowWithMode(mode: string, overrides?: Record<string, unknown>) {
-  const base = makeRunRow(overrides);
+  // `modeAtStart` defaults to the same value as `mode` — a normal,
+  // never-forced-shadow run — unless `overrides` explicitly names its own
+  // `modeAtStart` (hardening tests below deliberately diverge them).
+  const base = makeRunRow({ modeAtStart: mode, ...overrides });
   return {
     ...base,
     policySnapshot: {
@@ -1338,6 +1345,29 @@ describe('createActionIntent — approver fan-out', () => {
     );
   });
 
+  // A PAM elevation request never clears four_eyes through the sole-operator
+  // self-approval fallback: it needs a second person to approve.
+  it('never takes the sole-operator branch for request_elevation: cancels with no_eligible_approvers instead', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow({ actionName: 'request_elevation' })]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.updateActionIntentsResults.push([
+      makeIntentRow({ actionName: 'request_elevation', status: 'cancelled', errorCode: 'no_eligible_approvers' }),
+    ]);
+
+    const snapshot = await createActionIntent(
+      makeAuth(),
+      baseInput({
+        toolName: 'request_elevation',
+        input: { deviceId: 'device-1', subjectUsername: 'localadmin', reason: 'Install driver' },
+      }),
+    );
+
+    expect(snapshot.status).toBe('cancelled');
+    expect(snapshot.errorCode).toBe('no_eligible_approvers');
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+
   it('creates the intent then immediately cancels it when no one is eligible (not even the requester)', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
     // Nobody is eligible — not even the requester.
@@ -1511,6 +1541,35 @@ describe('createActionIntent — resolvePolicyDecisionState (Wave 5 Part B, real
     intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-shadow-mode' }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-shadow-mode' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(snap.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it("flag on + agent-originated + supervised + run's policy snapshot reads mode 'act' but the run was actually admitted with modeAtStart 'shadow' (anomaly/ticket forced-shadow downgrade) -> human_required, not unattempted (hardening)", async () => {
+    // Distinguishes this from the test above: `effective.mode` in the
+    // SNAPSHOT genuinely reads 'act' here (an anomaly- or ticket-triggered
+    // run is admitted against an agent whose resolved policy mode is 'act'
+    // — runService.ts only downgrades what the run RECORDS, never the
+    // snapshot's own `effective.mode`). The decidability gate must key on
+    // `modeAtStart`, not on the snapshot's mode, or the forced-shadow
+    // downgrade is silently undone here.
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    queueAgentContext({ run: agentRunRowWithMode('act', { modeAtStart: 'shadow' }) });
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-forced-shadow' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-forced-shadow' }]);
 
     const snap = await createActionIntent(makeAgentAuth(), agentInput());
 

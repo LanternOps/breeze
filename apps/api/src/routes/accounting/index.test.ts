@@ -8,8 +8,9 @@ import { createHmac } from 'crypto';
 // perturbs the shared-worker process.env that secretCrypto reads in sibling tests.
 const FIXED_SECRET = 'test-jwt-secret-must-be-at-least-32-characters-long';
 
-function mintState(partnerId: string, userId: string | null, exp = Date.now() + 60_000): { state: string; cookie: string } {
-  const payload = { partnerId, userId, nonce: 'test-nonce', exp };
+// `provider` omitted = a state minted by the pre-W01 image (no provider field).
+function mintState(partnerId: string, userId: string | null, exp = Date.now() + 60_000, provider?: string): { state: string; cookie: string } {
+  const payload = { partnerId, userId, ...(provider ? { provider } : {}), nonce: 'test-nonce', exp };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const sig = createHmac('sha256', FIXED_SECRET).update(`accounting-oauth:${encoded}`).digest('base64url');
   const state = `${encoded}.${sig}`;
@@ -41,6 +42,12 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     },
     mocks: {
       getConnection: vi.fn(),
+      resolveActiveConnectionRef: vi.fn(),
+      configError: vi.fn((): string | null => null),
+      // A vi.fn so the per-route capability table can assert the exact
+      // capability each route gates on; the registry mock's default
+      // implementation honours the capability argument.
+      providerSupports: vi.fn(),
       upsertConnection: vi.fn(),
       deleteConnection: vi.fn(async () => ({
         removed: true,
@@ -95,13 +102,6 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
 }));
 
-vi.mock('../../config/env', () => ({
-  QBO_CLIENT_ID: 'client-id',
-  QBO_CLIENT_SECRET: 'client-secret',
-  QBO_REDIRECT_URI: 'https://api.example.test/accounting/quickbooks/callback',
-  QBO_ENVIRONMENT: 'production',
-}));
-
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     c.set('auth', {
@@ -138,8 +138,12 @@ vi.mock('../../middleware/auth', () => ({
   withAuthDbAccessContext: mocks.withAuthDbAccessContext,
 }));
 
-vi.mock('../../services/accounting/accountingConnectionService', () => ({
+vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
+  // The REAL conflict class, so its message is the one the route returns.
+  AccountingProviderConflictError: (await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>())
+    .AccountingProviderConflictError,
   getConnection: mocks.getConnection,
+  resolveActiveConnectionRef: mocks.resolveActiveConnectionRef,
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
   updateHomeCurrency: mocks.updateHomeCurrency,
@@ -162,18 +166,33 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: mocks.writeRouteAudit,
 }));
 
-vi.mock('../../services/accounting/providerRegistry', () => ({
-  getAccountingProvider: vi.fn(() => ({
+vi.mock('../../services/accounting/providerRegistry', () => {
+  // Only QuickBooks is registered (Xero has no implementation until W02).
+  const qbo = {
     provider: 'quickbooks',
+    displayName: 'QuickBooks',
+    capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true },
+    configError: mocks.configError,
+    connectEnvironment: () => 'production',
     buildAuthUrl: mocks.buildAuthUrl,
     exchangeCode: mocks.exchangeCode,
     fetchRealmSettings: mocks.fetchRealmSettings,
-  })),
-}));
+  };
+  return {
+    getAccountingProvider: vi.fn(() => qbo),
+    findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : null),
+    providerSupports: (id: string, cap: string) => mocks.providerSupports(id, cap),
+    accountingProviderDisplayName: (id: string) => ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? id,
+    listRegisteredAccountingProviders: () => [qbo],
+    LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
+  };
+});
 
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
+import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
+import { AccountingProviderConflictError } from '../../services/accounting/accountingConnectionService';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
@@ -194,6 +213,11 @@ function exchangedTokens(realmId = 'realm-A') {
     refreshTokenExpiresAt: new Date(Date.now() + 8_640_000_000),
   };
 }
+
+const QBO_CAPABILITIES: Record<string, boolean> = {
+  connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+};
+const defaultProviderSupports = (id: string, cap: string) => id === 'quickbooks' && QBO_CAPABILITIES[cap] === true;
 
 async function runCallback(app: Hono, realmId = 'realm-A') {
   const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
@@ -226,6 +250,9 @@ describe('accounting routes', () => {
       homeCurrency: null,
     });
     mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+    mocks.resolveActiveConnectionRef.mockResolvedValue(null);
+    mocks.configError.mockReturnValue(null);
+    mocks.providerSupports.mockImplementation(defaultProviderSupports);
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -518,6 +545,53 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the Preferences fetch is refused by the accounting rate limiter (Xero W01)', async () => {
+    // fetchRealmSettings takes the connection's call slot; a refusal is a
+    // rate_limited AccountingProviderError, which the non-fatal capture must
+    // absorb exactly like any other failed capture.
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (per connection)', retryAfterMs: 5_000,
+    }));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+    // F7: a throttle is not an incident. A limiter-store outage is reported
+    // once, centrally, by the limiter itself — never again here.
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it.each(['provider', 'local', 'limiter_unavailable'] as const)(
+    'callback does not Sentry-capture a %s-throttled Preferences fetch (F7)',
+    async (throttleSource) => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+      mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+        kind: 'rate_limited', provider: 'quickbooks', operation: 'fetchRealmSettings', retryAfterMs: 5_000, throttleSource,
+      }));
+
+      const res = await runCallback(app);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('connected=1');
+      expect(mocks.captureException).not.toHaveBeenCalled();
+    },
+  );
+
+  it('callback still Sentry-captures a NON-throttle Preferences failure (F7 control)', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'transient', provider: 'quickbooks', operation: 'fetchRealmSettings', httpStatus: 503,
+    }));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('callback still connects when the Preferences fetch is ABORTED by its timeout', async () => {
@@ -1056,6 +1130,156 @@ describe('accounting routes', () => {
       expect(mocks.writeRouteAudit.mock.calls
         .map((call) => call[1] as Record<string, unknown>)
         .some((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toBe(false);
+    });
+  });
+  // Xero W01 review: pin the capability EACH route gates on (plan Task 15,
+  // "Route -> capability map"). The provider is registered and configured but
+  // lacks exactly that capability, so the route must answer 409
+  // capability_unavailable and must have asked the registry for that exact
+  // capability — a route gated on the wrong capability goes red here.
+  describe('per-route capability gate (Xero W01)', () => {
+    const jsonInit = (method: string, body: unknown) => ({
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    it.each([
+      ['GET /:provider (status)', 'connect', '/accounting/quickbooks', undefined],
+      ['GET /:provider/connect', 'connect', '/accounting/quickbooks/connect', undefined],
+      ['GET /:provider/callback', 'connect', '/accounting/quickbooks/callback?code=abc&realmId=realm-A&state=s', undefined],
+      ['POST /:provider/disconnect', 'connect', '/accounting/quickbooks/disconnect', { method: 'POST' }],
+      ['PATCH /:provider/settings', 'connect', '/accounting/quickbooks/settings', jsonInit('PATCH', { pushMode: 'manual' })],
+      ['POST /:provider/settings/refresh', 'connect', '/accounting/quickbooks/settings/refresh', { method: 'POST' }],
+    ] as const)('%s answers 409 capability_unavailable without %s', async (_route, capability, url, init) => {
+      mocks.providerSupports.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) && cap !== capability);
+      const res = await app.request(url, init);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'capability_unavailable' });
+      expect(mocks.providerSupports).toHaveBeenCalledWith('quickbooks', capability);
+    // The route's gate is the FIRST capability check (push-bulk re-checks
+    // invoicePush on the connection afterwards, which must not mask the gate).
+    expect(mocks.providerSupports).toHaveBeenNthCalledWith(1, 'quickbooks', capability);
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+      expect(mocks.refreshRealmSettings).not.toHaveBeenCalled();
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider generalisation (Xero W01)', () => {
+    async function startConnect(provider: 'quickbooks') {
+      const res = await app.request(`/accounting/${provider}/connect`);
+      expect(res.status).toBe(200);
+      const { authUrl } = await res.json() as { authUrl: string };
+      const state = new URL(authUrl).searchParams.get('state')!;
+      const cookie = /breeze_accounting_oauth_state=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]!;
+      return { state, cookie };
+    }
+
+    it('accepts xero in the URL but refuses it via the registry (409 capability_unavailable)', async () => {
+      const res = await app.request('/accounting/xero/connect');
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('capability_unavailable');
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    });
+
+    it('refuses connect with 409 accounting_provider_conflict when another provider is active', async () => {
+      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'xero', status: 'disconnected' });
+      const res = await app.request('/accounting/quickbooks/connect');
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'accounting_provider_conflict', error: 'Disconnect Xero before connecting QuickBooks' });
+      expect(mocks.resolveActiveConnectionRef).toHaveBeenCalledWith(expect.anything(), authState.partnerId);
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('lets a reconnect to the SAME provider start OAuth', async () => {
+      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'reauth_required' });
+      const res = await app.request('/accounting/quickbooks/connect');
+      expect(res.status).toBe(200);
+      expect(mocks.buildAuthUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it('records the provider in the OAuth state and rejects a state minted for another provider', async () => {
+      const { state, cookie } = await startConnect('quickbooks');
+      const payload = JSON.parse(Buffer.from(state.split('.')[0]!, 'base64url').toString('utf8'));
+      expect(payload.provider).toBe('quickbooks');
+      const res = await app.request(`/accounting/xero/callback?code=c&realmId=r&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(409); // xero is refused by the registry gate before state checks run
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('a state minted for a different provider never reaches the code exchange', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, null, Date.now() + 60_000, 'xero');
+      const res = await app.request(`/accounting/quickbooks/callback?code=c&realmId=r&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'OAuth state was issued for a different provider' });
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('a pre-W01 state (no provider) is honoured as a QuickBooks flow', async () => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+      const res = await runCallback(app, 'realm-A'); // mintState without provider
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&connected=1#accounting');
+    });
+
+    it('a state round-tripped through /connect completes the QuickBooks callback', async () => {
+      const { state, cookie } = await startConnect('quickbooks');
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+      const res = await app.request(`/accounting/quickbooks/callback?code=c&realmId=realm-A&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&connected=1#accounting');
+      expect(mocks.upsertConnection).toHaveBeenCalledWith(
+        expect.anything(), authState.partnerId, 'quickbooks', expect.objectContaining({ environment: 'production' }),
+      );
+    });
+
+    it('a callback that hits a provider conflict redirects with error=provider_conflict', async () => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+      mocks.upsertConnection.mockRejectedValueOnce(new AccountingProviderConflictError('xero', 'quickbooks'));
+      const res = await runCallback(app, 'realm-A');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=provider_conflict#accounting');
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
+    // R8: only routes that validated config before W01 answer provider_not_configured.
+    it('connect still answers 400 provider_not_configured when the provider is unconfigured', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      const res = await app.request('/accounting/quickbooks/connect');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'QuickBooks OAuth is not configured on this instance', code: 'provider_not_configured' });
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    });
+
+    it('status does NOT answer provider_not_configured on an unconfigured instance (DB-only, unchanged)', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      mocks.getConnection.mockResolvedValueOnce(null);
+      const res = await app.request('/accounting/quickbooks');
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe('disconnected');
+    });
+
+    it('disconnect still works on an unconfigured instance, so a stale row can never be stranded', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'quickbooks');
+    });
+
+    it('GET /accounting/providers lists registered providers with configuration and capabilities', async () => {
+      mocks.resolveActiveConnectionRef.mockResolvedValue({ id: 'c1', provider: 'quickbooks', status: 'connected' });
+      const res = await app.request('/accounting/providers');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ id: 'quickbooks', displayName: 'QuickBooks', configured: true,
+          capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true } }],
+        activeConnection: { provider: 'quickbooks', status: 'connected' },
+      });
+      expect(mocks.getConnection).not.toHaveBeenCalled();
     });
   });
 });

@@ -88,8 +88,8 @@ var allCommandTypes = []string{
 	tools.CmdSystemStateCollect, tools.CmdHardwareProfile,
 
 	// handlers_bmr_forward.go init()
-	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdBMRRecover,
-	tools.CmdBareMetalRebuild,
+	tools.CmdVMRestoreEstimate, tools.CmdVMRestoreFromBackup, tools.CmdVMInstantBoot,
+	tools.CmdBMRRecover, tools.CmdBareMetalRebuild,
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate,
@@ -225,6 +225,146 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 	}
 	if gotDisplayIndex != 2 {
 		t.Fatalf("displayIndex = %d, want 2", gotDisplayIndex)
+	}
+}
+
+// This WS-fallback transport previously started capturing unconditionally —
+// no consent/notify gate at all, unlike handleStartDesktop's WebRTC path,
+// which asks the end user (or applies consentUnavailableBehavior) before
+// ever starting the capture. These pin the same gate on this path, using the
+// no-session-broker branch (h.sessionBroker == nil -> requestConsent reports
+// "helper_absent", and consentUnavailableBehavior decides) since that needs
+// no session-broker/helper fixture to exercise both outcomes deterministically.
+
+func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehaviorBlocks(t *testing.T) {
+	started := false
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			started = true
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-consent-block",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId": "ws-consent-block",
+			"prompt": map[string]any{
+				"mode":                       "consent",
+				"consentUnavailableBehavior": "block",
+			},
+		},
+	})
+
+	if started {
+		t.Fatalf("capture must not start before a consent decision is reached")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected a completed (not failed) result carrying the denial marker, got %s (%s)", result.Status, result.Error)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &data); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
+	}
+	if data["event"] != "consent_denied" {
+		t.Fatalf("event = %v, want consent_denied", data["event"])
+	}
+	if data["reason"] != "helper_absent" {
+		t.Fatalf("reason = %v, want helper_absent (no session broker => no consent-capable helper)", data["reason"])
+	}
+}
+
+func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t *testing.T) {
+	started := false
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			started = true
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-consent-proceed",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId": "ws-consent-proceed",
+			"prompt": map[string]any{
+				"mode":                       "consent",
+				"consentUnavailableBehavior": "proceed",
+			},
+		},
+	})
+
+	if !started {
+		t.Fatalf("expected capture to start when consentUnavailableBehavior is proceed")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &data); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
+	}
+	// consentReason must be reported as "helper_absent", never "user" — the
+	// API audits "user" specifically as the end user granting the session.
+	if data["consentReason"] != "helper_absent" {
+		t.Fatalf("consentReason = %v, want helper_absent", data["consentReason"])
+	}
+}
+
+func TestHandleDesktopStreamStartStartsImmediatelyWhenNoPromptBlockSent(t *testing.T) {
+	// An older/unconfigured API sends no prompt block at all — must behave
+	// exactly as before this change (regression control).
+	started := false
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			started = true
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:      "desktop-stream-no-prompt",
+		Type:    tools.CmdDesktopStreamStart,
+		Payload: map[string]any{"sessionId": "ws-no-prompt"},
+	})
+
+	if !started {
+		t.Fatalf("expected capture to start when no prompt block is present")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
+	}
+}
+
+func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
+	// "notify" is informational-only (matches handleStartDesktop): it must
+	// not block the start.
+	started := false
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+			started = true
+			return 1920, 1080, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-notify",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId": "ws-notify",
+			"prompt": map[string]any{
+				"mode": "notify",
+			},
+		},
+	})
+
+	if !started {
+		t.Fatalf("expected capture to start immediately for notify mode")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", result.Status, result.Error)
 	}
 }
 
