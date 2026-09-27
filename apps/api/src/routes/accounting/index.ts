@@ -14,6 +14,8 @@ import {
   AccountingConnectionError,
   AccountingProviderConflictError,
   deleteConnection, getConnection,
+  PENDING_TENANT_STATUS,
+  type AccountingConnection,
   getPartnerConnectionRef,
   refreshRealmSettings,
   upsertConnection,
@@ -25,7 +27,6 @@ import {
   AccountingImportError,
 } from '../../services/accounting/accountingCustomerImport';
 import {
-  AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
   resolveConnectionAndToken,
@@ -38,15 +39,15 @@ import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../servi
 import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
-import {
-  accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
-} from '../../services/accounting/providerRegistry';
-import {
-  isAccountingProviderError, providerRateLimitedTryAgainMessage, rateLimitRetryAfterMs, rateLimitSourceOf,
-} from '../../services/accounting/accountingProviderError';
+import { getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../../services/accounting/providerRegistry';
 import { captureException } from '../../services/sentry';
 import { ACCOUNTING_PROVIDER_IDS } from '../../services/accounting/types';
+import { discardPendingTenantSelection } from '../../services/accounting/accountingTenantSelection';
+import { releaseProviderConnection } from '../../services/accounting/accountingProviderRelease';
+import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import { listProvidersHandler, providerGateResponse } from './providerGate';
+import { handleMappingError, setRetryAfter } from './routeErrors';
+import { registerConnectionSetupRoutes } from './connectionSetupRoutes';
 import { connectRedirectPath, finalizeConnection, homeCurrencyField, readPriorRealm } from './connectFinalize';
 import { completeTenantSelectingCallback } from './tenantConnect';
 import { constantTimeEqual, createState, STATE_TTL_MS, stateCookieValue, verifyState } from './oauthState';
@@ -170,6 +171,11 @@ const settingsSchema = z.object({
   // connection. Same tier as pushMode/pullPayments: a plain connection setting,
   // not a captured external fact.
   pushPayments: z.boolean().optional(),
+  // Xero W02 — defaults the push applies when a line is tax-exempt / when a
+  // payment is recorded (a Xero TaxType and a bank AccountID). Plain connection
+  // settings, same tier as the income-account / tax-code refs above.
+  defaultExemptTaxCodeRef: z.string().max(64).nullable().optional(),
+  defaultPaymentAccountRef: z.string().max(64).nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -214,31 +220,8 @@ function handleImportError(c: { json: (b: unknown, s: number) => Response }, err
   throw err;
 }
 
-/** A throttle answers 429 with Retry-After in whole seconds, rounded up (Xero W01). */
-function setRetryAfter(c: Context, err: unknown): number | null {
-  const retryAfterMs = rateLimitRetryAfterMs(err);
-  if (retryAfterMs !== null) c.header('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
-  return retryAfterMs;
-}
-
-function handleMappingError(c: Context, err: unknown): Response {
-  // AccountingMappingError.status is a narrowed literal union (404|409|429|502),
-  // so no cast, and every current/future code (including item_price_required)
-  // flows through generically — the route never re-enumerates codes.
-  if (err instanceof AccountingMappingError) {
-    setRetryAfter(c, err);
-    return c.json({ error: err.message, code: err.code }, err.status);
-  }
-  // A raw provider throttle (remote-candidates calls the provider directly).
-  if (isAccountingProviderError(err) && setRetryAfter(c, err) !== null) {
-    const label = accountingProviderDisplayName(err.provider);
-    return c.json({ error: providerRateLimitedTryAgainMessage(label, rateLimitSourceOf(err) ?? undefined), code: 'rate_limited' }, 429);
-  }
-  throw err;
-}
-
 /**
- * Deliberately a DIFFERENT body shape from `handleMappingError` above
+ * Deliberately a DIFFERENT body shape from `handleMappingError` (./routeErrors)
  * (`{ error: code, message }`, not `{ error: message, code }`) — the invoice
  * push coordinator's error taxonomy (Phase C, Task 3) is a separate typed
  * class from the mapping workbench's, and this shape is what Task 5's spec
@@ -512,10 +495,43 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const { provider } = c.req.valid('param');
   const gate = providerGateResponse(c, provider, 'connect', { requireConfigured: false });
   if (gate) return gate;
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const { removed, connectionId, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
+  // Self-managed (SELF_MANAGED_DB_CONTEXT_ROUTES): the provider-side release is
+  // an outbound call, so every DB step is its own short context, none held across it.
+  const runInDb: DbContextRunner = (fn) => withAuthDbAccessContext(auth, fn);
+  const ref = await runInDb(() => getPartnerConnectionRef(db, partner.partnerId));
+  if (!ref || ref.provider !== provider) return c.json({ error: 'Accounting connection not found' }, 404);
+  const audit = (resourceId: string, details: Record<string, unknown>) => writeRouteAudit(c, {
+    orgId: null, action: 'accounting.connection.disconnected', resourceType: 'accounting_connection', resourceId,
+    details: { provider, status: ref.status, ...details },
+  });
+  // A row still waiting for an organisation is a cancel: no chosen link to
+  // release, and this flow's links go through the held-checked cleanup. If it was
+  // claimed in the meantime, fall through and disconnect the now-connected row.
+  if (ref.status === PENDING_TENANT_STATUS) {
+    const { discarded } = await discardPendingTenantSelection({ partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb });
+    if (discarded) {
+      audit(ref.id, {});
+      return c.json({ disconnected: true });
+    }
+  }
+  // Best-effort provider-side release BEFORE the row and its tokens are gone
+  // (spec W02 "Disconnect"; never token revocation). A row whose tokens cannot
+  // be decrypted skips the release but still disconnects.
+  let full: AccountingConnection | null = null;
+  try {
+    full = await runInDb(() => getConnection(db, partner.partnerId, provider));
+  } catch (err) {
+    console.warn('[accounting] disconnect could not read the connection; skipping the provider-side release', {
+      partnerId: partner.partnerId, provider, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const providerRelease = full ? await releaseProviderConnection(full) : 'skipped';
+  const { removed, connectionId, owedPaymentDeletes } = await runInDb(() => deleteConnection(db, partner.partnerId, provider));
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
+  audit(connectionId ?? ref.id, { providerRelease });
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
   // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
   // — the only thing that lets a human find those Payments afterwards (review
@@ -541,6 +557,13 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   return c.json({ disconnected: true });
 });
 
+// Organisation picker, cancel and settings pickers (Xero W02): connect chain, manage-gated.
+registerConnectionSetupRoutes(accountingRoutes, {
+  auth: [authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage],
+  mfa: requireMfa(),
+  resolvePartnerId,
+});
+
 // Registered BEFORE GET /:provider, which would otherwise capture it (and the enum 400 it).
 accountingRoutes.get('/providers', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('query', partnerQuerySchema), async (c) => {
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
@@ -555,8 +578,16 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const connection = await getConnection(db, partner.partnerId, provider);
+  // What the provider can do and which setup steps it has (Xero W02). DB-only:
+  // the organisation name / demo badge come from GET /:provider/settings/options.
+  const impl = getAccountingProvider(provider);
+  const providerShape = {
+    capabilities: impl.capabilities,
+    features: { tenantSelection: !!impl.tenantSelection, settingsOptions: typeof impl.listSettingsOptions === 'function' },
+  };
   if (!connection) {
     return c.json({
+      ...providerShape,
       status: 'disconnected',
       environment: null,
       pushMode: 'auto',
@@ -575,6 +606,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
     });
   }
   return c.json({
+    ...providerShape,
     status: connection.status,
     environment: connection.environment,
     pushMode: connection.pushMode,
@@ -582,6 +614,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
     lastError: connection.lastError,
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
+    defaultExemptTaxCodeRef: connection.defaultExemptTaxCodeRef,
+    defaultPaymentAccountRef: connection.defaultPaymentAccountRef,
     // A captured external fact, exposed so an operator can see whether connect-time
     // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
     // accept it.
@@ -722,6 +756,8 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('pushMode' in body ? { pushMode: body.pushMode } : {}),
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
+      ...('defaultExemptTaxCodeRef' in body ? { defaultExemptTaxCodeRef: body.defaultExemptTaxCodeRef } : {}),
+      ...('defaultPaymentAccountRef' in body ? { defaultPaymentAccountRef: body.defaultPaymentAccountRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
       ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
       // Turning the switch back ON restarts the horizon, so a deliberate pause
@@ -747,6 +783,8 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       pushMode: accountingConnections.pushMode,
       defaultIncomeAccountRef: accountingConnections.defaultIncomeAccountRef,
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
+      defaultExemptTaxCodeRef: accountingConnections.defaultExemptTaxCodeRef,
+      defaultPaymentAccountRef: accountingConnections.defaultPaymentAccountRef,
       lastError: accountingConnections.lastError,
       pullPayments: accountingConnections.pullPayments,
       pushPayments: accountingConnections.pushPayments,

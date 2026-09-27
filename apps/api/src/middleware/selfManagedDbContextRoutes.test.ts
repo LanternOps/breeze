@@ -69,6 +69,18 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/remote-candidates'],
     ['GET', '/api/v1/accounting/quickbooks/remote-candidates/'],
     ['get', '/api/v1/accounting/quickbooks/remote-candidates'], // method is case-insensitive
+    // Xero W02 — the organisation picker, cancel and settings pickers call the
+    // provider live, and disconnect makes a best-effort provider-side release
+    // before deleting the row; each takes a runInDbContext runner.
+    ['GET', '/api/v1/accounting/xero/tenants'],
+    ['GET', '/api/v1/accounting/xero/tenants/'],
+    ['POST', '/api/v1/accounting/xero/tenants/select'],
+    ['POST', '/api/v1/accounting/xero/tenants/cancel'],
+    ['post', '/api/v1/accounting/xero/tenants/cancel/'], // method is case-insensitive
+    ['GET', '/api/v1/accounting/xero/settings/options'],
+    ['POST', '/api/v1/accounting/xero/disconnect'],
+    ['POST', '/api/v1/accounting/quickbooks/disconnect'],
+    ['POST', '/api/v1/accounting/quickbooks/disconnect/'],
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -261,8 +273,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/extra', 'extra segment must not match'],
-    // Task 5 — every OTHER accounting route (connect/callback/disconnect/status/
-    // settings) does only DB work and MUST keep the ambient RLS transaction.
+    // Task 5 — every OTHER accounting route (connect/callback/status/settings
+    // PATCH) does only DB work and MUST keep the ambient RLS transaction.
+    // (Disconnect opted out in Xero W02: it now makes a provider-side release.)
     ['POST', '/api/v1/accounting/quickbooks/mappings', 'POST to the mappings route (only GET/PUT opt out)'],
     ['DELETE', '/api/v1/accounting/quickbooks/mappings', 'DELETE to the mappings route is not a route at all'],
     ['GET', '/api/v1/accounting/quickbooks/mappings/extra', 'extra segment must not match'],
@@ -285,6 +298,18 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/invoices//push', 'empty invoiceId segment must not match'],
     ['POST', '/api/v1/accounting/quickbooks/remote-candidates', 'remote-candidates is GET-only'],
     ['GET', '/api/v1/accounting/quickbooks/remote-candidates/extra', 'extra segment must not match'],
+    // Xero W02 — only the picker/cancel/options/disconnect routes opt out.
+    ['GET', '/api/v1/accounting/xero', 'status route stays DB-only (no provider calls) — keep ambient tx'],
+    ['PATCH', '/api/v1/accounting/xero/settings', 'plain settings PATCH does only DB work'],
+    ['GET', '/api/v1/accounting/xero/connect', 'connect builds a URL with no outbound call'],
+    ['POST', '/api/v1/accounting/xero/tenants', 'the tenant list is GET-only'],
+    ['GET', '/api/v1/accounting/xero/tenants/select', 'select is POST-only'],
+    ['GET', '/api/v1/accounting/xero/tenants/cancel', 'cancel is POST-only'],
+    ['POST', '/api/v1/accounting/xero/tenants/select/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/xero/settings/options', 'settings options is GET-only'],
+    ['GET', '/api/v1/accounting/xero/settings/options/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/accounting/xero/disconnect', 'disconnect is POST-only'],
+    ['POST', '/api/v1/accounting/xero/disconnect/extra', 'extra segment must not match'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],
