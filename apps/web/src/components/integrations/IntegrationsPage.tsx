@@ -13,6 +13,7 @@ import {
   Webhook,
 } from "lucide-react";
 import { DOCS_BASE_URL } from "@breeze/shared";
+import { PageHeader } from "../shared/PageHeader";
 import WebhooksPage from "../webhooks/WebhooksPage";
 import CommunicationIntegrations from "./CommunicationIntegrations";
 import PsaConnectionsPage from "../psa/PsaConnectionsPage";
@@ -418,29 +419,25 @@ export default function IntegrationsPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("integrationsPage.integrations")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "integrationsPage.manageAllConnectionsAndKeepAutomationWorkflowsHealthy",
-            )}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={openTabDocs}
-          data-testid="integrations-docs-link"
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
-        >
-          <BookOpen className="h-4 w-4" />
-          {t("integrationsPage.viewNameDocumentation", {
-            name: activeTabLabel,
-          })}
-        </button>
-      </div>
+      <PageHeader
+        title={t("integrationsPage.integrations")}
+        description={t(
+          "integrationsPage.manageAllConnectionsAndKeepAutomationWorkflowsHealthy",
+        )}
+        actions={
+          <button
+            type="button"
+            onClick={openTabDocs}
+            data-testid="integrations-docs-link"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+          >
+            <BookOpen className="h-4 w-4" />
+            {t("integrationsPage.viewNameDocumentation", {
+              name: activeTabLabel,
+            })}
+          </button>
+        }
+      />
 
       {/* Top-level tabs */}
       <div className="flex flex-wrap gap-3">
