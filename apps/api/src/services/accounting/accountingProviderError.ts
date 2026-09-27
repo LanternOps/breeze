@@ -126,9 +126,19 @@ export function rateLimitRetryAfterMs(err: unknown): number | null {
   return typeof e.retryAfterMs === 'number' ? e.retryAfterMs : DEFAULT_RATE_LIMIT_DELAY_MS;
 }
 
-/** `last_error` / message for a throttled sync that a queued retry will pick up. */
+/** `last_error` for a throttled PAYMENT row: the outbox (sweep + delayed job)
+ *  always retries it, so "retrying automatically" is true on every path. */
 export function providerRateLimitedMessage(label: string): string {
   return `${label} is rate limiting requests; retrying automatically`;
+}
+
+/**
+ * `last_error` for a throttled invoice-push or mapping row. Those rows are also
+ * written by MANUAL route calls that nothing retries, so the marker must read
+ * true on both the job path and the manual path (ruling P6b).
+ */
+export function providerRateLimitedRetryLaterMessage(label: string, action: 'push' | 'sync'): string {
+  return `${label} is rate limiting requests; ${action} again if this does not clear shortly`;
 }
 
 /** Message for a throttled interactive read, which nothing retries on its own. */

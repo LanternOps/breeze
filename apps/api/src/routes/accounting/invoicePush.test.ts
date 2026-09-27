@@ -25,23 +25,29 @@ const {
   const listRemoteItemsMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
   const selectMock = vi.fn();
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingInvoicePushError extends Error {
     code: string;
-    status: number;
-    constructor(code: string, status: number, message: string) {
+    status: 404 | 409 | 429 | 502;
+    retryAfterMs?: number;
+    constructor(code: string, status: 404 | 409 | 429 | 502, message: string, opts: { retryAfterMs?: number } = {}) {
       super(message);
       this.code = code;
       this.status = status;
+      this.retryAfterMs = opts.retryAfterMs;
       this.name = 'AccountingInvoicePushError';
     }
   }
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingMappingError extends Error {
     code: string;
-    status: number;
-    constructor(code: string, status: number, message: string) {
+    status: 404 | 409 | 429 | 502;
+    retryAfterMs?: number;
+    constructor(code: string, status: 404 | 409 | 429 | 502, message: string, opts: { retryAfterMs?: number } = {}) {
       super(message);
       this.code = code;
       this.status = status;
+      this.retryAfterMs = opts.retryAfterMs;
       this.name = 'AccountingMappingError';
     }
   }
@@ -547,22 +553,19 @@ describe('GET /accounting/:provider/remote-candidates', () => {
 // seconds, rounded up) instead of 502/500.
 describe('rate limiting answers 429 with Retry-After (Xero W01)', () => {
   it('a throttled manual push answers 429 with Retry-After', async () => {
-    pushInvoiceToAccountingMock.mockRejectedValue(Object.assign(
-      new AccountingInvoicePushError('rate_limited', 429, 'QuickBooks is rate limiting requests; retrying automatically'),
-      { retryAfterMs: 30_000 },
-    ));
+    pushInvoiceToAccountingMock.mockRejectedValue(
+      new AccountingInvoicePushError('rate_limited', 429, 'QuickBooks is rate limiting requests; push again if this does not clear shortly', { retryAfterMs: 30_000 }),
+    );
     const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
     expect(res.status).toBe(429);
     expect(res.headers.get('Retry-After')).toBe('30');
     // The invoice-push body shape is `{ error: code, message }` (unchanged).
-    expect(await res.json()).toEqual({ error: 'rate_limited', message: 'QuickBooks is rate limiting requests; retrying automatically' });
+    expect(await res.json()).toEqual({ error: 'rate_limited', message: 'QuickBooks is rate limiting requests; push again if this does not clear shortly' });
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('rounds a sub-second Retry-After UP, never to 0', async () => {
-    pushInvoiceToAccountingMock.mockRejectedValue(Object.assign(
-      new AccountingInvoicePushError('rate_limited', 429, 'throttled'), { retryAfterMs: 1_200 },
-    ));
+    pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('rate_limited', 429, 'throttled', { retryAfterMs: 1_200 }));
     const res = await app().request(`/accounting/quickbooks/invoices/${INVOICE_ID}/push`, { method: 'POST' });
     expect(res.headers.get('Retry-After')).toBe('2');
   });
@@ -575,9 +578,7 @@ describe('rate limiting answers 429 with Retry-After (Xero W01)', () => {
   });
 
   it('a throttled token refresh on remote-candidates answers 429 with Retry-After (mapping error shape)', async () => {
-    resolveConnectionAndTokenMock.mockRejectedValue(Object.assign(
-      new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 60_000 },
-    ));
+    resolveConnectionAndTokenMock.mockRejectedValue(new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 60_000 }));
     const res = await app().request('/accounting/quickbooks/remote-candidates?entityType=org');
     expect(res.status).toBe(429);
     expect(res.headers.get('Retry-After')).toBe('60');

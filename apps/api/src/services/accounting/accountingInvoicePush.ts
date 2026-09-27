@@ -64,8 +64,8 @@ import { accountingProviderDisplayName, getAccountingProvider } from './provider
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import {
-  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerRateLimitedMessage, providerTelemetryTags,
-  rateLimitRetryAfterMs,
+  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerRateLimitedMessage,
+  providerRateLimitedRetryLaterMessage, providerTelemetryTags, rateLimitRetryAfterMs,
 } from './accountingProviderError';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -429,11 +429,12 @@ async function markInvoiceMappingErrorInOwnContext(
 }
 
 /**
- * A throttle after the invoice mapping was claimed (Xero W01, ruling P6):
- * the row gets the SAME `error` marker a transient failure leaves — never left
- * `pending`, which would strand a manual push (no sweep re-pushes invoices) and
- * make every later void answer `sync_in_progress` — but with no Sentry event.
- * The delayed job's retry re-claims the row via `upsertInvoiceMappingPending`.
+ * A throttle after the invoice mapping was claimed by a PUSH (Xero W01, ruling
+ * P6): the row gets the SAME `error` marker a transient failure leaves — never
+ * left `pending`, which would strand a manual push (no sweep re-pushes invoices)
+ * and make every later void answer `sync_in_progress` — but with no Sentry
+ * event. The wording is true on the manual route too, where nothing retries
+ * (P6b). The delayed job's retry re-claims the row via `upsertInvoiceMappingPending`.
  */
 async function markInvoiceRateLimitedAndThrow(
   runInDbContext: DbContextRunner,
@@ -442,7 +443,7 @@ async function markInvoiceRateLimitedAndThrow(
   provider: AccountingConnection['provider'],
   retryAfterMs: number,
 ): Promise<never> {
-  const message = providerRateLimitedMessage(accountingProviderDisplayName(provider));
+  const message = providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(provider), 'push');
   await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message);
   throw new AccountingInvoicePushError('rate_limited', 429, message, { retryAfterMs });
 }
@@ -1035,10 +1036,15 @@ export async function voidInvoiceInAccounting(
   try {
     voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
-    // Throttled: same marker as the transient path below, minus Sentry (P6).
+    // Throttled (ruling P6a): NO marker and no Sentry. The void claims no row,
+    // so nothing can be stranded, and a marker on this synced row would outlive
+    // the delayed void's success (that path leaves last_error alone). The
+    // message is never persisted; the worker (the only caller) delays the job.
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
-      await markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, throttleMs);
+      throw new AccountingInvoicePushError(
+        'rate_limited', 429, providerRateLimitedMessage(accountingProviderDisplayName(conn.provider)), { retryAfterMs: throttleMs },
+      );
     }
     // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
     // never allow this". A payment applied to the invoice in QuickBooks makes

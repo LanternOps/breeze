@@ -1539,10 +1539,29 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     expect(captureExceptionMock).not.toHaveBeenCalled();
     const persisted = currentMappingRows.find((r) => r.id === 'm1');
     expect(persisted).toMatchObject({
-      syncStatus: 'error', remoteEntityId: 'qb-1', lastError: 'QuickBooks is rate limiting requests; retrying automatically',
+      syncStatus: 'error', remoteEntityId: 'qb-1', lastError: 'QuickBooks is rate limiting requests; sync again if this does not clear shortly',
     });
     // The Redis sync lease is released, so the delayed retry is not refused sync_in_progress.
     expect(redisMock.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('del'"), 1, expect.any(String), expect.any(String));
+  });
+
+  it('callProviderOrThrow passes an already-typed rate_limited AccountingMappingError through unchanged', async () => {
+    const typed = new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 9_000 });
+    listRemoteCustomersMock.mockRejectedValue(typed);
+
+    const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(typed);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('callProviderOrThrow still wraps any OTHER AccountingMappingError as provider_error 502 (unchanged)', async () => {
+    listRemoteCustomersMock.mockRejectedValue(new AccountingMappingError('sync_in_progress', 409, 'busy'));
+
+    await expect(listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx))
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('AccountingMappingError carries retryAfterMs only when given', () => {

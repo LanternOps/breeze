@@ -59,7 +59,7 @@ import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import {
   isAccountingProviderError,
-  providerRateLimitedMessage,
+  providerRateLimitedRetryLaterMessage,
   providerRateLimitedTryAgainMessage,
   rateLimitRetryAfterMs,
 } from './accountingProviderError';
@@ -319,6 +319,10 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
   try {
     return await action();
   } catch (err) {
+    // An already-typed throttle (e.g. a wrapper that resolved its own token)
+    // passes through unchanged; every other AccountingMappingError keeps the
+    // existing provider_error wrapping below.
+    if (err instanceof AccountingMappingError && err.code === 'rate_limited') throw err;
     // A throttle is not an upstream failure (Xero W01): 429 + retryAfterMs, no
     // Sentry event. The message is built from the provider label only, never
     // from the error, for the same no-leak reason as the 502 below.
@@ -1384,7 +1388,7 @@ async function syncMappedEntityUnderLease(
     // Retry-After.
     const retryAfterMs = rateLimitRetryAfterMs(err);
     const message = retryAfterMs !== null
-      ? providerRateLimitedMessage(accountingProviderDisplayName(conn.provider))
+      ? providerRateLimitedRetryLaterMessage(accountingProviderDisplayName(conn.provider), 'sync')
       : sanitizeSyncErrorMessage(err, breezeEntityType);
     if (retryAfterMs === null) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {

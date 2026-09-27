@@ -41,14 +41,18 @@ const {
   captureExceptionMock,
   AccountingMappingError,
 } = vi.hoisted(() => {
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingMappingError extends Error {
+    readonly retryAfterMs?: number;
     constructor(
       public readonly code: string,
-      public readonly status: 404 | 409 | 502,
+      public readonly status: 404 | 409 | 429 | 502,
       message: string,
+      opts: { retryAfterMs?: number } = {},
     ) {
       super(message);
       this.name = 'AccountingMappingError';
+      this.retryAfterMs = opts.retryAfterMs;
     }
   }
   return {
@@ -2513,7 +2517,7 @@ describe('rate limiting (Review Focus 5)', () => {
     // resolveLiveConnection re-types a token-endpoint 429 as the mapping
     // service's rate_limited error; the lease was already claimed in phase 1.
     resolveLiveConnectionMock.mockRejectedValueOnce(
-      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 12_000 }),
+      new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 12_000 }),
     );
     const before = mapping()!.syncAttempts;
 
@@ -2553,7 +2557,7 @@ describe('rate limiting (Review Focus 5)', () => {
       remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 2,
     })];
     resolveLiveConnectionMock.mockRejectedValueOnce(
-      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'throttled'), { retryAfterMs: 9_000 }),
+      new AccountingMappingError('rate_limited', 429, 'throttled', { retryAfterMs: 9_000 }),
     );
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))

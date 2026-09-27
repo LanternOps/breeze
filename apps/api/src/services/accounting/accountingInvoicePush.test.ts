@@ -24,14 +24,18 @@ const {
   captureExceptionMock,
   AccountingMappingError,
 } = vi.hoisted(() => {
+  // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs).
   class AccountingMappingError extends Error {
+    readonly retryAfterMs?: number;
     constructor(
       public readonly code: string,
-      public readonly status: 404 | 409 | 502,
+      public readonly status: 404 | 409 | 429 | 502,
       message: string,
+      opts: { retryAfterMs?: number } = {},
     ) {
       super(message);
       this.name = 'AccountingMappingError';
+      this.retryAfterMs = opts.retryAfterMs;
     }
   }
   return {
@@ -1670,14 +1674,16 @@ describe('connection target threading (Xero W01)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rate limiting (Xero W01 Task 14, ruling P6): a throttle leaves the invoice
-// mapping in the same retryable `error` state a transient failure leaves, with
-// NO Sentry event, and raises `rate_limited` (429) carrying retryAfterMs so the
+// Rate limiting (Xero W01 Task 14, rulings P6/P6a/P6b): a throttled PUSH leaves
+// the claimed invoice mapping in the same retryable `error` state a transient
+// failure leaves, with a marker that reads true on the job AND the manual route
+// path; a throttled VOID writes nothing (it claims no row). Neither raises a
+// Sentry event; both throw `rate_limited` (429) carrying retryAfterMs so the
 // worker can delay the job without consuming an attempt.
 // ---------------------------------------------------------------------------
 
 describe('rate limiting (ruling P6)', () => {
-  const RATE_LIMITED_MESSAGE = 'QuickBooks is rate limiting requests; retrying automatically';
+  const RATE_LIMITED_MESSAGE = 'QuickBooks is rate limiting requests; push again if this does not clear shortly';
   const throttle = (retryAfterMs?: number) => new AccountingProviderError({
     kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks invoice push', httpStatus: 429, retryAfterMs,
   });
@@ -1723,7 +1729,7 @@ describe('rate limiting (ruling P6)', () => {
 
   it('a throttled TOKEN refresh after the row was claimed marks it error too, never leaving it pending', async () => {
     resolveLiveConnectionMock.mockRejectedValueOnce(
-      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'QuickBooks is rate limiting requests; try again shortly'), { retryAfterMs: 15_000 }),
+      new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 15_000 }),
     );
 
     await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx))
@@ -1737,7 +1743,7 @@ describe('rate limiting (ruling P6)', () => {
   it('a throttled dependency sync is re-typed rate_limited 429 (not provider_error), retryAfterMs carried', async () => {
     setup({ mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })] });
     syncMappedEntityMock.mockRejectedValueOnce(
-      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, RATE_LIMITED_MESSAGE), { retryAfterMs: 20_000 }),
+      new AccountingMappingError('rate_limited', 429, RATE_LIMITED_MESSAGE, { retryAfterMs: 20_000 }),
     );
 
     await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx))
@@ -1745,21 +1751,35 @@ describe('rate limiting (ruling P6)', () => {
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
-  it('a 429 on void follows the transient path (row marked error) minus Sentry, and throws rate_limited 429', async () => {
+  it('a 429 on void writes NO marker (P6a: the synced row is left untouched), raises no Sentry event, throws rate_limited 429', async () => {
+    // The void claims no row, so nothing can be stranded — and a marker written
+    // here would outlive the delayed void's success (that path never clears it).
     setup({ mappings: [orgMappingRow(), pushedInvoiceMapping()] });
     voidInvoiceMock.mockRejectedValueOnce(throttle(45_000));
 
     await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx))
-      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 45_000, message: RATE_LIMITED_MESSAGE });
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 45_000 });
     const row = currentMappings.find((m) => m.id === 'map-inv-1')!;
-    expect(row).toMatchObject({ syncStatus: 'error', lastError: RATE_LIMITED_MESSAGE, remoteEntityId: 'qb-inv-1' });
+    expect(row).toMatchObject({ syncStatus: 'synced', lastError: null, remoteEntityId: 'qb-inv-1' });
+    expect(updatedPatches).toHaveLength(0);
     expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('after a throttled void, the delayed void succeeds and the row still reads synced with no error', async () => {
+    setup({ mappings: [orgMappingRow(), pushedInvoiceMapping()] });
+    voidInvoiceMock.mockRejectedValueOnce(throttle(45_000));
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'rate_limited' });
+
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(voidInvoiceMock).toHaveBeenCalledTimes(2);
+    expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({ syncStatus: 'synced', lastError: null });
   });
 
   it('a throttled token refresh on void throws rate_limited without touching the mapping', async () => {
     setup({ mappings: [orgMappingRow(), pushedInvoiceMapping()] });
     resolveLiveConnectionMock.mockRejectedValueOnce(
-      Object.assign(new AccountingMappingError('rate_limited', 429 as 502, 'throttled'), { retryAfterMs: 8_000 }),
+      new AccountingMappingError('rate_limited', 429, 'throttled', { retryAfterMs: 8_000 }),
     );
 
     await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx))
