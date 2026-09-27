@@ -60,7 +60,10 @@
 #     repo-wide contract suites (Dockerfile/manifest enumeration over apps/*,
 #     exchangeRateBoundary over apps/web/src + apps/portal/src, tierConfig
 #     parity, the viewer input schema), so web/portal/viewer and every app's
-#     Dockerfile/package.json also set `api`. `ci-area-gating.test.mjs` scans
+#     Dockerfile/package.json also set `api`. test-web carries a contract
+#     test that reads apps/api/src/services/accounting/types.ts directly
+#     (accountingProviders.test.ts, since the web cannot import API code), so
+#     that one file also sets `web`. `ci-area-gating.test.mjs` scans
 #     the sources for such references and fails when one has no rule here.
 # Docs paths set no area. apps/mobile/** sets none either: mobile is gated by
 # its own `mobile-native-changes` filter and test-mobile rides `app`.
@@ -156,6 +159,7 @@ while IFS= read -r path; do
   case "${path}" in
     apps/web/*|apps/portal/*|apps/viewer/src/*) api=true ;;
     apps/api/src/routes/portal/*) portal=true ;;
+    apps/api/src/services/accounting/types.ts) web=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
