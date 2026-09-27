@@ -1025,7 +1025,9 @@ async function reportServerOnlyBoot(paired: string): Promise<void> {
         `(agent rows: ${state.agentRows.length}, backup rows: ${state.hasBackup ? "yes" : "no"}). ` +
         `Server-only boots never write agent_versions, so the fleet stays on its current promoted release. ` +
         `Deploy the full release v${binaries} first, or register it with POST /api/v1/agent-versions/sync-github?version=v${binaries}.` +
-        (paired !== binaries ? ` (BINARY_VERSION overrides the image pairing ${paired}.)` : ""),
+        (paired.replace(/^v/, "") !== binaries
+          ? ` (BINARY_VERSION overrides the image pairing ${paired}.)`
+          : ""),
     );
   } catch (err) {
     console.error(
