@@ -180,6 +180,23 @@ describe('OrgSettingsPage general tab — name editing', () => {
     expect((input as HTMLInputElement).value).toBe('Acme Systems');
   });
 
+  it('shrinks the name input and type select so their Save buttons stay inside the tile (#7152)', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const input = await screen.findByTestId('org-name-input');
+    const select = await screen.findByTestId('org-type-select');
+
+    // flex-1 items must be allowed to shrink below their intrinsic width
+    // (min-w-0) or they push the sibling Save button out of the tile.
+    expect(input.className).toContain('min-w-0');
+    expect(select.className).toContain('min-w-0');
+  });
+
   it('PATCHes the new name when the user edits and saves', async () => {
     fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));

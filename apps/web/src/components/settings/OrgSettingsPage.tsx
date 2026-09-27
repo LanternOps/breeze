@@ -776,7 +776,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                         }
                       }}
                       disabled={isArchived}
-                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      className="min-w-0 flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                       placeholder={t('orgSettingsPage.overview.organizationName')}
                       aria-label={t('orgSettingsPage.overview.organizationName')}
                     />
@@ -809,7 +809,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       value={typeDraft}
                       onChange={(e) => setTypeDraft(e.target.value)}
                       disabled={isArchived}
-                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      className="min-w-0 flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t('orgSettingsPage.overview.organizationType')}
                     >
                       <option value="customer">{t('orgSettingsPage.overview.types.customer')}</option>
