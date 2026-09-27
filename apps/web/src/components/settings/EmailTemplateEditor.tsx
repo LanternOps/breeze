@@ -307,7 +307,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
       <div>
         <p className="text-xs font-medium text-muted-foreground">{t('emailTemplates.preview')}</p>
         <div
-          className="prose prose-sm mt-1 max-w-none rounded-md border bg-background p-3"
+          className="prose prose-sm dark:prose-invert mt-1 max-w-none rounded-md border bg-background p-3"
           data-testid="email-template-preview"
           dangerouslySetInnerHTML={{ __html: preview }}
         />
