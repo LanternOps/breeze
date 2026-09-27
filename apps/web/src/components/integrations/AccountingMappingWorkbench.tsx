@@ -180,20 +180,20 @@ export default function AccountingMappingWorkbench({
         try {
           const accountsRes = await runAction<{ data: RemoteIncomeAccount[] }>({
             request: () => fetchWithAuth(accountingPath(provider, "/income-accounts")),
-            errorFallback: t("quickbooksMapping.failedToLoadIncomeAccounts", { provider: providerName }),
+            errorFallback: t("accountingMapping.failedToLoadIncomeAccounts", { provider: providerName }),
             onUnauthorized,
           });
           setIncomeAccounts(accountsRes.data);
         } catch (err) {
           if (err instanceof ActionError && err.status === 401) throw err;
           if (!(err instanceof ActionError)) {
-            handleActionError(err, t("quickbooksMapping.failedToLoadIncomeAccounts", { provider: providerName }));
+            handleActionError(err, t("accountingMapping.failedToLoadIncomeAccounts", { provider: providerName }));
           }
         }
       }
       const mappingsRes = await runAction<{ data: MappingProposal[] }>({
         request: () => fetchWithAuth(accountingPath(provider, `/mappings?entityType=${entityType}`)),
-        errorFallback: t("quickbooksMapping.failedToLoadMappings", { provider: providerName }),
+        errorFallback: t("accountingMapping.failedToLoadMappings", { provider: providerName }),
         onUnauthorized,
       });
       setProposals(mappingsRes.data);
@@ -203,7 +203,7 @@ export default function AccountingMappingWorkbench({
         return next;
       });
     } catch (err) {
-      handleActionError(err, t("quickbooksMapping.failedToLoadMappings", { provider: providerName }));
+      handleActionError(err, t("accountingMapping.failedToLoadMappings", { provider: providerName }));
     } finally {
       setLoading(false);
     }
@@ -294,7 +294,7 @@ export default function AccountingMappingWorkbench({
     if (err instanceof ActionError && err.status !== 401) {
       setRowError((prev) => ({ ...prev, [id]: err.message }));
     } else {
-      handleActionError(err, t("quickbooksMapping.failedToSyncEntity", { provider: providerName }));
+      handleActionError(err, t("accountingMapping.failedToSyncEntity", { provider: providerName }));
     }
   }
 
@@ -310,8 +310,8 @@ export default function AccountingMappingWorkbench({
             breezeEntityId: p.breezeEntityId,
           }),
         }),
-      errorFallback: t("quickbooksMapping.failedToSyncEntity", { provider: providerName }),
-      successMessage: t("quickbooksMapping.entitySynced", { provider: providerName }),
+      errorFallback: t("accountingMapping.failedToSyncEntity", { provider: providerName }),
+      successMessage: t("accountingMapping.entitySynced", { provider: providerName }),
       onUnauthorized,
     });
     applyMapping(res.data);
@@ -338,11 +338,11 @@ export default function AccountingMappingWorkbench({
               ...(remoteEntityId ? { remoteEntityId } : {}),
             }),
           }),
-        errorFallback: t("quickbooksMapping.failedToSaveMapping", { provider: providerName }),
+        errorFallback: t("accountingMapping.failedToSaveMapping", { provider: providerName }),
         // One click, one outcome. When the push follows, the sync's own toast
         // is the result the operator cares about; a "Mapping saved" toast in
         // front of it just doubles the noise.
-        ...(autoSyncs ? {} : { successMessage: t("quickbooksMapping.mappingSaved", { provider: providerName }) }),
+        ...(autoSyncs ? {} : { successMessage: t("accountingMapping.mappingSaved", { provider: providerName }) }),
         onUnauthorized,
       });
       applyMapping(res.data);
@@ -350,7 +350,7 @@ export default function AccountingMappingWorkbench({
         // The saved row, not the button that produced it, decides whether the
         // push is allowed — the same gate "Sync now" applies.
         if (syncGatedForMapping(res.data)) {
-          showToast({ message: t("quickbooksMapping.mappingSaved", { provider: providerName }), type: "success" });
+          showToast({ message: t("accountingMapping.mappingSaved", { provider: providerName }), type: "success" });
         } else {
           try {
             await requestSync(p);
@@ -363,7 +363,7 @@ export default function AccountingMappingWorkbench({
       if (err instanceof ActionError && err.status !== 401) {
         setRowError((prev) => ({ ...prev, [id]: err.message }));
       } else {
-        handleActionError(err, t("quickbooksMapping.failedToSaveMapping", { provider: providerName }));
+        handleActionError(err, t("accountingMapping.failedToSaveMapping", { provider: providerName }));
       }
     } finally {
       setRowBusy((prev) => ({ ...prev, [id]: false }));
@@ -392,15 +392,15 @@ export default function AccountingMappingWorkbench({
             method: "PATCH",
             body: JSON.stringify({ defaultIncomeAccountRef: incomeAccountRef || null }),
           }),
-        errorFallback: t("quickbooksMapping.failedToSaveIncomeAccount", { provider: providerName }),
-        successMessage: t("quickbooksMapping.incomeAccountSaved", { provider: providerName }),
+        errorFallback: t("accountingMapping.failedToSaveIncomeAccount", { provider: providerName }),
+        successMessage: t("accountingMapping.incomeAccountSaved", { provider: providerName }),
         onUnauthorized,
       });
       const saved = incomeAccountRef || null;
       setSavedIncomeAccountRef(saved);
       onSettingsChanged?.({ defaultIncomeAccountRef: saved });
     } catch (err) {
-      handleActionError(err, t("quickbooksMapping.failedToSaveIncomeAccount", { provider: providerName }));
+      handleActionError(err, t("accountingMapping.failedToSaveIncomeAccount", { provider: providerName }));
     } finally {
       setSavingIncomeAccount(false);
     }
@@ -430,7 +430,7 @@ export default function AccountingMappingWorkbench({
   return (
     <div data-testid={`${provider}-mapping-workbench`} className="space-y-4 rounded-lg border bg-card p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">{t("quickbooksMapping.mappingTitle", { provider: providerName })}</h2>
+        <h2 className="text-lg font-semibold">{t("accountingMapping.mappingTitle", { provider: providerName })}</h2>
         <button
           type="button"
           data-testid={`${provider}-mapping-load`}
@@ -439,14 +439,14 @@ export default function AccountingMappingWorkbench({
           className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
           {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-          {proposals ? t("quickbooksMapping.refreshMappings", { provider: providerName }) : t("quickbooksMapping.loadMappings", { provider: providerName })}
+          {proposals ? t("accountingMapping.refreshMappings", { provider: providerName }) : t("accountingMapping.loadMappings", { provider: providerName })}
         </button>
       </div>
 
       <div role="tablist" className="inline-flex overflow-hidden rounded-md border">
         {tabs.map((id) => {
           const active = tab === id;
-          const label = id === customersTab ? t("quickbooksMapping.customers", { provider: providerName }) : t("quickbooksMapping.items", { provider: providerName });
+          const label = id === customersTab ? t("accountingMapping.customers", { provider: providerName }) : t("accountingMapping.items", { provider: providerName });
           return (
             <button
               key={id}
@@ -469,7 +469,7 @@ export default function AccountingMappingWorkbench({
         <div className="rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <label htmlFor={`${provider}-income-account-select`} className="font-medium">
-              {t("quickbooksMapping.incomeAccount", { provider: providerName })}
+              {t("accountingMapping.incomeAccount", { provider: providerName })}
             </label>
             <select
               id={`${provider}-income-account-select`}
@@ -501,7 +501,7 @@ export default function AccountingMappingWorkbench({
               disabled={savingIncomeAccount || !incomeAccountRef || !canManageAccounting}
               className="inline-flex h-8 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
-              {t("quickbooksMapping.saveIncomeAccount", { provider: providerName })}
+              {t("accountingMapping.saveIncomeAccount", { provider: providerName })}
             </button>
           </div>
           {!savedIncomeAccountRef && (
@@ -509,7 +509,7 @@ export default function AccountingMappingWorkbench({
               data-testid={`${provider}-income-account-required`}
               className="mt-2 text-amber-700"
             >
-              {t("quickbooksMapping.incomeAccountRequired", { provider: providerName })}
+              {t("accountingMapping.incomeAccountRequired", { provider: providerName })}
             </p>
           )}
         </div>
@@ -517,7 +517,7 @@ export default function AccountingMappingWorkbench({
 
       {proposals && proposals.length === 0 && (
         <p data-testid={`${provider}-mapping-empty`} className="text-sm text-muted-foreground">
-          {t("quickbooksMapping.noProposals", { provider: providerName })}
+          {t("accountingMapping.noProposals", { provider: providerName })}
         </p>
       )}
 
@@ -526,9 +526,9 @@ export default function AccountingMappingWorkbench({
           <thead>
             <tr className="text-left text-muted-foreground">
               <th>{t("common:labels.name")}</th>
-              <th>{t("quickbooksMapping.suggestedMatch", { provider: providerName })}</th>
+              <th>{t("accountingMapping.suggestedMatch", { provider: providerName })}</th>
               <th />
-              <th>{t("quickbooksMapping.incomeAccount", { provider: providerName })}</th>
+              <th>{t("accountingMapping.incomeAccount", { provider: providerName })}</th>
             </tr>
           </thead>
           <tbody>
@@ -542,29 +542,29 @@ export default function AccountingMappingWorkbench({
               // (confidenceForMapping, accountingMappingService.ts).
               const confidenceLabel =
                 p.confidence === "ambiguous"
-                  ? t("quickbooksMapping.ambiguousMatch", { provider: providerName })
+                  ? t("accountingMapping.ambiguousMatch", { provider: providerName })
                   : p.confidence === "none"
-                    ? t("quickbooksMapping.noMatch", { provider: providerName })
+                    ? t("accountingMapping.noMatch", { provider: providerName })
                     : p.confidence === "existing_link"
-                      ? t("quickbooksMapping.linkedMatch", { provider: providerName })
-                      : t("quickbooksMapping.suggestedMatch", { provider: providerName });
+                      ? t("accountingMapping.linkedMatch", { provider: providerName })
+                      : t("accountingMapping.suggestedMatch", { provider: providerName });
               // "Pending" read as "Breeze is working on it"; it actually means
               // the decision never left Breeze. Name the three states after
               // where the record IS, and explain the unsynced one in a tooltip.
               const statusLabel =
                 p.syncStatus === "synced"
-                  ? t("quickbooksMapping.inQuickbooks", { provider: providerName })
+                  ? t("accountingMapping.inProvider", { provider: providerName })
                   : p.syncStatus === "synced_with_tax_variance"
-                    ? t("quickbooksMapping.syncedWithTaxVariance", { provider: providerName })
+                    ? t("accountingMapping.syncedWithTaxVariance", { provider: providerName })
                     : p.syncStatus === "error"
-                      ? t("quickbooksMapping.syncFailed", { provider: providerName })
-                      : t("quickbooksMapping.notSynced", { provider: providerName });
+                      ? t("accountingMapping.syncFailed", { provider: providerName })
+                      : t("accountingMapping.notSynced", { provider: providerName });
               // The hint explains a decision the operator made; a row they
               // never touched is unsynced simply because nothing was decided.
               const statusTitle =
                 p.syncStatus === "pending" &&
                 (p.linkStatus === "confirmed" || p.linkStatus === "create_new")
-                  ? t("quickbooksMapping.notSyncedHint", { provider: providerName })
+                  ? t("accountingMapping.notSyncedHint", { provider: providerName })
                   : undefined;
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
               const syncGated = syncGatedFor(p);
@@ -589,11 +589,11 @@ export default function AccountingMappingWorkbench({
                     </div>
                     <div data-testid={`${provider}-mapping-linkstatus-${id}`} className="text-xs text-muted-foreground">
                       {p.linkStatus === "confirmed"
-                        ? t("quickbooksMapping.confirmed", { provider: providerName })
+                        ? t("accountingMapping.confirmed", { provider: providerName })
                         : p.linkStatus === "create_new"
-                          ? t("quickbooksMapping.createNew", { provider: providerName })
+                          ? t("accountingMapping.createNew", { provider: providerName })
                           : p.linkStatus === "unlinked"
-                            ? t("quickbooksMapping.unlink", { provider: providerName })
+                            ? t("accountingMapping.unlink", { provider: providerName })
                             : null}
                     </div>
                   </td>
@@ -626,7 +626,7 @@ export default function AccountingMappingWorkbench({
                       onClick={() => void decide(p, "confirmed", remoteIdFor(id, p))}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.confirmMatch", { provider: providerName })}
+                      {t("accountingMapping.confirmMatch", { provider: providerName })}
                     </button>
                     <button
                       type="button"
@@ -635,7 +635,7 @@ export default function AccountingMappingWorkbench({
                       onClick={() => void decide(p, "create_new")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.createNew", { provider: providerName })}
+                      {t("accountingMapping.createNew", { provider: providerName })}
                     </button>
                     <button
                       type="button"
@@ -644,7 +644,7 @@ export default function AccountingMappingWorkbench({
                       onClick={() => void decide(p, "unlinked")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.unlink", { provider: providerName })}
+                      {t("accountingMapping.unlink", { provider: providerName })}
                     </button>
                     <button
                       type="button"
@@ -653,7 +653,7 @@ export default function AccountingMappingWorkbench({
                       onClick={() => void sync(p)}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {t("quickbooksMapping.syncNow", { provider: providerName })}
+                      {t("accountingMapping.syncNow", { provider: providerName })}
                     </button>
                     {error && (
                       <p
@@ -728,7 +728,7 @@ function RemoteCandidatePicker({
               fetchWithAuth(
                 accountingPath(provider, `/remote-candidates?entityType=${entityType}&q=${encodeURIComponent(q)}`),
               ),
-            errorFallback: stableT("quickbooksMapping.failedToSearchCandidates", { provider: providerName }),
+            errorFallback: stableT("accountingMapping.failedToSearchCandidates", { provider: providerName }),
             onUnauthorized,
           });
           if (!cancelled) setCandidates(res.data);
@@ -737,7 +737,7 @@ function RemoteCandidatePicker({
           // usable (the suggested option is still selectable) instead of
           // wedging it behind a permanent spinner.
           if (!cancelled) setCandidates([]);
-          handleActionError(err, stableT("quickbooksMapping.failedToSearchCandidates", { provider: providerName }));
+          handleActionError(err, stableT("accountingMapping.failedToSearchCandidates", { provider: providerName }));
         } finally {
           if (!cancelled) setSearching(false);
         }
@@ -775,8 +775,8 @@ function RemoteCandidatePicker({
         value={term}
         disabled={disabled}
         onChange={(e) => setTerm(e.target.value)}
-        placeholder={t("quickbooksMapping.searchPlaceholder", { provider: providerName })}
-        aria-label={t("quickbooksMapping.searchPlaceholder", { provider: providerName })}
+        placeholder={t("accountingMapping.searchPlaceholder", { provider: providerName })}
+        aria-label={t("accountingMapping.searchPlaceholder", { provider: providerName })}
         className="w-48 rounded-md border px-2 py-1"
       />
       <select
@@ -798,7 +798,7 @@ function RemoteCandidatePicker({
           data-testid={`${provider}-mapping-searching-${rowId}`}
           className="text-xs text-muted-foreground"
         >
-          {t("quickbooksMapping.searching", { provider: providerName })}
+          {t("accountingMapping.searching", { provider: providerName })}
         </p>
       )}
       {!searching && candidates?.length === 0 && (
@@ -806,7 +806,7 @@ function RemoteCandidatePicker({
           data-testid={`${provider}-mapping-no-candidates-${rowId}`}
           className="text-xs text-muted-foreground"
         >
-          {t("quickbooksMapping.noCandidates", { provider: providerName })}
+          {t("accountingMapping.noCandidates", { provider: providerName })}
         </p>
       )}
     </div>

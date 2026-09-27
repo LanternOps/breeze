@@ -733,4 +733,22 @@ describe("owed QuickBooks operations", () => {
     render(<AccountingConnectionPanel provider="quickbooks" />);
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith("/login?next=/integrations"));
   });
+
+  // Xero W01: every moved i18n key's English value carries `{{provider}}`
+  // rather than a hardcoded "QuickBooks" — this proves the interpolation
+  // actually fires for a SECOND provider, not just the one every other test
+  // in this file happens to render.
+  it("interpolates the connected provider's name and never leaks a raw {{provider}} token", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/xero") return jsonResponse(connected);
+      return jsonResponse({ count: 0, data: [] });
+    });
+
+    const { container } = render(<AccountingConnectionPanel provider="xero" />);
+
+    await screen.findByTestId("xero-status-connected");
+    await screen.findByTestId("xero-owed-operations");
+    expect(container.textContent).toContain("Xero");
+    expect(container.textContent).not.toContain("{{provider}}");
+  });
 });

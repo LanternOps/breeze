@@ -50,7 +50,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
       const data = await runAction<{ data: AnnotatedCustomer[] }>({
         request: () => fetchWithAuth(accountingPath(provider, "/customers")),
         errorFallback: t(
-          "quickbooksCustomerImport.failedToLoadQuickBooksCustomers", { provider: providerName },
+          "accountingCustomerImport.failedToLoadProviderCustomers", { provider: providerName },
         ),
         onUnauthorized,
       });
@@ -76,7 +76,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
             method: "POST",
             body: JSON.stringify({ customerIds }),
           }),
-        errorFallback: t("quickbooksCustomerImport.failedToImportCustomers", { provider: providerName }),
+        errorFallback: t("accountingCustomerImport.failedToImportCustomers", { provider: providerName }),
         onUnauthorized,
       });
       const s = res.data;
@@ -115,7 +115,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
     >
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">
-          {t("quickbooksCustomerImport.importCustomers", { provider: providerName })}
+          {t("accountingCustomerImport.importCustomers", { provider: providerName })}
         </h3>
         <button
           type="button"
@@ -125,10 +125,10 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
           className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
         >
           {loading
-            ? t("quickbooksCustomerImport.loading", { provider: providerName })
+            ? t("accountingCustomerImport.loading", { provider: providerName })
             : customers
               ? t("common:actions.refresh")
-              : t("quickbooksCustomerImport.loadCustomers", { provider: providerName })}
+              : t("accountingCustomerImport.loadCustomers", { provider: providerName })}
         </button>
       </div>
 
@@ -137,7 +137,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
           className="mt-4 text-sm text-gray-500"
           data-testid={`${provider}-import-empty`}
         >
-          {t("quickbooksCustomerImport.noCustomersFoundInQuickBooks", { provider: providerName })}
+          {t("accountingCustomerImport.noCustomersFoundInProvider", { provider: providerName })}
         </p>
       )}
 
@@ -153,7 +153,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
                   <input
                     type="checkbox"
                     data-testid={`${provider}-import-select-all`}
-                    aria-label={t("quickbooksCustomerImport.selectAll", { provider: providerName })}
+                    aria-label={t("accountingCustomerImport.selectAll", { provider: providerName })}
                     checked={
                       importable.length > 0 &&
                       importable.every((c) => selection.has(c.id))
@@ -162,7 +162,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
                   />
                 </th>
                 <th>{t("common:labels.name")}</th>
-                <th>{t("quickbooksCustomerImport.email", { provider: providerName })}</th>
+                <th>{t("accountingCustomerImport.email", { provider: providerName })}</th>
                 <th />
               </tr>
             </thead>
@@ -190,7 +190,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
                         data-testid={`${provider}-import-badge-${c.id}`}
                         className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700"
                       >
-                        {t("quickbooksCustomerImport.alreadyImported", { provider: providerName })}
+                        {t("accountingCustomerImport.alreadyImported", { provider: providerName })}
                       </span>
                     )}
                   </td>
@@ -208,8 +208,8 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               {importing
-                ? t("quickbooksCustomerImport.importing", { provider: providerName })
-                : t("quickbooksCustomerImport.importSelected", { provider: providerName,
+                ? t("accountingCustomerImport.importing", { provider: providerName })
+                : t("accountingCustomerImport.importSelected", { provider: providerName,
                     count: selection.size,
                   })}
             </button>
@@ -221,7 +221,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
               data-testid={`${provider}-import-failures`}
             >
               <p className="text-sm font-medium text-red-800">
-                {t("quickbooksCustomerImport.customerFailedCount", { provider: providerName,
+                {t("accountingCustomerImport.customerFailedCount", { provider: providerName,
                   count: failures.length,
                 })}
               </p>

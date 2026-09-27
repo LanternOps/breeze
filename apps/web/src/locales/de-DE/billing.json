@@ -1942,19 +1942,19 @@
       },
       "reverseError": "Die Zahlung konnte nicht rückgängig gemacht werden.",
       "reverseSuccess": "Zahlung storniert",
-      "reverseInQuickbooksToo": "Stornieren Sie diese Zahlung auch in QuickBooks",
       "sendLink": "Zahlungslink senden",
       "setUp": "Einrichten",
       "shareLinkPrompt": "Teilen Sie diesen Zahlungslink mit Ihrem Kunden:",
       "stripeNudge": "Verbinden Sie Stripe, um Online-Kartenzahlungen zu akzeptieren.",
       "title": "Zahlungen",
       "viaStripe": "über Stripe",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "über QuickBooks",
-      "inQuickbooks": "In QuickBooks vorhanden",
-      "syncingToQuickbooks": "Wird synchronisiert…",
-      "quickbooksSyncFailed": "QuickBooks-Synchronisierung fehlgeschlagen",
-      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren.",
+      "provider": "{{provider}}",
+      "viaProvider": "über {{provider}}",
+      "inProvider": "In {{provider}} vorhanden",
+      "syncingToProvider": "Wird synchronisiert…",
+      "providerSyncFailed": "{{provider}}-Synchronisierung fehlgeschlagen",
+      "reverseInProviderToo": "Stornieren Sie diese Zahlung auch in {{provider}}"
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",
@@ -1994,22 +1994,22 @@
       "error": "Link konnte nicht zurückgesetzt werden"
     },
     "accountingSync": {
-      "title": "QuickBooks-Synchronisierung",
+      "title": "{{provider}}-Synchronisierung",
       "status": {
         "pending": "Noch nicht übertragen",
         "synced": "Synchronisiert",
         "error": "Synchronisierung fehlgeschlagen",
         "synced_with_tax_variance": "Synchronisiert mit Steuerabweichung"
       },
-      "taxVarianceHint": "QuickBooks hat eine abweichende Steuersumme berechnet. Vergleichen Sie beide Datensätze, bevor Sie die Periode abschließen.",
-      "docNumber": "QuickBooks-Beleg {{docNumber}}",
+      "taxVarianceHint": "{{provider}} hat eine abweichende Steuersumme berechnet. Vergleichen Sie beide Datensätze, bevor Sie die Periode abschließen.",
+      "docNumber": "{{provider}}-Beleg {{docNumber}}",
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
       "syncing": "Wird übertragen…",
-      "push": "An QuickBooks übertragen",
-      "pushed": "Rechnung an QuickBooks übertragen.",
-      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",
-      "voidedHint": "Diese Rechnung ist storniert — es gibt nichts an QuickBooks zu übertragen.",
-      "remoteDeletedHint": "Diese Rechnung wurde in QuickBooks gelöscht. Ein erneutes Übertragen würde ein Duplikat erzeugen — lösen Sie dies zuerst in QuickBooks."
+      "push": "An {{provider}} übertragen",
+      "pushed": "Rechnung an {{provider}} übertragen.",
+      "pushFailed": "Die Rechnung konnte nicht an {{provider}} übertragen werden.",
+      "voidedHint": "Diese Rechnung ist storniert — es gibt nichts an {{provider}} zu übertragen.",
+      "remoteDeletedHint": "Diese Rechnung wurde in {{provider}} gelöscht. Ein erneutes Übertragen würde ein Duplikat erzeugen — lösen Sie dies zuerst in {{provider}}."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2072,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Stornieren",
       "voidedVerb": "storniert",
-      "quickbooks": "An QuickBooks übertragen",
-      "quickbooksQueued": "{{enqueued}} für QuickBooks eingereiht",
-      "quickbooksQueuedPartial": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen",
-      "quickbooksQueuedFailed": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen, {{failed}} konnten nicht eingereiht werden",
-      "quickbooksFailed": "Die QuickBooks-Übertragung konnte nicht eingereiht werden. Erneut versuchen."
+      "pushToProvider": "An {{provider}} übertragen",
+      "providerQueued": "{{enqueued}} für {{provider}} eingereiht",
+      "providerQueuedPartial": "{{enqueued}} für {{provider}} eingereiht, {{skipped}} übersprungen",
+      "providerQueuedFailed": "{{enqueued}} für {{provider}} eingereiht, {{skipped}} übersprungen, {{failed}} konnten nicht eingereiht werden",
+      "providerFailed": "Die {{provider}}-Übertragung konnte nicht eingereiht werden. Erneut versuchen."
     },
     "bulkDelete": {
       "message": "{{count}} ausgewählte Rechnung(en) löschen? Es werden nur DRAFT-Rechnungen gelöscht; Dies kann nicht rückgängig gemacht werden.",

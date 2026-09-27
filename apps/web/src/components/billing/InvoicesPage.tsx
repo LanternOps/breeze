@@ -35,7 +35,7 @@ import { ROW_LINK_CLASS, writeHashFilters } from './shared/listChrome';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 import { currencyLabel, currencyOptions } from '../../lib/currencies';
 import { useStableT } from '@/lib/i18n/useStableT';
-import { accountingPath, useActivePushProvider } from '../../lib/accountingProviders';
+import { ACCOUNTING_PROVIDER_NAMES, accountingPath, useActivePushProvider } from '../../lib/accountingProviders';
 
 interface Organization {
   id: string;
@@ -388,7 +388,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     [bulk, loadInvoices, filters, t],
   );
 
-  // Bulk QuickBooks push (Phase C, Task 7). Deliberately NOT routed through
+  // Bulk accounting push (Phase C, Task 7). Deliberately NOT routed through
   // `runBulkInvoices`: the accounting route answers a bare
   // `{ enqueued, skipped, failed }` (no `data` envelope, no `succeeded`) and
   // only enqueues — the push itself happens later on the accounting-sync
@@ -402,6 +402,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   const pushSelectedToAccounting = useCallback(async () => {
     const invoiceIds = Array.from(bulk.selectedIds);
     if (invoiceIds.length === 0 || !pushProvider) return;
+    const providerName = ACCOUNTING_PROVIDER_NAMES[pushProvider];
     if (invoiceIds.length > BULK_ID_LIMIT) {
       showToast({ type: 'warning', message: t('invoicesPage.bulk.limit', { limit: BULK_ID_LIMIT }) });
       return;
@@ -418,24 +419,24 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
             method: 'POST',
             body: JSON.stringify({ invoiceIds }),
           }),
-        errorFallback: t('invoicesPage.bulk.quickbooksFailed'),
+        errorFallback: t('invoicesPage.bulk.providerFailed', { provider: providerName }),
         onUnauthorized: UNAUTHORIZED,
       });
       if (failed > 0) {
         showToast({
           type: 'warning',
-          message: t('invoicesPage.bulk.quickbooksQueuedFailed', { enqueued, skipped, failed }),
+          message: t('invoicesPage.bulk.providerQueuedFailed', { enqueued, skipped, failed, provider: providerName }),
         });
       } else {
         showToast(
           skipped > 0
-            ? { type: 'warning', message: t('invoicesPage.bulk.quickbooksQueuedPartial', { enqueued, skipped }) }
-            : { type: 'success', message: t('invoicesPage.bulk.quickbooksQueued', { enqueued }) },
+            ? { type: 'warning', message: t('invoicesPage.bulk.providerQueuedPartial', { enqueued, skipped, provider: providerName }) }
+            : { type: 'success', message: t('invoicesPage.bulk.providerQueued', { enqueued, provider: providerName }) },
         );
       }
       bulk.clear();
     } catch (err) {
-      handleActionError(err, t('invoicesPage.bulk.quickbooksFailed'));
+      handleActionError(err, t('invoicesPage.bulk.providerFailed', { provider: providerName }));
     } finally {
       setBulkBusy(false);
     }
@@ -854,7 +855,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
               actions={[
                 ...(can('invoices', 'send') ? [{ key: 'issue', label: t('invoicesPage.bulk.issue'), disabled: bulkBusy, onClick: () => void runBulkInvoices('/invoices/bulk-issue', t('invoicesPage.bulk.issuedVerb')) }] : []),
                 ...(can('invoices', 'send') ? [{ key: 'void', label: t('invoicesPage.bulk.void'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
-                ...(canOfferBulkPush && pushProvider ? [{ key: pushProvider, label: t('invoicesPage.bulk.quickbooks'), disabled: bulkBusy, onClick: () => void pushSelectedToAccounting() }] : []),
+                ...(canOfferBulkPush && pushProvider ? [{ key: pushProvider, label: t('invoicesPage.bulk.pushToProvider', { provider: ACCOUNTING_PROVIDER_NAMES[pushProvider] }), disabled: bulkBusy, onClick: () => void pushSelectedToAccounting() }] : []),
                 ...(can('invoices', 'write') ? [{ key: 'delete', label: t('invoicesPage.bulk.deleteDrafts'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />

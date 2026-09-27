@@ -56,10 +56,10 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // +2: invoiceDetail.payments.provider / .viaProvider (accounting-provider
     // payment pull-back, Phase D) — the badge value IS the proper noun, and
     // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // so the translated preposition + {{provider}} is the correct wording here, not an untranslated
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 61, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
@@ -213,9 +213,9 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // +1: invoiceDetail.payments.provider (accounting-provider payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // every catalog. `.viaProvider` IS translated in this locale.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 47, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
@@ -362,10 +362,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // +2: invoiceDetail.payments.provider / .viaProvider (accounting-provider
     // payment pull-back, Phase D) — the badge value IS the proper noun, and
     // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // so the translated preposition + {{provider}} is the correct wording here, not an untranslated
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
@@ -536,10 +536,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // +2: invoiceDetail.payments.provider / .viaProvider (accounting-provider
     // payment pull-back, Phase D) — the badge value IS the proper noun, and
     // this locale already renders the parallel `viaStripe` as "via Stripe",
-    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // so the translated preposition + {{provider}} is the correct wording here, not an untranslated
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
@@ -720,9 +720,9 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // +1: invoiceDetail.payments.provider (accounting-provider payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // every catalog. `.viaProvider` IS translated in this locale.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
     'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
@@ -880,9 +880,9 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // +1: invoiceDetail.payments.provider (accounting-provider payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // every catalog. `.viaProvider` IS translated in this locale.
     'billing.json': 38, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
@@ -1007,9 +1007,9 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // +1: invoiceDetail.payments.provider (accounting-provider payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
-    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    // every catalog. `.viaProvider` IS translated in this locale.
     'billing.json': 23, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,

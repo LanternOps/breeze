@@ -1942,19 +1942,19 @@
       },
       "reverseError": "Impossibile stornare il pagamento.",
       "reverseSuccess": "Pagamento stornato",
-      "reverseInQuickbooksToo": "Storna questo pagamento anche in QuickBooks",
       "sendLink": "Invia link di pagamento",
       "setUp": "Configura",
       "shareLinkPrompt": "Condividi questo link di pagamento con il cliente:",
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
       "viaStripe": "tramite Stripe",
-      "quickbooks": "QuickBooks",
-      "viaQuickbooks": "tramite QuickBooks",
-      "inQuickbooks": "Presente in QuickBooks",
-      "syncingToQuickbooks": "Sincronizzazione…",
-      "quickbooksSyncFailed": "Sincronizzazione con QuickBooks non riuscita",
-      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo.",
+      "provider": "{{provider}}",
+      "viaProvider": "tramite {{provider}}",
+      "inProvider": "Presente in {{provider}}",
+      "syncingToProvider": "Sincronizzazione…",
+      "providerSyncFailed": "Sincronizzazione con {{provider}} non riuscita",
+      "reverseInProviderToo": "Storna questo pagamento anche in {{provider}}"
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",
@@ -1994,22 +1994,22 @@
       "error": "Impossibile reimpostare il link"
     },
     "accountingSync": {
-      "title": "Sincronizzazione QuickBooks",
+      "title": "Sincronizzazione {{provider}}",
       "status": {
         "pending": "Non ancora inviata",
         "synced": "Sincronizzata",
         "error": "Sincronizzazione non riuscita",
         "synced_with_tax_variance": "Sincronizzata con differenza d'imposta"
       },
-      "taxVarianceHint": "QuickBooks ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
-      "docNumber": "Documento QuickBooks {{docNumber}}",
+      "taxVarianceHint": "{{provider}} ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
+      "docNumber": "Documento {{provider}} {{docNumber}}",
       "lastSynced": "Ultima sincronizzazione: {{when}}",
       "syncing": "Sincronizzazione…",
-      "push": "Invia a QuickBooks",
-      "pushed": "Fattura inviata a QuickBooks.",
-      "pushFailed": "Impossibile inviare la fattura a QuickBooks.",
-      "voidedHint": "Questa fattura è annullata — non c'è nulla da inviare a QuickBooks.",
-      "remoteDeletedHint": "Questa fattura è stata eliminata in QuickBooks. Inviarla di nuovo creerebbe un duplicato — risolvi prima la situazione in QuickBooks."
+      "push": "Invia a {{provider}}",
+      "pushed": "Fattura inviata a {{provider}}.",
+      "pushFailed": "Impossibile inviare la fattura a {{provider}}.",
+      "voidedHint": "Questa fattura è annullata — non c'è nulla da inviare a {{provider}}.",
+      "remoteDeletedHint": "Questa fattura è stata eliminata in {{provider}}. Inviarla di nuovo creerebbe un duplicato — risolvi prima la situazione in {{provider}}."
     }
   },
   "invoiceDocument": {
@@ -2072,11 +2072,11 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Storna",
       "voidedVerb": "stornate",
-      "quickbooks": "Invia a QuickBooks",
-      "quickbooksQueued": "{{enqueued}} in coda per QuickBooks",
-      "quickbooksQueuedPartial": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate",
-      "quickbooksQueuedFailed": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate, {{failed}} non accodate",
-      "quickbooksFailed": "Impossibile accodare l'invio a QuickBooks. Riprova."
+      "pushToProvider": "Invia a {{provider}}",
+      "providerQueued": "{{enqueued}} in coda per {{provider}}",
+      "providerQueuedPartial": "{{enqueued}} in coda per {{provider}}, {{skipped}} ignorate",
+      "providerQueuedFailed": "{{enqueued}} in coda per {{provider}}, {{skipped}} ignorate, {{failed}} non accodate",
+      "providerFailed": "Impossibile accodare l'invio a {{provider}}. Riprova."
     },
     "bulkDelete": {
       "message": "Eliminare {{count}} fatture selezionate? Verranno eliminate solo le fatture in stato DRAFT; l'operazione non può essere annullata.",

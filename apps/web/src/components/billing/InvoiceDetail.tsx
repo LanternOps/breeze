@@ -68,6 +68,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     canPushInvoices && can('accounting', 'manage') && !detail.accountingSync,
   );
   const syncProvider = detail.accountingSync?.provider ?? pushProvider;
+  // Display name for the {{provider}} interpolation on payment-row sync
+  // badges. Those badges only render for a Breeze-origin payment that has
+  // actually been pushed (`p.accountingSync` set), which only happens once
+  // `syncProvider` is known — the QuickBooks fallback here is defensive, not
+  // a case the current (QuickBooks-only) test suite can hit.
+  const syncProviderName = ACCOUNTING_PROVIDER_NAMES[syncProvider ?? 'quickbooks'];
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -265,7 +271,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         onUnauthorized: UNAUTHORIZED,
       });
       showToast(result.quickbooksRecordUntouched
-        ? { type: 'warning', message: t('invoiceDetail.payments.reverseInQuickbooksToo') }
+        ? { type: 'warning', message: t('invoiceDetail.payments.reverseInProviderToo', { provider: syncProviderName }) }
         : { type: 'success', message: t('invoiceDetail.payments.reverseSuccess') });
       setReversePayment(null);
       refresh();
@@ -274,7 +280,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     } finally {
       setBusy(false);
     }
-  }, [busy, invoice.id, refresh, t]);
+  }, [busy, invoice.id, refresh, t, syncProviderName]);
 
   // Revoke every issued public view-and-pay link; the next send/copy dispenses
   // a fresh url. Rare action — for a link forwarded to the wrong hands.
@@ -705,10 +711,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           title={p.accountingSync.lastError ?? undefined}
                         >
                           {p.accountingSync.status === 'error'
-                            ? t('invoiceDetail.payments.quickbooksSyncFailed')
+                            ? t('invoiceDetail.payments.providerSyncFailed', { provider: syncProviderName })
                             : p.accountingSync.status === 'pending'
-                              ? t('invoiceDetail.payments.syncingToQuickbooks')
-                              : t('invoiceDetail.payments.inQuickbooks')}
+                              ? t('invoiceDetail.payments.syncingToProvider', { provider: syncProviderName })
+                              : t('invoiceDetail.payments.inProvider', { provider: syncProviderName })}
                         </span>
                       )}
                     </span>
