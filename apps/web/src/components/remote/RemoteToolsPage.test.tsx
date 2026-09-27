@@ -143,7 +143,7 @@ describe('RemoteToolsPage tab hash persistence (#4512)', () => {
 // "Processes 0 / No Data", indistinguishable from a genuinely idle box. The
 // empty state must stay reserved for a real 200 with zero rows.
 describe('RemoteToolsPage Processes tab surfaces an unavailable device (#4935)', () => {
-  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'DEVICE_OFFLINE' };
 
   const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
     ({
@@ -352,7 +352,7 @@ describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => 
       mockServicesRoutes(
         makeServiceListBody(initialStatus),
         action,
-        makeStatusResponse({ error: serverMessage, code: 'agent_execution_failed' }, false, 500),
+        makeStatusResponse({ error: serverMessage, code: 'AGENT_EXECUTION_FAILED' }, false, 500),
       );
 
       window.location.hash = '#services';
@@ -392,7 +392,7 @@ describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => 
 // symptom, just on a different tab. ServicesManager now takes a `loadError`
 // prop, mirroring ProcessManager.
 describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 2026-09-08 row 11)', () => {
-  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'DEVICE_OFFLINE' };
 
   const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
     ({
@@ -452,7 +452,7 @@ describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 202
 // (sweep 2026-09-08 row 11): fetchTasks discarded the error and ScheduledTasks
 // had no loadError prop at all.
 describe('RemoteToolsPage Scheduled Tasks tab surfaces an unavailable device (sweep 2026-09-08 row 11)', () => {
-  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'DEVICE_OFFLINE' };
 
   const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
     ({
