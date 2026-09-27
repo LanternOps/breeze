@@ -1551,6 +1551,25 @@ export class QuickbooksProvider implements AccountingProvider {
     );
 
     const text = await response.text();
+    if (response.status === 429) {
+      // A throttled token endpoint often answers with an empty or HTML body, so
+      // a 429 must not depend on JSON.parse to be recognised: without a status
+      // the boundary would classify the SyntaxError as a plain transient. Every
+      // other status keeps the historical parse-first order below.
+      let throttled: QboTokenResponse = {};
+      try {
+        throttled = text ? JSON.parse(text) as QboTokenResponse : {};
+      } catch {
+        // Not JSON — the status alone classifies it.
+      }
+      const err = new Error(throttled.error_description || throttled.error || 'QuickBooks token request failed with 429');
+      Object.assign(err, {
+        status: 429,
+        qboError: throttled.error,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')) ?? 60_000,
+      });
+      throw err;
+    }
     const parsed = text ? JSON.parse(text) as QboTokenResponse : {};
     if (!response.ok) {
       const err = new Error(parsed.error_description || parsed.error || `QuickBooks token request failed with ${response.status}`);
