@@ -293,6 +293,11 @@ func TestRetryTransient(t *testing.T) {
 // binary by absolute path, the same rule win_boot.go's hostSystemTool
 // already applies to bcdboot.exe/dism.exe — nothing resolves via PATH.
 func TestFormatVolume_UsesHostSystem32FormatCom(t *testing.T) {
+	// Fix round 1 / MINOR 5: pin hostWindowsDir so the expected
+	// C:\Windows\System32\format.com path does not depend on the actual
+	// runner's real Windows directory (native Windows CI could report
+	// something other than C:\Windows).
+	withHostWindowsDir(t, "")
 	sys := newFakeWinSystem(t.TempDir())
 	assign := func(string) (string, func() error, error) {
 		return "Q", func() error { return nil }, nil

@@ -226,12 +226,29 @@ func (r *run) winReattach(ctx context.Context) error {
 		// them, so unlike winTeardown's espLetterRelease path, the only way
 		// to find them is the live volume list itself. Warn-only: a letter
 		// that fails to release does not block the resume.
+		//
+		// Fix round 1 / MINOR 1: WaitForVolumes' DriveLetter snapshot can go
+		// stale by the time this loop runs (the OS could reassign the
+		// letter between the two calls), so confirm on the real seam that
+		// the letter still maps to the volume we saw before unmounting it —
+		// unmounting a letter that has since moved onto some other volume
+		// would rip that volume's mount out from under it instead.
 		for _, v := range vols {
 			if v.DriveLetter == "" {
 				continue
 			}
-			if err := r.opts.WinSystem.UnmountVolume(v.DriveLetter + ":"); err != nil {
-				r.warn("reclaim leaked drive letter %s:: %v", v.DriveLetter, err)
+			letter := v.DriveLetter + ":"
+			current, err := r.opts.WinSystem.VolumeForLetter(letter)
+			if err != nil {
+				r.warn("reclaim leaked drive letter %s: confirm current volume: %v", letter, err)
+				continue
+			}
+			if current != v.GUIDPath {
+				r.warn("drive letter %s no longer maps to the volume we saw (now %s); not reclaiming it", letter, current)
+				continue
+			}
+			if err := r.opts.WinSystem.UnmountVolume(letter); err != nil {
+				r.warn("reclaim leaked drive letter %s: %v", letter, err)
 			}
 		}
 	}
@@ -244,8 +261,10 @@ func (r *run) winReattach(ctx context.Context) error {
 // winTeardown releases every Windows-host resource this run holds except
 // the VHDX itself (teardown's r.detach, which runs after this): loaded
 // hives, the ESP's temporary letter, then the folder mount points —
-// ESP/Recovery first, root last; a root that will not unmount sets
-// r.releaseErr (the VHDX would still be in use). No-op on Linux runs.
+// Recovery first, root last (the ESP is never folder-mounted, ruling C1, so
+// there is no ESP mount to unmount here — see row 7's removal of the dead
+// espDir field); a root that will not unmount sets r.releaseErr (the VHDX
+// would still be in use). No-op on Linux runs.
 func (r *run) winTeardown() {
 	if r.opts.WinSystem == nil {
 		return

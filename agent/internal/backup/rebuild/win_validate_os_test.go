@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
@@ -119,18 +118,21 @@ func TestValidateOSState_MissingESPFileFails(t *testing.T) {
 // would be actively misleading for, say, a permissions error.
 func TestValidateOSState_ESPStatErrorIsWrappedNotFlattenedToMissing(t *testing.T) {
 	r, _, _ := newValidateOSRun(t) // no ESP files
-	// EFI/Microsoft/Boot exists as a FILE, so Stat(.../Boot/BCD) fails with
-	// ENOTDIR, not ErrNotExist.
-	bootPath := filepath.Join(r.espVolume, "EFI", "Microsoft", "Boot")
-	if err := os.MkdirAll(filepath.Dir(bootPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(bootPath, []byte("not a directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Fix round 1 / IMPORTANT 1: inject a non-ErrNotExist error through the
+	// statESPFile seam instead of provoking one from a real filesystem
+	// (e.g. by putting a file where a directory should be). The exact
+	// syscall a broken path component produces is not portable — on native
+	// Windows it can be ERROR_PATH_NOT_FOUND, which itself satisfies
+	// fs.ErrNotExist, or ERROR_DIRECTORY, which is not syscall.ENOTDIR —
+	// so a real-filesystem trick is not deterministic across OSes/CI.
+	injected := errors.New("simulated non-ErrNotExist stat failure")
+	prev := statESPFile
+	statESPFile = func(string) (os.FileInfo, error) { return nil, injected }
+	t.Cleanup(func() { statESPFile = prev })
+
 	err := validateOSState(context.Background(), r)
-	if err == nil || !errors.Is(err, syscall.ENOTDIR) {
-		t.Fatalf("err = %v, want it to wrap ENOTDIR", err)
+	if err == nil || !errors.Is(err, injected) {
+		t.Fatalf("err = %v, want it to wrap the injected error", err)
 	}
 	if strings.Contains(err.Error(), "missing") {
 		t.Fatalf("err = %v, must not say \"missing\" for a non-ErrNotExist Stat failure", err)

@@ -13,7 +13,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
-// The boot tests pin SystemRoot to a non-default value (X:\Windows, as in
+// The boot tests pin the hostWindowsDir seam (18b row 6; fix round 1 MINOR
+// 4 — this comment used to say "pin SystemRoot" from before hostSystemTool
+// switched to hostWindowsDir) to a non-default value (X:\Windows, as in
 // WinPE) so a tool resolved any other way — PATH (the fake's LookPath
 // answers C:\PATH\<name>), a hard-coded C:\Windows, the restored tree —
 // shows up in argv.

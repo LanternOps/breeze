@@ -235,6 +235,64 @@ func TestRun_ResumeReclaimsLeakedDriveLetters(t *testing.T) {
 	}
 }
 
+// Fix round 1 / MINOR 1: between WaitForVolumes observing a leaked drive
+// letter and the reclaim loop running, the OS could reassign that letter to
+// a different volume. winReattach must reconfirm on the real seam
+// (VolumeForLetter) before unmounting — reclaiming a letter that now maps
+// elsewhere would rip that OTHER volume's mount out from under it.
+func TestRun_ResumeSkipsLetterReclaimWhenLetterPointsElsewhere(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	opts.SkipBoot = false
+	res1, _ := Run(context.Background(), opts)
+	if res1 == nil || !phaseCompleted(res1, PhaseRestore) || res1.Plan == nil {
+		t.Fatalf("first run did not get through restore: %+v", res1)
+	}
+	vols := sys.volumePathsForDisk(sys.vhdxDiskNumber[opts.Target.Path])
+	st := runState{
+		SnapshotID: "win-1", TargetKey: targetKey(opts.Target),
+		Completed: map[Phase]bool{PhasePreflight: true, PhaseProvision: true, PhaseRestore: true},
+		Platform:  "windows", HostOS: "windows", Plan: res1.Plan, Volumes: vols,
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	espGUIDPath := sys.volumeDirForPartition(t, 1)
+	sys.mu.Lock()
+	sys.letters[espGUIDPath] = "Y" // WaitForVolumes will report this letter
+	// But VolumeForLetter("Y:") answers a DIFFERENT volume — simulating the
+	// OS having reassigned Y: to something else in the interim.
+	sys.letterOverride = map[string]string{"Y": `\\?\Volume{reassigned}\`}
+	sys.cmds = nil
+	sys.mountLog = nil
+	sys.mu.Unlock()
+
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2 == nil || !res2.Resumed || res2.Status != "completed" {
+		t.Fatalf("resumed run: res=%+v err=%v", res2, err)
+	}
+	sys.mu.Lock()
+	cmds := append([]string(nil), sys.cmds...)
+	sys.mu.Unlock()
+	if len(countCalls(cmds, "UnmountVolume Y:")) != 0 {
+		t.Fatalf("cmds = %v, must NOT unmount Y: once it no longer maps to our volume", cmds)
+	}
+	found := false
+	for _, w := range res2.Warnings {
+		if strings.Contains(w, "Y:") && strings.Contains(w, "no longer maps") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want one about Y: no longer mapping to our volume", res2.Warnings)
+	}
+}
+
 func phaseCompleted(res *Result, ph Phase) bool {
 	for _, p := range res.Phases {
 		if p.Phase == ph && p.Status == PhaseCompleted {

@@ -1908,9 +1908,10 @@ jobs:
       # below; winhive green with no skips. ./internal/backup/bmr joined here
       # in 18b (#5499 W06d) once its one pre-existing native red,
       # TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink
-      # (asserted a POSIX symlink target; Windows' os.Readlink normalizes the
-      # separator on the way back out), was fixed to compare after
-      # filepath.ToSlash on Windows — the Linux assertion is unchanged.
+      # (asserted a POSIX symlink target; Windows' os.Symlink itself converts
+      # the "/"-separated target to "\" on write, so os.Readlink then
+      # faithfully reads it back with backslashes), was fixed to compare
+      # after filepath.ToSlash on Windows — the Linux assertion is unchanged.
       - name: Run Windows Go tests
         working-directory: agent
         env:

@@ -190,8 +190,9 @@ type closeCountingHandle struct {
 func (h closeCountingHandle) Close() error { *h.closed++; return nil }
 
 // winTeardown is the failure-path backstop: hives closed, ESP letter
-// released, recovery/ESP folder mounts removed before root; the run's
-// VHDX detach stays teardown's job (after winTeardown).
+// released, the recovery folder mount removed before root (the ESP is
+// never folder-mounted, ruling C1, so there is nothing to remove for it);
+// the run's VHDX detach stays teardown's job (after winTeardown).
 func TestWinTeardown_ReleasesEverythingRootLast(t *testing.T) {
 	dir := t.TempDir()
 	sys := newFakeWinSystem(dir)

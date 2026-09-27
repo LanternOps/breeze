@@ -688,6 +688,21 @@ func (w *winSystemWindows) AssignLetter(volumeGUIDPath string) (string, func() e
 	return "", nil, errors.New("no free drive letter Z..D available for the ESP")
 }
 
+// VolumeForLetter: GetVolumeNameForVolumeMountPointW(driveLetter\) ->
+// \\?\Volume{GUID}\. Used only to confirm a drive letter still maps to the
+// expected volume before reclaiming it (18b row 1 fix round 1, MINOR 1).
+func (w *winSystemWindows) VolumeForLetter(driveLetter string) (string, error) {
+	mountPointP, err := windows.UTF16PtrFromString(withTrailingBackslash(driveLetter))
+	if err != nil {
+		return "", err
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	if err := windows.GetVolumeNameForVolumeMountPoint(mountPointP, &buf[0], uint32(len(buf))); err != nil {
+		return "", fmt.Errorf("GetVolumeNameForVolumeMountPointW %s: %w", driveLetter, err)
+	}
+	return windows.UTF16ToString(buf), nil
+}
+
 func (w *winSystemWindows) FlushVolume(volumeGUIDPath string) error {
 	h, err := openDevice(volumeDevicePath(volumeGUIDPath), windows.GENERIC_READ|windows.GENERIC_WRITE)
 	if err != nil {

@@ -73,6 +73,14 @@ type WinSystem interface {
 	// AssignLetter is for the ESP only (bcdboot needs a volume letter, not
 	// a folder mount point) — first free letter Z..D.
 	AssignLetter(volumeGUIDPath string) (letter string, release func() error, err error)
+	// VolumeForLetter is GetVolumeNameForVolumeMountPointW: the volume GUID
+	// path currently mounted at driveLetter (e.g. "Y:"), or an error when
+	// nothing is mounted there. winReattach's leaked-letter reclaim (18b
+	// row 1, fix round 1 MINOR 1) uses it to confirm the letter still maps
+	// to the volume it saw before reclaiming it — between WaitForVolumes
+	// observing the letter and the reclaim call, the OS could have
+	// reassigned it to something else.
+	VolumeForLetter(driveLetter string) (string, error)
 	FlushVolume(volumeGUIDPath string) error
 	FreeSpace(dir string) (int64, error)
 	// LoadHive mounts hiveFile at HKLM\mountName under SeBackup/SeRestore

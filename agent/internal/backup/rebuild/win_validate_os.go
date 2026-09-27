@@ -31,6 +31,17 @@ import (
 // C1); the ESP is never folder-mounted. winMountTree sets r.espVolume on
 // fresh and resumed runs alike. The ESP's temporary drive letter (winBoot)
 // is left to winTeardown.
+// statESPFile is os.Stat's seam for the ESP file-presence check (fix round
+// 1: reviewer finding IMPORTANT 1). Real OS Stat errors for "a path
+// component is not a directory" are not portable across platforms — on
+// native Windows the exact syscall a broken component produces (e.g.
+// ERROR_PATH_NOT_FOUND, which itself satisfies fs.ErrNotExist, or
+// ERROR_DIRECTORY, which is not syscall.ENOTDIR) is filesystem/build
+// dependent, so a test that tries to provoke a specific non-ErrNotExist
+// error by mangling a real path is not deterministic across OSes or CI
+// runners. Tests inject an arbitrary error through this seam instead.
+var statESPFile = os.Stat
+
 func validateOSState(_ context.Context, r *run) error {
 	if err := r.closeWinHives(); err != nil {
 		return err
@@ -46,7 +57,7 @@ func validateOSState(_ context.Context, r *run) error {
 		filepath.Join("EFI", "Microsoft", "Boot", "bootmgfw.efi"),
 		filepath.Join("EFI", "Boot", "bootx64.efi"),
 	} {
-		if _, err := os.Stat(filepath.Join(r.espVolume, rel)); err != nil {
+		if _, err := statESPFile(filepath.Join(r.espVolume, rel)); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("ESP is missing %s after boot phase", rel)
 			}
