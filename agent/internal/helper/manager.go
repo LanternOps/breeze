@@ -135,6 +135,19 @@ func WithBackupServerURL(backupServerURL func() string) Option {
 	return func(m *Manager) { m.backupServerURL = backupServerURL }
 }
 
+// WithOnInstalled sets a callback run after the helper package is installed
+// and the new binary is verified on disk, before any session is (re)spawned
+// from it. It receives the installed binary's path. The agent wires it to the session broker's RefreshAllowedHashes so
+// the new binary's hash is allowlisted before its first IPC connection
+// (#7043); without it the broker's startup snapshot rejects a helper installed
+// after the agent started, and every helper update, until the agent restarts.
+//
+// It runs synchronously with the Manager's lock held, so it must not call
+// back into the Manager. It is not called when the install fails.
+func WithOnInstalled(fn func(binaryPath string)) Option {
+	return func(m *Manager) { m.onInstalled = fn }
+}
+
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
 type Manager struct {
 	mu         sync.Mutex
@@ -187,6 +200,9 @@ type Manager struct {
 	manifestKeys func() []string
 
 	requireManifestSigningKeyID func() bool
+
+	// onInstalled runs after a successful, verified install. See WithOnInstalled.
+	onInstalled func(binaryPath string)
 
 	// now is the clock for the abandon cooldown; nil means time.Now (tests inject).
 	now func() time.Time
@@ -819,6 +835,11 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 
 	log.Info("helper installed", "path", m.binaryPath, "version", version)
+	// The binary at an allowlisted path just changed. Let the session broker
+	// re-hash it before any session spawns the new build (#7043).
+	if m.onInstalled != nil {
+		m.onInstalled(m.binaryPath)
+	}
 	return nil
 }
 
