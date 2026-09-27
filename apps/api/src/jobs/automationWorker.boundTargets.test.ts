@@ -224,6 +224,9 @@ describe('managed automation event-target binding (#3824)', () => {
         eventType: 'alert.triggered',
         eventTimestamp: '2026-08-24T12:00:00.000Z',
       },
+      // #3189 — one run per (automation, event): a replayed trigger job gets
+      // the existing run back instead of minting a second one.
+      occurrenceKey: 'event:evt-1',
     });
     expect(createOptions.boundDeviceIds).toEqual(['dev-1']);
     expect(selectMock).toHaveBeenCalledTimes(2);

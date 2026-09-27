@@ -479,6 +479,10 @@ async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ r
     return { skipped: 'not_due' };
   }
 
+  // #3189 — the slot is the occurrence. A replay of this job (stalled-job
+  // recovery) gets the run the first attempt minted back, and the enqueue
+  // below then either dedupes on the stable `automation-run-<runId>` job id,
+  // resumes a half-dispatched run, or short-circuits a finished one.
   const { run, targetDeviceIds } = await createAutomationRunRecord({
     automation,
     triggeredBy: `schedule:${data.slotKey}`,
@@ -486,6 +490,7 @@ async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ r
       slotKey: data.slotKey,
       scanAt: data.scanAt,
     },
+    occurrenceKey: `schedule:${data.slotKey}`,
   });
 
   await enqueueAutomationRun(run.id, targetDeviceIds);
@@ -660,6 +665,9 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       eventTimestamp: data.eventTimestamp,
     },
     ...(boundDeviceIds ? { boundDeviceIds } : {}),
+    // #3189 — one run per (automation, event). Without an event id there is no
+    // occurrence identity to deduplicate on.
+    ...(data.eventId ? { occurrenceKey: `event:${data.eventId}` } : {}),
   });
 
   if (triggerContext) {
@@ -1076,6 +1084,7 @@ async function processTriggerConfigPolicySchedule(
       configPolicyId: assignedPolicyId,
       targetDeviceIds: winners.sort(),
       triggeredBy: `schedule:${data.slotKey}`,
+      occurrenceKey: `${cpAutomation.id}:schedule:${data.slotKey}`,
     },
     `cp-automation-run-${cpAutomation.id}-${assignedPolicyId}-${data.slotKey}`,
   );
@@ -1119,6 +1128,7 @@ async function processExecuteConfigPolicyRun(
     data.configPolicyId,
     data.targetDeviceIds,
     data.triggeredBy,
+    data.occurrenceKey ? { occurrenceKey: data.occurrenceKey } : {},
   );
 
   return { runId: result.runId };
@@ -1352,6 +1362,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
             configPolicyId: cpAssignedPolicyId,
             targetDeviceIds: [deviceId],
             triggeredBy: `config-policy-event:${event.type}`,
+            occurrenceKey: `${cpAutomation.id}:event:${deviceId}:${event.id}`,
           },
           `cp-automation-event-${cpAutomation.id}-${cpAssignedPolicyId}-${deviceId}-${event.id}`,
         );

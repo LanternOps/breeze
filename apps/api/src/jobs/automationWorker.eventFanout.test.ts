@@ -274,4 +274,32 @@ describe('automation execution DB context ownership', () => {
     expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(expectedShortSystemContexts);
   });
+
+  it('passes the job occurrence key through so a replayed config-policy run resumes instead of re-admitting (#3189)', async () => {
+    const data = {
+      type: 'execute-config-policy-run',
+      configPolicyAutomationId: '33333333-3333-4333-8333-333333333333',
+      configPolicyId: '44444444-4444-4444-8444-444444444444',
+      targetDeviceIds: ['22222222-2222-4222-8222-222222222222'],
+      triggeredBy: 'schedule:202609260200',
+      occurrenceKey: '33333333-3333-4333-8333-333333333333:schedule:202609260200',
+    };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: data.configPolicyAutomationId }]),
+        }),
+      }),
+    } as never);
+    createAutomationWorker();
+    await workerCapture.processor!({ name: 'execute-config-policy-run', data });
+
+    expect(executeConfigPolicyAutomationRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: data.configPolicyAutomationId }),
+      data.configPolicyId,
+      data.targetDeviceIds,
+      data.triggeredBy,
+      { occurrenceKey: data.occurrenceKey },
+    );
+  });
 });
