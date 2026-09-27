@@ -14,6 +14,7 @@ import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
   ringAutoApproveSchema,
+  scriptVerificationClaimSchema,
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
   SYSTEM_CLEANUP_ACTION_IDS,
@@ -116,6 +117,68 @@ export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefi
   if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
   if ((/^(create|update)_/.test(v.action) || v.action === 'set_default') && !v.data) ctx.addIssue({ code: 'custom', path: ['data'], message: 'data is required for writes' });
 });
+
+/**
+ * #7130: `execute_command`'s `payload` shape varies by `commandType`, but the
+ * SDK-exposed schema used to be a bare `z.record(z.string(), z.unknown())` —
+ * no keys, no `level` values — while the Go agent enforces a real vocabulary
+ * (`agent/internal/remote/tools/eventlogs.go` levelToNumber: critical, error,
+ * warning, information/info, verbose, or 1-5). A model guess that missed cost
+ * a full ~14s dispatch round-trip before the agent rejected it. Typing the
+ * known keys here — shared between the SDK tool() shape and toolInputSchemas
+ * below — surfaces the real vocabulary to the model AND rejects a bad `level`
+ * at `validateToolInput` before the command ever reaches the agent.
+ */
+export const executeCommandPayloadSchema = z.object({
+  // start_service / stop_service / restart_service
+  name: z.string().max(255).describe('start/stop/restart_service: the Windows service name.').optional(),
+  serviceName: z.string().max(255).describe('Alias for name in service control commands.').optional(),
+  // kill_process
+  processName: z.string().max(255).describe('kill_process: process name to terminate (alternative to pid).').optional(),
+  pid: z.number().int().describe('kill_process: process ID to terminate.').optional(),
+  // file_list / file_read
+  path: z.string().max(4096).describe('file_list/file_read: filesystem path.').optional(),
+  // event_logs_query / event_logs_list
+  logName: z.string().max(255).describe('event_logs_query/list: Windows log name, e.g. "System" (default System).').optional(),
+  level: z.union([
+    z.enum(['critical', 'error', 'warning', 'information', 'info', 'verbose']),
+    z.number().int().min(1).max(5),
+  ]).describe('event_logs_query: severity filter — critical, error, warning, information (or "info"), verbose, or level number 1-5.').optional(),
+  source: z.string().max(255).describe('event_logs_query: filter by event source/provider name.').optional(),
+  eventId: z.number().int().describe('event_logs_query: filter by numeric event ID.').optional(),
+  query: z.string().max(2000).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
+  page: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+}).passthrough();
+
+export const executeCommandShape = {
+  deviceId: uuid,
+  commandType: z.enum([
+    'list_processes', 'kill_process',
+    'list_services', 'start_service', 'stop_service', 'restart_service',
+    'file_list', 'file_read',
+    'event_logs_list', 'event_logs_query',
+  ]),
+  payload: executeCommandPayloadSchema
+    .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, processName/pid for kill_process, path for file ops.')
+    .optional(),
+};
+
+/**
+ * #7130: `set_device_context.summary` is `varchar(255)` in the DB; the SDK
+ * schema enforced max(255) via a bare zod constraint with no explanatory
+ * text, so a caller who overflowed it got an SDK-level `too_big` rejection
+ * with no round-trip context. Shared between toolInputSchemas and the SDK
+ * tool() shape so the limit and its description can't drift apart.
+ */
+export const setDeviceContextShape = {
+  deviceId: uuid,
+  contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
+  summary: z.string().min(1).max(255)
+    .describe('Brief summary, max 255 chars — longer text is rejected, not truncated; put extra detail in details instead.'),
+  details: z.record(z.string(), z.unknown()).optional(),
+  expiresInDays: z.number().int().positive().max(365).optional(),
+};
 
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
@@ -906,16 +969,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     }
   }),
 
-  execute_command: z.object({
-    deviceId: uuid,
-    commandType: z.enum([
-      'list_processes', 'kill_process',
-      'list_services', 'start_service', 'stop_service', 'restart_service',
-      'file_list', 'file_read',
-      'event_logs_list', 'event_logs_query',
-    ]),
-    payload: z.record(z.string(), z.unknown()).optional(),
-  }),
+  execute_command: z.object(executeCommandShape),
 
   // AI script authoring (spec §4.2). The full propose_script input contract
   // lives in @breeze/shared so the tool handler, a future HTTP route and the
@@ -1268,13 +1322,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeResolved: z.boolean().optional().default(false),
   }),
 
-  set_device_context: z.object({
-    deviceId: uuid,
-    contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
-    summary: z.string().min(1).max(255),
-    details: z.record(z.string(), z.unknown()).optional(),
-    expiresInDays: z.number().int().positive().max(365).optional(),
-  }),
+  set_device_context: z.object(setDeviceContextShape),
 
   resolve_device_context: z.object({
     contextId: uuid,
