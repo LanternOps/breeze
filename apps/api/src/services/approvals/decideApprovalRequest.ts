@@ -395,6 +395,23 @@ async function resolveGrantSession(
 }
 
 /**
+ * Audit fields for an approve that was allowed below its required assurance
+ * floor because the partner is not enforcing approver assurance (step-up
+ * design: grace downgrades are flagged explicitly). Empty when the decision
+ * met its floor, so the field is only ever present when it is true. The key
+ * style follows the payload it is spread into.
+ */
+function graceDowngradeAuditDetails(
+  assurance: AssuranceDecision,
+  style: 'camel' | 'snake',
+): Record<string, boolean | number> {
+  if (!assurance.graceDowngrade) return {};
+  return style === 'camel'
+    ? { assuranceDowngradedGrace: true, requiredAssuranceLevel: assurance.requiredLevel }
+    : { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel };
+}
+
+/**
  * #5601: redeem a presented grant into the assurance its original ceremony
  * achieved, or `null` (→ the caller's 403) on any failure.
  *
@@ -1052,10 +1069,16 @@ export async function decideApprovalRequest(
   // single-use WebAuthn challenge / mobile nonce cannot be consumed again per
   // row. Nothing else about this handler changes; see `preverifiedAssurance`
   // on `DecideApprovalInput` for the full list of gates that still run.
-  const isPartnerEnforcingForSupervised =
-    !input.preverifiedAssurance && isSupervisedSelfDecide && status === 'approved'
-      ? isEnforcing(await loadPartnerPolicy(input.auth.partnerId ?? null), new Date())
-      : false;
+  const checksSupervisedPolicy =
+    !input.preverifiedAssurance && isSupervisedSelfDecide && status === 'approved';
+  // Kept (not just the boolean) so the plain-click shortcut below can apply
+  // the partner's raise-only floor when it records a grace downgrade.
+  const supervisedPartnerPolicy = checksSupervisedPolicy
+    ? await loadPartnerPolicy(input.auth.partnerId ?? null)
+    : null;
+  const isPartnerEnforcingForSupervised = checksSupervisedPolicy
+    ? isEnforcing(supervisedPartnerPolicy, new Date())
+    : false;
   // #5601: a presented grant suppresses the shortcut for the same reason a
   // presented proof does — a credential the caller offered must be ADJUDICATED
   // (accepted, or refused with 403), never silently dropped on the floor while
@@ -1072,6 +1095,20 @@ export async function decideApprovalRequest(
     assurance = input.preverifiedAssurance;
   } else if (skipAssuranceLadder) {
     assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
+    if (status === 'approved') {
+      // The shortcut only runs when the partner is NOT enforcing, so an
+      // approve below the (partner-raised) floor is exactly the ladder's
+      // "under-assured but allowed" case. Flag it the same way so the
+      // downgrade is recorded explicitly rather than only being derivable
+      // from level < floor. The recorded level/factor are untouched.
+      assurance.requiredLevel = requiredAssurance(
+        existing.riskTier as RiskTier,
+        supervisedPartnerPolicy?.floorOverrides ?? null,
+      );
+      if (assurance.decidedAssuranceLevel < assurance.requiredLevel) {
+        assurance.graceDowngrade = true;
+      }
+    }
   } else if (presentedGrantId !== undefined && proof === undefined && status === 'approved') {
     // #5601 REDEEM PATH. Replaces the ceremony, never the authorization: every
     // other gate in this handler (human principal, row pending/expiry, live
@@ -1339,6 +1376,7 @@ export async function decideApprovalRequest(
                   source: 'mobile_approval',
                   approval_request_id: updated.id,
                   ...(status === 'denied' && reason ? { reason } : {}),
+                  ...graceDowngradeAuditDetails(assurance, 'snake'),
                 },
                 occurredAt: now,
               });
@@ -1557,6 +1595,9 @@ export async function decideApprovalRequest(
         decidedAssuranceLevel: assurance.decidedAssuranceLevel,
         decidedVia: assurance.decidedVia,
         ...(supervisedSelfApproval ? { approvalMethod: 'supervised_self' as const } : {}),
+        // Approved below the required floor because the partner is not
+        // enforcing approver assurance (off, or inside its grace window).
+        ...graceDowngradeAuditDetails(assurance, 'camel'),
         // #5601: a redeemed row keeps the honest level/factor above (they
         // describe a real ceremony), so THIS is the only thing that says a
         // second ceremony did not happen. Emitted only on reuse, so a fresh
