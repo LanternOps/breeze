@@ -470,6 +470,28 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(0);
   });
 
+  it('#7132: every denylisted software provider is zeroed out at the aggregation chokepoint, not just at the predicate', () => {
+    // The bug was about STORED/aggregated stamps, not just the isolated
+    // predicate — prove each denylisted provider is excluded all the way
+    // through mergeRowsIntoDailyBuckets, the actual scoring path.
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { type: 'disk', severity: 'error', source: 'Volume Shadow Copy', eventId: '8224:1', timestamp: '2026-09-10T01:26:00.000Z' },
+          { type: 'memory', severity: 'error', source: 'Microsoft-Windows-DistributedCOM', eventId: '10010:1', timestamp: '2026-09-10T01:27:00.000Z' },
+          { type: 'disk', severity: 'error', source: 'Service Control Manager', eventId: '7000:1', timestamp: '2026-09-10T01:28:00.000Z' },
+          // One genuine hardware fault must still survive the same batch.
+          { type: 'disk', severity: 'critical', source: 'nvme', eventId: '11:1', timestamp: '2026-09-10T01:29:00.000Z' },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(1);
+  });
+
   it('tracks Breeze self service failures as a subset of serviceFailureCount', () => {
     const rows = [
       makeHistoryRow({

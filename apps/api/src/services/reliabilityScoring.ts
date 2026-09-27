@@ -861,8 +861,11 @@ const BARE_ID_STAMPED_EVENT_IDS = new Set([7, 11, 13, 15, 50, 51]);
 // event 13); it does nothing when the software provider's own event ID (here,
 // FilterManager's 3) was never one of the reused hardware IDs. Deny these
 // known-software providers outright, regardless of type or event ID, so
-// stored rows (and stragglers still on old binaries) self-heal on recompute —
-// mirrors #6713's agent-side fix for the same providers.
+// stored rows (and stragglers still on old binaries) self-heal on recompute.
+// This is server-side only — #6713 fixed the agent by requiring a
+// hardware-phrased message (memoryHardwarePhrases/diskHardwarePhrases in
+// agent/internal/collectors/reliability.go) rather than a source denylist, so
+// there is no equivalent list on the agent side to keep in sync with this one.
 const KNOWN_SOFTWARE_SOURCE_KEYWORDS = [
   'filtermanager',
   'volume shadow copy',

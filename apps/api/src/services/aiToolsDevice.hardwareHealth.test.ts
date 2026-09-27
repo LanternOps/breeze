@@ -13,8 +13,16 @@ it('checks access before the shared view and caps optional events',async()=>{
  expect(JSON.parse(await tool!.handler({deviceId:'id'},{} as any))).toHaveProperty('error');expect(m.view).not.toHaveBeenCalled();
  m.access.mockResolvedValue({device:{id:'id'}});m.view.mockResolvedValue({health:'ok'});
  await tool!.handler({deviceId:'id',includeEvents:true},{} as any);expect(m.view).toHaveBeenLastCalledWith('id',{eventLimit:50});
- await tool!.handler({deviceId:'id'},{} as any);expect(m.view).toHaveBeenLastCalledWith('id',{eventLimit:0});
+ const withoutFlag=JSON.parse(await tool!.handler({deviceId:'id'},{} as any));expect(m.view).toHaveBeenLastCalledWith('id',{eventLimit:0});
  expect(m.getReliability).not.toHaveBeenCalled();expect(m.getOffenders).not.toHaveBeenCalled();
+ expect(withoutFlag).not.toHaveProperty('reliability');expect(withoutFlag).not.toHaveProperty('hardwareOffenders30d');
+});
+it('#7132: reliability is null (not fetched-and-hidden) when the device has no computed score',async()=>{
+ const tools=new Map<string,AiTool>();registerDeviceTools(tools);const tool=tools.get('get_device_hardware_health');
+ m.access.mockResolvedValue({device:{id:'id'}});m.view.mockResolvedValue({health:'ok'});
+ m.getReliability.mockResolvedValue(null);m.getOffenders.mockResolvedValue({services:[],hardware:[],hangs:[]});
+ const result=JSON.parse(await tool!.handler({deviceId:'id',includeReliability:true},{} as any));
+ expect(result.reliability).toBeNull();expect(result.hardwareOffenders30d).toEqual([]);
 });
 it('#7132: includeReliability adds the score drivers and hardware offenders, never fetched otherwise',async()=>{
  const tools=new Map<string,AiTool>();registerDeviceTools(tools);const tool=tools.get('get_device_hardware_health');
