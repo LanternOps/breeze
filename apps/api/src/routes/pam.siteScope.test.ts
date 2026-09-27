@@ -72,6 +72,7 @@ vi.mock('../services/permissions', () => ({
     DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
     PAM_APPROVE: { resource: 'pam', action: 'approve' },
     PAM_MANAGE_POLICY: { resource: 'pam', action: 'manage_policy' },
+    AUDIT_EXPORT: { resource: 'audit', action: 'export' },
   },
   canAccessSite: () => true,
 }));
