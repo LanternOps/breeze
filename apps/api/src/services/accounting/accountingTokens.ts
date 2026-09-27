@@ -80,6 +80,16 @@ function freshAccessTokenFromRow(row: LockedConnectionRow, now: number): string 
 type RefreshTokens = Awaited<ReturnType<ReturnType<typeof getAccountingProvider>['refresh']>>;
 
 /**
+ * Returned (never thrown) by a transaction that has just written
+ * `status = 'reauth_required'`. Throwing `ReauthRequiredError` inside the
+ * transaction would roll that write back — the connection would stay
+ * `connected` and every push/pull would retry into the same failure (#7189).
+ * The transaction returns this instead so it COMMITS, and the caller throws
+ * once it is outside both `withSystemDbAccessContext` and `db.transaction`.
+ */
+const REAUTH_REQUIRED = { reauthRequired: true } as const;
+
+/**
  * `provider.refresh()` failed. `invalid_grant` normally means the refresh
  * token was permanently revoked — but it can ALSO mean we lost a concurrent
  * refresh race: a peer rotated the connection's refresh token between our
@@ -103,10 +113,11 @@ async function handleRefreshFailure(
 
   // Its OWN short system transaction, for the same reason A and B below are:
   // entered with no ambient context this is a real transaction that commits on
-  // its own, so the `reauth_required` status it writes survives the throw two
-  // lines later. Joined onto a caller's context it would be a savepoint and the
-  // status would roll back with the caller's transaction.
-  return withSystemDbAccessContext(() => db.transaction(async (tx) => {
+  // its own. Joined onto a caller's context it would be a savepoint and the
+  // status would roll back with the caller's transaction. The genuine-
+  // revocation branch RETURNS `REAUTH_REQUIRED` rather than throwing, so the
+  // `reauth_required` write commits; the throw happens below, outside it.
+  const outcome = await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
     const currentRefreshToken = decryptRowRefreshToken(row);
 
@@ -139,8 +150,11 @@ async function handleRefreshFailure(
       error: err instanceof Error ? err.message : String(err),
     });
     await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token is invalid or expired');
-    throw new ReauthRequiredError();
+    return REAUTH_REQUIRED;
   }), 'accountingTokens.refreshFailureRecheck');
+
+  if (typeof outcome !== 'string') throw new ReauthRequiredError();
+  return outcome;
 }
 
 /**
@@ -150,7 +164,9 @@ async function handleRefreshFailure(
  * below opens its own short `withSystemDbAccessContext` transaction so that the
  * row lock is released — and the token rotation committed — before and after
  * the `provider.refresh()` network call, and so that a `reauth_required` status
- * write survives the `ReauthRequiredError` thrown immediately after it. Joined
+ * write commits on its own. (A block that writes that status returns
+ * `REAUTH_REQUIRED` and the `ReauthRequiredError` is thrown only after the
+ * block has committed — a throw inside it would roll the write back.) Joined
  * onto a caller's transaction every one of those blocks degrades to a savepoint:
  * the lock would then genuinely span the fetch (the #1105 hold this module
  * claims to avoid) and the status writes would roll back with the caller.
@@ -218,12 +234,14 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     const lockedRefreshExpiresAt = row.refreshTokenExpiresAt?.getTime() ?? 0;
     if (!lockedRefreshToken || lockedRefreshExpiresAt <= now) {
       await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired');
-      throw new ReauthRequiredError();
+      // Returned, not thrown, so the status write above commits (#7189).
+      return REAUTH_REQUIRED;
     }
 
     return { needsRefresh: true as const, refreshToken: lockedRefreshToken };
   }), 'accountingTokens.captureRefresh');
 
+  if ('reauthRequired' in captured) throw new ReauthRequiredError();
   if (!captured.needsRefresh) return captured.accessToken;
 
   let tokens: RefreshTokens;
