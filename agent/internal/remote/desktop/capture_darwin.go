@@ -384,8 +384,11 @@ int sckStartStream(int displayIndex, int refreshFilter, long *outNSErrorCode) {
     g_streamStopCode = 0;
     os_unfair_lock_unlock(&g_slotLock);
 
-    // [[SCStream alloc] initWithFilter:configuration:delegate:]
-    id (*initStream)(id, SEL, id, id, id) = (void*)objc_msgSend;
+    // [[SCStream alloc] initWithFilter:configuration:delegate:]. Typed with
+    // init-family ownership (consumes self, returns +1) so ARC does not
+    // release the alloc'd object again if init fails and frees it.
+    typedef id __attribute__((ns_returns_retained)) (*BreezeInitStreamFn)(id __attribute__((ns_consumed)), SEL, id, id, id);
+    BreezeInitStreamFn initStream = (BreezeInitStreamFn)objc_msgSend;
     id stream = initStream([SCStreamClass alloc], NSSelectorFromString(@"initWithFilter:configuration:delegate:"),
                            g_filter, g_config, output);
     if (stream == nil) return 12;

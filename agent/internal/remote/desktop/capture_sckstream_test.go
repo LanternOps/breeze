@@ -22,6 +22,7 @@ type fakeSCKStream struct {
 	startErrs  []error // consumed one per start(); nil = success
 	seq        uint64
 	copies     int
+	copyErr    error // returned once by the next copyLatest
 	stopErr    error
 	dispChange bool
 
@@ -67,6 +68,10 @@ func (f *fakeSCKStream) frameSeq() uint64 {
 
 func (f *fakeSCKStream) copyLatest() (*image.RGBA, uint64, error) {
 	f.copies++
+	if err := f.copyErr; err != nil {
+		f.copyErr = nil
+		return nil, 0, err
+	}
 	return image.NewRGBA(image.Rect(0, 0, 4, 2)), f.seq, nil
 }
 
@@ -381,5 +386,66 @@ func TestSCKStreamController_LatestStartsStreamOnFirstUse(t *testing.T) {
 	}
 	if len(be.starts) != 1 {
 		t.Fatalf("starts = %v", be.starts)
+	}
+}
+
+func TestSCKStreamController_CopyFailureTearsDownAndArmsBackoff(t *testing.T) {
+	c, be, clk := newTestSCKController(t)
+	if _, err := c.capture(); err != nil {
+		t.Fatal(err)
+	}
+	be.copyErr = errors.New("pixel buffer lock failed")
+	be.newFrame()
+	clk.advance(time.Millisecond)
+	if img, err := c.capture(); err == nil || img != nil {
+		t.Fatalf("capture with a failing copy = (%v, %v), want the copy error", img, err)
+	}
+	if be.running || be.stops != 1 {
+		t.Fatalf("running=%v stops=%d, want the stream torn down", be.running, be.stops)
+	}
+	if c.backoff != sckBackoffMin {
+		t.Fatalf("backoff = %v, want %v armed", c.backoff, sckBackoffMin)
+	}
+}
+
+func TestSCKStreamController_LatestDuringOutageIsAnError(t *testing.T) {
+	c, be, _ := newTestSCKController(t)
+	if _, err := c.capture(); err != nil {
+		t.Fatal(err)
+	}
+	be.stopErr = errors.New("stopped")
+	be.startErrs = []error{errors.New("fail"), errors.New("fail")}
+	if _, err := c.capture(); err == nil {
+		t.Fatal("want restart failure")
+	}
+	if img, err := c.latest(); err == nil || img != nil {
+		t.Fatalf("latest during outage = (%v, %v), want an error (a screenshot must not silently get nothing)", img, err)
+	}
+}
+
+func TestSCKStreamController_DisplayPollRebaselinesAfterRestart(t *testing.T) {
+	c, be, clk := newTestSCKController(t)
+	if _, err := c.capture(); err != nil {
+		t.Fatal(err)
+	}
+	// Rebuild via wake long after the last poll; the new stream must get a
+	// full poll interval before its display state is checked.
+	clk.advance(10 * sckDisplayPollInterval)
+	c.slept = func(_, _ time.Time) bool { return true }
+	if _, err := c.capture(); err != nil {
+		t.Fatal(err)
+	}
+	c.slept = func(_, _ time.Time) bool { return false }
+	stops := be.stops
+	be.dispChange = true
+	clk.advance(sckDisplayPollInterval / 2)
+	_, _ = c.capture()
+	if be.stops != stops {
+		t.Fatal("display polled immediately after a restart; the poll clock must restart with the stream")
+	}
+	clk.advance(sckDisplayPollInterval)
+	_, _ = c.capture()
+	if be.stops != stops+1 {
+		t.Fatalf("stops = %d, want the display change acted on once the interval elapsed", be.stops)
 	}
 }
