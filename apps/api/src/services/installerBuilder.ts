@@ -405,15 +405,19 @@ async function fetchVerifiedLocalArtifact(args: {
   // else, since the Helper's asset and manifest pair both live there.
   const binaryDir = dirname(args.diskPath);
   const { manifestBytes, signatureBytes } = await loadLocalManifestPair(binaryDir);
-  const expectedRepository = getGithubReleaseRepository();
-  const expectedRelease = getGithubExpectedReleaseTag();
+  // Local-source trust contract (same as binarySync's local manifest
+  // registration): the manifest's Ed25519 signature against the configured
+  // RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS is the trust anchor, then the asset
+  // entry, size/sha256, edition, platform trust and macOS publisher. The
+  // repository/release pins apply to the GitHub source only — a hosted
+  // install's binaries volume carries the hosted build's manifest, whose
+  // repository is not the public GitHub repository, so pinning it here
+  // refused every locally staged installer on hosted.
   const expectedEdition = getBinaryEdition();
   const selected = await verifyReleaseArtifactManifestAsset({
     assetName: args.assetName,
     manifestBytes,
     signatureBytes,
-    expectedRepository,
-    expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
     expectedEdition,
     requireMacosPublisher: args.requireMacosPublisher,
@@ -448,8 +452,6 @@ async function fetchVerifiedLocalArtifact(args: {
     assetBuffer: buffer,
     manifestBytes,
     signatureBytes,
-    expectedRepository,
-    expectedRelease,
     expectedPlatformTrust: args.expectedPlatformTrust,
     expectedEdition,
     requireMacosPublisher: args.requireMacosPublisher,
