@@ -45,6 +45,7 @@ import {
   BACKUP_QUEUE_ACK_RESULT_STATUS,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
+  collapseAgentReportedTimeoutStatus,
 } from '../../services/commandResultAcceptance';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
@@ -134,12 +135,17 @@ function buildStoredCommandResult(
   // megabytes of random base64 and would silently corrupt the artifact (#2401).
   const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
   return {
-    status: data.status,
+    // See collapseAgentReportedTimeoutStatus: an agent-reported 'timeout'
+    // must never be stored verbatim — that literal string doubles as the
+    // server's own reopen marker.
+    status: collapseAgentReportedTimeoutStatus(data.status),
     exitCode: data.exitCode,
     stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
     stderr: data.stderr != null ? redactSecretsFromOutput(data.stderr) : data.stderr,
     durationMs: data.durationMs,
-    error: data.error != null ? redactSecretsFromOutput(data.error) : data.error,
+    error: data.error != null
+      ? redactSecretsFromOutput(data.error)
+      : data.status === 'timeout' ? 'Agent reported a timeout' : data.error,
   };
 }
 

@@ -22,23 +22,12 @@ func ManageCheckpoint(vmName, action, checkpointName string) (*CheckpointResult,
 		return nil, fmt.Errorf("%w: checkpointName is required for %s", ErrCheckpointFailed, action)
 	}
 
-	vmNameEsc := escapePSString(vmName)
-	cpNameEsc := escapePSString(checkpointName)
-
-	var psCmd string
-	switch action {
-	case "create":
-		if checkpointName == "" {
-			checkpointName = fmt.Sprintf("breeze-%d", time.Now().Unix())
-			cpNameEsc = escapePSString(checkpointName)
-		}
-		psCmd = fmt.Sprintf(`Checkpoint-VM -Name '%s' -SnapshotName '%s'`, vmNameEsc, cpNameEsc)
-	case "delete":
-		psCmd = fmt.Sprintf(`Remove-VMSnapshot -VMName '%s' -Name '%s'`, vmNameEsc, cpNameEsc)
-	case "apply":
-		psCmd = fmt.Sprintf(`Restore-VMSnapshot -VMName '%s' -Name '%s' -Confirm:$false`, vmNameEsc, cpNameEsc)
-	default:
-		return nil, fmt.Errorf("%w: unsupported action %q (must be create, delete, or apply)", ErrCheckpointFailed, action)
+	if action == "create" && checkpointName == "" {
+		checkpointName = fmt.Sprintf("breeze-%d", time.Now().Unix())
+	}
+	psCmd, err := buildCheckpointScript(vmName, action, checkpointName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCheckpointFailed, err)
 	}
 
 	slog.Info("hyperv: managing checkpoint", "vm", vmName, "action", action, "checkpoint", checkpointName)

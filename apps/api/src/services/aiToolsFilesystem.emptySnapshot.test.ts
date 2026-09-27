@@ -36,6 +36,13 @@ vi.mock('../db', () => ({
 
 const commandResult = vi.hoisted(() => ({ value: { status: 'completed', stdout: '' } as Record<string, unknown> }));
 
+// The remote-tools policy check has its own suites
+// (aiDispatch.test.ts, systemCleanup.aiOrigin.test.ts); allow it here.
+vi.mock('./aiRemoteToolsPolicy', () => ({
+  REMOTE_TOOLS_DISABLED_BY_POLICY: 'REMOTE_TOOLS_DISABLED_BY_POLICY',
+  checkAiRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+  assertAiRemoteToolsAllowed: vi.fn(async () => undefined),
+}));
 vi.mock('./commandQueue', () => ({
   executeCommand: vi.fn(async () => commandResult.value),
   queueCommandForExecution: vi.fn(async () => ({ command: { id: 'cmd-scan' } })),

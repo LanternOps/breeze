@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { SignJWT, jwtVerify } from 'jose';
-import { randomUUID } from 'crypto';
-import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
+import { brotliDecompress, gunzip, inflate } from 'node:zlib';
+import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
@@ -16,6 +18,8 @@ import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { PERMISSIONS } from '../services/permissions';
 import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
+import { createCorsOriginResolver } from '../services/corsOrigins';
+import { isSameOriginRequest } from '../services/requestTransport';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -66,6 +70,98 @@ async function authorizeTunnelContinuation(tunnelId: string, userId: string) {
   );
 }
 
+// GET/HEAD are the only methods a cross-site page can send without the
+// browser signaling it in a way this check relies on (a state-changing
+// method sent from another site is never legitimate traffic here).
+const CROSS_SITE_SAFE_METHODS = new Set(['GET', 'HEAD']);
+
+/**
+ * Refuse a cross-site state-changing request the way `validateCookieCsrfRequest`
+ * (`routes/auth/helpers.ts`) refuses one for the main app — but this route
+ * cannot use that helper's double-submit cookie: the auth cookie here proves
+ * ownership of the tunnel, not of a CSRF token pair, and the thing rendered
+ * through the proxy is an arbitrary device web UI that cannot be made to echo
+ * one back.
+ *
+ * Every proxied response carries a CSP `sandbox` directive (`PROXY_RESPONSE_CSP`
+ * below), so the browsing context that renders it — and every follow-up
+ * request that context issues — has an OPAQUE origin: `Origin` arrives as the
+ * literal string `"null"`, or is omitted, on legitimate traffic. That is let
+ * through unchanged here; the per-request path token below (not this check)
+ * is what closes the opaque-origin gap. A state-changing request carrying a
+ * REAL foreign `Origin` — an ordinary cross-site fetch/form POST from another
+ * page — is never legitimate on this route and is refused outright.
+ */
+function tunnelHttpCrossSiteDenialReason(c: Context): string | null {
+  if (CROSS_SITE_SAFE_METHODS.has(c.req.method.toUpperCase())) return null;
+
+  const origin = c.req.header('origin');
+  if (!origin || origin === 'null') return null;
+
+  const resolveOrigin = createCorsOriginResolver({
+    configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
+    nodeEnv: process.env.NODE_ENV,
+  });
+  if (resolveOrigin(origin) !== null) return null;
+  if (isSameOriginRequest(c, origin)) return null;
+
+  return 'Cross-site request blocked';
+}
+
+// ---------------------------------------------------------------------------
+// Per-request path credential (covers the Origin:null traffic the check
+// above has to accept).
+//
+// A cookie alone cannot fully gate this route: subresource/fetch/XHR/form
+// traffic issued by the sandboxed document this route serves originates from
+// an OPAQUE origin (no `allow-same-origin` in `PROXY_RESPONSE_CSP`), which the
+// Fetch/cookie "same-site" algorithm always treats as cross-site — so the
+// cookie has to be `SameSite=None` for that legitimate traffic to work at
+// all, and `Origin: null` has to be accepted for the same reason. Origin
+// alone therefore cannot tell this route's own sandboxed traffic from a
+// request made by another page's sandboxed iframe/`srcdoc` (also
+// opaque-origin, also `Origin: null`).
+//
+// So the route also requires a second, non-cookie secret that only the browser which actually
+// completed this tunnel's ticket exchange ever learns: a per-(tunnel,user)
+// token folded into `basePath`, so `tunnelHttpRewrite.ts` embeds it in every
+// rewritten `src`/`href`/`action`/`formaction`/fetch/XHR URL automatically —
+// including form actions, which covers the sandboxed-form-POST case a
+// pure Origin check cannot. It is delivered to the browser only via the
+// redirect `Location` after ticket consumption and via those rewritten
+// in-document URLs; it is never sent to, or derivable by, a page that has not
+// already completed that exchange. Derived (HMAC over the JWT signing key),
+// not stored, so no schema/persistence change and no separate revocation
+// path is needed — it's invalidated the instant `verifyTunnelCookie` would
+// also start failing (userId no longer resolvable), and rotates whenever the
+// JWT signing key rotates.
+//
+// This is the smallest of three options:
+//   - a fully separate isolated origin for tunnel content is the strongest
+//     answer but needs a new domain/deployment change (recorded as a design
+//     follow-up, not implemented here);
+//   - this is exactly the third option ("cookie scoped to the per-session
+//     path together with a non-cookie per-request credential in the path"),
+//     reusing the existing per-tunnel path structure and the rewriter's
+//     existing `basePath` prefixing with no new moving parts.
+const TUNNEL_PATH_TOKEN_HEX_LENGTH = 32; // 128 bits — HMAC truncation, not brute-forceable
+
+// Exported for tests only (to precompute the expected path token given a
+// known tunnelId/userId) — not used by any other route or service.
+export function computeTunnelPathToken(tunnelId: string, userId: string): string {
+  const { key } = getSignKey();
+  return createHmac('sha256', Buffer.from(key))
+    .update(`tunnel-http-path-token:${tunnelId}:${userId}`)
+    .digest('hex')
+    .slice(0, TUNNEL_PATH_TOKEN_HEX_LENGTH);
+}
+
+function tunnelPathTokenMatches(candidate: string, tunnelId: string, userId: string): boolean {
+  const expected = computeTunnelPathToken(tunnelId, userId);
+  if (candidate.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(candidate), Buffer.from(expected));
+}
+
 /** Absolute 12h cap off the tunnel row's createdAt, independent of activity. */
 function isPastSessionCap(createdAt: Date): boolean {
   return Date.now() - createdAt.getTime() > HTTP_TUNNEL_MAX_SESSION_MS;
@@ -110,6 +206,20 @@ const DEVICE_COOKIE_PREFIX = 'bzdev_';
 // (null origin — can't read app cookies/storage or reach the parent) while still
 // letting the device's own scripts/forms run, and forbid third-party framing.
 const PROXY_RESPONSE_CSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'";
+
+// Promise-based (worker-pool) zlib, not the *Sync forms — decompressing a
+// compressed device response off the event loop keeps one slow or oversized
+// upstream from stalling every other tenant's request on this process while
+// it runs. `maxOutputLength` bounds the decoded size regardless: a small
+// compressed body can still expand enormously (a few MB of gzip-of-zeros
+// decodes to gigabytes), and the cap turns that into a clean 502 instead of
+// an unbounded allocation.
+const gunzipAsync = promisify(gunzip);
+const inflateAsync = promisify(inflate);
+const brotliDecompressAsync = promisify(brotliDecompress);
+// Generous for any real device admin-UI page/stylesheet; far below what a
+// compression bomb would otherwise be allowed to decode to.
+const TUNNEL_DECOMPRESSED_BODY_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Rebuild a Cookie header containing only the device's own (prefixed) cookies, de-prefixed. */
 function extractDeviceCookies(cookieHeader: string): string {
@@ -251,13 +361,65 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Response headers, applied to EVERY response this router returns.
+//
+// The app-wide security-header middleware (index.ts) exempts this whole path
+// prefix because the 200 proxied-content response needs its own sandboxed CSP
+// to win instead of the app-wide `frame-ancestors 'none'`. That exemption
+// must not leave the route's own early-return error responses (401/403/404/
+// 410/502/504, ...) with no framing protection at all — a request that never
+// reaches the proxied-content branch still deserves a restrictive CSP. Set it
+// here, once, after the handler runs, so every branch below is covered
+// without threading it through each individual `c.text(...)` call. The 200
+// success path already sets the same value explicitly (it needs to construct
+// its own `Response` object to attach the rewritten body) — `next()` runs
+// first there too, so this is a harmless no-op overwrite with the same value,
+// not a conflict.
+tunnelHttpRoutes.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('content-security-policy', PROXY_RESPONSE_CSP);
+});
+
+// ---------------------------------------------------------------------------
 // The proxy route.
 // ---------------------------------------------------------------------------
 
 tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const tunnelId = c.req.param('tunnelId');
-  const basePath = `/api/v1/tunnel-http/${tunnelId}/`;
+  // Root, pre-path-token — used to recognize this tunnel's requests before we
+  // know which (or whether a) path token is present. The token-bearing
+  // `basePath` used for the rest of the request is derived below, once we
+  // know which user the cookie (or ticket) resolves to.
+  //
+  // Derived from the actual request path (via the matched `:tunnelId`
+  // segment) rather than hardcoded to the production mount
+  // (`/api/v1/tunnel-http/`) — this route is also exercised mounted at a
+  // bare `/tunnel-http` prefix (router-auth-gate contract test), and a
+  // hardcoded prefix would wrongly 404 every request there before the
+  // ticket/cookie check ever runs.
+  const tunnelIdSegment = `/${tunnelId}/`;
+  const tunnelIdSegmentIndex = c.req.path.indexOf(tunnelIdSegment);
+  const tunnelRootPath = tunnelIdSegmentIndex === -1
+    // Unreachable in practice — Hono already matched `:tunnelId` as a path
+    // segment to get here — but fail toward "no requests match" rather than
+    // throw if the assumption ever breaks.
+    ? tunnelIdSegment
+    : c.req.path.slice(0, tunnelIdSegmentIndex + tunnelIdSegment.length);
   const authCookieName = `bz_tunnel_${tunnelId}`;
+
+  // Refused before touching the ticket/cookie or the device at all: the auth
+  // cookie is `sameSite:'None'` (subresources load from the sandbox's opaque
+  // origin) so the browser sends it on a cross-site request too — Origin is
+  // one of the two signals left standing (the path token, checked below, is
+  // the other).
+  const crossSiteDenial = tunnelHttpCrossSiteDenialReason(c);
+  if (crossSiteDenial) {
+    return c.text(crossSiteDenial, 403);
+  }
+
+  if (!c.req.path.startsWith(tunnelRootPath)) {
+    return c.text('Not found', 404);
+  }
 
   // 1. Authn: cookie first; else one-time ticket → set cookie → redirect.
   let userId = await verifyTunnelCookie(getCookie(c, authCookieName), tunnelId);
@@ -302,6 +464,14 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
     });
 
+    // Mint the per-request path token now — it's the first point we have an
+    // authenticated userId — and fold it into both the cookie's scoping path
+    // and the redirect target the browser follows next. Every subsequent
+    // request (cookie-authenticated, below) must present the same token as
+    // the first path segment after the tunnel id.
+    const pathToken = computeTunnelPathToken(tunnelId, consumed.userId);
+    const basePath = `${tunnelRootPath}${pathToken}/`;
+
     // Subresources originate in the sandbox's opaque origin: Lax is insufficient.
     setCookie(c, authCookieName, await signTunnelCookie(consumed.userId, tunnelId), {
       httpOnly: true,
@@ -313,8 +483,22 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
 
     const url = new URL(c.req.url);
     url.searchParams.delete('__bzt');
-    return c.redirect(url.pathname + url.search, 302);
+    const devicePathAndQuery = url.pathname.slice(tunnelRootPath.length) + url.search;
+    return c.redirect(basePath + devicePathAndQuery, 302);
   }
+
+  // Cookie-authenticated: the request MUST also carry this (tunnelId, userId)
+  // pair's path token as the first segment after the tunnel id, or it is
+  // treated as unauthenticated — see the path-token block above the route for
+  // why the cookie alone (Origin:null accepted, SameSite:None required) isn't
+  // sufficient on its own for a state-changing request.
+  const afterRoot = c.req.path.slice(tunnelRootPath.length);
+  const tokenBoundary = afterRoot.indexOf('/');
+  const candidateToken = tokenBoundary === -1 ? afterRoot : afterRoot.slice(0, tokenBoundary);
+  if (!tunnelPathTokenMatches(candidateToken, tunnelId, userId)) {
+    return c.text('Not found', 404);
+  }
+  const basePath = `${tunnelRootPath}${candidateToken}/`;
 
   // 2. Authz: owner + absolute cap + device online + agent connected + policy
   // (fail-closed).
@@ -515,12 +699,15 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     // its original bytes and headers, even when another layer is supported.
     if (encodings.every((encoding) => ['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
       try {
+        const zlibOptions = { maxOutputLength: TUNNEL_DECOMPRESSED_BODY_MAX_BYTES };
         for (const encoding of encodings.reverse()) {
-          if (encoding === 'gzip') body = gunzipSync(body);
-          else if (encoding === 'deflate') body = inflateSync(body);
-          else if (encoding === 'br') body = brotliDecompressSync(body);
+          if (encoding === 'gzip') body = await gunzipAsync(body, zlibOptions);
+          else if (encoding === 'deflate') body = await inflateAsync(body, zlibOptions);
+          else if (encoding === 'br') body = await brotliDecompressAsync(body, zlibOptions);
         }
       } catch {
+        // Covers both malformed upstream encoding and ERR_BUFFER_TOO_LARGE
+        // (decoded size past the cap above) — same safe response either way.
         return c.text('Malformed upstream content encoding', 502);
       }
       body = isHtml

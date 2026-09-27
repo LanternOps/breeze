@@ -9,6 +9,7 @@ import AiPlanReviewCard from "./AiPlanReviewCard";
 import AiPlanProgressBar from "./AiPlanProgressBar";
 import type { ActionPlanStep } from "@breeze/shared";
 import { isDocsUrl } from "@/lib/safeHref";
+import { SafeMarkdownImage } from "@/lib/safeMarkdownImage";
 import { useHelpStore } from "@/stores/helpStore";
 import { useTranslation } from "react-i18next";
 // Single source of truth: the store owns the shape the stream writes (incl.
@@ -267,6 +268,11 @@ export default function AiChatMessages({
                           </a>
                         );
                       },
+                      // AI-authored markdown images must never auto-load —
+                      // see safeMarkdownImage.tsx for why.
+                      img: ({ src, alt }) => (
+                        <SafeMarkdownImage src={src} alt={alt} />
+                      ),
                     }}
                   >
                     {msg.content}

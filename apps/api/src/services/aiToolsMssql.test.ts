@@ -20,6 +20,12 @@ vi.mock('./commandQueue', () => ({
   },
 }));
 
+// The org/cross-site restore authorization is covered by
+// aiToolsRestoreAuthorization.test.ts and aiToolsRestoreScope.integration.test.ts;
+// here it is stubbed so the select sequences below stay the handler's own.
+vi.mock('./aiToolsRestoreAuthorization', () => ({
+  authorizeAiRestore: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(),
 }));
@@ -340,13 +346,36 @@ describe('aiToolsMssql handlers', () => {
         // backup config, the normal state for every policy-managed device.
         configId: CONFIG_ID,
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: CONFIG_ID, orgId: ORG_ID },
         storageEncryption: { required: false, mode: 'disabled' },
         instance: 'MSSQLSERVER',
         database: 'AppDb',
       }),
       expect.any(Object)
     );
+  });
+
+  it('records the destination storage identity on the backup job it creates', async () => {
+    prepareHandlerMocks('trigger_mssql_backup');
+    // Swap the destination row (the second select) for an S3 destination.
+    const baseSelect = vi.mocked(db.select).getMockImplementation()!;
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(((...args: unknown[]) => (++selectCall === 2
+      ? createQueryChain([{
+        provider: 's3',
+        providerConfig: { endpoint: 'https://Storage.Example.com:9443', bucket: 'Backups', accessKeyId: 'AKIA', secretAccessKey: 'secret' },
+        encryption: false,
+      }])
+      : (baseSelect as (...a: unknown[]) => unknown)(...args))) as any);
+    const jobInsert = createInsertChain([{ id: 'job-1' }]);
+    vi.mocked(db.insert).mockReset().mockImplementation(() => jobInsert as any);
+
+    await toolMap.get('trigger_mssql_backup')!.handler({ deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }, makeAuth());
+
+    expect(jobInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'database',
+      storageIdentity: 's3::storage.example.com:9443::Backups',
+    }));
   });
 
   // D20b follow-up: a resolved config id whose backup_configs row has since
@@ -387,7 +416,7 @@ describe('aiToolsMssql handlers', () => {
         // D20b follow-up: the helper builds its read provider from THIS
         // command's own payload the same way REST /mssql/restore does.
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: CONFIG_ID, orgId: ORG_ID },
       }),
       expect.any(Object)
     );
@@ -438,9 +467,15 @@ describe('aiToolsMssql handlers', () => {
         snapshotId: 'provider-snapshot-1',
         backupFileName: 'AppDb_full_20260331.bak',
         provider: 'local',
-        providerConfig: { path: '/tmp/backups' },
+        providerConfigRef: { configId: CONFIG_ID, orgId: ORG_ID },
       }),
       expect.any(Object)
     );
+  });
+
+  it('never hands a stored storage credential to any MSSQL dispatch', () => {
+    for (const call of vi.mocked(aiQueueCommandForExecution).mock.calls) {
+      expect(call[4]).not.toHaveProperty('providerConfig');
+    }
   });
 });

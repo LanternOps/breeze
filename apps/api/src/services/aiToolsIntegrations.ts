@@ -255,7 +255,14 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
   // ============================================
 
   registerTool({
-    tier: 2,
+    // Sends a real outbound POST (mutates), and its route
+    // (POST /webhooks/:id/test) carries requireMfa() on top of
+    // organizations:write. Per the MFA rule in aiGuardrails.ts ("MFA — what
+    // substitutes for the routes' requireMfa()"), a tool mirroring a mutating
+    // requireMfa() route is tier 3. Paired with TIER3_SUPERVISED_TOOLS in
+    // aiGuardrails.ts so TOOL_TIERS-equivalent resolution (getToolTier) and
+    // approval-scope resolution move together.
+    tier: 3,
     domain: 'integrations',
     searchHint: 'Breeze webhook connectivity: send a test delivery to an endpoint',
     definition: {

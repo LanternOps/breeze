@@ -44,9 +44,9 @@ Get-AuthenticodeSignature "C:\Program Files\Breeze Helper\breeze-helper.exe" | F
 ```
 
 ```bash
-# macOS agent
-codesign --verify --deep --strict --verbose=2 /usr/local/bin/breeze-agent
-spctl --assess --type execute --verbose /usr/local/bin/breeze-agent
+# macOS agent (agent 0.118.0+; /usr/local/bin/breeze-agent on older agents)
+codesign --verify --deep --strict --verbose=2 /Library/Breeze/bin/breeze-agent
+spctl --assess --type execute --verbose /Library/Breeze/bin/breeze-agent
 ```
 
 If the Windows Helper/Viewer reports `NotSigned`, or macOS reports the binary is not signed, that binary did not come from an official release. Reinstall from an official release before pursuing a false-positive report.
@@ -85,7 +85,7 @@ Use the platform sections below to unblock the fleet while the vendor submission
 | OS | Default Path |
 |---|---|
 | Linux | `/usr/local/bin/breeze-agent` |
-| macOS | `/usr/local/bin/breeze-agent` |
+| macOS | `/Library/Breeze/bin/breeze-agent` (agent 0.118.0+; `/usr/local/bin/breeze-agent` on older agents) |
 | Windows | `C:\Program Files\Breeze\breeze-agent.exe` |
 
 ### Companion Windows Executables
@@ -256,10 +256,10 @@ XProtect performs signature-based malware checks. It does not typically flag cus
 
 ```bash
 # Check if the binary is quarantined
-xattr -l /usr/local/bin/breeze-agent
+xattr -l /Library/Breeze/bin/breeze-agent
 
 # Remove all extended attributes
-sudo xattr -c /usr/local/bin/breeze-agent
+sudo xattr -c /Library/Breeze/bin/breeze-agent
 ```
 
 ### Third-Party Antivirus (macOS)
@@ -268,8 +268,9 @@ For products like CrowdStrike, SentinelOne, or Jamf Protect, add these exclusion
 
 | Exclusion Type | Value |
 |---|---|
-| Process | `/usr/local/bin/breeze-agent` |
+| Process | `/Library/Breeze/bin/breeze-agent` (and `/usr/local/bin/breeze-agent` until every agent runs 0.118.0) |
 | Process | `/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper` |
+| Directory | `/Library/Breeze/bin/` |
 | Directory | `/Library/Application Support/Breeze/` |
 | Directory | `/Applications/Breeze Helper.app/` |
 | Directory | `/etc/breeze/` (if symlinked) |
@@ -408,10 +409,12 @@ For quick reference, here are the minimum exclusions needed per platform:
   </TabItem>
   <TabItem label="macOS">
     **Processes:**
-    - `/usr/local/bin/breeze-agent`
+    - `/Library/Breeze/bin/breeze-agent` (agent 0.118.0+)
+    - `/usr/local/bin/breeze-agent` (older agents)
     - `/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper`
 
     **Directories:**
+    - `/Library/Breeze/bin/`
     - `/Library/Application Support/Breeze/`
     - `/Applications/Breeze Helper.app/`
   </TabItem>

@@ -27,7 +27,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
-import { cascadeDeleteOrg } from '../services/tenantCascade';
+import { cascadeDeleteOrg, TenantCascadeRefusalError } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { attachWorkerObservability } from './workerObservability';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -190,6 +190,17 @@ export function createTenantErasureWorker(): Worker {
         const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
         return { ...stats, jobId: job.id };
       } catch (err) {
+        // A precondition refusal (e.g. an active legal hold): cascadeDeleteOrg
+        // already wrote its own `tenant.erasure.refused_legal_hold` audit row
+        // before throwing, and nothing was deleted. Treat it as a skip, not a
+        // failure — the job succeeded at doing nothing, which is the correct
+        // outcome, and re-enqueuing once the hold is released will proceed.
+        if (err instanceof TenantCascadeRefusalError) {
+          console.warn(
+            `[TenantErasure] refused for org ${orgId}: ${err.code}`,
+          );
+          return { skipped: true, reason: err.code, jobId: job.id };
+        }
         // Record the failure as an audit row so the operator has a
         // structured pointer back to the job + the partial state.
         try {

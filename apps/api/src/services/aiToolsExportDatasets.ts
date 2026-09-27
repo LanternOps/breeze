@@ -17,6 +17,7 @@ import { db } from '../db';
 import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { searchFleetLogs } from './logSearch';
+import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
 import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerability';
@@ -188,10 +189,12 @@ const eventLogsAdapter: DatasetAdapter = {
     // it would let a site-restricted tech export the whole org's logs.
     const allowedDeviceIds = await scopedDeviceIds(req);
     if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
+    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(req.auth);
 
     return async (cursor) => {
       const result = await searchFleetLogs(req.auth, {
         allowedDeviceIds,
+        canReadSensitiveCategory,
         query: typeof f.query === 'string' ? f.query : undefined,
         timeRange: typeof f.timeRange === 'object' && f.timeRange !== null
           ? f.timeRange as { start?: string; end?: string }

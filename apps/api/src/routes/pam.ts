@@ -48,6 +48,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
+import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import {
   describePamRuleTierDrift,
@@ -214,6 +215,7 @@ function enforcementResponse(row: {
 export const pamRoutes = new Hono();
 pamRoutes.use('*', authMiddleware);
 pamRoutes.use('*', requireScope('organization', 'partner', 'system'));
+pamRoutes.route('/', pamAuditExportRoutes);
 
 /** Event emission is best-effort post-commit; never fail the request. */
 async function safePublish(
@@ -696,7 +698,8 @@ pamRoutes.post(
           }
         }
 
-        return { kind: 'ok' as const, row, newStatus: updated[0]!.status, actuation };
+        const newStatus = actuation.refusalReason ? 'denied' : updated[0]!.status;
+        return { kind: 'ok' as const, row, newStatus, actuation };
       });
     } catch (err) {
       if (err instanceof StepUpRequiredError) {
@@ -805,9 +808,12 @@ pamRoutes.post(
       success: true,
       id: result.row.id,
       status: result.newStatus,
-      enforcementStatus: result.actuation.desiredState === 'active'
-        ? 'pending_dispatch'
-        : 'cleanup_pending',
+      enforcementStatus: result.actuation.refusalReason
+        ? 'refused'
+        : result.actuation.desiredState === 'active'
+          ? 'pending_dispatch'
+          : 'cleanup_pending',
+      ...(result.actuation.refusalReason ? { reason: result.actuation.refusalReason } : {}),
     });
   },
 );

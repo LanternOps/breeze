@@ -33,6 +33,11 @@ import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 import InvoiceLineDevices from './InvoiceLineDevices';
 import { useStableT } from '@/lib/i18n/useStableT';
+import {
+  ACCOUNTING_PROVIDER_NAMES,
+  isAccountingProviderId,
+  useActivePushProvider,
+} from '../../lib/accountingProviders';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -52,6 +57,25 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
   const { invoice, lines } = detail;
+  const canPushInvoices = can('invoices', 'write');
+  // Where a push from the sync card goes when the invoice has no mapping row
+  // yet: the partner's active connection, iff it can push invoices. Only asked
+  // when a push could actually be made — the push route also requires
+  // accounting:manage (same gate as the InvoicesPage bulk push), and a mapped
+  // invoice already names its provider. `null` hides only the push action;
+  // the card itself (status + post-Issue watch) always mounts.
+  const pushProvider = useActivePushProvider(
+    canPushInvoices && can('accounting', 'manage') && !detail.accountingSync,
+  );
+  const syncProvider = detail.accountingSync?.provider ?? pushProvider;
+  // Display name for the {{provider}} interpolation on payment-row sync
+  // badges. Those badges only render for a Breeze-origin payment that has
+  // actually been pushed (`p.accountingSync` set), which only happens once
+  // `syncProvider` is known — `null` here is defensive, not a case the
+  // current (QuickBooks-only) test suite can hit. Deliberately no brand
+  // fallback (never guess "QuickBooks"): when the provider genuinely isn't
+  // known, the interpolation is left blank rather than naming the wrong one.
+  const syncProviderName = syncProvider ? ACCOUNTING_PROVIDER_NAMES[syncProvider] : '';
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -248,8 +272,16 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         errorFallback: t('invoiceDetail.payments.reverseError'),
         onUnauthorized: UNAUTHORIZED,
       });
+      // The payment being reversed names its own provider when it originated
+      // there (`p.source` is an accounting-provider id) — a more precise
+      // signal than the invoice-level `syncProviderName` for THIS specific
+      // payment, and available even when the invoice itself has no known
+      // active connection.
+      const reversalProviderName = reversePayment?.source && isAccountingProviderId(reversePayment.source)
+        ? ACCOUNTING_PROVIDER_NAMES[reversePayment.source]
+        : syncProviderName;
       showToast(result.quickbooksRecordUntouched
-        ? { type: 'warning', message: t('invoiceDetail.payments.reverseInQuickbooksToo') }
+        ? { type: 'warning', message: t('invoiceDetail.payments.reverseInProviderToo', { provider: reversalProviderName }) }
         : { type: 'success', message: t('invoiceDetail.payments.reverseSuccess') });
       setReversePayment(null);
       refresh();
@@ -258,7 +290,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     } finally {
       setBusy(false);
     }
-  }, [busy, invoice.id, refresh, t]);
+  }, [busy, invoice.id, refresh, t, syncProviderName, reversePayment]);
 
   // Revoke every issued public view-and-pay link; the next send/copy dispenses
   // a fresh url. Rare action — for a link forwarded to the wrong hands.
@@ -582,16 +614,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
-          {/* QuickBooks push status (Phase C). Renders only when the API
-              returned a mapping row — no connection, or an org-scoped read that
-              RLS-hides the partner-axis row, both come back null and the card
-              stays off the rail rather than implying "not synced". */}
+          {/* Accounting push status (Phase C). Always mounted: with no mapping
+              row it renders nothing, but its post-Issue watch still polls until
+              the auto-push lands the row. `provider` null (no push-capable
+              connection known to this caller) hides only the push action. */}
           <AccountingSyncCard
+            provider={syncProvider}
             invoiceId={invoice.id}
             sync={detail.accountingSync}
             invoiceStatus={invoice.status}
             invoiceTouchedAt={invoice.updatedAt}
-            canPush={can('invoices', 'write')}
+            canPush={canPushInvoices}
             onChanged={onChanged}
           />
 
@@ -669,12 +702,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           {t('invoiceDetail.payments.online')}
                         </span>
                       )}
-                      {p.source === 'quickbooks' && (
+                      {p.source && isAccountingProviderId(p.source) && (
                         <span
                           className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-                          data-testid={`invoice-payment-quickbooks-${p.id}`}
+                          data-testid={`invoice-payment-${p.source}-${p.id}`}
                         >
-                          {t('invoiceDetail.payments.quickbooks')}
+                          {ACCOUNTING_PROVIDER_NAMES[p.source]}
                         </span>
                       )}
                       {p.accountingSync && (
@@ -688,10 +721,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           title={p.accountingSync.lastError ?? undefined}
                         >
                           {p.accountingSync.status === 'error'
-                            ? t('invoiceDetail.payments.quickbooksSyncFailed')
+                            ? t('invoiceDetail.payments.providerSyncFailed', { provider: syncProviderName })
                             : p.accountingSync.status === 'pending'
-                              ? t('invoiceDetail.payments.syncingToQuickbooks')
-                              : t('invoiceDetail.payments.inQuickbooks')}
+                              ? t('invoiceDetail.payments.syncingToProvider', { provider: syncProviderName })
+                              : t('invoiceDetail.payments.inProvider', { provider: syncProviderName })}
                         </span>
                       )}
                     </span>

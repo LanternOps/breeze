@@ -33,6 +33,8 @@ for file in docker/turnserver.conf docker-compose.yml deploy/docker-compose.prod
   require_grep 'denied-peer-ip=.*127\.0\.0\.0|--denied-peer-ip=127\.0\.0\.0' "$file" "$file must deny IPv4 loopback TURN peers"
   require_grep 'denied-peer-ip=.*::1|--denied-peer-ip=::1' "$file" "$file must deny IPv6 loopback TURN peers"
   require_grep 'no-multicast-peers|--no-multicast-peers' "$file" "$file must deny multicast TURN peers"
+  require_grep '^(no-tcp-relay|[[:space:]]*- --no-tcp-relay)$' "$file" "$file must disable TURN TCP relay allocations"
+  reject_grep '^(verbose|[[:space:]]*- --verbose)$' "$file" "$file must not enable verbose TURN logging"
 done
 
 # SR-009: coturn must fail closed if TURN_SECRET is unset/empty. An empty REST

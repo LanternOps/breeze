@@ -1,13 +1,14 @@
 // apps/api/src/routes/billingProfiles.test.ts
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef, permsRef, permissionCalls } = vi.hoisted(() => ({
+const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef, permsRef, permissionCalls, mfaRef } = vi.hoisted(() => ({
   listWorkTypes: vi.fn(), createWorkType: vi.fn(), updateWorkType: vi.fn(), archiveWorkType: vi.fn(),
   authRef: { current: { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'all' } as { scope: string; partnerId: string | null; partnerOrgAccess?: 'all' | 'selected' | 'none' | null } | null },
   permsRef: { current: { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] } },
   // Appended by the requirePermission mock at MODULE LOAD (the middleware
   // factories run when billingProfiles.ts is imported), in registration order.
   permissionCalls: [] as Array<{ resource: string; action: string }>,
+  mfaRef: { current: true },
 }));
 
 const profileMocks = vi.hoisted(() => ({
@@ -54,7 +55,11 @@ vi.mock('../middleware/auth', async () => ({
     permissionCalls.push({ resource, action });
     c.set('permissions', permsRef.current);
     await next();
-  }
+  },
+  requireMfa: () => async (c: any, next: any) => {
+    if (!mfaRef.current) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    await next();
+  },
 }));
 
 import { billingProfilesRoutes } from './billingProfiles';
@@ -63,6 +68,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   [listWorkTypes, createWorkType, updateWorkType, archiveWorkType].forEach((mock) => mock.mockReset());
   authRef.current = { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'all' };
+  mfaRef.current = true;
 });
 
 // Work types are partner-wide config (epic #2135): a partner user whose org
@@ -91,6 +97,50 @@ describe('partner-wide write gate', () => {
     listWorkTypes.mockResolvedValue([]);
     const res = await billingProfilesRoutes.request('/work-types');
     expect(res.status).toBe(200);
+  });
+});
+
+// Every write below is a partner-wide rate-card/work-type change: a
+// non-MFA-satisfied session must be refused before the underlying service is
+// ever called, the same way a site-restricted or 'selected'-access caller is.
+describe('MFA gate on writes', () => {
+  const PROFILE_ID = '55555555-5555-4555-8555-555555555555';
+  const WORK_TYPE_ID = '33333333-3333-4333-8333-333333333333';
+
+  it.each([
+    ['POST', '/work-types', { name: 'Remote' }],
+    ['PATCH', `/work-types/${WORK_TYPE_ID}`, { name: 'Onsite' }],
+    ['DELETE', `/work-types/${WORK_TYPE_ID}`, undefined],
+    ['POST', '/', { name: 'Standard' }],
+    ['PATCH', `/${PROFILE_ID}`, { name: 'Standard' }],
+    ['DELETE', `/${PROFILE_ID}`, undefined],
+    ['PUT', `/${PROFILE_ID}/save`, { name: 'Standard', rows: [] }],
+    ['PUT', `/${PROFILE_ID}/rows`, { rows: [] }],
+    ['POST', `/${PROFILE_ID}/clone`, { name: 'Standard copy' }],
+  ])('%s %s is 403 without a fresh-MFA session', async (method, path, body) => {
+    mfaRef.current = false;
+    const res = await billingProfilesRoutes.request(path, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    expect(createWorkType).not.toHaveBeenCalled();
+    expect(updateWorkType).not.toHaveBeenCalled();
+    expect(archiveWorkType).not.toHaveBeenCalled();
+    expect(profileMocks.createProfile).not.toHaveBeenCalled();
+    expect(profileMocks.updateProfile).not.toHaveBeenCalled();
+    expect(profileMocks.saveProfile).not.toHaveBeenCalled();
+    expect(profileMocks.replaceProfileRows).not.toHaveBeenCalled();
+    expect(profileMocks.cloneProfile).not.toHaveBeenCalled();
+  });
+
+  it('allows POST /work-types through with a fresh-MFA session', async () => {
+    createWorkType.mockResolvedValue({ id: WORK_TYPE_ID, name: 'Remote', isActive: true });
+    const res = await billingProfilesRoutes.request('/work-types', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Remote' }),
+    });
+    expect(res.status).toBe(201);
+    expect(createWorkType).toHaveBeenCalled();
   });
 });
 

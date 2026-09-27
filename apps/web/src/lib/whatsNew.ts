@@ -18,6 +18,18 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.118.0',
+    date: '2026-09-27',
+    title: 'Network checks move to Monitors, sturdier backups and restores, and a broad hardening pass',
+    highlights: [
+      'Network checks are now authored and managed under Monitors, and maintenance windows suppress monitor alerts again.',
+      'Backup restores download files through short-lived per-file links, and Hyper-V restores (to a new VM, restore as VM, instant boot) are more reliable and report failures clearly.',
+      'Device pages show memory modules per slot, flag stuck agent self-updates and missing Breeze Assist installs, and failed patch installs now show their reason.',
+      'Security and reliability hardening across the agent, remote sessions, installers, AI tools and account management — upgrade your agents to 0.118.0.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.117.0',
     date: '2026-09-25',
     title: 'Hardware & RAID health monitoring, business reports, and a System page for your install',

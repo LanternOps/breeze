@@ -41,7 +41,19 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+// Default: no Redis client, so the ingest quota check fails open (allowed)
+// and existing tests are unaffected. Quota-specific tests below override
+// `checkAndConsumeIngestQuota` directly.
+vi.mock('../../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../../services/ingestQuota', () => ({
+  checkAndConsumeIngestQuota: vi.fn().mockResolvedValue({ allowed: true, rowsUsed: 0, bytesUsed: 0 }),
+}));
+
 import { db } from '../../db';
+import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { changesRoutes } from './changes';
 
 // ---------------------------------------------------------------------------
@@ -390,6 +402,75 @@ describe('changes routes', () => {
       expect(res.status).toBe(200);
       // The insert should use the device's orgId (ORG_ID), not any user-supplied value
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Daily ingest budget
+  // ----------------------------------------------------------------
+
+  describe('daily ingest budget', () => {
+    it('drops the batch with 429 once the per-device quota is exceeded', async () => {
+      mockDeviceFound();
+      mockInsertSuccess(1);
+      vi.mocked(checkAndConsumeIngestQuota).mockResolvedValueOnce({
+        allowed: false,
+        rowsUsed: 500_100,
+        bytesUsed: 1000,
+      });
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload()] }),
+      });
+
+      expect(res.status).toBe(429);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('drops the batch with 429 once the per-org quota is exceeded', async () => {
+      mockDeviceFound();
+      mockInsertSuccess(1);
+      vi.mocked(checkAndConsumeIngestQuota)
+        .mockResolvedValueOnce({ allowed: true, rowsUsed: 10, bytesUsed: 100 }) // device check
+        .mockResolvedValueOnce({ allowed: false, rowsUsed: 5_000_100, bytesUsed: 1000 }); // org check
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload()] }),
+      });
+
+      expect(res.status).toBe(429);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('inserts normally when both quotas are within budget', async () => {
+      mockDeviceFound();
+      mockInsertSuccess(1);
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload()] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.insert).toHaveBeenCalled();
+    });
+
+    it('does not check the quota for an empty change batch', async () => {
+      mockDeviceFound();
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(checkAndConsumeIngestQuota).not.toHaveBeenCalled();
     });
   });
 });

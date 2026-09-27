@@ -4,7 +4,7 @@ import { fetchWithAuth, useAuthStore } from '../../../stores/auth';
 import { useJwtClaims } from '@/lib/authScope';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
-import { conversionFriendly, conversionPaths, fetchPendingCounts, readPartnerConvertResult, readPartnerPreview, type PartnerConversionPreview, type PartnerConvertResult, type PendingCounts } from './conversionApi';
+import { conversionFriendly, conversionPaths, fetchPendingCounts, readPartnerConvertResult, readPartnerPreview, unconvertibleReasonKeys, type PartnerConversionPreview, type PartnerConvertResult, type PendingCounts } from './conversionApi';
 
 export interface ConversionPendingBannerProps {
   orgId: string | null;
@@ -108,7 +108,14 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
         parseSuccess: readPartnerConvertResult,
         friendly: conversionFriendly, errorFallback: t('monitoring:conversion.banner.errors.convertAll'),
       });
-      showToast({ type: 'success', message: t('monitoring:conversion.banner.convertedAll', result) });
+      showToast({
+        type: 'success',
+        message: t('monitoring:conversion.banner.convertedAll', {
+          rows: t('monitoring:conversion.banner.rowsCount', { count: result.converted }),
+          policies: t('monitoring:conversion.banner.policiesCount', { count: result.policies }),
+          unconvertible: result.unconvertible,
+        }),
+      });
       setConfirming(false);
       onConverted?.();
       await load();
@@ -144,7 +151,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
             {t('monitoring:conversion.banner.confirmBody', { rows: confirmRowsText, policies: confirmPoliciesText })}
           </p>
           <ul>{partnerPreview.unconvertible.map((item) => <li key={`${item.sourceTable}:${item.sourceId}`}>
-            {item.policyName ?? item.policyId ?? '—'} · {item.name} · {item.reason}
+            {item.policyName ?? item.policyId ?? '—'} · {item.name} · {t(/* i18n-dynamic */ unconvertibleReasonKeys(item.reason))}
           </li>)}</ul>
           <div className="mt-2 flex justify-end gap-2">
             <button type="button" onClick={() => setConfirming(false)} className="rounded-md border px-3 py-1.5">{t('common:actions.cancel')}</button>
@@ -176,7 +183,7 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
                   <span className="font-medium">{item.name}</span>
                   {item.policyName ? <span> — {item.policyName}</span> : null}
                   <div className="mt-1">
-                    <span>{t(/* i18n-dynamic */ [`monitoring:conversion.retirement.reasons.${item.reason.replace(/^unconvertible:/, '')}`, 'monitoring:conversion.retirement.reasons.unknown'])}</span>
+                    <span>{t(/* i18n-dynamic */ unconvertibleReasonKeys(item.reason))}</span>
                     {' '}<code className="break-all text-xs">{item.reason}</code>
                   </div>
                 </li>

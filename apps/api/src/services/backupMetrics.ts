@@ -9,6 +9,7 @@ type BackupMetricsRecorder = {
     count?: number
   ) => void;
   onLowReadinessDevices: (count: number) => void;
+  onReadDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -20,6 +21,7 @@ let recorder: BackupMetricsRecorder = {
   onCommandTimeout: noop,
   onVerificationResult: noop,
   onLowReadinessDevices: noop,
+  onReadDispatch: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -30,6 +32,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onCommandTimeout: next?.onCommandTimeout ?? noop,
     onVerificationResult: next?.onVerificationResult ?? noop,
     onLowReadinessDevices: next?.onLowReadinessDevices ?? noop,
+    onReadDispatch: next?.onReadDispatch ?? noop,
   };
 }
 
@@ -63,4 +66,14 @@ export function recordBackupVerificationResult(
 
 export function setLowReadinessDevices(count: number): void {
   recorder.onLowReadinessDevices(Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0);
+}
+
+/**
+ * One restore-shaped command delivery: `mode` is `brokered` (a storage session
+ * was delivered) or `legacy` (the storage destination was delivered), with the
+ * reason the command could not be brokered. The legacy count reaching zero is
+ * the signal that storage destinations are no longer sent to agents for reads.
+ */
+export function recordBackupReadDispatch(commandType: string, mode: 'brokered' | 'legacy', reason: string, count = 1): void {
+  recorder.onReadDispatch(commandType, mode, reason, count);
 }

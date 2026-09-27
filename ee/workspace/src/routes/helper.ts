@@ -10,6 +10,7 @@ import { createActivityService } from '../services/activityService';
 import { createContentSearchService } from '../services/contentSearchService';
 import { createFileQueryService } from '../services/fileQueryService';
 import { createFilingService } from '../services/filingService';
+import { helperUserField } from '../services/ownerPath';
 
 // End-user finder surface, authenticated by the core helper (Breeze Assist
 // device-token) middleware — the gateway maps /helper/* here when the manifest
@@ -64,6 +65,9 @@ const searchQuerySchema = z.object({
   project: z.string().min(1).max(200).optional(),
   docType: z.string().min(1).max(200).optional(),
   limit: z.coerce.number().int().optional(),
+  // Required to see any local_profile row (fileQueryService's ownerUsername) —
+  // caller-claimed, not authenticated; see SearchFilters.ownerUsername.
+  helperUser: helperUserField().optional(),
 });
 const browseQuerySchema = z.object({
   // uuid-ness is checked separately so a malformed id is the contract 404
@@ -74,6 +78,9 @@ const browseQuerySchema = z.object({
   // Architecture note authorizing these two params on browse as well.
   project: z.string().min(1).max(200).optional(),
   docType: z.string().min(1).max(200).optional(),
+  // Same as searchQuerySchema.helperUser — required to browse into any
+  // local_profile source.
+  helperUser: helperUserField().optional(),
 });
 const passagesQuerySchema = z.object({
   q: z.string().min(1).max(200),
@@ -81,12 +88,12 @@ const passagesQuerySchema = z.object({
   limit: z.coerce.number().int().optional(),
 });
 const recentsQuerySchema = z.object({
-  helperUser: z.string().max(100).optional(),
+  helperUser: helperUserField().optional(),
 });
 const activitySchema = z.object({
   fileIndexId: z.string(),
   action: z.enum(['open', 'reveal', 'copy_path']),
-  helperUser: z.string().max(100).optional(),
+  helperUser: helperUserField().optional(),
 }).strict();
 
 function errorDetail(error: unknown): string {
@@ -141,10 +148,20 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     if (!parsed.success) return c.json({ error: 'invalid request' }, 400);
     const device = c.get('helperDevice');
     if (deps.contentSearchService && (await deps.getSettings(device.orgId)).contentEnabled) {
-      const results = await deps.contentSearchService.search(device.orgId, device.id, parsed.data, []);
+      const results = await deps.contentSearchService.search(
+        device.orgId,
+        device.id,
+        { ...parsed.data, ownerUsername: parsed.data.helperUser },
+        [],
+      );
       return c.json({ results });
     }
-    const results = await deps.fileQueryService.search(device.orgId, device.id, parsed.data, []);
+    const results = await deps.fileQueryService.search(
+      device.orgId,
+      device.id,
+      { ...parsed.data, ownerUsername: parsed.data.helperUser },
+      [],
+    );
     return c.json({ results });
   });
 
@@ -192,10 +209,15 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
   const filingAvailable = async (orgId: string) =>
     Boolean(deps.filingService) && (await deps.getSettings(orgId)).contentEnabled;
 
+  const filingListQuerySchema = z.object({ helperUser: helperUserField().min(1).optional() });
   app.get('/filing', async (c) => {
     const device = c.get('helperDevice');
     if (!(await filingAvailable(device.orgId))) return c.json({ error: 'not found' }, 404);
-    return c.json({ filings: await deps.filingService!.list(device.orgId, []) });
+    const parsed = filingListQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: 'invalid request' }, 400);
+    return c.json({
+      filings: await deps.filingService!.list(device.orgId, [], device.id, parsed.data.helperUser),
+    });
   });
 
   app.get('/content/projects', async (c) => {
@@ -204,7 +226,10 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     return c.json({ projects: await deps.filingService!.projects(device.orgId) });
   });
 
-  const classifySchema = z.object({ fileIndexId: z.string() }).strict();
+  const classifySchema = z.object({
+    fileIndexId: z.string(),
+    helperUser: helperUserField().min(1).optional(),
+  }).strict();
   app.post('/filing/classify', async (c) => {
     const device = c.get('helperDevice');
     if (!(await filingAvailable(device.orgId))) return c.json({ error: 'not found' }, 404);
@@ -213,7 +238,9 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     if (!z.uuid().safeParse(parsed.data.fileIndexId).success) {
       return c.json({ error: 'not found' }, 404);
     }
-    const filing = await deps.filingService!.classify(device.orgId, parsed.data.fileIndexId, []);
+    const filing = await deps.filingService!.classify(
+      device.orgId, parsed.data.fileIndexId, [], device.id, parsed.data.helperUser,
+    );
     if (!filing) return c.json({ error: 'not found' }, 404);
     await guardedAudit({
       orgId: device.orgId,
@@ -233,7 +260,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
 
   const assignSchema = z.object({
     projectKey: z.string().min(1).max(40),
-    helperUser: z.string().max(100).optional(),
+    helperUser: helperUserField().optional(),
   }).strict();
   app.post('/filing/:fileIndexId/assign', async (c) => {
     const device = c.get('helperDevice');
@@ -244,6 +271,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     if (!parsed.success) return c.json({ error: 'invalid request' }, 400);
     const filing = await deps.filingService!.assign(
       device.orgId, fileIndexId, parsed.data.projectKey, parsed.data.helperUser ?? null, [],
+      device.id, parsed.data.helperUser,
     );
     if (!filing) return c.json({ error: 'not found' }, 404);
     await guardedAudit({
@@ -279,6 +307,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
       parsed.data.parentPath,
       { project: parsed.data.project, docType: parsed.data.docType },
       [],
+      parsed.data.helperUser,
     );
     return c.json({ entries });
   });
@@ -290,7 +319,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     const helperUser = parsed.data.helperUser ?? null;
     const [recent, department] = await Promise.all([
       deps.activityService.recents(device.orgId, device.id, helperUser, undefined, []),
-      deps.activityService.departmentRecent(device.orgId, device.id, undefined, []),
+      deps.activityService.departmentRecent(device.orgId, device.id, undefined, [], helperUser ?? undefined),
     ]);
     return c.json({ recent, department });
   });

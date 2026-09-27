@@ -66,6 +66,15 @@ type Request struct {
 	// ignores it (it injects into an already-pending consent.exe).
 	TargetPath string
 
+	// TargetPathHash, when non-empty, is the SHA-256 the target executable
+	// was approved under (server-echoed elevation_requests.target_executable_hash
+	// on the remote flow; empty on the local ETW-driven flow, which has no
+	// approval-time hash). token_launch re-verifies the file on disk against
+	// this value immediately before launch and refuses on mismatch, closing
+	// the window between approval and actuation during which the file at
+	// TargetPath could have been replaced. Ignored by sendinput.
+	TargetPathHash string
+
 	// CommandLine is the full command line for the elevated launch (Path B).
 	// Ignored by the sendinput strategy.
 	CommandLine string

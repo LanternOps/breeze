@@ -18,9 +18,16 @@ import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
 import { registerDRTools } from './aiToolsDR';
 import { createDrExecutionAndEnqueue } from './drExecutionService';
+import { resolveAiCallerPermissions } from './aiToolsRestoreAuthorization';
+import { requiredPermissionsForTool } from './aiGuardrails';
+import { ResilienceAuthorizationError } from './resilienceSiteAuthorization';
 
-vi.mock('./drExecutionService', () => ({
+vi.mock('./drExecutionService', async (importOriginal) => ({
+  classifyDrExecutionAuthorizationError: (await importOriginal<typeof import('./drExecutionService')>()).classifyDrExecutionAuthorizationError,
   createDrExecutionAndEnqueue: vi.fn(),
+}));
+vi.mock('./aiToolsRestoreAuthorization', () => ({
+  resolveAiCallerPermissions: vi.fn(),
 }));
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -297,7 +304,11 @@ describe('aiToolsDR handlers', () => {
     });
 
     it('stores the normalised config (defaults applied) when the host is reachable', async () => {
-      mockSelectSequence([[planRow], [{ id: HOST_ID, orgId: ORG_ID, siteId: null, status: 'online', osType: 'linux' }]]);
+      mockSelectSequence([
+        [planRow],
+        [{ id: HOST_ID, orgId: ORG_ID, siteId: null, status: 'online', osType: 'linux' }],
+        [{ id: DEVICE_ID, siteId: null }], // group devices are all in the plan's org
+      ]);
       mockInsertSequence([[{ id: GROUP_ID }]]);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
         action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
@@ -389,5 +400,114 @@ describe('manage_dr_plan:create_plan write-org resolution (#6667)', () => {
 
     expect(result.success).toBe(true);
     expect(result.plan.orgId).toBe('org-2');
+  });
+});
+
+describe('DR plan tools match the route', () => {
+  let toolMap: Map<string, AiTool>;
+  const OTHER_PLAN_GROUP = '66666666-6666-6666-6666-666666666666';
+  const planRow = { id: PLAN_ID, orgId: ORG_ID, name: 'Primary DR Plan', status: 'active' };
+  const bareMetalGroup = {
+    id: GROUP_ID, name: 'Rebuild', sequence: 1, devices: [DEVICE_ID],
+    restoreConfig: { commandType: 'BARE_METAL_REBUILD', snapshotSelection: 'latest_restorable' },
+    estimatedDurationMinutes: null,
+  };
+  const grant = (...perms: Array<[string, string]>) => ({
+    permissions: perms.map(([resource, action]) => ({ resource, action })),
+    partnerId: null, orgId: ORG_ID, roleId: 'r', scope: 'organization' as const,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDefaultDbMocks();
+    toolMap = buildToolMap();
+  });
+
+  it.each(['create_plan', 'update_plan', 'add_group', 'update_group', 'delete_group'])(
+    'manage_dr_plan:%s requires devices:write like routes/dr.ts',
+    (action) => {
+      expect(requiredPermissionsForTool('manage_dr_plan', { action })).toEqual([{ resource: 'devices', action: 'write' }]);
+    },
+  );
+
+  it('execute_dr_plan refuses a BARE_METAL_REBUILD plan without backup:write', async () => {
+    mockSelectSequence([[planRow], [bareMetalGroup]]);
+    vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute']) as any);
+
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+    ));
+
+    expect(result.error).toBe('backup_write_required');
+    expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('execute_dr_plan runs a BARE_METAL_REBUILD plan with backup:write', async () => {
+    mockSelectSequence([[planRow], [bareMetalGroup]]);
+    vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute'], ['backup', 'write']) as any);
+
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+    ));
+
+    expect(result.success).toBe(true);
+    expect(createDrExecutionAndEnqueue).toHaveBeenCalledOnce();
+  });
+
+  it('execute_dr_plan does not need backup:write for a plan without bare-metal groups', async () => {
+    prepareHandlerMocks('execute_dr_plan');
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+    ));
+    expect(result.success).toBe(true);
+    expect(resolveAiCallerPermissions).not.toHaveBeenCalled();
+  });
+
+  it('execute_dr_plan reports the service authorization denial like the route', async () => {
+    prepareHandlerMocks('execute_dr_plan');
+    vi.mocked(createDrExecutionAndEnqueue).mockReset();
+    vi.mocked(createDrExecutionAndEnqueue).mockRejectedValue(new ResilienceAuthorizationError(403, 'site_access_denied'));
+
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'failover' }, makeAuth(),
+    ));
+
+    expect(result.error).toBe('site_access_denied');
+  });
+
+  it('add_group refuses a device outside the plan org', async () => {
+    // plan, then the plan-org device lookup finds only one of the two.
+    mockSelectSequence([[planRow], [{ id: DEVICE_ID }]]);
+    const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+      action: 'add_group', planId: PLAN_ID, name: 'g', devices: [DEVICE_ID, OTHER_PLAN_GROUP],
+    }, makeAuth()));
+
+    expect(result.error).toBe('One or more devices do not belong to this organization');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('add_group refuses a dependsOnGroupId that is not a group of the same plan', async () => {
+    mockSelectSequence([[planRow], [{ id: DEVICE_ID }], []]);
+    const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+      action: 'add_group', planId: PLAN_ID, name: 'g', devices: [DEVICE_ID], dependsOnGroupId: OTHER_PLAN_GROUP,
+    }, makeAuth()));
+
+    expect(result.error).toBe('dependsOnGroupId must reference another group in the same DR plan');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('update_group refuses a group depending on itself and a device outside the plan org', async () => {
+    mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }]]);
+    const self = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+      action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, dependsOnGroupId: GROUP_ID,
+    }, makeAuth()));
+    expect(self.error).toBe('dependsOnGroupId must reference another group in the same DR plan');
+
+    mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }], []]);
+    const foreign = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+      action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, devices: [OTHER_PLAN_GROUP],
+    }, makeAuth()));
+    expect(foreign.error).toBe('One or more devices do not belong to this organization');
+    expect(db.update).not.toHaveBeenCalled();
   });
 });

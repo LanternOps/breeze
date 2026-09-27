@@ -453,6 +453,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       createdAt: deviceCommands.createdAt,
       executedAt: deviceCommands.executedAt,
       deliverBy: deviceCommands.deliverBy,
+      result: deviceCommands.result,
     })
     .from(deviceCommands)
     .where(and(...whereConditions))
@@ -477,10 +478,22 @@ export async function reapStaleDeviceCommands(): Promise<number> {
     let due: boolean;
     let kind: 'expired' | 'timeout';
     let errorMsg: string;
+    // A row whose delivery was REFUSED (commandDispatch
+    // `expireRefusedClaimedCommandDelivery`) sits `pending` with a deadline of
+    // the refusal instant and the reason in `result.deliveryRefusal`. It is on
+    // the delivery clock like any other expired row, but the device may well
+    // be connected, so report the refusal rather than a reconnect deadline.
+    const pendingResult = cmd.result as Record<string, unknown> | null | undefined;
+    const deliveryRefusal =
+      cmd.status === 'pending' && typeof pendingResult?.deliveryRefusal === 'string'
+        ? pendingResult.deliveryRefusal
+        : null;
     if (cmd.status === 'pending' && cmd.deliverBy) {
       due = cmd.deliverBy.getTime() <= now;
       kind = 'expired';
-      errorMsg = `Device did not reconnect before ${cmd.deliverBy.toISOString()}; command was never delivered`;
+      errorMsg = deliveryRefusal
+        ? `Command was not delivered: ${deliveryRefusal}`
+        : `Device did not reconnect before ${cmd.deliverBy.toISOString()}; command was never delivered`;
     } else if (cmd.status === 'sent' && cmd.executedAt) {
       due = now - cmd.executedAt.getTime() >= timeoutMs;
       kind = 'timeout';
@@ -517,7 +530,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       kind === 'expired'
         ? {
             status: SERVER_TIMEOUT_RESULT_STATUS,
-            reason: 'not_delivered_before_deadline',
+            reason: deliveryRefusal ? 'delivery_refused' : 'not_delivered_before_deadline',
             clock: 'delivery',
             error: errorMsg,
             timedOutBy: 'server',

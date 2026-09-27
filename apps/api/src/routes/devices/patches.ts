@@ -11,6 +11,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
+import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
 
 export const patchesRoutes = new Hono();
 
@@ -319,8 +320,12 @@ patchesRoutes.get(
         title: patches.title,
         externalId: patches.externalId,
         description: patches.description,
-        severity: patches.severity,
-        category: patches.category,
+        // Effective values: shared trusted classification when known, else
+        // this device's own reported severity/category — see
+        // services/patchSeverityOverlay.ts. Scoped by the deviceId WHERE
+        // below, so this can never surface another tenant's report.
+        severity: EFFECTIVE_PATCH_SEVERITY_SQL,
+        category: EFFECTIVE_PATCH_CATEGORY_SQL,
         source: patches.source,
         packageId: patches.packageId,
         releaseDate: patches.releaseDate,

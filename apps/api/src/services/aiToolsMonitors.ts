@@ -28,6 +28,7 @@ import type { AiTool } from './aiTools';
 import { isMonitorAttachableToPolicy } from './monitors/monitorAttachability';
 import { monitorsLinkSettings, readMonitorsLink, shouldRemoveEmptiedLink } from './monitors/monitorAttachments';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { toolErrorResult } from './aiToolErrors';
 import { describeFirstZodIssue } from '../lib/zodIssues';
@@ -41,7 +42,7 @@ import {
   createMonitorDefinition,
   deleteMonitorDefinition,
   getMonitorDefinition,
-  listMonitorDefinitions,
+  listMonitorDefinitionsPage,
   MonitorNotFoundError,
   MonitorOwnershipError,
   MonitorValidationError,
@@ -179,14 +180,13 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       if (!pageArgs.ok) return JSON.stringify({ error: pageArgs.error, code: pageArgs.code });
       const { limit, offset, fingerprint } = pageArgs;
 
-      const rows = await listMonitorDefinitions(auth, filters);
-      if (rows.length === 0) {
-        return JSON.stringify(pageEnvelope({ key: 'monitors', items: [], limit, offset, fingerprint, total: 0 }));
+      // Page in SQL (#6735). The page and its total come from one statement
+      // (one snapshot), so `total`/`hasMore` describe exactly these rows.
+      const { rows: pageRows, total } = await listMonitorDefinitionsPage(auth, filters, { limit, offset });
+      if (pageRows.length === 0) {
+        return JSON.stringify(pageEnvelope({ key: 'monitors', items: [], limit, offset, fingerprint, total }));
       }
 
-      // `rows` is the caller's whole visible set (no DB-side limit today), so
-      // `total` is the true count and the page is sliced from it.
-      const pageRows = rows.slice(offset, offset + limit);
       const counts = await attachmentCountsFor(pageRows.map((r) => r.id));
 
       return JSON.stringify(pageEnvelope({
@@ -201,7 +201,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           attachmentCount: counts.get(r.id) ?? 0,
         })),
         limit, offset, fingerprint,
-        total: rows.length,
+        total,
       }));
     }),
   });
@@ -377,6 +377,17 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_monitor_definitions', async (input, auth) => {
       const action = input.action as string;
+
+      // Site-ceiling gate up front, before any branch: a monitor's responses
+      // compile verbatim into a managed automation that runs as SYSTEM on
+      // every device an attaching org-wide policy reaches, so every action
+      // here (create, update, enable, disable, delete, attach, detach) takes
+      // the same capability as every other org-wide governance write. This
+      // tool has no TOOL_TIERS entry yet (latent), so the gate must be in
+      // place before it ever gets one.
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'create') {
         const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});

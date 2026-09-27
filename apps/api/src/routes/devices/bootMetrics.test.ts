@@ -41,9 +41,16 @@ vi.mock('../../services/commandQueue', () => ({
   executeCommand: vi.fn(),
 }));
 
+vi.mock('../../services/aiRemoteToolsPolicy', () => ({
+  REMOTE_TOOLS_DISABLED_BY_POLICY: 'REMOTE_TOOLS_DISABLED_BY_POLICY',
+  checkDeviceRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+}));
+
 import { db } from '../../db';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { bootMetricsRoutes } from './bootMetrics';
+import { executeCommand } from '../../services/commandQueue';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
 
 describe('boot metrics routes', () => {
   let app: Hono;
@@ -154,5 +161,37 @@ describe('boot metrics routes', () => {
 
     expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  // Startup-item actions are the same class as /system-tools and
+  // honour the per-device remote-tools policy like it does.
+  it.each(['disable', 'enable'])('refuses startup-item %s when the remote-tools policy is off, before any dispatch', async (action) => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: 'device-1', status: 'online', orgId: 'org-123' } as never);
+    vi.mocked(checkDeviceRemoteToolsPolicy).mockResolvedValueOnce({ allowed: false, reason: 'Remote tools is disabled by policy "Locked"' });
+
+    const res = await app.request(`/devices/device-1/startup-items/Updater/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'test' }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('REMOTE_TOOLS_DISABLED_BY_POLICY');
+    expect(body.error).toContain('Locked');
+    expect(checkDeviceRemoteToolsPolicy).toHaveBeenCalledWith('device-1');
+    expect(db.select).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the policy before the tenant check (another tenant\'s device reads as not found)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
+    const res = await app.request('/devices/device-1/startup-items/Updater/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ reason: 'test' }),
+    });
+    expect(res.status).toBe(404);
+    expect(checkDeviceRemoteToolsPolicy).not.toHaveBeenCalled();
   });
 });

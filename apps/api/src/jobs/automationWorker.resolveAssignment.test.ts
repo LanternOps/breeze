@@ -64,6 +64,23 @@ vi.mock('../services/bullmqValidation', () => ({
 vi.mock('./queueSchemas', () => ({ automationQueueJobDataSchema: {} }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 
+// Execution-target field-provenance tiering: `resolveDeviceIdsForAssignment`'s
+// `device_group` branch — the resolver that feeds `processTriggerConfigPolicySchedule`
+// — now gates through the shared execution-target field-provenance helper
+// before resolving membership, the same sibling gate patchSchedulerWorker.ts
+// already carries. Mocked as a pass-through by default so the existing tests
+// above (which pin the exact join/where SQL of the membership query itself)
+// are unaffected; the gating behavior is covered by a dedicated suite below.
+const mockResolveExecutionSafeGroupIds = vi.fn(async (groupIds: string[]) => ({
+  allowedGroupIds: groupIds,
+  refusedGroups: [] as Array<{ id: string; refusedFields: string[] }>,
+}));
+const mockAuditRefusedExecutionGroups = vi.fn();
+vi.mock('../services/executionTargetGating', () => ({
+  resolveExecutionSafeGroupIds: (...args: [string[]]) => mockResolveExecutionSafeGroupIds(...args),
+  auditRefusedExecutionGroups: (...args: unknown[]) => mockAuditRefusedExecutionGroups(...args),
+}));
+
 import { __testOnly } from './automationWorker';
 import { db } from '../db';
 import { organizations, devices, deviceGroups, deviceGroupMemberships } from '../db/schema';
@@ -287,6 +304,24 @@ describe('automationWorker resolveDeviceIdsForAssignment — partner re-clamp (#
     expect(ids).toEqual([]);
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('refuses a device_group assignment whose rules reference an execution-refused field, without querying membership', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({
+      allowedGroupIds: [],
+      refusedGroups: [{ id: 'group-x', refusedFields: ['hostname'] }],
+    });
+
+    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', 'org-y', null);
+
+    expect(ids).toEqual([]);
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith(
+      'org-y',
+      'automation_schedule.execution_target_refused_agent_reported_fields',
+      [{ id: 'group-x', refusedFields: ['hostname'] }],
+    );
+    // No membership query — the group was refused before resolution.
+    expect(db.select).not.toHaveBeenCalled();
   });
 });
 

@@ -1,5 +1,5 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runAfterDbContextExit } from '../db';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -26,6 +26,8 @@ import {
 } from './backupSnapshotStorage';
 import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
+import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -345,6 +347,41 @@ function buildSnapshotLabel(
   }
 
   return `Backup ${timestamp.toISOString().slice(0, 10)}`;
+}
+
+// How far an agent-reported result timestamp may drift from a trustworthy
+// anchor before it is treated as invalid rather than clock skew. The agent
+// reports this field verbatim (routes/backup/resultSchemas.ts has no range
+// bound on it), and it drives immutableUntil / expiresAt / maxVersions
+// pruning order — an unclamped future date would outrank every later backup
+// and never expire, so retention would evict real restore points instead.
+const SNAPSHOT_TIMESTAMP_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * Clamp an agent-reported snapshot timestamp to [job.createdAt − skew,
+ * server receipt time + skew]. A missing/invalid reported value falls back
+ * to receipt time — the DB column still needs *a* timestamp, and receipt
+ * time is always a trustworthy fallback. A missing/invalid `jobCreatedAt`
+ * (e.g. a caller that did not select it) only widens the lower bound to
+ * "no floor" rather than throwing; the upper bound — the leg that actually
+ * blocks the future-dated retention-evasion primitive — always applies.
+ */
+export function clampSnapshotTimestamp(
+  reported: Date | null,
+  jobCreatedAt: Date | null | undefined,
+  receivedAt: Date,
+): Date {
+  if (!reported || Number.isNaN(reported.getTime())) return receivedAt;
+
+  const maxBound = new Date(receivedAt.getTime() + SNAPSHOT_TIMESTAMP_SKEW_MS);
+  if (reported.getTime() > maxBound.getTime()) return maxBound;
+
+  const hasValidCreatedAt = jobCreatedAt instanceof Date && !Number.isNaN(jobCreatedAt.getTime());
+  if (hasValidCreatedAt) {
+    const minBound = new Date(jobCreatedAt.getTime() - SNAPSHOT_TIMESTAMP_SKEW_MS);
+    if (reported.getTime() < minBound.getTime()) return minBound;
+  }
+  return reported;
 }
 
 function computeImmutableUntil(
@@ -827,6 +864,32 @@ async function checkLateResultBaseFence(job: {
   return retirement ? { ok: false, reason: 'base_retired' } : { ok: true };
 }
 
+/**
+ * Which file-index hydration, if any, a freshly persisted snapshot needs.
+ *
+ * - Every S3 snapshot gets a full-index request, even when it references no
+ *   older snapshots: brokered storage reads serve file, system_image and
+ *   application snapshots through the file index, and a generic verify of a
+ *   `database` snapshot does too (only the MSSQL restore/verify commands read
+ *   it from its one metadata-named object). Local destinations are never
+ *   served by brokered reads, so a full local snapshot needs nothing.
+ * - Otherwise a snapshot with references still needs the referenced-origin
+ *   index that token-mode recovery requires (W09, #6464).
+ * - A snapshot whose index is already server-verified needs nothing.
+ */
+export function snapshotIndexHydrationReason(params: {
+  storageIdentity: string | null;
+  referencedFiles: number | undefined;
+  fileIndexStatus: string | null | undefined;
+}): 'result_brokered_read' | 'result' | null {
+  if (params.fileIndexStatus === 'complete') return null;
+  if (params.storageIdentity?.startsWith('s3::')) {
+    return 'result_brokered_read';
+  }
+  if (params.referencedFiles !== undefined && params.referencedFiles > 0) return 'result';
+  return null;
+}
+
 export async function applyBackupCommandResultToJob(params: {
   jobId: string;
   orgId: string;
@@ -862,6 +925,41 @@ export async function applyBackupCommandResultToJob(params: {
 }> {
   const { jobId, orgId, deviceId, resultStatus, agentStatus, result, source = 'agent' } = params;
   const providerSnapshotId = result.snapshot?.id ?? result.snapshotId ?? null;
+  // The agent (or, on this leg, a synthesized reconcile result already vetted
+  // against reconcile's own `foreignClaimed` check) is authoritative for the
+  // job it is completing, not for the snapshot id it names. An unchecked id
+  // here lets this device's terminal result adopt another device's snapshot
+  // into a product-verified restore point.
+  //
+  // findForeignSnapshotClaim runs its SELECTs under THIS request's own
+  // org-scoped RLS context (see db/index.ts — the agent WS/REST path never
+  // holds system scope), so it can only ever see a row belonging to this
+  // caller's OWN org. That makes it a real, sound guard against a SIBLING
+  // DEVICE IN THE SAME ORG (RLS restricts by org, not by device) — but it is
+  // NOT a guard against a different org's row on a destination shared across
+  // orgs; that row is invisible to this SELECT by design. The actual cross-org guarantee is the
+  // `backup_snapshots_storage_identity_snapshot_id_uq` DB constraint
+  // enforced at INSERT time below (see `isPgUniqueViolation` handling) —
+  // Postgres refuses the conflicting row regardless of what this session's
+  // RLS context can see, with no need to escalate to system scope (which
+  // would double-hold a pooled connection under this request's own
+  // transaction, the #2417/#6671 shape) to find out who holds it.
+  const snapshotOwnershipConflict = providerSnapshotId
+    ? await findForeignSnapshotClaim({ snapshotId: providerSnapshotId, callerDeviceId: deviceId, callerOrgId: orgId })
+    : null;
+  if (snapshotOwnershipConflict) {
+    // crossOrg can be true here on the one call site that runs system-scoped
+    // (jobs/backupWorker.ts's BullMQ consumer) — every other call site's RLS
+    // context makes a cross-org row invisible to the SELECT above, so this
+    // branch is reachable there but the case above is never cross-org on
+    // the agent WS/REST legs.
+    const msg =
+      `[BackupPersistence] Dropped snapshotId "${providerSnapshotId}" reported by device ${deviceId} ` +
+      `for job ${jobId} — already claimed by device ${snapshotOwnershipConflict.ownerDeviceId}` +
+      (snapshotOwnershipConflict.crossOrg ? ' in a different org' : ' in this org') + '.';
+    console.warn(msg);
+    captureException(new Error(msg));
+  }
   const metadata = normalizeMetadata(result.metadata);
   const now = new Date();
 
@@ -881,12 +979,24 @@ export async function applyBackupCommandResultToJob(params: {
   // Any inner status other than `partial` collapses to `completed` on purpose:
   // the agent's vocabulary includes `skipped`/`stopped`, which are not
   // backup_status enum values and would fail the UPDATE outright.
+  //
+  // #5396: `completed` means every file was read. A success run that still
+  // counted per-file failures (errorCount > 0) but stayed under the agent's
+  // partial threshold is `completed_with_errors`. Derived HERE from errorCount
+  // rather than trusted from the agent's inner status because every agent
+  // already in the field reports such a run as plain `completed` — the
+  // derivation makes the honest status reach the whole fleet without an agent
+  // release. An agent that reports `completed_with_errors` itself is accepted
+  // as-is. `partial` (over the threshold) takes precedence.
   const isSuccessResult = resultStatus === 'completed';
-  let terminalStatus: 'completed' | 'partial' | 'failed';
+  const hadFileFailures = typeof result.errorCount === 'number' && result.errorCount > 0;
+  let terminalStatus: 'completed' | 'completed_with_errors' | 'partial' | 'failed';
   if (!isSuccessResult) {
     terminalStatus = 'failed';
   } else if (agentStatus === 'partial') {
     terminalStatus = 'partial';
+  } else if (agentStatus === 'completed_with_errors') {
+    terminalStatus = 'completed_with_errors';
   } else {
     // Collapse LOUDLY. Silently greening an agent status we do not model is the
     // #3000 bug class itself — `skipped` (a run that protected zero files)
@@ -897,15 +1007,23 @@ export async function applyBackupCommandResultToJob(params: {
     if (agentStatus && agentStatus !== 'completed') {
       const msg =
         `[BackupPersistence] Unrecognized agent terminal status "${agentStatus}" for job ${jobId} ` +
-        `(device ${deviceId}) recorded as 'completed' — the run may not be a good restore point.`;
+        `(device ${deviceId}) recorded as '${hadFileFailures ? 'completed_with_errors' : 'completed'}' — the run may not be a good restore point.`;
       console.warn(msg);
       captureException(new Error(msg));
     }
-    terminalStatus = 'completed';
+    terminalStatus = hadFileFailures ? 'completed_with_errors' : 'completed';
   }
 
   if (isSuccessResult) {
-    updateData.status = terminalStatus;
+    updateData.status =
+      source === 'reconcile' && terminalStatus === 'completed'
+        ? // #5396: a reconcile result is synthesized from the manifest and
+          // carries no errorCount, so it cannot tell a clean run from one with
+          // file failures. When it re-adopts a half-written completed_with_errors
+          // job (see the reconcile guard below), keep that status rather than
+          // laundering the run back to a clean `completed`.
+          sql`CASE WHEN ${backupJobs.status} = 'completed_with_errors' THEN 'completed_with_errors'::backup_status ELSE 'completed'::backup_status END`
+        : terminalStatus;
     updateData.fileCount = result.filesBackedUp ?? null;
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
@@ -994,7 +1112,7 @@ export async function applyBackupCommandResultToJob(params: {
     }
   }
 
-  if (providerSnapshotId) {
+  if (providerSnapshotId && !snapshotOwnershipConflict) {
     updateData.snapshotId = providerSnapshotId;
   }
 
@@ -1043,13 +1161,17 @@ export async function applyBackupCommandResultToJob(params: {
   // snapshot write is an upsert keyed on (jobId, snapshotId), so a repeat is a
   // no-op.
   //
+  // `completed_with_errors` (#5396) is a `completed` run that counted file
+  // failures, so it can be half-written in exactly the same way and is
+  // adoptable on the same terms.
+  //
   // `cancelled` and `partial` remain excluded under BOTH sources: a user cancel
   // is a deliberate decision, and a `partial` job already recorded its own
   // outcome. (backupStatusEnum is pending|running|completed|failed|cancelled|
-  // partial — all six are accounted for here.)
+  // partial|completed_with_errors — all seven are accounted for here.)
   const terminalJobGuard =
     source === 'reconcile'
-      ? inArray(backupJobs.status, ['failed', 'completed'])
+      ? inArray(backupJobs.status, ['failed', 'completed', 'completed_with_errors'])
       : and(
           eq(backupJobs.status, 'failed'),
           like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)
@@ -1125,11 +1247,12 @@ export async function applyBackupCommandResultToJob(params: {
     baseSnapshotId: backupJobs.baseSnapshotId,
     publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
     storageIdentity: backupJobs.storageIdentity,
+    createdAt: backupJobs.createdAt,
   } as const;
 
   type MainUpdateRow = Pick<
     typeof backupJobs.$inferSelect,
-    'id' | 'orgId' | 'configId' | 'backupType' | 'backupMode' | 'baseSnapshotId' | 'publishLeaseExpiresAt' | 'storageIdentity'
+    'id' | 'orgId' | 'configId' | 'backupType' | 'backupMode' | 'baseSnapshotId' | 'publishLeaseExpiresAt' | 'storageIdentity' | 'createdAt'
   >;
   let updatedJob: MainUpdateRow | undefined;
 
@@ -1273,7 +1396,13 @@ export async function applyBackupCommandResultToJob(params: {
   // produced a genuine snapshot and must still get its backup_snapshots row.
   // Gating this on the narrower status would strand a restorable snapshot in
   // the bucket with no DB row, the exact failure mode FIX 7 above exists for.
-  if (!isSuccessResult || !providerSnapshotId) {
+  //
+  // A same-org foreign claim is refused here too (fast path — same finding
+  // as the job-row guard above; RLS makes it a sound check for this case).
+  // The cross-org case is NOT decidable here (see the comment on
+  // snapshotOwnershipConflict above) — it is enforced below, at the actual
+  // `backup_snapshots` INSERT, by the DB unique constraint.
+  if (!isSuccessResult || !providerSnapshotId || snapshotOwnershipConflict) {
     return {
       applied: true,
       snapshotDbId: null,
@@ -1281,9 +1410,14 @@ export async function applyBackupCommandResultToJob(params: {
     };
   }
 
-  const timestamp = result.snapshot?.timestamp
-    ? new Date(result.snapshot.timestamp)
-    : now;
+  // Agent-reported, server-unverified — clamped so an out-of-range past/future date
+  // cannot escape retention ordering or immutability windows (see
+  // clampSnapshotTimestamp).
+  const timestamp = clampSnapshotTimestamp(
+    result.snapshot?.timestamp ? new Date(result.snapshot.timestamp) : null,
+    updatedJob.createdAt,
+    now,
+  );
   // A system_image job dispatches a generic backup_run whose result carries no
   // backupType, so derive it from the job's backup_mode; otherwise the snapshot
   // (and BMR restore, which keys off snapshot.backupType) mislabels it 'file'.
@@ -1360,16 +1494,50 @@ export async function applyBackupCommandResultToJob(params: {
     bareMetalReasons,
   } as const;
 
+  // Scoped by storage identity, not jobId, when the job has one: a
+  // journal-resumed run keeps the SAME snapshot id under a NEW backup_jobs
+  // row (see the snapshotId doc comment in backupProgress.ts), so a
+  // jobId-scoped lookup would miss this run's own earlier backup_snapshots
+  // row and attempt a second INSERT that collides with it under the unique
+  // constraint below. A NULL storageIdentity job (legacy/unset) falls back
+  // to the old jobId-scoped lookup, matching the constraint's own partial
+  // (WHERE storage_identity IS NOT NULL) scope — there is no DB-level
+  // protection for that case either way.
   const [existingSnapshot] = await db
-    .select({ id: backupSnapshots.id })
+    .select({ id: backupSnapshots.id, deviceId: backupSnapshots.deviceId })
     .from(backupSnapshots)
     .where(
-      and(
-        eq(backupSnapshots.jobId, jobId),
-        eq(backupSnapshots.snapshotId, providerSnapshotId)
-      )
+      updatedJob.storageIdentity
+        ? and(
+            eq(backupSnapshots.storageIdentity, updatedJob.storageIdentity),
+            eq(backupSnapshots.snapshotId, providerSnapshotId)
+          )
+        : and(
+            eq(backupSnapshots.jobId, jobId),
+            eq(backupSnapshots.snapshotId, providerSnapshotId)
+          )
     )
     .limit(1);
+
+  // A row visible under THIS session's own org-scoped RLS context but owned
+  // by a DIFFERENT device is a same-org sibling-device claim (RLS restricts
+  // by org, not by device, so this row IS visible) — refuse rather than
+  // adopt. This is the same-org twin of the 23505 handling below; together
+  // they cover both axes the top-of-function comment describes.
+  if (existingSnapshot && existingSnapshot.deviceId !== deviceId) {
+    const msg =
+      `[BackupPersistence] Refused to create a backup_snapshots row for snapshot ${providerSnapshotId} ` +
+      `on job ${jobId} (device ${deviceId}) — already claimed by device ${existingSnapshot.deviceId} in this org.`;
+    console.warn(msg);
+    captureException(new Error(msg));
+    return { applied: true, snapshotDbId: null, providerSnapshotId };
+  }
+
+  // Set when the INSERT below lost a race against a row this session's RLS
+  // context cannot see (the cross-org case) — distinguishes a deliberate
+  // refusal from the genuine "concurrent delete" anomaly the `!snapshot`
+  // fallback further down exists for, so the two are not conflated in Sentry.
+  let refusedForeignClaim = false;
 
   const [snapshot] = existingSnapshot
     ? await db
@@ -1377,7 +1545,47 @@ export async function applyBackupCommandResultToJob(params: {
         .set(snapshotValues)
         .where(eq(backupSnapshots.id, existingSnapshot.id))
         .returning()
-    : await db.insert(backupSnapshots).values(snapshotValues).returning();
+    : await (async () => {
+        try {
+          // A NESTED transaction, not a bare INSERT: `applyBackupCommandResultToJob`
+          // always runs inside an outer request-scoped transaction (see
+          // db/index.ts's `withDbAccessContext`/`withSystemDbAccessContext` —
+          // both wrap their whole callback in ONE `baseDb.transaction(...)`).
+          // Calling `db.transaction(...)` again while already inside that
+          // ambient transaction compiles to a Postgres SAVEPOINT, not a new
+          // top-level transaction on a second pooled connection (see
+          // dbSavepointErrorIsolation.integration.test.ts and the
+          // retryOnTransientLockError doc comment in utils/pgErrors.ts for the
+          // mechanism). That is required here, not cosmetic: a 23505 from a
+          // BARE insert aborts the whole outer transaction — every statement
+          // after it, including the request's own final COMMIT, would then
+          // fail with 25P02 "current transaction is aborted". The SAVEPOINT
+          // is what lets the catch below swallow the conflict and leave the
+          // rest of this request's transaction usable.
+          return await db.transaction((tx) => tx.insert(backupSnapshots).values(snapshotValues).returning());
+        } catch (err) {
+          if (!isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')) {
+            throw err;
+          }
+          // A row this session cannot see (a different org's, under this
+          // request's own org-scoped RLS context) already claims this
+          // (storage_identity, snapshot_id) pair. Postgres refused the
+          // INSERT regardless of what this session's RLS context can see —
+          // the DB-level guarantee the app-layer ownership check above
+          // cannot provide across orgs. Deliberately NOT escalating to a
+          // system-scoped read here to find out who holds it: that would
+          // hold a second pooled connection open under this request's own
+          // transaction (#2417/#6671 pool-double-hold shape) just to learn a
+          // detail this response never needs to surface.
+          refusedForeignClaim = true;
+          const msg =
+            `[BackupPersistence] Refused to create a backup_snapshots row for snapshot ${providerSnapshotId} ` +
+            `on job ${jobId} (device ${deviceId}) — already claimed by another organization's destination.`;
+          console.warn(msg);
+          captureException(new Error(msg));
+          return [];
+        }
+      })();
 
   if (snapshot && result.snapshot?.files && snapshot.fileIndexStatus !== 'complete') {
     // W09 (#6464): once the server has hydrated a verified-complete index
@@ -1423,25 +1631,42 @@ export async function applyBackupCommandResultToJob(params: {
     }
   }
 
-  if (snapshot && result.referencedFiles !== undefined && result.referencedFiles > 0) {
-    // W09 (#6464): a snapshot with references needs a server-verified index
-    // before ANY token-mode recovery can be authorized against it — enqueue
-    // hydration now so it's usually already 'complete' by the time an
-    // operator creates a recovery. Enqueue is dedupe-keyed by snapshot id
-    // (Task 4), so a re-adoption/reconcile re-posting the same result is safe
-    // to call again.
+  const hydrationReason = snapshot
+    ? snapshotIndexHydrationReason({
+        storageIdentity: updatedJob.storageIdentity ?? null,
+        referencedFiles: result.referencedFiles,
+        fileIndexStatus: snapshot.fileIndexStatus,
+      })
+    : null;
+  if (snapshot && hydrationReason) {
+    // Ask for a server-verified file index now rather than at the first read:
+    //  - a snapshot with references needs one before ANY token-mode recovery
+    //    can be authorized against it (W09, #6464);
+    //  - an S3 snapshot needs one before a restore/verify can be served
+    //    through a brokered storage session, which authorizes objects by exact
+    //    index membership, for full snapshots as well as incrementals.
+    // Without this the first read after every backup falls back to the
+    // credential-bearing path. A reconcile adoption qualifies too: it only
+    // adopts manifest-bearing prefixes, so the snapshot is hydratable, and it
+    // is a restore point like any other.
     //
-    // The job/snapshot rows above are already committed by this point, so a
-    // throw here (e.g. Redis unreachable) would make BullMQ retry an
-    // already-terminal backup result — catch only this enqueue and continue.
-    // The creation-time preflight (bareMetalRecoveryService.ts) is the
-    // documented fallback that enqueues hydration again if it's still
-    // missing when a recovery is actually created.
-    try {
-      await enqueueSnapshotFileIndexHydration(snapshot.id, 'result');
-    } catch (err) {
-      console.error(`[backupResultPersistence] Failed to enqueue file-index hydration for snapshot ${snapshot.id}:`, err);
-    }
+    // The queue request is several Redis round trips, so it starts only after
+    // the caller's DB context has settled (never while a transaction holds its
+    // pooled connection). It also runs if that transaction rolls back; the
+    // request is idempotent (snapshot-scoped jobId) and hydration of a
+    // snapshot row that does not exist ends as a logged, non-retried failure.
+    // A failure here never fails the already-persisted result: the brokered
+    // read delivery and the recovery-creation preflight both request
+    // hydration again when they find the index incomplete. Snapshots
+    // persisted before this change keep relying on that lazy request.
+    const snapshotDbId = snapshot.id;
+    runAfterDbContextExit('backupResultPersistence.requestIndexHydration', async () => {
+      try {
+        await enqueueSnapshotFileIndexHydration(snapshotDbId, hydrationReason);
+      } catch (err) {
+        console.error(`[backupResultPersistence] Failed to enqueue file-index hydration for snapshot ${snapshotDbId}:`, err);
+      }
+    });
   }
 
   if (snapshot) {
@@ -1575,13 +1800,15 @@ export async function applyBackupCommandResultToJob(params: {
     }
   }
 
-  if (!snapshot) {
+  if (!snapshot && !refusedForeignClaim) {
     // The job row was flipped to `completed` and stamped with the snapshot id,
     // but neither the UPDATE nor the INSERT above returned a row — a concurrent
     // delete of the row selected at `existingSnapshot`, most plausibly. The
     // caller would otherwise read `applied: true` and count this as a restore
     // point that does not exist, which is exactly the #3006 silent-orphan
-    // shape. Surface it.
+    // shape. Surface it. (A `refusedForeignClaim` already logged its own,
+    // more specific message above — this generic anomaly warning would
+    // otherwise misrepresent a deliberate security refusal as data loss.)
     const missingSnapshotMsg =
       `[BackupPersistence] Job ${jobId} (device ${deviceId}) was marked completed for snapshot ` +
       `${providerSnapshotId} but no backup_snapshots row was written (source: ${source}); the ` +

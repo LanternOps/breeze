@@ -64,7 +64,7 @@
 import './setup';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -104,6 +104,25 @@ vi.mock('../../config/env', async (importOriginal) => {
 const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-10-11-160000-device-custom-field-values.sql',
+);
+
+/**
+ * 2026-11-05-100100 later redefines both `breeze_device_custom_field_value_coherent`
+ * and `breeze_rehome_device_custom_field_values` (device-org coherence check +
+ * the rehome GUC). Replaying the OLDER `MIGRATION_FILE` above — needed to
+ * exercise the backfill's idempotency, which is the whole point of that block
+ * — re-runs ITS `CREATE OR REPLACE FUNCTION` for both, reverting them to their
+ * pre-100100 bodies for the rest of this DB session (`breeze_migrations` only
+ * gates whether autoMigrate reapplies a file by checksum; it does not notice
+ * a function drifting back under it via a raw replay). Left alone, every test
+ * that shares this database AFTER this describe block runs — in this file or
+ * any other integration file in the same `vitest run` — would silently see
+ * the unpatched coherence trigger. Replaying 100100 once more after the
+ * backfill replays restores head-of-migrations state.
+ */
+const LATEST_COHERENCE_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-11-05-100100-device-custom-field-values-trigger-org-check.sql',
 );
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -306,14 +325,68 @@ describe('device_custom_field_values — projection', () => {
 });
 
 describe('device_custom_field_values — coherence and tenancy guards', () => {
-  runDb('refuses a row whose device belongs to another org (composite FK)', async () => {
+  runDb('refuses a row whose device belongs to another org (device-org coherence check, 2026-11-05-100100)', async () => {
     const f = await seedFixture();
-    // A PARTNER-WIDE definition so the coherence trigger passes (orgA2 is under
-    // the same partner) and the composite FK is what actually rejects the row.
+    // A PARTNER-WIDE definition so the coherence trigger's DEFINITION check
+    // passes (orgA2 is under the same partner) and the DEVICE-org check added
+    // by 2026-11-05-100100 is what actually rejects the row. That check runs
+    // in the same BEFORE ROW trigger, ahead of the composite
+    // (device_id, org_id) -> devices(id, org_id) FK — which is DEFERRABLE
+    // INITIALLY DEFERRED and would otherwise not be checked until COMMIT (see
+    // that migration's header for why the deferred-only guard was not enough
+    // on its own).
     await expect(sys(() => db.execute(sql`
       INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text)
       VALUES (${f.deviceId}::uuid, ${f.orgA2}::uuid, ${f.partnerWideDef}::uuid, 'rack_unit', 'x')`)))
-      .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+      .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === 'P0001');
+  });
+
+  runDb('an INSERT-then-DELETE in one transaction is refused for another org\'s device (device-org coherence)', async () => {
+    // The composite device FK is DEFERRABLE INITIALLY DEFERRED, so an INSERT
+    // undone by a DELETE in the same transaction leaves no live row for the
+    // deferred check to see at COMMIT. The BEFORE ROW device-org check fires
+    // at INSERT time regardless of what happens to the row afterward, so the
+    // statement raises immediately and the AFTER STATEMENT projection trigger
+    // never runs against the other org's device.
+    const f = await seedFixture();
+    const foreignDevice = await createDevice(f.orgA2, f.siteA2, `dcfv-foreign-${deviceSeq + 1}`);
+    const stampBefore = await readExportStamp(foreignDevice);
+
+    await expect(sys(() => db.transaction(async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text)
+        VALUES (${foreignDevice}::uuid, ${f.orgA}::uuid, ${f.partnerWideDef}::uuid, 'rack_unit', 'mismatched')`);
+      await tx.execute(sql`
+        DELETE FROM device_custom_field_values
+         WHERE device_id = ${foreignDevice}::uuid AND org_id = ${f.orgA}::uuid`);
+    }))).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === 'P0001');
+
+    const rows = await sys(() => db.execute(sql`
+      SELECT 1 FROM device_custom_field_values WHERE device_id = ${foreignDevice}::uuid`));
+    expect(rows).toHaveLength(0);
+    // The whole transaction aborted, so the foreign device was never touched.
+    expect(await readExportStamp(foreignDevice)).toBe(stampBefore);
+  });
+
+  runDb('a plain breeze_app session does not get the re-home exception by setting an arbitrary GUC', async () => {
+    // The exception is keyed on current_user (the real, Postgres-level
+    // identity the coherence trigger observes because it is SECURITY
+    // INVOKER, not SECURITY DEFINER), never on a session-settable GUC — any
+    // session can call set_config on itself, so a GUC cannot identify the
+    // re-home path. This proves setting a plausible-looking GUC does
+    // nothing.
+    const f = await seedFixture();
+    const foreignDevice = await createDevice(f.orgA2, f.siteA2, `dcfv-guc-${deviceSeq + 1}`);
+
+    await sys(() => db.execute(sql`SELECT set_config('breeze.device_custom_field_rehome', 'on', true)`));
+    await expect(sys(() => db.execute(sql`
+      INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text)
+      VALUES (${foreignDevice}::uuid, ${f.orgA}::uuid, ${f.partnerWideDef}::uuid, 'rack_unit', 'mismatched')`)))
+      .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === 'P0001');
+
+    const rows = await sys(() => db.execute(sql`
+      SELECT 1 FROM device_custom_field_values WHERE device_id = ${foreignDevice}::uuid`));
+    expect(rows).toHaveLength(0);
   });
 
   runDb('refuses a definition_id owned by ANOTHER partner (coherence trigger)', async () => {
@@ -398,12 +471,14 @@ describe('device_custom_field_values — coherence and tenancy guards', () => {
 
   runDb('an org token cannot forge a row for another org (RLS, 42501)', async () => {
     const f = await seedFixture();
-    // RLS is the OUTER wall and is stricter than the trigger: this row would
-    // also fail the composite FK, but WITH CHECK rejects it first for a caller
-    // with no access to orgA2.
+    // Device genuinely belongs to orgA2, so the 2026-11-05-100100 device-org
+    // coherence check (and the composite FK) both agree with the row's claimed
+    // org_id — neither has anything to object to. WITH CHECK is what actually
+    // rejects this: the caller's context only has access to orgA.
+    const deviceInOrgA2 = await createDevice(f.orgA2, f.siteA2, `dcfv-other-org-${deviceSeq + 1}`);
     await expect(insertValue(
       {
-        deviceId: f.deviceId, orgId: f.orgA2, definitionId: f.partnerWideDef,
+        deviceId: deviceInOrgA2, orgId: f.orgA2, definitionId: f.partnerWideDef,
         fieldKey: 'rack_unit', valueText: 'x',
       },
       orgContext(f.orgA, f.partnerA),
@@ -453,6 +528,17 @@ describe('device_custom_field_values — backfill', () => {
    * exercise it — and re-applying it must be a true no-op, which the second
    * replay below asserts.
    */
+
+  // See LATEST_COHERENCE_MIGRATION_FILE's comment: every test in this describe
+  // block replays the OLDER migration file, which reverts the coherence/rehome
+  // functions 2026-11-05-100100 patches. Restore head-of-migrations state once
+  // this block finishes, so later tests (this file or another integration file
+  // sharing the DB in the same run) see the patched functions.
+  afterAll(async () => {
+    if (!process.env.DATABASE_URL) return;
+    await getTestDb().execute(sql.raw(readFileSync(LATEST_COHERENCE_MIGRATION_FILE, 'utf8')));
+  });
+
   runDb('backfills an existing jsonb value and mints a definition for an orphan key', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner!.id });
@@ -894,6 +980,33 @@ describe('device_custom_field_values — device org move', () => {
       SELECT 1 FROM public.device_custom_field_values WHERE device_id = ${f.deviceId}::uuid`));
     expect(rows).toHaveLength(0);
     expect(await readProjection(f.deviceId)).not.toHaveProperty('asset_tag');
+  });
+
+  runDb('a raw devices.org_id UPDATE (no rehome call) still moves a partner-wide value, via the generic restamp loop alone', async () => {
+    // breeze_cascade_device_org_id() does NOT call
+    // breeze_rehome_device_custom_field_values() — only the moveOrg.ts route
+    // does. This is a real gap for an ORG-OWNED definition (its definition_id
+    // is never re-pointed, so the coherence trigger's merge fence correctly
+    // refuses it — pre-existing, unrelated to 2026-11-05-100100). For a
+    // PARTNER-WIDE definition there is no such gap: breeze_cascade_device_org_id
+    // is an AFTER trigger, so devices.org_id already reads the TARGET org by
+    // the time its generic loop restamps this table's org_id to match — the
+    // new device-org check in the coherence trigger sees them agree and never
+    // needs the rehome exception on this path.
+    const f = await seedFixture();
+    await insertValue({
+      deviceId: f.deviceId, orgId: f.orgA, definitionId: f.partnerWideDef,
+      fieldKey: 'rack_unit', valueText: 'R12',
+    });
+
+    await sys(() => db.execute(sql`
+      UPDATE devices SET org_id = ${f.orgA2}::uuid, site_id = ${f.siteA2}::uuid
+       WHERE id = ${f.deviceId}::uuid`));
+
+    const rows = await sys(() => db.execute<{ orgId: string }>(sql`
+      SELECT org_id AS "orgId" FROM public.device_custom_field_values
+       WHERE device_id = ${f.deviceId}::uuid AND field_key = 'rack_unit'`));
+    expect(rows).toEqual([{ orgId: f.orgA2 }]);
   });
 });
 

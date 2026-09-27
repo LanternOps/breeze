@@ -30,7 +30,12 @@ import {
 } from './binarySource';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
-import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
+import {
+  getCurrentRecoverySigningKey,
+  getRecoverySigningKey,
+  isRecoverySigningConfigured,
+  signRecoveryArtifact,
+} from './recoverySigning';
 import { safeFetchFollowingRedirects } from './urlSafety';
 import { resolveRecoveryWorkDir } from './recoveryWorkDir';
 import {
@@ -179,7 +184,7 @@ export async function resolveBackupBinary(
   return { fileName, filePath: destinationPath, verified };
 }
 
-function buildBundleReadme(args: {
+export function buildBundleReadme(args: {
   platform: string;
   architecture: string;
   serverUrl: string;
@@ -210,16 +215,41 @@ function buildBundleReadme(args: {
     '- Boot into a compatible recovery environment.',
     '- Ensure the environment can reach the Breeze server and backup storage.',
     '- Provide any required network or storage drivers for the target hardware.',
+    '- minisign must be installed and on PATH. The launch script downloads',
+    '  this artifact\'s detached signature from the server (using the',
+    '  recovery token, over the Server URL above) and verifies the included',
+    '  helper binary against the verification key baked into THIS bundle at',
+    '  build time — never a key fetched at run time — BEFORE running it.',
+    '  A bundle built without recovery-bundle signing configured carries no',
+    '  verification key at all, so the script refuses to run unverified;',
+    '  verification failing, or the server having no signature available,',
+    '  both also refuse to run the binary — this is deliberate fail-closed',
+    '  behavior, not a bug.',
     '',
     `Included helper binary: ${args.fileName}`,
+    `Archive checksum and detached archive signature: see CHECKSUM.txt`,
+    'and the /bmr/media/:id/signature and /bmr/signing-key API routes (for',
+    'someone with an authenticated session verifying the archive itself,',
+    'independent of the launch script\'s own binary-level check above).',
   ].join('\n');
 }
 
-function buildLaunchScript(args: {
+export function buildLaunchScript(args: {
   platform: string;
+  architecture: string;
   fileName: string;
   serverUrl: string;
+  // The recovery-signing public key active WHEN THIS BUNDLE WAS BUILT,
+  // baked into the script as a literal so the script has a trust root
+  // independent of the live server it also has to fetch the signature
+  // from. null/omitted means signing was not configured for this bundle
+  // — the generated script refuses to run at all rather than falling
+  // back to whatever public key a live /binary-signature response hands
+  // back (that response is never trusted for the key — see bmr.ts).
+  signingPublicKey?: string | null;
 }) {
+  const pubkey = args.signingPublicKey ?? '';
+
   if (args.platform === 'windows') {
     return {
       fileName: 'run-recovery.ps1',
@@ -231,7 +261,52 @@ function buildLaunchScript(args: {
         '$ErrorActionPreference = "Stop"',
         '$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path',
         `$binary = Join-Path $scriptDir "${args.fileName}"`,
-        `& $binary bmr-recover --token $RecoveryToken --server "${args.serverUrl}"`,
+        `$server = "${args.serverUrl}"`,
+        // Baked in at build time — the trust root for the signature this
+        // script fetches below, never something read out of that
+        // fetch's own response.
+        `$expectedPublicKey = "${pubkey}"`,
+        '',
+        '# Verify the helper binary against a signature fetched fresh from',
+        '# the server (using this recovery token, not a session — see',
+        '# recoveryMediaService.ts), checked',
+        '# against $expectedPublicKey baked into THIS bundle above — never',
+        '# a key the server hands back — before running it. Fails closed:',
+        '# no baked key, no minisign, no reachable server, or no signature',
+        '# available all refuse to run the binary.',
+        'if (-not $expectedPublicKey) {',
+        '  Write-Error "This bundle was not signed at build time (no verification key embedded). Refusing to run the helper binary unverified."',
+        '  exit 1',
+        '}',
+        '$minisign = Get-Command minisign.exe -ErrorAction SilentlyContinue',
+        'if (-not $minisign) {',
+        '  Write-Error "minisign.exe is required to verify this bundle\'s helper binary before running it. Install minisign and re-run."',
+        '  exit 1',
+        '}',
+        'try {',
+        '  $body = @{ token = $RecoveryToken; platform = "windows"; architecture = "' + args.architecture + '" } | ConvertTo-Json',
+        '  $verify = Invoke-RestMethod -Method Post -Uri "$server/api/v1/backup/bmr/recover/binary-signature" -ContentType "application/json" -Body $body',
+        '} catch {',
+        '  Write-Error "Could not fetch the signature needed to verify this bundle\'s helper binary. Refusing to run it unverified."',
+        '  exit 1',
+        '}',
+        'if (-not $verify.signature) {',
+        '  Write-Error "Server has no signature available for this bundle\'s helper binary. Refusing to run it unverified."',
+        '  exit 1',
+        '}',
+        '$sigPath = Join-Path $env:TEMP ("breeze-recovery-" + [guid]::NewGuid().ToString() + ".minisig")',
+        '[IO.File]::WriteAllBytes($sigPath, [Convert]::FromBase64String($verify.signature))',
+        'try {',
+        '  & $minisign.Source -V -P $expectedPublicKey -m $binary -x $sigPath -q',
+        '  if ($LASTEXITCODE -ne 0) {',
+        '    Write-Error "Signature verification FAILED for $binary — refusing to run it."',
+        '    exit 1',
+        '  }',
+        '} finally {',
+        '  Remove-Item -Path $sigPath -ErrorAction SilentlyContinue',
+        '}',
+        '',
+        '& $binary bmr-recover --token $RecoveryToken --server "$server"',
       ].join('\n'),
     };
   }
@@ -247,7 +322,52 @@ function buildLaunchScript(args: {
       '  exit 1',
       'fi',
       'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
-      `"$SCRIPT_DIR/${args.fileName}" bmr-recover --token "$TOKEN" --server "${args.serverUrl}"`,
+      `BINARY="$SCRIPT_DIR/${args.fileName}"`,
+      `SERVER="${args.serverUrl}"`,
+      // Baked in at build time — the trust root for the signature this
+      // script fetches below, never something parsed out of that
+      // fetch's own response.
+      `EXPECTED_PUBKEY="${pubkey}"`,
+      '',
+      '# Verify the helper binary against a signature fetched fresh from the',
+      '# server (using this recovery token, not a session — see',
+      '# recoveryMediaService.ts), checked against',
+      '# EXPECTED_PUBKEY baked into THIS bundle above — never a key the',
+      '# server hands back — before running it. Fails closed: no baked key,',
+      '# no minisign/curl, no reachable server, or no signature available',
+      '# all refuse to run the binary.',
+      'if [ -z "$EXPECTED_PUBKEY" ]; then',
+      '  echo "This bundle was not signed at build time (no verification key embedded). Refusing to run the helper binary unverified." >&2',
+      '  exit 1',
+      'fi',
+      'if ! command -v minisign >/dev/null 2>&1; then',
+      '  echo "minisign is required to verify this bundle\'s helper binary before running it. Install minisign and re-run." >&2',
+      '  exit 1',
+      'fi',
+      'if ! command -v curl >/dev/null 2>&1; then',
+      '  echo "curl is required to fetch this bundle\'s verification signature. Install curl and re-run." >&2',
+      '  exit 1',
+      'fi',
+      'VERIFY_JSON="$(curl -fsS -X POST "$SERVER/api/v1/backup/bmr/recover/binary-signature" \\',
+      '  -H "Content-Type: application/json" \\',
+      `  -d "{\\"token\\":\\"\$TOKEN\\",\\"platform\\":\\"linux\\",\\"architecture\\":\\"${args.architecture}\\"}")" || {`,
+      '  echo "Could not fetch the signature needed to verify this bundle\'s helper binary. Refusing to run it unverified." >&2',
+      '  exit 1',
+      '}',
+      'SIGNATURE_B64="$(printf \'%s\' "$VERIFY_JSON" | sed -n \'s/.*"signature":"\\([^"]*\\)".*/\\1/p\')"',
+      'if [ -z "$SIGNATURE_B64" ]; then',
+      '  echo "Server has no signature available for this bundle\'s helper binary. Refusing to run it unverified." >&2',
+      '  exit 1',
+      'fi',
+      'SIG_FILE="$(mktemp)"',
+      'trap \'rm -f "$SIG_FILE"\' EXIT',
+      'printf \'%s\' "$SIGNATURE_B64" | base64 -d > "$SIG_FILE"',
+      'if ! minisign -V -P "$EXPECTED_PUBKEY" -m "$BINARY" -x "$SIG_FILE" -q; then',
+      '  echo "Signature verification FAILED for $BINARY — refusing to run it." >&2',
+      '  exit 1',
+      'fi',
+      '',
+      '"$BINARY" bmr-recover --token "$TOKEN" --server "$SERVER"',
     ].join('\n'),
   };
 }
@@ -607,10 +727,20 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     await copyFile(binary.filePath, binaryTargetPath);
 
     const serverUrl = resolveServerUrl(requestUrl);
+    // Resolved BEFORE the launch script is built (and, further down, before
+    // the binary is actually signed) so the script can embed this bundle's
+    // own build-time trust root — see buildLaunchScript's signingPublicKey
+    // doc comment for why the script must never
+    // trust a key fetched live from /bmr/recover/binary-signature instead.
+    const embeddedSigningPublicKey = isRecoverySigningConfigured()
+      ? getCurrentRecoverySigningKey()?.publicKey ?? null
+      : null;
     const launchScript = buildLaunchScript({
       platform: artifact.platform,
+      architecture: artifact.architecture,
       fileName: artifact.platform === 'windows' ? 'breeze-backup.exe' : 'breeze-backup',
       serverUrl,
+      signingPublicKey: embeddedSigningPublicKey,
     });
 
     const readme = buildBundleReadme({
@@ -665,6 +795,9 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     let signatureStorageKey: string | null = null;
     let signingKeyId: string | null = null;
     let signedAt: Date | null = null;
+    let binarySignatureBase64: string | null = null;
+    let binarySignatureKeyId: string | null = null;
+    let binarySignaturePublicKey: string | null = null;
 
     const checksumStorage = await resolveRecoveryArtifactStorage(
       artifact.snapshotId,
@@ -691,6 +824,30 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
       signatureStorageKey = signatureStorage.storageKey;
       signingKeyId = signature.keyId;
       signedAt = new Date();
+
+      // Sign the HELPER BINARY itself too, separate from the archive-level
+      // signature above. The archive signature can only ever be checked
+      // against the archive as a whole (never by run-recovery.sh/.ps1,
+      // which only exists once the archive has already been extracted) —
+      // this per-binary signature is what the launch script downloads at
+      // run time (POST /bmr/recover/binary-signature, token-authenticated)
+      // and verifies BEFORE exec'ing the binary. Stored in metadata rather
+      // than a new storage upload + column: it is small (a few hundred
+      // bytes) and this whole artifact row already carries signing
+      // metadata this way.
+      const binarySignature = await signRecoveryArtifact(
+        binaryTargetPath,
+        `Breeze recovery helper binary ${artifact.id}`
+      );
+      binarySignatureBase64 = binarySignature.signature.toString('base64');
+      binarySignatureKeyId = binarySignature.keyId;
+      binarySignaturePublicKey = binarySignature.publicKey;
+      // The .minisig file signRecoveryArtifact wrote lands next to the
+      // binary, INSIDE bundleDir — but the archive was already built above
+      // (createBundleArchive ran before this block), so it never entered
+      // the archive. Remove it anyway so a stray file never lingers in the
+      // working directory this function tears down in its `finally`.
+      await rm(`${binaryTargetPath}.minisig`, { force: true });
     }
 
     // #5411: a successful build must clear any `error` left by a prior failed
@@ -734,6 +891,9 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
           helperBinaryManifestVersion: binary.verified.manifestVersion,
           serverUrl,
           signingConfigured: isRecoverySigningConfigured(),
+          binarySignatureBase64,
+          binarySignatureKeyId,
+          binarySignaturePublicKey,
         },
         completedAt: new Date(),
       })

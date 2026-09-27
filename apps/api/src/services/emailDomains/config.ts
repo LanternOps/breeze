@@ -31,6 +31,15 @@ export interface EmailDomainsConfig {
   dailySendCap: number;
   partnerAllowlist: string[];
   denylist: string[];
+  /**
+   * Domains an operator has explicitly confirmed Breeze may ADOPT when found
+   * already existing at the provider (e.g. a name being migrated in from a
+   * prior sending setup on the same provider account). Without an entry here,
+   * provisioning refuses to adopt a pre-existing provider object — see
+   * domainSync.ts's provision() — because adopting silently would let a
+   * trusted partner claim a domain it never proved ownership of.
+   */
+  adoptExistingAllowlist: string[];
   staticAllowed: StaticAllowedEntry[];
   webhookSecret: string | null;
   autoSuspend: EmailDomainsAutoSuspendConfig;
@@ -171,6 +180,8 @@ export function getEmailDomainsConfig(): EmailDomainsConfig {
     dailySendCap: nonNegativeInt('EMAIL_DOMAINS_DAILY_SEND_CAP', isHosted() ? DEFAULT_HOSTED_DAILY_SEND_CAP : 0),
     partnerAllowlist: csv('EMAIL_DOMAINS_PARTNER_ALLOWLIST'),
     denylist: csv('EMAIL_DOMAINS_DENYLIST').map((d) => d.toLowerCase().replace(/\.+$/, '')),
+    adoptExistingAllowlist: csv('EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST')
+      .map((d) => d.toLowerCase().replace(/\.+$/, '')),
     staticAllowed: parseStaticAllowed(process.env.EMAIL_DOMAINS_STATIC_ALLOWED),
     webhookSecret: str('EMAIL_DOMAINS_WEBHOOK_SECRET'),
     autoSuspend: readAutoSuspendConfig()

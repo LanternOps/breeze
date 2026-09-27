@@ -131,7 +131,13 @@ export async function enrichFromCatalog(input: EnrichmentInput): Promise<Enrichm
   return {
     title: hit.friendlyName,
     vendor: hit.vendor,
-    severity: inputSeverity && inputSeverity !== 'unknown' ? inputSeverity : hit.defaultSeverity,
+    // `severity` is classification, not identity: even on a curated match the
+    // catalog's own `defaultSeverity` is the only trusted value, never the
+    // agent's reported one. `patches` is a global, un-tenanted row every
+    // tenant's approval engine reads, so honoring an agent-reported severity
+    // here — even for a device that correctly identified the package — would
+    // let that agent choose the classification for every other tenant.
+    severity: hit.defaultSeverity,
     category: hit.category,
     matchedCatalogId: hit.id,
   };

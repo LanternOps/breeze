@@ -47,42 +47,20 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 		return nil, fmt.Errorf("%w: failed to create export path: %v", ErrExportFailed, err)
 	}
 
-	vmNameEsc := escapePSString(vmName)
-
-	// For crash-consistent, save VM state first.
-	if consistencyType == "crash" {
-		slog.Info("hyperv: saving VM state for crash-consistent backup", "vm", vmName)
-		saveCmd := fmt.Sprintf(`Save-VM -Name '%s'`, vmNameEsc)
-		if _, err := runPS(saveCmd); err != nil {
-			return nil, fmt.Errorf("%w: failed to save VM state: %v", ErrExportFailed, err)
-		}
-	}
-
-	// Export the VM.
+	// Resolve the VM by exact name once (refusing ambiguous names) and run
+	// every step against that VM's ID.
 	slog.Info("hyperv: exporting VM", "vm", vmName, "path", exportPath, "consistency", consistencyType)
-	exportCmd := fmt.Sprintf(`Export-VM -Name '%s' -Path '%s'`, vmNameEsc, escapePSString(exportPath))
-	if _, err := runPS(exportCmd); err != nil {
+	vmID, warnings, err := exportVMWith(runPS, vmName, exportPath, consistencyType)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrExportFailed, err)
 	}
-
-	// If we saved state for crash consistency, start the VM again.
-	var warnings []string
-	if consistencyType == "crash" {
-		slog.Info("hyperv: restarting VM after crash-consistent export", "vm", vmName)
-		startCmd := fmt.Sprintf(`Start-VM -Name '%s'`, vmNameEsc)
-		if _, err := runPS(startCmd); err != nil {
-			warnMsg := fmt.Sprintf("failed to restart VM %q after export: %s", vmName, err.Error())
-			slog.Warn("hyperv: " + warnMsg)
-			warnings = append(warnings, warnMsg)
-		}
+	for _, w := range warnings {
+		slog.Warn("hyperv: " + w)
 	}
 
 	// Calculate export size.
 	vmExportDir := filepath.Join(exportPath, vmName)
 	sizeBytes, vhdCount := calcDirSize(vmExportDir)
-
-	// Retrieve VM ID.
-	vmID := getVMID(vmName)
 
 	duration := time.Since(start).Milliseconds()
 	slog.Info("hyperv: export completed", "vm", vmName, "sizeBytes", sizeBytes, "durationMs", duration)
@@ -98,16 +76,6 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 		DurationMs:      duration,
 		Warnings:        warnings,
 	}, nil
-}
-
-// getVMID retrieves the VM GUID from Hyper-V.
-func getVMID(vmName string) string {
-	cmd := fmt.Sprintf(`(Get-VM -Name '%s').Id.Guid`, escapePSString(vmName))
-	out, err := runPS(cmd)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
 }
 
 // calcDirSize walks a directory and returns total size and VHD file count.

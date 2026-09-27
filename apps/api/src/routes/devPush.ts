@@ -1,4 +1,5 @@
 import { Hono, type Context, type Next } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID, createHash } from 'crypto';
 import { createReadStream, createWriteStream } from 'fs';
@@ -8,13 +9,16 @@ import { Readable, Transform } from 'stream';
 import { dirname, join } from 'path';
 import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { devices } from '../db/schema';
+import { devices, users } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
+import { propagateDenial } from '../middleware/propagateDenial';
+import { ENABLE_2FA } from './auth/schemas';
 import { getDeviceByAgentWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { PERMISSIONS } from '../services/permissions';
 import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../services/deviceSiteAccess';
+import { writeAuditEvent } from '../services/auditEvents';
 
 // #6621: staged uploads must never live under os.tmpdir() — the container's
 // /tmp is a small tmpfs shared with tsx's compile cache, so a ~34 MB Windows
@@ -112,18 +116,89 @@ async function getDeviceByAgentWithAccess(
   return device;
 }
 
-// Auth middleware that accepts JWT (Authorization: Bearer) or API key (X-API-Key)
+// Thrown (never returned) so the denial survives devPushAuth's hand-rolled,
+// multiply-nested middleware composition: a `return c.json(...)` from a
+// function called several closures deep here never reaches Hono's own
+// dispatch loop (only the outermost devPushAuth call is a real registered
+// Hono middleware), so the response gets silently discarded and the request
+// falls through as if it had succeeded. Throwing propagates through every
+// intervening `await` regardless of nesting, exactly like the sibling denial
+// paths in apiKeyAuth.ts (requireApiKeyScope) already do.
+function mfaRequiredError(): HTTPException {
+  const message = 'MFA required';
+  // Supply the response body directly (rather than relying on the app's
+  // global onError to unpack a `.code` property) so this denial renders
+  // correctly regardless of which error handler ends up catching it.
+  const res = new Response(JSON.stringify({ error: message, message, code: 'MFA_REQUIRED' }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const err = new HTTPException(403, { message, res });
+  (err as HTTPException & { code?: string }).code = 'MFA_REQUIRED';
+  return err;
+}
+
+// Bearer credentials cannot present an interactive MFA challenge, so this is
+// the API-key branch's compensating control for parity with the JWT branch's
+// requireMfa(): the key's human creator must currently hold a usable second
+// factor. A service-principal key has no interactive human behind it — that
+// class is authorized against the principal's own status elsewhere
+// (apiKeyAuth.ts) and is deliberately exempt here, matching the posture that
+// file already takes for these keys. Easy to flip: this is the only gate in
+// the branch, and disabling org-wide MFA (ENABLE_2FA=false) short-circuits it
+// exactly like requireMfa() does on the JWT side.
+async function requireApiKeyCreatorMfa(c: Context, next: Next) {
+  if (!ENABLE_2FA) {
+    await next();
+    return;
+  }
+
+  const apiKey = c.get('apiKey') as
+    | { createdBy?: string; principalType?: string }
+    | undefined;
+
+  if (apiKey?.principalType === 'service') {
+    await next();
+    return;
+  }
+
+  if (!apiKey?.createdBy) {
+    throw mfaRequiredError();
+  }
+
+  const hasFactor = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ mfaEnabled: users.mfaEnabled })
+      .from(users)
+      .where(eq(users.id, apiKey.createdBy!))
+      .limit(1);
+    return row?.mfaEnabled === true;
+  });
+
+  if (!hasFactor) {
+    throw mfaRequiredError();
+  }
+
+  await next();
+}
+
+// Auth middleware that accepts JWT (Authorization: Bearer) or API key (X-API-Key).
+// See ../middleware/propagateDenial.ts for why the requireMfa() call below is
+// wrapped: this composition is hand-rolled (not separately registered Hono
+// middlewares), which silently discards a denial that returns rather than throws.
 async function devPushAuth(c: Context, next: Next) {
   const apiKeyHeader = c.req.header('X-API-Key');
   if (apiKeyHeader) {
     return apiKeyAuthMiddleware(c, async () => {
-      await requireApiKeyScope('devices:execute')(c, next);
+      await requireApiKeyScope('devices:execute')(c, async () => {
+        await requireApiKeyCreatorMfa(c, next);
+      });
     });
   }
   return authMiddleware(c, async () => {
     await requireScope('organization', 'partner', 'system')(c, async () => {
       await requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)(c, async () => {
-        await requireMfa()(c, next);
+        await propagateDenial(requireMfa(), c, next);
       });
     });
   });
@@ -133,7 +208,7 @@ async function devPushAuth(c: Context, next: Next) {
 devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c) => c.json({ error: 'Binary too large (max 150MB)' }, 413) }), devPushAuth, async (c) => {
   // Build auth context from either JWT or API key
   const jwtAuth = c.get('auth') as AuthContext | undefined;
-  const apiKey = c.get('apiKey') as { orgId: string; scopes: string[] } | undefined;
+  const apiKey = c.get('apiKey') as { id: string; orgId: string; scopes: string[] } | undefined;
 
   const auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'> = jwtAuth ?? {
     scope: 'organization' as const,
@@ -257,6 +332,30 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
   };
 
   const sent = sendCommandToAgent(device.agentId, command);
+
+  // Attributable audit trail for a capability that pushes unverified binaries
+  // to a device — mirrors the writeRouteAudit call already made when
+  // registering an agent version (agentVersions.ts) or issuing an agent
+  // rollback directive (agentRollback.ts), both materially less dangerous
+  // actions than dispatching arbitrary, self-checksummed bytes for execution.
+  writeAuditEvent(c, {
+    orgId: device.orgId,
+    action: 'device.dev_push',
+    resourceType: 'device',
+    resourceId: device.id,
+    resourceName: device.agentId,
+    actorType: jwtAuth ? 'user' : 'api_key',
+    actorId: jwtAuth ? jwtAuth.user.id : apiKey?.id,
+    actorEmail: jwtAuth ? jwtAuth.user.email : undefined,
+    details: {
+      agentId: device.agentId,
+      component,
+      version,
+      checksum,
+      commandId,
+      wsSent: sent,
+    },
+  });
 
   return c.json({
     commandId,

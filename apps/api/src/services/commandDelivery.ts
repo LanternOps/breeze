@@ -1,4 +1,14 @@
-import { releaseClaimedCommandDelivery } from './commandDispatch';
+import {
+  BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES,
+  materializeBackupStorageCredentials,
+} from './backupCommandCredentials';
+import { hasDbAccessContext, withDbTransaction } from '../db';
+import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
+import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
+import {
+  isCommandDeliveryRefusal,
+  type DeliveryRefreshContext,
+} from './commandDeliveryRefusal';
 import { getPresignedUrl, isS3Configured } from './s3Storage';
 import { failClaimedSecretCommandsForUnsupportedAgent } from './scriptSecretDelivery';
 import {
@@ -7,18 +17,33 @@ import {
 } from './sensitiveCommandPayload';
 import { captureException } from './sentry';
 
+export {
+  CommandDeliveryRefusedError,
+  type DeliveryRefreshContext,
+} from './commandDeliveryRefusal';
+
 /**
- * Re-materialises payload fields that are only valid for a short window, at the
- * moment the command is actually handed to an agent (#5128 §D / OD-8).
+ * Re-materialises payload fields that are only valid for a short window, or
+ * must never be persisted, at the moment the command is actually handed to an
+ * agent (#5128 §D / OD-8).
  *
  * A queued command may be claimed days after it was enqueued. Anything
  * time-limited in its payload — a presigned download URL, most obviously — is
- * stale by then, so payloads store STABLE references (an S3 key) and the
- * refresher turns that into a fresh URL here. Returns the payload to deliver;
- * throwing releases the row back to `pending` rather than delivering a stale
- * payload.
+ * stale by then, so payloads store STABLE references (an S3 key, a storage
+ * destination reference) and the refresher turns that into the deliverable
+ * value here. Returns the payload to deliver. Throwing an ordinary error
+ * releases the row back to `pending` rather than delivering a stale payload;
+ * throwing `CommandDeliveryRefusedError` expires the row instead (it can never
+ * be delivered as queued, so re-claiming it on every heartbeat is pointless).
+ *
+ * `ctx` identifies the command being prepared — id, device, type and the claim
+ * timestamp of this delivery attempt — so a refresher can bind what it mints
+ * to exactly this command and device.
  */
-export type DeliveryRefresher = (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+export type DeliveryRefresher = (
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+) => Promise<Record<string, unknown>>;
 
 /**
  * Per-command-type refreshers, keyed by `device_commands.type`.
@@ -57,6 +82,23 @@ registerDeliveryRefresher('software_install', async (payload) => {
   if (!s3Key || !isS3Configured()) return payload;
   return { ...payload, downloadUrl: await getPresignedUrl(s3Key, 3600) };
 });
+
+// Backup/restore/verify commands persist a storage destination REFERENCE; the
+// destination itself is resolved here, into the outgoing frame only, so it is
+// never written to `device_commands` (see services/backupCommandCredentials.ts).
+//
+// Restore-shaped READS go through ONE refresher that delivers a short-lived
+// storage session instead of the destination when the device's backup helper
+// supports it, and otherwise falls back to resolving the destination exactly
+// as the write path does (services/backupStorageSessions.ts). One refresher
+// per type: the storage-session refresher composes the destination refresher,
+// it does not compete with it.
+for (const type of BROKERED_READ_COMMAND_TYPES) {
+  registerDeliveryRefresher(type, deliverBrokeredReadCommand);
+}
+for (const type of BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES) {
+  registerDeliveryRefresher(type, materializeBackupStorageCredentials);
+}
 
 /**
  * The subset of a just-claimed `device_commands` row that batch delivery needs.
@@ -123,9 +165,13 @@ export type ClaimedCommand = {
  */
 export async function prepareClaimedCommandsForDelivery(
   claimed: ClaimedCommand[],
-  opts?: { reportedScriptSecretEnvVersion?: number },
+  opts?: { reportedScriptSecretEnvVersion?: number; reportedBackupReadProtocolVersion?: number },
 ): Promise<DeliverableCommand[]> {
-  const refreshed = await refreshClaimedCommandPayloads(claimed);
+  const refreshed = await refreshClaimedCommandPayloads(claimed, {
+    ...(typeof opts?.reportedBackupReadProtocolVersion === 'number'
+      ? { reportedBackupReadProtocolVersion: opts.reportedBackupReadProtocolVersion }
+      : {}),
+  });
 
   const deliverable = await failClaimedSecretCommandsForUnsupportedAgent(refreshed, {
     ...(typeof opts?.reportedScriptSecretEnvVersion === 'number'
@@ -174,13 +220,68 @@ export async function prepareClaimedCommandsForDelivery(
 }
 
 /**
+ * Expire a claimed row whose refresher REFUSED it. Best-effort like the
+ * release paths: a failure is reported, never thrown into the delivery path
+ * (the row then sits `sent` until the reaper's execution clock times it out).
+ */
+async function expireRefusedClaim(
+  commandId: string,
+  type: string,
+  claimedAt: Date | null,
+  reason: string,
+): Promise<void> {
+  try {
+    if (!claimedAt) {
+      throw new Error('claimed command row has no executedAt — cannot expire');
+    }
+    await expireRefusedClaimedCommandDelivery(commandId, claimedAt, reason);
+  } catch (expireErr) {
+    const expireMessage = expireErr instanceof Error ? expireErr.message : String(expireErr);
+    console.error(
+      '[commandDelivery] failed to expire a command whose delivery was refused; it will strand as sent until the stale reaper times it out',
+      { commandId, type, error: expireMessage },
+    );
+    captureException(
+      new Error(
+        `[commandDelivery] expiry after delivery refusal failed (commandId=${commandId}, type=${type}): ${expireMessage}`,
+      ),
+    );
+  }
+}
+
+/**
+ * Run one command's refresher. When the caller already holds a transaction
+ * (the heartbeat's organization-scoped transaction, the REST poll and drain
+ * system contexts, a request context on the enqueue-time push) the refresher
+ * runs in its own savepoint: a statement error or timeout while preparing one
+ * command rolls back to that savepoint and fails that command only, instead
+ * of aborting the caller's transaction — and with it the sibling commands, the
+ * release/expiry writes below and the rest of the heartbeat. The refresher's
+ * error propagates unchanged, so a refusal is still recognised as one.
+ */
+function runRefresher(
+  refresher: DeliveryRefresher,
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+): Promise<Record<string, unknown>> {
+  if (!hasDbAccessContext()) return refresher(payload, ctx);
+  return withDbTransaction(() => refresher(payload, ctx));
+}
+
+/**
  * Runs each claimed row's registered refresher (#5128 §D). A row whose
  * refresher throws is RELEASED back to `pending` and dropped from the batch:
  * delivering a payload we know to be stale (an expired installer URL, say) is
  * worse than waiting for the next heartbeat, and the release keeps the row
- * recoverable instead of stranding it as `sent`.
+ * recoverable instead of stranding it as `sent`. A row whose refresher REFUSES
+ * it (CommandDeliveryRefusedError) is dropped and EXPIRED instead: it can
+ * never be delivered as queued, and the reaper's delivery clock then fails it
+ * with the refusal reason and propagates that to its owning records.
  */
-async function refreshClaimedCommandPayloads(claimed: ClaimedCommand[]): Promise<ClaimedCommand[]> {
+async function refreshClaimedCommandPayloads(
+  claimed: ClaimedCommand[],
+  extraCtx: Pick<DeliveryRefreshContext, 'reportedBackupReadProtocolVersion'> = {},
+): Promise<ClaimedCommand[]> {
   const out: ClaimedCommand[] = [];
   for (const cmd of claimed) {
     const refresher = deliveryRefreshers[cmd.type];
@@ -193,9 +294,27 @@ async function refreshClaimedCommandPayloads(claimed: ClaimedCommand[]): Promise
         cmd.payload && typeof cmd.payload === 'object' && !Array.isArray(cmd.payload)
           ? (cmd.payload as Record<string, unknown>)
           : {};
-      out.push({ ...cmd, payload: await refresher(payload) });
+      out.push({
+        ...cmd,
+        payload: await runRefresher(refresher, payload, {
+          commandId: cmd.id,
+          deviceId: cmd.deviceId,
+          type: cmd.type,
+          claimedAt: cmd.executedAt,
+          ...extraCtx,
+        }),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (isCommandDeliveryRefusal(err)) {
+        console.warn('[commandDelivery] delivery refused; expiring the row instead of re-claiming it', {
+          commandId: cmd.id,
+          type: cmd.type,
+          reason: message,
+        });
+        await expireRefusedClaim(cmd.id, cmd.type, cmd.executedAt, message);
+        continue;
+      }
       console.error(
         '[commandDelivery] delivery refresher failed; releasing the row for a later heartbeat rather than delivering a stale payload',
         { commandId: cmd.id, type: cmd.type, error: message },
@@ -222,28 +341,64 @@ async function refreshClaimedCommandPayloads(claimed: ClaimedCommand[]): Promise
   return out;
 }
 
+export type PushRefreshOutcome =
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; refusal: string | null };
+
 /**
- * Single-command variant for the enqueue-time WS push (`dispatchDeviceCommand`).
- * Returns null when the refresher failed — the caller releases the claim.
+ * Single-command variant for the direct pushes that hold a claim on ONE row
+ * (`dispatchDeviceCommand`'s enqueue-time push and `executeCommand`'s WS
+ * push). On a refusal the claim is expired here (so the caller's subsequent
+ * release is a 0-row no-op) and the reason is returned; on any other failure
+ * the caller releases the claim.
  */
-export async function refreshPayloadForDelivery(
+export async function refreshClaimedPayloadForPush(
   type: string,
   payload: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
+  ctx: DeliveryRefreshContext,
+): Promise<PushRefreshOutcome> {
   const refresher = deliveryRefreshers[type];
-  if (!refresher) return payload;
+  if (!refresher) return { ok: true, payload };
   try {
-    return await refresher(payload);
+    return { ok: true, payload: await runRefresher(refresher, payload, ctx) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error('[commandDelivery] delivery refresher failed on the enqueue-time push', {
+    if (isCommandDeliveryRefusal(err)) {
+      console.warn('[commandDelivery] delivery refused on a direct push; expiring the row', {
+        commandId: ctx.commandId,
+        type,
+        reason: message,
+      });
+      await expireRefusedClaim(ctx.commandId, type, ctx.claimedAt, message);
+      return { ok: false, refusal: message };
+    }
+    console.error('[commandDelivery] delivery refresher failed on a direct push', {
+      commandId: ctx.commandId,
       type,
       error: message,
     });
     // Reported, not just logged: a refresher that starts failing (an S3 outage,
-    // say) silently downgrades every enqueue-time push to a heartbeat wait, and
+    // say) silently downgrades every direct push to a heartbeat wait, and
     // nothing else on this path surfaces that.
     captureException(err instanceof Error ? err : new Error(String(err)));
-    return null;
+    return { ok: false, refusal: null };
   }
+}
+
+/**
+ * Compatibility form of `refreshClaimedPayloadForPush` for the enqueue-time
+ * push: returns the payload, or null when the refresher failed or refused
+ * (the caller releases the claim; after a refusal that release is a no-op).
+ */
+export async function refreshPayloadForDelivery(
+  type: string,
+  payload: Record<string, unknown>,
+  ctx?: DeliveryRefreshContext,
+): Promise<Record<string, unknown> | null> {
+  const outcome = await refreshClaimedPayloadForPush(
+    type,
+    payload,
+    ctx ?? { commandId: '', deviceId: '', type, claimedAt: null },
+  );
+  return outcome.ok ? outcome.payload : null;
 }

@@ -238,6 +238,38 @@ describe('McpClient', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(50);
   });
 
+  it('(k) rejects once the aggregate tool count across pages exceeds the per-source cap', async () => {
+    // Each page stays well under maxResponseBytes on its own, but a peer
+    // returning many small pages can still accumulate an unbounded total
+    // tool count if nothing checks the running total.
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: { body?: unknown }) => {
+      const req = requestBody([_url, init]);
+      const cursor = req.params?.cursor as string | undefined;
+      const nextPage = (cursor ? Number(cursor.split('-')[1]) : 0) + 1;
+      const tools = Array.from({ length: 20 }, (_, i) => ({ name: `t${nextPage}-${i}`, inputSchema: {} }));
+      return jsonResponse({ jsonrpc: '2.0', id: req.id, result: { tools, nextCursor: `page-${nextPage}` } });
+    });
+
+    const client = new McpClient({ endpointUrl: BASE_URL, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, fetchImpl });
+
+    await expect(client.listTools()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
+  it('(l) rejects once the aggregate descriptive-text byte total across pages exceeds the cap', async () => {
+    const bigDescription = 'x'.repeat(200_000);
+    let calls = 0;
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: { body?: unknown }) => {
+      calls += 1;
+      const req = requestBody([_url, init]);
+      const tools = [{ name: `big-${calls}`, description: bigDescription, inputSchema: {} }];
+      return jsonResponse({ jsonrpc: '2.0', id: req.id, result: { tools, nextCursor: `page-${calls}` } });
+    });
+
+    const client = new McpClient({ endpointUrl: BASE_URL, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, fetchImpl });
+
+    await expect(client.listTools()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
   it('treats any 3xx response as a transport error and never follows it', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { location: 'https://mcp.example.com/other' } })

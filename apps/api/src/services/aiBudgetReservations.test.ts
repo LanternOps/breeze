@@ -499,3 +499,78 @@ describe('reserveAiBudget — client namespace sub-cap (#5557)', () => {
     )).rejects.toThrow(/conflicts with another dispatch/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bounded per-request hold — a reservation should not take more of the
+// remaining cap than the caller's own request needs, so one dispatch in a
+// capped org does not serialize every other AI surface in that org (JD L-2).
+// ---------------------------------------------------------------------------
+
+describe('reserveAiBudget — bounded per-request hold', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock.execute.mockReset();
+    hoisted.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+    hoisted.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
+    hoisted.withDbAccessContext.mockImplementation((_ctx: unknown, fn: () => unknown) => fn());
+    hoisted.getEffectiveAiBudget.mockResolvedValue({
+      enabled: true, dailyBudgetCents: 100000, monthlyBudgetCents: null,
+    });
+  });
+
+  function primeAdmission(usage: Record<string, unknown>, inserted: Record<string, unknown> = {}) {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([usageRow(usage)])
+      .mockResolvedValueOnce([reservationRow({ uncapped: false, ...inserted })]);
+  }
+
+  it('reserves only the caller-supplied ceiling, not the whole remaining cap', async () => {
+    // 100000 cap, nothing used or held: unbounded remaining would reserve the
+    // full 100000 and serialize every other AI surface in the org.
+    primeAdmission({}, { reserved_cost_cents: '50.000000' });
+
+    const result = await reserveAiBudget({
+      orgId: ORG_ID, idempotencyKey: 'ai-agent-run:run-1', billingSource: 'platform',
+      maxHoldCents: 50,
+    });
+
+    expect(result).toMatchObject({ kind: 'reserved', reservedCostCents: 50 });
+    const insertParams = sqlParamValues(dbMock.execute.mock.calls[3]?.[0]);
+    expect(insertParams).toContain('50.000000');
+  });
+
+  it('still reserves only the true remaining amount when it is tighter than the ceiling (last slice)', async () => {
+    primeAdmission({ daily_usage: '99970' }, { reserved_cost_cents: '30.000000' });
+
+    const result = await reserveAiBudget({
+      orgId: ORG_ID, idempotencyKey: 'ai-agent-run:run-2', billingSource: 'platform',
+      maxHoldCents: 50,
+    });
+
+    // Only 30 cents remain under the cap — the ceiling never widens a hold.
+    expect(result).toMatchObject({ kind: 'reserved', reservedCostCents: 30 });
+  });
+
+  it('does not change denial reasons: a tiny ceiling is not "budget exceeded" when real remaining is zero', async () => {
+    primeAdmission({ daily_usage: '100000' });
+
+    const result = await reserveAiBudget({
+      orgId: ORG_ID, idempotencyKey: 'ai-agent-run:run-3', billingSource: 'platform',
+      maxHoldCents: 50,
+    });
+
+    expect(result).toMatchObject({ kind: 'denied', reason: 'daily_budget' });
+  });
+
+  it('leaves unbounded callers (no maxHoldCents) reserving the full remaining cap — unchanged default', async () => {
+    primeAdmission({}, { reserved_cost_cents: '100000.000000' });
+
+    const result = await reserveAiBudget({
+      orgId: ORG_ID, idempotencyKey: 'key-1', billingSource: 'platform',
+    });
+
+    expect(result).toMatchObject({ kind: 'reserved', reservedCostCents: 100000 });
+  });
+});

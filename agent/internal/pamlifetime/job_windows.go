@@ -101,7 +101,20 @@ func (*nativeWindowsPrimitives) PinTarget(ctx context.Context, path string, expe
 		return "", "", nil, fmt.Errorf("hash PAM target: %w", err)
 	}
 	hash := hex.EncodeToString(hasher.Sum(nil))
-	if expectedHash != nil && !strings.EqualFold(strings.TrimSpace(*expectedHash), hash) {
+	expected := ""
+	if expectedHash != nil {
+		expected = strings.TrimSpace(*expectedHash)
+	}
+	// A missing/blank expected hash must fail closed, not skip verification.
+	// The whole point of pinning is to detect the target file being swapped
+	// between when a human approved it and when the agent actuates it; if
+	// there is nothing to compare against (e.g. the agent's own hash capture
+	// failed at request time), that swap goes undetected.
+	if expected == "" {
+		release()
+		return "", "", nil, errors.New("PAM target hash is required and was not provided")
+	}
+	if !strings.EqualFold(expected, hash) {
 		release()
 		return "", "", nil, errors.New("PAM target SHA-256 does not match command")
 	}

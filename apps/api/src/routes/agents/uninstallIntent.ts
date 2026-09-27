@@ -35,6 +35,15 @@ uninstallIntentRoutes.post('/:id/uninstall-intent', async (c) => {
     return c.json({ error: 'Agent context not found' }, 401);
   }
 
+  // Main-agent-only: a watchdog or helper credential has no business timing
+  // out the device's decommission reaper (heartbeat.ts / offlineDetector.ts
+  // above). Checked here rather than via the shared requireAgentRole
+  // middleware so a missing context still 401s instead of collapsing into
+  // the same 403 as a wrong-role one.
+  if (agent.role !== 'agent') {
+    return c.json({ error: 'This endpoint requires the agent credential' }, 403);
+  }
+
   await db
     .update(devices)
     .set({ uninstallIntentAt: new Date() })

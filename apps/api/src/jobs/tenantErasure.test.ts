@@ -61,8 +61,20 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const { FakeTenantCascadeRefusalError } = vi.hoisted(() => ({
+  FakeTenantCascadeRefusalError: class extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'TenantCascadeRefusalError';
+      this.code = code;
+    }
+  },
+}));
+
 vi.mock('../services/tenantCascade', () => ({
   cascadeDeleteOrg: (...args: unknown[]) => cascadeDeleteOrgMock(...(args as [])),
+  TenantCascadeRefusalError: FakeTenantCascadeRefusalError,
 }));
 
 vi.mock('../services/auditService', () => ({
@@ -386,6 +398,27 @@ describe('tenantErasure worker', () => {
         resourceId: 'org-xyz',
         result: 'failure',
       }),
+    );
+  });
+
+  it('worker processor skips (does not fail the job) when cascadeDeleteOrg refuses on an active legal hold', async () => {
+    cascadeDeleteOrgMock.mockRejectedValueOnce(
+      new FakeTenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', 'held'),
+    );
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    const result = await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(result).toMatchObject({ skipped: true, reason: 'LEGAL_HOLD_ACTIVE' });
+    // cascadeDeleteOrg already wrote its own refusal audit row; the worker
+    // must not additionally log a generic tenant.erasure.failed row for it.
+    expect(createAuditLogMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'tenant.erasure.failed' }),
     );
   });
 

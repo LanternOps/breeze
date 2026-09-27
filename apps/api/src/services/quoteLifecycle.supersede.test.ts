@@ -173,6 +173,7 @@ function queueRevisionThroughClaim(opts: {
   }
   queueResult([PARTNER]);                      // partner row
   queueResult([ORG]);                          // org (billing snapshot + recipient)
+  queueResult([]); // freeze: portal_branding footer (#6232)
   if (quote.revisionOfQuoteId) {
     queueResult(opts.parentRecipients ?? []);  // parent recipients for the send fallback
   }

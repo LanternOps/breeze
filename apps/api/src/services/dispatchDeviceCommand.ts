@@ -203,10 +203,12 @@ async function deliverPreparedDeviceCommand(
 
   // The enqueue-time push runs the same late-binding preparation the heartbeat
   // batch does, so a `software_install` pushed now and one claimed in six hours
-  // are prepared identically.
+  // are prepared identically. A refusal expires this claim inside the
+  // refresher step, which makes the release below a 0-row no-op.
   const fresh = await refreshPayloadForDelivery(
     input.type,
     payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {},
+    { commandId: command.id, deviceId: input.deviceId, type: input.type, claimedAt: claimed.executedAt },
   );
   const prepared = fresh
     ? decryptCommandForDelivery({ id: command.id, type: input.type, deviceId: input.deviceId, payload: fresh })

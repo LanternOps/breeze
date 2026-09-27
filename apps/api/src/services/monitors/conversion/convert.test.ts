@@ -46,7 +46,10 @@ vi.mock('./networkChecks', () => ({
   loadPendingNetworkChecks: m.networkLoad,
   adoptNetworkChecksInTx: m.networkAdopt,
 }));
-vi.mock('./previewScope', () => ({
+vi.mock('./previewScope', async (importOriginal) => ({
+  // Real hash-input readers: they only issue selects through the harness executor.
+  conversionDeviceColumns: (await importOriginal<typeof import('./previewScope')>()).conversionDeviceColumns,
+  ownerAxisInputs: (await importOriginal<typeof import('./previewScope')>()).ownerAxisInputs,
   authorizePreview: m.authorize,
   previewFreshness: m.freshness,
   snapshotPreviewAccess: () => ({

@@ -160,3 +160,15 @@ export const retireBody = (sourceTable: ConversionSourceTable, sourceId: string,
 
 export const readConvertResult = (body: unknown): ConvertResult => unwrap<ConvertResult>(body);
 export const readPartnerConvertResult = (body: unknown): PartnerConvertResult => unwrap<PartnerConvertResult>(body);
+
+/**
+ * i18next key(s) for an `unconvertible:<code>` reason, resolving against the
+ * complete `conversion.retirement.reasons` map (never the shorter, stale
+ * `conversion.reasons` map) with a readable, code-free fallback. Pass the
+ * result straight to `t()` — i18next falls through the array to whichever
+ * key exists first.
+ */
+export function unconvertibleReasonKeys(reason?: string): [string, string] {
+  const code = (reason ?? '').replace(/^unconvertible:/, '') || 'unknown';
+  return [`monitoring:conversion.retirement.reasons.${code}`, 'monitoring:conversion.retirement.reasons.unknown'];
+}

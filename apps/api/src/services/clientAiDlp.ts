@@ -39,6 +39,7 @@ import {
   ssnContextPresent,
   type DlpMatch,
 } from './clientAiDlpDetectors';
+import { compileRe2, execAllRe2 } from './dlpRegexEngine';
 
 export interface DlpRedactionEvent {
   rule: string;
@@ -97,8 +98,8 @@ function stringifyCell(cell: unknown): string | null {
   }
 }
 
-/** Compile the enabled rule list, or return a block reason (fail closed). */
-function compileRules(config: DlpConfig, ssnActive: boolean): CompiledRule[] | string {
+/** Compile the enabled rule list. Custom rules that can't be compiled are skipped (see below). */
+function compileRules(config: DlpConfig, ssnActive: boolean, orgId: string): CompiledRule[] {
   const builtinDetectors: Record<(typeof BUILTIN_ORDER)[number], (text: string) => DlpMatch[]> = {
     creditCard: detectCreditCard,
     ssn: (text) => detectSsn(text, ssnActive),
@@ -116,27 +117,37 @@ function compileRules(config: DlpConfig, ssnActive: boolean): CompiledRule[] | s
   }
 
   for (const custom of config.customRules) {
-    let re: RegExp;
-    try {
-      re = new RegExp(custom.pattern, 'gu');
-    } catch {
-      // The shared schema compiles every pattern at save time, so this is
-      // only reachable for out-of-band DB writes. Fail CLOSED: silently
-      // skipping a rule the MSP believes is active would disable DLP
-      // without anyone noticing.
-      return `dlp_rule_compile_failed:${custom.name}`;
+    // Compile with RE2, not V8's backtracking engine: RE2 matches in time
+    // linear in input length regardless of pattern shape, so this is the
+    // actual safety boundary for tenant-authored regexes scanned on every
+    // chat message — the write-time schema gate
+    // (packages/shared/src/validators/clientAiDlp.ts) is defense in depth,
+    // not the thing standing between a hostile pattern and this hot path.
+    //
+    // The write-time schema already compiles every pattern at save time, so
+    // an RE2 compile failure here is only reachable for a row that predates
+    // this gate, or an out-of-band DB write, or (until the write-time RE2
+    // check landed alongside this) a lookaround the old JS-only heuristic
+    // didn't ban. Skip just that rule — RE2 rejects a narrow, known set of
+    // constructs (backreferences, lookaround) that are not "unsafe", just
+    // unsupported, so silently disabling one legacy rule while the rest of
+    // an org's DLP config keeps working is the right default-deny shape;
+    // blocking every message for the whole org over one stale rule would
+    // be its own availability problem. The warning below is what makes this
+    // visible instead of silent.
+    const compiled = compileRe2(custom.pattern);
+    if (!compiled.ok) {
+      console.warn(
+        `[clientAiDlp] skipping custom DLP rule with an RE2-incompatible pattern: org=${orgId} rule=${custom.name} reason=${compiled.reason}`,
+      );
+      continue;
     }
+    const re = compiled.re;
     rules.push({
       name: custom.name,
       action: custom.action,
-      detect: (text: string) => {
-        const out: DlpMatch[] = [];
-        for (const m of text.matchAll(re)) {
-          if (m[0].length === 0) break; // zero-width match safety
-          out.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
-        }
-        return out;
-      },
+      detect: (text: string) =>
+        execAllRe2(re, text).map((span): DlpMatch => ({ start: span.start, end: span.end })),
     });
   }
   return rules;
@@ -207,8 +218,7 @@ export async function applyDlp(input: {
   // in the payload (covers "SSN" header cells above bare-number columns).
   const ssnActive = locations.some((l) => ssnContextPresent(l.content));
 
-  const compiled = compileRules(config, ssnActive);
-  if (typeof compiled === 'string') return block(compiled);
+  const compiled = compileRules(config, ssnActive, input.orgId);
 
   // ── Scan every location with every enabled rule ────────────────────────────
   interface LocationMatches {

@@ -30,6 +30,7 @@ const {
   teardownDisconnectedSessions,
   checkSessionRateLimit,
   checkUserSessionRateLimit,
+  checkTurnCredentialMintRateLimit,
   evaluateCapability,
   partnerIdForDevice,
   partnerTrustMode,
@@ -48,6 +49,7 @@ const {
   teardownDisconnectedSessions: vi.fn(() => Promise.resolve(undefined)),
   checkSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   checkUserSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
+  checkTurnCredentialMintRateLimit: vi.fn(() => Promise.resolve({ allowed: true })),
   evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
   partnerIdForDevice: vi.fn(() => Promise.resolve('partner-1')),
   partnerTrustMode: vi.fn(() => 'off'),
@@ -171,6 +173,7 @@ vi.mock('./helpers', () => ({
   hasSessionOwnership: vi.fn(() => true),
   checkSessionRateLimit,
   checkUserSessionRateLimit,
+  checkTurnCredentialMintRateLimit,
   logSessionAudit: vi.fn(),
   // Default to "no prompt" (mode 'off' equivalent) so the offer handler ships
   // no prompt block — keeps these site-scope tests focused. The prompt
@@ -276,6 +279,19 @@ function conditionContainsSiteScope(condition: unknown, siteId = ALLOWED_SITE): 
   const hasSiteColumn = chunks.some((chunk) => chunk === 'devices.siteId' || conditionContainsSiteScope(chunk, siteId));
   const hasAllowedSites = chunks.some((chunk) => Array.isArray(chunk) && chunk.includes(siteId));
   return hasSiteColumn && (hasAllowedSites || chunks.some((chunk) => conditionContainsSiteScope(chunk, siteId)));
+}
+
+// Recursively walks a drizzle `and(...)`/`eq(...)` condition tree looking for
+// an `eq(<columnLabel>, <value>)` leaf. Column mocks in this file are plain
+// strings (e.g. 'remoteSessions.userId'), so the built SQL's queryChunks
+// contain that label and the bound value as adjacent chunk entries.
+function conditionContainsEquality(condition: unknown, columnLabel: string, value: string): boolean {
+  if (!condition || typeof condition !== 'object') return false;
+  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks;
+  if (!Array.isArray(chunks)) return false;
+  const labelIndex = chunks.indexOf(columnLabel);
+  if (labelIndex !== -1 && chunks[labelIndex + 2] === value) return true;
+  return chunks.some((chunk) => conditionContainsEquality(chunk, columnLabel, value));
 }
 
 function makeRemoteSessionRow(deviceId: string) {
@@ -441,6 +457,7 @@ describe('remote sessions — site-scope enforcement', () => {
     teardownDisconnectedSessions.mockResolvedValue(undefined);
     checkSessionRateLimit.mockResolvedValue({ allowed: true, currentCount: 0 });
     checkUserSessionRateLimit.mockResolvedValue({ allowed: true, currentCount: 0 });
+    checkTurnCredentialMintRateLimit.mockResolvedValue({ allowed: true });
     app = new Hono();
     app.route('/remote', sessionRoutes);
   });
@@ -923,6 +940,42 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(teardownDisconnectedSessions).toHaveBeenCalledWith(staleRows);
     });
 
+    it('scopes the pre-create sweep to the caller\'s own sessions, not every session of that device+type', async () => {
+      getDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_IN_ALLOWED,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE,
+        agentId: 'agent-1',
+        hostname: 'host-1',
+        osType: 'linux',
+        status: 'online',
+      });
+      const staleRows = [staleTerminalRow('stale-1')];
+      const { staleReturning } = rigCreateSession(staleRows);
+      void staleReturning;
+
+      // db.update().set() returns the `.where(...)` mock this test inspects;
+      // grab the actual where-fn from the queued mock implementation.
+      const updateCall = vi.mocked(db.update).mock;
+      const res = await app.request('/remote/sessions', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_IN_ALLOWED, type: 'desktop' }),
+      });
+      expect(res.status).toBe(201);
+
+      // The sweep's set() mock is a fresh vi.fn per call; recover the
+      // condition actually passed to where() via the `set` mock's own calls.
+      const setMock = updateCall.results[0]!.value.set as ReturnType<typeof vi.fn>;
+      const whereMock = setMock.mock.results[0]!.value.where as ReturnType<typeof vi.fn>;
+      const condition = whereMock.mock.calls[0]![0];
+
+      // Regression guard: a sweep with no userId predicate would tear down
+      // every pending/connecting/active session of this device+type across
+      // the whole org, including sessions owned by other users.
+      expect(conditionContainsEquality(condition, 'remoteSessions.userId', 'user-1')).toBe(true);
+    });
+
     it('maps partner-trust denial to a 403 without inserting', async () => {
       getDeviceWithOrgCheck.mockResolvedValue({
         id: DEVICE_IN_ALLOWED,
@@ -1078,6 +1131,35 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toMatch(/site/i);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // A WebRTC offer is a desktop-stream primitive. This route derived its
+    // remote-access capability from `session.type` further down (desktop ->
+    // webrtcDesktop, anything else -> remoteTools) with no explicit guard
+    // rejecting a non-desktop session first — unlike its siblings (ws-ticket,
+    // connect-code), which do refuse `session.type !== 'desktop'` outright.
+    // On a policy that allows `remoteTools` but not `webrtcDesktop`, a
+    // `type:'terminal'` session could still reach the desktop-capable /offer
+    // path.
+    it('rejects a WebRTC offer for a non-desktop (terminal) session before any policy/DB write', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'terminal', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+      });
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}/offer`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: offerBody,
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/desktop/i);
+      // Refused before the policy check and before any session-state write —
+      // never derives a capability from the non-desktop type at all.
+      expect(checkRemoteAccess).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
     });
 
@@ -1314,6 +1396,45 @@ describe('remote sessions — site-scope enforcement', () => {
         expect(createDesktopConnectCode).not.toHaveBeenCalled();
       }
     );
+  });
+
+  // TURN credential mint budget wiring. Sliding-window
+  // mechanics live in the shared `rateLimiter` service and are covered there;
+  // this just proves the route consults `checkTurnCredentialMintRateLimit`
+  // for an otherwise-fully-authorized request, and mints nothing when it
+  // reports the budget is exhausted.
+  describe('GET /remote/ice-servers — mint rate limit', () => {
+    it('returns 429 and does not mint credentials when the per-user mint budget is exhausted', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: {
+          id: SESSION_ID,
+          userId: 'user-1',
+          type: 'desktop',
+          status: 'active',
+          deviceId: DEVICE_IN_ALLOWED,
+          iceCandidates: [],
+        },
+        device: {
+          id: DEVICE_IN_ALLOWED,
+          orgId: ORG_ID,
+          siteId: ALLOWED_SITE,
+          agentId: 'agent-1',
+        },
+      });
+      checkTurnCredentialMintRateLimit.mockResolvedValueOnce({ allowed: false });
+
+      const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual({
+        error: 'Too many ICE server requests. Please try again later.',
+        code: ERROR_CODES.RATE_LIMITED,
+      });
+      expect(checkTurnCredentialMintRateLimit).toHaveBeenCalledWith('user-1');
+    });
   });
 });
 

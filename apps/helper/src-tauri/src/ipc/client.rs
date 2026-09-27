@@ -430,6 +430,24 @@ pub async fn run(
             }
         };
 
+        // Fail closed: never send anything (including the auth request that
+        // carries our identity) to a pipe unless the kernel-verified
+        // identity of the process on the other end is the agent broker
+        // itself. A pipe of the same name created by another process would
+        // otherwise be indistinguishable from the real one at the point of
+        // dialing. Unix sockets are not affected — their parent directory is
+        // root-owned — so this check is windows-only.
+        #[cfg(windows)]
+        if let Err(e) = super::transport::verify_server_identity(&stream) {
+            eprintln!("[helper] ipc: refusing pipe server ({}): {}", path, e);
+            drop(stream);
+            if wait_or_stop(&mut stop, backoff).await {
+                return;
+            }
+            backoff = next_backoff(backoff);
+            continue;
+        }
+
         let started = std::time::Instant::now();
 
         // Catch panics so a single bad session can't take down the reconnect

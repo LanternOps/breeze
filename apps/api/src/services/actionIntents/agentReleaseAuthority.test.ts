@@ -97,11 +97,20 @@ const effectivePolicy = (overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy 
   ...overrides,
 });
 
-const runRow = (snapshotEffective: AiAgentPolicy = effectivePolicy()) => ({
+const runRow = (
+  snapshotEffective: AiAgentPolicy = effectivePolicy(),
+  // The run's actual admission-time mode. Defaults to the
+  // SAME value as the snapshot's own mode — a normal, never-forced-shadow
+  // run — so every pre-existing call site here (which only ever passes
+  // `snapshotEffective`) is unaffected. The forced-shadow hardening tests
+  // below pass this explicitly, diverged from the snapshot's mode.
+  modeAtStart: string = snapshotEffective.mode,
+) => ({
   id: 'run-1',
   agentId: 'agent-1',
   orgId: 'org-1',
   deviceId: 'dev-1',
+  modeAtStart,
   policySnapshot: {
     schemaVersion: 1,
     agentId: 'agent-1',
@@ -464,6 +473,21 @@ describe('checkAgentReleaseAuthority', () => {
       );
 
       expect(result).toEqual({ ok: true });
+    });
+
+    it("vetoes policy_authorization_revoked when the run's own modeAtStart is 'shadow' even though BOTH the snapshot's and the current policy's mode read 'act'", async () => {
+      // An anomaly- or ticket-triggered run is admitted against an agent
+      // whose resolved policy mode is 'act', with the run's OWN record
+      // (`modeAtStart`) forced to 'shadow' (runService.ts's forced-shadow
+      // downgrade) — the snapshot's `effective.mode` is left unchanged at
+      // 'act'. Neither the snapshot-mode nor the current-mode candidate
+      // check below catches this; only a direct `modeAtStart` read does.
+      seedHappyRows({ run: runRow(actPolicy(), 'shadow') });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'policy_authorization_revoked' });
     });
 
     it('vetoes policy_authorization_revoked when the CURRENT policy no longer lists the key (operator revoked it)', async () => {

@@ -43,7 +43,7 @@ const CAPABILITY_FN = 'canMutateOrgWideGovernance';
 const API_SRC = resolve(__dirname, '..');
 
 /**
- * The seven org-wide governance tables named in the contract. Hand-specified
+ * The org-wide governance tables named in the contract. Hand-specified
  * on purpose (§7C) — this is a fixed policy decision (which object CLASSES
  * have no per-site ownership model), not a structural property of the schema
  * the way the partner-axis table set is.
@@ -59,6 +59,14 @@ const GOVERNANCE_TABLE_NAMES = [
   'pamSignerGroups',
   'backupConfigs',
   'backupProfiles',
+  // A monitor definition's `responses` compile verbatim into a managed
+  // automation that runs as SYSTEM on every device an attaching org-wide
+  // policy reaches (`services/monitors/monitorCompiler.ts`), and the
+  // service itself carries no site axis to narrow that reach — same
+  // no-per-site-ownership shape as every other table in this list.
+  // `configPolicyMonitors` is the attachment join row (attach/detach).
+  'monitorDefinitions',
+  'configPolicyMonitors',
   // Identity-tenant connections: an M365 connection IS the org's whole Entra
   // tenant and a Google Workspace connection IS its whole Workspace customer
   // (the DWD service account behind every mutating google_* tool). Connecting
@@ -80,7 +88,35 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // (they each call canMutateOrgWideGovernance before invoking these
   // functions). Verify both callers still gate before editing this file.
   'services/configurationPolicy.ts':
-    'mutations here are reached only through routes/configurationPolicies/{crud,featureLinks}.ts and services/aiToolsConfigPolicy.ts, which each call canMutateOrgWideGovernance before invoking these functions — verify both callers still gate when editing this file',
+    'mutations here are reached only through routes/configurationPolicies/{crud,featureLinks}.ts, services/aiToolsConfigPolicy.ts, routes/monitorDefinitions.ts (attach/detach) and services/aiToolsMonitors.ts (attach/detach), which each call canMutateOrgWideGovernance before invoking these functions — verify all four callers still gate when editing this file',
+
+  // create/update/delete are reached only through callers that already gate:
+  // routes/monitorDefinitions.ts and services/aiToolsMonitors.ts each call
+  // canMutateOrgWideGovernance before invoking these functions;
+  // services/monitors/conversion/{convert,equivalence}.ts gate internally
+  // (same import, `convert.ts:180,385`); services/fleetDesign/{apply,
+  // monitorAttachments}.ts are reached only through routes/fleetDesign.ts's
+  // apply/apply-preview routes, which refuse any site-restricted caller via
+  // `siteRestricted(c)` before calling. Verify all five callers still gate
+  // when editing this file.
+  'services/monitors/monitorService.ts':
+    'create/update/delete are reached only through gated callers: routes/monitorDefinitions.ts and services/aiToolsMonitors.ts (both call canMutateOrgWideGovernance before invoking), services/monitors/conversion/{convert,equivalence}.ts (gated internally with the same import), and services/fleetDesign/{apply,monitorAttachments}.ts (gated by routes/fleetDesign.ts\'s siteRestricted() check before calling) — verify all five callers still gate when editing this file',
+
+  // Compiles a definition INSIDE monitorService's own transaction
+  // (createValidatedMonitorInTx / updateMonitorDefinition) — reached only
+  // through monitorService.ts's create/update paths, which are themselves
+  // reached only through gated callers (see the monitorService.ts entry
+  // above). Never called directly from a route, AI tool or worker.
+  'services/monitors/monitorCompiler.ts':
+    'compiles a definition inside monitorService\'s own transaction — reached only through monitorService.ts\'s create/update, which is itself reached only through gated callers (see the monitorService.ts entry above)',
+
+  // Provisions the eight PARTNER-WIDE built-in default monitors on partner
+  // creation (inside createPartner's own transaction), a system-scope
+  // POST /orgs/partners route, and a detached post-listen boot backfill —
+  // never from a caller-supplied site-restricted identity, and it always
+  // inserts a fixed catalog with no caller-chosen target.
+  'services/monitors/builtInMonitors.ts':
+    'provisions built-in partner-wide monitors from createPartner (system), the system-scope POST /orgs/partners route, and a detached boot backfill — no caller-scoped site-restricted identity ever reaches this path',
 
   // Worker-side delivery-outcome bookkeeping (successCount/failureCount/
   // lastDeliveryAt only — never enabled/url/secret/events) runs inside
@@ -264,6 +300,10 @@ describe('site-ceiling write coverage (contract-site-ceiling-gate)', () => {
       'services/aiToolsAlerts.ts',
       'services/aiToolsFleet.ts',
       'services/aiToolsIntegrations.ts',
+      // Monitor-definition writes (SEC facet a hardening): every writer
+      // route and its AI-tool twin.
+      'routes/monitorDefinitions.ts',
+      'services/aiToolsMonitors.ts',
     ];
 
     for (const rel of fixed) {

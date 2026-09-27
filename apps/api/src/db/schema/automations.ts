@@ -26,6 +26,10 @@ export const automationDeviceResultStatusEnum = pgEnum('automation_device_result
 export const automationActionResultStatusEnum = pgEnum('automation_action_result_status', [
   'pending', 'queued', 'delivered', 'running',
   'succeeded', 'failed', 'skipped', 'timed_out', 'cancelled',
+  // #3189 — the per-action dispatch claim (pending -> dispatching CAS), taken
+  // in the same transaction that creates the action's effect. Appended last:
+  // the enum is order-sensitive for drift; its progress rank lives in code.
+  'dispatching',
 ]);
 export const automationActionTerminalSourceEnum = pgEnum('automation_action_terminal_source', [
   'command', 'script_execution', 'deployment_result', 'timeout', 'cancellation', 'reaper', 'dispatch',
@@ -145,8 +149,23 @@ export const automationRuns = pgTable('automation_runs', {
   startedAt: timestamp('started_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
   logs: jsonb('logs').default([]),
+  /**
+   * #3189 — the trigger occurrence this run was minted for (`schedule:<slot>`,
+   * `event:<eventId>`, or `<configPolicyAutomationId>:schedule:<slot>`). A
+   * replayed trigger job conflicts on the partial unique indexes below and
+   * reuses the existing run. NULL for manual, webhook and subject-response
+   * runs, which are never deduplicated this way.
+   */
+  occurrenceKey: varchar('occurrence_key', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  automationOccurrenceUnique: uniqueIndex('automation_runs_automation_occurrence_uq')
+    .on(table.automationId, table.occurrenceKey)
+    .where(sql`${table.automationId} IS NOT NULL AND ${table.occurrenceKey} IS NOT NULL`),
+  configPolicyOccurrenceUnique: uniqueIndex('automation_runs_config_policy_occurrence_uq')
+    .on(table.configPolicyId, table.occurrenceKey)
+    .where(sql`${table.automationId} IS NULL AND ${table.occurrenceKey} IS NOT NULL`),
+}));
 
 // Per-device execution result for a single automation run (#2023). A child of
 // automation_runs, one row per targeted device, giving the consolidated

@@ -14,7 +14,7 @@ import {
   topologyConfigTemplates,
   topologyConfigTemplateVersions,
 } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
 import {
   canAccessOrg,
   hasPermission,
@@ -76,6 +76,16 @@ export function assertTopologyTemplateAccess(
   owner: { orgId: string | null; partnerId: string | null },
   write: boolean,
 ): void {
+  // Template mutations arm/disarm monitoring policies partner- or org-wide, so
+  // a write must come from an interactive session that has satisfied its MFA
+  // policy, matching the step-up bar other governance writes carry
+  // (softwarePolicyAuthorization.ts, ai/scriptPolicy.ts).
+  if (write) {
+    if (auth.principal?.kind === 'ai_agent')
+      throw new TopologyOperationError('topology_permission_denied', 403);
+    if (!hasSatisfiedMfa(auth))
+      throw new TopologyOperationError('topology_mfa_required', 403);
+  }
   if (
     !hasPermission(permissions, 'topology', write ? 'write' : 'read') ||
     !hasPermission(permissions, 'devices', write ? 'write' : 'read')
@@ -233,6 +243,17 @@ export async function updateTopologyTemplate(
   const value = updateTopologyTemplateSchema.parse(input);
   const row = await loadTemplate(auth, permissions, id, true);
   assertRevision(row.revision, value.expectedRevision);
+  // Revocation is terminal. A revoked template's referencing monitoring
+  // policies were disabled by the `UPDATE topology_monitoring_policies`
+  // below; a reversible lifecycle would let un-revoke silently leave them
+  // disabled (they are never re-enabled), so the transition is refused
+  // rather than left partly sticky.
+  if (
+    row.lifecycle === 'revoked' &&
+    value.lifecycle !== undefined &&
+    value.lifecycle !== 'revoked'
+  )
+    throw new TopologyOperationError('template_revocation_terminal', 409);
   const [updated] = await db
     .update(topologyConfigTemplates)
     .set({

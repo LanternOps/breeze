@@ -22,6 +22,7 @@ function run(id: string) {
     devicesSucceeded: 0,
     devicesFailed: 99,
     devicesCancelled: 0,
+    occurrenceKey: null,
     startedAt: new Date('2026-09-05T00:00:00Z'),
     completedAt: new Date('2026-09-05T00:01:00Z'),
     logs: [

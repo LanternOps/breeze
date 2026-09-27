@@ -24,6 +24,7 @@ import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
 import { resolvePartnerDocumentLocale } from '../../services/documentLocale';
+import { resolveDocumentFooter } from '../../services/documentFooter';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
 
@@ -173,7 +174,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
   const branding = {
     partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-    footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
+    footer: resolveDocumentFooter({ documentTerms: quote.terms, partnerFooter: partner?.invoiceFooter ?? null, brandingFooter: brand?.footerText ?? null }), currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
     // Send-time locale snapshot → partner language → 'en' (#3777).

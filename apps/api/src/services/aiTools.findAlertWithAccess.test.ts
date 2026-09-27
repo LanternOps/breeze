@@ -102,6 +102,29 @@ describe('findAlertWithAccess — exact-device axis', () => {
   });
 });
 
+describe('findAlertWithAccess — helper device axis', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const helperBound = () => makeAuth({
+    helperDeviceId: 'dev-1',
+  } as Partial<AuthContext>);
+
+  it('denies a sibling device alert for a Helper-authenticated caller', async () => {
+    mockAlert({ id: 'a1', orgId: 'org-1', deviceId: 'dev-2' });
+    expect(await findAlertWithAccess('a1', helperBound())).toBeNull();
+  });
+
+  it('denies a device-LESS org-wide alert for a Helper-authenticated caller', async () => {
+    mockAlert({ id: 'a1', orgId: 'org-1', deviceId: null });
+    expect(await findAlertWithAccess('a1', helperBound())).toBeNull();
+  });
+
+  it('still returns the Helper device own alert', async () => {
+    mockAlert({ id: 'a1', orgId: 'org-1', deviceId: 'dev-1' });
+    expect(await findAlertWithAccess('a1', helperBound())).toMatchObject({ id: 'a1' });
+  });
+});
+
 // #6096 I6 left TWO byte-identical bodies (aiTools.ts and aiToolsAlerts.ts),
 // each with its own callers — the exact shape that drifted before. There must
 // be ONE implementation; the second module re-exports it. Identity, not

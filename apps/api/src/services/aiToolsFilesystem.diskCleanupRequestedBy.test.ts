@@ -56,6 +56,13 @@ vi.mock('../db', () => ({
   },
 }));
 
+// The remote-tools policy check has its own suites
+// (aiDispatch.test.ts, aiRemoteToolsPolicy.contract.test.ts); allow it here.
+vi.mock('./aiRemoteToolsPolicy', () => ({
+  REMOTE_TOOLS_DISABLED_BY_POLICY: 'REMOTE_TOOLS_DISABLED_BY_POLICY',
+  checkAiRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
+  assertAiRemoteToolsAllowed: vi.fn(async () => undefined),
+}));
 vi.mock('./commandQueue', () => ({
   executeCommand: vi.fn(),
   executeCommandWithSystemPrecheck: vi.fn(async () => ({ status: 'completed', stdout: '{}' })),

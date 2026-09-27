@@ -33,6 +33,12 @@ import {
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
 import {
+  isRecord,
+  isRedactedSecretMarker,
+  preserveSecretFields,
+  s3EndpointOriginChanged,
+} from './backupProviderConfigSecrets';
+import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
 } from '../jobs/peripheralJobs';
@@ -1035,12 +1041,44 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.provider === 'string') updates.provider = input.provider;
         if (input.providerConfig) {
           const targetProvider = typeof input.provider === 'string' ? input.provider : existing.provider;
+          const incomingProviderConfig = input.providerConfig as Record<string, unknown>;
+          const existingProviderConfig = isRecord(existing.providerConfig) ? existing.providerConfig : {};
+
+          // Same origin-binding contract as credentialOriginBinding.ts: an S3
+          // endpoint change must not carry the stored access/secret key
+          // forward to a new destination without re-entering it.
           if (targetProvider === 's3') {
-            const resolved = resolveS3ProviderConfig(input.providerConfig as Record<string, unknown>);
+            const storedHasAccessKey = typeof existingProviderConfig.accessKey === 'string' && existingProviderConfig.accessKey.length > 0;
+            const storedHasSecretKey = typeof existingProviderConfig.secretKey === 'string' && existingProviderConfig.secretKey.length > 0;
+            if (
+              (storedHasAccessKey || storedHasSecretKey)
+              && s3EndpointOriginChanged(existingProviderConfig.endpoint, incomingProviderConfig.endpoint)
+            ) {
+              const hasFreshAccessKey = typeof incomingProviderConfig.accessKey === 'string'
+                && incomingProviderConfig.accessKey.length > 0
+                && !isRedactedSecretMarker(incomingProviderConfig.accessKey);
+              const hasFreshSecretKey = typeof incomingProviderConfig.secretKey === 'string'
+                && incomingProviderConfig.secretKey.length > 0
+                && !isRedactedSecretMarker(incomingProviderConfig.secretKey);
+              if (!hasFreshAccessKey || !hasFreshSecretKey) {
+                return JSON.stringify({ error: 'Changing the storage endpoint requires re-entering the access key and secret key' });
+              }
+            }
+          }
+
+          // Merge against the stored config the way the REST route does
+          // (preserveSecretFields) instead of replacing providerConfig
+          // wholesale — an endpoint-only or bucket-only update must not
+          // silently delete the stored credentials for fields it never
+          // mentioned.
+          const mergedProviderConfig = preserveSecretFields(incomingProviderConfig, existingProviderConfig) as Record<string, unknown>;
+
+          if (targetProvider === 's3') {
+            const resolved = resolveS3ProviderConfig(mergedProviderConfig);
             if ('error' in resolved) return JSON.stringify({ error: resolved.error });
             updates.providerConfig = resolved.value;
           } else {
-            updates.providerConfig = input.providerConfig;
+            updates.providerConfig = mergedProviderConfig;
           }
         }
         if (input.schedule) updates.schedule = input.schedule;

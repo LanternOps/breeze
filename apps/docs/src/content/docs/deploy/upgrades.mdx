@@ -114,6 +114,15 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### v0.118.0 — coturn peer restrictions and API stop grace
+
+The [v0.118.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.118.0/docker-compose.yml) and `docker/turnserver.conf` change two things:
+
+| Change | Required action |
+|---|---|
+| coturn relays only to public addresses: `denied-peer-ip` rules for loopback, private, CGNAT, link-local, documentation and reserved ranges (IPv4 and IPv6), plus `no-tcp-relay`. `verbose` is turned off. | Nothing if you use the bundled coturn with the shipped files. If you run your own coturn, apply the same rules from [TURN Server](/deploy/turn-server/#install-and-configure-coturn). **Never deny the relay's own public IP**: relay-to-relay traffic targets it. The IPv4-mapped and NAT64 lines ship commented out; enable them only after checking relay-to-relay on your deployment. |
+| The `api` service (and `worker`) has `stop_grace_period: 90s`, so background work in the process can finish during a restart. | Copy it into your own Compose file if you maintain one. |
+
 ### v0.95.0 — stable Caddy address and proxy trust
 
 The [v0.95.0 Compose file](https://github.com/LanternOps/breeze/blob/v0.95.0/docker-compose.yml) introduced these coupled settings. If your deployed file predates them, apply all three even if your images are already newer:
@@ -131,6 +140,117 @@ Changing an existing network's IPAM/subnet requires recreating that network duri
 Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
+
+### v0.118.0 — legacy alerting retired, network checks become monitors
+
+<Aside type="caution" title="Before you upgrade: convert everything on v0.117.0">
+  While you are still on **v0.117.0**, open **Alerts → Monitors → Needs conversion**, run **Convert everything**, and review every refusal. After this upgrade, **Undo** in conversion history is no longer available for legacy alert rules, templates, inline policy rules or service/process watches, so fix anything you want to keep while you can still roll a conversion back. Then take a database backup.
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. On v0.117.0, run **Convert everything** and review the refusals (above).
+2. Back up the database.
+3. Set `BREEZE_VERSION` to the new release in `.env`, then run `docker compose pull api web portal && docker compose up -d`.
+4. Merge the [Compose file changes](#v01180--coturn-peer-restrictions-and-api-stop-grace) if you maintain your own Compose file or coturn configuration.
+5. Let every agent and Breeze Helper update to 0.118.0, then rebuild any recovery media you keep.
+</Steps>
+
+**Update every agent and Helper.** Many changes in this release take effect on a device only once it runs the 0.118 agent and Helper. Until then, the device keeps its previous behaviour. This covers installer secret handling, Windows local file and pipe checks, PAM file-hash pinning, the new restore path, the Hyper-V, restore-as-VM and instant-boot fixes, consent-prompt reporting, memory module inventory and the macOS binary move. A few paths refuse older agents rather than fall back; they are listed below.
+
+#### Alerting and network checks
+
+- **Legacy alerting is retired.** The policy **Alerts** and **Service & Process Monitoring** tabs are gone, and `/alerts/rules` redirects to **Alerts → Monitors**. Writes under `/alerts/rules*` and `/alert-templates*`, and writes to the retired `alert_rule` and `monitoring` policy feature types, return `410 Gone`. Reads still work, so history stays available.
+- **First boot converts what is left.** The API converts any remaining legacy sources for each partner and retires the ones it cannot convert, with a reason for each. A dismissible banner under **Alerts → Monitors** lists them. Recreate what you need as monitors before you dismiss it. Open alerts from retired sources stay open until someone resolves them. Set `BREEZE_LEGACY_ALERTING_SWEEP=false` to skip the conversion at boot; the API still counts what is left.
+- **Leftovers are logged on every boot.** If any legacy policy alert rules or service/process watches are still unretired after the sweep, the API logs the counts at error level on every start. Nothing evaluates them any more. Restart the API to run the sweep again (after removing `BREEZE_LEGACY_ALERTING_SWEEP=false` if you set it), or run **Convert everything**.
+- **Review alert routing before you upgrade.** Queued legacy alerts and unconverted standalone rules no longer use their old per-rule delivery settings. Delivery follows the monitor's settings, your routing rows and the explicit **Everything else** row. An alert that matches no destination sends no notification.
+- **Network checks move to Monitors.** You now create and edit network checks as `network_check` monitors under **Alerts → Monitors**. **Network → Results** is read-only and offers conversion of existing checks. Checks you have not converted keep polling and alerting. Creating or editing a check through the old endpoints returns `410`. An asset cannot be deleted while it still has active or retained checks (`409`). The boot sweep never converts or retires network checks. See [Network Monitors](/features/network-monitors/).
+- **Maintenance windows suppress monitor alerts again.** On v0.117.0, **Suppress alerts** in a maintenance window did not stop monitor alerts, including alerts from rules converted to monitors. Expect fewer alerts during maintenance than on v0.117.0.
+- **Some monitor thresholds now fire.** Bandwidth, disk I/O, network-error and patch-compliance monitors now evaluate in the units they display. Bandwidth thresholds had been compared about 8× too high, so a bandwidth monitor that never fired may fire now.
+
+#### Dynamic groups as execution targets
+
+Dynamic groups whose rules match on a field the device reports about itself no longer act as execution targets. These fields are hostname, display name, tags, device role, last user, agent version, Helper version, installed software (installed or not installed), and any custom field.
+
+- **Affected:** scripts, automations, software policies and update rings. The automation, software, remote-access, PAM, maintenance, OneDrive and Assist policy features also skip such groups.
+- **Not affected:** patch and backup assignments still resolve through these groups. So does every non-execution use of a dynamic group, such as views, filters and reports.
+- **Visible in the audit log.** Each skipped group is logged with the fields that caused it. Where the request is interactive, the response also carries a warning.
+
+To keep targeting these devices, rebuild the group on fields Breeze accepts for targeting, such as site, organization, OS, hardware, network facts or metrics. Or use a static group. See [Device Groups](/features/device-groups/#dynamic-groups-as-execution-targets).
+
+#### Backups, restores and DR
+
+- **DR plan steps cannot store credentials.** A step whose restore settings include a recovery token or storage credentials fails when it runs. The upgrade removes those keys from saved steps, and saving a step that includes them is rejected. Open each affected step and save it again without credentials. Breeze resolves the storage destination from the snapshot when the step runs. See [Disaster Recovery](/backup/disaster-recovery/).
+- **Commands queued across an org merge or device move.** A backup, restore or verify command that is still queued when its device changes organization is not delivered. This includes devices moved by an organization merge. The command is expired with a reason. Run it again after the move.
+- **Restores no longer receive storage credentials.** A restore, verify or test-restore command no longer carries the storage destination. With the 0.118 backup helper, the device fetches each file it needs through a short-lived, read-only link that Breeze issues for that command and device only. Devices whose backup helper predates 0.118 keep using the previous path until they update. See [Restoring from Backup](/backup/restoring/#how-restores-reach-storage).
+- **Restore as VM and instant boot report failures.** A restore as VM that cannot place every file now fails before any VM is created, instead of reporting success. Instant boot runs its background sync inside the command, and an incomplete sync reports the VM as degraded. Hyper-V restore refuses a VM name that already exists.
+- **New run state: completed with errors.** A backup run that produced a snapshot but could not read or upload some files (up to 10%) is now **Completed with errors**, not **Completed**. API consumers see the new status value `completed_with_errors`. See [Monitoring Backups](/backup/monitoring/).
+- **Legal hold blocks erasure.** Erasing an organization's data is refused (`409`) while any of its snapshots is under legal hold, and a legal hold cannot be placed on an organization that is being erased. Permanently deleting a device is refused while one of its snapshots is under legal hold or inside its immutability window.
+- **Storage cannot be shared across partners.** A bucket, endpoint or local path already used by an organization under another partner is refused. Organizations under the same partner can still share one.
+- **Cove name matches are no longer mapped automatically.** Only a Cove customer whose external code is set to a Breeze organization ID is mapped on sync. Map name-only matches yourself. Mappings made before this release are not changed. See [Third-Party Backup Providers](/backup/backup-providers/#mapping-customers-to-organizations).
+- **Recovery bundles verify their helper.** A recovery bundle's launch script checks the included helper binary's signature before running it. Bundles need [recovery signing](/backup/bare-metal-recovery/#recovery-bundle-signing) configured on the server when they are built, and the machine that runs them needs `minisign` (plus `curl` on Linux and macOS). **Rebuild recovery bundles after upgrading.** The recovery console also no longer relaxes its HTTPS requirement for `breeze.insecure=1` in interactive mode.
+
+#### Agent
+
+- **Windows: linked data and log directories are replaced.** If `C:\ProgramData\Breeze\data` or `C:\ProgramData\Breeze\logs` is a junction or symbolic link, the installer and the agent replace it with a real directory that only SYSTEM and Administrators can write to. Files in the old link target are not moved or copied, so copy anything you need first. If the link cannot be removed, **the agent refuses to start** and writes the reason to `C:\ProgramData\Breeze\logs\agent-start-failed.txt`. Remove the link by hand, then start the service.
+- **macOS: agent binaries move.** On its first start, the 0.118 agent moves the agent and watchdog binaries from `/usr/local/bin` to `/Library/Breeze/bin` and reloads its service from there. Update any local scripts that call the old path. If an MDM privacy (PPPC) profile grants the agent Full Disk Access or Accessibility by path, add the new path. See [macOS Permissions](/agents/macos-permissions/). This move is covered by automated tests only, so check one Mac after it updates: `/Library/Breeze/bin/breeze-agent` should exist and the service should be running.
+- **Helper token file.** On Linux and macOS, the Helper token moves to `helper_token.yaml`.
+
+#### Access, MFA and limits
+
+- **Account changes reach delegated access.** A password change or reset, or an MFA factor reset, ends that user's live remote sessions and invalidates the API keys they created before the change. A role change revokes the user's refresh tokens. Service-principal keys are not affected, and the upgrade itself revokes nothing.
+- **More actions need a fresh MFA check:**
+  - revealing a disk-encryption key;
+  - report email recipients;
+  - partner billing profiles and work types;
+  - org billing-profile assignment and org billing settings;
+  - linking a backup-provider device;
+  - topology template library changes;
+  - software-policy executable rules, which also need `pam:manage_policy`;
+  - AI script policy changes;
+  - deactivating a policy.
+- **Permissions.** System Tools file-content and registry reads need `devices:execute`, and so do sensitive event-log channels (Security, PowerShell, Sysmon). Reads of the agent's own configuration directory and the SAM and SECURITY registry hives are always refused. Enrollment short codes are shown only to users who can create or rotate enrollment keys. Role, MFA-reset and member actions require the caller to hold every permission of the target user's role.
+- **PAM and AI approvals.** An approval for a specific executable without its file hash is denied with a reason. AI elevation requests always wait for a human approver, and a requester cannot approve their own elevation. AI ticket comments are private unless approved as customer-visible. Newly discovered MCP tools must be reviewed before they are enabled.
+- **Enrollment and installers.** Rotating an enrollment link issues a new short code, so the old `/s/` and `/i/` links return `404`. A custom-field value used in installer arguments must not contain spaces, quotes or backslashes; otherwise that device's install fails as an unresolved field.
+- **Stored credentials stay tied to their destination.** Changing a tool source, backup S3 endpoint, log-forwarding URL or monitoring integration URL to a new origin requires re-entering its credential. Changing an SNMP discovery profile's subnets, exclusions or site requires re-entering or clearing its SNMP secrets.
+- **Remote sessions.** Where the remote-access policy requires consent or an on-screen notice, desktop sessions over the WebSocket fallback to agents older than 0.118 are refused until the agent updates.
+- **New limits.** Most can be tuned; see [Environment Variables → Agent traffic and ingest budgets](/deploy/environment/#agent-traffic-and-ingest-budgets).
+  - public downloads: 600 requests per 5 minutes per route per IP;
+  - TURN credentials: 30 per 10 minutes per user;
+  - password-reset emails: one per account per 5 minutes;
+  - agent WebSocket messages, plus daily agent log, event-log and change-log ingest (`429` when exceeded);
+  - Helper screenshots;
+  - pending log-forwarding jobs per organization;
+  - the partner's organization limit when creating organizations.
+
+#### Other behaviour changes
+
+- Public invoice and quote links stop working while the owning partner is not active.
+- Adopting a sending domain that already exists at the email provider needs a DNS TXT record at `_breeze-verify.<domain>`, or the domain listed in `EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST`. Otherwise provisioning ends as `provider_conflict`.
+- Organization-scoped users cannot set audit-log retention below 90 days.
+- Revoking a topology template is final.
+- Inviting an address that already belongs to another tenant returns the normal success response.
+- Public download routes, including `install.sh` and `uninstall.sh`, return `503` while Redis is unavailable.
+- With `BINARY_SOURCE=local`, the Breeze Helper download is checked against the signed release manifest and returns `503` on a mismatch. Keep the manifest files next to the Helper binaries (`HELPER_BINARY_DIR` is respected).
+- Notification channel settings (webhook URLs, bot tokens, routing keys) move to their own table, which only the channel's owner can read. The old column is kept for rollback and is dropped in the next release.
+
+#### Environment variables
+
+**No new required variables.** New optional ones all have defaults; see [Environment Variables](/deploy/environment/#agent-traffic-and-ingest-budgets). The four `OFFLINE_DETECTOR_REEVAL_*` variables no longer do anything: the job that read them was retired with legacy alerting. You can remove them.
+
+#### Migrations
+
+All migrations are idempotent and apply on boot. Migrations that change rows report their counts in the API log. Read these before upgrading:
+
+- **One accounting connection per partner.** The API does not start if any partner has more than one accounting connection. Disconnect the extra provider first.
+- **Backup snapshot index.** A new unique index on backup snapshots is built without blocking writes. If duplicate snapshot rows exist, the API logs a warning with the count and skips the index, and tries again on every start until the duplicates are resolved. If an interrupted build left an invalid index, the migration stops with an error. Run `DROP INDEX CONCURRENTLY backup_snapshots_storage_identity_snapshot_id_uq` and restart.
+- **Elevation audit index.** Same pattern. If an interrupted build left the index invalid, run `DROP INDEX CONCURRENTLY public.elevation_audit_org_created_id_idx` and restart.
+- **Stored storage destinations are cleared.** Storage destinations are removed from **finished** device commands, and credential keys from DR plan steps. On an install with a long command history, the first boot takes longer. Queued commands are left alone and cleared when they finish.
+- **Patch job results index.** Built without blocking writes, but it can take a while on a large table.
+- **Network checks.** A new asset/organization constraint on network checks stops the migration if existing rows already break that pairing. It converts and retires nothing.
+
+**Rolling back** to v0.117.0 means restoring the database backup you took before upgrading, together with the v0.117.0 images.
 
 ### v0.117.0 — legacy labour-pricing columns dropped
 

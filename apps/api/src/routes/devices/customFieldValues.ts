@@ -13,6 +13,7 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../../middleware/apiKeyAuth';
+import { propagateDenial } from '../../middleware/propagateDenial';
 import { getDeviceWithOrgCheck } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
 import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../../services/deviceSiteAccess';
@@ -92,6 +93,13 @@ const customFieldValueSchema = z
 
 // Accept JWT (Authorization: Bearer) or API key (X-API-Key). The write variant
 // additionally requires MFA on the JWT path to match PATCH /devices/:id.
+//
+// This composition is hand-rolled (each gate is manually nested and invoked,
+// rather than registered as separate Hono middlewares), which is why the
+// requireMfa() call is wrapped in propagateDenial: see
+// ../../middleware/propagateDenial.ts for why a gate that denies by
+// RETURNING a Response (requireMfa()) would otherwise have that denial
+// silently discarded several closures deep.
 function dualAuth(
   apiKeyScope: 'devices:read' | 'devices:write',
   permission: { resource: string; action: string },
@@ -108,7 +116,7 @@ function dualAuth(
       await requireScope('organization', 'partner', 'system')(c, async () => {
         await requirePermission(permission.resource, permission.action)(c, async () => {
           if (options.mfa) {
-            await requireMfa()(c, next);
+            await propagateDenial(requireMfa(), c, next);
           } else {
             await next();
           }

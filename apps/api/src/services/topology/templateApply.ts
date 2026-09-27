@@ -115,17 +115,20 @@ export async function previewTopologyTemplateApplication(
   // or binding revisions are changed by this POST.
   await withDbTransaction(async () => {
     for (const selected of request.sites) {
+      // Preview is the admission gate for an intent to write site config (it
+      // journals an outbox row and, on apply, audit rows) — it must require
+      // the same `write` tier as the change it is previewing, not `read`.
       await requireTopologySiteAccess(
         auth,
         permissions,
         selected.siteId,
-        'read',
+        'write',
       );
       const ctx = await requireTopologySiteAccess(
         live.auth,
         live.permissions,
         selected.siteId,
-        'read',
+        'write',
       );
       const preview: TopologyTemplatePreview['sites'][number] = {
         siteId: selected.siteId,
@@ -272,17 +275,19 @@ export async function applyTopologyTemplatePreview(
             let code = record.preview.errors[0]?.code ?? null;
             if (!code && record.effect) {
               try {
+                // Same admission-tier fix as preview: apply must re-check
+                // `write`, not `read`, before it journals an intent.
                 await requireTopologySiteAccess(
                   auth,
                   permissions,
                   row.siteId,
-                  'read',
+                  'write',
                 );
                 const ctx = await requireTopologySiteAccess(
                   live.auth,
                   live.permissions,
                   row.siteId,
-                  'read',
+                  'write',
                 );
                 if (ctx.scope.orgId !== record.originalOrgId)
                   throw new TopologyOperationError('preview_invalidated', 409);

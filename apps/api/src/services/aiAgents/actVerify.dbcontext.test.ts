@@ -59,6 +59,10 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../commandQueue', () => commandQueueMock);
+// The policy check has its own suite; here it only has to allow.
+vi.mock('../aiRemoteToolsPolicy', () => ({
+  checkAiRemoteToolsPolicy: vi.fn().mockResolvedValue({ allowed: true }),
+}));
 
 import { ACT_MANIFEST, type ActOperation } from './actManifest';
 import { recordActVerifyFailureAlert, verifyActExecution } from './actVerify';

@@ -25,10 +25,12 @@ import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from './backupProviderConfig';
+import { backupReadCredentialPayload } from './backupCommandCredentials';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
 import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { inArray } from 'drizzle-orm';
 
@@ -156,7 +158,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           },
           status: {
             type: 'string',
-            enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'partial'],
+            enum: ['pending', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled', 'partial'],
             description: 'Filter jobs by status',
           },
           deviceId: { type: 'string', description: 'Filter by device UUID' },
@@ -209,6 +211,11 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         if (jobDeviceCond) conditions.push(jobDeviceCond);
 
         const orgId = getOrgId(auth);
+        // Fail closed: a site-restricted caller whose org never
+        // resolves must not fall through to an unfiltered query.
+        if ((auth.allowedSiteIds || auth.allowedDeviceIds) && !orgId) {
+          return JSON.stringify({ jobs: [], showing: 0 });
+        }
         if ((auth.allowedSiteIds || auth.allowedDeviceIds) && orgId) {
           const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!allowed || allowed.length === 0) {
@@ -405,6 +412,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         pending: sql<number>`count(*) filter (where ${backupJobs.status} = 'pending')`,
         running: sql<number>`count(*) filter (where ${backupJobs.status} = 'running')`,
         completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')`,
+        completedWithErrors: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed_with_errors')`,
         failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')`,
         cancelled: sql<number>`count(*) filter (where ${backupJobs.status} = 'cancelled')`,
         partial: sql<number>`count(*) filter (where ${backupJobs.status} = 'partial')`,
@@ -666,6 +674,12 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (snapshot.orgId !== orgId) {
         return JSON.stringify({ error: 'Snapshot and target device must belong to the same organization' });
       }
+      // Same resilience check as the route: a restore onto a device at a
+      // different site than the backup source needs backup:cross_site_restore.
+      const restoreAuthorization = await authorizeAiRestore(auth, { snapshot, targetDeviceId: deviceId });
+      if (!restoreAuthorization.ok) {
+        return JSON.stringify({ error: restoreAuthorization.error, ...(restoreAuthorization.code ? { code: restoreAuthorization.code } : {}) });
+      }
 
       // Determine restore type based on selectedPaths
       const selectedPaths = Array.isArray(input.selectedPaths) ? input.selectedPaths as string[] : undefined;
@@ -741,8 +755,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
             snapshotId: snapshot.providerSnapshotId,
             targetPath: restoreJob.targetPath ?? '',
             selectedPaths: restoreType === 'selective' ? (selectedPaths ?? []) : [],
-            provider: backupProviderConfig.provider,
-            providerConfig: backupProviderConfig.providerConfig,
+            // A reference only: resolved when the command is delivered.
+            ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
           },
           { userId: auth.user?.id ?? undefined }
         );

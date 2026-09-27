@@ -25,6 +25,7 @@ import {
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
+import { assertMayManageExecutableRules } from '../services/softwarePolicyExecutableRulesAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { requestPamCleanup } from '../services/pamActuationLifecycle';
@@ -357,6 +358,16 @@ softwarePoliciesRoutes.post(
       return c.json({ error: 'At least one software or executable rule is required' }, 400);
     }
 
+    // PAM authority (#5480): setting rules.executable[] on an
+    // allowlist/blocklist policy feeds the PAM auto-approve/auto-deny bridge,
+    // so it needs pam.manage_policy on top of the devices:write this route
+    // already carries.
+    const execRulesDenied = await assertMayManageExecutableRules(c, null, {
+      mode: payload.mode,
+      executable: rules.executable,
+    });
+    if (execRulesDenied) return execRulesDenied;
+
     const [policy] = await db
       .insert(softwarePolicies)
       .values({
@@ -643,6 +654,28 @@ softwarePoliciesRoutes.patch(
     });
     if (armDenied) return armDenied;
 
+    // Normalized up front (rather than inline below) so the PAM-governance
+    // gate can see the same post-write executable[] the update will store.
+    let normalizedRules: ReturnType<typeof normalizeSoftwarePolicyRules> | undefined;
+    if (payload.rules !== undefined) {
+      normalizedRules = normalizeSoftwarePolicyRules(payload.rules);
+      if (normalizedRules.software.length === 0 && (normalizedRules.executable?.length ?? 0) === 0) {
+        return c.json({ error: 'At least one software or executable rule is required' }, 400);
+      }
+    }
+
+    // PAM authority (#5480): setting/changing rules.executable[], or
+    // switching mode on a policy that carries executable[], feeds the PAM
+    // auto-approve/auto-deny bridge — needs pam.manage_policy on top of the
+    // devices:write this route already carries.
+    const storedRules = policy.rules as { executable?: unknown[] } | null | undefined;
+    const execRulesDenied = await assertMayManageExecutableRules(
+      c,
+      { mode: policy.mode, executable: storedRules?.executable },
+      { mode: payload.mode, executable: normalizedRules?.executable }
+    );
+    if (execRulesDenied) return execRulesDenied;
+
     const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),
       // Site-ceiling gate contract §3: bump on every PATCH so a queued
@@ -658,11 +691,7 @@ softwarePoliciesRoutes.patch(
     if (payload.enforceMode !== undefined) updates.enforceMode = payload.enforceMode;
     if (payload.remediationOptions !== undefined) updates.remediationOptions = payload.remediationOptions;
 
-    if (payload.rules !== undefined) {
-      const normalizedRules = normalizeSoftwarePolicyRules(payload.rules);
-      if (normalizedRules.software.length === 0 && (normalizedRules.executable?.length ?? 0) === 0) {
-        return c.json({ error: 'At least one software or executable rule is required' }, 400);
-      }
+    if (normalizedRules !== undefined) {
       updates.rules = normalizedRules;
     }
 

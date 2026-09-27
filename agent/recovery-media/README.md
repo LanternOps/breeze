@@ -37,3 +37,45 @@ No SSH server, no passwords, no secrets are baked into the image. The
 console refuses to run unless `breeze.media=1` is on the kernel cmdline (or
 `--allow-host` is passed, for development off real media). See the
 `recoveryconsole` package for the guided flow itself.
+
+### Unattended (`breeze.ci=1`) mode is a build-time opt-in, not a cmdline one
+
+`breeze.ci=1` and every answer that only matters alongside it
+(`breeze.server=`, `breeze.insecure=1`, `breeze.code=`, `breeze.target=`,
+`breeze.confirm=`, `breeze.after=`) come from the same unauthenticated
+kernel cmdline as everything else on this page — anyone with physical or
+console access can edit it before the console ever starts. Production
+recovery media therefore does not honor `breeze.ci=1` at all: the breeze-backup
+binary built for release (`agent/scripts/build-edition.sh`, every
+self-host/hosted edition) never links
+`internal/recoveryconsole.unattendedCmdlineEnabled`, so `Console.Run` treats
+a cmdline `breeze.ci=1` as inert and always falls through to the
+interactive, `https://`-required prompt (see `console.go`'s `Run` and
+`promptServer`). Only a build that explicitly passes
+`-ldflags "-X github.com/breeze-rmm/agent/internal/recoveryconsole.unattendedCmdlineEnabled=1"`
+— today, only the CI recovery-media E2E job's QEMU boot (`.github/workflows/ci.yml`)
+— honors it, and even then a plaintext (non-`https://`) `breeze.server=`
+still requires the explicit `breeze.insecure=1` cmdline token alongside it.
+
+### Server trust
+
+`build.sh` accepts optional `--server-url <https://...>` and `--trust-pin
+<base64-sha256-spki>` flags. When supplied, they are baked in as
+`/etc/breeze-recovery-server` and `/etc/breeze-recovery-trust-pin` and
+become the console's trusted server default and TLS certificate pin (see
+`agent/internal/recoveryconsole/console.go`'s `promptServer` and
+`agent/internal/backup/bmr/certpin.go`). A kernel-cmdline `breeze.server=`
+value is never trusted the same way: outside `breeze.ci=1` unattended mode
+it is offered only as a labeled, must-confirm suggestion at the prompt, and
+`breeze.insecure=1` no longer has any effect there (`https://` is required
+unconditionally once the console is actually prompting an operator).
+
+Without `--server-url`/`--trust-pin`, built media behaves as it always has:
+no baked default, no certificate pin, operator prompted every time. A
+self-hosted deployment building its own media should pass its own
+`--server-url`; a hosted build pipeline should pass the region's URL. This
+is a recommended default, not yet wired into the release pipeline. What
+remains: GRUB-edit-mode protection (no
+password/superusers directive exists yet) and end-to-end manifest/artifact
+signing beyond TLS certificate pinning both still need coordination with
+the recovery-media and signing-key build pipelines.

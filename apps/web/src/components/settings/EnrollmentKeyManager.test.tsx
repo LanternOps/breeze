@@ -76,6 +76,7 @@ interface Row {
   siteId: string | null;
   name: string;
   shortCode?: string | null;
+  hasShortLink?: boolean;
   usageCount: number;
   maxUsage: number | null;
   expiresAt: string | null;
@@ -162,6 +163,19 @@ describe('EnrollmentKeyManager — short code column', () => {
     await screen.findByText('Prod key');
     expect(screen.getByText('—')).toBeTruthy();
     expect(screen.queryByText('Hidden')).toBeNull();
+  });
+
+  // A read-only-role viewer: the API redacts shortCode to null but still
+  // reports hasShortLink so the UI can distinguish "no link was ever
+  // created" (renders a dash) from "a link exists but you lack the
+  // enrollment permission to see it" (renders an explanatory message, not a
+  // dash — a dash would misleadingly suggest no link exists at all).
+  it('renders a hidden-permission message when the API redacted an existing short link', async () => {
+    routeFetch([makeRow({ shortCode: null, hasShortLink: true })]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText('Prod key');
+    expect(screen.getByText(/hidden.*enrollment permission/i)).toBeTruthy();
+    expect(screen.queryByText('—', { selector: 'span' })).toBeNull();
   });
 });
 

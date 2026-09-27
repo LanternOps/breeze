@@ -239,6 +239,9 @@ vi.mock('../../services/permissions', () => ({
     ALERTS_ACKNOWLEDGE: { resource: 'alerts', action: 'acknowledge' },
   },
 }));
+vi.mock('../../services/eventLogSensitivity', () => ({
+  canReadSensitiveEventLogCategory: vi.fn(() => Promise.resolve(false)),
+}));
 
 import { alertCorrelationRoutes } from './correlations';
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mirrors the mocking pattern established in quickbooksCustomerImport.test.ts:
+// Mirrors the mocking pattern established in accountingCustomerImport.test.ts:
 // mock the db module, the connection/token seams, and the provider registry,
 // then exercise the real matching logic against those mocks.
 const {
@@ -9,6 +9,7 @@ const {
   updateMock,
   deleteMock,
   getConnectionMock,
+  resolveActiveConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
   listRemoteItemsMock,
@@ -28,6 +29,7 @@ const {
     updateMock: vi.fn(),
     deleteMock: vi.fn(),
     getConnectionMock: vi.fn(),
+    resolveActiveConnectionMock: vi.fn(),
     getValidAccessTokenMock: vi.fn(),
     listRemoteCustomersMock: vi.fn(),
     listRemoteItemsMock: vi.fn(),
@@ -73,6 +75,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('./accountingConnectionService', () => ({
   getConnection: getConnectionMock,
+  resolveActiveConnection: resolveActiveConnectionMock,
 }));
 
 vi.mock('./accountingTokens', () => ({
@@ -88,6 +91,7 @@ vi.mock('./providerRegistry', () => ({
     upsertCustomer: upsertCustomerMock,
     upsertItem: upsertItemMock,
   }),
+  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
 
 vi.mock('../auditEvents', () => ({ writeAuditEvent: writeAuditEventMock, requestLikeFromSnapshot: () => ({}) }));
@@ -101,7 +105,9 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   organizations, sites, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
 } from '../../db/schema';
+import { AccountingProviderError } from './accountingProviderError';
 import {
+  AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
   normalizeMatchValue,
@@ -331,12 +337,15 @@ beforeEach(() => {
   stubUpdate();
   stubReads();
   getConnectionMock.mockResolvedValue(connectedConn());
+  // Xero W01: the core resolves the partner's ONE active connection. Delegate to
+  // the pre-existing getConnection fixture so every older test is unchanged.
+  resolveActiveConnectionMock.mockImplementation((_db: unknown, partnerId: string) => getConnectionMock(_db, partnerId, 'quickbooks'));
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
   listRemoteCustomersMock.mockResolvedValue([]);
   listRemoteItemsMock.mockResolvedValue([]);
   listRemoteIncomeAccountsMock.mockResolvedValue([]);
-  upsertCustomerMock.mockResolvedValue({ id: 'qb-new', syncToken: '0' });
-  upsertItemMock.mockResolvedValue({ id: 'qb-new-item', syncToken: '0' });
+  upsertCustomerMock.mockResolvedValue({ id: 'qb-new', remoteVersion: '0' });
+  upsertItemMock.mockResolvedValue({ id: 'qb-new-item', remoteVersion: '0' });
 });
 
 describe('normalizeMatchValue', () => {
@@ -376,7 +385,7 @@ describe('listMappingProposals — org matching priority', () => {
       orgs: [{ id: ORG_A, name: 'Acme' }],
       links: [{ orgId: ORG_A, system: 'quickbooks', externalId: 'qb-12' }],
     });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-12', displayName: 'Acme', syncToken: '4', currencyCode: 'USD' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-12', displayName: 'Acme', remoteVersion: '4', currencyCode: 'USD' }]);
 
     await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
 
@@ -653,7 +662,7 @@ describe('listMappingProposals — connection/token error mapping', () => {
     const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
       .catch((e: unknown) => e);
 
-    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect(err).toMatchObject({ code: 'provider_error', status: 502 });
     expect((err as Error).message).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
     expect(captureExceptionMock).toHaveBeenCalledWith(qboErr);
   });
@@ -685,7 +694,7 @@ describe('listRemoteIncomeAccountsForPartner', () => {
   it('maps a QBO failure to a typed 502', async () => {
     listRemoteIncomeAccountsMock.mockRejectedValue(new Error('boom'));
     await expect(listRemoteIncomeAccountsForPartner({ partnerId: PARTNER, provider: 'quickbooks' }, runCtx))
-      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
   });
 });
 
@@ -741,7 +750,7 @@ function itemMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
 describe('saveMappingDecision', () => {
   it('confirms a remote Customer only when it exists and is unclaimed', async () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '3' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', remoteVersion: '3' }]);
 
     const row = await saveMappingDecision(confirmOrg('qb-1'), runCtx);
 
@@ -752,7 +761,7 @@ describe('saveMappingDecision', () => {
 
   it('persists remoteCurrencyCode from the live listing row when confirming an org mapping', async () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '3', currencyCode: 'EUR' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', remoteVersion: '3', currencyCode: 'EUR' }]);
 
     const row = await saveMappingDecision(confirmOrg('qb-1'), runCtx);
 
@@ -761,7 +770,7 @@ describe('saveMappingDecision', () => {
 
   it('confirming a catalog_item mapping never persists a remoteCurrencyCode (RemoteItem carries none)', async () => {
     stubReads({ items: [{ id: ITEM_A, name: 'Widget', sku: 'W-1' }] });
-    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', syncToken: '0' }]);
+    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', remoteVersion: '0' }]);
 
     const row = await saveMappingDecision({
       partnerId: PARTNER, provider: 'quickbooks', breezeEntityType: 'catalog_item',
@@ -860,7 +869,7 @@ describe('saveMappingDecision', () => {
     // the org id from the request body. A stale mapping row (or a hand-rolled
     // call) must not be able to push the hidden org to QuickBooks.
     stubReads({ orgs: [{ id: ORG_A, name: 'Quick Support', type: 'quick_support' }] });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support', syncToken: '0' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support', remoteVersion: '0' }]);
 
     await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
   });
@@ -880,7 +889,7 @@ describe('saveMappingDecision', () => {
         id: 'm-stale-qs', breezeEntityId: QUICK_SUPPORT_ORG, remoteEntityId: 'qb-1', linkStatus: 'confirmed',
       })],
     });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '0' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', remoteVersion: '0' }]);
 
     const row = await saveMappingDecision(confirmOrg('qb-1'), runCtx);
 
@@ -911,7 +920,7 @@ describe('saveMappingDecision', () => {
 
   it('converts a 23505 unique violation on the mapping insert into mapping_conflict (DB is the last-line defense)', async () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] }); // no existing mapping row -> insert path
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '0' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', remoteVersion: '0' }]);
     insertMock.mockImplementationOnce(() => ({
       values: () => ({
         returning: () => Promise.reject(pgUniqueViolation('accounting_entity_mappings_remote_uniq')),
@@ -926,7 +935,7 @@ describe('saveMappingDecision', () => {
       orgs: [{ id: ORG_A, name: 'Acme' }],
       mappings: [orgMappingRow({ id: 'm-existing', linkStatus: 'suggested', syncStatus: 'pending' })],
     });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-2', displayName: 'Acme', syncToken: '1' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-2', displayName: 'Acme', remoteVersion: '1' }]);
 
     const row = await saveMappingDecision(confirmOrg('qb-2'), runCtx);
 
@@ -939,7 +948,7 @@ describe('saveMappingDecision', () => {
 describe('mapping response presentation', () => {
   it('returns validated remote names and confidence for confirm and clears them on unlink/create_new', async () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Local Acme' }] });
-    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Remote Acme', syncToken: '0' }]);
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Remote Acme', remoteVersion: '0' }]);
     await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).resolves.toMatchObject({
       confidence: 'existing_link', proposedRemoteName: 'Remote Acme',
     });
@@ -1064,7 +1073,7 @@ describe('syncMappedEntity', () => {
       mappings: [itemMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-item-1', remoteSyncToken: '2' })],
       itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
     });
-    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '3' });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', remoteVersion: '3' });
 
     const row = await syncMappedEntity(syncCatalogItem(), runCtx);
 
@@ -1087,7 +1096,7 @@ describe('syncMappedEntity', () => {
       orgs: [{ id: ORG_A, name: 'Acme' }],
       mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', remoteVersion: '0' });
 
     const first = await syncMappedEntity(syncOrg(), runCtx);
 
@@ -1096,7 +1105,7 @@ describe('syncMappedEntity', () => {
     });
     expect(upsertCustomerMock.mock.calls[0]?.[2]).toBeNull(); // first call is a CREATE: no existing ref
 
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '1' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', remoteVersion: '1' });
     const second = await syncMappedEntity(syncOrg(), runCtx);
 
     // The second call must carry the FIRST call's persisted id+SyncToken as a
@@ -1118,7 +1127,7 @@ describe('syncMappedEntity', () => {
         return { returning: async () => [{ id: ORG_A }] };
       } }),
     }));
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4',
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', remoteVersion: '4',
       billAddr: scenario === 'shipping-only' ? undefined : { line1: '1 Billing St', city: 'Austin', country: 'United States' },
       shipAddr: hasShipping ? { line1: '2 Shipping St', country: 'US' } : undefined,
     });
@@ -1156,7 +1165,7 @@ describe('syncMappedEntity', () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Acme', [field]: 'existing' }], mappings: [orgMappingRow({
       linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3',
     })] });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4', billAddr: { line1: 'Remote' } });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', remoteVersion: '4', billAddr: { line1: 'Remote' } });
     await syncMappedEntity(syncOrg(), runCtx);
     expect(updateMock.mock.calls.every(([table]) => table === accountingEntityMappings)).toBe(true);
   });
@@ -1169,7 +1178,7 @@ describe('syncMappedEntity', () => {
     updateMock.mockImplementation((table) => table === accountingEntityMappings ? mappingUpdate(table) : ({
       set: () => ({ where: () => ({ returning: async () => [] }) }),
     }));
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4', billAddr: { line1: 'Remote' } });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', remoteVersion: '4', billAddr: { line1: 'Remote' } });
     await expect(syncMappedEntity(syncOrg(), runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
     expect(updateMock).not.toHaveBeenCalledWith(sites);
     expect(writeAuditEventMock).not.toHaveBeenCalled();
@@ -1189,7 +1198,7 @@ describe('syncMappedEntity', () => {
       orgs: [{ id: ORG_A, name: 'Acme' }],
       mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0', currencyCode: 'USD' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', remoteVersion: '0', currencyCode: 'USD' });
 
     const row = await syncMappedEntity(syncOrg(), runCtx);
 
@@ -1202,7 +1211,7 @@ describe('syncMappedEntity', () => {
       mappings: [itemMappingRow()],
       itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
     });
-    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '0' });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', remoteVersion: '0' });
 
     const row = await syncMappedEntity(syncCatalogItem(), runCtx);
 
@@ -1219,7 +1228,7 @@ describe('syncMappedEntity', () => {
       mappings: [itemMappingRow()],
       itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
     });
-    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '0' });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', remoteVersion: '0' });
 
     await syncMappedEntity(syncCatalogItem(), runCtx);
 
@@ -1244,7 +1253,7 @@ describe('syncMappedEntity', () => {
       }],
       mappings: [orgMappingRow()],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', remoteVersion: '0' });
 
     await syncMappedEntity(syncOrg(), runCtx);
 
@@ -1265,7 +1274,7 @@ describe('syncMappedEntity', () => {
         linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'error', lastError: 'previous failure',
       })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', remoteVersion: '4' });
 
     const row = await syncMappedEntity(syncOrg(), runCtx);
 
@@ -1284,12 +1293,32 @@ describe('syncMappedEntity', () => {
 
     const err: unknown = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e);
 
-    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect(err).toMatchObject({ code: 'provider_error', status: 502 });
     expect((err as Error).message).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
     expect(captureExceptionMock).toHaveBeenCalled();
     const persisted = currentMappingRows.find((r) => r.id === 'm1');
     expect(persisted).toMatchObject({ syncStatus: 'error', remoteEntityId: 'qb-1' }); // prior ref survives the failure
     expect(persisted?.lastError).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
+  });
+
+  it.each([
+    ['quickbooks', 400, 'QuickBooks rejected the customer sync (HTTP 400)'],
+    ['quickbooks', undefined, 'QuickBooks rejected the customer sync'],
+    ['xero', 400, 'Xero rejected the customer sync (HTTP 400)'],
+    ['xero', undefined, 'Xero rejected the customer sync'],
+  ] as const)('labels the sanitized sync failure with the connection\'s provider (%s, HTTP %s) (Xero W01)', async (provider, status, expected) => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(Object.assign(new Error('upstream body'), status === undefined ? {} : { status }));
+
+    const err: unknown = await syncMappedEntity(syncOrg({ provider }), runCtx).catch((e: unknown) => e);
+
+    expect(upsertCustomerMock).toHaveBeenCalledTimes(1);
+    expect(err).toMatchObject({ code: 'provider_error', status: 502, message: expected });
+    expect(currentMappingRows.find((r) => r.id === 'm1')?.lastError).toBe(expected);
   });
 
   // ---------------------------------------------------------------------------
@@ -1316,7 +1345,7 @@ describe('syncMappedEntity', () => {
       throw Object.assign(new Error('boom'), { status: 500 });
     });
 
-    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({ code: 'provider_error' });
 
     // The whole point: nothing was held across the QuickBooks call, and the
     // error marker ran in a context OPENED AFTER it — so it is a real
@@ -1330,7 +1359,7 @@ describe('syncMappedEntity', () => {
     stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }], mappings: [orgMappingRow()] });
     upsertCustomerMock.mockImplementationOnce(async () => {
       ctx.events.push('provider');
-      return { id: 'qb-new', syncToken: '0' };
+      return { id: 'qb-new', remoteVersion: '0' };
     });
 
     await syncMappedEntity(syncOrg(), runCtx);
@@ -1382,7 +1411,7 @@ describe('syncMappedEntity', () => {
       orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'USD' }],
       mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', remoteVersion: '0' });
 
     await expect(syncMappedEntity(syncOrg(), runCtx)).resolves.toMatchObject({ remoteEntityId: 'qb-new', syncStatus: 'synced' });
     expect(upsertCustomerMock).toHaveBeenCalled();
@@ -1394,7 +1423,7 @@ describe('syncMappedEntity', () => {
       orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'EUR' }],
       mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3' })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', remoteVersion: '4' });
 
     await expect(syncMappedEntity(syncOrg(), runCtx)).resolves.toMatchObject({ remoteEntityId: 'qb-1', syncStatus: 'synced' });
     expect(upsertCustomerMock).toHaveBeenCalled();
@@ -1421,7 +1450,7 @@ describe('syncMappedEntity', () => {
       partnerCurrency: 'EUR',
       itemPrices: [{ itemId: ITEM_A, currencyCode: 'EUR', unitPrice: '125.50' }],
     });
-    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '3' });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', remoteVersion: '3' });
 
     await expect(syncMappedEntity(syncCatalogItem(), runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
   });
@@ -1431,7 +1460,7 @@ describe('syncMappedEntity', () => {
       orgs: [{ id: ORG_A, name: 'Acme' }],
       mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
     });
-    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-created', syncToken: '0' });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-created', remoteVersion: '0' });
     // Simulate the mapping row vanishing between read and write (0 rows on the
     // persist UPDATE) — the remote entity now exists in QuickBooks but Breeze
     // could not record it, so a blind retry risks a duplicate QBO Customer.
@@ -1448,5 +1477,164 @@ describe('syncMappedEntity', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error), undefined, expect.objectContaining({ remote_entity_id: 'qb-created' }),
     );
+  });
+});
+
+describe('resolveConnection targets (Xero W01)', () => {
+  it('no target: returns the partner\'s active connection whatever its provider', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c1', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1')).resolves.toMatchObject({ id: 'c1' });
+  });
+
+  it('provider target that does not match the active connection is not_connected, named after the TARGET provider', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c1', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { provider: 'xero' })).rejects.toMatchObject({
+      code: 'not_connected', status: 404, message: 'Xero is not connected for this partner',
+    });
+  });
+
+  it('connectionId target that no longer matches the active row is not_connected (the destination is never reinterpreted)', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ id: 'c-new', provider: 'quickbooks' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { connectionId: 'c-old' })).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('no row at all keeps the QuickBooks wording for a quickbooks route and a neutral one otherwise', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(null);
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1', { provider: 'quickbooks' })).rejects.toMatchObject({ message: 'QuickBooks is not connected for this partner' });
+    await expect(resolveConnection('p1')).rejects.toMatchObject({ message: 'No accounting system is connected for this partner' });
+  });
+
+  it('reauth_required keeps its exact QuickBooks message', async () => {
+    resolveActiveConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks', status: 'reauth_required' }));
+    const { resolveConnection } = await import('./accountingMappingService');
+    await expect(resolveConnection('p1')).rejects.toMatchObject({ code: 'reauth_required', message: 'QuickBooks needs to be reconnected' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting (Xero W01 Task 14): a provider throttle is `rate_limited`/429
+// with retryAfterMs — never the generic provider_error/502, never a Sentry
+// event — so routes answer 429 + Retry-After and workers delay the job.
+// ---------------------------------------------------------------------------
+
+describe('rate limiting (Xero W01 Task 14)', () => {
+  const throttle = (retryAfterMs?: number) => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', httpStatus: 429, retryAfterMs,
+    logBody: 'SUPER-SECRET-UPSTREAM-BODY',
+  });
+
+  it('a throttled provider list call is rate_limited 429 with retryAfterMs, not provider_error, and raises no Sentry event', async () => {
+    listRemoteCustomersMock.mockRejectedValue(throttle(30_000));
+
+    const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AccountingMappingError);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000 });
+    expect((err as Error).message).toBe('QuickBooks is rate limiting requests; try again shortly');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a throttled token refresh is re-typed rate_limited 429 (default 60s when no Retry-After)', async () => {
+    getValidAccessTokenMock.mockRejectedValue(throttle());
+
+    await expect(listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx))
+      .rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 60_000 });
+  });
+
+  it('a throttled upsert follows the transient persistence path (row marked error) minus Sentry, and throws rate_limited', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(throttle(12_000));
+
+    const err: unknown = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 12_000 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    const persisted = currentMappingRows.find((r) => r.id === 'm1');
+    expect(persisted).toMatchObject({
+      syncStatus: 'error', remoteEntityId: 'qb-1', lastError: 'QuickBooks is rate limiting requests; sync again if this does not clear shortly',
+    });
+    // The Redis sync lease is released, so the delayed retry is not refused sync_in_progress.
+    expect(redisMock.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('del'"), 1, expect.any(String), expect.any(String));
+  });
+
+  it('callProviderOrThrow passes an already-typed rate_limited AccountingMappingError through unchanged', async () => {
+    const typed = new AccountingMappingError('rate_limited', 429, 'QuickBooks is rate limiting requests; try again shortly', { retryAfterMs: 9_000 });
+    listRemoteCustomersMock.mockRejectedValue(typed);
+
+    const err: unknown = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(typed);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('callProviderOrThrow still wraps any OTHER AccountingMappingError as provider_error 502 (unchanged)', async () => {
+    listRemoteCustomersMock.mockRejectedValue(new AccountingMappingError('sync_in_progress', 409, 'busy'));
+
+    await expect(listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx))
+      .rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  // ---- F1/F2 (PR #7197 review): source carried + truthful wording + cause ----
+  const sourced = (throttleSource: 'local' | 'limiter_unavailable') => new AccountingProviderError({
+    kind: 'rate_limited', provider: 'quickbooks', operation: 'QuickBooks customer query', retryAfterMs: 5_000, throttleSource,
+  });
+
+  it('a LOCAL throttle on a provider list call is worded as Breeze pacing, with source and cause', async () => {
+    const original = sourced('local');
+    listRemoteCustomersMock.mockRejectedValue(original);
+
+    const err = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e) as AccountingMappingError;
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', status: 429, throttleSource: 'local', message: 'Breeze is pacing requests to QuickBooks; try again shortly',
+    });
+    expect(err.cause).toBe(original);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a limiter_unavailable throttle on the token refresh is worded as Breeze\'s, with source and cause', async () => {
+    const original = sourced('limiter_unavailable');
+    getValidAccessTokenMock.mockRejectedValue(original);
+
+    const err = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx)
+      .catch((e: unknown) => e) as AccountingMappingError;
+
+    expect(err).toMatchObject({
+      code: 'rate_limited', throttleSource: 'limiter_unavailable', message: 'Breeze could not reach its rate limiter; try again shortly',
+    });
+    expect(err.cause).toBe(original);
+  });
+
+  it('a LOCAL throttle on upsert persists the Breeze-pacing marker and throws with source and cause', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced' })],
+    });
+    const original = sourced('local');
+    upsertCustomerMock.mockRejectedValueOnce(original);
+
+    const err = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e) as AccountingMappingError;
+
+    const message = 'Breeze is pacing requests to QuickBooks; sync again if this does not clear shortly';
+    expect(err).toMatchObject({ code: 'rate_limited', throttleSource: 'local', message });
+    expect(err.cause).toBe(original);
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('AccountingMappingError carries retryAfterMs only when given', () => {
+    expect(new AccountingMappingError('rate_limited', 429, 'x', { retryAfterMs: 1_000 }).retryAfterMs).toBe(1_000);
+    expect(new AccountingMappingError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
   });
 });

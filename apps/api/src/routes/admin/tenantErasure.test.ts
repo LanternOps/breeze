@@ -22,6 +22,17 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
+const { legalHoldMock } = vi.hoisted(() => ({
+  legalHoldMock: vi.fn(async () => false),
+}));
+
+vi.mock('../../services/tenantCascade', () => ({
+  hasActiveLegalHoldSnapshots: legalHoldMock,
+  LEGAL_HOLD_ACTIVE_MESSAGE:
+    'This organization has one or more backup snapshots under legal hold. '
+    + 'Release the hold before erasing the organization.',
+}));
+
 // Stub authMiddleware: tests inject their own `auth` context via the
 // pre-route middleware shim below.
 vi.mock('../../middleware/auth', async () => {
@@ -132,6 +143,28 @@ describe('POST /admin/tenant-erasure', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     orgLookup.current = { id: ORG_ID, name: 'Acme Inc', partnerId: 'p-1' };
+    legalHoldMock.mockResolvedValue(false);
+  });
+
+  it('returns 409 and does not enqueue when the org has a snapshot under legal hold', async () => {
+    legalHoldMock.mockResolvedValue(true);
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/tenant-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, confirmEmail: 'admin@breeze.test' }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('LEGAL_HOLD_ACTIVE');
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.refused_legal_hold',
+        resourceId: ORG_ID,
+        result: 'failure',
+      }),
+    );
   });
 
   it('returns 403 when caller is not a platform admin', async () => {

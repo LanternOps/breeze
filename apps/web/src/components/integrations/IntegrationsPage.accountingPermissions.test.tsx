@@ -64,16 +64,26 @@ vi.mock("./UnifiIntegration", () => ({ default: () => <div /> }));
 vi.mock("./StripePaymentsIntegration", () => ({
   default: () => <div data-testid="stub-stripe-payments" />,
 }));
-vi.mock("./QuickbooksIntegration", () => ({
-  default: () => <div data-testid="stub-quickbooks" />,
+vi.mock("./AccountingConnectionPanel", () => ({
+  default: ({ provider }: { provider: string }) => <div data-testid={`stub-${provider}`} />,
 }));
 
 import IntegrationsPage from "./IntegrationsPage";
+import { fetchWithAuth } from "../../stores/auth";
+
+const ALL_CAPS = { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true };
 
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
   window.history.replaceState({}, "", "/integrations#quickbooks");
+  // GET /accounting/providers (Xero W01) — QuickBooks configured.
+  vi.mocked(fetchWithAuth).mockImplementation(async () =>
+    new Response(JSON.stringify({
+      data: [{ id: "quickbooks", displayName: "QuickBooks", configured: true, capabilities: ALL_CAPS }],
+      activeConnection: null,
+    }), { status: 200 }),
+  );
 });
 
 describe("IntegrationsPage QuickBooks accounting:read gate", () => {
@@ -88,12 +98,12 @@ describe("IntegrationsPage QuickBooks accounting:read gate", () => {
     expect(buttons.some((label) => /payment/i.test(label))).toBe(true);
   });
 
-  it("renders the QuickBooks panel and sub-tab once accounting:read is granted", () => {
+  it("renders the QuickBooks panel and sub-tab once accounting:read is granted", async () => {
     state.permissions = [{ resource: "accounting", action: "read" }];
 
     render(<IntegrationsPage />);
 
-    expect(screen.getByTestId("stub-quickbooks")).toBeTruthy();
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
     expect(screen.queryByTestId("accounting-quickbooks-denied")).toBeNull();
     const buttons = screen.getAllByRole("button").map((b) => b.textContent ?? "");
     expect(buttons.some((label) => /quickbooks/i.test(label))).toBe(true);

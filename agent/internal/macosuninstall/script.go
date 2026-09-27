@@ -17,7 +17,7 @@ func Script() string {
 breeze_stop_watchdog || exit 1
 breeze_stop_helpers || exit 1
 breeze_bootout system/com.breeze.agent || exit 1
-rm -f /Library/LaunchDaemons/com.breeze.agent.plist /usr/local/bin/breeze-agent || exit 1
+rm -f /Library/LaunchDaemons/com.breeze.agent.plist /usr/local/bin/breeze-agent /Library/Breeze/bin/breeze-agent || exit 1
 breeze_remove_auxiliary || exit 1
 `
 }

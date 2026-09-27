@@ -853,6 +853,7 @@
     "hideExpired": "Süresi dolmuşları gizle",
     "deleteExpired": "Silinme süresi doldu",
     "shortCode": "Kısa kod",
+    "shortCodeHidden": "Gizli — kayıt izni gerektirir",
     "installerUsage": "Kurulum cihazları {{consumed}} / {{max}}",
     "installerUsageExpired": "Kurulum cihazları {{consumed}} / {{max}} (süresi doldu)",
     "installerUsageMixed": "Yükleyici cihazlar {{liveConsumed}} / {{liveMax}} yayında · {{expired}} süresi doldu",
@@ -5557,7 +5558,9 @@
       "inviteSent": "Davetiye {{email}} adresine gönderildi",
       "copied": "Kopyalandı!",
       "copyLink": "Bağlantıyı kopyala",
-      "mfaReset": "{{email}} için MFA sıfırlandı"
+      "mfaReset": "{{email}} için MFA sıfırlandı",
+      "roleUpdated": "Rol güncellendi",
+      "orgAccessUpdated": "Kuruluş erişimi güncellendi"
     },
     "resetMfa": {
       "title": "MFA sıfırlansın mı?",

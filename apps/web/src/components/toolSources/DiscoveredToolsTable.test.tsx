@@ -94,6 +94,18 @@ describe('DiscoveredToolsTable', () => {
     expect(screen.getByTestId('tool-row-t-1-flag-review')).toBeTruthy();
   });
 
+  it('a tool still flagged reviewNeeded cannot be enabled from its own switch — the tier select is the review', () => {
+    renderTable([tool({ reviewNeeded: true })]);
+    expect((screen.getByTestId('tool-row-t-1-enabled') as HTMLButtonElement).disabled).toBe(true);
+    // Setting the tier IS the review (matches the API contract), and stays enabled.
+    expect((screen.getByTestId('tool-row-t-1-tier') as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it('a reviewNeeded tool that is already enabled can still be turned off', () => {
+    renderTable([tool({ reviewNeeded: true, enabled: true })]);
+    expect((screen.getByTestId('tool-row-t-1-enabled') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('shows the tier the discovery PROPOSED next to the effective one', () => {
     renderTable([tool({ proposedTier: 3, tier: 1 })]);
     const row = screen.getByTestId('tool-row-t-1');
@@ -106,6 +118,7 @@ describe('DiscoveredToolsTable', () => {
     const user = userEvent.setup();
     renderTable([tool(), tool({ id: 't-2' })]);
     await user.click(screen.getByTestId('tools-enable-reads'));
+    await user.click(screen.getByTestId('tools-enable-reads-confirm'));
     await waitFor(() => expect(bulkTools).toHaveBeenCalled());
     expect(bulkTools.mock.calls[0]!.slice(1)).toEqual(['s-1', 'enable_reads']);
     expect(patchSourceTool).not.toHaveBeenCalled();
@@ -113,6 +126,49 @@ describe('DiscoveredToolsTable', () => {
     await user.click(screen.getByTestId('tools-disable-all'));
     await waitFor(() => expect(bulkTools).toHaveBeenCalledTimes(2));
     expect(bulkTools.mock.calls[1]!.slice(1)).toEqual(['s-1', 'disable_all']);
+  });
+
+  it('Enable Reads asks for confirmation and enumerates exactly the tools it will enable', async () => {
+    const user = userEvent.setup();
+    renderTable([
+      tool({ id: 't-1', qualifiedName: 'hudu__get_asset' }),
+      // Already enabled — not part of what this action WOULD change.
+      tool({ id: 't-2', qualifiedName: 'hudu__list_assets', enabled: true }),
+      // Still needs human review — must not be offered for auto-enable.
+      tool({ id: 't-3', qualifiedName: 'hudu__get_secret', reviewNeeded: true }),
+      // Tier 3 — enable_reads only ever touches tier-1 tools server-side.
+      tool({ id: 't-4', qualifiedName: 'hudu__delete_asset', tier: 3 }),
+    ]);
+
+    await user.click(screen.getByTestId('tools-enable-reads'));
+
+    expect(bulkTools).not.toHaveBeenCalled();
+    const dialog = screen.getByTestId('tools-enable-reads-dialog');
+    expect(within(dialog).getByText('hudu__get_asset')).toBeTruthy();
+    expect(within(dialog).queryByText('hudu__list_assets')).toBeNull();
+    expect(within(dialog).queryByText('hudu__get_secret')).toBeNull();
+    expect(within(dialog).queryByText('hudu__delete_asset')).toBeNull();
+
+    await user.click(screen.getByTestId('tools-enable-reads-confirm'));
+    await waitFor(() => expect(bulkTools).toHaveBeenCalled());
+  });
+
+  it('Enable Reads confirmation can be cancelled without calling the bulk route', async () => {
+    const user = userEvent.setup();
+    renderTable([tool()]);
+    await user.click(screen.getByTestId('tools-enable-reads'));
+    expect(screen.getByTestId('tools-enable-reads-dialog')).toBeTruthy();
+    await user.click(screen.getByText('Cancel'));
+    expect(screen.queryByTestId('tools-enable-reads-dialog')).toBeNull();
+    expect(bulkTools).not.toHaveBeenCalled();
+  });
+
+  it('Enable Reads confirmation disables the confirm button with nothing eligible', async () => {
+    const user = userEvent.setup();
+    renderTable([tool({ enabled: true })]);
+    await user.click(screen.getByTestId('tools-enable-reads'));
+    const confirmButton = screen.getByTestId('tools-enable-reads-confirm') as HTMLButtonElement;
+    expect(confirmButton.getAttribute('aria-disabled')).toBe('true');
   });
 
   it('clicking Test hands the tool to the drawer instead of calling the API itself', async () => {
@@ -146,6 +202,7 @@ describe('DiscoveredToolsTable', () => {
     const onChanged = renderTable([tool()]);
 
     await user.click(screen.getByTestId('tools-enable-reads'));
+    await user.click(screen.getByTestId('tools-enable-reads-confirm'));
 
     await waitFor(() => expect(bulkTools).toHaveBeenCalled());
     expect(onChanged).not.toHaveBeenCalled();

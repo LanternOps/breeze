@@ -38,6 +38,15 @@ const NO_INVOICES_PERMISSIONS = [
   { resource: 'tickets', action: 'read' },
   { resource: 'time_entries', action: 'read' },
 ];
+/** reports:read + reports:write, explicitly WITHOUT reports:export. */
+const REPORTS_WRITE_ONLY_PERMISSIONS = [
+  { resource: 'reports', action: 'read' },
+  { resource: 'reports', action: 'write' },
+];
+const REPORTS_WRITE_AND_EXPORT_PERMISSIONS = [
+  ...REPORTS_WRITE_ONLY_PERMISSIONS,
+  { resource: 'reports', action: 'export' },
+];
 
 const state = vi.hoisted(() => ({
   auth: null as unknown,
@@ -50,6 +59,7 @@ const state = vi.hoisted(() => ({
   inserts: [] as Array<{ values: Record<string, unknown> }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
   deletes: [] as Array<{ where: unknown }>,
+  mfaSatisfied: true,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -64,6 +74,7 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireMfa: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  hasSatisfiedMfa: () => state.mfaSatisfied,
 }));
 
 vi.mock('../../db', () => {
@@ -312,6 +323,7 @@ beforeEach(() => {
   state.inserts = [];
   state.updates = [];
   state.deletes = [];
+  state.mfaSatisfied = true;
 });
 
 describe('POST /reports ownerScope=partner (#3198 W01)', () => {
@@ -1401,5 +1413,105 @@ describe('business types refuse legacy selector keys in config (#3198 W02 item 6
       body: JSON.stringify({ config: { dateRange: { preset: 'last_30_days' }, filters: { siteIds: [ORG_ID] } } }),
     });
     expect(res.status).toBe(200);
+  });
+});
+
+/**
+ * A scheduled report's `config.emailRecipients` delivers rendered rows off
+ * the platform on a timer with no per-run confirmation — the same bulk
+ * output `reports:export` already gates on the interactive download/generate
+ * routes (`runs.ts`, `generate.ts`). Setting or changing those recipients on
+ * the definition needs `reports:export` (not just `reports:write`) plus a
+ * fresh-MFA session.
+ */
+describe('report definition recipients require export + MFA', () => {
+  function orgOwnedRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Fleet inventory',
+      type: 'device_inventory',
+      config: {},
+      schedule: 'monthly',
+      format: 'pdf',
+      createdBy: USER_ID,
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'user',
+      portalSelfService: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    state.auth = orgAuth();
+  });
+
+  it('denies POST with a recipient list when the caller lacks reports:export, before any insert', async () => {
+    state.permissions = { permissions: REPORTS_WRITE_ONLY_PERMISSIONS };
+    const res = await app().request('/reports', {
+      method: 'POST', headers: JSON_HEADERS,
+      body: JSON.stringify({
+        name: 'Fleet inventory', type: 'device_inventory',
+        config: { emailRecipients: ['ops@example.com'] },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it('denies PUT that sets a recipient list when the caller lacks reports:export, before any update', async () => {
+    state.permissions = { permissions: REPORTS_WRITE_ONLY_PERMISSIONS };
+    state.rows = [orgOwnedRow(), orgOwnedRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { emailRecipients: ['ops@example.com'] } }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('denies PUT that sets a recipient list when export is granted but the session is not MFA-satisfied', async () => {
+    state.permissions = { permissions: REPORTS_WRITE_AND_EXPORT_PERMISSIONS };
+    state.mfaSatisfied = false;
+    state.rows = [orgOwnedRow(), orgOwnedRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { emailRecipients: ['ops@example.com'] } }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('allows PUT that sets a recipient list when export is granted and the session is MFA-satisfied', async () => {
+    state.permissions = { permissions: REPORTS_WRITE_AND_EXPORT_PERMISSIONS };
+    state.rows = [orgOwnedRow(), orgOwnedRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ config: { emailRecipients: ['ops@example.com'] } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
+  });
+
+  it('does not gate a PUT that leaves config untouched', async () => {
+    state.permissions = { permissions: REPORTS_WRITE_ONLY_PERMISSIONS };
+    state.rows = [orgOwnedRow(), orgOwnedRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
   });
 });

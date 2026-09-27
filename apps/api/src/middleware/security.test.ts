@@ -208,6 +208,59 @@ describe('securityMiddleware', () => {
     });
   });
 
+  describe('skipHeadersPathPrefix option', () => {
+    // A route (the tunnel-http reverse proxy) sets its own conflicting
+    // CSP/Permissions-Policy on every response and must not have this
+    // middleware's values win on top of them — but FORCE_HTTPS enforcement
+    // and canonical-Host rejection are unrelated to that header conflict and
+    // must keep running for that path prefix too, not be dropped wholesale.
+    const PUBLIC_API_URL = 'https://api.example.com';
+
+    it('does not set Content-Security-Policy or Permissions-Policy for a path under the skipped prefix', async () => {
+      const app = createApp({ skipHeadersPathPrefix: '/api/v1/tunnel-http/' });
+      const res = await app.request('http://api.example.com/api/v1/tunnel-http/abc/status');
+      expect(res.headers.get('Content-Security-Policy')).toBeNull();
+      expect(res.headers.get('Permissions-Policy')).toBeNull();
+    });
+
+    it('still sets the headers for a path outside the skipped prefix', async () => {
+      const app = createApp({ skipHeadersPathPrefix: '/api/v1/tunnel-http/' });
+      const res = await app.request('/test');
+      expect(res.headers.get('Content-Security-Policy')).toBeTruthy();
+      expect(res.headers.get('Permissions-Policy')).toBeTruthy();
+    });
+
+    it('still redirects HTTP to HTTPS for a path under the skipped prefix', async () => {
+      const app = createApp({
+        forceHttps: 'true',
+        publicApiUrl: PUBLIC_API_URL,
+        skipHeadersPathPrefix: '/api/v1/tunnel-http/',
+      });
+      app.get('/api/v1/tunnel-http/abc/status', (c) => c.text('proxied'));
+      const req = new Request('http://api.example.com/api/v1/tunnel-http/abc/status', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(308);
+      expect(res.headers.get('Location')).toBe('https://api.example.com/api/v1/tunnel-http/abc/status');
+    });
+
+    it('still rejects an unrecognized Host with 400 for a path under the skipped prefix', async () => {
+      const app = createApp({
+        forceHttps: 'true',
+        publicApiUrl: PUBLIC_API_URL,
+        skipHeadersPathPrefix: '/api/v1/tunnel-http/',
+      });
+      app.get('/api/v1/tunnel-http/abc/status', (c) => c.text('proxied'));
+      const req = new Request('http://unrecognized-host.example.net/api/v1/tunnel-http/abc/status', {
+        headers: { 'x-forwarded-proto': 'http', host: 'unrecognized-host.example.net' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Location')).toBeNull();
+    });
+  });
+
   describe('next() is called', () => {
     it('passes through to route handler', async () => {
       const app = createApp();

@@ -2,7 +2,7 @@ import { DelayedError, Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { withSystemDbAccessContext } from '../db';
-import { reconcileDrExecution } from '../services/drExecutionService';
+import { dispatchDrPendingWork, reconcileDrExecution } from '../services/drExecutionService';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -49,6 +49,16 @@ export async function processDrExecutionReconcileJob(
       outcome: await reconcileDrExecution(data.executionId),
     };
   });
+
+  // #242 hardening: dispatch strictly AFTER withSystemDbAccessContext above
+  // has returned — its transaction is committed and its pooled connection
+  // released by this point. Dispatching from inside that block (even via a
+  // "with system precheck" helper that opens its own connection) held two
+  // pooled connections at once, which is the shape behind #2417 and #6671.
+  const pending = outcome.outcome.pending ?? [];
+  if (pending.length > 0) {
+    await dispatchDrPendingWork(outcome.data.executionId, pending);
+  }
 
   if (outcome.outcome.nextDelayMs !== null) {
     if (!job.token) throw new Error('Active DR reconcile job is missing its worker token');

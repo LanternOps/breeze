@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroupMemberships } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
+import { isQuickSupportOrgType } from '../quickSupportOrg';
 import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
@@ -193,7 +194,7 @@ export async function resolveMonitorsForDevice(
   if (!device) return { kind: 'device_missing' };
 
   const [org] = await executor
-    .select({ partnerId: organizations.partnerId })
+    .select({ partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
@@ -228,7 +229,11 @@ export async function resolveMonitorsForDevice(
       and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId))!,
     );
   }
-  if (org?.partnerId) {
+  // A partner-level assignment must never reach an ephemeral Quick Support
+  // device — the hidden quick_support org is a stranger's own machine mid
+  // support session, not fleet the partner authored partner-wide policies
+  // against. Same exclusion as monitorScriptWorker.ts's partner-wide fan-out.
+  if (org?.partnerId && !isQuickSupportOrgType(org.type)) {
     targetConditions.push(
       and(
         eq(configPolicyAssignments.level, 'partner'),

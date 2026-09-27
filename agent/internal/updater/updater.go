@@ -1605,6 +1605,13 @@ func defaultStagedSignatureCheck(path string) error {
 	return fmt.Errorf("%w: %s", ErrCodeSignatureInvalid, detail)
 }
 
+// geteuidFn and chownBinaryFn are package-level vars so tests can drive
+// replaceBinary's ownership-preservation branch without needing real root.
+var (
+	geteuidFn     = os.Geteuid
+	chownBinaryFn = os.Chown
+)
+
 // replaceBinary replaces the current binary with a new one.
 //
 // On macOS the incoming binary's code signature is verified BEFORE anything is
@@ -1656,6 +1663,13 @@ func (u *Updater) replaceBinary(newPath string) error {
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(u.config.BinaryPath, 0755); err != nil {
 			return err
+		}
+		// See the identical block in replaceBinary for why this is explicit
+		// rather than assumed, and why it's skipped when unprivileged.
+		if geteuidFn() == 0 {
+			if err := chownBinaryFn(u.config.BinaryPath, 0, 0); err != nil {
+				return fmt.Errorf("preserve root ownership of %s: %w", u.config.BinaryPath, err)
+			}
 		}
 	}
 
@@ -1901,6 +1915,13 @@ func (u *Updater) Rollback() error {
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(u.config.BinaryPath, 0755); err != nil {
 			return err
+		}
+		// See the identical block in replaceBinary for why this is explicit
+		// rather than assumed, and why it's skipped when unprivileged.
+		if geteuidFn() == 0 {
+			if err := chownBinaryFn(u.config.BinaryPath, 0, 0); err != nil {
+				return fmt.Errorf("preserve root ownership of %s: %w", u.config.BinaryPath, err)
+			}
 		}
 	}
 

@@ -211,14 +211,23 @@ func PromotePendingCredentials(authToken, watchdogAuthToken, helperAuthToken str
 		return fmt.Errorf("promoted credentials failed readback verification")
 	}
 
-	// The Breeze Helper runs as the logged-in user and cannot read the root-only
-	// secrets.yaml, so helper_auth_token is deliberately exempted from stripping
-	// and also lives in agent.yaml (see secretKeyAllowedInAgentYAML). Promoting
-	// only into secrets.yaml would leave the Helper reading the SUPERSEDED token
-	// and 401ing as soon as its 5-minute grace lapsed — the same stranding bug,
-	// one component over.
+	// The Breeze Helper runs as the logged-in user and cannot read the
+	// root-only secrets.yaml. On Windows helper_auth_token is deliberately
+	// exempted from stripping and lives in agent.yaml instead (see
+	// secretKeyAllowedInAgentYAML); SetAndPersist below writes it there.
+	// Promoting only into secrets.yaml would leave the Helper reading the
+	// SUPERSEDED token and 401ing as soon as its 5-minute grace lapsed — the
+	// same stranding bug, one component over.
 	if err := SetAndPersist(secretKeyHelperAuthToken, helperAuthToken); err != nil {
 		return fmt.Errorf("persisting rotated helper token to agent config: %w", err)
+	}
+	// On Unix the same Helper-visibility requirement is met by the dedicated,
+	// group-scoped helper_token.yaml instead (see helpertoken_unix.go); a
+	// no-op on Windows. Uses the same config-file resolution as the
+	// secrets.yaml write above (mutateSecretsAndPersist -> secretsFilePath ->
+	// viper.ConfigFileUsed()).
+	if err := writeHelperTokenFileFor(viper.ConfigFileUsed(), helperAuthToken); err != nil {
+		return fmt.Errorf("persisting rotated helper token file: %w", err)
 	}
 	return nil
 }

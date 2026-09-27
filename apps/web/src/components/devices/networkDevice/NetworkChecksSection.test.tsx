@@ -35,4 +35,16 @@ describe('NetworkChecksSection', () => {
     await userEvent.click(screen.getByTestId('network-detail-checks-retry'));
     expect(onRetry).toHaveBeenCalledOnce();
   });
+  it('shows the never-checked label instead of the raw i18n key for an unknown status', () => {
+    render(
+      <NetworkChecksSection
+        checks={[{ ...check, lastStatus: 'unknown', lastChecked: null, lastResponseMs: null }]}
+        timezone="UTC"
+        onAddCheck={vi.fn()}
+      />,
+    );
+    const text = screen.getByTestId('network-detail-check-ping').textContent ?? '';
+    expect(text).not.toMatch(/networkDeviceDetailPage\.checks\.status\.unknown/);
+    expect(text).toMatch(/Never checked/);
+  });
 });

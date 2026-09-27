@@ -13,7 +13,7 @@ import { createProfileSchema, updateProfileSchema, profileRowsSchema, saveProfil
 import {
   listProfiles, getProfile, createProfile, updateProfile, saveProfile, replaceProfileRows, cloneProfile, BillingProfileServiceError,
 } from '../services/billingProfileService';
-import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createWorkTypeSchema, updateWorkTypeSchema } from '@breeze/shared';
 import {
@@ -59,7 +59,7 @@ app.get('/work-types', readPerm, async (c) => {
   return c.json({ workTypes: rows });
 });
 
-app.post('/work-types', writePerm, partnerWideWrite, async (c) => {
+app.post('/work-types', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const parsed = createWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
@@ -69,7 +69,7 @@ app.post('/work-types', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.patch('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
+app.patch('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const parsed = updateWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
@@ -86,7 +86,7 @@ app.patch('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
 // how many ticket categories just lost it as their default (the service clears
 // those in the same transaction — otherwise the server would keep stamping a
 // work type the picker no longer offers).
-app.delete('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
+app.delete('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   try {
@@ -106,7 +106,7 @@ app.get('/', readPerm, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.post('/', writePerm, partnerWideWrite, async (c) => {
+app.post('/', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const parsed = createProfileSchema.safeParse(await c.req.json().catch(() => null));
@@ -121,7 +121,7 @@ app.post('/', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.patch('/:id', writePerm, partnerWideWrite, async (c) => {
+app.patch('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
@@ -139,7 +139,7 @@ app.patch('/:id', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.delete('/:id', writePerm, partnerWideWrite, async (c) => {
+app.delete('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
@@ -155,7 +155,7 @@ app.delete('/:id', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.put('/:id/save', writePerm, partnerWideWrite, async (c) => {
+app.put('/:id/save', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
@@ -173,7 +173,7 @@ app.put('/:id/save', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.put('/:id/rows', writePerm, partnerWideWrite, async (c) => {
+app.put('/:id/rows', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
@@ -191,7 +191,7 @@ app.put('/:id/rows', writePerm, partnerWideWrite, async (c) => {
   } catch (err) { return fail(c, err); }
 });
 
-app.post('/:id/clone', writePerm, partnerWideWrite, async (c) => {
+app.post('/:id/clone', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));

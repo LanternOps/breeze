@@ -9,6 +9,7 @@ import {
   buildCommandFailureResponse,
   CLOUDFLARE_SWALLOWED_STATUSES,
 } from './fileBrowserHelpers';
+import { ERROR_CODES } from '@breeze/shared';
 import { DEVICE_UNREACHABLE_ERROR, type CommandResult } from '../../services/commandQueue';
 
 describe('isCommandFailure', () => {
@@ -96,8 +97,8 @@ describe('classifyCommandFailure', () => {
       error: 'file too large: 8981850 bytes (max 1048576 bytes)',
     });
     expect(failure).toEqual({
-      kind: 'agent_command_rejected',
-      code: 'agent_command_rejected',
+      kind: ERROR_CODES.AGENT_COMMAND_REJECTED,
+      code: ERROR_CODES.AGENT_COMMAND_REJECTED,
       message: 'file too large: 8981850 bytes (max 1048576 bytes)',
       status: 422,
     });
@@ -113,7 +114,7 @@ describe('classifyCommandFailure', () => {
     'destPath is required',
   ])('classifies the deterministic refusal %j as 422', (error) => {
     const failure = classifyCommandFailure({ status: 'failed', error });
-    expect(failure.kind).toBe('agent_command_rejected');
+    expect(failure.kind).toBe(ERROR_CODES.AGENT_COMMAND_REJECTED);
     expect(failure.status).toBe(422);
   });
 
@@ -126,7 +127,7 @@ describe('classifyCommandFailure', () => {
     // the download route's old local `includes('not found')` test missed them
     // and answered 502 for a plain mistyped path.
     const failure = classifyCommandFailure({ status: 'failed', error });
-    expect(failure.kind).toBe('path_not_found');
+    expect(failure.kind).toBe(ERROR_CODES.PATH_NOT_FOUND);
     expect(failure.status).toBe(404);
   });
 
@@ -135,7 +136,7 @@ describe('classifyCommandFailure', () => {
       status: 'failed',
       error: 'cannot restore: path already exists: /home/user/report.pdf',
     });
-    expect(failure.kind).toBe('path_conflict');
+    expect(failure.kind).toBe(ERROR_CODES.PATH_CONFLICT);
     expect(failure.status).toBe(409);
   });
 
@@ -147,7 +148,7 @@ describe('classifyCommandFailure', () => {
       status: 'failed',
       error: 'failed to read file: input/output error',
     });
-    expect(failure.kind).toBe('agent_execution_failed');
+    expect(failure.kind).toBe(ERROR_CODES.AGENT_EXECUTION_FAILED);
     expect(failure.status).toBe(500);
   });
 });
@@ -156,8 +157,8 @@ describe('mapCommandFailure', () => {
   it('maps DEVICE_UNREACHABLE_ERROR to 503 with the sentinel message', () => {
     const result: CommandResult = { status: 'failed', error: DEVICE_UNREACHABLE_ERROR };
     expect(mapCommandFailure(result, 'fallback')).toEqual({
-      kind: 'device_unreachable',
-      code: 'device_unreachable',
+      kind: ERROR_CODES.DEVICE_UNREACHABLE,
+      code: ERROR_CODES.DEVICE_UNREACHABLE,
       message: DEVICE_UNREACHABLE_ERROR,
       status: 503,
     });
@@ -167,7 +168,7 @@ describe('mapCommandFailure', () => {
     const result: CommandResult = { status: 'timeout', error: 'Command timed out after 30000ms' };
     const mapped = mapCommandFailure(result, 'fallback');
     expect(mapped.status).toBe(503);
-    expect(mapped.code).toBe('agent_timeout');
+    expect(mapped.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
     expect(mapped.message).toMatch(/didn't respond in time/i);
     expect(mapped.message).toMatch(/please try again/i);
   });
@@ -178,19 +179,19 @@ describe('mapCommandFailure', () => {
     // user gets the same UI treatment.
     const result: CommandResult = { status: 'failed', error: 'agent: command timed out at 30s' };
     const mapped = mapCommandFailure(result, 'fallback');
-    expect(mapped.code).toBe('agent_timeout');
+    expect(mapped.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
     expect(mapped.status).toBe(503);
     expect(mapped.message).toMatch(/didn't respond in time/i);
   });
 
   it('maps "did not complete" error string to a timeout', () => {
     const result: CommandResult = { status: 'failed', error: 'Command did not complete' };
-    expect(mapCommandFailure(result, 'fallback').code).toBe('agent_timeout');
+    expect(mapCommandFailure(result, 'fallback').code).toBe(ERROR_CODES.AGENT_TIMEOUT);
   });
 
   it('regex matching is case-insensitive', () => {
     const result: CommandResult = { status: 'failed', error: 'COMMAND TIMED OUT' };
-    expect(mapCommandFailure(result, 'fallback').code).toBe('agent_timeout');
+    expect(mapCommandFailure(result, 'fallback').code).toBe(ERROR_CODES.AGENT_TIMEOUT);
   });
 
   it('uses the mutating message when opts.mutating is true', () => {
@@ -215,8 +216,8 @@ describe('mapCommandFailure', () => {
       error: 'Device is offline, cannot execute command',
     };
     expect(mapCommandFailure(result, 'fallback')).toEqual({
-      kind: 'device_offline',
-      code: 'device_offline',
+      kind: ERROR_CODES.DEVICE_OFFLINE,
+      code: ERROR_CODES.DEVICE_OFFLINE,
       message: 'The device is offline.',
       status: 503,
     });
@@ -244,7 +245,7 @@ describe('mapCommandFailure', () => {
     };
     const failure = mapCommandFailure(result, 'fallback');
 
-    expect(failure.code).toBe('device_offline');
+    expect(failure.code).toBe(ERROR_CODES.DEVICE_OFFLINE);
     expect(failure.status).toBe(503);
     expect(failure.message).toBe(expected);
   });
@@ -261,8 +262,8 @@ describe('mapCommandFailure', () => {
   it('falls through to 500 with the raw error for unclassified failures', () => {
     const result: CommandResult = { status: 'failed', error: 'Permission denied' };
     expect(mapCommandFailure(result, 'fallback')).toEqual({
-      kind: 'agent_execution_failed',
-      code: 'agent_execution_failed',
+      kind: ERROR_CODES.AGENT_EXECUTION_FAILED,
+      code: ERROR_CODES.AGENT_EXECUTION_FAILED,
       message: 'Permission denied',
       status: 500,
     });
@@ -271,8 +272,8 @@ describe('mapCommandFailure', () => {
   it('uses the fallback string when no error is present', () => {
     const result: CommandResult = { status: 'failed' };
     expect(mapCommandFailure(result, 'Failed to do the thing.')).toEqual({
-      kind: 'agent_execution_failed',
-      code: 'agent_execution_failed',
+      kind: ERROR_CODES.AGENT_EXECUTION_FAILED,
+      code: ERROR_CODES.AGENT_EXECUTION_FAILED,
       message: 'Failed to do the thing.',
       status: 500,
     });
@@ -317,7 +318,7 @@ describe('buildBulkItemFailure', () => {
     const failure = buildBulkItemFailure(result);
     expect(failure.unverified).toBe(false);
     expect(failure.message).toBe('Permission denied');
-    expect(failure.code).toBe('agent_execution_failed');
+    expect(failure.code).toBe(ERROR_CODES.AGENT_EXECUTION_FAILED);
   });
 
   it('passes the unreachable sentinel through with unverified=false', () => {
@@ -369,7 +370,7 @@ describe('buildSingleItemUploadBody', () => {
     expect(body.error).toMatch(/may have completed/i);
     expect(body.error).toMatch(/refresh to verify/i);
     expect(body.status).toBe(503);
-    expect(body.code).toBe('agent_timeout');
+    expect(body.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
   });
 
   it('keeps unverified distinct from offline now that both answer 503', () => {
@@ -435,7 +436,7 @@ describe('buildCommandFailureResponse', () => {
     );
 
     expect(status).toBe(503);
-    expect(body.code).toBe('agent_timeout');
+    expect(body.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
     expect(body.unverified).toBe(true);
     expect(body.error).toContain('may have completed');
   });
@@ -447,7 +448,7 @@ describe('buildCommandFailureResponse', () => {
     );
 
     expect(status).toBe(503);
-    expect(body.code).toBe('agent_timeout');
+    expect(body.code).toBe(ERROR_CODES.AGENT_TIMEOUT);
     // Absent, not `false` — the routes spread this straight into c.json and a
     // literal `unverified: false` would read as a deliberate "we checked".
     expect('unverified' in body).toBe(false);
@@ -460,7 +461,7 @@ describe('buildCommandFailureResponse', () => {
     for (const error of ['service not found: WinRM', 'task not found: \\Backup\\Daily']) {
       const { body, status } = buildCommandFailureResponse({ status: 'failed', error }, 'fallback');
       expect(status).toBe(404);
-      expect(body.code).toBe('path_not_found');
+      expect(body.code).toBe(ERROR_CODES.PATH_NOT_FOUND);
       expect(body.error).toBe(error);
     }
   });

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,6 +18,42 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/watchdog"
 )
+
+func TestVerifyOwnExecutableTrustedIfPrivilegedSkipsWhenNotPrivileged(t *testing.T) {
+	origEuid, origResolve, origVerify := geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn
+	t.Cleanup(func() { geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn = origEuid, origResolve, origVerify })
+
+	geteuidFn = func() int { return 501 }
+	verifyTrustedExecutableOwnerFn = func(string) error {
+		t.Fatal("verifyTrustedExecutableOwnerFn must not be called when not privileged")
+		return nil
+	}
+
+	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
+		t.Fatalf("got %v, want nil (check skipped for a non-root caller)", err)
+	}
+}
+
+func TestVerifyOwnExecutableTrustedIfPrivilegedChecksWhenRoot(t *testing.T) {
+	origEuid, origResolve, origVerify := geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn
+	t.Cleanup(func() { geteuidFn, osExecutableFn, verifyTrustedExecutableOwnerFn = origEuid, origResolve, origVerify })
+
+	geteuidFn = func() int { return 0 }
+	osExecutableFn = func() (string, error) { return "/usr/local/bin/breeze-watchdog", nil }
+	var gotPath string
+	verifyTrustedExecutableOwnerFn = func(path string) error {
+		gotPath = path
+		return errors.New("not owned by root")
+	}
+
+	err := verifyOwnExecutableTrustedIfPrivileged()
+	if err == nil {
+		t.Fatal("expected the underlying ownership failure to propagate")
+	}
+	if want := filepath.Clean("/usr/local/bin/breeze-watchdog"); gotPath != want {
+		t.Fatalf("got path %q, want the resolved executable path", gotPath)
+	}
+}
 
 // collectDiagnosticsHarness spins up a fake API that routes /logs and
 // /commands/.../result, drives handleFailoverCommand with a collect_diagnostics

@@ -235,6 +235,16 @@ export async function loadAndResolveEffectivePeripheralPolicySetInCurrentDbConte
     .limit(1);
   if (!organization) return null;
 
+  // Field-provenance tiering — NOT gated by field provenance,
+  // deliberately. Peripheral policy only ever RESTRICTS the device it applies
+  // to (blocks/allows USB and other peripheral classes) — same direction as
+  // `peripheral_control` in configFeatureTypes.ts's config-policy tiering. A
+  // device that reports its way INTO a group that carries a stricter
+  // peripheral policy only tightens its own restrictions; it gains nothing.
+  // Leaving a group's filter match by misreporting is a general property of
+  // dynamic-group membership (not specific to this resolver, and not what the
+  // field-provenance-tiering execution-target gate covers), so it is out of
+  // scope here and not gated.
   const membershipRows = await db
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)

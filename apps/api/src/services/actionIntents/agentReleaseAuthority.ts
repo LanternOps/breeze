@@ -66,6 +66,8 @@ export async function checkAgentReleaseAuthority(
           orgId: aiAgentRuns.orgId,
           deviceId: aiAgentRuns.deviceId,
           policySnapshot: aiAgentRuns.policySnapshot,
+          // See the check below, mirroring policyDecide.ts.
+          modeAtStart: aiAgentRuns.modeAtStart,
         })
         .from(aiAgentRuns)
         .where(eq(aiAgentRuns.id, runId))
@@ -274,6 +276,25 @@ export async function checkAgentReleaseAuthority(
   // operator opting a key back out, execute unattended anyway as long as
   // guardrails merely declined to hard-deny it.
   const isPolicyDecided = intent.decidedVia === 'policy';
+
+  // The last release-time gate for a policy-decided
+  // intent — no human ever reviewed this call, so it must be refused unless
+  // the run itself was actually admitted in act mode. `run.modeAtStart` is
+  // distinct from both `run.policySnapshot.effective.mode` and the current
+  // live policy read below: an anomaly- or ticket-triggered run is admitted
+  // with `modeAtStart: 'shadow'` even when the resolved policy's mode is
+  // 'act' (runService.ts's forced-shadow downgrade), and the snapshot still
+  // records that resolved 'act' mode unchanged. Mirrors the same check in
+  // policyDecide.ts's `attemptPolicyDecision` (decide time) and
+  // intentService.ts's `resolvePolicyDecisionState` (creation time) — this
+  // is the third and final enforcement point, immediately before execution.
+  if (isPolicyDecided && run.modeAtStart !== 'act') {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: { policy: 'mode_at_start', modeAtStart: run.modeAtStart },
+    };
+  }
 
   const candidates = [
     { policy: 'snapshot' as const, effective: run.policySnapshot?.effective },

@@ -67,6 +67,14 @@ var (
 	userHomeDirFunc   = os.UserHomeDir
 	passwdHomeDirFunc = passwdHomeDir
 	agentDataDirFunc  = config.GetDataDir
+	// agentConfigDirFunc resolves the agent's OWN config/secrets directory
+	// (holds agent.yaml and secrets.yaml — the bearer and mTLS credentials the
+	// agent authenticates to the API with). Indirected like the data-dir
+	// resolver above for test injection, and read live rather than hardcoded
+	// so a non-default install location (an alternate ProgramData root, a
+	// relocated /etc/breeze, etc.) is still covered — the static patterns
+	// below only catch the well-known defaults.
+	agentConfigDirFunc = config.ConfigDir
 )
 
 // passwdHomeDir resolves the current user's home directory from the system
@@ -248,16 +256,30 @@ var sensitiveReadPatterns = []string{
 	// Keychains directory node is denied alongside its contents (#3385) — every
 	// file under it is credential material, so there is nothing to allow through.
 	"/library/keychains",
+	// The agent's own config/secrets directory, well-known default locations
+	// holds agent.yaml and secrets.yaml, which carry the
+	// agent's bearer token and mTLS client certificate/key. A devices:execute
+	// caller browsing the filesystem must not be able to read the agent's own
+	// credentials back out through the file browser. The live-configured
+	// location (which also covers a non-default install path) is checked
+	// separately below via agentConfigDirFunc.
+	"/programdata/breeze",                 // Windows default
+	"/etc/breeze",                         // Linux default
+	"/library/application support/breeze", // macOS default (also covers the data dir under it)
 }
 
 // sensitiveReadBasenames are lowercased filenames that are credential stores
 // regardless of directory (browser password databases, etc.).
 var sensitiveReadBasenames = map[string]bool{
-	"login data":     true, // Chrome / Edge / Brave / Chromium
-	"key4.db":        true, // Firefox NSS key DB
-	"logins.json":    true, // Firefox saved logins
-	"signons.sqlite": true, // legacy Firefox logins
-	"cookies.sqlite": true, // Firefox cookies (session theft)
+	"login data":       true, // Chrome / Edge / Brave / Chromium
+	"key4.db":          true, // Firefox NSS key DB
+	"logins.json":      true, // Firefox saved logins
+	"signons.sqlite":   true, // legacy Firefox logins
+	"cookies.sqlite":   true, // Firefox cookies (session theft)
+	"cookies":          true, // Chrome / Edge / Brave / Chromium cookie DB (no extension)
+	"local state":      true, // Chrome / Edge / Brave / Chromium (holds the AES master key for encrypted cookies/passwords)
+	".git-credentials": true, // git credential.helper=store plaintext token cache
+	".env":             true, // application secrets/config (API keys, DB connection strings)
 }
 
 // matchesPathFragment reports whether frag occurs in norm at a path-component
@@ -319,11 +341,35 @@ func isSensitiveReadPath(p string) bool {
 		}
 	}
 
+	// AWS CLI credentials file, wherever its containing .aws directory lives
+	// (normally under a home directory, but not assumed to be — the same
+	// reasoning as the .ssh check above).
+	if strings.Contains(norm, "/.aws/") && base == "credentials" {
+		return true
+	}
+
+	// kubectl config, same reasoning as .aws/credentials above.
+	if strings.Contains(norm, "/.kube/") && base == "config" {
+		return true
+	}
+
 	// macOS keychain files outside the standard Keychains directory. The
 	// directory itself (and everything under it) is covered by the
 	// "/library/keychains" entry in sensitiveReadPatterns.
 	if strings.HasSuffix(base, ".keychain") || strings.HasSuffix(base, ".keychain-db") {
 		return true
+	}
+
+	// The agent's own config/secrets directory at its actual configured
+	// location (covers a non-default install path; the well-known defaults
+	// are also covered statically in sensitiveReadPatterns above so this
+	// still denies even if ConfigDir() cannot be resolved for some reason).
+	if configDir := agentConfigDirFunc(); configDir != "" {
+		normConfigDir := strings.ToLower(strings.ReplaceAll(configDir, "\\", "/"))
+		normConfigDir = strings.TrimSuffix(normConfigDir, "/")
+		if matchesPathFragment(norm, normConfigDir) {
+			return true
+		}
 	}
 
 	return false

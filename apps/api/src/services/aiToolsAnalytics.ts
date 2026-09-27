@@ -448,9 +448,9 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
       // trends, patch compliance, SLA stats across the whole tenant). They
       // cannot be attributed to, or narrowed to, a single device, so a
       // device-scoped run must not read them at all (#6086).
-      if (auth.allowedDeviceIds) {
+      if (auth.allowedDeviceIds || auth.allowedSiteIds) {
         return JSON.stringify({
-          error: 'Executive summaries are org-wide aggregates covering every device in the organization, so they are not available to a device-scoped run. Use the device-level tools (device details, metrics, alerts, patch status) for the device(s) this run is scoped to.',
+          error: 'Executive summaries are org-wide aggregates covering every device in the organization, so they are not available to a device- or site-scoped run. Use the device-level tools (device details, metrics, alerts, patch status) for the device(s) this run is scoped to.',
         });
       }
 

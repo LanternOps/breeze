@@ -48,6 +48,9 @@
 <?ifndef RemoveUserHelperScriptPath?>
 <?define RemoveUserHelperScriptPath=remove-windows-task.ps1?>
 <?endif?>
+<?ifndef EnrollAgentScriptPath?>
+<?define EnrollAgentScriptPath=scripts\enroll-agent.vbs?>
+<?endif?>
 
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -192,6 +195,11 @@
     <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" />
     <?endif?>
     <Property Id="BOOTSTRAP_TOKEN" Secure="yes" Hidden="yes" />
+    <!-- Carries key|server|secret|exePath from the immediate Set_EnrollAgent
+         CustomAction to the deferred EnrollAgent script CA via
+         CustomActionData — see that CA's comment. Hidden for the same
+         reason as ENROLLMENT_KEY/ENROLLMENT_SECRET above: it embeds both. -->
+    <Property Id="EnrollAgent" Secure="no" Hidden="yes" />
     <!-- Always write a verbose MSI log to %TEMP%\MSI*.LOG and print its path in
          the failure dialog. Without this, a rolled-back install shows only
          "Breeze Agent Setup Wizard ended prematurely" with no cause and no log
@@ -385,11 +393,21 @@
          re-applies PROTECTED DACLs to the config dir and (fail-closed) to
          secrets.yaml at runtime on first config write (see
          agent/internal/config/permissions_windows.go), so a skipped/blocked
-         icacls here self-heals and never leaves tokens world-readable. -->
+         icacls here self-heals and never leaves tokens world-readable.
+
+         Each directory is handled root first, in full, before its children:
+         a directory that already exists as a junction or symbolic link (a
+         standard user can create one under ProgramData before install) is
+         removed with a plain rmdir, which deletes only the link and never
+         its target, then created as a real directory, given a SYSTEM owner
+         and a protected SYSTEM/Administrators DACL. icacls on a link would
+         change only the link object. If a link cannot be removed the chain
+         stops; the agent repeats the same replacement at startup and
+         refuses to start while a link remains. -->
     <CustomAction
       Id="HardenProgramDataAcl"
       Property="BREEZE_ACL_CMD"
-      ExeCommand="/c (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
+      ExeCommand="/c (fsutil reparsepoint query &quot;[ProgramDataBreezeDir].&quot; >nul 2>&amp;1 &amp;&amp; (rmdir &quot;[ProgramDataBreezeDir].&quot; || exit /b 1) || ver >nul) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /setowner *S-1-5-18 &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; (fsutil reparsepoint query &quot;[ProgramDataBreezeDataDir].&quot; >nul 2>&amp;1 &amp;&amp; (rmdir &quot;[ProgramDataBreezeDataDir].&quot; || exit /b 1) || ver >nul) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /setowner *S-1-5-18 &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; (fsutil reparsepoint query &quot;[ProgramDataBreezeLogsDir].&quot; >nul 2>&amp;1 &amp;&amp; (rmdir &quot;[ProgramDataBreezeLogsDir].&quot; || exit /b 1) || ver >nul) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /setowner *S-1-5-18 &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -561,14 +579,38 @@
       Impersonate="no"
       Return="ignore" />
 
+    <!-- Set_EnrollAgent (immediate) formats the values the deferred
+         EnrollAgent CA below needs into the "EnrollAgent" property — MSI's
+         standard mechanism for handing a deferred CA its CustomActionData
+         (the property's name must match the deferred CA's Id). This is
+         formatted at schedule time, same as every other property reference
+         in this file; the deferred CA reads it back via
+         Session.Property("CustomActionData"). -->
+    <CustomAction
+      Id="Set_EnrollAgent"
+      Property="EnrollAgent"
+      Value="[ENROLLMENT_KEY]|[SERVER_URL]|[ENROLLMENT_SECRET]|[#filBreezeAgentExe]" />
+
+    <!-- EnrollAgent is a script CA (installer/scripts/enroll-agent.vbs), not
+         an EXE CA — see that script's header comment for why: it lets the
+         key/secret reach breeze-agent.exe enroll via that process's own
+         environment block instead of its command line, which an EXE-type
+         CustomAction's ExeCommand cannot do (ExeCommand IS the literal argv).
+         Do NOT revert this to an ExeCommand-based CA that inlines
+         [ENROLLMENT_KEY]/[ENROLLMENT_SECRET] directly — that is exactly the
+         plaintext-argv exposure this CA exists to avoid (any local account
+         can read another process's argv via Get-CimInstance Win32_Process).
+         Also do NOT try to read them via "[CustomActionData]" in an
+         ExeCommand instead of a script CA — see the comment on
+         BootstrapEnroll below for why that formats to an empty string for a
+         deferred EXE CA and silently broke every enrollment once already. -->
     <CustomAction
       Id="EnrollAgent"
-      FileRef="filBreezeAgentExe"
-      ExeCommand="enroll &quot;[ENROLLMENT_KEY]&quot; --server &quot;[SERVER_URL]&quot; --enrollment-secret &quot;[ENROLLMENT_SECRET]&quot; --quiet"
       Execute="deferred"
       Impersonate="no"
       Return="check"
-      HideTarget="yes" />
+      Script="vbscript"
+      ScriptSourceFile="$(var.EnrollAgentScriptPath)" />
 
     <!-- Pass the launched MSI path (which carries the bootstrap token in its
          filename — Breeze Agent (TOKEN@HOST).msi) to the agent on the deferred
@@ -694,6 +736,7 @@
            single-use bootstrap token is never burned. A maintenance run
            launched from the Windows Installer cache (Apps repair) has a
            tokenless OriginalDatabase and takes the soft no-token path. -->
+      <Custom Action="Set_EnrollAgent" Before="EnrollAgent" Condition="NOT REMOVE AND SERVER_URL AND ENROLLMENT_KEY" />
       <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT REMOVE AND SERVER_URL AND ENROLLMENT_KEY" />
       <!-- Filename/property bootstrap enrollment: only when explicit
            SERVER_URL+ENROLLMENT_KEY were NOT supplied (those take the

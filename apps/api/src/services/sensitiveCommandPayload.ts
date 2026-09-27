@@ -10,6 +10,7 @@ import {
   type SecretPayloadContext,
 } from './scriptSecretEnvelope';
 import { captureException } from './sentry';
+import { CommandTypes } from './commandTypes';
 
 // device_commands is intentionally system-scoped (no RLS) and its payload
 // column is plaintext JSONB. Commands whose payload carries credentials are
@@ -51,8 +52,93 @@ const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
  */
 const ENVELOPE_COMMAND_TYPES = new Set(['script']);
 
+/**
+ * 3. STORAGE DESTINATION — backup/restore/verify command types whose agent
+ *    handler reads a storage destination (`providerConfig`: bucket
+ *    credentials, a filesystem path) from the payload. The API's own enqueue
+ *    sites persist only a reference and resolve the destination at delivery
+ *    (services/backupCommandCredentials.ts). This is the backstop for any
+ *    payload that still arrives with an inline destination: the two
+ *    `device_commands` insert sites in commandQueue.ts seal it into
+ *    `providerConfigEnvelope` under an AAD bound to the command id, device id
+ *    and type before the row is written, and `decryptCommandForDelivery`
+ *    opens it for the agent. Both fields are erased at terminal state.
+ */
+export const STORAGE_DESTINATION_FIELD = 'providerConfig';
+export const STORAGE_DESTINATION_ENVELOPE_FIELD = 'providerConfigEnvelope';
+const STORAGE_DESTINATION_ENVELOPE_VERSION = 1;
+
+const STORAGE_DESTINATION_COMMAND_TYPES: ReadonlySet<string> = new Set([
+  CommandTypes.BACKUP_RUN,
+  CommandTypes.BACKUP_RESTORE,
+  CommandTypes.BACKUP_VERIFY,
+  CommandTypes.BACKUP_TEST_RESTORE,
+  CommandTypes.MSSQL_BACKUP,
+  CommandTypes.MSSQL_RESTORE,
+  CommandTypes.MSSQL_VERIFY,
+  CommandTypes.HYPERV_BACKUP,
+  CommandTypes.HYPERV_RESTORE,
+  CommandTypes.VM_RESTORE_FROM_BACKUP,
+  CommandTypes.VM_INSTANT_BOOT,
+  CommandTypes.BMR_RECOVER,
+]);
+
 export function hasSensitivePayload(type: string): boolean {
-  return type in SENSITIVE_PAYLOAD_FIELDS || ENVELOPE_COMMAND_TYPES.has(type);
+  return (
+    type in SENSITIVE_PAYLOAD_FIELDS
+    || ENVELOPE_COMMAND_TYPES.has(type)
+    || STORAGE_DESTINATION_COMMAND_TYPES.has(type)
+  );
+}
+
+function buildStorageDestinationAad(type: string, ctx: SecretPayloadContext): string {
+  return [
+    AAD,
+    STORAGE_DESTINATION_ENVELOPE_FIELD,
+    `v${STORAGE_DESTINATION_ENVELOPE_VERSION}`,
+    type,
+    ctx.commandId,
+    ctx.deviceId,
+  ].join('|');
+}
+
+/** True when persisting this payload would write an inline storage destination. */
+export function needsStorageDestinationSeal(type: string, payload: unknown): boolean {
+  if (!STORAGE_DESTINATION_COMMAND_TYPES.has(type)) return false;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const value = (payload as Record<string, unknown>)[STORAGE_DESTINATION_FIELD];
+  return value !== undefined && value !== null;
+}
+
+/**
+ * Seal an inline storage destination before the payload is persisted. A pure
+ * passthrough (same object) for other command types and for payloads with no
+ * inline destination — which, for the API's own enqueue sites, is every
+ * payload: they carry a reference instead.
+ */
+export function sealStorageCredentialsForPersistence(
+  type: string,
+  payload: Record<string, unknown>,
+  ctx: SecretPayloadContext,
+): Record<string, unknown> {
+  if (!needsStorageDestinationSeal(type, payload)) return payload;
+  if (!ctx?.commandId || !ctx?.deviceId) {
+    throw new Error('[sensitiveCommandPayload] sealing a storage destination requires (commandId, deviceId)');
+  }
+  const { [STORAGE_DESTINATION_FIELD]: destination, ...rest } = payload;
+  const sealed = encryptSecret(JSON.stringify(destination), { aad: buildStorageDestinationAad(type, ctx) });
+  if (!sealed) {
+    throw new Error('[sensitiveCommandPayload] storage destination encryption produced no ciphertext');
+  }
+  return { ...rest, [STORAGE_DESTINATION_ENVELOPE_FIELD]: sealed };
+}
+
+function openStorageDestination(type: string, envelope: string, ctx: SecretPayloadContext): unknown {
+  const plaintext = decryptSecret(envelope, { aad: buildStorageDestinationAad(type, ctx) });
+  if (!plaintext) {
+    throw new Error('[sensitiveCommandPayload] storage destination envelope decrypted to empty');
+  }
+  return JSON.parse(plaintext);
 }
 
 /**
@@ -66,6 +152,11 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
   ...new Set([
     ...Object.values(SENSITIVE_PAYLOAD_FIELDS).flat(),
     SCRIPT_SECRET_ENVELOPE_FIELD,
+    // Stripped for EVERY type, not just the storage-destination ones: a
+    // destination is credential material wherever it appears, and rows queued
+    // before references existed carry it inline in plaintext.
+    STORAGE_DESTINATION_FIELD,
+    STORAGE_DESTINATION_ENVELOPE_FIELD,
   ]),
 ].sort();
 
@@ -146,7 +237,11 @@ export function decryptSensitivePayloadFields(
     ? source[SCRIPT_SECRET_ENVELOPE_FIELD]
     : undefined;
   const hasEnvelope = typeof envelope === 'string' && envelope.length > 0;
-  if (!fields && !hasEnvelope) return payload;
+  const storageEnvelope = STORAGE_DESTINATION_COMMAND_TYPES.has(type)
+    ? source[STORAGE_DESTINATION_ENVELOPE_FIELD]
+    : undefined;
+  const hasStorageEnvelope = typeof storageEnvelope === 'string' && storageEnvelope.length > 0;
+  if (!fields && !hasEnvelope && !hasStorageEnvelope) return payload;
 
   const out: Record<string, unknown> = { ...source };
   for (const field of fields ?? []) {
@@ -167,6 +262,18 @@ export function decryptSensitivePayloadFields(
     }
     delete out[SCRIPT_SECRET_ENVELOPE_FIELD];
     out[SCRIPT_SECRET_ENV_FIELD] = openSecretEnv(envelope as string, ctx);
+  }
+
+  if (hasStorageEnvelope) {
+    // Same fail-closed rule as the script envelope: without the binding the
+    // command is dropped by decryptCommandForDelivery, never delivered sealed.
+    if (!ctx) {
+      throw new Error(
+        '[sensitiveCommandPayload] storage destination envelope requires a decryption context (commandId, deviceId)',
+      );
+    }
+    delete out[STORAGE_DESTINATION_ENVELOPE_FIELD];
+    out[STORAGE_DESTINATION_FIELD] = openStorageDestination(type, storageEnvelope as string, ctx);
   }
 
   return out;

@@ -112,6 +112,61 @@ describe('applyDlp — action precedence (block > redact > log)', () => {
   });
 });
 
+describe('applyDlp — custom rule matching engine (RE2, not V8 backtracking)', () => {
+  it(
+    'a custom rule shaped as a catastrophic-backtracking pattern scans worst-case input in well under a second',
+    async () => {
+      // Separated-nested-quantifier "evil regex" shape: takes 900ms+ on a
+      // plain backtracking JS RegExp for this exact input (~2.5s at 42
+      // chars, ~6s at 44). RE2 has no backtracking behavior, so this
+      // should come back in single-digit milliseconds.
+      const evilInput = 'a'.repeat(40) + '!';
+      const start = Date.now();
+      const r = await applyDlp({
+        text: evilInput,
+        dlpConfig: {
+          customRules: [
+            { id: RULE_ID, name: 'evil', pattern: '^(([a-z])+.)+[A-Z]([a-z])+$', action: 'log' },
+          ],
+        },
+        orgId: ORG,
+      });
+      expect(Date.now() - start).toBeLessThan(500);
+      expect(r.action).toBe('allow');
+    },
+    10_000,
+  );
+
+  it('an RE2-incompatible stored pattern (e.g. lookaround) is skipped, not blocked — other rules keep working', async () => {
+    const r = await applyDlp({
+      text: `card ${VISA} and EMP-123456`,
+      dlpConfig: {
+        customRules: [
+          // Passes JS-regex compile and the shared heuristic doesn't ban
+          // lookaround, but RE2 can't compile it — legacy/out-of-band row.
+          { id: RULE_ID, name: 'legacy lookaround', pattern: '(?=E)EMP-\\d+', action: 'block' },
+        ],
+      },
+      orgId: ORG,
+    });
+    // The lookaround rule never ran (would have blocked); builtins still did.
+    expect(r.action).toBe('allow');
+    expect(r.text).toContain('[REDACTED:creditCard]');
+    expect(r.redactions.some((e) => e.rule === 'legacy lookaround')).toBe(false);
+  });
+
+  it('legitimate custom patterns (SSN/card/email/API-key shapes) still match correctly', async () => {
+    const r = await applyDlp({
+      text: 'ticket TICKET-4821 done',
+      dlpConfig: {
+        customRules: [{ id: RULE_ID, name: 'ticket', pattern: 'TICKET-\\d{3,6}', action: 'redact' }],
+      },
+      orgId: ORG,
+    });
+    expect(r.text).toBe('ticket [REDACTED:ticket] done');
+  });
+});
+
 describe('applyDlp — cell matrices', () => {
   it('redacts within cells, preserves untouched cells and their types', async () => {
     const cells = [

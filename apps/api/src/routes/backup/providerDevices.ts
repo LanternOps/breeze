@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
-import { and, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { backupProviderCustomers, backupProviderDevices, devices } from '../../db/schema';
-import { requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pgErrorCode } from './providerAccess';
 
@@ -35,6 +35,7 @@ backupProviderDeviceRoutes.get(
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const conditions: SQL[] = [];
@@ -53,6 +54,26 @@ backupProviderDeviceRoutes.get(
     if (query.connectionId) conditions.push(eq(backupProviderDevices.connectionId, query.connectionId));
     if (query.linked === 'true') conditions.push(isNotNull(backupProviderDevices.breezeDeviceId));
     if (query.linked === 'false') conditions.push(isNull(backupProviderDevices.breezeDeviceId));
+
+    // Site ceiling (sibling backup routes enforce this; this list did not): a
+    // site-restricted caller must not see hostnames/status for a row linked to
+    // a device outside their allowed sites. Only meaningful with a single org
+    // in play (auth.orgId — the ordinary case for a site-restricted token);
+    // an unlinked row (breezeDeviceId null) carries no site to check.
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, auth.orgId));
+      const allowedDeviceIds = orgDevices
+        .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+        .map((d) => d.id);
+      conditions.push(
+        (allowedDeviceIds.length > 0
+          ? or(isNull(backupProviderDevices.breezeDeviceId), inArray(backupProviderDevices.breezeDeviceId, allowedDeviceIds))
+          : isNull(backupProviderDevices.breezeDeviceId)) as SQL
+      );
+    }
 
     const rows = await db
       .select({
@@ -96,10 +117,12 @@ backupProviderDeviceRoutes.put(
   '/devices/:id/link',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  requireMfa(),
   zValidator('param', rowIdParamSchema),
   zValidator('json', linkSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
     const { deviceId } = c.req.valid('json');
 
@@ -116,13 +139,31 @@ backupProviderDeviceRoutes.put(
       .limit(1);
     if (!providerRow) return c.json({ error: 'Backup provider device not found' }, 404);
 
+    // Site ceiling on the PREVIOUS device (sibling backup routes enforce this;
+    // this route did not). A site-restricted caller must not be able to
+    // silently unlink, or move the mapping away from, a device outside their
+    // allowed sites — even though the write only ever touches the provider
+    // row, not the device row itself.
+    if (providerRow.breezeDeviceId) {
+      const [previousDevice] = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, providerRow.breezeDeviceId))
+        .limit(1);
+      // Fail closed: an unresolved `permissions` context must refuse a
+      // site-carrying device rather than silently skip the check.
+      if (previousDevice?.siteId && (!perms || !canAccessSite(perms, previousDevice.siteId))) {
+        return c.json({ error: 'Access to this device site denied' }, 403);
+      }
+    }
+
     if (deviceId !== null) {
       // PRE-CHECK, because the composite FK's 23503 would otherwise abort the
       // ambient request transaction and turn the friendly 422 into a raw 500 at
       // COMMIT. The savepointed catch below is the concurrent-writer backstop,
       // not the primary control.
       const [device] = await db
-        .select({ id: devices.id, orgId: devices.orgId, hostname: devices.hostname })
+        .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
         .from(devices)
         .where(eq(devices.id, deviceId))
         .limit(1);
@@ -132,6 +173,12 @@ backupProviderDeviceRoutes.put(
           error: 'That device belongs to a different organization than this provider row',
           code: 'DEVICE_ORG_MISMATCH',
         }, 422);
+      }
+      // Site ceiling on the NEW device. Fail closed: an unresolved
+      // `permissions` context must refuse a site-carrying device rather than
+      // silently skip the check.
+      if (device.siteId && (!perms || !canAccessSite(perms, device.siteId))) {
+        return c.json({ error: 'Access to this device site denied' }, 403);
       }
     }
 

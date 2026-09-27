@@ -6,6 +6,15 @@ import { DATASET_ADAPTERS, EXPORT_DATASETS } from './aiToolsExportDatasets';
 const searchFleetLogs = vi.fn();
 vi.mock('./logSearch', () => ({ searchFleetLogs: (...a: unknown[]) => searchFleetLogs(...a) }));
 
+const canReadSensitiveEventLogCategory = vi.fn(async () => false);
+vi.mock('./eventLogSensitivity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./eventLogSensitivity')>();
+  return {
+    ...actual,
+    canReadSensitiveEventLogCategory: (...a: unknown[]) => canReadSensitiveEventLogCategory(...(a as [])),
+  };
+});
+
 // Only the agent_logs adapter (and metrics, untested here) issues a raw
 // db.select(); every other adapter delegates entirely to a mocked builder
 // above. Mocked with the same chain shape aiToolsAgentLogs.test.ts already
@@ -68,6 +77,8 @@ const siteAuth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: 
 describe('dataset adapters', () => {
   beforeEach(() => {
     searchFleetLogs.mockReset();
+    canReadSensitiveEventLogCategory.mockReset();
+    canReadSensitiveEventLogCategory.mockResolvedValue(false);
     resolveSiteAllowedDeviceIds.mockReset();
     resolveSiteAllowedDeviceIds.mockResolvedValue(null);
     generateDeviceInventoryReport.mockReset();
@@ -177,6 +188,27 @@ describe('dataset adapters', () => {
     });
     await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ deviceIds: ['d1', 'd2'], level: ['error'] });
+  });
+
+  it('event_logs resolves and passes canReadSensitiveCategory through to the builder', async () => {
+    canReadSensitiveEventLogCategory.mockResolvedValue(true);
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth, orgId: 'org-1', filters: { category: ['security'] }, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+    });
+    await pager(null);
+    expect(canReadSensitiveEventLogCategory).toHaveBeenCalledWith(auth);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ canReadSensitiveCategory: true });
+  });
+
+  it('event_logs surfaces a clean pager error instead of an uncaught throw when a caller without the permission requests only the sensitive category', async () => {
+    canReadSensitiveEventLogCategory.mockResolvedValue(false);
+    const { SensitiveEventLogAccessError } = await import('./eventLogSensitivity');
+    searchFleetLogs.mockImplementation(() => { throw new SensitiveEventLogAccessError(); });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth, orgId: 'org-1', filters: { category: ['security'] }, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+    });
+    await expect(pager(null)).rejects.toThrow(SensitiveEventLogAccessError);
   });
 
   // --- site axis: the narrowing `search_logs` performs at aiToolsEventLogs.ts:84 ---
@@ -523,6 +555,8 @@ describe('dataset adapters', () => {
 describe('dataset adapters — analysis run frame', () => {
   beforeEach(() => {
     searchFleetLogs.mockReset();
+    canReadSensitiveEventLogCategory.mockReset();
+    canReadSensitiveEventLogCategory.mockResolvedValue(false);
     resolveSiteAllowedDeviceIds.mockReset();
     resolveSiteAllowedDeviceIds.mockResolvedValue(null);
   });

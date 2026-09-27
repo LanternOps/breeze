@@ -14,6 +14,9 @@ import (
 )
 
 func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry read denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	key, err := openRegistryKey(hive, path, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -76,6 +79,9 @@ func listRegistryKeysOS(hive, path string, startTime time.Time) CommandResult {
 }
 
 func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry read denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	key, err := openRegistryKey(hive, path, registry.QUERY_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -132,6 +138,9 @@ func listRegistryValuesOS(hive, path string, startTime time.Time) CommandResult 
 }
 
 func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry read denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	key, err := openRegistryKey(hive, path, registry.QUERY_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -166,6 +175,9 @@ func getRegistryValueOS(hive, path, name string, startTime time.Time) CommandRes
 }
 
 func setRegistryValueOS(hive, path, name, valueType, data string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry write denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	key, err := openRegistryKey(hive, path, registry.SET_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -228,6 +240,9 @@ func setRegistryValueOS(hive, path, name, valueType, data string, startTime time
 }
 
 func deleteRegistryValueOS(hive, path, name string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry write denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	key, err := openRegistryKey(hive, path, registry.SET_VALUE)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
@@ -248,6 +263,9 @@ func deleteRegistryValueOS(hive, path, name string, startTime time.Time) Command
 }
 
 func createRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry write denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	if path == "" {
 		return NewErrorResult(fmt.Errorf("key path is required"), time.Since(startTime).Milliseconds())
 	}
@@ -272,6 +290,9 @@ func createRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
 }
 
 func deleteRegistryKeyOS(hive, path string, startTime time.Time) CommandResult {
+	if isDeniedRegistryTarget(hive, path) {
+		return NewErrorResult(fmt.Errorf("registry write denied on sensitive path: %s\\%s", hive, path), time.Since(startTime).Milliseconds())
+	}
 	if path == "" {
 		return NewErrorResult(fmt.Errorf("key path is required"), time.Since(startTime).Milliseconds())
 	}

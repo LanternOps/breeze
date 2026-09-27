@@ -215,8 +215,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'apply_configuration_policy', description: 'Assign config policy', category: 'Configuration Policies' },
       { name: 'remove_configuration_policy_assignment', description: 'Remove config assignment', category: 'Configuration Policies' },
       { name: 'manage_configuration_policy (activate/deactivate)', description: 'Toggle policy status', category: 'Configuration Policies' },
-      // Integrations
-      { name: 'test_webhook', description: 'Test webhook delivery', category: 'Integrations' },
       // Other
       { name: 'manage_tags (add/remove)', description: 'Add or remove device tags', category: 'Other' },
       { name: 'manage_saved_filters (create/delete)', description: 'Create or delete saved filters', category: 'Other' },
@@ -283,6 +281,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // class as the software/browser/peripheral policy tools.
       { name: 'manage_monitor_definitions', description: 'Create, update, delete, or attach/detach a monitor definition', category: 'Monitoring & Analytics' },
       // Integrations
+      { name: 'test_webhook', description: 'Test webhook delivery — sends a real outbound POST; route requires MFA', category: 'Integrations' },
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
       // Configuration Policies
@@ -376,7 +375,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Monitoring & Analytics
   { toolName: 'manage_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'test_webhook', tier: 2, permission: 'devices.write', category: 'Integrations' },
+  { toolName: 'test_webhook', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
   { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.execute', category: 'Integrations' },
   { toolName: 'manage_notification_channels', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
@@ -414,7 +413,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'manage_dr_plan', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
   { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_as_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_hyperv_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
@@ -542,7 +541,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   apply_configuration_policy: 'devices.write',
   remove_configuration_policy_assignment: 'devices.write',
   // Backup & DR
-  query_backups: 'organizations.read',
+  // Per-action map, matching routes/backup/configs.ts (backup:read),
+  // routes/backup/jobs.ts (organizations:read) and routes/configurationPolicies/
+  // crud.ts (devices:read).
+  query_backups: { list_configs: 'backup.read', list_jobs: 'organizations.read', list_policies: 'devices.read' },
   get_backup_status: 'organizations.read',
   browse_snapshots: 'backup.read',
   trigger_backup: 'devices.execute',
@@ -555,8 +557,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_executive_summary: 'devices.read',
   // Integrations
   query_webhooks: 'devices.read',
-  query_psa_status: 'devices.read',
-  test_webhook: 'devices.write',
+  // Route requires organizations:read (routes/psa.ts:435).
+  query_psa_status: 'organizations.read',
+  test_webhook: 'organizations.write',
   // Agent management
   query_agent_versions: 'devices.read',
   trigger_agent_upgrade: 'devices.execute',

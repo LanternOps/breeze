@@ -32,6 +32,7 @@ describe('commandAcceptsAgentResult (#3607)', () => {
       commandAcceptsAgentResult('failed', {
         status: SERVER_TIMEOUT_RESULT_STATUS,
         error: 'Command timed out after 60000ms',
+        timedOutBy: 'server',
       }),
     ).toBe(true);
 
@@ -43,6 +44,34 @@ describe('commandAcceptsAgentResult (#3607)', () => {
         timedOutBy: 'server',
       }),
     ).toBe(true);
+
+    // …and what routes/backup/verificationScheduled.ts writes — a different
+    // literal `timedOutBy` value than 'server', which is why the predicate
+    // checks the key's presence rather than one specific string.
+    expect(
+      commandAcceptsAgentResult('failed', {
+        status: SERVER_TIMEOUT_RESULT_STATUS,
+        error: 'Verification timed out after 30 minutes',
+        timedOutBy: 'verification-timeout-check',
+      }),
+    ).toBe(true);
+  });
+
+  // SEC follow-up: buildStoredCommandResult never copies `timedOutBy` from the
+  // agent's own payload — the marker is only ever set by a server-side
+  // writer. A stored row whose status collides with the server's own
+  // SERVER_TIMEOUT_RESULT_STATUS literal but carries no marker cannot have
+  // come from one of the three legitimate writers, so it must not be
+  // reopenable — otherwise an agent could report its OWN `status:'timeout'`
+  // (a value commandResultSchema allows) and keep that row reopenable
+  // indefinitely for a later result.
+  it('rejects a stored timeout status with no server timedOutBy marker', () => {
+    expect(
+      commandAcceptsAgentResult('failed', {
+        status: SERVER_TIMEOUT_RESULT_STATUS,
+        error: 'Agent reported a timeout',
+      }),
+    ).toBe(false);
   });
 
   it('rejects an agent-reported failure so a duplicate frame cannot rewrite it', () => {
@@ -135,9 +164,12 @@ describe('commandAcceptsAgentResultCondition (#3607)', () => {
 
     expect(text).toContain('"status" in');
     expect(text).toContain(`"result"->>'status' =`);
+    expect(text).toContain(`"result"->>'timedOutBy' IS NOT NULL`);
     expect(text).toContain('"type" in');
     expect(text).toContain(' or ');
-    // Every literal rides as a placeholder, in predicate order.
+    // The timedOutBy existence check carries no literal — no agent-supplied
+    // value is ever bound for it.
+    // Every OTHER literal rides as a placeholder, in predicate order.
     expect(params).toEqual([
       ...ACCEPTED_COMMAND_RESULT_STATUSES,
       'failed',

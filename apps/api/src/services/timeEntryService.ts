@@ -22,6 +22,7 @@ export type TimeEntryServiceErrorCode =
   | 'ENTRY_NOT_FOUND'
   | 'PART_NOT_FOUND'
   | 'NOT_OWN_ENTRY'
+  | 'NOT_OWN_PART'
   | 'ADMIN_REQUIRED'
   | 'APPROVED_IMMUTABLE'
   | 'NO_RUNNING_TIMER'
@@ -1337,10 +1338,24 @@ async function getPartOr404(id: string) {
   return part;
 }
 
+/**
+ * Mirrors {@link assertCanMutate}'s ownership half for parts: any technician
+ * with ticket write access can share-edit ticket status/comments/assignment,
+ * but a parts line is authored by whoever added it, so only its author or a
+ * manageAll actor (leads/admins) may change or remove it. Parts have no
+ * approval concept, so there is no approved-immutable arm here.
+ */
+function assertCanMutatePart(part: { addedBy: string | null }, actor: TimeEntryActor) {
+  if (part.addedBy !== actor.userId && !actor.manageAll) {
+    throw new TimeEntryServiceError('You can only manage parts you added', 403, 'NOT_OWN_PART');
+  }
+}
+
 /** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
-export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, _actor: TimeEntryActor) {
+export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
   const part = await getPartOr404(id);
+  assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
   }
@@ -1379,8 +1394,9 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
   return mutated;
 }
 
-export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
+export async function deleteTicketPart(id: string, actor: TimeEntryActor) {
   const part = await getPartOr404(id);
+  assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed') {
     throw new TimeEntryServiceError(
       'This part has been invoiced and cannot be deleted; void the invoice first',

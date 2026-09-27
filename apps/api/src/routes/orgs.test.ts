@@ -3179,11 +3179,94 @@ describe('org routes', () => {
       })
     }) as any;
 
-    const queueCreateSelects = (clashRows: unknown[] = []) => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(selectRows([{ currencyCode: 'USD' }]))
-        .mockReturnValueOnce(selectRows(clashRows));
+    const queueCreateSelects = (clashRows: unknown[] = [], maxOrganizations: number | null = null) => {
+      const mocked = vi.mocked(db.select).mockReturnValueOnce(
+        selectRows([{ currencyCode: 'USD', maxOrganizations }]),
+      );
+      if (maxOrganizations !== null) {
+        // countPartnerOrganizations' pre-check select: `.from().where()`
+        // resolves directly, no `.limit()` — a different chain shape than
+        // `selectRows` above.
+        mocked.mockReturnValueOnce(selectCount(0) as any);
+      }
+      mocked.mockReturnValueOnce(selectRows(clashRows));
+      if (maxOrganizations !== null) {
+        // Race-safety post-insert recount, run inside insertOrganization's
+        // own system-scoped transaction — still under the cap after the one
+        // row this call just inserted.
+        mocked.mockReturnValueOnce(selectCount(1) as any);
+      }
     };
+
+    // countPartnerOrganizations' shape: `.select({value}).from().where()`
+    // resolves directly (COUNT query, no `.limit()`).
+    const selectCount = (value: number) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ value }]),
+      }),
+    });
+
+    // Finding: this route had no per-partner org quota at all (unlike
+    // POST /partner-api/organizations, which already enforces
+    // partners.maxOrganizations) — an org-access-all partner/caller could
+    // create orgs without limit, and each one adds to the shared per-process
+    // event-WS Redis fan-out this same wave bounds separately.
+    describe('per-partner organization quota (partners.maxOrganizations)', () => {
+      it('returns 409 and does not insert when the partner is already at its cap', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectRows([{ currencyCode: 'USD', maxOrganizations: 2 }]))
+          .mockReturnValueOnce(selectCount(2) as any); // already at the cap
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'org-over-cap' })
+        });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.error).toMatch(/quota/i);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('allows create when the partner is under its cap', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects([], 5); // cap of 5, countPartnerOrganizations mocked to 0
+        vi.mocked(db.insert).mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-under-cap', name: 'Org' }])
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'org-under-cap' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(db.insert).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not enforce a quota when maxOrganizations is null (unlimited, the default)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects(); // maxOrganizations defaults to null in the helper
+        vi.mocked(db.insert).mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-unlimited', name: 'Org' }])
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'org-unlimited' })
+        });
+
+        expect(res.status).toBe(201);
+      });
+    });
 
     it('should create an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
@@ -3780,6 +3863,147 @@ describe('org routes', () => {
 
         expect(res.status).toBe(200);
         expect(written).toEqual({ branding: { primaryColor: '#abc' } });
+      });
+    });
+
+    // Same origin-binding contract as credentialOriginBinding.ts:
+    // the settings editor round-trips the stored `eventLogs.elasticsearchApiKey`
+    // ciphertext unchanged on a save that only edits `elasticsearchUrl`, so a
+    // wholesale-blob write must not carry that stored ciphertext forward to a
+    // new destination origin without the credential being re-entered.
+    describe('eventLogs.elasticsearchUrl origin binding (log forwarding)', () => {
+      const priorKey = process.env.APP_ENCRYPTION_KEY;
+      const priorKeyId = process.env.APP_ENCRYPTION_KEY_ID;
+
+      beforeEach(() => {
+        process.env.APP_ENCRYPTION_KEY = 'orgs-route-test-key-material';
+        process.env.APP_ENCRYPTION_KEY_ID = 'orgs-route-test';
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      });
+
+      afterEach(() => {
+        if (priorKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+        else process.env.APP_ENCRYPTION_KEY = priorKey;
+        if (priorKeyId === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+        else process.env.APP_ENCRYPTION_KEY_ID = priorKeyId;
+        // Reinstate the factory default so later tests in this file don't
+        // inherit this block's 3-call select sequencing.
+        vi.mocked(db.select).mockImplementation((() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+              limit: vi.fn(() => Promise.resolve([]))
+            }))
+          }))
+        })) as any);
+      });
+
+      function noLockSelect(rows: Record<string, unknown>[]) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) };
+      }
+
+      function currentOrgSettingsSelect(rows: Record<string, unknown>[]) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) };
+      }
+
+      function queueSelects(storedEventLogs: Record<string, unknown> | undefined) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(noLockSelect([{ partnerId: 'partner-123' }]) as any) // assertNotLocked: org.partnerId
+          .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any) // assertNotLocked: partner settings (no locks)
+          .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { eventLogs: storedEventLogs } }]) as any); // current org settings
+      }
+
+      it('refuses a URL change that would carry the stored API key ciphertext to a new origin', async () => {
+        queueSelects({
+          enabled: true,
+          elasticsearchUrl: 'https://es.trusted-vendor.example',
+          elasticsearchApiKey: 'enc:v1:stored-ciphertext-blob',
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            settings: {
+              eventLogs: {
+                enabled: true,
+                elasticsearchUrl: 'https://es.other-origin.example',
+                elasticsearchApiKey: 'enc:v1:stored-ciphertext-blob',
+              },
+            },
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('allows a URL change when a fresh plaintext API key is supplied in the same request', async () => {
+        queueSelects({
+          enabled: true,
+          elasticsearchUrl: 'https://es.trusted-vendor.example',
+          elasticsearchApiKey: 'enc:v1:stored-ciphertext-blob',
+        });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            settings: {
+              eventLogs: {
+                enabled: true,
+                elasticsearchUrl: 'https://es.new-vendor.example',
+                elasticsearchApiKey: 'freshly-typed-key',
+              },
+            },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        expect(db.update).toHaveBeenCalled();
+      });
+
+      it('allows a URL change that keeps the same origin without re-entering the key', async () => {
+        // Real ciphertext (not a fixture string): the write path re-encrypts
+        // an already-sealed value it round-trips, so it must actually decrypt.
+        const { encryptSecret } = await import('../services/secretCrypto');
+        const realCiphertext = encryptSecret('stored-real-key')!;
+        queueSelects({
+          enabled: true,
+          elasticsearchUrl: 'https://es.trusted-vendor.example/old-path',
+          elasticsearchApiKey: realCiphertext,
+        });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            settings: {
+              eventLogs: {
+                enabled: true,
+                elasticsearchUrl: 'https://es.trusted-vendor.example',
+                elasticsearchApiKey: realCiphertext,
+              },
+            },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        expect(db.update).toHaveBeenCalled();
       });
     });
 

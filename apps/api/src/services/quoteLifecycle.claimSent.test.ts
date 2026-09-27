@@ -46,6 +46,7 @@ describe('claimQuoteSent', () => {
   it('flips draft→sent without writing any public-link or accept-token state', async () => {
     queueResult([{ id: 'p1', name: 'Acme MSP', documentTheme: null, documentPageSize: null, settings: {} }]); // partners
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);                                 // organizations
+    queueResult([]); // portal_branding (#6232)
     queueResult([{ id: 'q1' }]);                                                                               // claim .returning()
 
     await claimQuoteSent(draft, { now: new Date('2026-09-21T12:00:00Z') });
@@ -62,9 +63,22 @@ describe('claimQuoteSent', () => {
     expect((db as unknown as Chain).insert.mock.calls).toHaveLength(0);
   });
 
+  it('stamps terms through the three-level footer chain, including the portal-branding footer (#6232)', async () => {
+    queueResult([{ id: 'p1', name: 'Acme MSP', invoiceFooter: null, settings: {} }]); // partners
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);        // organizations
+    queueResult([{ footerText: 'Portal footer' }]);                                   // portal_branding
+    queueResult([{ id: 'q1' }]);                                                      // claim .returning()
+
+    await claimQuoteSent(draft, { now: new Date('2026-09-21T12:00:00Z') });
+
+    const claim = (db as unknown as Chain).set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(claim.terms).toBe('Portal footer');
+  });
+
   it('409s when the row is no longer a draft (the conditional claim matched 0 rows)', async () => {
     queueResult([{ id: 'p1', settings: {} }]);
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);
+    queueResult([]); // portal_branding (#6232)
     queueResult([]); // claim matched nothing
 
     await expect(claimQuoteSent(draft, { now: new Date() })).rejects.toMatchObject({ status: 409 });

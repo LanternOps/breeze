@@ -32,14 +32,14 @@ describe('AccountingSyncCard', () => {
 
   it('renders nothing when there is no accounting sync row (no connection, or RLS-hidden)', () => {
     const { container } = render(
-      <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="sent" canPush onChanged={vi.fn()} />,
+      <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={null} invoiceStatus="sent" canPush onChanged={vi.fn()} />,
     );
     expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
     expect(container).toBeEmptyDOMElement();
   });
 
   it('renders the pending state with a Push affordance', () => {
-    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={vi.fn()} />);
+    render(<AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={vi.fn()} />);
 
     expect(screen.getByTestId('invoice-detail-accounting-sync')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
@@ -48,7 +48,7 @@ describe('AccountingSyncCard', () => {
 
   it('renders the synced state with the QuickBooks document number and no Push button', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'synced', remoteDocNumber: 'QB-1042', lastSyncedAt: '2026-09-01T10:00:00Z' })}
         invoiceStatus="sent"
@@ -64,7 +64,7 @@ describe('AccountingSyncCard', () => {
 
   it('renders the error state with the sanitized lastError and a retry Push button', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'error', lastError: 'QuickBooks rejected the invoice sync (HTTP 500)' })}
         invoiceStatus="sent"
@@ -88,7 +88,7 @@ describe('AccountingSyncCard', () => {
   // never by string-matching `lastError` itself (#4544).
   it('renders a reconcile-sourced lastError verbatim, not just push failures — and does not itself infer remoteDeleted from the string', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'error', lastError: 'Deleted in QuickBooks', remoteDeleted: false })}
         invoiceStatus="sent"
@@ -105,7 +105,7 @@ describe('AccountingSyncCard', () => {
 
   it('renders tax variance with its own copy — never as "pending" and never as a plain "Synced"', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'synced_with_tax_variance', remoteDocNumber: 'QB-1042' })}
         invoiceStatus="sent"
@@ -124,7 +124,7 @@ describe('AccountingSyncCard', () => {
 
   it('hides the Push button without invoices:write even when the row is pushable', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'error', lastError: 'boom' })}
         invoiceStatus="sent"
@@ -144,7 +144,7 @@ describe('AccountingSyncCard', () => {
   it('does not crash and renders the button when remoteDeleted is omitted from the API response', () => {
     const { remoteDeleted: _omit, ...syncWithoutRemoteDeleted } = sync({ syncStatus: 'pending' });
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={syncWithoutRemoteDeleted as AccountingSyncSummary}
         invoiceStatus="sent"
@@ -162,7 +162,7 @@ describe('AccountingSyncCard', () => {
   describe('voided invoice (#4544)', () => {
     it('hides the Push button and shows an explanatory hint on an otherwise-pushable (pending) mapping', () => {
       render(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'pending' })}
           invoiceStatus="void"
@@ -177,7 +177,7 @@ describe('AccountingSyncCard', () => {
 
     it('hides the Push button on an otherwise-pushable (error) mapping', () => {
       render(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'error', lastError: 'boom' })}
           invoiceStatus="void"
@@ -191,7 +191,7 @@ describe('AccountingSyncCard', () => {
 
     it('does not render the voided hint for a synced mapping — there was never a Push button to explain away', () => {
       render(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'synced', remoteDocNumber: 'QB-1042' })}
           invoiceStatus="void"
@@ -211,7 +211,7 @@ describe('AccountingSyncCard', () => {
   describe('remote-deleted mapping (#4544)', () => {
     it('hides the Push button and shows an explanatory hint', () => {
       render(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'error', lastError: 'Deleted in QuickBooks', remoteDeleted: true })}
           invoiceStatus="sent"
@@ -228,7 +228,7 @@ describe('AccountingSyncCard', () => {
 
     it('prefers the voided hint over the remote-deleted hint when both apply, without rendering both', () => {
       render(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'error', lastError: 'Deleted in QuickBooks', remoteDeleted: true })}
           invoiceStatus="void"
@@ -248,7 +248,7 @@ describe('AccountingSyncCard', () => {
     let release!: (value: Response) => void;
     fetchMock.mockReturnValue(new Promise<Response>((r) => { release = r; }));
 
-    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    render(<AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
     fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
 
     await waitFor(() => expect(screen.getByTestId('invoice-accounting-sync-push')).toBeDisabled());
@@ -269,7 +269,7 @@ describe('AccountingSyncCard', () => {
       json({ error: 'currency_mismatch', message: 'Invoice currency EUR does not match the QuickBooks home currency USD.' }, false, 409),
     );
 
-    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    render(<AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
     fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
@@ -289,13 +289,57 @@ describe('AccountingSyncCard', () => {
       json({ error: 'remote_deleted', message: 'QuickBooks reports this invoice as deleted — pushing again would create a duplicate.' }, false, 409),
     );
 
-    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    render(<AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
     fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: expect.stringContaining('deleted') }),
     ));
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  // Ruling R6 (Xero W01c): a throttled provider answers 429
+  // `{ code: 'rate_limited', error: '<provider> is rate limiting…' }`. That
+  // server text is the only thing that tells the operator to wait rather than
+  // retry, so it must reach the toast verbatim — not the generic pushFailed.
+  it('surfaces a 429 rate_limited push rejection with the server text, not the generic fallback', async () => {
+    const onChanged = vi.fn();
+    const serverText = 'QuickBooks is rate limiting requests. Try again in a minute.';
+    fetchMock.mockResolvedValue(json({ error: serverText, code: 'rate_limited' }, false, 429));
+
+    render(<AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: serverText }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  // Ruling R9: no push-capable provider known to this caller hides ONLY the
+  // push action — the status pill and error text still render.
+  it('renders the status but no Push button when provider is null', () => {
+    render(
+      <AccountingSyncCard
+        provider={null}
+        invoiceId="inv-1"
+        sync={sync({ syncStatus: 'error', lastError: 'HTTP 500' })}
+        invoiceStatus="sent"
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Sync failed');
+    expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent('HTTP 500');
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+  });
+
+  it('pushes to the provider named by its provider prop', async () => {
+    render(<AccountingSyncCard provider="xero" invoiceId="inv-9" sync={sync({ provider: 'xero' })} invoiceStatus="sent" canPush onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/accounting/xero/invoices/inv-9/push',
+      expect.objectContaining({ method: 'POST' }),
+    ));
   });
 });
 
@@ -318,14 +362,34 @@ describe('AccountingSyncCard live sync watch', () => {
     vi.useRealTimers();
   });
 
+  // Ruling R9: a caller with no known push provider (e.g. no accounting:read)
+  // still gets the post-Issue watch — `provider` null hides only the push.
+  it('still polls after a fresh issue when provider is null (no mapping row yet)', () => {
+    const onChanged = vi.fn();
+    const { container } = render(
+      <AccountingSyncCard
+        provider={null}
+        invoiceId="inv-1"
+        sync={null}
+        invoiceStatus="sent"
+        invoiceTouchedAt={new Date().toISOString()}
+        canPush
+        onChanged={onChanged}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
   const issued = (onChanged: () => void, initialSync: AccountingSyncSummary | null = null) => {
     const view = render(
-      <AccountingSyncCard invoiceId="inv-1" sync={initialSync} invoiceStatus="draft" canPush onChanged={onChanged} />,
+      <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={initialSync} invoiceStatus="draft" canPush onChanged={onChanged} />,
     );
     const show = (next: AccountingSyncSummary | null, status: InvoiceStatus = 'sent') =>
       act(() => {
         view.rerender(
-          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus={status} canPush onChanged={onChanged} />,
+          <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={next} invoiceStatus={status} canPush onChanged={onChanged} />,
         );
       });
     // The Issue action flips the invoice out of draft and the refetch brings
@@ -415,7 +479,7 @@ describe('AccountingSyncCard live sync watch', () => {
     fetchMock.mockResolvedValue(json({ syncStatus: 'synced', docNumber: 'QB-1042', taxVarianceCents: null }));
 
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'error', lastError: 'QuickBooks rejected the invoice sync (HTTP 500)' })}
         invoiceStatus="sent"
@@ -455,12 +519,12 @@ describe('AccountingSyncCard live sync watch', () => {
   it('keeps polling the whole window while no mapping row has appeared yet', async () => {
     const onChanged = vi.fn();
     const view = render(
-      <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
+      <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
     );
     const show = (next: AccountingSyncSummary | null) =>
       act(() => {
         view.rerender(
-          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus="sent" canPush onChanged={onChanged} />,
+          <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={next} invoiceStatus="sent" canPush onChanged={onChanged} />,
         );
       });
     show(null);
@@ -482,11 +546,11 @@ describe('AccountingSyncCard live sync watch', () => {
     let resolveRefetch: (() => void) | undefined;
     const onChanged = vi.fn(() => new Promise<void>((resolve) => { resolveRefetch = resolve; }));
     const view = render(
-      <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
+      <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
     );
     act(() => {
       view.rerender(
-        <AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
+        <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
       );
     });
 
@@ -530,7 +594,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
 
   it('shows Syncing on mount when the invoice was just issued', () => {
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync()}
         invoiceStatus="sent"
@@ -547,7 +611,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
   it('polls on a fresh mount and settles on the pushed row', () => {
     const onChanged = vi.fn();
     const view = render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync()}
         invoiceStatus="sent"
@@ -562,7 +626,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
 
     act(() => {
       view.rerender(
-        <AccountingSyncCard
+        <AccountingSyncCard provider="quickbooks"
           invoiceId="inv-1"
           sync={sync({ syncStatus: 'synced', remoteDocNumber: 'QB-1042' })}
           invoiceStatus="sent"
@@ -583,7 +647,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
   it('mounts straight to Not pushed yet for an invoice issued an hour ago', () => {
     const onChanged = vi.fn();
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync()}
         invoiceStatus="sent"
@@ -601,7 +665,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
 
   it('does not arm the mount watch for a settled row or a draft', () => {
     const { unmount } = render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync({ syncStatus: 'synced' })}
         invoiceStatus="sent"
@@ -615,7 +679,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
     unmount();
 
     render(
-      <AccountingSyncCard
+      <AccountingSyncCard provider="quickbooks"
         invoiceId="inv-1"
         sync={sync()}
         invoiceStatus="draft"
@@ -634,7 +698,7 @@ describe('AccountingSyncCard live sync watch on a fresh mount', () => {
   it('does not arm the mount watch without a timestamp', () => {
     const onChanged = vi.fn();
     render(
-      <AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
+      <AccountingSyncCard provider="quickbooks" invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
     );
 
     expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');

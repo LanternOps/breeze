@@ -101,7 +101,7 @@ function args(over: Record<string, unknown> = {}) {
   } as never;
 }
 const agentDraft = (over: Record<string, unknown> = {}) =>
-  draft({ agentRun: { id: 'run-1', agentId: 'agent-1', policySnapshot: ACT_SNAPSHOT }, ...over });
+  draft({ agentRun: { id: 'run-1', agentId: 'agent-1', policySnapshot: ACT_SNAPSHOT, modeAtStart: 'act' }, ...over });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -328,6 +328,18 @@ describe('evaluateScriptReviewerAutonomy — invariant 13 (requester authority)'
       intentDraft: agentDraft({ agentRun: { id: 'run-1', agentId: 'agent-1', policySnapshot: { ...ACT_SNAPSHOT, effective: { ...ACT_SNAPSHOT.effective, mode: 'shadow' } } } }),
     }))).toEqual({ granted: false, reason: 'requester_unauthorized' });
     expect(mockAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("the run's own modeAtStart 'shadow' refuses even though BOTH the snapshot's and the live policy's mode read 'act'", async () => {
+    // An anomaly- or ticket-triggered run is admitted against an agent
+    // whose resolved policy mode is 'act', with the run's OWN record
+    // (`modeAtStart`) forced to 'shadow' (runService.ts's forced-shadow
+    // downgrade) — the snapshot's `effective.mode` is left unchanged at
+    // 'act'. Neither the snapshot-mode nor the live-mode check above
+    // catches this; only a direct `modeAtStart` read does.
+    expect(await evaluateScriptReviewerAutonomy(args({
+      intentDraft: agentDraft({ agentRun: { id: 'run-1', agentId: 'agent-1', policySnapshot: ACT_SNAPSHOT, modeAtStart: 'shadow' } }),
+    }))).toEqual({ granted: false, reason: 'requester_unauthorized' });
   });
 
   it('agent — a shadow-mode LIVE policy refuses even when the snapshot said act', async () => {

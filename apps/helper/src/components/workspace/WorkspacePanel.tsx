@@ -201,7 +201,7 @@ export default function WorkspacePanel({
   // `lastSearchKeyRef` above.
   const runSearch = (q: string, searchFilters: typeof filters) => {
     const key = JSON.stringify([q, searchFilters]);
-    void search(q, searchFilters).then(() => {
+    void search(q, searchFilters, username).then(() => {
       if (!useWorkspaceStore.getState().error) lastSuccessKeyRef.current = key;
     });
   };
@@ -215,7 +215,7 @@ export default function WorkspacePanel({
   const runBrowse = (sourceId: string, parentPath: string) => {
     const { project, docType } = useWorkspaceStore.getState().filters;
     const key = JSON.stringify([sourceId, parentPath, project, docType]);
-    void browse(sourceId, parentPath).then(() => {
+    void browse(sourceId, parentPath, username).then(() => {
       if (!useWorkspaceStore.getState().error) lastBrowseKeyRef.current = key;
     });
   };
@@ -274,8 +274,8 @@ export default function WorkspacePanel({
   // Load unfiled mail when the Filing tab is shown.
   const filingEnabled = contentEnabled === true && contentFeatures.includes('filing');
   useEffect(() => {
-    if (tab === 'filing' && filingEnabled) loadFilings();
-  }, [tab, filingEnabled, loadFilings]);
+    if (tab === 'filing' && filingEnabled) loadFilings(username);
+  }, [tab, filingEnabled, username, loadFilings]);
 
   // Open the first source when Browse is shown for the first time.
   useEffect(() => {
@@ -581,7 +581,7 @@ export default function WorkspacePanel({
             <div className="ws-filing-cards">
               {loading && <SkeletonRows />}
               {!loading && error && (
-                <ErrorRow message={error} onRetry={loadFilings} />
+                <ErrorRow message={error} onRetry={() => loadFilings(username)} />
               )}
               {!loading && !error && filings.length === 0 && (
                 <EmptyState
@@ -598,7 +598,7 @@ export default function WorkspacePanel({
                       filing={filing}
                       projects={projects}
                       busy={filingBusy === filing.fileIndexId}
-                      onClassify={classifyEmail}
+                      onClassify={(id) => classifyEmail(id, username)}
                       onAssign={(id, key) => assignFiling(id, key, username)}
                       viaDrop={pendingDropId === filing.fileIndexId}
                     />

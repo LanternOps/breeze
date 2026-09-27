@@ -116,6 +116,17 @@ vi.mock('../services/auditEvents', async (importOriginal) => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
 
+// Same pattern as routes/users.test.ts: the rank/scope check itself is
+// covered by roleAssignment.test.ts. Here it's mocked so each route test can
+// control allow/deny without re-deriving the full permission-ceiling walk.
+const { assertCanManageTargetMock } = vi.hoisted(() => ({
+  assertCanManageTargetMock: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../services/roleAssignment', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/roleAssignment')>();
+  return { ...actual, assertCanManageTarget: assertCanManageTargetMock };
+});
+
 import { db } from '../db';
 import { users, userPasskeys } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
@@ -500,8 +511,11 @@ describe('access review routes', () => {
       return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes };
     }
 
-    function seedReviewSelects(revokedItems: Array<{ userId: string }>) {
-      vi.mocked(db.select)
+    function seedReviewSelects(
+      revokedItems: Array<{ userId: string }>,
+      targetRows?: Array<{ userId: string; roleId: string; roleIsSystem: boolean }>
+    ) {
+      const chain = vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -521,6 +535,20 @@ describe('access review routes', () => {
             where: vi.fn().mockResolvedValue(revokedItems)
           })
         } as any);
+
+      const uniqueUserIds = [...new Set(revokedItems.map((item) => item.userId))];
+      if (uniqueUserIds.length > 0) {
+        const rows =
+          targetRows ??
+          uniqueUserIds.map((userId) => ({ userId, roleId: `role-for-${userId}`, roleIsSystem: false }));
+        chain.mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue(rows)
+            })
+          })
+        } as any);
+      }
     }
 
     it('should complete a review, advance each revoked user\'s epoch + revoke their refresh families in-tx, and run post-commit cleanup', async () => {
@@ -665,6 +693,27 @@ describe('access review routes', () => {
       expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         details: expect.objectContaining({ neutralizedUserIds: [] }),
       }));
+    });
+
+    it('rejects completion outright (fails closed, no partial apply) when a revoked item targets a user the caller cannot manage', async () => {
+      seedReviewSelects([{ userId: 'user-1' }, { userId: 'user-2' }]);
+      const { txDelete, txUpdate } = mockCompleteTx();
+      assertCanManageTargetMock
+        .mockResolvedValueOnce(null) // user-1: allowed
+        .mockResolvedValueOnce('Cannot manage a user outside your site access'); // user-2: denied
+
+      const res = await app.request('/access-reviews/review-1/complete', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      // Nothing applied — a single unauthorized target fails the whole
+      // completion rather than revoking user-1 and skipping user-2.
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(txDelete).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
     });
   });
 });

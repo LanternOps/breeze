@@ -325,6 +325,10 @@ After enrollment, the agent stores its configuration at:
 | macOS | `/Library/Application Support/Breeze/agent.yaml` | `/Library/Application Support/Breeze/secrets.yaml` |
 | Windows | `C:\ProgramData\Breeze\agent.yaml` | `C:\ProgramData\Breeze\secrets.yaml` |
 
+<Aside type="caution" title="Windows: no links under ProgramData\Breeze (agent 0.118.0+)">
+  The agent keeps `C:\ProgramData\Breeze\data` and `C:\ProgramData\Breeze\logs` as real directories that only SYSTEM and Administrators can write to. If either is a junction or symbolic link (for example, one that redirects logs to another drive), the installer and the agent replace it with a real directory. Files in the old link target are not moved or copied. If the link cannot be removed, the agent refuses to start and writes the reason to `C:\ProgramData\Breeze\logs\agent-start-failed.txt`; remove the link by hand, then start the service.
+</Aside>
+
 ```yaml
 # agent.yaml (0644 — readable by Breeze Helper)
 server_url: "https://breeze.yourdomain.com"

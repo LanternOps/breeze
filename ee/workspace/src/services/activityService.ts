@@ -4,6 +4,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { workspaceFileActivity } from '../schema/workspace';
 import type { FinderFile } from './fileQueryService';
 import { SHARED_DEVICE_KEY } from './runScope';
+import { ownerRelPathPattern } from './ownerPath';
 import { visibleSourcePredicateSql } from './visibility';
 
 export type ActivityAction = 'open' | 'reveal' | 'copy_path';
@@ -32,13 +33,19 @@ function visibleSourceJoinSql(groupIds: string[]): SQL {
 /**
  * Partition rule (defence-in-depth atop RLS): smb rows live under the shared
  * device key and are org-visible; local-profile rows only exist for the device
- * that produced them. Applied to every read AND to record()'s verification so
- * the activity API can never confirm (or later surface) a file outside the
- * calling device's partition.
+ * that produced them AND (mirrors fileQueryService.ownedByUsername) the
+ * caller-claimed owning profile — an unclaimed caller (no `ownerUsername`,
+ * e.g. no helperUser label) sees no local-profile rows at all, rather than
+ * every profile on the device. Applied to every read AND to record()'s
+ * verification so the activity API can never confirm (or later surface) a
+ * file outside the calling device's partition and claimed owner.
  */
-function partitionSql(helperDeviceId: string): SQL {
+function partitionSql(helperDeviceId: string, ownerUsername?: string): SQL {
+  const localBranch = ownerUsername
+    ? sql`(s.kind = 'local_profile' and f.device_key = ${helperDeviceId} and f.rel_path ilike ${ownerRelPathPattern(ownerUsername)} escape '\\')`
+    : sql`(s.kind = 'local_profile' and false)`;
   return sql`((s.kind = 'smb_share' and f.device_key = ${SHARED_DEVICE_KEY})
-    or (s.kind = 'local_profile' and f.device_key = ${helperDeviceId}))`;
+    or ${localBranch})`;
 }
 
 const fileColumnsSql = sql`
@@ -111,7 +118,7 @@ export function createActivityService(db: WorkspaceDatabase) {
         where f.org_id = ${orgId}
           and f.id = ${input.fileIndexId}
           and f.deleted_at is null
-          and ${partitionSql(input.deviceId)}`);
+          and ${partitionSql(input.deviceId, input.helperUser ?? undefined)}`);
       if (visible.length === 0) return { notFound: true };
       await d.insert(workspaceFileActivity).values({
         orgId,
@@ -144,7 +151,7 @@ export function createActivityService(db: WorkspaceDatabase) {
             and a.device_id = ${deviceId}
             ${helperUser === null ? sql`` : sql`and a.helper_user = ${helperUser}`}
             and f.deleted_at is null
-            and ${partitionSql(deviceId)}
+            and ${partitionSql(deviceId, helperUser ?? undefined)}
           order by a.file_index_id, a.created_at desc
         ) t
         order by t.last_activity_at desc
@@ -163,6 +170,7 @@ export function createActivityService(db: WorkspaceDatabase) {
       helperDeviceId: string,
       limit?: number,
       groupIds: string[] = [],
+      ownerUsername?: string,
     ): Promise<Array<FinderFile & { lastActivityAt: string }>> {
       const rows = await d.execute(sql`
         select ${fileColumnsSql}, x.last_activity_at
@@ -175,7 +183,7 @@ export function createActivityService(db: WorkspaceDatabase) {
         join workspace_file_index f on f.id = x.file_index_id and f.org_id = ${orgId}
         ${visibleSourceJoinSql(groupIds)}
         where f.deleted_at is null
-          and ${partitionSql(helperDeviceId)}
+          and ${partitionSql(helperDeviceId, ownerUsername)}
         order by x.last_activity_at desc
         limit ${clampLimit(limit)}`);
       return (rows as unknown as JoinedFileRow[]).map((row) => ({

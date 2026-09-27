@@ -18,7 +18,7 @@ import {
 } from '../db/schema';
 import { asRecord, getStringValue, resolveSnapshotProviderConfig } from './recoveryBootstrap';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
-import { backupSnapshotManifestKey, fetchBackupObjectBytes, isBackupObjectNotFound } from './backupSnapshotStorage';
+import { backupSnapshotManifestKey, fetchBackupObjectBytes, isBackupObjectNotFound, isBackupObjectTooLarge, MANIFEST_FETCH_MAX_BYTES } from './backupSnapshotStorage';
 import { parseBackupObjectKey } from './backupObjectKey';
 
 export type FileIndexStatus = 'none' | 'agent' | 'hydrating' | 'complete' | 'failed';
@@ -28,6 +28,7 @@ export type HydrationFailure =
   | 'storage_identity_drift'
   | 'manifest_missing'
   | 'manifest_invalid'
+  | 'manifest_too_large'
   | 'manifest_key_invalid'
   | 'origin_unverifiable'
   | 'origin_identity_pending'
@@ -35,7 +36,7 @@ export type HydrationFailure =
 
 const HYDRATION_FAILURES: readonly HydrationFailure[] = [
   'storage_identity_unknown', 'storage_identity_drift', 'manifest_missing', 'manifest_invalid',
-  'manifest_key_invalid', 'origin_unverifiable', 'origin_identity_pending', 'provider_error',
+  'manifest_too_large', 'manifest_key_invalid', 'origin_unverifiable', 'origin_identity_pending', 'provider_error',
 ];
 
 // Retryability is a pure function of the failure code so that the route glue
@@ -137,7 +138,7 @@ function summarizeManifestIssues(error: z.ZodError, json: unknown): string {
 
 function defaultDeps(): HydrationDeps {
   return {
-    fetchManifestBytes: (args) => fetchBackupObjectBytes(args),
+    fetchManifestBytes: (args) => fetchBackupObjectBytes({ ...args, maxBytes: MANIFEST_FETCH_MAX_BYTES }),
   };
 }
 
@@ -183,34 +184,65 @@ async function fail(
   return { status: 'failed', failure, reason, retryable: isRetryableHydrationFailure(failure) };
 }
 
-export async function hydrateSnapshotFileIndex(
+// Failure paths reached while no DB context is held (the manifest
+// fetch/parse phase below, and the outer catch-all once the final write
+// transaction has already closed) need to open their own short context —
+// `fail` itself assumes an ambient one, which is correct for every call site
+// still inside a transaction (see below) but would hit the contextless-write
+// guard here.
+async function failOutsideContext(
   snapshotDbId: string,
-  opts?: { force?: boolean; deps?: HydrationDeps },
+  failure: HydrationFailure,
+  reason: string,
 ): Promise<HydrationOutcome> {
-  const deps = opts?.deps ?? defaultDeps();
-  const now = deps.now?.() ?? new Date();
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => fail(snapshotDbId, failure, reason)));
+}
 
+type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydration>>>;
+// Once claimSnapshotForHydration's own storage_identity_unknown check has run,
+// storageIdentity is verified non-null for the rest of the pipeline — phases 2
+// and 3 read it unconditionally (origin verification, SQL equality checks). The
+// null check and its use live in different functions, so a plain narrowed
+// re-read of `snapshot.storageIdentity` at the return site doesn't survive the
+// function boundary; this type carries the guarantee across it instead.
+type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & { storageIdentity: string };
+
+/**
+ * Phase 1 (short transaction): load the snapshot, apply the skip checks,
+ * CAS-claim it into 'hydrating', and resolve/verify its provider config and
+ * storage identity. Every statement here is a small, bounded read or a
+ * single-row write — nothing here waits on the network.
+ */
+async function claimSnapshotForHydration(
+  snapshotDbId: string,
+  now: Date,
+  force: boolean,
+  includeUnreferenced: boolean,
+): Promise<
+  | { outcome: HydrationOutcome }
+  | { snapshot: ClaimedSnapshot; providerType: string; providerConfig: Record<string, unknown> }
+> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const snapshot = await loadSnapshotForHydration(snapshotDbId);
       if (!snapshot) {
-        return { status: 'failed', failure: 'manifest_missing', reason: 'snapshot not found', retryable: false } as const;
+        return { outcome: { status: 'failed', failure: 'manifest_missing', reason: 'snapshot not found', retryable: false } as const };
       }
 
       const referencedFiles = await loadReferencedFiles(snapshot.jobId);
 
-      if ((referencedFiles ?? 0) === 0) {
-        return { status: 'skipped', reason: 'not_referenced' } as const;
+      if ((referencedFiles ?? 0) === 0 && !includeUnreferenced) {
+        return { outcome: { status: 'skipped', reason: 'not_referenced' } as const };
       }
-      if (snapshot.fileIndexStatus === 'complete' && !opts?.force) {
-        return { status: 'skipped', reason: 'already_complete' } as const;
+      if (snapshot.fileIndexStatus === 'complete' && !force) {
+        return { outcome: { status: 'skipped', reason: 'already_complete' } as const };
       }
       if (
         snapshot.fileIndexStatus === 'hydrating' &&
         snapshot.fileIndexHydratedAt &&
         now.getTime() - snapshot.fileIndexHydratedAt.getTime() < HYDRATING_STALE_MS
       ) {
-        return { status: 'skipped', reason: 'in_progress' } as const;
+        return { outcome: { status: 'skipped', reason: 'in_progress' } as const };
       }
 
       // CAS to 'hydrating' — the predicate itself expresses staleness so a
@@ -251,96 +283,134 @@ export async function hydrateSnapshotFileIndex(
           storageIdentity: backupSnapshots.storageIdentity,
         });
       if (!claimed) {
-        return { status: 'skipped', reason: 'in_progress' } as const;
+        return { outcome: { status: 'skipped', reason: 'in_progress' } as const };
       }
 
-      try {
-        return await hydrateClaimedSnapshot(snapshotDbId, { ...snapshot, ...claimed }, now, deps);
-      } catch (err) {
-        await fail(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
-        throw err;
+      // Everything below pins the row AS CLAIMED (see the note above the CAS),
+      // not the pre-claim read.
+      const claimedRow = { ...snapshot, ...claimed };
+
+      const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
+      const providerType = resolved?.providerType ?? null;
+      const providerConfig = asRecord(resolved?.providerConfig);
+      if (!claimedRow.storageIdentity) {
+        return { outcome: await fail(snapshotDbId, 'storage_identity_unknown', 'snapshot has no pinned storage identity') };
       }
+      if (!providerType) {
+        return { outcome: await fail(snapshotDbId, 'storage_identity_unknown', 'could not resolve a provider for this snapshot') };
+      }
+      const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
+      if (resolvedIdentity !== claimedRow.storageIdentity) {
+        return { outcome: await fail(snapshotDbId, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${claimedRow.storageIdentity}`) };
+      }
+
+      return {
+        // Rebuilt (not the bare narrowed variable) so the object literal's own
+        // storageIdentity field carries the non-null type this scope just
+        // proved, across the function boundary into ClaimedSnapshot.
+        snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity },
+        providerType,
+        providerConfig,
+      };
     }),
   );
 }
 
-async function hydrateClaimedSnapshot(
+type ParsedManifest = {
+  manifestSha256: string;
+  fileRows: Array<{ snapshotDbId: string; sourcePath: string; backupPath: string; size: number | null; modifiedAt: Date | null }>;
+  originCounts: Map<string, number>;
+};
+
+/**
+ * Phase 2 (no DB context held): fetch and parse the manifest. This is the
+ * network round trip and the CPU-bound hash/parse step — sized only by
+ * MANIFEST_FETCH_MAX_BYTES — and it must not pin a pooled connection idle
+ * for however long it takes.
+ */
+async function fetchAndParseManifest(
   snapshotDbId: string,
-  snapshot: NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydration>>>,
-  now: Date,
+  snapshot: ClaimedSnapshot,
+  providerType: string,
+  providerConfig: Record<string, unknown>,
   deps: HydrationDeps,
+): Promise<{ outcome: HydrationOutcome } | { manifest: ParsedManifest }> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await deps.fetchManifestBytes({
+      provider: providerType,
+      providerConfig,
+      key: backupSnapshotManifestKey(snapshot.snapshotId),
+    });
+  } catch (err) {
+    if (isBackupObjectNotFound(err)) {
+      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_missing', 'manifest object not found in storage') };
+    }
+    if (isBackupObjectTooLarge(err)) {
+      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_too_large', err.message) };
+    }
+    return { outcome: await failOutsideContext(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err)) };
+  }
+
+  const manifestSha256 = createHash('sha256').update(bytes).digest('hex');
+
+  let parsed: z.infer<typeof hydrationManifestSchema>;
+  try {
+    const json = JSON.parse(Buffer.from(bytes).toString('utf8'));
+    const result = hydrationManifestSchema.safeParse(json);
+    if (!result.success) {
+      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_invalid', summarizeManifestIssues(result.error, json)) };
+    }
+    parsed = result.data;
+    if (parsed.id !== snapshot.snapshotId) {
+      throw new Error(`manifest id ${parsed.id} does not match snapshot ${snapshot.snapshotId}`);
+    }
+  } catch (err) {
+    return { outcome: await failOutsideContext(snapshotDbId, 'manifest_invalid', err instanceof Error ? err.message : String(err)) };
+  }
+
+  const files = parsed.files ?? [];
+  const ownPrefix = `snapshots/${snapshot.snapshotId}/`;
+  const originCounts = new Map<string, number>();
+  const fileRows: ParsedManifest['fileRows'] = [];
+
+  for (const file of files) {
+    // Content-less entries (dir/symlink) upload nothing — the schema above
+    // guarantees an empty backupPath only ever appears on one.
+    if (!file.backupPath) continue;
+    const parsedKey = parseBackupObjectKey(file.backupPath);
+    if (!parsedKey) {
+      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`) };
+    }
+    if (!file.backupPath.startsWith(ownPrefix)) {
+      originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
+    }
+    fileRows.push({
+      snapshotDbId,
+      sourcePath: file.originalPath ?? file.sourcePath,
+      backupPath: file.backupPath,
+      size: file.size ?? null,
+      modifiedAt: file.modTime ? new Date(file.modTime) : null,
+    });
+  }
+
+  return { manifest: { manifestSha256, fileRows, originCounts } };
+}
+
+/**
+ * Phase 3 (short transaction, opened fresh — no connection was held across
+ * the fetch in phase 2): verify each referenced origin against current DB
+ * state and write the file/origin rows plus the completion status.
+ */
+async function verifyOriginsAndWrite(
+  snapshotDbId: string,
+  snapshot: ClaimedSnapshot,
+  manifest: ParsedManifest,
 ): Promise<HydrationOutcome> {
-  {
-      const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
-      const providerType = resolved?.providerType ?? null;
-      const providerConfig = asRecord(resolved?.providerConfig);
-      if (!snapshot.storageIdentity) {
-        return fail(snapshotDbId, 'storage_identity_unknown', 'snapshot has no pinned storage identity');
-      }
-      if (!providerType) {
-        return fail(snapshotDbId, 'storage_identity_unknown', 'could not resolve a provider for this snapshot');
-      }
-      const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
-      if (resolvedIdentity !== snapshot.storageIdentity) {
-        return fail(snapshotDbId, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${snapshot.storageIdentity}`);
-      }
+  const { manifestSha256, fileRows, originCounts } = manifest;
 
-      let bytes: Uint8Array;
-      try {
-        bytes = await deps.fetchManifestBytes({
-          provider: providerType,
-          providerConfig,
-          key: backupSnapshotManifestKey(snapshot.snapshotId),
-        });
-      } catch (err) {
-        if (isBackupObjectNotFound(err)) {
-          return fail(snapshotDbId, 'manifest_missing', 'manifest object not found in storage');
-        }
-        return fail(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
-      }
-
-      const manifestSha256 = createHash('sha256').update(bytes).digest('hex');
-
-      let parsed: z.infer<typeof hydrationManifestSchema>;
-      try {
-        const json = JSON.parse(Buffer.from(bytes).toString('utf8'));
-        const result = hydrationManifestSchema.safeParse(json);
-        if (!result.success) {
-          return fail(snapshotDbId, 'manifest_invalid', summarizeManifestIssues(result.error, json));
-        }
-        parsed = result.data;
-        if (parsed.id !== snapshot.snapshotId) {
-          throw new Error(`manifest id ${parsed.id} does not match snapshot ${snapshot.snapshotId}`);
-        }
-      } catch (err) {
-        return fail(snapshotDbId, 'manifest_invalid', err instanceof Error ? err.message : String(err));
-      }
-
-      const files = parsed.files ?? [];
-      const ownPrefix = `snapshots/${snapshot.snapshotId}/`;
-      const originCounts = new Map<string, number>();
-      const fileRows: Array<{ snapshotDbId: string; sourcePath: string; backupPath: string; size: number | null; modifiedAt: Date | null }> = [];
-
-      for (const file of files) {
-        // Content-less entries (dir/symlink) upload nothing — the schema
-        // above guarantees an empty backupPath only ever appears on one.
-        if (!file.backupPath) continue;
-        const parsedKey = parseBackupObjectKey(file.backupPath);
-        if (!parsedKey) {
-          return fail(snapshotDbId, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`);
-        }
-        if (!file.backupPath.startsWith(ownPrefix)) {
-          originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
-        }
-        fileRows.push({
-          snapshotDbId,
-          sourcePath: file.originalPath ?? file.sourcePath,
-          backupPath: file.backupPath,
-          size: file.size ?? null,
-          modifiedAt: file.modTime ? new Date(file.modTime) : null,
-        });
-      }
-
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
       type OriginRow = {
         originSnapshotId: string; originOrgId: string; originDeviceId: string;
         originStorageIdentity: string; originStoragePrefix: string | null; provenance: 'live' | 'retired'; objectCount: number;
@@ -382,8 +452,7 @@ async function hydrateClaimedSnapshot(
         return fail(snapshotDbId, 'origin_unverifiable', `origin ${originId}: no live snapshot or retirement record for this device/destination`);
       }
 
-      // Write file rows in 1,000-row batches, each its own transaction —
-      // storage I/O already happened above, outside any DB transaction.
+      // Write file rows in 1,000-row batches, each its own transaction.
       // The delete rides in the SAME transaction as the first insert batch so a
       // crash between them cannot leave a snapshot with zero rows; every later
       // batch is its own short transaction. Status stays 'hydrating' until the
@@ -427,6 +496,49 @@ async function hydrateClaimedSnapshot(
         externalCount,
         originSnapshotIds: [...originCounts.keys()],
       };
+    }),
+  );
+}
+
+export async function hydrateSnapshotFileIndex(
+  snapshotDbId: string,
+  opts?: {
+    force?: boolean;
+    deps?: HydrationDeps;
+    /**
+     * Also hydrate a snapshot whose job referenced no older snapshots. The
+     * brokered storage-read path authorizes objects by EXACT index
+     * membership, so it needs a server-verified index for full snapshots
+     * too, not only for incrementals with external references.
+     */
+    includeUnreferenced?: boolean;
+  },
+): Promise<HydrationOutcome> {
+  const deps = opts?.deps ?? defaultDeps();
+  const now = deps.now?.() ?? new Date();
+
+  const claim = await claimSnapshotForHydration(
+    snapshotDbId,
+    now,
+    opts?.force ?? false,
+    opts?.includeUnreferenced ?? false,
+  );
+  if ('outcome' in claim) {
+    return claim.outcome;
+  }
+  const { snapshot, providerType, providerConfig } = claim;
+
+  // No DB context is held across this step — see fetchAndParseManifest.
+  const parsedManifest = await fetchAndParseManifest(snapshotDbId, snapshot, providerType, providerConfig, deps);
+  if ('outcome' in parsedManifest) {
+    return parsedManifest.outcome;
+  }
+
+  try {
+    return await verifyOriginsAndWrite(snapshotDbId, snapshot, parsedManifest.manifest);
+  } catch (err) {
+    await failOutsideContext(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
+    throw err;
   }
 }
 

@@ -297,7 +297,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Kein erfolgreiches Backup",
-    "consecutive_failures": "Aufeinanderfolgende Fehlschläge"
+    "consecutive_failures": "Aufeinanderfolgende Fehlschläge",
+    "completed_with_errors": "Mit Dateifehlern abgeschlossen"
   },
   "checkTypes": {
     "icmp_ping": "ICMP-Ping",
@@ -438,9 +439,9 @@
       "review": "Prüfen",
       "convertEverything": "Alles konvertieren…",
       "confirmTitle": "Alle Altregeln, Überwachungen und alarmausgelösten Automatisierungen in allen Ihren Richtlinien konvertieren?",
-      "confirmBody": "{{rows}} in {{policies}} des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben in W05c zur Prüfung oder manuellen Stilllegung; W05d konvertiert Reste und legt nicht konvertierbare still.",
+      "confirmBody": "{{rows}} in {{policies}} des gesamten Partners. Konvertierte Zeilen werden stillgelegt. Nicht konvertierbare Zeilen bleiben jetzt zur Prüfung oder manuellen Stilllegung; eine künftige Version konvertiert Reste und legt nicht konvertierbare still.",
       "confirmRun": "Alles konvertieren",
-      "convertedAll": "{{converted}} Zeilen in {{policies}} Richtlinien konvertiert; {{unconvertible}} nicht konvertierbar.",
+      "convertedAll": "{{rows}} in {{policies}} konvertiert; {{unconvertible}} nicht konvertierbar.",
       "errors": {
         "convertAll": "Konvertierung aller Einträge fehlgeschlagen"
       }
@@ -511,7 +512,7 @@
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
       "reverted": "Rückgängig gemacht",
-      "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch W05d nicht verfügbar."
+      "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch die Stilllegung der Legacy-Benachrichtigungen nicht verfügbar."
     },
     "errorCodes": {
       "preview_stale": "Die Richtlinie wurde seit dieser Vorschau geändert. Erstellen Sie vor der Konvertierung erneut eine Vorschau.",

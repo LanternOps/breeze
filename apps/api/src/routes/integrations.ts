@@ -20,6 +20,7 @@ import {
 import { PERMISSIONS } from '../services/permissions';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 import { safeFetch } from '../services/urlSafety';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 
 export const integrationRoutes = new Hono();
 const requireIntegrationRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -255,9 +256,32 @@ function resolveMaskedMonitoringSecrets(
   const storedRecord = stored && typeof stored === 'object' && !Array.isArray(stored)
     ? stored as Record<string, unknown>
     : {};
+
+  const maskedTopLevelFields = Object.entries(config)
+    .filter(([field, value]) => value === INTEGRATION_MASKED_SECRET && isSecretFieldName(field))
+    .map(([field]) => field);
+
+  // Same origin-binding contract as credentialOriginBinding.ts: a
+  // masked credential must not be decrypted and forwarded to a destination
+  // this same request just changed. Only a call that would actually resolve
+  // a stored secret needs the check — a caller supplying a fresh, unmasked
+  // key never touches the stored plaintext, regardless of the URL.
+  if (maskedTopLevelFields.length > 0) {
+    for (const urlField of ['url', 'endpointUrl'] as const) {
+      const incomingUrl = config[urlField];
+      const storedUrl = storedRecord[urlField];
+      if (
+        typeof incomingUrl === 'string'
+        && typeof storedUrl === 'string'
+        && urlOriginChanged(storedUrl, incomingUrl)
+      ) {
+        return { ok: false, error: `Enter the ${provider} credentials again after changing the destination URL` };
+      }
+    }
+  }
+
   const resolved: Record<string, unknown> = { ...config };
-  for (const [field, value] of Object.entries(config)) {
-    if (value !== INTEGRATION_MASKED_SECRET || !isSecretFieldName(field)) continue;
+  for (const field of maskedTopLevelFields) {
     const opened = openStoredMonitoringSecret(storedRecord[field], orgId, [provider, field], `${provider} ${field}`);
     if (!opened.ok) return opened;
     resolved[field] = opened.value;

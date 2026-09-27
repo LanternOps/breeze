@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/updater"
@@ -125,6 +126,18 @@ func WithRequireManifestSigningKeyID(require func() bool) Option {
 	return func(m *Manager) { m.requireManifestSigningKeyID = require }
 }
 
+// WithMachineInstallOwner declares whether this process owns the host's
+// machine-wide Breeze Assist installation (config.Config.IsInstalledAgent).
+// A Manager that is not the owner never installs, updates, uninstalls,
+// spawns, stops or reconfigures Assist and never touches its autostart entry
+// or per-session state: those are shared with the installed agent, and a
+// second agent process (foreground run, lab build, Quick Support client)
+// acting on its own server's policy would otherwise tear down the installed
+// agent's Assist. Omitting the option means "not the owner".
+func WithMachineInstallOwner(owner bool) Option {
+	return func(m *Manager) { m.managesMachineInstall = owner }
+}
+
 // WithBackupServerURL sets a provider for the configured backup control-plane
 // URL, threaded into the verified downloader's netpolicy.Policy so the backup
 // origin (not just serverURL's primary) is reachable for helper downloads
@@ -133,6 +146,24 @@ func WithRequireManifestSigningKeyID(require func() bool) Option {
 // it does not default to serverURL's value.
 func WithBackupServerURL(backupServerURL func() string) Option {
 	return func(m *Manager) { m.backupServerURL = backupServerURL }
+}
+
+// WithOnInstalled sets a callback that runs after a verified install puts a
+// new helper binary on disk, before any session is (re)spawned from it. It
+// runs again when an update whose new build would not start is rolled back,
+// before the previous build is respawned. It receives the binary's path.
+//
+// The agent wires it to the session broker's RefreshAllowedHashes, so the
+// binary's hash is allowlisted before its first IPC connection (#7043).
+// Without it, the broker's startup snapshot rejects a helper installed after
+// the agent started until the agent restarts. The same applies after every
+// helper update.
+//
+// It runs synchronously with the Manager's lock held, so it must not call
+// back into the Manager. It is not called when the download, the package
+// install or the post-install version check fails.
+func WithOnInstalled(fn func(binaryPath string)) Option {
+	return func(m *Manager) { m.onInstalled = fn }
 }
 
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
@@ -188,6 +219,9 @@ type Manager struct {
 
 	requireManifestSigningKeyID func() bool
 
+	// onInstalled runs after a successful, verified install. See WithOnInstalled.
+	onInstalled func(binaryPath string)
+
 	// now is the clock for the abandon cooldown; nil means time.Now (tests inject).
 	now func() time.Time
 
@@ -200,6 +234,13 @@ type Manager struct {
 	abandonedAt          time.Time // when abandonedVersion was set; retried after helperAbandonRetryAfter
 
 	legacyAutoStartCleaned bool
+
+	// managesMachineInstall: this process owns the machine-wide Assist
+	// installation. See WithMachineInstallOwner. Immutable after New.
+	managesMachineInstall bool
+	// nonOwnerNoticeLogged: the "not the owner, leaving Assist alone" line has
+	// been logged once for this process. Guarded by mu.
+	nonOwnerNoticeLogged bool
 
 	// notInstalledWarned: the "enabled but not installed, waiting for the
 	// server" warning has fired for the current not-installed episode. Reset
@@ -266,24 +307,22 @@ func defaultBinaryPath() string {
 	}
 }
 
+// ManagesMachineInstall reports whether this Manager owns the machine-wide
+// Assist installation (see WithMachineInstallOwner).
+func (m *Manager) ManagesMachineInstall() bool {
+	return m.managesMachineInstall
+}
+
 // DefaultBinaryPath returns the platform-default Breeze Assist binary path.
 func DefaultBinaryPath() string {
 	return defaultBinaryPath()
 }
 
+// defaultBaseDir is where Assist's per-session state and legacy global config
+// live: the agent's own config dir, resolved by the same function the agent
+// uses for agent.yaml, so the two can never disagree.
 func defaultBaseDir() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/Library/Application Support/Breeze"
-	case "windows":
-		pd := os.Getenv("ProgramData")
-		if pd == "" {
-			pd = `C:\ProgramData`
-		}
-		return filepath.Join(pd, "Breeze")
-	default:
-		return "/etc/breeze"
-	}
+	return config.ConfigDir()
 }
 
 func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) (int, error) {
@@ -310,6 +349,20 @@ func (m *Manager) Apply(settings *Settings) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Only the installed agent manages the machine-wide Assist install. Every
+	// step below (legacy-name cleanup, per-session migration, the HKLM Run
+	// sweep, install/update, spawn/stop, uninstall) acts on state shared with
+	// that agent, driven by THIS process's server policy. A second agent
+	// process on the same host must not act on it at all.
+	if !m.managesMachineInstall {
+		if !m.nonOwnerNoticeLogged {
+			log.Info("leaving Breeze Assist to the installed agent: this process is not the installed agent service",
+				"policyEnabled", settings.Enabled)
+			m.nonOwnerNoticeLogged = true
+		}
+		return
+	}
 
 	// Snapshot install state BEFORE migrateFromLegacyName — on Linux (and
 	// old-name darwin/windows) it can delete the binary, and we must still
@@ -819,7 +872,18 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 
 	log.Info("helper installed", "path", m.binaryPath, "version", version)
+	// The binary at an allowlisted path just changed. Let the session broker
+	// re-hash it before any session spawns the new build (#7043).
+	m.notifyInstalledLocked()
 	return nil
+}
+
+// notifyInstalledLocked runs the WithOnInstalled callback, if any. Must be
+// called with m.mu held.
+func (m *Manager) notifyInstalledLocked() {
+	if m.onInstalled != nil {
+		m.onInstalled(m.binaryPath)
+	}
 }
 
 // readBinaryVersion reads the installed helper binary's stamped version.
@@ -1006,6 +1070,10 @@ func (m *Manager) applyPendingUpdate() {
 				started.pid = 0
 			}
 			m.rollbackBinaryLocked(backupPath, preVersion)
+			// The install already told the broker about the new build, and
+			// the rollback just put the previous one back. Refresh again
+			// before respawning it, or the broker rejects it (#7043).
+			m.notifyInstalledLocked()
 			m.restartSessionsLocked(stopped)
 			return
 		}

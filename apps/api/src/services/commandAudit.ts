@@ -23,10 +23,30 @@ function contentMetadata(value: unknown): Record<string, unknown> {
   };
 }
 
-export function sanitizeCommandPayloadForAudit(type: string, payload: CommandPayload | null | undefined): unknown {
-  if (!isRecord(payload)) {
-    return payload ?? null;
+/**
+ * Storage destinations (bucket credentials, filesystem paths) and their sealed
+ * form are redacted WHOLESALE in audit and history copies — key-name
+ * redaction alone would still copy a bucket, endpoint or path into an
+ * append-only table, and a sealed envelope is ciphertext that has no business
+ * outliving its command. Literal names on purpose: importing them from
+ * sensitiveCommandPayload would pull the crypto module into this one.
+ */
+const STORAGE_DESTINATION_KEYS = ['providerConfig', 'providerConfigEnvelope'] as const;
+
+function redactStorageDestination(payload: Record<string, unknown>): Record<string, unknown> {
+  if (!STORAGE_DESTINATION_KEYS.some((key) => key in payload)) return payload;
+  const out: Record<string, unknown> = { ...payload };
+  for (const key of STORAGE_DESTINATION_KEYS) {
+    if (key in out) out[key] = REDACTED;
   }
+  return out;
+}
+
+export function sanitizeCommandPayloadForAudit(type: string, rawPayload: CommandPayload | null | undefined): unknown {
+  if (!isRecord(rawPayload)) {
+    return rawPayload ?? null;
+  }
+  const payload = redactStorageDestination(rawPayload);
 
   if (type === FILE_WRITE) {
     return {

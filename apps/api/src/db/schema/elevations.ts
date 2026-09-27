@@ -13,6 +13,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -311,7 +312,9 @@ export const elevationAudit = pgTable(
     details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
 
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // clock_timestamp(), not now(): the insert's own time, so the ledger
+    // export's (created_at, id) walk never sees a late insert sort behind it (#4910).
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
   },
   (table) => ({
     requestOccurredIdx: index('elevation_audit_request_id_occurred_at_idx').on(
@@ -319,6 +322,12 @@ export const elevationAudit = pgTable(
       table.occurredAt,
     ),
     orgIdIdx: index('elevation_audit_org_id_idx').on(table.orgId),
+    // #4910: per-org keyset traversal for the ledger export, in recorded order.
+    orgCreatedIdIdx: index('elevation_audit_org_created_id_idx').on(
+      table.orgId,
+      table.createdAt,
+      table.id,
+    ),
     eventTypeIdx: index('elevation_audit_event_type_idx').on(table.eventType),
     // Composite FK: (elevation_request_id, org_id) →
     // elevation_requests(id, org_id). Structural guarantee that the

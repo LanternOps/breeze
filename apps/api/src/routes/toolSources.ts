@@ -177,7 +177,11 @@ toolSourcesRoutes.patch(
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
 
-      const { row, discoveryTriggered } = await updateToolSourceRow(existing, payload);
+      const updateResult = await updateToolSourceRow(existing, payload);
+      if ('error' in updateResult) {
+        return c.json({ error: updateResult.error, code: updateResult.code }, updateResult.status as 400 | 403);
+      }
+      const { row, discoveryTriggered } = updateResult;
 
       writeRouteAudit(c, {
         orgId: row.orgId,

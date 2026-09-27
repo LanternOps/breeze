@@ -1,12 +1,12 @@
 /**
  * QuickBooks address → Breeze site-address mapping, split out of
- * `quickbooksCustomerImport.ts` so callers that only need this pure
+ * `accountingCustomerImport.ts` so callers that only need this pure
  * formatting helper don't pull in the rest of the QBO customer-import
  * pipeline's import graph.
  *
- * `quickbooksCustomerImport.ts` re-exports `siteAddressFrom` from here for
+ * `accountingCustomerImport.ts` re-exports `siteAddressFrom` from here for
  * its own callers; `accountingMappingService.ts` imports directly from this
- * file instead — `quickbooksCustomerImport.ts` transitively imports
+ * file instead — `accountingCustomerImport.ts` transitively imports
  * `services/orgImport/index.ts` (for `commitOrgImport`/`previewOrgImport`),
  * which imports `services/tenantLifecycle.ts`, which dynamically `import()`s
  * `routes/agentWs.ts` (deliberately — see tenantLifecycle.ts's header

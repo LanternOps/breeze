@@ -6,7 +6,7 @@
 // Task 2.
 import { z } from 'zod';
 import { createAuditLogAsync } from './auditService';
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { CommandTypes } from './commandTypes';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 
@@ -30,17 +30,28 @@ export const bareMetalRebuildPayloadSchema = z.object({
 });
 export type BareMetalRebuildPayload = z.infer<typeof bareMetalRebuildPayloadSchema>;
 
-export async function queueBareMetalRebuild(input: {
+type QueueBareMetalRebuildInput = {
   orgId: string;
   hostDeviceId: string;
   payload: BareMetalRebuildPayload;
   userId?: string;
-}): Promise<{ command: { id: string; status: string } | null; error: string | null }> {
+};
+type QueueBareMetalRebuildResult = { command: { id: string; status: string } | null; error: string | null };
+
+async function queueBareMetalRebuildVia(
+  dispatch: (
+    deviceId: string,
+    type: string,
+    payload: Record<string, unknown>,
+    options: { userId?: string; expectedOrgId: string },
+  ) => Promise<{ command?: { id: string; status: string } | null; error?: string }>,
+  input: QueueBareMetalRebuildInput,
+): Promise<QueueBareMetalRebuildResult> {
   // `token` is registered in SENSITIVE_PAYLOAD_FIELDS: encrypted at rest here,
   // decrypted just-in-time on delivery, and erased by every terminal writer.
   const payload = encryptSensitivePayloadFields(CommandTypes.BARE_METAL_REBUILD, input.payload);
 
-  const res = await queueCommandForExecution(input.hostDeviceId, CommandTypes.BARE_METAL_REBUILD, payload, {
+  const res = await dispatch(input.hostDeviceId, CommandTypes.BARE_METAL_REBUILD, payload, {
     ...(input.userId !== undefined ? { userId: input.userId } : {}),
     expectedOrgId: input.orgId,
   });
@@ -69,4 +80,32 @@ export async function queueBareMetalRebuild(input: {
   });
 
   return { command, error };
+}
+
+/** Ambient-context callers (e.g. a route already inside a request transaction). */
+export async function queueBareMetalRebuild(input: QueueBareMetalRebuildInput): Promise<QueueBareMetalRebuildResult> {
+  return queueBareMetalRebuildVia(queueCommandForExecution, input);
+}
+
+/**
+ * No-ambient-context callers only (e.g. dispatch work run strictly after a
+ * caller's own transaction has committed — see drExecutionService.ts's
+ * post-commit DR dispatcher, #242 hardening). Commits its own short
+ * transaction before socket transport instead of running inside whatever
+ * transaction happens to be open, which is what this variant exists to
+ * prevent: dispatching from inside an ambient transaction while also holding
+ * a second pooled connection open for this call is exactly the double-hold
+ * shape that produced #2417 and #6671.
+ */
+export async function queueBareMetalRebuildWithSystemPrecheck(
+  input: QueueBareMetalRebuildInput,
+): Promise<QueueBareMetalRebuildResult> {
+  return queueBareMetalRebuildVia(
+    (deviceId, type, payload, options) =>
+      queueCommandForExecutionWithSystemPrecheck(deviceId, type, payload, {
+        ...options,
+        expectedOrgId: input.orgId,
+      }),
+    input,
+  );
 }

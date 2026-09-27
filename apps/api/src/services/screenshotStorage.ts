@@ -7,13 +7,44 @@
 
 import { db } from '../db';
 import { aiScreenshots } from '../db/schema/ai';
-import { eq, and, lte } from 'drizzle-orm';
+import { eq, and, gt, lte, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { writeFile, mkdir, unlink, readFile } from 'fs/promises';
 import { join } from 'path';
+import { envInt } from '../utils/envInt';
 
 const SCREENSHOT_DIR = process.env.SCREENSHOT_STORAGE_DIR || '/tmp/breeze-screenshots';
 const DEFAULT_RETENTION_HOURS = 24;
+
+/**
+ * Per-device storage budget. `ai_screenshots` has no quota today, so a single
+ * device can write an unbounded number of ~1 MiB-body-gated files until the
+ * shared `SCREENSHOT_STORAGE_DIR` fills — a 64 MB tmpfs in the repo compose,
+ * or the host disk if a droplet points the dir at a real volume — breaking
+ * screenshot capture, installer-zip builds and software uploads for every
+ * tenant on the instance. Bounding one device's LIVE (non-expired) footprint
+ * keeps that failure local to the offending device instead.
+ */
+const MAX_SCREENSHOT_BYTES = envInt('SCREENSHOT_MAX_BYTES', 1_600_000);
+const MAX_SCREENSHOTS_PER_DEVICE = envInt('SCREENSHOT_MAX_PER_DEVICE', 20);
+const MAX_SCREENSHOT_BYTES_PER_DEVICE = envInt(
+  'SCREENSHOT_MAX_BYTES_PER_DEVICE',
+  MAX_SCREENSHOTS_PER_DEVICE * MAX_SCREENSHOT_BYTES,
+);
+
+export class ScreenshotTooLargeError extends Error {
+  constructor(public readonly sizeBytes: number, public readonly maxBytes: number) {
+    super(`Screenshot of ${sizeBytes} bytes exceeds the ${maxBytes} byte limit`);
+    this.name = 'ScreenshotTooLargeError';
+  }
+}
+
+export class ScreenshotQuotaExceededError extends Error {
+  constructor(public readonly deviceId: string, public readonly reason: 'count' | 'bytes') {
+    super(`Device ${deviceId} exceeded its live screenshot ${reason} quota`);
+    this.name = 'ScreenshotQuotaExceededError';
+  }
+}
 
 interface StoreScreenshotParams {
   deviceId: string;
@@ -36,6 +67,20 @@ interface StoredScreenshot {
   expiresAt: Date;
 }
 
+/** Live (non-expired) screenshot count and total bytes currently stored for a device. */
+async function getDeviceScreenshotUsage(deviceId: string): Promise<{ count: number; bytes: number }> {
+  const [row] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+      bytes: sql<number>`coalesce(sum(${aiScreenshots.sizeBytes}), 0)::bigint`,
+    })
+    .from(aiScreenshots)
+    .where(and(eq(aiScreenshots.deviceId, deviceId), gt(aiScreenshots.expiresAt, new Date())))
+    .limit(1);
+
+  return { count: Number(row?.count ?? 0), bytes: Number(row?.bytes ?? 0) };
+}
+
 export async function storeScreenshot(params: StoreScreenshotParams): Promise<StoredScreenshot> {
   const {
     deviceId,
@@ -51,6 +96,19 @@ export async function storeScreenshot(params: StoreScreenshotParams): Promise<St
 
   const imageBuffer = Buffer.from(imageBase64, 'base64');
   const sizeBytes = imageBuffer.length;
+
+  if (sizeBytes > MAX_SCREENSHOT_BYTES) {
+    throw new ScreenshotTooLargeError(sizeBytes, MAX_SCREENSHOT_BYTES);
+  }
+
+  const usage = await getDeviceScreenshotUsage(deviceId);
+  if (usage.count >= MAX_SCREENSHOTS_PER_DEVICE) {
+    throw new ScreenshotQuotaExceededError(deviceId, 'count');
+  }
+  if (usage.bytes + sizeBytes > MAX_SCREENSHOT_BYTES_PER_DEVICE) {
+    throw new ScreenshotQuotaExceededError(deviceId, 'bytes');
+  }
+
   const uuid = randomUUID();
   const storageKey = `screenshots/${orgId}/${deviceId}/${uuid}.jpg`;
 

@@ -197,6 +197,11 @@ export const JOB_SCHEDULES = {
   // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
   // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
   'ai-artifact-expiry-sweeper': '2 * * * *',
+  // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
+  // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
+  // on hours 1,7,13,19 is unused by any existing hour/minute combination in
+  // this lane.
+  'helper-screenshot-retention': '27 1,7,13,19 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

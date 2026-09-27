@@ -18,7 +18,13 @@ vi.mock('../../services/recoveryMediaService', async (importOriginal) => {
 
 vi.mock('../../services/commandQueue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/commandQueue')>();
-  return { ...actual, queueCommandForExecution: effects.queueCommand };
+  return {
+    ...actual,
+    queueCommandForExecution: effects.queueCommand,
+    // DR group dispatch now runs post-commit through the system-precheck
+    // variant (dispatchDrPendingWork); it is the same agent-dispatch boundary.
+    queueCommandForExecutionWithSystemPrecheck: effects.queueCommand,
+  };
 });
 
 import { withSystemDbAccessContext } from '../../db';

@@ -6,6 +6,7 @@ import (
 	"compress/bzip2"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,31 +27,97 @@ const (
 	openH264FallbackURL = "http://ciscobinary.openh264.org/openh264-2.4.1-win64.dll.bz2"
 )
 
+// getDataDirFn, verifyProgramDataPathFn and downloadOpenH264DLLFn are
+// package-level seams so tests can exercise findOpenH264Library's
+// fail-closed gates without a real agent data directory or network.
+// Production always resolves through config.GetDataDir,
+// config.VerifyProgramDataPath and downloadOpenH264DLL.
+var (
+	getDataDirFn            = config.GetDataDir
+	verifyProgramDataPathFn = config.VerifyProgramDataPath
+	downloadOpenH264DLLFn   = downloadOpenH264DLL
+)
+
+// refuseUntrustedDataDir returns a fail-closed error unless this process can
+// itself verify, read-only, that dataDir and every directory above it up to
+// the agent ProgramData root are real directories (not links) owned by
+// SYSTEM, Administrators or TrustedInstaller that no other principal can
+// write. The check runs in whichever process loads the codec: the
+// desktop-session helpers that encode never run the service's startup
+// repair pass, so they cannot rely on its result. A directory a foreign
+// principal controls could swap the file between the SHA-256 check and the
+// load, or interfere with the auto-download's temp-file-then-rename, so it
+// is neither read from nor written into.
+func refuseUntrustedDataDir(dataDir string) error {
+	if err := verifyProgramDataPathFn(dataDir); err != nil {
+		return fmt.Errorf("agent data directory %q is not verified as SYSTEM/Administrators-only — refusing to load or stage the OpenH264 codec from it: %w", dataDir, err)
+	}
+	return nil
+}
+
 // findOpenH264Library searches for the OpenH264 DLL on Windows.
 // Search order: next to executable, agent data dir, auto-download.
+//
+// A candidate found next to the executable or in the agent data dir is only
+// used after its SHA-256 matches the pinned release hash — previously
+// os.Stat alone was enough to trust it, so a planted file of the right name
+// in either location would be loaded into the LocalSystem service unverified
+// (only the fresh-download path checked the hash). A name match with a
+// mismatched hash is skipped, not deleted, and the search keeps going.
+//
+// The agent data dir candidates (2 and 3) additionally require the directory
+// and the codec file itself to pass refuseUntrustedDataDir's read-only
+// verification in this process. When the directory does not verify, the
+// caller (loadOpenH264) degrades to the placeholder encoder instead of
+// failing the agent — hardware encoding is disabled, not the process.
 func findOpenH264Library() (string, error) {
 	// 1. Next to agent executable
 	exePath, err := os.Executable()
 	if err == nil {
 		candidate := filepath.Join(filepath.Dir(exePath), openH264DLLName)
-		if _, err := os.Stat(candidate); err == nil {
+		if ok, verr := verifyFileSHA256(candidate, openH264SHA256); verr == nil && ok {
 			return candidate, nil
+		} else if verr == nil && !ok {
+			slog.Warn("OpenH264 DLL next to executable failed checksum verification, ignoring",
+				"path", candidate,
+			)
 		}
 	}
 
-	// 2. Agent data directory
-	dataDir := config.GetDataDir()
+	// 2 & 3. Agent data directory — read or written only once this process
+	// has verified its ownership and permissions itself.
+	dataDir := getDataDirFn()
+	if derr := refuseUntrustedDataDir(dataDir); derr != nil {
+		slog.Warn("OpenH264: skipping the agent data directory — it did not verify as SYSTEM/Administrators-only",
+			"dataDir", dataDir, "error", derr.Error(),
+		)
+		return "", fmt.Errorf("OpenH264 DLL not found next to the executable, and the agent data directory is not trusted: %w", derr)
+	}
+
 	candidate := filepath.Join(dataDir, openH264DLLName)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate, nil
+	if ferr := verifyProgramDataPathFn(candidate); ferr == nil {
+		if ok, verr := verifyFileSHA256(candidate, openH264SHA256); verr == nil && ok {
+			return candidate, nil
+		} else if verr == nil && !ok {
+			slog.Warn("OpenH264 DLL in agent data dir failed checksum verification, ignoring",
+				"path", candidate,
+			)
+		}
+	} else if !errors.Is(ferr, os.ErrNotExist) {
+		slog.Warn("OpenH264 DLL in agent data dir did not verify as SYSTEM/Administrators-only, ignoring",
+			"path", candidate, "error", ferr.Error(),
+		)
 	}
 
 	// 3. Auto-download from Cisco
-	slog.Info("OpenH264 DLL not found locally, downloading",
+	slog.Info("OpenH264 DLL not found or not verified locally, downloading",
 		"dest", candidate,
 	)
-	if err := downloadOpenH264DLL(dataDir); err != nil {
+	if err := downloadOpenH264DLLFn(dataDir); err != nil {
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
+	}
+	if ferr := verifyProgramDataPathFn(candidate); ferr != nil {
+		return "", fmt.Errorf("downloaded OpenH264 DLL did not verify as SYSTEM/Administrators-only: %w", ferr)
 	}
 	return candidate, nil
 }

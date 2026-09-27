@@ -99,6 +99,8 @@ vi.mock('../services/ticketService', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
+  patches: { severity: 'patches.severity', category: 'patches.category' },
   assetCheckouts: {},
   backupConfigs: {},
   backupJobs: {},
@@ -117,7 +119,8 @@ vi.mock('../db/schema', () => ({
   portalBranding: {},
   portalUsers: {},
   recoveryReadiness: {},
-  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'completed_with_errors', 'partial'],
+  DEGRADED_BACKUP_JOB_STATUSES: ['completed_with_errors', 'partial'],
   s1Agents: {},
   securityStatus: {},
   ticketComments: {},

@@ -166,9 +166,13 @@ vi.mock('../../services/auditService', () => ({
   createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...(args as [])),
 }));
 
-const authorizeResilienceResourcesMock = vi.fn(async () => ({ ok: true, authorization: { resources: [] } }));
+const authorizeResilienceResourcesMock = vi.fn(async (): Promise<
+  { ok: true; authorization: { resources: unknown[] } } | { ok: false; response: Response }
+> => ({ ok: true, authorization: { resources: [] } }));
+const resolveRouteAuthorizedDeviceIdsMock = vi.fn(async () => null as string[] | null);
 vi.mock('./resilienceAuthorization', () => ({
   authorizeRouteResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...(args as [])),
+  resolveRouteAuthorizedDeviceIds: (...args: unknown[]) => resolveRouteAuthorizedDeviceIdsMock(...(args as [])),
 }));
 
 vi.mock('./helpers', () => ({
@@ -182,6 +186,7 @@ vi.mock('./bmr', () => ({
   enforcePublicRateLimit: (...args: unknown[]) => enforcePublicRateLimitMock(...(args as [])),
   enforceTokenRateLimit: (...args: unknown[]) => enforceTokenRateLimitMock(...(args as [])),
   runInRecoveryOrgContext: (...args: unknown[]) => runInRecoveryOrgContextMock(...(args as [any, any])),
+  BMR_PROGRESS_IP_LIMIT: 10_000,
 }));
 
 vi.mock('../../services/recoveryBootstrap', async (importOriginal) => {
@@ -224,6 +229,7 @@ describe('bare-metal recoveries routes', () => {
       token: { sub: 'user-123' },
     };
     authorizeResilienceResourcesMock.mockResolvedValue({ ok: true, authorization: { resources: [] } });
+    resolveRouteAuthorizedDeviceIdsMock.mockResolvedValue(null);
     mfaSatisfied = true;
     deniedPermission = null;
     enforcePublicRateLimitMock.mockResolvedValue(null);
@@ -258,6 +264,75 @@ describe('bare-metal recoveries routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0]).toMatchObject({ id: RECOVERY_ID, fileIndexStatus: 'hydrating' });
+    });
+
+    it('short-circuits to an empty list for a site-restricted caller with no allowed devices, without querying recoveries', async () => {
+      // Mirrors the resolver's real contract: null means unrestricted, an
+      // empty array means site-restricted with zero allowed devices in this
+      // org. The route must not fall through to an unfiltered query in that
+      // case — it has nothing to intersect against.
+      resolveRouteAuthorizedDeviceIdsMock.mockResolvedValueOnce([]);
+      const row = {
+        id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+        status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+        target: null, plan: null, result: null, failureReason: null, warnings: null,
+        createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+        validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      };
+      // If the route fails to apply the site filter, this row would still
+      // be returned by an unfiltered recoveries query.
+      selectMock.mockReturnValueOnce(chainMock([{ row, fileIndexStatus: null }]));
+
+      const res = await app.request('/backup/bmr/recoveries', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicit out-of-scope device filter for a site-restricted caller', async () => {
+      resolveRouteAuthorizedDeviceIdsMock.mockResolvedValueOnce(['other-device-id']);
+
+      const res = await app.request(`/backup/bmr/recoveries?deviceId=${DEVICE_ID}`, { method: 'GET' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    });
+  });
+
+  describe('GET /backup/bmr/recoveries/:id', () => {
+    const row = {
+      id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+      status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+      target: null, plan: null, result: null, failureReason: null, warnings: null,
+      createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+      validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+    };
+
+    it('returns a recovery whose device site is authorized', async () => {
+      selectMock.mockReturnValueOnce(chainMock([row]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}`, { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(authorizeResilienceResourcesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        ORG_ID,
+        [{ kind: 'device', id: DEVICE_ID, role: 'target' }],
+        'read',
+      );
+      const body = await res.json();
+      expect(body).toMatchObject({ id: RECOVERY_ID });
+    });
+
+    it('denies a recovery on a hidden-site device for a site-restricted caller', async () => {
+      selectMock.mockReturnValueOnce(chainMock([row]));
+      authorizeResilienceResourcesMock.mockResolvedValueOnce({ ok: false, response: new Response(null, { status: 403 }) });
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}`, { method: 'GET' });
+
+      expect(res.status).toBe(403);
     });
   });
 
@@ -697,6 +772,18 @@ describe('bare-metal recoveries routes', () => {
   });
 
   describe('POST /bmr/recover/progress', () => {
+    it('returns the rate-limit response before validating the token format, using a per-IP backstop', async () => {
+      enforcePublicRateLimitMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 }) as never);
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'not-even-a-valid-token-format', status: 'restoring' }),
+      });
+      expect(res.status).toBe(429);
+      expect(enforcePublicRateLimitMock).toHaveBeenCalledWith(expect.anything(), 'progress', expect.any(Number));
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
     it('advances forward, stores plan/result/timestamps, and refuses backwards moves', async () => {
       selectMock
         .mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, status: 'authenticated', expiresAt: new Date(Date.now() + 60_000) }]))

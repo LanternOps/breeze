@@ -204,7 +204,12 @@ export async function discoverSource(
           proposedTier: proposed,
           tier,
           enabled: false,
-          reviewNeeded: !addressable,
+          // Every newly discovered tool starts flagged for human review,
+          // regardless of the tier its own peer-declared annotations
+          // propose — a peer's self-reported readOnlyHint is not corroborated
+          // server-side, so an admin must look at it once before it can be
+          // bulk-enabled (see bulkToolsAction('enable_reads') in service.ts).
+          reviewNeeded: true,
           revision,
           lastError: addressable ? null : NOT_ADDRESSABLE_ERROR,
           discoveredAt: now,

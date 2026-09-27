@@ -27,6 +27,15 @@ vi.mock('../db/schema', () => ({
     orgId: 'org_id',
     agentTokenHash: 'agent_token_hash',
   },
+  users: {
+    id: 'id',
+    mfaEnabled: 'mfa_enabled',
+  },
+}));
+
+const mockWriteAuditEvent = vi.fn();
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: (...args: any[]) => mockWriteAuditEvent(...args),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -46,12 +55,18 @@ vi.mock('../middleware/auth', () => ({
     if (!c.req.header('x-test-drop-perms')) c.set('permissions', {});
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Matches the real requireMfa()'s success-path shape: it awaits next()
+  // without forwarding next()'s own return value (only a denial returns a
+  // Response directly). devPushAuth's propagateDenial helper depends on that
+  // distinction to tell "denied" apart from "succeeded".
+  requireMfa: vi.fn(() => async (_c: any, next: any) => { await next(); }),
 }));
 
 vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: vi.fn((c: any, next: any) => {
     c.set('apiKey', {
+      id: 'key-001',
+      createdBy: 'creator-001',
       orgId: '11111111-1111-1111-1111-111111111111', scopes: ['devices:execute'],
       allowedSiteIds: c.req.header('x-test-sites') === undefined
         ? undefined : c.req.header('x-test-sites').split(',').filter(Boolean),
@@ -103,8 +118,20 @@ vi.mock('fs', () => ({
 import { mkdir, statfs, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { createWriteStream } from 'fs';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireMfa } from '../middleware/auth';
+import { db } from '../db';
 import { devPushRoutes } from './devPush';
+
+// Builds a chainable `db.select(...).from(...).where(...).limit(...)` stub
+// resolving to `rows`, matching the shape devPush.ts's MFA-creator lookup uses.
+function mockUsersSelect(rows: unknown[]) {
+  const chain: any = {
+    from: vi.fn(() => chain),
+    where: vi.fn(() => chain),
+    limit: vi.fn(() => Promise.resolve(rows)),
+  };
+  vi.mocked(db.select).mockReturnValue(chain);
+}
 
 // ---------------------------------------------------------------------------
 // Test suite
@@ -130,6 +157,10 @@ describe('devPush routes', () => {
       });
       return next();
     });
+
+    // Default: the API key's creator has an enrolled MFA factor, matching
+    // the common case so unrelated tests don't have to opt in.
+    mockUsersSelect([{ mfaEnabled: true }]);
 
     app = new Hono();
     app.route('/dev', devPushRoutes);
@@ -630,6 +661,181 @@ describe('devPush routes', () => {
       });
 
       expect(res.status).toBe(200);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Audit trail (accountability for a capability that ships binaries)
+  // ------------------------------------------------------------------
+
+  describe('audit trail', () => {
+    it('records an attributable audit event for a JWT-authenticated push', async () => {
+      mockGetDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+      });
+      mockSendCommandToAgent.mockReturnValue(true);
+
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('version', 'v1.2.3-dev');
+      formData.append('component', 'agent');
+      formData.append('binary', new File(['test-binary-content'], 'agent.bin'));
+
+      const res = await app.request('/dev/push', {
+        method: 'POST',
+        body: formData,
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockWriteAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = mockWriteAuditEvent.mock.calls[0]!;
+      expect(event).toMatchObject({
+        orgId: ORG_ID,
+        action: 'device.dev_push',
+        resourceType: 'device',
+        resourceId: DEVICE_ID,
+        resourceName: AGENT_ID,
+        actorType: 'user',
+        actorId: 'user-123',
+        actorEmail: 'test@example.com',
+        details: expect.objectContaining({
+          agentId: AGENT_ID,
+          component: 'agent',
+          version: 'v1.2.3-dev',
+          wsSent: true,
+          checksum: expect.any(String),
+        }),
+      });
+    });
+
+    it('records an attributable audit event for an API-key-authenticated push', async () => {
+      mockGetDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+      });
+      mockSendCommandToAgent.mockReturnValue(true);
+
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File(['data'], 'agent.bin'));
+
+      const res = await app.request('/dev/push', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-API-Key': 'brz_test_key' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockWriteAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = mockWriteAuditEvent.mock.calls[0]!;
+      expect(event).toMatchObject({
+        orgId: ORG_ID,
+        action: 'device.dev_push',
+        actorType: 'api_key',
+        actorId: 'key-001',
+      });
+    });
+
+    it('does not write an audit event when the push is rejected before dispatch', async () => {
+      mockGetDeviceWithOrgCheck.mockResolvedValue(null);
+
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File(['data'], 'agent.bin'));
+
+      const res = await app.request('/dev/push', {
+        method: 'POST',
+        body: formData,
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockWriteAuditEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // API-key MFA parity (compensating control — keys cannot interactively MFA)
+  // ------------------------------------------------------------------
+
+  describe('API key MFA parity', () => {
+    const push = () => {
+      mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      mockSendCommandToAgent.mockReturnValue(true);
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File(['data'], 'agent.bin'));
+      return app.request('/dev/push', {
+        method: 'POST', body: formData, headers: { 'X-API-Key': 'brz_test_key' },
+      });
+    };
+
+    it('rejects a push when the key creator has no enrolled MFA factor', async () => {
+      mockUsersSelect([{ mfaEnabled: false }]);
+      const res = await push();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+      expect(mockWriteAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('rejects a push when the key creator row cannot be found', async () => {
+      mockUsersSelect([]);
+      const res = await push();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('allows a push when the key creator has an enrolled MFA factor', async () => {
+      mockUsersSelect([{ mfaEnabled: true }]);
+      const res = await push();
+      expect(res.status).toBe(200);
+      expect(mockSendCommandToAgent).toHaveBeenCalled();
+    });
+
+    it('does not gate the JWT branch on this check (already covered by requireMfa())', async () => {
+      // Sanity: the creator-MFA lookup must not run on the JWT path at all.
+      mockUsersSelect([{ mfaEnabled: false }]);
+      mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      mockSendCommandToAgent.mockReturnValue(true);
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File(['data'], 'agent.bin'));
+      const res = await app.request('/dev/push', {
+        method: 'POST', body: formData, headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('JWT MFA denial propagation', () => {
+    // devPushAuth composes authMiddleware/requireScope/requirePermission/
+    // requireMfa by hand instead of registering them as separate Hono
+    // middlewares. requireMfa() denies by RETURNING a Response rather than
+    // throwing; nested several closures deep like this, a returned value
+    // that nothing forwards is just discarded — the request would silently
+    // fall through as an empty 200 instead of a 403. This proves the denial
+    // actually reaches the caller.
+    it('surfaces a requireMfa() denial as 403, not a silent empty 200', async () => {
+      vi.mocked(requireMfa).mockImplementationOnce(() => async (c: any, _next: any) =>
+        c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403));
+      mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+
+      const formData = new FormData();
+      formData.append('agentId', DEVICE_ID);
+      formData.append('binary', new File(['data'], 'agent.bin'));
+      const res = await app.request('/dev/push', {
+        method: 'POST', body: formData, headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+      expect(mockWriteAuditEvent).not.toHaveBeenCalled();
     });
   });
 });

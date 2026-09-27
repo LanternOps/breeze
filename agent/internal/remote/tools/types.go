@@ -193,6 +193,7 @@ const (
 	CmdHardwareProfile     = "hardware_profile"
 	CmdVMRestoreFromBackup = "vm_restore_from_backup"
 	CmdVMRestoreEstimate   = "vm_restore_estimate"
+	CmdVMInstantBoot       = "vm_instant_boot"
 	CmdBMRRecover          = "bmr_recover"
 	// CmdBareMetalRebuild (W05a) runs the rebuild engine on a Linux host
 	// against a server-minted recovery token (payload: recoveryId, token,

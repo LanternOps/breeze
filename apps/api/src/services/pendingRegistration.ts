@@ -50,10 +50,45 @@ function pendingKey(tokenHash: string): string {
   return `${PENDING_REG_PREFIX}${tokenHash}`;
 }
 
+const PENDING_REG_EMAIL_INDEX_PREFIX = 'pending-reg-email:';
+
+// Hashed (not the raw address) so a normalized email never appears in a Redis
+// key name — mirrors the token-hash-as-key pattern above.
+function pendingEmailIndexKey(normalizedEmail: string): string {
+  return `${PENDING_REG_EMAIL_INDEX_PREFIX}${sha256Hex(normalizedEmail)}`;
+}
+
 type RedisWithGetDel = NonNullable<ReturnType<typeof getRedis>> & {
   getdel?: (key: string) => Promise<string | null>;
   eval?: (script: string, keyCount: number, ...keys: string[]) => Promise<unknown>;
 };
+
+/**
+ * Atomically supersede any prior pending registration for the same email and
+ * park the new one, in ONE round trip: read the current email-index pointer,
+ * delete the token it points at (if any), then write the new token record
+ * and repoint the index — all inside a single Lua script so no other caller
+ * can observe or act on an intermediate state. A non-atomic GET → DEL →
+ * SETEX → SETEX sequence (four separate round trips) lets two concurrent
+ * calls for the same email each read "no previous token" before either
+ * writes the index, so neither ever deletes the other's record and both
+ * stay independently live — exactly the two-confirmable-records shape this
+ * supersession exists to prevent.
+ *
+ * KEYS[1] = email index key, KEYS[2] = new token's pending key.
+ * ARGV[1] = pending-key prefix (to rebuild the OLD token's key from the
+ *   index's bare hash), ARGV[2] = TTL seconds, ARGV[3] = new record JSON,
+ * ARGV[4] = new token hash.
+ */
+const SUPERSEDE_AND_STORE_SCRIPT = `
+local prevHash = redis.call('GET', KEYS[1])
+if prevHash then
+  redis.call('DEL', ARGV[1] .. prevHash)
+end
+redis.call('SETEX', KEYS[2], ARGV[2], ARGV[3])
+redis.call('SETEX', KEYS[1], ARGV[2], ARGV[4])
+return prevHash
+`;
 
 /**
  * Atomic GET+DEL — copies the same capability dance `routes/auth/password.ts`
@@ -99,14 +134,40 @@ export async function createPendingRegistration(
   // >=256 bits of entropy (32 random bytes) per the design.
   const rawToken = randomBytes(32).toString('base64url');
   const tokenHash = sha256Hex(rawToken);
+  const normalizedEmail = record.email.toLowerCase().trim();
 
   const stored: StoredPendingRegistration = {
     ...record,
+    email: normalizedEmail,
     createdAt: Date.now(),
     rawToken,
   };
 
-  await redis.setex(pendingKey(tokenHash), PENDING_REG_TTL_SECONDS, JSON.stringify(stored));
+  // Supersede any older pending registration for this SAME normalized email.
+  // Each new step-1 call invalidates every prior one: only the LATEST requester's password
+  // hash can ever be confirmed by a click — an earlier record can no longer
+  // be confirmed by a different, later clicker. Done as ONE atomic Lua script
+  // (see SUPERSEDE_AND_STORE_SCRIPT) so two concurrent calls for the same
+  // email can never both observe "no previous token" and leave two live
+  // records — if the previous token was already consumed or expired, the
+  // delete inside the script is a no-op.
+  const emailIndexKey = pendingEmailIndexKey(normalizedEmail);
+  const redisWithEval = redis as RedisWithGetDel;
+  if (typeof redisWithEval.eval !== 'function') {
+    throw new Error(
+      '[pending-registration] Redis client does not support atomic pending-registration supersession',
+    );
+  }
+  await redisWithEval.eval(
+    SUPERSEDE_AND_STORE_SCRIPT,
+    2,
+    emailIndexKey,
+    pendingKey(tokenHash),
+    PENDING_REG_PREFIX,
+    String(PENDING_REG_TTL_SECONDS),
+    JSON.stringify(stored),
+    tokenHash,
+  );
 
   return { rawToken, tokenHash };
 }
@@ -125,7 +186,12 @@ export async function consumePendingRegistration(
   const raw = await getDelAtomic(redis as RedisWithGetDel, pendingKey(tokenHash));
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PendingRegistration;
+    const parsed = JSON.parse(raw) as PendingRegistration;
+    // Hygiene only — the token record is already gone (GET+DEL above), so a
+    // stale email-index entry can only ever point at a dead key. Best-effort;
+    // never fails the confirmation.
+    await redis.del(pendingEmailIndexKey(parsed.email.toLowerCase().trim())).catch(() => undefined);
+    return parsed;
   } catch {
     return null;
   }

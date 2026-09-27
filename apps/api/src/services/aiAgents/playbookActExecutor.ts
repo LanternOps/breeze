@@ -132,7 +132,14 @@ export interface PlaybookExecutorDeps {
 const REAL_DEPS: PlaybookExecutorDeps = {
   revalidate: revalidateActExecution,
   executeToolFn: executeTool,
-  executeCommandFn: async (...args) => (await getCommandQueue()).executeCommandWithSystemPrecheck(...args),
+  // This read (`list_services`) does not go through `aiDispatch`, so it runs
+  // the same per-device remote-tools policy check itself before dispatching.
+  executeCommandFn: async (deviceId, type, payload, options) => {
+    const { checkAiRemoteToolsPolicy } = await import('../aiRemoteToolsPolicy');
+    const policy = await checkAiRemoteToolsPolicy(deviceId, type);
+    if (!policy.allowed) return { status: 'failed', error: policy.error };
+    return (await getCommandQueue()).executeCommandWithSystemPrecheck(deviceId, type, payload, options);
+  },
   sleepFn: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 

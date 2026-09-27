@@ -17,6 +17,7 @@ import { buildMonitorCommand } from '../services/monitorCommands';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert, createSourcedAlert } from '../services/alertService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { excludeQuickSupportOrgs } from '../services/quickSupportOrg';
 import {
   monitorQueueJobDataSchema,
   type MonitorQueueJobData,
@@ -657,7 +658,11 @@ export async function selectDueMonitorJobs(
       db
         .select({ id: organizations.id, partnerId: organizations.partnerId })
         .from(organizations)
-        .where(inArray(organizations.partnerId, partnerIds))
+        // Exclude the hidden per-partner 'quick_support' org: its devices are
+        // a stranger's own machine mid support session, not fleet the
+        // partner authored partner-wide network monitors against. Same
+        // exclusion as monitorScriptWorker.ts's partner-wide fan-out.
+        .where(and(inArray(organizations.partnerId, partnerIds), excludeQuickSupportOrgs()))
     );
     for (const row of rows) {
       if (!row.partnerId) continue;

@@ -9,7 +9,7 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -577,6 +577,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     quantity: z.number().optional(),
     partNumber: z.string().optional(),
     reason: z.string().optional(),
+    // Required (at the handler layer, via
+    // REQUIRED_PARAMS.decline) for the `decline` action only; optional here
+    // like every other action-specific field in this flat multiplexer schema.
+    method: z.enum(QUOTE_ACCEPT_ON_BEHALF_METHODS).optional(),
+    reference: z.string().trim().min(1).max(500).optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     block: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),

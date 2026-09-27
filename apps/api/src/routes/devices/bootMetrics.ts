@@ -5,6 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
 import {
   normalizeStartupItems,
   resolveStartupItem,
@@ -202,6 +203,13 @@ bootMetricsRoutes.post(
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
+      // A startup-item change is the same class as /system-tools
+      // and honours the per-device remote-tools policy like it does. After
+      // the tenant/site check, so another tenant's device reads as not found.
+      const remoteTools = await checkDeviceRemoteToolsPolicy(deviceId);
+      if (!remoteTools.allowed) {
+        return c.json({ error: remoteTools.reason, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
+      }
       if (device.status !== 'online') {
         return c.json({ error: `Device is not online (status: ${device.status})` }, 400);
       }
@@ -296,6 +304,13 @@ bootMetricsRoutes.post(
       }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
+      }
+      // A startup-item change is the same class as /system-tools
+      // and honours the per-device remote-tools policy like it does. After
+      // the tenant/site check, so another tenant's device reads as not found.
+      const remoteTools = await checkDeviceRemoteToolsPolicy(deviceId);
+      if (!remoteTools.allowed) {
+        return c.json({ error: remoteTools.reason, code: REMOTE_TOOLS_DISABLED_BY_POLICY }, 403);
       }
       if (device.status !== 'online') {
         return c.json({ error: `Device is not online (status: ${device.status})` }, 400);

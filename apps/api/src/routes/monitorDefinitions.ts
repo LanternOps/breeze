@@ -38,6 +38,7 @@ import {
 } from '../services/monitors/monitorAttachments';
 import { isMonitorAttachableToPolicy } from '../services/monitors/monitorAttachability';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
 import {
   listMonitorDeviceActivity,
@@ -165,6 +166,13 @@ monitorDefinitionRoutes.post(
   zValidator('json', createMonitorDefinitionSchema),
   async (c) => {
     const auth = c.get('auth');
+    // A monitor's responses compile verbatim into a managed automation that
+    // runs as SYSTEM on every device an attaching org-wide policy reaches —
+    // the same governance capability as every other org-wide config object,
+    // even though monitorService itself carries no site axis to narrow it.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     // The web client carries the selected org as an ambient `?orgId=` query,
     // not in the body. Partner tokens have auth.orgId === null, so without
     // this fallback every "This organization only" create 403s (cf. #808).
@@ -221,10 +229,19 @@ monitorDefinitionRoutes.get('/:id', requireScope('organization', 'partner', 'sys
     )
     .where(eq(configPolicyMonitors.monitorId, monitor.id));
 
+  // Same display-safe projection as the response/action fields on `monitor`
+  // itself: a policy-attachment override can carry the same MSP-authored
+  // action payload, so an org-scope caller viewing a partner-wide monitor
+  // gets the attachment's shape without its contents.
+  const visibleAttachments =
+    monitor.orgId === null && auth.scope === 'organization'
+      ? attachments.map((a) => ({ ...a, overrides: {} }))
+      : attachments;
+
   return c.json({
     data: {
       ...monitor,
-      attachments,
+      attachments: visibleAttachments,
       compiled: {
         alertTemplateId: monitor.compiledAlertTemplateId,
         alertRuleId: monitor.compiledAlertRuleId,
@@ -243,6 +260,9 @@ monitorDefinitionRoutes.patch(
   zValidator('json', updateMonitorDefinitionSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     try {
       const updated = await updateMonitorDefinition(c.req.param('id')!, c.req.valid('json'), auth);
       writeRouteAudit(c, {
@@ -269,6 +289,9 @@ monitorDefinitionRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const id = c.req.param('id')!;
     try {
       const existing = await getMonitorDefinition(id, auth);
@@ -315,6 +338,13 @@ monitorDefinitionRoutes.post(
   zValidator('json', attachSchema),
   async (c) => {
     const auth = c.get('auth');
+    // Attaching (including the createPolicyFor branch, which additionally
+    // gets its own site-scoped refusal below) changes what every device the
+    // policy reaches runs — same capability as every other org-wide
+    // governance write, so it takes the same check.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const monitor = await getMonitorDefinition(c.req.param('id')!, auth);
     if (!monitor) return c.json({ error: 'Monitor not found' }, 404);
     const body = c.req.valid('json');
@@ -457,6 +487,9 @@ monitorDefinitionRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const monitor = await getMonitorDefinition(c.req.param('id')!, auth);
     if (!monitor) return c.json({ error: 'Monitor not found' }, 404);
 

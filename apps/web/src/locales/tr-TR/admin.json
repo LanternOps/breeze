@@ -524,8 +524,8 @@
         "description": "Yapay zeka acil durdurma anahtarı, Breeze platform yöneticileri tarafından yönetilen platform genelinde bir kontroldür. Hesabınız bunu görüntüleyemez veya değiştiremez."
       },
       "status": {
-        "active": "Yapay zeka eylemleri etkin",
-        "killed": "Yapay zeka eylemleri durduruldu"
+        "active": "Denetimsiz yapay zeka eylemleri etkin",
+        "killed": "Denetimsiz yapay zeka eylemleri durduruldu"
       },
       "fields": {
         "epoch": "Epok",

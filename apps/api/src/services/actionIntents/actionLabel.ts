@@ -31,11 +31,65 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+/** `alice@acme.example` -> `acme.example`. Null for a value with no `@`-domain. */
+function emailDomain(value: string): string | null {
+  const at = value.lastIndexOf('@');
+  return at === -1 || at === value.length - 1 ? null : value.slice(at + 1).toLowerCase();
+}
+
+/**
+ * Mirrors aiGuardrails.ts's `externalDestinationFlag` (duplicated rather than
+ * imported — this module stays a light, dependency-free formatter).
+ * `sourceEmail` (the tool's own `userEmail`/`ownerEmail` argument) is used as
+ * a stand-in for the connected Google workspace's verified/primary domain:
+ * this fallback path has no connection lookup available (it runs outside any
+ * DB/org context), so it cannot confirm the source mailbox is actually on the
+ * workspace's real domain — a caller who fully controls the tool arguments
+ * controls both sides of this comparison. Display-only, and worded to reflect
+ * that: it flags a domain difference between the two supplied addresses, not
+ * a verified-external destination.
+ */
+function externalDestinationFlag(sourceEmail: string | null, destEmail: string | null): string {
+  if (!sourceEmail || !destEmail) return '';
+  const sourceDomain = emailDomain(sourceEmail);
+  const destDomain = emailDomain(destEmail);
+  if (!sourceDomain || !destDomain || sourceDomain === destDomain) return '';
+  return ' (different domain from source mailbox)';
+}
+
+/**
+ * The deferred human-fanout path (intentService.ts's runHumanFanout-from-
+ * timeout branch) never threads the guardrail's `reason`, so these
+ * mail/calendar tools relied entirely on the generic fallback below — which
+ * showed the bare tool name, with no destination, on the mobile
+ * takeover/push surface. Keyed by tool name so only these external-
+ * destination tools take this branch; every other tool's fallback is
+ * unchanged. `requiresField`, when set, must be strictly `true` in `input`
+ * before `dest` is shown — mirrors `google_disable_forwarding`'s own
+ * `removeAddress` gate in aiGuardrails.ts's `buildApprovalDescription`
+ * (a disable-without-`removeAddress` call has no destination to show).
+ */
+const GOOGLE_DESTINATION_FIELDS: Record<string, { source: string; dest: string; verb: string; requiresField?: string }> = {
+  google_set_forwarding: { source: 'userEmail', dest: 'forwardTo', verb: 'Forward mail to' },
+  google_add_mail_delegate: { source: 'userEmail', dest: 'delegateEmail', verb: 'Grant mail delegate access to' },
+  google_share_calendar: { source: 'ownerEmail', dest: 'shareWithEmail', verb: "Share calendar with" },
+  google_disable_forwarding: { source: 'userEmail', dest: 'forwardTo', verb: 'Remove forwarding address', requiresField: 'removeAddress' },
+};
+
 /**
  * Fallback when the guardrail produced no description: the tool name in
  * words plus the one or two arguments a human would actually recognise.
  */
 function fallbackLabel(toolName: string, input: Record<string, unknown>): string {
+  const googleDestination = GOOGLE_DESTINATION_FIELDS[toolName];
+  if (googleDestination && (!googleDestination.requiresField || input[googleDestination.requiresField] === true)) {
+    const source = str(input[googleDestination.source]);
+    const dest = str(input[googleDestination.dest]);
+    if (dest) {
+      return `${googleDestination.verb} ${dest}${externalDestinationFlag(source, dest)}`;
+    }
+  }
+
   const head = titleCaseWords(toolName);
   const detail = [
     str(input.action) ?? str(input.commandType),

@@ -204,6 +204,10 @@ export const heartbeatSchema = z.object({
   // Installed breeze-backup version, reported by the agent so
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
+  // Brokered storage-read protocol of the INSTALLED backup helper (the helper
+  // reports it via --protocol-info; the agent omits it when 0). Top-level, not
+  // part of securityCapabilities. Tolerant: anything malformed reads as absent.
+  backupReadProtocolVersion: z.number().int().optional().catch(undefined),
   rollbackComponentVersions: z.record(
     z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
     z.string().min(1).max(20),
@@ -356,6 +360,9 @@ export const heartbeatSchema = z.object({
     // route treats anything other than exactly 1 as "not capable".
     revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
     desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
+    // Consent/notification prompt capability. Same tolerant contract: a
+    // malformed value drops this field alone rather than rejecting the beat.
+    consentPromptProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),

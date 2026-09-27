@@ -32,6 +32,11 @@ var (
 	// writable directory RunBackup writes into (D23b). See
 	// mssql.ResolveRestoreTargetDir's doc comment.
 	resolveMSSQLRestoreTargetDir = mssql.ResolveRestoreTargetDir
+
+	// Hyper-V entry points, as seams so restore wiring is testable off
+	// Windows. The import seam is importHypervVM (exec_hyperv_preflight.go).
+	hypervRestoreAsVM = hyperv.RestoreAsVM
+	hypervInstantBoot = hyperv.InstantBoot
 )
 
 // --- MSSQL ---
@@ -384,11 +389,32 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 		return fail("failed to locate Hyper-V import root: " + err.Error())
 	}
 
-	result, err := importHypervVM(importRoot, p.VMName, p.GenerateNewID)
+	// Restores always import as a copy with a new VM ID so the restored VM can
+	// never collide with (or be mistaken for) the VM it was exported from.
+	if !p.GenerateNewID {
+		slog.Info("hyperv restore: generateNewId=false ignored; restores always import with a new VM ID",
+			"snapshotId", p.SnapshotID)
+	}
+	vmName := hypervRestoreVMName(p.VMName, manifest.VMName, time.Now())
+	result, err := importHypervVM(importRoot, vmName)
 	if result != nil && len(preflightWarnings) > 0 {
 		result.Warnings = append(preflightWarnings, result.Warnings...)
 	}
 	return marshalResult(result, err)
+}
+
+// hypervRestoreVMName returns the name the restored VM is created under: the
+// requested name, or "<source>-restored-<UTC timestamp>" so a restore without
+// an explicit name never reuses the name of the VM it was exported from.
+func hypervRestoreVMName(requested, source string, now time.Time) string {
+	if name := strings.TrimSpace(requested); name != "" {
+		return name
+	}
+	base := strings.TrimSpace(source)
+	if base == "" {
+		base = "vm"
+	}
+	return base + "-restored-" + now.UTC().Format("20060102T150405Z")
 }
 
 func execHypervCheckpoint(payload json.RawMessage) backupipc.BackupCommandResult {
@@ -492,6 +518,15 @@ func restoreHypervSnapshotFiles(provider providers.BackupProvider, manifest *hyp
 		return fmt.Errorf("manifest is required")
 	}
 	restoreRoot := filepath.Clean(restoreDir)
+	// Entries without a backup path are left out of the download plan; each
+	// still fails at its own Download below, as before.
+	keys := make([]string, 0, len(manifest.Files))
+	for _, file := range manifest.Files {
+		if file.BackupPath != "" {
+			keys = append(keys, file.BackupPath)
+		}
+	}
+	providers.PrepareDownloads(provider, keys)
 	for _, file := range manifest.Files {
 		relativePath := filepath.Clean(filepath.FromSlash(file.SourcePath))
 		targetPath := filepath.Join(restoreRoot, relativePath)
@@ -667,6 +702,9 @@ func newMssqlSnapshotID(instance, database string) string {
 // see that function's doc comment for why the download destination isn't a
 // process-local staging directory (D23b).
 func resolveMSSQLBackupArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string) (string, func(), error) {
+	if isBrokeredProvider(provider) {
+		return resolveBrokeredMSSQLArtifact(instance, provider, snapshotID, backupFile)
+	}
 	if snapshotID != "" {
 		return stageMSSQLSnapshotArtifact(instance, provider, snapshotID)
 	}
@@ -797,10 +835,10 @@ func execVMRestoreFromBackup(parentCtx context.Context, payload json.RawMessage,
 		SwitchName: p.SwitchName,
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Hour)
+	ctx, cancel := context.WithTimeout(parentCtx, backupipc.VMRestoreFromBackupRunBudget)
 	defer cancel()
 
-	result, err := hyperv.RestoreAsVM(ctx, cfg, mgr.GetProvider(), nil)
+	result, err := hypervRestoreAsVM(ctx, cfg, mgr.GetProvider(), nil)
 	return marshalResult(result, err)
 }
 
@@ -826,10 +864,10 @@ func execInstantBoot(parentCtx context.Context, payload json.RawMessage, mgr *ba
 		WorkDir:    p.WorkDir,
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(parentCtx, backupipc.VMInstantBootRunBudget)
 	defer cancel()
 
-	result, err := hyperv.InstantBoot(ctx, cfg, mgr.GetProvider(), nil)
+	result, err := hypervInstantBoot(ctx, cfg, mgr.GetProvider(), nil)
 	return marshalResult(result, err)
 }
 

@@ -41,6 +41,7 @@ vi.mock('./commandQueue', () => ({
     BMR_RECOVER: 'bmr_recover',
   },
   queueCommandForExecution: vi.fn(),
+  queueCommandForExecutionWithSystemPrecheck: vi.fn(),
 }));
 
 vi.mock('../jobs/drExecutionWorker', () => ({
@@ -53,6 +54,7 @@ const bmrMocks = vi.hoisted(() => ({
   mintRecoveryTokenForRecovery: vi.fn(),
   cancelBareMetalRecovery: vi.fn(),
   queueBareMetalRebuild: vi.fn(),
+  queueBareMetalRebuildWithSystemPrecheck: vi.fn(),
   resolveLatestRestorableSnapshotId: vi.fn(),
   createAuditLogAsync: vi.fn(async () => undefined),
 }));
@@ -70,6 +72,7 @@ vi.mock('./bareMetalRecoveryService', () => ({
 }));
 vi.mock('./bareMetalRebuildCommand', () => ({
   queueBareMetalRebuild: bmrMocks.queueBareMetalRebuild,
+  queueBareMetalRebuildWithSystemPrecheck: bmrMocks.queueBareMetalRebuildWithSystemPrecheck,
 }));
 vi.mock('./drBareMetalRebuildStep', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./drBareMetalRebuildStep')>()),
@@ -80,13 +83,14 @@ vi.mock('./auditService', () => ({
 }));
 
 import { db } from '../db';
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { enqueueDrExecutionReconcile } from '../jobs/drExecutionWorker';
 import { BareMetalRecoveryError } from './bareMetalRecoveryService';
 import {
   classifyDrExecutionAuthorizationError,
   computeGroupResults,
   createDrExecutionAndEnqueue,
+  dispatchDrPendingWork,
   dispatchGroup,
   DrRecoveryAuthorizationDeniedError,
   reconcileDrExecution,
@@ -111,6 +115,7 @@ function createQueryChain(rows: any[] = []) {
   chain.where = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(() => chain);
+  chain.innerJoin = vi.fn(() => chain);
   chain.then = (resolve: (value: any[]) => unknown, reject?: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
   return chain;
@@ -341,7 +346,15 @@ describe('drExecutionService', () => {
     expect(enqueueDrExecutionReconcile).toHaveBeenCalledWith(EXECUTION_ID);
   });
 
-  it('dispatches the next pending group when reconciling a new execution', async () => {
+  // #242 hardening: reconcileDrExecution runs inside ONE ambient
+  // withSystemDbAccessContext (drExecutionWorker.ts). It must only RECORD
+  // which devices need a command this tick — the actual agent-socket
+  // dispatch must never run from inside that transaction (that shape held
+  // two pooled connections at once and produced #2417/#6671). This test is
+  // the direct proof of the fix: it asserts dispatch does NOT happen during
+  // the tick, only after it — see 'dispatches nothing before commit' below
+  // and dispatchDrPendingWork's own suite for the post-commit half.
+  it('records the intended dispatch without calling any dispatch function during the tick', async () => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([{
         id: EXECUTION_ID,
@@ -360,34 +373,55 @@ describe('drExecutionService', () => {
         id: '77777777-7777-7777-7777-777777777777',
         snapshotId: 'snap-1',
       }]) as any);
-    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
-      command: {
-        id: 'cmd-1',
-        status: 'sent',
-      },
-    } as any);
     vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([{
       id: EXECUTION_ID,
       status: 'running',
     }]) as any);
 
-    const execution = await reconcileDrExecution(EXECUTION_ID);
+    const outcome = await reconcileDrExecution(EXECUTION_ID);
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
-      DEVICE_ID,
-      'vm_restore_from_backup',
+    // The load-bearing assertion: no dispatch call happens inside the tick.
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(outcome.pending).toEqual([
       expect.objectContaining({
-        drExecutionId: EXECUTION_ID,
-        drPlanId: PLAN_ID,
-        drGroupId: GROUP_ID,
+        kind: 'command',
+        deviceId: DEVICE_ID,
+        commandType: 'vm_restore_from_backup',
+        groupId: GROUP_ID,
+        userId: 'user-1',
+        expectedOrgId: ORG_ID,
+        payload: expect.objectContaining({
+          drExecutionId: EXECUTION_ID,
+          drPlanId: PLAN_ID,
+          drGroupId: GROUP_ID,
+        }),
       }),
-      // expectedOrgId threads the plan's org through to commandQueue's
-      // cross-tenant guard so a foreign device id in devices[] is refused.
-      { userId: 'user-1', expectedOrgId: ORG_ID }
-    );
-    expect(execution.execution?.status).toBe('running');
-    expect(execution?.nextDelayMs).toBe(2000);
+    ]);
+    expect(outcome.execution?.status).toBe('running');
+    expect(outcome?.nextDelayMs).toBe(2000);
     expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
+  });
+
+  it('dispatches nothing when the tick\'s plan never committed (lost CAS race)', async () => {
+    const pendingExecution = {
+      id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
+      status: 'pending', startedAt: new Date('2026-03-30T00:00:00.000Z'), completedAt: null,
+      initiatedBy: 'user-1', results: null, createdAt: new Date('2026-03-30T00:00:00.000Z'),
+    };
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([pendingExecution]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{
+        id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1',
+      }]) as any)
+      .mockImplementationOnce(() => createQueryChain([{ ...pendingExecution, status: 'aborted', completedAt: new Date() }]) as any);
+    // Zero rows updated: another writer terminalised the row first.
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+
+    const outcome = await reconcileDrExecution(EXECUTION_ID);
+
+    expect(outcome.pending).toEqual([]);
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   // #6322: the opening `SELECT ... FOR UPDATE` sat outside db.transaction(),
@@ -420,7 +454,7 @@ describe('drExecutionService', () => {
       }]) as any)
       // The compare-and-swap matched nothing, so reconcile re-reads the row.
       .mockImplementationOnce(() => createQueryChain([{ ...pending, status: 'aborted', completedAt: new Date() }]) as any);
-    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } } as any);
+    vi.mocked(queueCommandForExecutionWithSystemPrecheck).mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } } as any);
     // Zero rows updated: the guarded UPDATE found the row already terminal.
     vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
 
@@ -469,7 +503,7 @@ describe('drExecutionService', () => {
 
     const outcome = await reconcileDrExecution(EXECUTION_ID);
 
-    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
     expect(outcome.execution?.status).toBe('failed');
     expect(outcome.execution?.authorizationState).toBe('denied');
     expect(outcome.nextDelayMs).toBeNull();
@@ -558,10 +592,11 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
   });
 
   it('failover: one recovery per device with identity original, no device command, audited', async () => {
-    const results = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+    const { results, pending } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
 
     expect(queueCommandForExecution).not.toHaveBeenCalled();
     expect(bmrMocks.queueBareMetalRebuild).not.toHaveBeenCalled();
+    expect(bmrMocks.queueBareMetalRebuildWithSystemPrecheck).not.toHaveBeenCalled();
     expect(bmrMocks.mintRecoveryTokenForRecovery).not.toHaveBeenCalled();
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledWith(expect.objectContaining({
@@ -575,6 +610,9 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     expect(results.queuedCommands).toEqual([]);
     expect(results.failedDispatches).toEqual([]);
     expect(results.dispatchStatus).toBe('running');
+    // No device command is ever needed for failover/failback, so there is
+    // nothing to defer past the tick's commit.
+    expect(pending).toEqual([]);
     expect(bmrMocks.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'dr.step.bare_metal_rebuild.dispatch',
       orgId: ORG_ID,
@@ -590,38 +628,43 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledWith(expect.objectContaining({ identity: 'original' }));
   });
 
-  it('rehearsal: identity new on the host, one token + one bare_metal_rebuild per device to the HOST, commandId recorded', async () => {
-    const results = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+  // #242 hardening: the recovery row and its one-time token are plain DB
+  // writes, so they stay inside the tick (createBareMetalRecovery/
+  // mintRecoveryTokenForRecovery ARE called). The actual `bare_metal_rebuild`
+  // socket send must NOT happen here — it is deferred to dispatchDrPendingWork,
+  // run after the tick commits. queuedRecoveries is therefore empty; the two
+  // devices show up in `pending` instead.
+  it('rehearsal: creates the recovery + mints the token, but defers the device dispatch past commit', async () => {
+    const { results, pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
 
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
     for (const call of bmrMocks.createBareMetalRecovery.mock.calls) {
       expect(call[0]).toMatchObject({ identity: 'new', executingDeviceId: HOST_ID, source: 'dr' });
     }
     expect(bmrMocks.mintRecoveryTokenForRecovery).toHaveBeenCalledTimes(2);
-    expect(bmrMocks.queueBareMetalRebuild).toHaveBeenCalledTimes(2);
-    expect(bmrMocks.queueBareMetalRebuild).toHaveBeenCalledWith({
-      orgId: ORG_ID,
-      hostDeviceId: HOST_ID,
-      userId: 'user-1',
-      payload: {
-        recoveryId: REC_1,
-        token: `tok-${REC_1}`,
-        server: 'https://breeze.example.test',
-        target: { kind: 'vhdx', path: `/srv/rebuild/out/${DEVICE_ID}-${REC_1}.vhdx` },
-        identity: 'new',
-      },
-    });
+    expect(bmrMocks.queueBareMetalRebuild).not.toHaveBeenCalled();
+    expect(bmrMocks.queueBareMetalRebuildWithSystemPrecheck).not.toHaveBeenCalled();
     expect(queueCommandForExecution).not.toHaveBeenCalled();
-    expect(results.queuedRecoveries).toEqual([
-      expect.objectContaining({ deviceId: DEVICE_ID, recoveryId: REC_1, executingDeviceId: HOST_ID, commandId: `cmd-${REC_1}` }),
-      expect.objectContaining({ deviceId: DEVICE_2, recoveryId: REC_2, executingDeviceId: HOST_ID, commandId: `cmd-${REC_2}` }),
-    ]);
-    // The rehearsal command is NOT a DR command entry: results fold from the recovery row.
+
+    expect(results.queuedRecoveries).toEqual([]);
     expect(results.queuedCommands).toEqual([]);
+    expect(pending).toEqual([
+      expect.objectContaining({
+        kind: 'bare_metal_rebuild', deviceId: DEVICE_ID, recoveryId: REC_1, hostDeviceId: HOST_ID, orgId: ORG_ID, userId: 'user-1',
+        payload: {
+          recoveryId: REC_1,
+          token: `tok-${REC_1}`,
+          server: 'https://breeze.example.test',
+          target: { kind: 'vhdx', path: `/srv/rebuild/out/${DEVICE_ID}-${REC_1}.vhdx` },
+          identity: 'new',
+        },
+      }),
+      expect.objectContaining({ kind: 'bare_metal_rebuild', deviceId: DEVICE_2, recoveryId: REC_2, hostDeviceId: HOST_ID }),
+    ]);
   });
 
   it('rehearsal without a rebuild host fails the group with rebuild_host_required and creates nothing', async () => {
-    const results = await dispatchGroup(execution('rehearsal'), bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD' } }) as any, initialResults());
+    const { results } = await dispatchGroup(execution('rehearsal'), bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD' } }) as any, initialResults());
 
     expect(bmrMocks.createBareMetalRecovery).not.toHaveBeenCalled();
     expect(results.failedDispatches).toEqual([
@@ -632,36 +675,70 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
 
   it('rehearsal with no server URL configured fails dispatch cleanly before creating a recovery', async () => {
     delete process.env.PUBLIC_API_URL;
-    const results = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+    const { results } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
 
     expect(bmrMocks.createBareMetalRecovery).not.toHaveBeenCalled();
     expect(results.failedDispatches[0]?.error).toBe('server_url_unset');
     expect(results.dispatchStatus).toBe('failed');
   });
 
-  it('rehearsal: a queue failure cancels the recovery (frees the per-device slot) and records the dispatch failure', async () => {
-    bmrMocks.queueBareMetalRebuild
-      .mockResolvedValueOnce({ command: { id: `cmd-${REC_1}`, status: 'sent' }, error: null })
-      .mockResolvedValueOnce({ command: null, error: 'Device is offline, cannot execute command' });
+  // Post-commit half of the rehearsal flow: dispatchDrPendingWork actually
+  // sends the command and records the outcome. A dispatch failure must still
+  // free the per-device recovery slot, exactly as the pre-#242 in-transaction
+  // code did — just running after the tick has committed instead of inside it.
+  describe('dispatchDrPendingWork (post-commit half)', () => {
+    function mockDrResultsUpdate(setSpy?: (payload: any) => void) {
+      vi.mocked(db.update).mockImplementation(() => ({
+        set: (payload: any) => {
+          setSpy?.(payload);
+          return { where: vi.fn().mockResolvedValue(undefined) };
+        },
+      }) as any);
+    }
 
-    const results = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+    it('rehearsal: a queue failure cancels the recovery (frees the per-device slot) and records the dispatch failure', async () => {
+      const { pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+      bmrMocks.queueBareMetalRebuildWithSystemPrecheck
+        .mockResolvedValueOnce({ command: { id: `cmd-${REC_1}`, status: 'sent' }, error: null })
+        .mockResolvedValueOnce({ command: null, error: 'Device is offline, cannot execute command' });
+      vi.mocked(db.select).mockImplementation(() => createQueryChain([{ id: EXECUTION_ID, results: { queuedRecoveries: [], failedDispatches: [], queuedCommands: [] } }]) as any);
+      const setCalls: any[] = [];
+      mockDrResultsUpdate((payload) => setCalls.push(payload));
 
-    expect(bmrMocks.cancelBareMetalRecovery).toHaveBeenCalledWith(expect.objectContaining({ recoveryId: REC_2, orgId: ORG_ID }));
-    expect(results.queuedRecoveries.map((r) => r.recoveryId)).toEqual([REC_1]);
-    expect(results.failedDispatches).toEqual([
-      expect.objectContaining({ deviceId: DEVICE_2, error: 'Device is offline, cannot execute command' }),
-    ]);
-    expect(results.dispatchStatus).toBe('partial');
+      await dispatchDrPendingWork(EXECUTION_ID, pending);
+
+      expect(bmrMocks.queueBareMetalRebuildWithSystemPrecheck).toHaveBeenCalledTimes(2);
+      expect(bmrMocks.cancelBareMetalRecovery).toHaveBeenCalledWith(expect.objectContaining({ recoveryId: REC_2, orgId: ORG_ID }));
+      // First call (success) writes a queuedRecoveries entry; second (failure) writes failedDispatches.
+      expect(setCalls.length).toBeGreaterThanOrEqual(2);
+      expect(setCalls.some((c) => c.results.queuedRecoveries?.some((r: any) => r.recoveryId === REC_1))).toBe(true);
+      expect(setCalls.some((c) => c.results.failedDispatches?.some((f: any) => f.deviceId === DEVICE_2))).toBe(true);
+    });
+
+    it('a successful rehearsal dispatch records commandId on the recovery, not a failedDispatches entry', async () => {
+      const { pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+      bmrMocks.queueBareMetalRebuildWithSystemPrecheck.mockResolvedValue({ command: { id: 'cmd-x', status: 'sent' }, error: null });
+      vi.mocked(db.select).mockImplementation(() => createQueryChain([{ id: EXECUTION_ID, results: { queuedRecoveries: [], failedDispatches: [], queuedCommands: [] } }]) as any);
+      const setCalls: any[] = [];
+      mockDrResultsUpdate((payload) => setCalls.push(payload));
+
+      await dispatchDrPendingWork(EXECUTION_ID, pending);
+
+      expect(bmrMocks.cancelBareMetalRecovery).not.toHaveBeenCalled();
+      const anyQueuedRecovery = setCalls.some((c) => Array.isArray(c.results.queuedRecoveries) && c.results.queuedRecoveries.some((q: any) => q.commandId === 'cmd-x'));
+      expect(anyQueuedRecovery).toBe(true);
+      expect(setCalls.some((c) => c.results.failedDispatches?.length > 0)).toBe(false);
+    });
   });
 
   it('dispatching again with the same results creates nothing (dedupe on queuedRecoveries by group+device)', async () => {
     const first = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
 
-    const second = await dispatchGroup(execution('failover'), bmrGroup() as any, first);
+    const second = await dispatchGroup(execution('failover'), bmrGroup() as any, first.results);
 
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
-    expect(second.queuedRecoveries).toHaveLength(2);
+    expect(second.results.queuedRecoveries).toHaveLength(2);
   });
 
   it('a recovery_in_progress service error becomes a failedDispatches entry, not a throw', async () => {
@@ -670,7 +747,7 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
       .mockResolvedValueOnce({ row: recoveryRow(REC_1, DEVICE_ID, 'created'), code: 'AAA-BBB-CCC' })
       .mockRejectedValueOnce(new BareMetalRecoveryError('recovery_in_progress', 409, { recoveryId: 'other' }));
 
-    const results = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+    const { results } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
 
     expect(results.queuedRecoveries.map((r) => r.deviceId)).toEqual([DEVICE_ID]);
     expect(results.failedDispatches).toEqual([
@@ -682,7 +759,7 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
   it('a device with no restorable snapshot at dispatch time is a failedDispatches entry', async () => {
     bmrMocks.resolveLatestRestorableSnapshotId.mockImplementation(async (_o: string, d: string) => (d === DEVICE_ID ? SNAP_1 : null));
 
-    const results = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+    const { results } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
 
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(1);
     expect(results.failedDispatches).toEqual([
@@ -895,5 +972,118 @@ describe('classifyDrExecutionAuthorizationError', () => {
     expect(classifyDrExecutionAuthorizationError(new Error('redis is on fire'))).toBeNull();
     expect(classifyDrExecutionAuthorizationError('nope')).toBeNull();
     expect(classifyDrExecutionAuthorizationError(undefined)).toBeNull();
+  });
+});
+
+describe('DR command steps and stored credentials', () => {
+  const CONFIG_ID = '88888888-8888-4888-8888-888888888888';
+  const SNAPSHOT_ROW_ID = '77777777-7777-4777-8777-777777777777';
+
+  function execution() {
+    return {
+      id: EXECUTION_ID,
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      executionType: 'failover',
+      status: 'running',
+      startedAt: new Date(),
+      completedAt: null,
+      initiatedBy: 'user-1',
+      results: null,
+      createdAt: new Date(),
+    } as any;
+  }
+
+  function initialResults(): DrExecutionResults {
+    return {
+      dispatchStatus: 'queued', queuedAt: new Date().toISOString(), groupCount: 1, deviceCount: 1,
+      plannedGroups: [], queuedCommands: [], queuedRecoveries: [], failedDispatches: [], groupResults: [],
+      activeGroupId: null, haltReason: null,
+    };
+  }
+
+  function group(commandType: string, payload: Record<string, unknown>) {
+    return { ...groupRow(), restoreConfig: { commandType, payload } } as any;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('dispatches a provider-backed restore step with a destination reference resolved from its snapshot', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([{
+      id: SNAPSHOT_ROW_ID,
+      snapshotId: 'provider-snap-1',
+      configId: CONFIG_ID,
+      provider: 's3',
+    }]) as any);
+
+    const { results, pending } = await dispatchGroup(
+      execution(),
+      group('hyperv_restore', {
+        snapshotId: 'provider-snap-1',
+        vmName: 'Recovered VM',
+        provider: 'local',
+        providerConfig: { accessKey: 'AKIA-SYNTHETIC', secretKey: 'synthetic-secret-value' },
+        providerConfigRef: { configId: '99999999-9999-4999-8999-999999999999', orgId: ORG_ID },
+        password: 'synthetic-password',
+      }),
+      initialResults(),
+    );
+
+    expect(results.failedDispatches).toEqual([]);
+    // dispatchGroup only records pending work; the agent dispatch happens
+    // post-commit (dispatchDrPendingWork) with this exact payload.
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(1);
+    const payload = (pending[0] as { payload: Record<string, unknown> }).payload;
+    expect(payload).toMatchObject({
+      drExecutionId: EXECUTION_ID,
+      snapshotId: 'provider-snap-1',
+      vmName: 'Recovered VM',
+      provider: 's3',
+      providerConfigRef: { configId: CONFIG_ID, orgId: ORG_ID },
+    });
+    expect(payload).not.toHaveProperty('providerConfig');
+    expect(payload).not.toHaveProperty('password');
+    expect(JSON.stringify(payload)).not.toContain('synthetic');
+  });
+
+  it('fails the device dispatch when the step snapshot has no resolvable destination', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([]) as any);
+
+    const { results, pending } = await dispatchGroup(
+      execution(),
+      group('mssql_restore', { snapshotId: 'provider-snap-missing', backupFileName: 'db.bak' }),
+      initialResults(),
+    );
+
+    expect(pending).toEqual([]);
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(results.dispatchStatus).toBe('failed');
+    expect(results.failedDispatches).toEqual([
+      expect.objectContaining({ groupId: GROUP_ID, deviceId: DEVICE_ID, commandType: 'mssql_restore' }),
+    ]);
+  });
+
+  it('strips credential-shaped keys from other step payloads without a destination lookup', async () => {
+    const { pending } = await dispatchGroup(
+      execution(),
+      group('vm_restore_from_backup', {
+        snapshotId: 'snap-1',
+        vmName: 'VM',
+        providerConfig: { secretKey: 'synthetic-secret-value' },
+        apiKey: 'synthetic-api-key',
+      }),
+      initialResults(),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(1);
+    const payload = (pending[0] as { payload: Record<string, unknown> }).payload;
+    expect(payload).toMatchObject({ snapshotId: 'snap-1', vmName: 'VM' });
+    expect(payload).not.toHaveProperty('providerConfig');
+    expect(payload).not.toHaveProperty('apiKey');
   });
 });

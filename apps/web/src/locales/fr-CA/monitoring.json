@@ -297,7 +297,8 @@
   },
   "backupChecks": {
     "no_successful_backup": "Aucune sauvegarde réussie",
-    "consecutive_failures": "Défaillances consécutives"
+    "consecutive_failures": "Défaillances consécutives",
+    "completed_with_errors": "Terminée avec des erreurs de fichiers"
   },
   "checkTypes": {
     "icmp_ping": "Ping ICMP",
@@ -438,9 +439,9 @@
       "review": "Examiner",
       "convertEverything": "Tout convertir…",
       "confirmTitle": "Convertir toutes les règles héritées, surveillances et automatisations déclenchées par alerte de toutes vos politiques ?",
-      "confirmBody": "{{rows}} dans {{policies}} de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent à examiner ou retirer manuellement en W05c ; W05d convertit les restantes et retire celles non convertibles.",
+      "confirmBody": "{{rows}} dans {{policies}} de tout le partenaire. Les lignes converties sont retirées sur place. Les autres restent maintenant à examiner ou retirer manuellement; une future version convertit les restantes et retire celles non convertibles.",
       "confirmRun": "Tout convertir",
-      "convertedAll": "{{converted}} lignes converties dans {{policies}} politiques ; {{unconvertible}} n'ont pas pu l'être.",
+      "convertedAll": "{{rows}} converties dans {{policies}} ; {{unconvertible}} n'ont pas pu l'être.",
       "errors": {
         "convertAll": "Échec de la conversion globale"
       }
@@ -511,7 +512,7 @@
       "empty": "Aucun historique de conversion.",
       "system": "Système",
       "reverted": "Annulée",
-      "deadline": "L'annulation est indisponible après la suppression du moteur source par W05d."
+      "deadline": "L'annulation est indisponible après la suppression du moteur source par le retrait des alertes héritées."
     },
     "errorCodes": {
       "preview_stale": "La politique a changé depuis cet aperçu. Générez un nouvel aperçu avant de convertir.",

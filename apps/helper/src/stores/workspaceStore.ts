@@ -111,7 +111,11 @@ export interface WorkspaceFilters {
  * requires), kind becomes ext (the wire field name), everything else passes
  * through unchanged. Insertion order matches the filters' declared order.
  */
-export function buildSearchParams(q: string, filters: WorkspaceFilters = {}): URLSearchParams {
+export function buildSearchParams(
+  q: string,
+  filters: WorkspaceFilters = {},
+  helperUser?: string | null,
+): URLSearchParams {
   const params = new URLSearchParams({ q });
   if (filters.sourceId) params.set('sourceId', filters.sourceId);
   if (filters.kind) params.set('ext', filters.kind);
@@ -119,6 +123,10 @@ export function buildSearchParams(q: string, filters: WorkspaceFilters = {}): UR
   if (filters.docType) params.set('docType', filters.docType);
   if (filters.dateFrom) params.set('modifiedAfter', new Date(filters.dateFrom).toISOString());
   if (filters.dateTo) params.set('modifiedBefore', new Date(filters.dateTo).toISOString());
+  // Required server-side to see any local_profile result (see
+  // ee/workspace/src/services/fileQueryService.ts SearchFilters.ownerUsername)
+  // — without it local_profile sources simply return no rows.
+  if (helperUser) params.set('helperUser', helperUser);
   return params;
 }
 
@@ -133,10 +141,13 @@ export function buildBrowseParams(
   sourceId: string,
   parentPath: string,
   filters: WorkspaceFilters = {},
+  helperUser?: string | null,
 ): URLSearchParams {
   const params = new URLSearchParams({ sourceId, parentPath });
   if (filters.project) params.set('project', filters.project);
   if (filters.docType) params.set('docType', filters.docType);
+  // See buildSearchParams — required to browse into any local_profile source.
+  if (helperUser) params.set('helperUser', helperUser);
   return params;
 }
 
@@ -164,16 +175,16 @@ interface WorkspaceState {
   filters: WorkspaceFilters;
 
   probe: () => Promise<void>;
-  search: (q: string, filters?: WorkspaceFilters) => Promise<void>;
-  browse: (sourceId: string, parentPath: string) => Promise<void>;
+  search: (q: string, filters?: WorkspaceFilters, helperUser?: string | null) => Promise<void>;
+  browse: (sourceId: string, parentPath: string, helperUser?: string | null) => Promise<void>;
   loadRecents: (helperUser: string | null) => Promise<void>;
   recordActivity: (
     fileIndexId: string,
     action: ActivityAction,
     helperUser: string | null,
   ) => Promise<void>;
-  loadFilings: () => Promise<void>;
-  classifyEmail: (fileIndexId: string) => Promise<void>;
+  loadFilings: (helperUser: string | null) => Promise<void>;
+  classifyEmail: (fileIndexId: string, helperUser: string | null) => Promise<void>;
   assignFiling: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
   /** Drag-to-project filing (ProjectRail drop). Same code path as assignFiling. */
   fileByDrop: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
@@ -269,11 +280,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  search: async (q, filters) => {
+  search: async (q, filters, helperUser) => {
     const config = agentConfig();
     if (!config) return;
 
-    const params = buildSearchParams(q, filters);
+    const params = buildSearchParams(q, filters, helperUser);
 
     set({ loading: true, error: null });
 
@@ -297,7 +308,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  browse: async (sourceId, parentPath) => {
+  browse: async (sourceId, parentPath, helperUser) => {
     const config = agentConfig();
     if (!config) return;
 
@@ -305,7 +316,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // chips write to) — the Browse tab's own chips write to the identical
     // slice, so reading it here means callers never need to thread filters
     // through every browse() call site (rail clicks, breadcrumbs, drill-down).
-    const params = buildBrowseParams(sourceId, parentPath, get().filters);
+    const params = buildBrowseParams(sourceId, parentPath, get().filters, helperUser);
 
     set({ loading: true, error: null });
 
@@ -385,13 +396,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  loadFilings: async () => {
+  loadFilings: async (helperUser) => {
     const config = agentConfig();
     if (!config) return;
+    const params = new URLSearchParams();
+    if (helperUser) params.set('helperUser', helperUser);
     set({ loading: true, error: null });
     try {
       const [filingRes, projectsRes] = await Promise.all([
-        helperRequest(config, workspaceUrl(config, '/filing'), { method: 'GET' }),
+        helperRequest(config, workspaceUrl(config, '/filing', params), { method: 'GET' }),
         helperRequest(config, workspaceUrl(config, '/content/projects'), { method: 'GET' }),
       ]);
       if (!filingRes.ok) {
@@ -415,7 +428,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  classifyEmail: async (fileIndexId) => {
+  classifyEmail: async (fileIndexId, helperUser) => {
     const config = agentConfig();
     if (!config) return;
     set({ filingBusy: fileIndexId, error: null });
@@ -423,7 +436,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const res = await helperRequest(config, workspaceUrl(config, '/filing/classify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileIndexId }),
+        body: JSON.stringify({ fileIndexId, ...(helperUser ? { helperUser } : {}) }),
       });
       if (!res.ok) {
         set({ filingBusy: null, error: parseErrorBody(res.body, "Couldn't sort this email.") });

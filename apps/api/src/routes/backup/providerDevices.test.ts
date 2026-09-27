@@ -2,17 +2,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 
-const { authState, gates, dbState } = vi.hoisted(() => ({
+const { authState, gates, dbState, permsState } = vi.hoisted(() => ({
   authState: {
     scope: 'partner' as 'organization' | 'partner' | 'system',
     orgId: null as string | null,
     partnerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as string | null,
     accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
   },
-  gates: { permission: false },
+  gates: { permission: false, mfa: false },
+  permsState: { value: { allowedSiteIds: undefined as string[] | undefined } as Record<string, unknown> },
   dbState: {
     rows: [] as Array<Record<string, unknown>>,
     device: null as null | Record<string, unknown>,
+    // Keyed by device id — devices-table selects (previous device, new
+    // device) resolve to whichever fixture matches the id actually bound
+    // into the where() condition, since the route now looks up TWO distinct
+    // devices in the same shape ({id, siteId}). Falls back to `device` above
+    // when a test hasn't populated this map (keeps older tests unchanged).
+    devicesById: {} as Record<string, Record<string, unknown> | null>,
+    /** Org-wide devices list — only consulted by the GET /devices site-ceiling resolution. */
+    orgDevices: [] as Array<{ id: string; siteId: string | null }>,
     providerRow: null as null | Record<string, unknown>,
     updated: [] as Array<Record<string, unknown>>,
     orgConditions: [] as unknown[],
@@ -35,16 +44,51 @@ function referencesColumn(node: unknown, marker: string): boolean {
   return false;
 }
 
+/**
+ * The bound id in an `eq(devices.id, <id>)` condition. The mocked schema uses
+ * plain strings for columns (not real drizzle Column instances), so drizzle's
+ * `eq()` never wraps the value in an `encoder`-carrying Param — it inlines the
+ * raw value into a queryChunks StringChunk instead (confirmed against
+ * drizzle-orm 0.45.2). Render the condition's text and pull out the UUID.
+ */
+function flattenText(node: unknown): string {
+  if (Array.isArray(node)) return node.map(flattenText).join('');
+  if (node == null) return '';
+  if (typeof node !== 'object') return String(node);
+  const c = node as { queryChunks?: unknown[]; value?: unknown };
+  if (Array.isArray(c.queryChunks)) return c.queryChunks.map(flattenText).join('');
+  if (Array.isArray(c.value)) return (c.value as unknown[]).map(String).join('');
+  return '';
+}
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function boundId(node: unknown): string | undefined {
+  return flattenText(node).match(UUID_RE)?.[0];
+}
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn((cols?: Record<string, unknown>) => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () =>
-            cols && 'hostname' in cols ? (dbState.device ? [dbState.device] : [])
-            : (dbState.providerRow ? [dbState.providerRow] : [])),
-          orderBy: vi.fn(async () => dbState.rows),
-        })),
+        where: vi.fn((cond: unknown) => {
+          // Single-device lookup by id (previous device / new device — always
+          // chains .limit(1)): resolve from devicesById, falling back to the
+          // single `device` fixture so pre-existing tests need no changes.
+          const singleDeviceRows = () => {
+            const id = boundId(cond);
+            if (typeof id === 'string' && id in dbState.devicesById) {
+              const found = dbState.devicesById[id];
+              return found ? [found] : [];
+            }
+            return dbState.device ? [dbState.device] : [];
+          };
+          return {
+            limit: vi.fn(async () => (cols && 'siteId' in cols ? singleDeviceRows() : (dbState.providerRow ? [dbState.providerRow] : []))),
+            orderBy: vi.fn(async () => dbState.rows),
+            // The site-ceiling org-wide devices list (no .limit()/.orderBy()
+            // chained — the route just `await`s the query directly).
+            then: (resolve: (v: unknown) => unknown) => Promise.resolve(dbState.orgDevices).then(resolve),
+          };
+        }),
         leftJoin: vi.fn(() => ({
           where: vi.fn((cond: unknown) => {
             dbState.capturedListWhere.push(cond);
@@ -105,6 +149,8 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) =>
     gates.permission ? c.json({ error: 'Forbidden' }, 403) : next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) =>
+    gates.mfa ? c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403) : next()),
 }));
 
 vi.mock('../../services/permissions', () => ({
@@ -112,6 +158,10 @@ vi.mock('../../services/permissions', () => ({
     BACKUP_READ: { resource: 'backup', action: 'read' },
     BACKUP_WRITE: { resource: 'backup', action: 'write' },
   },
+  // Faithful to the real implementation: unrestricted (no allowedSiteIds)
+  // always passes; otherwise the site must be in the allowlist.
+  canAccessSite: (perms: { allowedSiteIds?: string[] | null } | undefined, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
@@ -129,16 +179,20 @@ describe('backup provider device routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     gates.permission = false;
+    gates.mfa = false;
     authState.scope = 'partner';
     authState.orgId = null;
     authState.accessibleOrgIds = [ORG_ID];
     dbState.rows = [];
-    dbState.device = { id: DEVICE_ID, orgId: ORG_ID, hostname: 'srv-fs01' };
+    dbState.device = { id: DEVICE_ID, orgId: ORG_ID, hostname: 'srv-fs01', siteId: null };
+    dbState.devicesById = {};
+    dbState.orgDevices = [];
     dbState.providerRow = { id: PROVIDER_ROW_ID, orgId: ORG_ID, breezeDeviceId: null };
     dbState.updated = [];
     dbState.orgConditions = [];
     dbState.throwOnUpdate = null;
     dbState.capturedListWhere = [];
+    permsState.value = { allowedSiteIds: undefined };
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -164,6 +218,7 @@ describe('backup provider device routes', () => {
         user: { id: '99999999-9999-4999-8999-999999999999', email: 't@example.com', name: 'Test Tech', isPlatformAdmin: false },
         token: null,
       });
+      c.set('permissions', permsState.value as any);
       await next();
     });
     app.route('/backup/providers', backupProviderDeviceRoutes);
@@ -303,6 +358,132 @@ describe('backup provider device routes', () => {
         body: JSON.stringify({ deviceId: null }),
       });
       expect(res.status).toBe(403);
+    });
+
+    it('requires MFA', async () => {
+      gates.mfa = true;
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('MFA_REQUIRED');
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('refuses to link a device outside the caller\'s allowed sites', async () => {
+      permsState.value = { allowedSiteIds: ['site-allowed'] };
+      dbState.device = { id: DEVICE_ID, orgId: ORG_ID, siteId: 'site-hidden' };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('allows linking a device inside the caller\'s allowed sites', async () => {
+      permsState.value = { allowedSiteIds: ['site-allowed'] };
+      dbState.device = { id: DEVICE_ID, orgId: ORG_ID, siteId: 'site-allowed' };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('refuses to unlink (or relink) away from a PREVIOUS device outside the caller\'s allowed sites', async () => {
+      const previousDeviceId = '88888888-8888-4888-8888-888888888888';
+      dbState.providerRow = { id: PROVIDER_ROW_ID, orgId: ORG_ID, breezeDeviceId: previousDeviceId };
+      dbState.devicesById[previousDeviceId] = { id: previousDeviceId, siteId: 'site-hidden' };
+      permsState.value = { allowedSiteIds: ['site-allowed'] };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: null }),
+      });
+      expect(res.status).toBe(403);
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('allows unlinking a PREVIOUS device inside the caller\'s allowed sites', async () => {
+      const previousDeviceId = '88888888-8888-4888-8888-888888888888';
+      dbState.providerRow = { id: PROVIDER_ROW_ID, orgId: ORG_ID, breezeDeviceId: previousDeviceId };
+      dbState.devicesById[previousDeviceId] = { id: previousDeviceId, siteId: 'site-allowed' };
+      permsState.value = { allowedSiteIds: ['site-allowed'] };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: null }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('fails closed (403) linking a site-carrying device when permissions never resolved', async () => {
+      permsState.value = undefined as unknown as Record<string, unknown>;
+      dbState.device = { id: DEVICE_ID, orgId: ORG_ID, siteId: 'site-allowed' };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('fails closed (403) unlinking away from a site-carrying PREVIOUS device when permissions never resolved', async () => {
+      const previousDeviceId = '88888888-8888-4888-8888-888888888888';
+      dbState.providerRow = { id: PROVIDER_ROW_ID, orgId: ORG_ID, breezeDeviceId: previousDeviceId };
+      dbState.devicesById[previousDeviceId] = { id: previousDeviceId, siteId: 'site-allowed' };
+      permsState.value = undefined as unknown as Record<string, unknown>;
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: null }),
+      });
+      expect(res.status).toBe(403);
+      expect(dbState.updated).toHaveLength(0);
+    });
+  });
+
+  describe('GET /devices — site ceiling', () => {
+    it('intersects the list condition with the allowed-site device set (org-scoped, site-restricted)', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      permsState.value = { allowedSiteIds: ['site-allowed'] };
+      dbState.orgDevices = [
+        { id: 'aaaaaaaa-0000-4000-8000-000000000001', siteId: 'site-allowed' },
+        { id: 'bbbbbbbb-0000-4000-8000-000000000002', siteId: 'site-hidden' },
+      ];
+      const res = await app.request('/backup/providers/devices');
+      expect(res.status).toBe(200);
+      // The site-derived condition reaches the actual list query (not just a
+      // resolution step that never gets wired in): it references the
+      // breeze_device_id column, includes the ALLOWED device's id, and does
+      // NOT include the HIDDEN device's id.
+      expect(dbState.capturedListWhere).toHaveLength(1);
+      const where = dbState.capturedListWhere[0];
+      expect(referencesColumn(where, 'breeze_device_id')).toBe(true);
+      const text = flattenText(where);
+      expect(text).toContain('aaaaaaaa-0000-4000-8000-000000000001');
+      expect(text).not.toContain('bbbbbbbb-0000-4000-8000-000000000002');
+    });
+
+    it('excludes every linked row (isNull only) when no site is allowed', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      permsState.value = { allowedSiteIds: [] };
+      dbState.orgDevices = [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', siteId: 'site-hidden' }];
+      const res = await app.request('/backup/providers/devices');
+      expect(res.status).toBe(200);
+      const text = flattenText(dbState.capturedListWhere[0]);
+      expect(text).not.toContain('aaaaaaaa-0000-4000-8000-000000000001');
+    });
+
+    it('does not apply a site filter for an unrestricted caller', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      permsState.value = { allowedSiteIds: undefined };
+      dbState.orgDevices = [{ id: 'aaaaaaaa-0000-4000-8000-000000000001', siteId: 'site-hidden' }];
+      const res = await app.request('/backup/providers/devices');
+      expect(res.status).toBe(200);
+      expect(referencesColumn(dbState.capturedListWhere[0], 'breeze_device_id')).toBe(false);
     });
   });
 });

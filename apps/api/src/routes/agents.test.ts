@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { agentRoutes } from './agents';
 
-vi.mock('../services', () => ({}));
+// Public download routes (routes/agents/download.ts) take their per-IP
+// limiter's Redis client from ../services and fail closed (503) without one.
+vi.mock('../services', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => ({
     multi: vi.fn(),

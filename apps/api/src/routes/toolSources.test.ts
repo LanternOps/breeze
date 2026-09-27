@@ -259,6 +259,21 @@ describe('toolSourcesRoutes', () => {
       expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
     });
 
+    it('surfaces a service-level refusal to change the endpoint origin as a 400', async () => {
+      vi.mocked(service.updateToolSourceRow).mockResolvedValueOnce({
+        status: 400,
+        error: 'Changing the endpoint origin requires re-entering the credential (or clearing it by setting authKind to "none")',
+        code: 'endpoint_origin_changed',
+      });
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS,
+        body: JSON.stringify({ endpointUrl: 'https://other-origin.example/mcp' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'endpoint_origin_changed' });
+      expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
+    });
+
     it.each([false, true])('allows HTTP updates only with the private-egress flag = %s', async (allow) => {
       vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValueOnce(allow);
       const res = await app.request(`/tool-sources/${SRC_ID}`, {

@@ -524,8 +524,8 @@
         "description": "Le coupe-circuit IA est un contrôle à l'échelle de la plateforme géré par les administrateurs de plateforme Breeze. Votre compte ne peut pas le consulter ni le modifier."
       },
       "status": {
-        "active": "Actions IA actives",
-        "killed": "Actions IA arrêtées"
+        "active": "Actions IA non supervisées actives",
+        "killed": "Actions IA non supervisées arrêtées"
       },
       "fields": {
         "epoch": "Époque",

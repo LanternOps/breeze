@@ -7,10 +7,22 @@ import { Hono } from 'hono';
 
 const peekShortCodeMock = vi.fn();
 const redeemShortCodeMock = vi.fn();
+const anonymousInstallerDistributionAllowedMock = vi.fn<(...args: unknown[]) => Promise<boolean>>();
+anonymousInstallerDistributionAllowedMock.mockResolvedValue(true);
+const enforcePublicInstallerIpRateLimitMock = vi.fn<(...args: unknown[]) => Promise<Response | null>>();
+enforcePublicInstallerIpRateLimitMock.mockResolvedValue(null);
+const checkInstallerSignSpendMock = vi.fn<(...args: unknown[]) => Promise<Response | null>>();
+checkInstallerSignSpendMock.mockResolvedValue(null);
 
 vi.mock('../../routes/enrollmentKeys', () => ({
   peekShortCode: (...args: unknown[]) => peekShortCodeMock(...args),
   redeemShortCode: (...args: unknown[]) => redeemShortCodeMock(...args),
+  anonymousInstallerDistributionAllowed: (...args: unknown[]) =>
+    anonymousInstallerDistributionAllowedMock(...args),
+  enforcePublicInstallerIpRateLimit: (...args: unknown[]) =>
+    enforcePublicInstallerIpRateLimitMock(...args),
+  checkInstallerSignSpend: (...args: unknown[]) =>
+    checkInstallerSignSpendMock(...args),
 }));
 
 const updateWhereMock = vi.fn().mockResolvedValue(undefined);
@@ -151,6 +163,12 @@ describe('GET /i/:shortCode (landing page)', () => {
 });
 
 describe('GET /i/:shortCode/download/:os', () => {
+  beforeEach(() => {
+    // Realistic default for tests that don't care about the trust-gate
+    // lookup itself: a valid, trust-allowed link.
+    peekShortCodeMock.mockResolvedValue({ id: 'key-1', orgId: 'org-1', siteId: 'site-1' });
+  });
+
   it('rejects an unsupported OS param with 400', async () => {
     const res = await buildApp().request('/i/abc1234567/download/bsd');
     expect(res.status).toBe(400);
@@ -167,6 +185,42 @@ describe('GET /i/:shortCode/download/:os', () => {
     redeemShortCodeMock.mockResolvedValue(null);
     const res = await buildApp().request('/i/badcode/download/win');
     expect(res.status).toBe(404);
+  });
+
+  // This route previously built and served a fully credentialed installer
+  // with no trust check and no rate limiting — unlike its /s/:code and
+  // /public-download siblings. These pin parity.
+  it('enforces the per-IP rate limit before building an installer', async () => {
+    enforcePublicInstallerIpRateLimitMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Too many requests. Please try again later.' }), {
+        status: 429,
+      }),
+    );
+    const res = await buildApp().request('/i/abc1234567/download/win');
+    expect(res.status).toBe(429);
+    expect(peekShortCodeMock).not.toHaveBeenCalled();
+    expect(redeemShortCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('denies distribution when the org is not trust-allowed for anonymous installers', async () => {
+    anonymousInstallerDistributionAllowedMock.mockResolvedValueOnce(false);
+    const res = await buildApp().request('/i/abc1234567/download/win');
+    expect(res.status).toBe(404);
+    expect(anonymousInstallerDistributionAllowedMock).toHaveBeenCalledWith('org-1', 'invite-landing');
+    expect(redeemShortCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the per-code signing-spend budget is exhausted', async () => {
+    checkInstallerSignSpendMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: 'Installer signing rate limit reached for this enrollment link. Try again later.' }),
+        { status: 429 },
+      ),
+    );
+    const res = await buildApp().request('/i/abc1234567/download/win');
+    expect(res.status).toBe(429);
+    expect(checkInstallerSignSpendMock).toHaveBeenCalledWith(expect.anything(), 'abc1234567');
+    expect(redeemShortCodeMock).not.toHaveBeenCalled();
   });
 
   it('serves a Windows zip with enrollment baked in', async () => {

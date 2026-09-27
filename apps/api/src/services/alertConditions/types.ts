@@ -126,7 +126,7 @@ export interface SoftwarePresenceCondition {
 // SLA worker's own state, which runs on its own cadence).
 export interface BackupContinuityCondition {
   type: 'backup_continuity';
-  check: 'no_successful_backup' | 'consecutive_failures';
+  check: 'no_successful_backup' | 'consecutive_failures' | 'completed_with_errors';
   maxAgeHours?: number;
   failureCount?: number;
 }

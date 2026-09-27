@@ -260,6 +260,10 @@ function makeSweepRunRow(overrides?: Record<string, unknown>) {
     agentId: AGENT_ID,
     orgId: ORG_ID,
     deviceId: null,
+    // Matches policySnapshot.effective.mode by default, like a real,
+    // never-forced-shadow run — `actModeRun` below keeps
+    // the two in sync when it overrides the snapshot's mode to 'act'.
+    modeAtStart: 'shadow',
     policySnapshot: {
       schemaVersion: 1,
       agentId: AGENT_ID,
@@ -588,7 +592,7 @@ describe('createActionIntent — a scoped (sweep) intent is never policy-decided
   /** Act mode + the operation registered — the full pre-conditions
    *  `resolvePolicyDecisionState` needs to return 'unattempted'. */
   function actModeRun(overrides?: Record<string, unknown>) {
-    const base = makeSweepRunRow(overrides);
+    const base = makeSweepRunRow({ modeAtStart: 'act', ...overrides });
     return {
       ...base,
       policySnapshot: {

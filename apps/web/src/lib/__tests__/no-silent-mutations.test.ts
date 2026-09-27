@@ -183,11 +183,12 @@ const TARGET_GLOBS = [
   'src/components/billing/quotes/QuoteEditor.tsx',
   'src/components/alerts/CorrelatedAlertGroups.tsx',
   'src/components/integrations/SecurityIntegration.tsx',
-  // QuickBooks entity mapping workbench: confirm/create/unlink/sync decisions
+  // Accounting entity mapping workbench (QuickBooks, and Xero from W02):
+  // confirm/create/unlink/sync decisions
   // and the income-account save all mutate a partner's accounting linkage —
   // a bare fetchWithAuth here would silently fail a mapping the operator
   // believes was saved.
-  'src/components/integrations/QuickbooksMappingWorkbench.tsx',
+  'src/components/integrations/AccountingMappingWorkbench.tsx',
   'src/components/devices/DeviceVulnerabilitiesTab.tsx',
   'src/components/vulnerabilities/VulnerabilityFleetPage.tsx',
   'src/components/vulnerabilities/SoftwareGroupDrawer.tsx',
@@ -322,12 +323,16 @@ const TARGET_GLOBS = [
   // that 403s on the all-organizations access gate must never look identical
   // to one that succeeded.
   'src/components/reports/ReportTemplates.tsx',
-  // QuickBooks connection panel (Phase D): connect/disconnect/push-mode/settings
+  // Accounting connection panel (formerly the QuickBooks-only panel, Phase D): connect/disconnect/push-mode/settings
   // -refresh already routed through runAction, but the file was never guarded —
   // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
   // unguarded next to them. A silent failure on either reads as "payment sync
   // is on / a sync is running" while the books and Breeze quietly diverge.
-  'src/components/integrations/QuickbooksIntegration.tsx',
+  'src/components/integrations/AccountingConnectionPanel.tsx',
+  // Accounting customer import: the import POST creates Breeze organizations
+  // from provider customers. It already used runAction but was never listed
+  // (Xero W01 Task 18), so a regression to a bare fetch would have gone unseen.
+  'src/components/integrations/AccountingCustomerImport.tsx',
   // Partner trust action links approve or suspend an entire partner. Keep the
   // TOTP-confirmed mutation inside runAction so this high-impact result cannot
   // fail without operator feedback.
@@ -749,10 +754,10 @@ describe('no silent mutations in targeted set', () => {
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
     // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
+    // AccountingMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
     // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
-    // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
+    // push, Phase C Task 7), plus AccountingConnectionPanel.tsx (QuickBooks payment
     // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
     // enqueue joined four pre-existing unguarded mutations in that file), plus
     // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
@@ -826,9 +831,11 @@ describe('no silent mutations in targeted set', () => {
     // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
     // #5313 adds monitors/CreateMonitorForm.tsx and settings/SiteDetailPage.tsx: 189 → 191.
     // Network results replace the deleted create form with three mutation adopters: 191 → 193.
-    // 193 -> 194: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
-    // 194 -> 196: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
-    expect(absoluteFiles.length).toBe(196);
+    // Xero W01 renames the two QuickBooks components and adds the previously
+    // unlisted AccountingCustomerImport.tsx: 193 → 194.
+    // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
+    // 195 -> 197: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
+    expect(absoluteFiles.length).toBe(197);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

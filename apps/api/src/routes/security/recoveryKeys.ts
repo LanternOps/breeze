@@ -5,7 +5,7 @@ import type { Context } from 'hono';
 
 import { db } from '../../db';
 import { devices, deviceRecoveryKeys, recoveryKeyAccessEvents } from '../../db/schema';
-import { requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import { decryptForColumn } from '../../services/secretCrypto';
@@ -113,6 +113,11 @@ recoveryKeysRoutes.post(
   '/encryption/devices/:deviceId/recovery-keys/:keyId/reveal',
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'read'),
+  // Plaintext disk-encryption key material — require a fresh MFA-satisfied
+  // session on top of the read permission, matching the step-up gate used
+  // elsewhere for secret-bearing operations (e.g. backup/vault.ts writes,
+  // enrollmentKeys.ts token issuance).
+  requireMfa(),
   zValidator('param', recoveryKeyRevealParamSchema),
   async (c) => {
     const auth = c.get('auth');

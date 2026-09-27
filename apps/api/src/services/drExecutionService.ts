@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, notInArray, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
+  backupConfigs,
   backupSnapshots,
   bareMetalRecoveries,
   deviceCommands,
@@ -17,8 +18,13 @@ import {
   createBareMetalRecovery,
   mintRecoveryTokenForRecovery,
 } from './bareMetalRecoveryService';
-import { queueBareMetalRebuild } from './bareMetalRebuildCommand';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { queueBareMetalRebuildWithSystemPrecheck, type BareMetalRebuildPayload } from './bareMetalRebuildCommand';
+import { CommandTypes, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
+import {
+  BACKUP_READ_CREDENTIAL_COMMAND_TYPES,
+  backupReadCredentialPayload,
+} from './backupCommandCredentials';
+import { withoutCredentialShapedKeys } from './drStoredCredentialKeys';
 import { resolveServerUrl } from './recoveryBootstrap';
 import {
   authorizeQueuedRecoveryWork,
@@ -64,9 +70,47 @@ export const DR_RECOVERY_AUTHORIZATION_INTENT: RecoveryAuthorizationIntent = {
   requiredAiTool: 'execute_dr_plan',
 };
 
+// #242 hardening: dispatchGroup/dispatchBareMetalRebuildGroup no longer call
+// the agent-socket dispatch themselves. They run inside the reconcile tick's
+// ambient system transaction and must only record what SHOULD be dispatched;
+// the actual dispatch (and the DB write recording its outcome) happens after
+// that transaction has committed — see dispatchDrPendingWork below. Doing the
+// dispatch inside the ambient transaction, even via a "with system precheck"
+// helper wrapped in `runOutsideDbContext`, held a SECOND pooled connection
+// open concurrently with the tick's own connection — the exact shape behind
+// two production pool-wedge incidents (#2417, #6671).
+export type PendingCommandDispatch = {
+  kind: 'command';
+  groupId: string;
+  groupName: string;
+  deviceId: string;
+  commandType: string;
+  payload: Record<string, unknown>;
+  userId?: string;
+  expectedOrgId: string;
+};
+
+export type PendingBareMetalRebuildDispatch = {
+  kind: 'bare_metal_rebuild';
+  groupId: string;
+  groupName: string;
+  deviceId: string;
+  recoveryId: string;
+  hostDeviceId: string;
+  orgId: string;
+  userId: string | null;
+  payload: BareMetalRebuildPayload;
+  /** The already-committed recovery row's createdAt, threaded through for the eventual queuedRecoveries entry. */
+  createdAt: string;
+};
+
+export type PendingDrDispatch = PendingCommandDispatch | PendingBareMetalRebuildDispatch;
+
 export type DrReconcileOutcome = {
   execution: DrExecutionRecord | null;
   nextDelayMs: number | null;
+  /** Dispatch work recorded this tick but not yet sent — dispatch after the caller's transaction commits. */
+  pending: PendingDrDispatch[];
 };
 
 type PlannedGroup = {
@@ -531,6 +575,54 @@ async function resolveProviderSnapshotIdWithDb(
   return external[0]!.id;
 }
 
+/**
+ * The storage destination REFERENCE for a DR step whose agent handler reads
+ * its destination from the command payload (Hyper-V / MSSQL restore). Derived
+ * from the step's snapshot — the destination that snapshot was written to —
+ * scoped to the execution's org, with the same internal-id-first precedence as
+ * the authorization pass. Null when the step names no snapshot or the snapshot
+ * has no tracked destination. The credential itself is resolved only when the
+ * command is delivered (services/backupCommandCredentials.ts).
+ */
+async function resolveDrStepStorageReference(
+  orgId: string,
+  payload: Record<string, unknown>,
+): Promise<ReturnType<typeof backupReadCredentialPayload> | null> {
+  const snapshotRef =
+    typeof payload.snapshotId === 'string' && payload.snapshotId.trim()
+      ? payload.snapshotId
+      : typeof payload.sourceSnapshotId === 'string' && payload.sourceSnapshotId.trim()
+        ? payload.sourceSnapshotId
+        : null;
+  if (!snapshotRef) return null;
+
+  const rows = await db
+    .select({
+      id: backupSnapshots.id,
+      snapshotId: backupSnapshots.snapshotId,
+      configId: backupSnapshots.configId,
+      provider: backupConfigs.provider,
+    })
+    .from(backupSnapshots)
+    .innerJoin(
+      backupConfigs,
+      and(eq(backupConfigs.id, backupSnapshots.configId), eq(backupConfigs.orgId, backupSnapshots.orgId)),
+    )
+    .where(and(
+      eq(backupSnapshots.orgId, orgId),
+      UUID_PATTERN.test(snapshotRef)
+        ? or(eq(backupSnapshots.id, snapshotRef), eq(backupSnapshots.snapshotId, snapshotRef))
+        : eq(backupSnapshots.snapshotId, snapshotRef),
+    ));
+
+  const internal = rows.filter((row) => row.id === snapshotRef);
+  const matches = internal.length === 1 ? internal : rows.filter((row) => row.snapshotId === snapshotRef);
+  if (matches.length !== 1 || !matches[0]!.configId) return null;
+  return backupReadCredentialPayload(matches[0]!.configId, orgId, matches[0]!.provider);
+}
+
+const DR_STORAGE_DESTINATION_COMMAND_TYPES = new Set(BACKUP_READ_CREDENTIAL_COMMAND_TYPES);
+
 const EXPLICIT_SOURCE_FIELDS: ReadonlyArray<{
   field: string;
   kind: ResilienceResourceRef['kind'];
@@ -689,13 +781,14 @@ async function dispatchBareMetalRebuildGroup(
   group: DrPlanGroupRecord,
   deviceIds: string[],
   nextResults: DrExecutionResults,
-): Promise<DrExecutionResults> {
+): Promise<{ results: DrExecutionResults; pending: PendingDrDispatch[] }> {
   const commandType = DR_STEP_BARE_METAL_REBUILD;
-  const failGroup = (error: string): DrExecutionResults => {
+  const pending: PendingDrDispatch[] = [];
+  const failGroup = (error: string): { results: DrExecutionResults; pending: PendingDrDispatch[] } => {
     nextResults.failedDispatches.push({ groupId: group.id, groupName: group.name, commandType, error });
     nextResults.dispatchStatus = 'failed';
     nextResults.haltReason = `Group ${group.name} did not dispatch cleanly`;
-    return nextResults;
+    return { results: nextResults, pending };
   };
 
   const parsedConfig = drBareMetalRebuildConfigSchema.safeParse(asRecord(group.restoreConfig));
@@ -764,7 +857,6 @@ async function dispatchBareMetalRebuildGroup(
       throw error;
     }
 
-    let commandId: string | null = null;
     if (rehearsal && host && serverUrl) {
       const target = { kind: 'vhdx' as const, path: `${config.outputDir.replace(/\/+$/, '')}/${deviceId}-${recoveryId}.vhdx` };
       let token: string;
@@ -776,35 +868,53 @@ async function dispatchBareMetalRebuildGroup(
         failDevice(error.code);
         continue;
       }
-      const { command, error } = await queueBareMetalRebuild({
-        orgId: execution.orgId,
+      // #242 hardening: the recovery row and its one-time token are plain DB
+      // writes with no socket I/O, so they stay inside the tick's transaction
+      // (this IS "recording the intended dispatch"). The actual
+      // `bare_metal_rebuild` socket send is deferred to after the tick
+      // commits — see dispatchDrPendingWork. Until that post-commit call
+      // records an outcome, this device has NO queuedRecoveries entry (same
+      // as a device that failed above), so a crash before the post-commit
+      // dispatch runs is a safe re-plan on the next tick, not a duplicate
+      // agent dispatch: createBareMetalRecovery's one-non-terminal-recovery
+      // constraint rejects the retry as `recovery_in_progress` until this
+      // recovery resolves.
+      pending.push({
+        kind: 'bare_metal_rebuild',
+        groupId: group.id,
+        groupName: group.name,
+        deviceId,
+        recoveryId,
         hostDeviceId: host,
-        ...(userId ? { userId } : {}),
+        orgId: execution.orgId,
+        userId,
         payload: { recoveryId, token, server: serverUrl, target, identity },
+        createdAt: createdAt.toISOString(),
       });
-      if (error || !command) {
-        const message = error ?? 'Failed to queue bare-metal rebuild';
-        // Free the "one non-terminal recovery per device" slot so a retry can proceed.
-        await cancelBareMetalRecovery({ recoveryId, orgId: execution.orgId, userId, reason: message }).catch(() => {});
-        failDevice(message);
-        continue;
-      }
-      commandId = command.id;
+      createdRecoveryIds.push(recoveryId);
+      alreadyQueued.add(deviceId);
+      continue;
     }
 
+    // Failover/failback resume the original identity in place — there is no
+    // device command to dispatch, ever, so the recovery row is complete now.
     nextResults.queuedRecoveries.push({
       groupId: group.id,
       groupName: group.name,
       deviceId,
       recoveryId,
       executingDeviceId: host,
-      commandId,
+      commandId: null,
       createdAt: createdAt.toISOString(),
     });
     createdRecoveryIds.push(recoveryId);
     alreadyQueued.add(deviceId);
   }
 
+  // Covers only pre-dispatch failures (config/snapshot/recovery/token) known
+  // synchronously in this tick. A rehearsal device's actual dispatch outcome
+  // is audited separately by queueBareMetalRebuildWithSystemPrecheck's own
+  // 'bmr.rebuild.command' entry once dispatchDrPendingWork runs it, post-commit.
   const groupFailures = nextResults.failedDispatches.filter((entry) => entry.groupId === group.id);
   void createAuditLogAsync({
     orgId: execution.orgId,
@@ -829,13 +939,13 @@ async function dispatchBareMetalRebuildGroup(
   });
 
   if (groupFailures.length > 0) {
-    nextResults.dispatchStatus = nextResults.queuedRecoveries.some((entry) => entry.groupId === group.id)
+    nextResults.dispatchStatus = nextResults.queuedRecoveries.some((entry) => entry.groupId === group.id) || pending.length > 0
       ? 'partial'
       : 'failed';
     nextResults.haltReason = `Group ${group.name} did not dispatch cleanly`;
   }
 
-  return nextResults;
+  return { results: nextResults, pending };
 }
 
 /** @internal Exported for tests; reconcile is the only production caller. */
@@ -843,12 +953,16 @@ export async function dispatchGroup(
   execution: DrExecutionRecord,
   group: DrPlanGroupRecord,
   currentResults: DrExecutionResults,
-): Promise<DrExecutionResults> {
+): Promise<{ results: DrExecutionResults; pending: PendingDrDispatch[] }> {
   const restoreConfig = asRecord(group.restoreConfig);
   const commandType = typeof restoreConfig.commandType === 'string' ? restoreConfig.commandType : null;
-  const payload = restoreConfig.payload && typeof restoreConfig.payload === 'object' && !Array.isArray(restoreConfig.payload)
-    ? restoreConfig.payload as Record<string, unknown>
-    : {};
+  // Credential-shaped keys never travel from the plan into a command, even for
+  // a plan stored before plan writes started refusing them.
+  const payload = withoutCredentialShapedKeys(
+    restoreConfig.payload && typeof restoreConfig.payload === 'object' && !Array.isArray(restoreConfig.payload)
+      ? restoreConfig.payload as Record<string, unknown>
+      : {},
+  );
   const deviceIds = Array.isArray(group.devices)
     ? group.devices.filter((value): value is string => typeof value === 'string')
     : [];
@@ -871,7 +985,7 @@ export async function dispatchGroup(
     });
     nextResults.dispatchStatus = 'failed';
     nextResults.haltReason = `Group ${group.name} is missing a command type`;
-    return nextResults;
+    return { results: nextResults, pending: [] };
   }
 
   if (!DR_ALLOWED_COMMAND_TYPES.has(commandType)) {
@@ -883,7 +997,7 @@ export async function dispatchGroup(
     });
     nextResults.dispatchStatus = 'failed';
     nextResults.haltReason = `Group ${group.name} uses an unsupported command type`;
-    return nextResults;
+    return { results: nextResults, pending: [] };
   }
 
   if (deviceIds.length === 0) {
@@ -895,7 +1009,7 @@ export async function dispatchGroup(
     });
     nextResults.dispatchStatus = 'failed';
     nextResults.haltReason = `Group ${group.name} has no assigned devices`;
-    return nextResults;
+    return { results: nextResults, pending: [] };
   }
 
   if (commandType === DR_STEP_BARE_METAL_REBUILD) {
@@ -909,55 +1023,210 @@ export async function dispatchGroup(
       .map((entry) => entry.deviceId),
   );
 
+  // `dispatchGroup` runs inside the reconcile tick's ambient system
+  // transaction (drExecutionWorker.ts). It must ONLY record which devices
+  // need a command — never call the agent-socket dispatch itself. Dispatching
+  // here, even through a "with system precheck" helper wrapped in
+  // `runOutsideDbContext`, held a SECOND pooled connection open concurrently
+  // with the tick's own connection — the exact double-hold shape behind two
+  // production pool-wedge incidents (#2417, #6671). The real dispatch happens
+  // in dispatchDrPendingWork, called by the worker strictly after the tick's
+  // transaction has committed and released its connection.
+  const pending: PendingDrDispatch[] = [];
+
+  // Steps whose agent handler reads a storage destination from the payload get
+  // a REFERENCE derived from the step's snapshot, set after the plan payload so
+  // the plan can never supply its own.
+  let storageReference: ReturnType<typeof backupReadCredentialPayload> | null = null;
+  if (DR_STORAGE_DESTINATION_COMMAND_TYPES.has(commandType)) {
+    storageReference = await resolveDrStepStorageReference(execution.orgId, payload);
+    if (!storageReference) {
+      for (const deviceId of deviceIds) {
+        if (alreadyQueued.has(deviceId)) continue;
+        nextResults.failedDispatches.push({
+          groupId: group.id,
+          groupName: group.name,
+          deviceId,
+          commandType,
+          error: 'The step snapshot has no tracked backup destination; set payload.snapshotId to a snapshot of this organization',
+        });
+      }
+    }
+  }
+
   for (const deviceId of deviceIds) {
     if (alreadyQueued.has(deviceId)) {
       continue;
     }
+    if (DR_STORAGE_DESTINATION_COMMAND_TYPES.has(commandType) && !storageReference) {
+      continue;
+    }
 
-    const { command, error } = await queueCommandForExecution(
+    pending.push({
+      kind: 'command',
+      groupId: group.id,
+      groupName: group.name,
       deviceId,
       commandType,
-      {
+      payload: {
         drExecutionId: execution.id,
         drPlanId: execution.planId,
         drGroupId: group.id,
         executionType: execution.executionType,
         groupName: group.name,
         ...payload,
+        ...(storageReference ?? {}),
       },
-      { userId: execution.initiatedBy ?? undefined, expectedOrgId: execution.orgId }
-    );
-
-    if (error || !command) {
-      nextResults.failedDispatches.push({
-        groupId: group.id,
-        groupName: group.name,
-        deviceId,
-        commandType,
-        error: error ?? 'Failed to queue DR command',
-      });
-      continue;
-    }
-
-    nextResults.queuedCommands.push({
-      groupId: group.id,
-      groupName: group.name,
-      deviceId,
-      commandId: command.id,
-      commandType,
-      status: command.status,
+      ...(execution.initiatedBy ? { userId: execution.initiatedBy } : {}),
+      expectedOrgId: execution.orgId,
     });
-    alreadyQueued.add(deviceId);
   }
 
+  // The only failures recorded inside the tick are the storage-reference
+  // refusals above (agent dispatch failures are recorded post-commit), so a
+  // group that has any halts the same tick, as it did before dispatch moved
+  // out of the transaction.
   if (nextResults.failedDispatches.some((entry) => entry.groupId === group.id)) {
-    nextResults.dispatchStatus = nextResults.queuedCommands.some((entry) => entry.groupId === group.id)
-      ? 'partial'
-      : 'failed';
+    nextResults.dispatchStatus = pending.length > 0 ? 'partial' : 'failed';
     nextResults.haltReason = `Group ${group.name} did not dispatch cleanly`;
   }
 
-  return nextResults;
+  return { results: nextResults, pending };
+}
+
+// ── Post-commit dispatch (#242 hardening) ───────────────────────────────────
+//
+// Called by drExecutionWorker.ts strictly AFTER the reconcile tick's ambient
+// `withSystemDbAccessContext` has returned (transaction committed, pooled
+// connection released). Every function below therefore assumes NO ambient DB
+// context is held — `queueCommandForExecutionWithSystemPrecheck` and
+// `queueBareMetalRebuildWithSystemPrecheck` both throw otherwise, which is the
+// guard that keeps a future caller from reintroducing the double pool-hold.
+
+/** Read-merge-write one dispatch outcome into `drExecutions.results`, in its own short transaction. */
+async function withDrResultsUpdate(
+  executionId: string,
+  mutate: (current: {
+    queuedCommands: QueuedDrCommand[];
+    queuedRecoveries: QueuedDrRecovery[];
+    failedDispatches: FailedDispatch[];
+  }) => void,
+): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(drExecutions).where(eq(drExecutions.id, executionId)).limit(1);
+    if (!row) return; // Execution vanished (erasure/cleanup) — nothing left to patch.
+    const record = asRecord(row.results);
+    const current = {
+      queuedCommands: normalizeQueuedCommands(record.queuedCommands),
+      queuedRecoveries: normalizeQueuedRecoveries(record.queuedRecoveries),
+      failedDispatches: normalizeFailedDispatches(record.failedDispatches),
+    };
+    mutate(current);
+    await db
+      .update(drExecutions)
+      .set({ results: { ...record, ...current } })
+      .where(eq(drExecutions.id, executionId));
+  });
+}
+
+async function recordCommandDispatchOutcome(
+  executionId: string,
+  item: PendingCommandDispatch,
+  outcome: { command: { id: string; status: string } | null; error?: string },
+): Promise<void> {
+  await withDrResultsUpdate(executionId, (current) => {
+    if (outcome.command) {
+      current.queuedCommands.push({
+        groupId: item.groupId,
+        groupName: item.groupName,
+        deviceId: item.deviceId,
+        commandId: outcome.command.id,
+        commandType: item.commandType,
+        status: outcome.command.status,
+      });
+    } else {
+      current.failedDispatches.push({
+        groupId: item.groupId,
+        groupName: item.groupName,
+        deviceId: item.deviceId,
+        commandType: item.commandType,
+        error: outcome.error ?? 'Failed to queue DR command',
+      });
+    }
+  });
+}
+
+async function recordBareMetalRebuildDispatchOutcome(
+  executionId: string,
+  item: PendingBareMetalRebuildDispatch,
+  outcome: { command: { id: string; status: string } | null; error?: string },
+): Promise<void> {
+  if (outcome.command) {
+    await withDrResultsUpdate(executionId, (current) => {
+      current.queuedRecoveries.push({
+        groupId: item.groupId,
+        groupName: item.groupName,
+        deviceId: item.deviceId,
+        recoveryId: item.recoveryId,
+        executingDeviceId: item.hostDeviceId,
+        commandId: outcome.command!.id,
+        createdAt: item.createdAt,
+      });
+    });
+    return;
+  }
+
+  // Free the "one non-terminal recovery per device" slot so a retry can
+  // proceed, mirroring the pre-#242 in-transaction failure path exactly —
+  // just moved to after the tick has committed.
+  await withSystemDbAccessContext(() =>
+    cancelBareMetalRecovery({
+      recoveryId: item.recoveryId,
+      orgId: item.orgId,
+      userId: item.userId,
+      reason: outcome.error ?? 'dispatch_failed',
+    }).catch(() => {})
+  );
+  await withDrResultsUpdate(executionId, (current) => {
+    current.failedDispatches.push({
+      groupId: item.groupId,
+      groupName: item.groupName,
+      deviceId: item.deviceId,
+      commandType: DR_STEP_BARE_METAL_REBUILD,
+      error: outcome.error ?? 'Failed to queue bare-metal rebuild',
+    });
+  });
+}
+
+/**
+ * Dispatch every pending device command/rebuild recorded by this tick's
+ * `dispatchGroup`/`dispatchBareMetalRebuildGroup` call, then persist each
+ * outcome. Processed sequentially — these share one execution row's `results`
+ * JSONB, and a sequential read-merge-write avoids a lost update between two
+ * of this tick's own devices (a concern this function owns alone: BullMQ's
+ * stable job id already keeps two ticks of the SAME execution from running
+ * this concurrently).
+ */
+export async function dispatchDrPendingWork(executionId: string, pending: PendingDrDispatch[]): Promise<void> {
+  for (const item of pending) {
+    if (item.kind === 'command') {
+      const { command, error } = await queueCommandForExecutionWithSystemPrecheck(
+        item.deviceId,
+        item.commandType,
+        item.payload,
+        { ...(item.userId ? { userId: item.userId } : {}), expectedOrgId: item.expectedOrgId },
+      );
+      await recordCommandDispatchOutcome(executionId, item, { command: command ? { id: command.id, status: command.status } : null, error });
+    } else {
+      const { command, error } = await queueBareMetalRebuildWithSystemPrecheck({
+        orgId: item.orgId,
+        hostDeviceId: item.hostDeviceId,
+        ...(item.userId ? { userId: item.userId } : {}),
+        payload: item.payload,
+      });
+      await recordBareMetalRebuildDispatchOutcome(executionId, item, { command, error: error ?? undefined });
+    }
+  }
 }
 
 function pickNextGroup(groups: DrPlanGroupRecord[], groupResults: GroupResult[]): DrPlanGroupRecord | null {
@@ -1095,7 +1364,7 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     .limit(1);
 
   if (!execution || (DR_EXECUTION_TERMINAL as readonly string[]).includes(execution.status)) {
-    return { execution: execution ?? null, nextDelayMs: null };
+    return { execution: execution ?? null, nextDelayMs: null, pending: [] };
   }
 
   if (
@@ -1109,6 +1378,7 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
         new Date(),
       ),
       nextDelayMs: null,
+      pending: [],
     };
   }
 
@@ -1179,11 +1449,16 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
         new Date(),
       ),
       nextDelayMs: null,
+      pending: [],
     };
   }
 
   let nextStatus: DrExecutionRecord['status'] = hasRunningGroup ? 'running' : 'pending';
   let completedAt: Date | null = null;
+  // Only populated when this tick actually dispatches a new group. Returned
+  // to the caller ONLY once the CAS below durably commits this tick's plan —
+  // see the `updated` check.
+  let tickPending: PendingDrDispatch[] = [];
 
   if (groups.length === 0) {
     nextStatus = 'failed';
@@ -1217,9 +1492,12 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
             new Date(),
           ),
           nextDelayMs: null,
+          pending: [],
         };
       }
-      results = await dispatchGroup(execution, nextGroup, results);
+      const dispatched = await dispatchGroup(execution, nextGroup, results);
+      results = dispatched.results;
+      tickPending = dispatched.pending;
       nextStatus = results.dispatchStatus === 'failed' ? 'failed' : 'running';
       results.groupResults = computeGroupResults(
         groups, results.queuedCommands, results.queuedRecoveries, results.failedDispatches, commandMap, recoveryMap, now,
@@ -1280,12 +1558,14 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
       // live reconcile. Loud, because it means the row vanished mid-tick.
       console.error(`[drExecutionService] reconcile ${executionId}: execution row disappeared mid-tick`);
     }
-    return { execution: current ?? null, nextDelayMs: null };
+    // This tick's plan never committed — nothing may be dispatched from it.
+    return { execution: current ?? null, nextDelayMs: null, pending: [] };
   }
 
   const finalExecution = updated;
   return {
     execution: finalExecution,
+    pending: tickPending,
     nextDelayMs: ['pending', 'running'].includes(finalExecution.status)
       ? (hasRunningGroup ? 10_000 : 2_000)
       : null,

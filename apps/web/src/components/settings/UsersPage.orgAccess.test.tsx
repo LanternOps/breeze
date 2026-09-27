@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UsersPage from './UsersPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 // #7034: a partner user's organization access must be editable after the
 // invite, from the same Edit modal that changes the role.
@@ -167,5 +168,27 @@ describe('UsersPage — edit organization access (#7034)', () => {
     await openEdit('Tessa');
 
     expect(screen.queryByLabelText(/^Access level$/)).not.toBeInTheDocument();
+  });
+
+  it('toasts success after saving a role change', async () => {
+    seed([TECH]);
+    await openEdit('Tessa');
+
+    fireEvent.change(screen.getByLabelText(/^Role$/), { target: { value: ROLE_ADMIN.id } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(screen.queryByLabelText(/^Role$/)).not.toBeInTheDocument());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('toasts success after saving an organization-access change', async () => {
+    seed([TECH]);
+    await openEdit('Tessa');
+
+    fireEvent.change(screen.getByLabelText(/^Access level$/), { target: { value: 'all' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(screen.queryByLabelText(/^Role$/)).not.toBeInTheDocument());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 });

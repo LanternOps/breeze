@@ -12,6 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { devices, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
 import { queueCommandForExecutionWithSystemPrecheck, CommandTypes } from './commandQueue';
+import { checkAiRemoteToolsPolicy } from './aiRemoteToolsPolicy';
 import { SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from './commandTimeouts';
 import { SYSTEM_CLEANUP_ACTION_IDS, SYSTEM_CLEANUP_RISK_FLAGS, systemCleanupRunBodySchema, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
@@ -187,7 +188,9 @@ export interface StartSystemCleanupRunArgs extends QueueSystemCleanupListArgs {
 export type SystemCleanupQueueResult =
   | { ok: true; commandId: string }
   | { ok: false; status: 409; error: 'agent_update_required'; minAgentVersion: string }
-  | { ok: false; status: 400 | 503; error: string };
+  | { ok: false; status: 400 | 503; error: string }
+  // The device's remote_access policy disables remote tools.
+  | { ok: false; status: 403; error: string };
 export type SystemCleanupStartResult =
   | { ok: true; commandId: string; cleanupRunId: string; deadlineAt: string }
   | Exclude<SystemCleanupQueueResult, { ok: true }>
@@ -200,6 +203,10 @@ async function queueSystemCleanupListOutsideContext(
   // only answer with a bare failure the UI cannot explain.
   const gate = systemCleanupAgentGate(args.device);
   if (!gate.ok) return gate;
+  // Shared by the route and the AI tool (which reaches the device
+  // only through here, not through aiDispatch), so the policy lives here too.
+  const policy = await checkAiRemoteToolsPolicy(args.device.id, CommandTypes.SYSTEM_CLEANUP_LIST);
+  if (!policy.allowed) return { ok: false, status: 403, error: policy.error };
 
   const queued = await queueCommandForExecutionWithSystemPrecheck(
     args.device.id,
@@ -225,6 +232,10 @@ async function startSystemCleanupRunOutsideContext(
 
   const selection = systemCleanupRunBodySchema.safeParse({ actionIds: args.actionIds, params: args.params });
   if (!selection.success) return { ok: false, status: 400, error: 'Invalid system cleanup selection' };
+
+  // Before the run row is claimed, so a refusal leaves nothing behind.
+  const policy = await checkAiRemoteToolsPolicy(args.device.id, CommandTypes.SYSTEM_CLEANUP_RUN);
+  if (!policy.allowed) return { ok: false, status: 403, error: policy.error };
 
   const deadlineAt = new Date(Date.now() + systemCleanupRunBudgetMs(args.actionIds));
 
