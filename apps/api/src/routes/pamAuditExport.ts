@@ -19,7 +19,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { elevationAudit, elevationAuditEventTypeEnum } from '../db/schema';
+import { elevationAudit } from '../db/schema';
+// Imported from the table's own module: route tests that mock '../db/schema'
+// (pam.test.ts, pam.siteScope.test.ts) load this file through routes/pam.ts.
+import { elevationAuditEventTypeEnum } from '../db/schema/elevations';
 import { requireMfa, requirePermission } from '../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
