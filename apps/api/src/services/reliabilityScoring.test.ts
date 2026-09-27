@@ -429,6 +429,47 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(1);
   });
 
+  it('#7132: isGenuineHardwareError rejects FilterManager disk stamps regardless of event ID', () => {
+    const { isGenuineHardwareError } = reliabilityScoringInternals;
+    // Pre-#6696 agents matched the bare word "disk" in the raw message
+    // ("...failed to attach to volume \Device\HarddiskVolume1...") and stamped
+    // type="disk" no matter the event ID. FilterManager's event 3 is not in the
+    // bare-ID collision set {7,11,13,15,50,51}, so the existing bare-ID gate
+    // never catches it — this is the exact shape from issue #7132.
+    expect(isGenuineHardwareError({
+      source: 'Microsoft-Windows-FilterManager', type: 'disk', eventId: '3:98765',
+    } as any)).toBe(false);
+    // Same provider, a different (still non-bare) event ID — still denied.
+    expect(isGenuineHardwareError({
+      source: 'Microsoft-Windows-FilterManager', type: 'memory', eventId: '9:1',
+    } as any)).toBe(false);
+    // Other named software providers from the issue's suggested fix are denied too.
+    expect(isGenuineHardwareError({
+      source: 'Volume Shadow Copy', type: 'disk', eventId: '8224:1',
+    } as any)).toBe(false);
+    expect(isGenuineHardwareError({
+      source: 'Microsoft-Windows-DistributedCOM', type: 'memory', eventId: '10010:1',
+    } as any)).toBe(false);
+  });
+
+  it('#7132: a FilterManager event-3 burst no longer pins hardwareErrorCount', () => {
+    // 50 identical FilterManager event-3 rows in a ~1s burst, exactly the
+    // pre-#6696-shaped stamp from device_reliability_history in the issue.
+    const hardwareErrors = Array.from({ length: 50 }, (_, i) => ({
+      type: 'disk',
+      severity: 'error',
+      source: 'Microsoft-Windows-FilterManager',
+      eventId: `3:${1000 + i}`,
+      timestamp: `2026-09-10T01:26:${String(i % 60).padStart(2, '0')}.000Z`,
+    }));
+    const rows = [makeHistoryRow({ hardwareErrors })] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(0);
+  });
+
   it('tracks Breeze self service failures as a subset of serviceFailureCount', () => {
     const rows = [
       makeHistoryRow({

@@ -21,13 +21,14 @@ it('registers schema, read permission and tier without legacy-gap exemptions',()
  const schema=toolInputSchemas[name]!;
  expect(schema.safeParse({deviceId}).success).toBe(true);
  expect(schema.safeParse({deviceId,includeEvents:true}).success).toBe(true);
- for(const input of [{},{deviceId:'invalid'},{deviceId,includeEvents:'true'}])expect(schema.safeParse(input).success).toBe(false);
+ expect(schema.safeParse({deviceId,includeReliability:true}).success).toBe(true);
+ for(const input of [{},{deviceId:'invalid'},{deviceId,includeEvents:'true'},{deviceId,includeReliability:'true'}])expect(schema.safeParse(input).success).toBe(false);
 });
 it('declares callable chat and script-builder tools with matching inputs',()=>{
  const auth=()=>{throw new Error('declaration inspection must not execute handlers');};
  for(const tools of [buildBreezeSdkTools(auth),buildScriptBuilderTools(auth)]){
   const tool=tools.find(t=>t.name===name);expect(tool).toBeDefined();expect(typeof tool!.handler).toBe('function');
-  expect(Object.keys(tool!.inputSchema).sort()).toEqual(['deviceId','includeEvents']);
+  expect(Object.keys(tool!.inputSchema).sort()).toEqual(['deviceId','includeEvents','includeReliability']);
  }
  expect(SCRIPT_BUILDER_TOOL_TIERS[name]).toBe(1);
 });

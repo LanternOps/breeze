@@ -30,6 +30,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
+import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
   sanitizeUntrustedText,
@@ -320,15 +321,20 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'devices',
     deviceArgs: ['deviceId'],
-    searchHint: 'RAID arrays, physical disks, cache batteries and hardware collector health',
+    searchHint: 'RAID arrays, physical disks, cache batteries, hardware collector health and reliability score inputs',
     definition: {
       name: 'get_device_hardware_health',
-      description: 'Get current hardware health, components, collectors and optional recent events.',
+      description: 'Get current hardware health, components, collectors, optional recent events, and (with includeReliability) the reliability score\'s factor breakdown and top hardware offenders — the actual inputs behind a device\'s reliability score, so an explanation is grounded in real events instead of guessed causes.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
-          includeEvents: { type: 'boolean', default: false }
+          includeEvents: { type: 'boolean', default: false },
+          includeReliability: {
+            type: 'boolean',
+            default: false,
+            description: 'Include the reliability score, its per-factor drivers (crashes/hangs/service failures/hardware/uptime), and the top hardware offenders (source + event count) behind the last 30 days\' hardware factor. Use this before explaining or diagnosing a device\'s reliability score.'
+          }
         },
         required: ['deviceId']
       }
@@ -338,7 +344,26 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const view = await getDeviceHardwareHealthView(deviceId, { eventLimit: input.includeEvents === true ? 50 : 0 });
-      return JSON.stringify(view ?? { error: 'no_hardware_health' });
+      const result: Record<string, unknown> = { ...(view ?? { error: 'no_hardware_health' }) };
+      if (input.includeReliability === true) {
+        const [reliability, offenders] = await Promise.all([
+          getDeviceReliability(deviceId),
+          getDeviceReliabilityOffenders(deviceId, 30, 5),
+        ]);
+        result.reliability = reliability
+          ? {
+              score: reliability.reliabilityScore,
+              trendDirection: reliability.trendDirection,
+              // The scored inputs behind the number: per-factor score/weight/lostPoints/evidence.
+              drivers: reliability.drivers ?? [],
+            }
+          : null;
+        // Top hardware offenders (source + distinct event count) for the same
+        // 30-day window the hardware driver's evidence covers — lets the model
+        // name the actual source instead of guessing (#7132).
+        result.hardwareOffenders30d = offenders.hardware;
+      }
+      return JSON.stringify(result);
     }
   });
 

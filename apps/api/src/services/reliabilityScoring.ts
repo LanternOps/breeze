@@ -852,6 +852,24 @@ const HARDWARE_SOURCE_KEYWORDS = [
 // already written (and stragglers on old binaries) self-heal on recompute.
 const BARE_ID_STAMPED_EVENT_IDS = new Set([7, 11, 13, 15, 50, 51]);
 
+// #7132: pre-#6696 agents matched the bare word "disk"/"memory" anywhere in
+// the raw message text (e.g. FilterManager event 3, "...failed to attach to
+// volume \Device\HarddiskVolume1...") and stamped type="disk" regardless of
+// event ID or provider. The message itself isn't persisted, so a stored row
+// can't be re-classified after the fact — but the BARE_ID_STAMPED_EVENT_IDS
+// gate above only catches the narrower #1967 id-collision case (VSS emitting
+// event 13); it does nothing when the software provider's own event ID (here,
+// FilterManager's 3) was never one of the reused hardware IDs. Deny these
+// known-software providers outright, regardless of type or event ID, so
+// stored rows (and stragglers still on old binaries) self-heal on recompute —
+// mirrors #6713's agent-side fix for the same providers.
+const KNOWN_SOFTWARE_SOURCE_KEYWORDS = [
+  'filtermanager',
+  'volume shadow copy',
+  'distributedcom',
+  'service control manager',
+];
+
 function numericEventIdPrefix(eventId: string | undefined): number | null {
   if (!eventId) return null;
   const parsed = Number.parseInt(eventId.split(':')[0]!.trim(), 10);
@@ -861,6 +879,9 @@ function numericEventIdPrefix(eventId: string | undefined): number | null {
 function isGenuineHardwareError(event: HistoryRow['hardwareErrors'][number]): boolean {
   const type = (event.type ?? '').toLowerCase();
   const source = (event.source ?? '').toLowerCase();
+  if (KNOWN_SOFTWARE_SOURCE_KEYWORDS.some((keyword) => source.includes(keyword))) {
+    return false;
+  }
   const hasHardwareSource = HARDWARE_SOURCE_KEYWORDS.some((keyword) => source.includes(keyword));
   if (HARDWARE_FAULT_TYPES.has(type)) {
     // memory/disk stamps that look ID-derived need a hardware provider behind
