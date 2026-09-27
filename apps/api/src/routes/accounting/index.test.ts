@@ -43,6 +43,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     mocks: {
       getConnection: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
+      configError: vi.fn((): string | null => null),
       upsertConnection: vi.fn(),
       deleteConnection: vi.fn(async () => ({
         removed: true,
@@ -174,7 +175,7 @@ vi.mock('../../services/accounting/providerRegistry', () => {
     provider: 'quickbooks',
     displayName: 'QuickBooks',
     capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true },
-    configError: () => null,
+    configError: mocks.configError,
     connectEnvironment: () => 'production',
     buildAuthUrl: mocks.buildAuthUrl,
     exchangeCode: mocks.exchangeCode,
@@ -248,6 +249,7 @@ describe('accounting routes', () => {
     });
     mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
     mocks.resolveActiveConnectionRef.mockResolvedValue(null);
+    mocks.configError.mockReturnValue(null);
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -1207,6 +1209,30 @@ describe('accounting routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=provider_conflict#accounting');
       expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
+    // R8: only routes that validated config before W01 answer provider_not_configured.
+    it('connect still answers 400 provider_not_configured when the provider is unconfigured', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      const res = await app.request('/accounting/quickbooks/connect');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'QuickBooks OAuth is not configured on this instance', code: 'provider_not_configured' });
+      expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    });
+
+    it('status does NOT answer provider_not_configured on an unconfigured instance (DB-only, unchanged)', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      mocks.getConnection.mockResolvedValueOnce(null);
+      const res = await app.request('/accounting/quickbooks');
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe('disconnected');
+    });
+
+    it('disconnect still works on an unconfigured instance, so a stale row can never be stranded', async () => {
+      mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
+      const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'quickbooks');
     });
 
     it('GET /accounting/providers lists registered providers with configuration and capabilities', async () => {

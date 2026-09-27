@@ -13,8 +13,21 @@ import {
 import { resolveActiveConnectionRef } from '../../services/accounting/accountingConnectionService';
 import type { AccountingCapability, AccountingProviderId } from '../../services/accounting/types';
 
-/** Replaces the route's old validateProviderConfig. null = proceed; otherwise the response to return. */
-export function providerGateResponse(c: Context, provider: AccountingProviderId, capability: AccountingCapability): Response | null {
+/**
+ * Replaces the route's old validateProviderConfig. null = proceed; otherwise the response to return.
+ *
+ * `requireConfigured: false` is for the DB-only routes that never validated
+ * config before W01 (status, disconnect, settings PATCH, owed-operations,
+ * reconcile): they keep the registry + capability gate but must keep working on
+ * an instance whose provider env was removed — above all disconnect, or a stale
+ * row would be stranded and block connecting another provider.
+ */
+export function providerGateResponse(
+  c: Context,
+  provider: AccountingProviderId,
+  capability: AccountingCapability,
+  { requireConfigured = true }: { requireConfigured?: boolean } = {},
+): Response | null {
   const impl = findAccountingProvider(provider);
   if (!impl) {
     return c.json({ error: `${accountingProviderDisplayName(provider)} is not available on this instance yet`, code: 'capability_unavailable' }, 409);
@@ -22,6 +35,7 @@ export function providerGateResponse(c: Context, provider: AccountingProviderId,
   if (!providerSupports(provider, capability)) {
     return c.json({ error: `${impl.displayName} does not support this yet`, code: 'capability_unavailable' }, 409);
   }
+  if (!requireConfigured) return null;
   const configError = impl.configError();
   if (configError) return c.json({ error: configError, code: 'provider_not_configured' }, 400);
   return null;

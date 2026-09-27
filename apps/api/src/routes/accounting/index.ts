@@ -665,7 +665,7 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
 
 accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
-  const gate = providerGateResponse(c, provider, 'connect');
+  const gate = providerGateResponse(c, provider, 'connect', { requireConfigured: false });
   if (gate) return gate;
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -705,7 +705,7 @@ accountingRoutes.get('/providers', authMiddleware, partnerScopes, requireAccount
 
 accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
-  const gate = providerGateResponse(c, provider, 'connect');
+  const gate = providerGateResponse(c, provider, 'connect', { requireConfigured: false });
   if (gate) return gate;
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -756,7 +756,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
 // visible after voidPayment removes its invoice_payments row.
 accountingRoutes.get('/:provider/owed-operations', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
-  const gate = providerGateResponse(c, provider, 'paymentPush');
+  const gate = providerGateResponse(c, provider, 'paymentPush', { requireConfigured: false });
   if (gate) return gate;
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -864,7 +864,7 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
 
 accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
   const { provider } = c.req.valid('param');
-  const gate = providerGateResponse(c, provider, 'connect');
+  const gate = providerGateResponse(c, provider, 'connect', { requireConfigured: false });
   if (gate) return gate;
   const body = c.req.valid('json');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
@@ -970,7 +970,7 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
 // rather than assume the job landed — see the push-bulk route's comment above).
 accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
-  const gate = providerGateResponse(c, provider, 'paymentPull');
+  const gate = providerGateResponse(c, provider, 'paymentPull', { requireConfigured: false });
   if (gate) return gate;
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);

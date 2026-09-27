@@ -18,9 +18,9 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
 }));
 import { listProvidersHandler, providerGateResponse } from './providerGate';
 
-function run(provider: 'quickbooks' | 'xero', cap: 'connect' | 'invoicePush') {
+function run(provider: 'quickbooks' | 'xero', cap: 'connect' | 'invoicePush', opts?: { requireConfigured?: boolean }) {
   const app = new Hono();
-  app.get('/', (c) => providerGateResponse(c, provider, cap) ?? c.json({ ok: true }));
+  app.get('/', (c) => providerGateResponse(c, provider, cap, opts) ?? c.json({ ok: true }));
   return app.request('/');
 }
 
@@ -45,6 +45,13 @@ describe('providerGateResponse', () => {
     const res = await run('quickbooks', 'connect');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'QuickBooks OAuth is not configured on this instance', code: 'provider_not_configured' });
+  });
+  it('requireConfigured:false lets an unconfigured provider through (DB-only routes)', async () => {
+    reg.qbo.configError.mockReturnValueOnce('QuickBooks OAuth is not configured on this instance');
+    expect((await run('quickbooks', 'connect', { requireConfigured: false })).status).toBe(200);
+  });
+  it('requireConfigured:false still refuses an unregistered provider', async () => {
+    expect((await run('xero', 'connect', { requireConfigured: false })).status).toBe(409);
   });
 });
 
