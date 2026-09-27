@@ -179,6 +179,17 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
   return `${hours}h ${remainingMinutes}m`;
 }
 
+// Reaper- and worker-generated error text is sometimes prefixed with an
+// internal routing tag, e.g. `[stale-backup-reaper] snapshot lease expired`.
+// That tag is implementation detail, not something a user should have to
+// decode, so strip it wherever an error message reaches the UI. Display-only
+// — the underlying errorLog data is never mutated.
+const INTERNAL_TAG_PREFIX = /^\[[a-z0-9]+(?:-[a-z0-9]+)*\]\s+/;
+
+function stripInternalTagPrefix(message: string): string {
+  return message.replace(INTERNAL_TAG_PREFIX, '');
+}
+
 function formatTime(iso?: string | null): string {
   return formatDateTime(iso, {
     fallback: '--',
@@ -208,9 +219,10 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorSummary: raw.errorLog
-      ? raw.errorLog.length > 60
-        ? `${raw.errorLog.slice(0, 57)}...`
-        : raw.errorLog
+      ? (() => {
+          const cleaned = stripInternalTagPrefix(raw.errorLog);
+          return cleaned.length > 60 ? `${cleaned.slice(0, 57)}...` : cleaned;
+        })()
       : raw.errorCount
         ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
@@ -649,8 +661,12 @@ export default function BackupJobList() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {job.errorCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
+                        {job.errorSummary !== '-' ? (
+                          <span
+                            data-testid="backup-job-error-summary"
+                            title={job.errorSummary}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
+                          >
                             <AlertTriangle className="h-3.5 w-3.5" />
                             {job.errorSummary}
                           </span>
@@ -750,14 +766,14 @@ export default function BackupJobList() {
                                 {t('backupJobList.filesNotBackedUp', { count: job.errorCount })}
                               </p>
                               <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
-                                {details.errorLog ?? 'No error log recorded.'}
+                                {details.errorLog ? stripInternalTagPrefix(details.errorLog) : 'No error log recorded.'}
                               </pre>
                             </div>
                           ) : (
                             <div className="mt-4">
                               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                               <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
-                                {details.errorLog ?? 'No error log recorded.'}
+                                {details.errorLog ? stripInternalTagPrefix(details.errorLog) : 'No error log recorded.'}
                               </pre>
                             </div>
                           )}
