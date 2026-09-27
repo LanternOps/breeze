@@ -273,8 +273,8 @@ const BINDINGS: readonly Binding[] = [
 
   // Restore tools and DR plan management/execution.
   { tool: 'restore_snapshot', routeFile: 'backup/restore.ts', method: 'post', path: '/restore' },
-  { tool: 'restore_as_vm', routeFile: 'backup/vmrestore.ts', method: 'post', path: '/backup/restore/as-vm' },
-  { tool: 'instant_boot_vm', routeFile: 'backup/vmrestore.ts', method: 'post', path: '/backup/restore/instant-boot' },
+  { tool: 'restore_as_vm', routeFile: 'backup/vmrestore.ts', method: 'post', path: '/restore/as-vm' },
+  { tool: 'instant_boot_vm', routeFile: 'backup/vmrestore.ts', method: 'post', path: '/restore/instant-boot' },
   { tool: 'restore_hyperv_vm', routeFile: 'backup/hyperv.ts', method: 'post', path: '/restore' },
   { tool: 'restore_mssql_database', routeFile: 'backup/mssql.ts', method: 'post', path: '/mssql/restore' },
   { tool: 'manage_dr_plan', action: 'create_plan', routeFile: 'dr.ts', method: 'post', path: '/plans' },
@@ -290,7 +290,7 @@ const BINDINGS: readonly Binding[] = [
   // the per-action rows below (its base tier-1 map is per-action, so a
   // bare-tool binding here can no longer resolve).
   { tool: 'browse_snapshots', routeFile: 'backup/snapshots.ts', method: 'get', path: '/snapshots/:id/browse' },
-  { tool: 'get_vm_restore_estimate', routeFile: 'backup/vmrestore.ts', method: 'get', path: '/backup/restore/as-vm/estimate/:snapshotId' },
+  { tool: 'get_vm_restore_estimate', routeFile: 'backup/vmrestore.ts', method: 'get', path: '/restore/as-vm/estimate/:snapshotId' },
   { tool: 'query_hyperv_vms', routeFile: 'backup/hyperv.ts', method: 'get', path: '/vms' },
   { tool: 'query_mssql_instances', routeFile: 'backup/mssql.ts', method: 'get', path: '/mssql/instances' },
 
