@@ -14,6 +14,7 @@ import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
 import { useHashTab } from '@/lib/useHashState';
+import { OverflowTabs, type OverflowTab } from '@/components/shared/OverflowTabs';
 import type { TriggerFilter } from './AutomationList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -459,19 +460,16 @@ export default function AutomationsPage() {
         </a>
       </div>
 
-      <nav className="flex gap-1 border-b" aria-label={t('automationsPage.tabs.ariaLabel')}>
-        {JOB_TABS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => switchTab(key)}
-            aria-current={tab === key ? 'page' : undefined}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          >
-            {t(/* i18n-dynamic */ `automationsPage.tabs.${key}`)}
-          </button>
-        ))}
-      </nav>
+      <OverflowTabs
+        tabs={JOB_TABS.map((key): OverflowTab => ({
+          id: key,
+          label: t(/* i18n-dynamic */ `automationsPage.tabs.${key}`),
+          icon: null,
+        }))}
+        activeTab={tab}
+        onTabChange={(id) => switchTab(id as JobTab)}
+        testIdPrefix="automations-tab-"
+      />
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
