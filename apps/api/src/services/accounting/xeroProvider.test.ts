@@ -73,7 +73,7 @@ describe('buildAuthUrl', () => {
       response_type: 'code',
       client_id: 'client-abc',
       redirect_uri: 'https://breeze.example.com/api/v1/accounting/xero/callback',
-      scope: 'offline_access accounting.contacts accounting.invoices accounting.payments accounting.settings.read',
+      scope: 'offline_access accounting.contacts accounting.invoices accounting.payments accounting.settings',
       state: 'signed-state',
     });
   });

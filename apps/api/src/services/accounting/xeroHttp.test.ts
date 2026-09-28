@@ -49,8 +49,12 @@ afterEach(() => {
 
 describe('XERO_SCOPES (open verification item 3)', () => {
   it('is exactly the granular set, never the deprecated broad transactions scope', () => {
-    expect(XERO_SCOPES.join(' ')).toBe('offline_access accounting.contacts accounting.invoices accounting.payments accounting.settings.read');
+    expect(XERO_SCOPES.join(' ')).toBe('offline_access accounting.contacts accounting.invoices accounting.payments accounting.settings');
     expect(XERO_SCOPES).not.toContain('accounting.transactions');
+    // Lab X16 (2026-09-28): Xero refuses an Item create with 401
+    // insufficient_scope under accounting.settings.read; Items are written
+    // under accounting.settings, which also covers the settings reads.
+    expect(XERO_SCOPES).not.toContain('accounting.settings.read');
   });
 });
 
