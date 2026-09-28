@@ -14,6 +14,7 @@ import {
   xeroArray, XERO_AUTHORIZE_URL, XERO_SCOPES, type XeroCallContext,
 } from './xeroHttp';
 import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
+import { getXeroItem, listXeroItems, upsertXeroItem } from './xeroItems';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
   AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
@@ -52,6 +53,16 @@ function normalizeCurrency(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const code = value.trim().toUpperCase();
   return /^[A-Z]{3}$/.test(code) ? code : null;
+}
+
+/**
+ * Revenue accounts an invoice line or item can post to. Shared by the settings picker and the workbench listing.
+ * Invoice lines reference an AccountCode (W04), so a revenue account without a code is not selectable.
+ */
+function incomeAccountOptions(accounts: XeroAccount[]): ProviderSettingsOption[] {
+  return accounts
+    .filter((a) => a.Status === 'ACTIVE' && (a.Type === 'REVENUE' || a.Type === 'SALES') && a.Code)
+    .map((a) => ({ ref: a.Code as string, label: a.Name ? `${a.Code} · ${a.Name}` : (a.Code as string), detail: a.Type ?? null }));
 }
 
 function callContext(conn: AccountingConnection, timeoutMs?: number): XeroCallContext {
@@ -145,10 +156,7 @@ export class XeroProvider implements AccountingProvider {
         name: organisation?.Name ?? null,
         isDemoCompany: typeof organisation?.IsDemoCompany === 'boolean' ? organisation.IsDemoCompany : null,
       },
-      // Invoice lines reference an AccountCode (W04), so a revenue account without a code is not selectable.
-      incomeAccounts: active
-        .filter((a) => (a.Type === 'REVENUE' || a.Type === 'SALES') && a.Code)
-        .map((a): ProviderSettingsOption => ({ ref: a.Code as string, label: a.Name ? `${a.Code} · ${a.Name}` : (a.Code as string), detail: a.Type ?? null })),
+      incomeAccounts: incomeAccountOptions(accounts),
       // Bank accounts may have no Code; payments accept Account.AccountID (W05).
       bankAccounts: active
         .filter((a) => a.Type === 'BANK' && a.AccountID)
@@ -185,14 +193,34 @@ export class XeroProvider implements AccountingProvider {
     return upsertXeroContact(callContext(conn), customer, mapping);
   }
 
-  // --- later waves (capability false; unreachable behind the gates) ---
-  async listRemoteItems(_conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> { return notYet('item listing', 'W03'); }
-  async listRemoteIncomeAccounts(_conn: AccountingConnection): Promise<RemoteIncomeAccount[]> { return notYet('income account listing', 'W03'); }
+  // --- items and income accounts (Xero W03) ---
+  async listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]> {
+    return listXeroItems(callContext(conn), query);
+  }
+
+  async getRemoteItem(conn: AccountingConnection, id: string): Promise<RemoteItem | null> {
+    return getXeroItem(callContext(conn), id);
+  }
+
+  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+    const operation = 'Xero account list';
+    const body = requireXeroBody(await xeroApiGet<{ Accounts?: XeroAccount[] } | null>(callContext(conn), 'Accounts', operation), operation);
+    return incomeAccountOptions(xeroArray<XeroAccount>(body.Accounts))
+      .map((o) => ({ id: o.ref, displayName: o.label, accountType: o.detail ?? 'REVENUE' }));
+  }
+
   async upsertItem(
-    _conn: AccountingConnection,
-    _item: AccountingItemPayload,
-    _mapping: AccountingEntityMapping | null,
-  ): Promise<RemoteRef> { return notYet('item sync', 'W03'); }
+    conn: AccountingConnection,
+    item: AccountingItemPayload,
+    mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
+    return upsertXeroItem(callContext(conn), item, mapping, {
+      taxCodeRef: conn.defaultTaxCodeRef,
+      exemptTaxCodeRef: conn.defaultExemptTaxCodeRef,
+    });
+  }
+
+  // --- later waves (capability false; unreachable behind the gates) ---
   async pushInvoice(
     _conn: AccountingConnection,
     _invoice: AccountingInvoicePayload,
