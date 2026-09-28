@@ -44,6 +44,7 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 import {
   REAPER_DOMAINS,
   STALE_REAPER_INLINE_INTERVAL_MS,
+  STALE_REAPER_INLINE_STUCK_MS,
   initializeStaleCommandReaper,
   shutdownStaleCommandReaper,
   startStaleCommandReaperWithoutRedis,
@@ -104,6 +105,19 @@ describe('stale command reaper without Redis (#7105)', () => {
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(withSystemMock).toHaveBeenCalledTimes(REAPER_DOMAINS.length);
+  });
+
+  it('reports a cycle that never settles, once', async () => {
+    withSystemMock.mockImplementationOnce(() => new Promise<number>(() => {}));
+    startStaleCommandReaperWithoutRedis();
+    captureExceptionMock.mockClear();
+
+    await vi.advanceTimersByTimeAsync(STALE_REAPER_INLINE_INTERVAL_MS); // hangs
+    await vi.advanceTimersByTimeAsync(STALE_REAPER_INLINE_STUCK_MS);
+    await vi.advanceTimersByTimeAsync(STALE_REAPER_INLINE_STUCK_MS);
+
+    const stuck = captureExceptionMock.mock.calls.filter((c) => /still running after/.test(String(c[0])));
+    expect(stuck).toHaveLength(1);
   });
 
   it('reports a cycle in which every domain failed', async () => {

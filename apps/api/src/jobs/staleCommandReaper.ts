@@ -299,7 +299,20 @@ export async function propagateTimedOutDeviceCommand(params: {
   if (params.commandType && BACKUP_JOB_OWNING_COMMAND_TYPES.has(params.commandType) && params.deviceId) {
     const backupJobId = backupJobIdFromCommandPayload(payload);
     if (backupJobId) {
-      await failBackupJobForTimedOutCommand(backupJobId, params.deviceId, errorMsg);
+      // Contained like the patch finalizer above: a failure here must not
+      // skip the DR reconcile below. The backup reaper's own rules remain
+      // the backstop for the job row.
+      try {
+        await failBackupJobForTimedOutCommand(backupJobId, params.deviceId, errorMsg);
+      } catch (err) {
+        console.error(`[StaleCommandReaper] Failed to fail backup job ${backupJobId} for timed-out command ${commandId}:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    } else if (payload && ('jobId' in payload || 'backupJobId' in payload)) {
+      console.warn(
+        `[StaleCommandReaper] Timed-out ${params.commandType} command ${commandId} names no valid backup job id; ` +
+        'its job is left to the backup reaper',
+      );
     }
   }
 
@@ -1812,8 +1825,14 @@ function createWorker(): Worker<ReaperJobData> {
 /** Same cadence as the repeatable job, so reaping latency does not change. */
 export const STALE_REAPER_INLINE_INTERVAL_MS = REAP_INTERVAL_MS;
 
+/** A cycle running this long is reported as stuck (see the interval below). */
+export const STALE_REAPER_INLINE_STUCK_MS = 5 * STALE_REAPER_INLINE_INTERVAL_MS;
+
 let inlineTimer: ReturnType<typeof setInterval> | null = null;
 let inlineCycleRunning = false;
+let inlineCycleStartedAt = 0;
+let inlineStuckReported = false;
+let inlineGeneration = 0;
 
 /**
  * Run the reaper on an in-process interval instead of the BullMQ repeatable
@@ -1848,15 +1867,33 @@ export function startStaleCommandReaperWithoutRedis(): void {
   inlineTimer = setInterval(() => {
     // A slow cycle must not stack a second one on top of it (BullMQ gives
     // the same guarantee with concurrency: 1).
-    if (inlineCycleRunning) return;
+    if (inlineCycleRunning) {
+      // A cycle that never settles would silently stop the fallback, the only
+      // reaper this process has. Say so once per stuck cycle.
+      const runningMs = Date.now() - inlineCycleStartedAt;
+      if (!inlineStuckReported && runningMs >= STALE_REAPER_INLINE_STUCK_MS) {
+        inlineStuckReported = true;
+        const stuck = new Error(
+          `[StaleCommandReaper] Inline reaper cycle still running after ${Math.round(runningMs / 60000)} minutes; ` +
+          'no further cycles run until it settles',
+        );
+        console.error(stuck.message);
+        captureException(stuck);
+      }
+      return;
+    }
     inlineCycleRunning = true;
+    inlineCycleStartedAt = Date.now();
+    inlineStuckReported = false;
+    const generation = inlineGeneration;
     runStaleCommandReaperCycle()
       .catch((err) => {
         console.error('[StaleCommandReaper] Inline reaper cycle failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));
       })
       .finally(() => {
-        inlineCycleRunning = false;
+        // A cycle from before a stop/restart must not clear the new timer's flag.
+        if (generation === inlineGeneration) inlineCycleRunning = false;
       });
   }, STALE_REAPER_INLINE_INTERVAL_MS);
   inlineTimer.unref?.();
@@ -1867,6 +1904,8 @@ function stopInlineReaper(): void {
     clearInterval(inlineTimer);
     inlineTimer = null;
   }
+  inlineGeneration++;
+  inlineCycleRunning = false;
 }
 
 async function scheduleRepeatableJob(): Promise<void> {

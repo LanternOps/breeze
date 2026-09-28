@@ -3,9 +3,13 @@ package backup
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // #7105 item 1: the per-file deadline scales with size at the 64 KiB/s stall
@@ -73,6 +77,30 @@ func TestPublishLayoutManifest_DeadlineExpiryIsAStallNotAStop(t *testing.T) {
 	}
 	if errors.Is(err, errBackupStopped) {
 		t.Fatalf("deadline expiry reported as a job stop: %v", err)
+	}
+}
+
+func TestPublishSystemState_ArtifactDeadlineExpiryIsAStallNotAStop(t *testing.T) {
+	restoreFloor := setUploadTimeoutFloorForTest(50 * time.Millisecond)
+	defer restoreFloor()
+
+	staging := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staging, "reg.hiv"), []byte("hive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{{Path: "reg.hiv", SizeBytes: 4}},
+	}
+
+	err := publishSystemState(context.Background(), &stallOnceProvider{}, "snap-1", staging, manifest)
+	if err == nil {
+		t.Fatal("want an error when a system state artifact upload stalls past its deadline")
+	}
+	if errors.Is(err, errBackupStopped) {
+		t.Fatalf("deadline expiry reported as a job stop: %v", err)
+	}
+	if !strings.Contains(err.Error(), "upload stalled") {
+		t.Fatalf("want an 'upload stalled' error, got %v", err)
 	}
 }
 
