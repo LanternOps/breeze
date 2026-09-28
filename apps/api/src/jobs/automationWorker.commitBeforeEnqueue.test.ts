@@ -155,6 +155,8 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 import { createAutomationWorker } from './automationWorker';
+import { executeAutomationRun } from '../services/automationRuntime';
+import { isRedisAvailable } from '../services/redis';
 
 const SCHEDULE_AUTOMATION = {
   id: 'auto-sched-1',
@@ -305,6 +307,70 @@ describe('automation trigger handlers enqueue execute-run only after the run com
       targetDeviceIds: ['device-1'],
       triggerContext: expect.objectContaining({ alertId: 'alert-1', eventId: 'event-2', severity: 'high' }),
     }));
+  });
+
+  it('trigger-event still drains committed subject responses afterwards, with no context held', async () => {
+    mockSelectRows([EVENT_AUTOMATION]);
+    drainSubjectResponseOutboxMock.mockImplementation(async () => {
+      events.push({ event: 'drained', depth: txState.depth, open: txState.open });
+    });
+
+    await captured.processor!(EVENT_JOB);
+
+    const enqueued = events.findIndex((e) => e.event === 'enqueue:execute-run');
+    const drained = events.findIndex((e) => e.event === 'drained');
+    expect(drained).toBeGreaterThan(enqueued);
+    expect(events[drained]).toMatchObject({ depth: 0, open: 0 });
+  });
+
+  it.each([
+    ['trigger-schedule', SCHEDULE_AUTOMATION, SCHEDULE_JOB],
+    ['trigger-event', EVENT_AUTOMATION, EVENT_JOB],
+  ])('%s with Redis down: the inline run fallback starts only after the run commits', async (_name, automation, queueJob) => {
+    mockSelectRows([automation]);
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+    vi.mocked(executeAutomationRun).mockImplementation(async () => {
+      events.push({ event: 'inline_run', depth: txState.depth, open: txState.open });
+      return undefined as never;
+    });
+
+    try {
+      await captured.processor!(queueJob);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      vi.mocked(isRedisAvailable).mockReturnValue(true);
+    }
+
+    expect(addMock).not.toHaveBeenCalled();
+    const created = events.findIndex((e) => e.event === 'run_created');
+    const inline = events.findIndex((e) => e.event === 'inline_run');
+    expect(inline).toBeGreaterThan(created);
+    // Its own transaction (executeRunInline opens one); the run's has committed.
+    expect(events[inline]).toMatchObject({ depth: 1, open: 1 });
+  });
+
+  it.each([
+    ['trigger-schedule', SCHEDULE_AUTOMATION, SCHEDULE_JOB],
+    ['trigger-event', EVENT_AUTOMATION, EVENT_JOB],
+  ])('%s with Redis down: a rolled-back run never starts the inline fallback', async (_name, automation, queueJob) => {
+    mockSelectRows([automation]);
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+    vi.mocked(executeAutomationRun).mockImplementation(async () => {
+      events.push({ event: 'inline_run', depth: txState.depth, open: txState.open });
+      return undefined as never;
+    });
+    txState.failNextCommit = true;
+
+    try {
+      await expect(captured.processor!(queueJob)).rejects.toThrow('commit failed');
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      vi.mocked(isRedisAvailable).mockReturnValue(true);
+    }
+
+    expect(events.map((e) => e.event)).toEqual(['run_created']);
   });
 
   it('a skipped trigger enqueues nothing and returns the skip unchanged', async () => {
