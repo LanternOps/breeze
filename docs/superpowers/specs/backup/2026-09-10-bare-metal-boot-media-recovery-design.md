@@ -91,9 +91,13 @@ tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` plus
 each `.LOG1`/`.LOG2`, and every `Users\*\NTUSER.DAT`). If any one of
 SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, all four are
 replaced together from the independently captured system-state artifacts
-(`system-state/registry/<HIVE>`) and their `.LOG1`/`.LOG2` files are
-deleted — mixing a tree hive with an artifact hive from a different capture
-point would split LSA secrets from the machine password. If an artifact is
+(`system-state/registry/<HIVE>`). The tree's `.LOG1`/`.LOG2` for those
+hives are deleted and each artifact's own `.LOG1`/`.LOG2` are installed
+beside it when the artifact carries them: a hive copied from a VSS shadow
+copy is dirty, and loading it replays those logs (a `reg save` artifact has
+none). A tree log is never left beside an artifact hive — mixing a tree
+hive or log with an artifact hive from a different capture point would
+split LSA secrets from the machine password. If an artifact is
 missing too, the restore fails naming the hive.
 
 Every hive is mounted at a run-scoped key (`HKLM\BRZ_<runid>_<HIVE>`),
