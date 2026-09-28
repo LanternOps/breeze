@@ -518,7 +518,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     ]);
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
+    expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD', archived: false }] });
     // Xero W01: the route's :provider is the connection target.
     expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', { provider: 'quickbooks' }, expect.any(Function));
     await expectAuthContextRunner(resolveConnectionAndTokenMock.mock.calls[0]![2]);
@@ -531,9 +531,23 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', remoteVersion: '0' }]);
     const res = await getCandidates('?entityType=catalog_item&q=Widget');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1' }] });
+    expect(await res.json()).toEqual({ data: [{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', archived: false }] });
     expect(listRemoteItemsMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Widget');
     expect(listRemoteCustomersMock).not.toHaveBeenCalled();
+  });
+
+  it('marks archived remote candidates (Xero W03)', async () => {
+    resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
+    listRemoteCustomersMock.mockResolvedValue([
+      { id: 'a', displayName: 'Live', active: true },
+      { id: 'b', displayName: 'Old', active: false },
+    ]);
+    const res = await getCandidates('?entityType=org&q=ol');
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([
+      { id: 'a', displayName: 'Live', email: null, currencyCode: null, archived: false },
+      { id: 'b', displayName: 'Old', email: null, currencyCode: null, archived: true },
+    ]);
   });
 
   it('works with no q (optional)', async () => {

@@ -12,8 +12,9 @@ vi.mock('./accountingRateLimit', () => ({
 }));
 
 import {
-  decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections, requestXeroTokens, xeroApiError, xeroApiGet,
-  xeroTokenError, XERO_CONNECTIONS_URL, XERO_REFRESH_TOKEN_LIFETIME_MS, XERO_SCOPES, XERO_TOKEN_URL,
+  classifyXeroValidation, decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections, parseXeroDate,
+  requestXeroTokens, requireXeroBody, xeroApiError, xeroApiGet, xeroApiWrite, xeroArray, xeroIdempotencyKey,
+  xeroQuery, xeroTokenError, XERO_CONNECTIONS_URL, XERO_REFRESH_TOKEN_LIFETIME_MS, XERO_SCOPES, XERO_TOKEN_URL,
 } from './xeroHttp';
 import { AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS } from './accountingProviderError';
 
@@ -360,5 +361,179 @@ describe('xeroApiGet', () => {
     );
     expect(err).toMatchObject({ kind: 'transient' });
     expect(err.message).not.toContain('proxy');
+  });
+});
+
+describe('xeroQuery (Xero W03)', () => {
+  it('encodes values and drops undefined', () => {
+    expect(xeroQuery({ page: 2, pageSize: 1000, includeArchived: true, searchTerm: 'a b&c', skip: undefined }))
+      .toBe('?page=2&pageSize=1000&includeArchived=true&searchTerm=a%20b%26c');
+  });
+  it('encodes a where clause with quotes and a colon', () => {
+    expect(xeroQuery({ where: 'ContactNumber=="breeze:0f0e"' })).toBe('?where=ContactNumber%3D%3D%22breeze%3A0f0e%22');
+  });
+  it('returns an empty string for no params', () => {
+    expect(xeroQuery({})).toBe('');
+  });
+});
+
+describe('xeroIdempotencyKey (Xero W03)', () => {
+  it('is deterministic and within Xero\'s 128-char limit', () => {
+    const a = xeroIdempotencyKey('ten-A', 'PUT', 'Contacts', '{"Contacts":[{"Name":"Acme"}]}');
+    expect(a).toBe(xeroIdempotencyKey('ten-A', 'PUT', 'Contacts', '{"Contacts":[{"Name":"Acme"}]}'));
+    expect(a).toMatch(/^breeze-[0-9a-f]{64}$/);
+  });
+  it.each<[string, string, string, string, string]>([
+    ['tenant', 'ten-B', 'PUT', 'Contacts', '{}'],
+    ['method', 'ten-A', 'POST', 'Contacts', '{}'],
+    ['path', 'ten-A', 'PUT', 'Items', '{}'],
+    ['body', 'ten-A', 'PUT', 'Contacts', '{"x":1}'],
+  ])('changes when the %s changes', (_label, tenant, method, path, body) => {
+    expect(xeroIdempotencyKey(tenant, method, path, body)).not.toBe(xeroIdempotencyKey('ten-A', 'PUT', 'Contacts', '{}'));
+  });
+});
+
+describe('xeroApiWrite (Xero W03)', () => {
+  const ctx = { connectionId: 'c1', tenantId: 'ten-A', accessToken: 'at', rate: SPEC };
+
+  it('sends JSON through the slot with tenant, auth and a request-derived Idempotency-Key', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Contacts: [{ ContactID: 'x' }] }, 200, { 'x-daylimit-remaining': '900' }));
+    const body = { Contacts: [{ Name: 'Acme' }] };
+    await expect(xeroApiWrite(ctx, 'PUT', 'Contacts', body, 'Xero contact create')).resolves.toEqual({ Contacts: [{ ContactID: 'x' }] });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.xero.com/api.xro/2.0/Contacts');
+    expect(init.method).toBe('PUT');
+    expect(init.body).toBe(JSON.stringify(body));
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer at', 'xero-tenant-id': 'ten-A', Accept: 'application/json', 'Content-Type': 'application/json',
+      'Idempotency-Key': xeroIdempotencyKey('ten-A', 'PUT', 'Contacts', JSON.stringify(body)),
+    });
+    expect(slotMock).toHaveBeenCalledWith('xero', SPEC, 'c1', expect.any(Function));
+    expect(noteMock).toHaveBeenCalledWith('xero', 'c1', 900);
+  });
+
+  it('identical requests carry identical keys (a replay inside 6 minutes is deduplicated by Xero)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Contacts: [] }))
+      .mockResolvedValueOnce(json({ Contacts: [] }));
+    const body = { Contacts: [{ Name: 'Acme', ContactNumber: 'breeze:o1' }] };
+    await xeroApiWrite(ctx, 'PUT', 'Contacts', body, 'op');
+    await xeroApiWrite(ctx, 'PUT', 'Contacts', body, 'op');
+    const keyOf = (i: number) => ((fetchMock.mock.calls[i] as [string, RequestInit])[1].headers as Record<string, string>)['Idempotency-Key'];
+    expect(keyOf(0)).toBe(keyOf(1));
+  });
+
+  it('a POST update carries no key, so an A → B → A edit inside 6 minutes is never replayed (quorum 1)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Contacts: [] }))
+      .mockResolvedValueOnce(json({ Contacts: [] }));
+    await xeroApiWrite(ctx, 'POST', 'Contacts/xc-1', { Contacts: [{ ContactID: 'xc-1', Name: 'A' }] }, 'op');
+    await xeroApiWrite(ctx, 'POST', 'Contacts/xc-1', { Contacts: [{ ContactID: 'xc-1', Name: 'A' }] }, 'op');
+    for (const i of [0, 1]) {
+      const headers = (fetchMock.mock.calls[i] as [string, RequestInit])[1].headers as Record<string, string>;
+      expect(headers).not.toHaveProperty('Idempotency-Key');
+      expect(headers['Content-Type']).toBe('application/json');
+    }
+  });
+
+  it('uses an explicit key when one is given', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({}));
+    await xeroApiWrite(ctx, 'POST', 'Items', {}, 'op', { idempotencyKey: 'breeze-explicit' });
+    expect(((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>)['Idempotency-Key']).toBe('breeze-explicit');
+  });
+
+  it('translates a duplicate-name 400 to validation + duplicate_name, with the full message kept out of the thrown message', async () => {
+    const longName = 'A'.repeat(240);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({
+      ErrorNumber: 10, Type: 'ValidationException', Message: 'A validation exception occurred',
+      Elements: [{ ValidationErrors: [{ Message: `The contact name ${longName} is already assigned to another contact. The contact name must be unique across all active contacts.` }] }],
+    }, 400));
+    const err = await xeroApiWrite(ctx, 'PUT', 'Contacts', {}, 'Xero contact create').catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'validation', provider: 'xero', providerCode: 'duplicate_name', httpStatus: 400 });
+    expect((err as Error).message).toBe('Xero contact create failed with 400');
+  });
+
+  it.each(['insufficent_scope', 'insufficient_scope'])('classifies a 401/403 whose WWW-Authenticate names %s as validation + insufficient_scope', async (spelling) => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 401, headers: { 'www-authenticate': `Bearer error="${spelling}"` } }))
+      .mockResolvedValueOnce(new Response('', { status: 403, headers: { 'www-authenticate': `Bearer error="${spelling}"` } }));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Items', {}, 'Xero item create')).rejects.toMatchObject({ kind: 'validation', providerCode: 'insufficient_scope', httpStatus: 401 });
+    await expect(xeroApiWrite(ctx, 'PUT', 'Items', {}, 'Xero item create')).rejects.toMatchObject({ kind: 'validation', providerCode: 'insufficient_scope', httpStatus: 403 });
+  });
+
+  it('keeps a bare 401 transient (link removed) — unchanged W02 behaviour', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('', { status: 401 }));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Items', {}, 'op')).rejects.toMatchObject({ kind: 'transient', providerCode: undefined });
+  });
+
+  it('propagates a limiter refusal untouched', async () => {
+    const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'slot', retryAfterMs: 1000, throttleSource: 'local' });
+    slotMock.mockImplementationOnce(async () => { throw refusal; });
+    await expect(xeroApiWrite(ctx, 'PUT', 'Contacts', {}, 'op')).rejects.toBe(refusal);
+  });
+
+  it('a timeout is a Xero-attributed transient', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new DOMException('t', 'TimeoutError'));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Contacts', {}, 'Xero contact create')).rejects.toMatchObject({ kind: 'transient', message: 'Xero contact create timed out' });
+  });
+
+  it('xeroApiGet still sends no body, no Content-Type and no Idempotency-Key', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Items: [] }));
+    await xeroApiGet(ctx, 'Items?unitdp=4', 'op');
+    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+    expect(init.headers).not.toHaveProperty('Idempotency-Key');
+    expect(init.headers).not.toHaveProperty('Content-Type');
+  });
+});
+
+describe('classifyXeroValidation (Xero W03)', () => {
+  const body = (...messages: string[]) => JSON.stringify({ Elements: [{ ValidationErrors: messages.map((Message) => ({ Message })) }] });
+  it.each([
+    ['The contact name Acme is already assigned to another contact. The contact name must be unique across all active contacts.', 'duplicate_name'],
+    ['The contact number breeze:o1 is already assigned to another contact. The contact number must be unique across all contacts.', 'duplicate_key'],
+    ["Price List Item with Code 'abc' already exists", 'duplicate_key'],
+    ["Item code 'abc' already exists", 'duplicate_key'],
+    ['Account code is invalid', undefined],
+  ] as const)('%s → %s', (message, expected) => {
+    expect(classifyXeroValidation(body(message))).toBe(expected);
+  });
+  it('finds the verdict in any element, not only the first message', () => {
+    expect(classifyXeroValidation(body('Email address must be valid.', 'The contact name Acme is already assigned to another contact.'))).toBe('duplicate_name');
+  });
+  it('returns undefined for a non-JSON or empty body', () => {
+    expect(classifyXeroValidation('<html>')).toBeUndefined();
+    expect(classifyXeroValidation('')).toBeUndefined();
+  });
+});
+
+describe('parseXeroDate (Xero W03)', () => {
+  it.each([
+    ['/Date(1503348544227+0000)/', '2017-08-21T20:49:04.227Z'],
+    ['/Date(1573755038314)/', '2019-11-14T18:10:38.314Z'],
+    ['/Date(1503348544227-0800)/', '2017-08-21T20:49:04.227Z'],
+    ['2026-09-27T10:00:00', '2026-09-27T10:00:00.000Z'],
+  ])('%s → %s', (input, expected) => {
+    expect(parseXeroDate(input)).toBe(expected);
+  });
+  it.each([[undefined], [null], [''], ['/Date(abc)/'], [42]])('returns null for %s', (input) => {
+    expect(parseXeroDate(input)).toBeNull();
+  });
+});
+
+describe('requireXeroBody / xeroArray (moved from xeroProvider, Xero W03)', () => {
+  it('requireXeroBody passes an object through and refuses null as a Xero-attributed transient', () => {
+    const body = { Items: [] };
+    expect(requireXeroBody(body, 'op')).toBe(body);
+    expect(() => requireXeroBody(null, 'Xero item list')).toThrow(expect.objectContaining({
+      kind: 'transient', provider: 'xero', message: 'Xero item list returned an unexpected response',
+    }));
+  });
+  it('xeroArray returns a real array as-is and anything else as empty', () => {
+    const rows = [{ a: 1 }];
+    expect(xeroArray(rows)).toBe(rows);
+    expect(xeroArray(undefined)).toEqual([]);
+    expect(xeroArray({ 0: 'x' })).toEqual([]);
   });
 });

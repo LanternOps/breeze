@@ -260,13 +260,67 @@ describe('releaseConnection (disconnect)', () => {
   });
 });
 
+describe('contacts (Xero W03)', () => {
+  it('listRemoteCustomers delegates with the connection tenant and query', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ pagination: { pageCount: 1 }, Contacts: [] }));
+    await xeroProvider.listRemoteCustomers(conn(), 'ac');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/Contacts?page=1&pageSize=1000&includeArchived=true&searchTerm=ac');
+    expect(init.headers).toMatchObject({ 'xero-tenant-id': 'ten-A', Authorization: 'Bearer at' });
+  });
+  it('declares getRemoteCustomer', () => {
+    expect(typeof xeroProvider.getRemoteCustomer).toBe('function');
+  });
+  it('still declares only the connect capability through W03a', () => {
+    expect(xeroProvider.capabilities).toMatchObject({ connect: true, mapping: false, customerImport: false });
+  });
+});
+
+describe('items and income accounts (Xero W03)', () => {
+  it('upsertItem passes the connection tax defaults', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Items: [] }))
+      .mockResolvedValueOnce(json({ Items: [{ ItemID: 'xi-1', Code: 'fw-100-0000000000' }] }));
+    await xeroProvider.upsertItem(conn({ defaultTaxCodeRef: 'OUTPUT2', defaultExemptTaxCodeRef: 'EXEMPTOUTPUT' }), {
+      catalogItemId: '11111111-2222-4333-8444-555555555555', name: 'FW', sku: 'FW-100', description: null,
+      type: 'Service', unitPrice: '10', currencyCode: 'GBP', taxable: false, active: true, incomeAccountRef: '200',
+    }, null);
+    expect(JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string).Items[0].SalesDetails)
+      .toEqual({ UnitPrice: 10, AccountCode: '200', TaxType: 'EXEMPTOUTPUT' });
+  });
+  it('getRemoteItem delegates to a single-item read', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Items: [{ ItemID: 'xi-1', Code: 'AV-1', Name: 'Antivirus' }] }));
+    await expect(xeroProvider.getRemoteItem(conn(), 'xi-1')).resolves.toMatchObject({ id: 'xi-1', displayName: 'Antivirus', sku: 'AV-1' });
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toBe('https://api.xero.com/api.xro/2.0/Items/xi-1?unitdp=4');
+  });
+  it('listRemoteIncomeAccounts returns the same accounts the settings picker offers', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Accounts: [
+      { Code: '200', Name: 'Sales', Type: 'REVENUE', Status: 'ACTIVE' },
+      { Code: '260', Name: 'Other Revenue', Type: 'SALES', Status: 'ACTIVE' },
+      { Code: '090', Name: 'Bank', Type: 'BANK', Status: 'ACTIVE', AccountID: 'b1' },
+      { Code: '201', Name: 'Old', Type: 'REVENUE', Status: 'ARCHIVED' },
+      { Name: 'No code', Type: 'REVENUE', Status: 'ACTIVE' },
+    ] }));
+    await expect(xeroProvider.listRemoteIncomeAccounts(conn())).resolves.toEqual([
+      { id: '200', displayName: '200 · Sales', accountType: 'REVENUE' },
+      { id: '260', displayName: '260 · Other Revenue', accountType: 'SALES' },
+    ]);
+  });
+  it('has no W03 method left behind a capability_unavailable refusal', async () => {
+    // a fresh Response per call: a body reads once
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => json({ Items: [], Contacts: [], Accounts: [] }));
+    for (const call of [
+      () => xeroProvider.listRemoteCustomers(conn()), () => xeroProvider.listRemoteItems(conn()),
+      () => xeroProvider.listRemoteIncomeAccounts(conn()),
+    ]) {
+      await expect(call()).resolves.toBeDefined();
+    }
+    expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
 describe('methods behind later waves', () => {
   it.each([
-    ['listRemoteCustomers', () => xeroProvider.listRemoteCustomers(conn())],
-    ['listRemoteItems', () => xeroProvider.listRemoteItems(conn())],
-    ['listRemoteIncomeAccounts', () => xeroProvider.listRemoteIncomeAccounts(conn())],
-    ['upsertCustomer', () => xeroProvider.upsertCustomer(conn(), {} as any, null)],
-    ['upsertItem', () => xeroProvider.upsertItem(conn(), {} as any, null)],
     ['pushInvoice', () => xeroProvider.pushInvoice(conn(), {} as any, [])],
     ['voidInvoice', () => xeroProvider.voidInvoice(conn(), {} as any, {} as any)],
     ['createPayment', () => xeroProvider.createPayment(conn(), {} as any)],

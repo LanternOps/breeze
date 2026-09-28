@@ -24,7 +24,6 @@ import {
 import {
   importAccountingCustomers,
   listAccountingCustomersAnnotated,
-  AccountingImportError,
 } from '../../services/accounting/accountingCustomerImport';
 import {
   listMappingProposals,
@@ -50,7 +49,7 @@ import { rateLimitRetryAfterMs } from '../../services/accounting/accountingProvi
 import { releaseProviderConnection } from '../../services/accounting/accountingProviderRelease';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import { listProvidersHandler, providerGateResponse } from './providerGate';
-import { handleMappingError, setRetryAfter } from './routeErrors';
+import { handleImportError, handleMappingError, setRetryAfter } from './routeErrors';
 import { registerConnectionSetupRoutes } from './connectionSetupRoutes';
 import { connectRedirectPath, finalizeConnection, homeCurrencyField, readPriorRealm } from './connectFinalize';
 import { completeTenantSelectingCallback } from './tenantConnect';
@@ -218,12 +217,6 @@ const remoteCandidatesQuerySchema = partnerQuerySchema.extend({
   entityType: z.enum(['org', 'catalog_item']),
   q: z.string().max(255).optional(),
 });
-
-function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  // AccountingImportError.status is a narrowed literal union (400|404|409|502), so no cast.
-  if (err instanceof AccountingImportError) return c.json({ error: err.message, code: err.code }, err.status);
-  throw err;
-}
 
 /**
  * Deliberately a DIFFERENT body shape from `handleMappingError` (./routeErrors)
@@ -1219,10 +1212,10 @@ accountingRoutes.get(
       const providerImpl = getAccountingProvider(provider);
       const data = entityType === 'org'
         ? (await runOutsideDbContext(() => providerImpl.listRemoteCustomers(liveConn, q))).map((r) => ({
-          id: r.id, displayName: r.displayName, email: r.email ?? null, currencyCode: r.currencyCode ?? null,
+          id: r.id, displayName: r.displayName, email: r.email ?? null, currencyCode: r.currencyCode ?? null, archived: r.active === false,
         }))
         : (await runOutsideDbContext(() => providerImpl.listRemoteItems(liveConn, q))).map((r) => ({
-          id: r.id, displayName: r.displayName, sku: r.sku ?? null,
+          id: r.id, displayName: r.displayName, sku: r.sku ?? null, archived: r.active === false,
         }));
       return c.json({ data });
     } catch (err) {

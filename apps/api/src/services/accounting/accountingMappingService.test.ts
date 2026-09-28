@@ -18,6 +18,7 @@ const {
   upsertItemMock,
   captureExceptionMock,
   writeAuditEventMock,
+  providerExtras,
   ReauthRequiredError,
 } = vi.hoisted(() => {
   class ReauthRequiredError extends Error {
@@ -38,6 +39,8 @@ const {
     upsertItemMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     writeAuditEventMock: vi.fn(),
+    // Optional provider hooks (e.g. getRemoteCustomer) a test opts into; cleared per test.
+    providerExtras: {} as Record<string, unknown>,
     ReauthRequiredError,
   };
 });
@@ -90,6 +93,7 @@ vi.mock('./providerRegistry', () => ({
     listRemoteIncomeAccounts: listRemoteIncomeAccountsMock,
     upsertCustomer: upsertCustomerMock,
     upsertItem: upsertItemMock,
+    ...providerExtras,
   }),
   accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
@@ -328,6 +332,7 @@ function stubUpdate() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const k of Object.keys(providerExtras)) delete providerExtras[k];
   redisMock.set.mockResolvedValue('OK');
   redisMock.eval.mockResolvedValue(1);
   ctx.depth = 0;
@@ -1636,5 +1641,150 @@ describe('rate limiting (Xero W01 Task 14)', () => {
   it('AccountingMappingError carries retryAfterMs only when given', () => {
     expect(new AccountingMappingError('rate_limited', 429, 'x', { retryAfterMs: 1_000 }).retryAfterMs).toBe(1_000);
     expect(new AccountingMappingError('provider_error', 502, 'x').retryAfterMs).toBeUndefined();
+  });
+});
+
+describe('provider refusals the user resolves (Xero W03)', () => {
+  const refusal = (providerCode: string) =>
+    new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'Xero contact update', httpStatus: 400, providerCode });
+
+  beforeEach(() => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider: 'xero' }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'xc-1', remoteSyncToken: null, syncStatus: 'synced' })],
+    });
+  });
+
+  it('duplicate_name on a CREATE → 409 link-instead advice with the name in details, persisted, no Sentry (Review Focus 2)', async () => {
+    // No remote ref yet: Breeze was creating, so linking to the existing record is the right advice.
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
+    });
+    upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_name'));
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: 'duplicate_name', status: 409, details: { remoteName: 'Acme' },
+      message: 'Xero already has a customer named "Acme" — link this organization to it instead of creating a new one',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('duplicate_name on an UPDATE → 409 rename advice, NO details (a Link-it would orphan the linked record)', async () => {
+    // beforeEach's row is already linked to xc-1: the rename collided with a different, unlinked contact.
+    upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_name'));
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: 'duplicate_name', status: 409,
+      message: 'Xero already has a different customer named "Acme" — rename this organization or that Xero customer, then sync again',
+    });
+    expect((err as AccountingMappingError).details).toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('remote_archived → 409 remote_archived', async () => {
+    upsertCustomerMock.mockRejectedValueOnce(refusal('remote_archived'));
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: 'remote_archived', status: 409,
+      message: 'The Xero customer for "Acme" is archived — restore it in Xero, then sync again',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('remote_missing → 409 remote_missing (a mapped record deleted in the provider)', async () => {
+    upsertCustomerMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'not_found', provider: 'xero', operation: 'Xero contact update', httpStatus: 404, providerCode: 'remote_missing' }));
+    await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({
+      code: 'remote_missing', status: 409,
+      message: 'The Xero customer linked to "Acme" no longer exists — unlink it and map it again',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a bare not_found (e.g. QuickBooks 610) is still the sanitized 502 — QuickBooks unchanged', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks' }));
+    upsertCustomerMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'not_found', provider: 'quickbooks', operation: 'QuickBooks customer upsert', httpStatus: 400, providerCode: '610' }));
+    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
+  });
+
+  it('duplicate_key (two provider records claim this item) → 409 mapping_conflict', async () => {
+    upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_key'));
+    await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({ code: 'mapping_conflict', status: 409 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('insufficient_scope → 409 provider_permission (Review Focus 5)', async () => {
+    upsertCustomerMock.mockRejectedValueOnce(refusal('insufficient_scope'));
+    await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({
+      code: 'provider_permission', status: 409,
+      message: 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission',
+    });
+  });
+
+  it('a QuickBooks validation fault (e.g. 6240 duplicate name) is still the sanitized 502 — QuickBooks unchanged', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks' }));
+    upsertCustomerMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks customer upsert', httpStatus: 400, providerCode: '6240' }));
+    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({
+      code: 'provider_error', status: 502, message: 'QuickBooks rejected the customer sync (HTTP 400)',
+    });
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('a listing refused for scope → 409 provider_permission, not a 502', async () => {
+    listRemoteItemsMock.mockRejectedValueOnce(refusal('insufficient_scope'));
+    await expect(listMappingProposals({ partnerId: PARTNER, provider: 'xero', entityType: 'catalog_item' }, runCtx))
+      .rejects.toMatchObject({ code: 'provider_permission', status: 409 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('confirm reads one record when the provider can (Xero W03)', () => {
+  it('uses getRemoteCustomer instead of listing every customer', async () => {
+    const getRemoteCustomer = vi.fn().mockResolvedValue({ id: 'xc-1', displayName: 'Acme', remoteVersion: '2026-09-27T10:00:00.000Z', currencyCode: 'GBP' });
+    providerExtras.getRemoteCustomer = getRemoteCustomer;
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    const row = await saveMappingDecision(confirmOrg('xc-1'), runCtx);
+    expect(getRemoteCustomer).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String) }), 'xc-1');
+    expect(listRemoteCustomersMock).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ remoteEntityId: 'xc-1', remoteSyncToken: '2026-09-27T10:00:00.000Z', remoteCurrencyCode: 'GBP' });
+  });
+  it('a null single read is entity_not_found (404)', async () => {
+    providerExtras.getRemoteCustomer = vi.fn().mockResolvedValue(null);
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    await expect(saveMappingDecision(confirmOrg('xc-9'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+  it('uses getRemoteItem for a catalog item', async () => {
+    const getRemoteItem = vi.fn().mockResolvedValue({ id: 'xi-1', displayName: 'Widget', remoteVersion: '2026-09-27T10:00:00.000Z' });
+    providerExtras.getRemoteItem = getRemoteItem;
+    stubReads({ items: [{ id: ITEM_A, name: 'Widget', sku: 'W-1' }] });
+    await saveMappingDecision({
+      partnerId: PARTNER, provider: 'quickbooks', breezeEntityType: 'catalog_item', breezeEntityId: ITEM_A, decision: 'confirmed', remoteEntityId: 'xi-1',
+    }, runCtx);
+    expect(getRemoteItem).toHaveBeenCalledWith(expect.anything(), 'xi-1');
+    expect(listRemoteItemsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('operator messages name the connected provider (Xero W03)', () => {
+  it('entity_not_found names Xero for a Xero connection', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider: 'xero' }));
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    listRemoteCustomersMock.mockResolvedValue([]);
+    await expect(saveMappingDecision(confirmOrg('xc-9', { provider: 'xero' }), runCtx))
+      .rejects.toMatchObject({ code: 'entity_not_found', message: 'Xero Customer xc-9 was not found' });
+  });
+  it('no string literal in the mapping or import service names QuickBooks', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    for (const file of ['accountingMappingService.ts', 'accountingCustomerImport.ts']) {
+      const code = readFileSync(join(__dirname, file), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1');
+      expect({ file, hits: code.match(/.*QuickBooks.*/g) ?? [] }).toEqual({ file, hits: [] });
+    }
   });
 });

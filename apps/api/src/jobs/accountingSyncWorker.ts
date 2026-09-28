@@ -183,6 +183,16 @@ const MAPPING_TERMINAL_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set(
   'not_connected', 'reauth_required', 'mapping_conflict', 'entity_not_found',
   'income_account_required', 'mapping_not_ready', 'currency_mismatch',
   'item_price_required', 'record_failed',
+  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
+]);
+
+/**
+ * Terminal refusals the USER resolves in the workbench (Xero W03): logged, never
+ * retried, and not reported to Sentry — they are expected outcomes, not incidents.
+ * Every other terminal code keeps its capture (QuickBooks telemetry unchanged).
+ */
+const MAPPING_USER_RESOLVABLE_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set([
+  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
 ]);
 
 let accountingSyncQueue: Queue<AccountingSyncJobData> | null = null;
@@ -274,10 +284,12 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
         // unexpected failures use the queue's existing attempts/backoff policy.
         if (!(err instanceof AccountingMappingError) || !MAPPING_TERMINAL_CODES.has(err.code)) throw err;
         console.error('[AccountingSyncWorker] terminal mapping failure, not retrying', err.code, err.message);
-        captureException(err, undefined, {
-          service: 'accountingSyncWorker', accounting_job_type: data.type,
-          accounting_entity_id: data.breezeEntityId, accounting_error_code: err.code,
-        });
+        if (!MAPPING_USER_RESOLVABLE_CODES.has(err.code)) {
+          captureException(err, undefined, {
+            service: 'accountingSyncWorker', accounting_job_type: data.type,
+            accounting_entity_id: data.breezeEntityId, accounting_error_code: err.code,
+          });
+        }
       }
       return;
     }

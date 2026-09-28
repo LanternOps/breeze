@@ -15,10 +15,11 @@
  * HTTP 429 from Xero is classified `rate_limited` BEFORE anything else, whatever
  * its body says, so it is never read as a reauth or validation verdict.
  */
+import { createHash } from 'node:crypto';
 import { runOutsideDbContext } from '../../db';
 import { xeroOAuthConfig } from '../../config/env';
 import {
-  AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS, type AccountingProviderErrorKind,
+  AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS, type AccountingProviderErrorKind, type AccountingRefusalCode,
 } from './accountingProviderError';
 import { noteDailyRemaining, withProviderCallSlot } from './accountingRateLimit';
 import { parseRetryAfterMs } from './retryAfter';
@@ -148,24 +149,61 @@ export function xeroFaultMessage(text: string): string | null {
   }
 }
 
-function apiKindFor(status: number): AccountingProviderErrorKind {
+function allValidationMessages(text: string): string[] {
+  try {
+    const body = JSON.parse(text) as XeroRawError | null;
+    if (!body || typeof body !== 'object') return [];
+    return (body.Elements ?? [])
+      .flatMap((e) => e?.ValidationErrors ?? [])
+      .map((v) => v?.Message)
+      .filter((m): m is string => typeof m === 'string' && m.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Structured verdict for a Xero 400 (refinement 5). Runs over EVERY validation
+ * message, untruncated — `xeroFaultMessage` keeps only the first, cut at 200
+ * chars, and a contact name alone may be 255.
+ */
+export function classifyXeroValidation(text: string): AccountingRefusalCode | undefined {
+  for (const message of allValidationMessages(text)) {
+    if (/^The contact name .+ is already assigned to another contact/is.test(message)) return 'duplicate_name';
+    if (/^The contact number .+ is already assigned to another contact/is.test(message)) return 'duplicate_key';
+    if (/^(Price List Item|Item code) .+ already exists/is.test(message)) return 'duplicate_key';
+  }
+  return undefined;
+}
+
+/** Matches `insufficient_scope` and Xero's documented misspelling `insufficent_scope` (the optional `i`). */
+const INSUFFICIENT_SCOPE_RE = /insuffici?ent_scope/i;
+
+function apiKindFor(status: number, headers: Headers): AccountingProviderErrorKind {
   // 429 first: a throttle is never read as any other verdict (W01c P5).
   if (status === 429) return 'rate_limited';
+  // A token that lacks a scope is a partner-fixable refusal (reconnect with the
+  // scope), never a transient to retry forever.
+  if ((status === 401 || status === 403) && INSUFFICIENT_SCOPE_RE.test(headers.get('www-authenticate') ?? '')) return 'validation';
   if (status === 400) return 'validation';
   if (status === 404) return 'not_found';
-  return 'transient'; // 401/403 (link removed or scope missing), 5xx, anything else
+  return 'transient'; // 401/403 (link removed), 5xx, anything else
 }
 
 export function xeroApiError(operation: string, status: number, headers: Headers, text: string): AccountingProviderError {
-  const kind = apiKindFor(status);
+  const kind = apiKindFor(status, headers);
+  const providerCode = kind === 'rate_limited'
+    ? headers.get('x-rate-limit-problem') ?? undefined // 'minute' | 'day' | 'appminute' | 'concurrent'
+    : kind === 'validation'
+      ? (status === 400 ? classifyXeroValidation(text) : 'insufficient_scope')
+      : undefined;
   return providerError({
     kind,
     operation,
     message: `${operation} failed with ${status}`,
     httpStatus: status,
     providerMessage: xeroFaultMessage(text) ?? undefined,
-    // X-Rate-Limit-Problem: 'minute' | 'day' | 'appminute' | 'concurrent'.
-    providerCode: kind === 'rate_limited' ? headers.get('x-rate-limit-problem') ?? undefined : undefined,
+    providerCode,
     retryAfterMs: kind === 'rate_limited' ? retryAfterFor(headers) : undefined,
     logBody: text.slice(0, 500),
   });
@@ -349,8 +387,60 @@ export interface XeroCallContext {
   timeoutMs?: number;
 }
 
-/** A tenant-scoped Accounting API GET through the rate-limit slot. */
-export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operation: string): Promise<T> {
+export function xeroQuery(params: Record<string, string | number | boolean | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+/**
+ * One key per immutable request (refinement 9): an identical retry replays inside
+ * Xero's 6-minute window; any change to tenant, method, path or body yields a new
+ * key, so Xero's "used with a different request" 400 cannot happen. Keys are
+ * per-app at Xero, so the tenant is part of the input.
+ */
+export function xeroIdempotencyKey(tenantId: string, method: string, path: string, body: string): string {
+  return `breeze-${createHash('sha256').update([tenantId, method, path, body].join('\n')).digest('hex')}`;
+}
+
+/**
+ * `xeroApiGet`/`xeroApiWrite` type their return as `T` but only guarantee valid
+ * JSON — a `null` body (or any non-object shape) parses cleanly and would
+ * otherwise throw a bare TypeError the first time a caller reads a property off
+ * it. Never wraps an error the call itself threw; it only guards the parsed
+ * payload once that call has already succeeded.
+ */
+export function requireXeroBody<T extends object>(body: T | null, operation: string): T {
+  if (body === null || typeof body !== 'object') {
+    throw new AccountingProviderError({
+      kind: 'transient',
+      provider: 'xero',
+      operation,
+      message: `${operation} returned an unexpected response`,
+    });
+  }
+  return body;
+}
+
+/** A field Xero documents as an array can still come back missing or of the
+ *  wrong shape on a malformed/partial response; treat anything but a real
+ *  array as empty rather than let `.filter`/`.length` throw. */
+export function xeroArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+async function xeroApiCall<T>(
+  ctx: XeroCallContext, method: 'GET' | 'PUT' | 'POST', path: string, operation: string,
+  write?: { body: string; idempotencyKey?: string },
+): Promise<T> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${ctx.accessToken}`,
+    'xero-tenant-id': ctx.tenantId,
+    Accept: 'application/json',
+  };
+  if (write) headers['Content-Type'] = 'application/json';
+  if (write?.idempotencyKey) headers['Idempotency-Key'] = write.idempotencyKey;
   // The slot wraps only this leaf round trip (request + body read), like the
   // QuickBooks boundary; the abort budget starts inside the slot, so a queue
   // wait for a slot never eats into Xero's own response time.
@@ -359,15 +449,7 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
   const { response, text } = await withProviderCallSlot('xero', ctx.rate, ctx.connectionId, () => xeroRoundTrip(
     operation,
     `${XERO_API_BASE}/${path}`,
-    {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${ctx.accessToken}`,
-        'xero-tenant-id': ctx.tenantId,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(ctx.timeoutMs ?? XERO_REQUEST_TIMEOUT_MS),
-    },
+    { method, headers, body: write?.body, signal: AbortSignal.timeout(ctx.timeoutMs ?? XERO_REQUEST_TIMEOUT_MS) },
   ));
 
   const remainingHeader = response.headers.get('x-daylimit-remaining');
@@ -380,7 +462,10 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
 
   if (!response.ok) {
     const err = xeroApiError(operation, response.status, response.headers, text);
-    console.error(`[xeroHttp] ${operation} failed`, `status=${response.status}`, `kind=${err.kind}`);
+    console.error(
+      `[xeroHttp] ${operation} failed`, `status=${response.status}`, `kind=${err.kind}`,
+      ...(err.providerCode ? [`providerCode=${err.providerCode}`] : []),
+    );
     throw err;
   }
   try {
@@ -388,4 +473,41 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
   } catch {
     throw providerError({ kind: 'transient', operation, message: `${operation} returned invalid JSON` });
   }
+}
+
+/** A tenant-scoped Accounting API GET through the rate-limit slot. */
+export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operation: string): Promise<T> {
+  return xeroApiCall<T>(ctx, 'GET', path, operation);
+}
+
+/**
+ * A tenant-scoped Accounting API write (PUT = create only, POST = create or
+ * update) through the same slot, day-remaining note and error translation as
+ * reads. Only a create carries an Idempotency-Key by default (refinement 9): an
+ * update is idempotent by content, and keying it would let an A → B → A edit
+ * inside Xero's 6-minute window replay A's stale response.
+ */
+export async function xeroApiWrite<T>(
+  ctx: XeroCallContext, method: 'PUT' | 'POST', path: string, body: unknown, operation: string,
+  opts: { idempotencyKey?: string } = {},
+): Promise<T> {
+  const json = JSON.stringify(body);
+  return xeroApiCall<T>(ctx, method, path, operation, {
+    body: json,
+    idempotencyKey: opts.idempotencyKey ?? (method === 'PUT' ? xeroIdempotencyKey(ctx.tenantId, method, path, json) : undefined),
+  });
+}
+
+const MS_DATE_RE = /^\/Date\((-?\d+)([+-]\d{4})?\)\/$/;
+
+/**
+ * Xero's Microsoft JSON date (or a bare ISO timestamp, which Xero treats as UTC)
+ * → ISO-8601, else null. In `/Date(ms±hhmm)/` the millisecond epoch IS the
+ * instant; the offset is display information only and is ignored.
+ */
+export function parseXeroDate(value: unknown): string | null {
+  if (typeof value !== 'string' || value === '') return null;
+  const ms = MS_DATE_RE.exec(value);
+  const date = ms ? new Date(Number(ms[1])) : new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
