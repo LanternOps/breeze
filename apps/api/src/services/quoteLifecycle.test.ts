@@ -1233,10 +1233,20 @@ describe('sendQuote footer stamp (#6232)', () => {
     expect(claimSet().terms).toBe('Quote footer');
   });
 
-  it('stamps null only when all three levels are empty', async () => {
+  it("stamps the explicit empty marker '' (not NULL) when all three levels are empty (#7216)", async () => {
+    // NULL means "not frozen — resolve live", so a NULL stamp let a footer
+    // added after send appear on the already-sent quote. '' is frozen "none".
     queueSendPath(baseQuote, partner(null), null);
     await sendQuote('q1', actor);
-    expect(claimSet().terms).toBeNull();
+    expect(claimSet().terms).toBe('');
+  });
+
+  it("the emailed PDF of a quote sent with no footer carries the frozen '' (#7216)", async () => {
+    queueSendPath(baseQuote, partner(null), null);
+    await (await sendQuote('q1', actor)).deliverEmail();
+    expect(capturedPdfArgs).not.toBeNull();
+    expect((capturedPdfArgs![0] as Record<string, unknown>).terms).toBe('');
+    expect((capturedPdfArgs![4] as Record<string, unknown>).footer).toBe('');
   });
 
   it('renders the send-time emailed PDF with the frozen footer, not a two-level live chain', async () => {

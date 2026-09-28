@@ -654,7 +654,10 @@ async function cloneQuoteCore(
       billToAddress: null,
       billToTaxId: null,
       introNotes: source.introNotes,
-      terms: source.terms,
+      // '' on a sent source is the frozen "no footer" marker (#7216), not a
+      // choice made in the editor (which saves blank as NULL = inherit). The
+      // new draft inherits live instead, matching what its blank field shows.
+      terms: source.terms === '' ? null : source.terms,
       sellerSnapshot: null,
       // documentLocale deliberately NOT copied (stays NULL, like sellerSnapshot):
       // it is a send-time snapshot, stamped fresh when the clone is sent (#3777).
