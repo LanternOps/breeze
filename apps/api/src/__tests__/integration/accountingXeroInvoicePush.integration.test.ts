@@ -151,9 +151,19 @@ describe('Xero invoice push and void — real Postgres (Xero W04)', () => {
     expect((await invoiceMapping(fx, invoiceId))[0]).toMatchObject({ remoteSyncToken: new Date(1790000100000).toISOString(), syncStatus: 'synced' });
   });
 
-  runDb('creates no payment mapping for a Xero invoice until W05 (refinement 18)', async () => {
+  runDb('fans an existing payment out to a pending push mapping once paymentPush is live (Xero W05c, refinement 18)', async () => {
     const fx = await seed();
     const invoiceId = await seedInvoice(fx, { taxable: true, taxTotal: '20.00' });
+    // The fan-out's horizon (`push_payments_since`, stamped by `upsertConnection`
+    // to Node's clock at connection-insert time) is compared against
+    // `invoice_payments.created_at` (Postgres's own clock, via `defaultNow()`).
+    // Backdate it explicitly rather than rely on the payment insert below
+    // landing "later": those are two different clock sources with no
+    // guaranteed margin between them, which makes an un-backdated horizon a
+    // race, not a fact (accountingPaymentPush.ts paymentIsWithinPushHorizon).
+    await withSystemDbAccessContext(() => db.update(accountingConnections)
+      .set({ pushPaymentsSince: new Date(0) })
+      .where(eq(accountingConnections.id, fx.connectionId)));
     // Copy the invoice_payments insert from accountingPaymentPush.integration.test.ts (its required
     // columns); one 50.00 manual payment on this invoice, received today.
     await withSystemDbAccessContext(() => db.insert(invoicePayments).values({
@@ -168,6 +178,6 @@ describe('Xero invoice push and void — real Postgres (Xero W04)', () => {
       eq(accountingEntityMappings.integrationId, fx.connectionId),
       eq(accountingEntityMappings.breezeEntityType, 'payment'),
     )));
-    expect(paymentRows).toEqual([]);
+    expect(paymentRows).toEqual([expect.objectContaining({ pendingOp: 'push', remoteEntityId: null })]);
   });
 });

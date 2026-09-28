@@ -38,11 +38,11 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); slotMock.mockClear(); });
 
 describe('xeroProvider identity and limits', () => {
-  it('declares connect, mapping, customerImport and invoicePush (Xero W04)', () => {
+  it('declares every capability (Xero W05c)', () => {
     expect(xeroProvider.provider).toBe('xero');
     expect(xeroProvider.displayName).toBe('Xero');
     expect(xeroProvider.capabilities).toEqual({
-      connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: false, paymentPush: false,
+      connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
     });
   });
 
@@ -336,8 +336,8 @@ describe('payment push wiring (Xero W05b)', () => {
     const sent = JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body));
     expect(sent.Payments[0].Reference).toBe('Breeze payment 0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f | pi_1');
   });
-  it('still declares paymentPush false until W05c', () => {
-    expect(xeroProvider.capabilities.paymentPush).toBe(false);
+  it('declares both payment directions (W05c)', () => {
+    expect(xeroProvider.capabilities.paymentPush).toBe(true);
   });
 });
 
@@ -359,9 +359,9 @@ describe('payment pull wiring (Xero W05a)', () => {
     expect(headers.get('authorization')).toBe('Bearer tok');
   });
 
-  it('still declares paymentPull and paymentPush false until W05c', () => {
-    expect(xeroProvider.capabilities.paymentPull).toBe(false);
-    expect(xeroProvider.capabilities.paymentPush).toBe(false);
+  it('declares both payment directions (W05c)', () => {
+    expect(xeroProvider.capabilities.paymentPull).toBe(true);
+    expect(xeroProvider.capabilities.paymentPush).toBe(true);
   });
 });
 
