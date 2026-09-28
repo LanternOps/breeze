@@ -212,7 +212,7 @@ func (p *scriptedDownloadProvider) trickleManifest(ctx context.Context, localPat
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("read body: %w", ctx.Err())
-			case <-time.After(p.manifestChunkDelay):
+			case <-downloadClock.NewTimer(p.manifestChunkDelay).C():
 			}
 		}
 		end := min(off+chunk, len(p.manifest))
@@ -581,7 +581,13 @@ func TestVerifyIntegrity_BudgetDuringManifestIsNotReportedAsMissing(t *testing.T
 //
 // Both progress signals are covered: the destination file growing (what an
 // io.Copy into it looks like) and the provider's progress callback alone.
+// The clock is faked (#7255): same shape as TestTestRestore_SlowButProgressingManifestSucceeds
+// (50ms chunk pacing against a 150ms window), which really did flake in CI
+// on real wall time. This one wasn't observed flaking, but it races the
+// exact same two real-time waits, so it gets the same deterministic fix
+// rather than waiting to be caught.
 func TestVerifyIntegrity_SlowButProgressingManifestSucceeds(t *testing.T) {
+	const window = 150 * time.Millisecond
 	for _, tc := range []struct {
 		name     string
 		hookOnly bool
@@ -590,17 +596,31 @@ func TestVerifyIntegrity_SlowButProgressingManifestSucceeds(t *testing.T) {
 		{"progress callback only", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+			defer setDownloadTimeoutFloorForTest(window)()
+			fc := newFakeStallClock(t)
+			defer setDownloadClockForTest(fc)()
+
 			p := newScriptedDownloadProvider(t, "verify-slow-manifest", 3)
 			p.manifestChunks = 12
-			p.manifestChunkDelay = 50 * time.Millisecond // ~550 ms in total, well past the floor
+			p.manifestChunkDelay = 50 * time.Millisecond // twelve chunks span the 150ms window ~4x over
 			p.manifestHookOnly = tc.hookOnly
+
+			driveDone := make(chan struct{})
+			var driveErr error
+			go func() {
+				defer close(driveDone)
+				driveErr = driveChunkedTransfer(t, fc, p.manifestChunkDelay, p.manifestChunks-1)
+			}()
 
 			var result *VerifyResult
 			var err error
 			runWithWatchdog(t, 10*time.Second, func() {
 				result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-slow-manifest", VerifyOptions{})
 			})
+			<-driveDone
+			if driveErr != nil {
+				t.Fatalf("fake clock driver: %v", driveErr)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -674,17 +694,38 @@ func TestManifestDownloadError_OnlyMissingObjectIsNotFound(t *testing.T) {
 	}
 }
 
+// The clock is faked (#7255): the manifest's chunk pacing and the download
+// watchdog's no-progress window used to both run on real wall time, 50ms
+// apart against a 150ms window. A loaded CI runner descheduling either side
+// could close that gap enough to trip a false stall (queue run 36360377325
+// failed this way in 0.30s). A fake clock makes the test assert that a
+// manifest delivered in-window never stalls, deterministically.
 func TestTestRestore_SlowButProgressingManifestSucceeds(t *testing.T) {
-	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	const window = 150 * time.Millisecond
+	defer setDownloadTimeoutFloorForTest(window)()
+	fc := newFakeStallClock(t)
+	defer setDownloadClockForTest(fc)()
+
 	p := newScriptedDownloadProvider(t, "restore-slow-manifest", 3)
 	p.manifestChunks = 12
 	p.manifestChunkDelay = 50 * time.Millisecond
+
+	driveDone := make(chan struct{})
+	var driveErr error
+	go func() {
+		defer close(driveDone)
+		driveErr = driveChunkedTransfer(t, fc, p.manifestChunkDelay, p.manifestChunks-1)
+	}()
 
 	var result *TestRestoreResult
 	var err error
 	runWithWatchdog(t, 10*time.Second, func() {
 		result, err = TestRestoreWithOptions(context.Background(), p, "restore-slow-manifest", t.TempDir(), VerifyOptions{})
 	})
+	<-driveDone
+	if driveErr != nil {
+		t.Fatalf("fake clock driver: %v", driveErr)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
