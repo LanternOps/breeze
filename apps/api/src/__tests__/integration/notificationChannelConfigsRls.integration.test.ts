@@ -1,7 +1,8 @@
 /**
  * Notification channel config confidentiality at the DB layer (#6379).
  *
- * Migration under test: 2026-11-02-100600-notification-channel-configs.sql.
+ * Migrations under test: 2026-11-02-100600-notification-channel-configs.sql
+ * (expand) and 2026-11-06-100100-drop-notification-channels-config.sql (contract).
  *
  * `notification_channels` carries a SELECT-only partner-wide read branch
  * (2026-10-10-120000), so an ORG session can read its MSP's partner-wide
