@@ -30,6 +30,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
 import RecentApprovals from './RecentApprovals';
 import { ApproverAssuranceNotice } from './ApproverAssuranceNotice';
+import { RegisterApproverDeviceLink } from './RegisterApproverDeviceLink';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { EmptyState } from '../shared/EmptyState';
@@ -1202,9 +1203,7 @@ export default function ApprovalsInbox() {
                 {rowError === 'noApproverDevice' && (
                   <>
                     {' '}
-                    <a className="font-medium underline underline-offset-4" href="/settings/profile">
-                      {t('registerDevice')}
-                    </a>
+                    <RegisterApproverDeviceLink />
                   </>
                 )}
               </div>
@@ -1625,9 +1624,7 @@ export default function ApprovalsInbox() {
                     {groupErrors[section.group.identity] === 'noApproverDevice' && (
                       <>
                         {' '}
-                        <a className="font-medium underline underline-offset-4" href="/settings/profile">
-                          {t('registerDevice')}
-                        </a>
+                        <RegisterApproverDeviceLink />
                       </>
                     )}
                   </div>

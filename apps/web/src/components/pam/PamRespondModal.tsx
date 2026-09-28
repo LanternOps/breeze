@@ -9,6 +9,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { type ElevationRequest, FLOW_ICONS, FLOW_LABELS, requestTarget } from './types';
 import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
+import { RegisterApproverDeviceLink } from '../approvals/RegisterApproverDeviceLink';
 
 /**
  * True when the assertion ceremony failed because the technician has no
@@ -66,6 +67,9 @@ export default function PamRespondModal({
   const [duration, setDuration] = useState('15');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the server refused the approve for want of an approver device,
+  // so the error also offers the register-device action.
+  const [needsApproverDevice, setNeedsApproverDevice] = useState(false);
   const reasonId = useId();
   const durationId = useId();
   const titleId = useId();
@@ -100,6 +104,7 @@ export default function PamRespondModal({
     if (submitting) return;
     setSubmitting(true);
     setError(null);
+    setNeedsApproverDevice(false);
 
     // Take the re-auth secret into a local and clear the field at once: it is
     // sent in exactly one request below and never retained, logged or replayed.
@@ -202,10 +207,8 @@ export default function PamRespondModal({
                 defaultValue: 'Your approver-device verification was not accepted. Try again.',
               });
             case 'step_up_required':
-              return t('pamPamRespondModal.reauth.errors.stepUpRequired', {
-                defaultValue:
-                  'Your organization requires a registered approver device (Windows Hello or Touch ID) to approve this request. Register one under Profile → Security.',
-              });
+              // Same copy (and, below, the same action) as the approvals inbox.
+              return t('approvals:errors.noApproverDevice');
             default:
               return undefined;
           }
@@ -227,6 +230,9 @@ export default function PamRespondModal({
           // — just refresh the list, no extra toast.
           onActioned();
           return;
+        }
+        if (err.status === 403 && rejectionToken(err.body) === 'step_up_required') {
+          setNeedsApproverDevice(true);
         }
         setError(err.message);
       } else {
@@ -440,7 +446,17 @@ export default function PamRespondModal({
           />
         </div>
 
-        {error && <ErrorAlert>{error}</ErrorAlert>}
+        {error && (
+          <ErrorAlert>
+            {error}
+            {needsApproverDevice && (
+              <>
+                {' '}
+                <RegisterApproverDeviceLink />
+              </>
+            )}
+          </ErrorAlert>
+        )}
 
         <div className="flex items-center justify-between gap-2">
           {onCreateRule ? (

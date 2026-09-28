@@ -973,8 +973,7 @@
         "passwordRequired": "Geben Sie Ihr Kontopasswort ein, um diese kritische Anfrage zu genehmigen.",
         "invalid": "Dieses Passwort oder dieser Code wurde nicht akzeptiert. Überprüfen Sie es und versuchen Sie es erneut.",
         "required": "Dies ist eine kritische Anfrage. Geben Sie Ihr Passwort (oder den Authentifizierungscode) erneut ein und genehmigen Sie noch einmal.",
-        "assertionFailed": "Die Überprüfung Ihres Genehmigergeräts wurde nicht akzeptiert. Versuchen Sie es erneut.",
-        "stepUpRequired": "Ihre Organisation erfordert ein registriertes Genehmigergerät (Windows Hello oder Touch ID), um diese Anfrage zu genehmigen. Registrieren Sie eines unter Profil → Sicherheit."
+        "assertionFailed": "Die Überprüfung Ihres Genehmigergeräts wurde nicht akzeptiert. Versuchen Sie es erneut."
       }
     }
   },

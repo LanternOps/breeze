@@ -454,7 +454,23 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     });
     submit();
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent(/registered approver device/i),
+      expect(screen.getByRole('alert')).toHaveTextContent(/approver device/i),
     );
+    // Same message and action the approvals inbox shows for a missing device.
+    expect(screen.getByRole('alert')).toHaveTextContent('Register an approver device in your profile, then try again.');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('step_up_required');
+    const link = screen.getByTestId('register-approver-device-link');
+    expect(link).toHaveAttribute('href', '/settings/profile');
+    expect(link).toHaveTextContent('Register device');
+  });
+
+  it('does not offer the register-device action for other errors', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ success: false, error: 'Request is not pending' }, false, 400),
+    );
+    render(<PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />);
+    submit();
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.queryByTestId('register-approver-device-link')).toBeNull();
   });
 });

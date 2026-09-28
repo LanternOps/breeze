@@ -973,8 +973,7 @@
         "passwordRequired": "Enter your account password to approve this critical request.",
         "invalid": "That password or code was not accepted. Check it and try again.",
         "required": "This is a critical request. Re-enter your password (or authenticator code) and approve again.",
-        "assertionFailed": "Your approver-device verification was not accepted. Try again.",
-        "stepUpRequired": "Your organization requires a registered approver device (Windows Hello or Touch ID) to approve this request. Register one under Profile → Security."
+        "assertionFailed": "Your approver-device verification was not accepted. Try again."
       }
     }
   },

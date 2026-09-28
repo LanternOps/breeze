@@ -973,8 +973,7 @@
         "passwordRequired": "Saisissez le mot de passe de votre compte pour approuver cette demande critique.",
         "invalid": "Ce mot de passe ou ce code n’a pas été accepté. Vérifiez-le et réessayez.",
         "required": "Il s’agit d’une demande critique. Ressaisissez votre mot de passe (ou le code d’authentification) et approuvez à nouveau.",
-        "assertionFailed": "La vérification de votre appareil d’approbateur n’a pas été acceptée. Réessayez.",
-        "stepUpRequired": "Votre organisation exige un appareil d’approbateur enregistré (Windows Hello ou Touch ID) pour approuver cette demande. Enregistrez-en un dans Profil → Sécurité."
+        "assertionFailed": "La vérification de votre appareil d’approbateur n’a pas été acceptée. Réessayez."
       }
     }
   },
