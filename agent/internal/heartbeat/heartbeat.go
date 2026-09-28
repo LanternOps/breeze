@@ -4619,6 +4619,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	virtComputed := h.cachedVirtComputed
 	h.mu.Unlock()
 
+	if runtime.GOOS == "darwin" {
+		updateRelocationFDAHealth(h.healthMon, defaultRelocationFDAProbe())
+	}
+
 	healthSnapshot := h.healthMon.Snapshot(health.SnapshotMetadata{
 		DeviceID:         h.config.DeviceID,
 		AgentVersion:     h.agentVersion,
