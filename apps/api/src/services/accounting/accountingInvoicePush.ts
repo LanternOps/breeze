@@ -652,10 +652,13 @@ function buildInvoicePayload(
 
 /**
  * Provider refusals the operator must resolve (Xero W04, refinement 14):
- * terminal 409s, persisted on the mapping row, never reported to Sentry.
- * Null for anything else. QuickBooks never sets these neutral codes on an
- * invoice (its providerCode is Intuit's numeric fault code), so its errors
- * keep the generic retryable handling below.
+ * terminal 409s, persisted on the mapping row. `remote_missing`, `remote_locked`
+ * and `provider_permission` are never reported to Sentry (the worker's
+ * `INVOICE_USER_RESOLVABLE_CODES`); `remote_ambiguous` is NOT quiet — the
+ * worker still reports it, because two live remote invoices for one Breeze
+ * invoice should never happen. Null for anything else. QuickBooks never sets
+ * these neutral codes on an invoice (its providerCode is Intuit's numeric
+ * fault code), so its errors keep the generic retryable handling below.
  */
 function invoicePushRefusal(err: unknown, label: string): { code: AccountingInvoicePushErrorCode; message: string } | null {
   switch (refusalCodeOf(err)) {
@@ -664,6 +667,25 @@ function invoicePushRefusal(err: unknown, label: string): { code: AccountingInvo
     case 'remote_locked': return { code: 'remote_locked', message: invoicePushMessages.remoteLocked(label) };
     case 'insufficient_scope': return { code: 'provider_permission', message: providerPermissionMessage(label) };
     case 'duplicate_name': case 'remote_archived': return null;
+    default: return null;
+  }
+}
+
+/**
+ * The void-side subset of the same refusal mapping (Xero W04). Deliberately
+ * NOT `invoicePushRefusal`: a void's `remote_missing` is not an error at all
+ * (the provider treats "already gone" as a successful void, handled by the
+ * caller falling through with no refusal here) and `remote_locked` on a void
+ * is the payment-linked case the caller already names with its own remedy —
+ * `invoicePushRefusal`'s messages for both talk about PUSHING, which would be
+ * wrong copy for a void. Only `insufficient_scope` and `duplicate_key`
+ * (findRemoteInvoice's `onlyLive`, refinement 22, seeing two live remote
+ * invoices for this Breeze invoice) carry the same meaning on both paths.
+ */
+function voidInvoiceRefusal(err: unknown, label: string): { code: AccountingInvoicePushErrorCode; message: string } | null {
+  switch (refusalCodeOf(err)) {
+    case 'insufficient_scope': return { code: 'provider_permission', message: providerPermissionMessage(label) };
+    case 'duplicate_key': return { code: 'remote_ambiguous', message: invoicePushMessages.remoteAmbiguous(label) };
     default: return null;
   }
 }
@@ -1104,13 +1126,14 @@ export async function voidInvoiceInAccounting(
         { retryAfterMs: throttleMs, throttleSource, cause: err },
       );
     }
-    // Xero W04: a scope refusal is terminal. A missing remote invoice never
-    // reaches here — the provider treats "already gone" as a successful void.
-    if (refusalCodeOf(err) === 'insufficient_scope') {
-      const message = providerPermissionMessage(accountingProviderDisplayName(conn.provider));
+    // Xero W04: a scope refusal or a remote ambiguity is terminal. A missing
+    // remote invoice never reaches here — the provider treats "already gone"
+    // as a successful void.
+    const voidRefusal = voidInvoiceRefusal(err, accountingProviderDisplayName(conn.provider));
+    if (voidRefusal) {
       logProviderFault('voidInvoice', mappingRow.id, err);
-      await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
-      throw new AccountingInvoicePushError('provider_permission', 409, message, { cause: err });
+      await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, voidRefusal.message);
+      throw new AccountingInvoicePushError(voidRefusal.code, 409, voidRefusal.message, { cause: err });
     }
     // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
     // never allow this". A payment applied to the invoice in QuickBooks makes
@@ -1166,11 +1189,16 @@ export async function voidInvoiceInAccounting(
         .where(and(
           eq(accountingEntityMappings.id, mappingRow.id),
           eq(accountingEntityMappings.partnerId, partnerId),
+          // A push can land its own remote id on this row between the
+          // recovery lookup above and this write (the row was `error`, not
+          // locked against a concurrent push) — never overwrite a link that
+          // already exists, even with the same value the lookup itself found.
+          isNull(accountingEntityMappings.remoteEntityId),
         ))
         .returning({ id: accountingEntityMappings.id }));
       if (!rows[0]) {
         captureException(
-          new Error(`void recovery persist matched no accounting_entity_mappings row (id=${mappingRow.id})`),
+          new Error(`void recovery persist matched no accounting_entity_mappings row, or it was already linked (id=${mappingRow.id})`),
           undefined,
           { service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId },
         );

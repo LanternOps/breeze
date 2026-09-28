@@ -1965,6 +1965,57 @@ describe('Xero W04: labels, preflight and provider refusals', () => {
       expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({ remoteEntityId: 'xi-lost', remoteSyncToken: 'v2', linkStatus: 'confirmed' });
     });
 
+    it('a duplicate_key ambiguity from the recovery lookup is terminal remote_ambiguous, persisted, no Sentry', async () => {
+      providerExtras.findRemoteInvoice = vi.fn(async () => { throw refusal('duplicate_key'); });
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+
+      await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'remote_ambiguous', status: 409,
+        message: 'Xero holds more than one invoice for this Breeze invoice — void or delete the extra one in Xero, then push again',
+      });
+      expect(voidInvoiceMock).not.toHaveBeenCalled();
+      expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({
+        syncStatus: 'error',
+        lastError: 'Xero holds more than one invoice for this Breeze invoice — void or delete the extra one in Xero, then push again',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    // Neither of the two tests above can prove the recovery persist's UPDATE
+    // is conditioned at the SQL level on the row NOT already carrying a
+    // remoteEntityId — this mock harness applies a patch synchronously
+    // against the same `currentMappings` array both any JS check and the
+    // UPDATE itself read, so it cannot simulate a genuinely concurrent push
+    // landing between the lookup and this write. Same technique and same
+    // limitation as the analogous remote-deleted regression guard above:
+    // proving the compiled WHERE clause carries the guard predicate (so a
+    // future edit that drops it fails this test instead of shipping
+    // silently) is what a fully-mocked unit file CAN prove.
+    it('the recovery persist UPDATE conditions on the row not already carrying a remoteEntityId (SQL-level regression guard)', async () => {
+      providerExtras.findRemoteInvoice = vi.fn(async () => ({ id: 'xi-lost', remoteVersion: 'v1' }));
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+      voidInvoiceMock.mockResolvedValueOnce({ remoteVersion: 'v2' });
+
+      let capturedWhereCond: unknown;
+      updateMock.mockImplementationOnce(() => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: (cond: unknown) => ({
+            returning: () => {
+              capturedWhereCond = cond;
+              const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+              currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+              return Promise.resolve([currentMappings[idx]]);
+            },
+          }),
+        }),
+      }));
+
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+      const { columns } = sqlColumnsAndValues(capturedWhereCond);
+      expect(columns).toContain('remote_entity_id');
+    });
+
     it('nothing found → no void call and no write (today\'s no-op)', async () => {
       providerExtras.findRemoteInvoice = vi.fn(async () => null);
       setup({ mappings: [orgMappingRow(), errorRow()] });
