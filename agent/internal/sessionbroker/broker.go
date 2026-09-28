@@ -526,11 +526,11 @@ func (b *Broker) SetConsoleUser(username string) {
 
 // ConsoleAtLoginWindow reports whether the macOS console is at the login
 // window, as last set by SetConsoleUser. An unset console user (the darwin
-// console watcher has not run, or this is not macOS) reports false.
+// console watcher has not run, or this is not macOS) reports false. Reads the
+// lock-free snapshot, so a start_desktop never queues behind a write-lock storm.
 func (b *Broker) ConsoleAtLoginWindow() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.consoleUser == "loginwindow"
+	_, consoleUser := b.snapshotSessions()
+	return consoleUser == "loginwindow"
 }
 
 // Listen starts the IPC listener. Blocks until stopChan is closed.

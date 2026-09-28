@@ -114,6 +114,35 @@ describe('ConnectDesktopButton — macOS login window (#7047)', () => {
     expect(calledPaths()).not.toContain('POST /remote/sessions');
   });
 
+  it('still falls back to VNC Relay automatically when the live state is unavailable and the policy allows it', async () => {
+    // Guards the connectViaVnc extraction on its original, automatic call site.
+    fetchMock.mockResolvedValueOnce(liveDevice({
+      mode: 'unavailable',
+      reason: 'unsupported_os',
+      loginUiReachable: false,
+      virtualDisplayReady: false,
+    }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ id: 'tun-auto' }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ code: 'vnc-auto-code' }));
+
+    render(
+      <ConnectDesktopButton
+        deviceId="dev-auto-vnc"
+        remoteAccessPolicy={{ webrtcDesktop: true, vncRelay: true } as never}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(calledPaths()).toContain('POST /tunnels/tun-auto/connect-code');
+    });
+    const tunnelCall = fetchMock.mock.calls.find(([path]) => path === '/tunnels');
+    expect(JSON.parse(String((tunnelCall![1] as RequestInit).body))).toEqual({ deviceId: 'dev-auto-vnc', type: 'vnc' });
+    expect(calledPaths()).not.toContain('POST /remote/sessions');
+    expect(screen.queryByText('Remote Desktop unavailable')).not.toBeInTheDocument();
+    expect(screen.queryByText('This Mac is at the login window')).not.toBeInTheDocument();
+  });
+
   it('does not show the login-window card for an unrelated start failure (regression guard)', async () => {
     fetchMock.mockResolvedValueOnce(liveDevice());
     fetchMock.mockResolvedValueOnce(jsonRes({ id: 'sess-other' }));
