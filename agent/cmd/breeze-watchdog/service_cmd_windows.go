@@ -130,14 +130,16 @@ func isWindowsService() bool {
 
 // watchdogSvc implements svc.Handler for the Windows SCM.
 type watchdogSvc struct {
-	stopCh chan struct{}
+	stopCh  chan struct{}
+	powerCh chan powerNotice
 }
 
 // runAsWindowsService wraps runWatchdog under the SCM handler so that the
 // service correctly reports Running/Stopped status.
 func runAsWindowsService() error {
 	return svc.Run(windowsWatchdogServiceName, &watchdogSvc{
-		stopCh: make(chan struct{}),
+		stopCh:  make(chan struct{}),
+		powerCh: make(chan powerNotice, powerNoticeBuffer),
 	})
 }
 
@@ -148,11 +150,14 @@ func (s *watchdogSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes
 	// Start the watchdog loop in a goroutine with a stop channel.
 	done := make(chan struct{})
 	go func() {
-		runWatchdog(s.stopCh)
+		runWatchdog(s.stopCh, s.powerCh)
 		close(done)
 	}()
 
-	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	// AcceptPowerEvent (#6762): a resume must restart the heartbeat
+	// staleness clock, or the time spent asleep reads as a missed heartbeat
+	// and the watchdog restarts a healthy agent on wake.
+	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPowerEvent}
 
 	for {
 		select {
@@ -165,6 +170,8 @@ func (s *watchdogSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes
 				close(s.stopCh) // signals runWatchdog to return
 				<-done
 				return false, 0
+			case svc.PowerEvent:
+				forwardPowerEvent(s.powerCh, cr.EventType, time.Now())
 			}
 		case <-done:
 			return false, 0

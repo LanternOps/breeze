@@ -103,6 +103,9 @@ type HealthChecker struct {
 	// IPC/heartbeat channel is alive right now, not that some past
 	// heartbeat was fresh.
 	lastStateSyncAt time.Time
+	// resumedAt is when the system last resumed from sleep (#6762). See
+	// NoteResume.
+	resumedAt time.Time
 }
 
 // NewHealthChecker constructs a HealthChecker.
@@ -225,6 +228,29 @@ func (h *HealthChecker) NoteStateSync(lastHeartbeat time.Time, activeBackupRuns 
 	h.lastStateSyncAt = time.Now()
 }
 
+// NoteResume records that the system resumed from sleep at `at` (#6762; the
+// Windows watchdog service calls it on PBT_APMRESUME* power events). Heartbeat
+// timestamps are wall-clock, so the whole sleep interval counts toward
+// staleThreshold: without this, the first heartbeat tick after any sleep
+// longer than the threshold judges a healthy agent stale, and on a Modern
+// Standby laptop each short maintenance wake spends one IPC veto until the
+// third wake restarts the agent. After a resume the agent gets one full
+// staleThreshold, measured from the resume, to produce a fresh heartbeat (see
+// CheckHeartbeatStaleness). It is a grace, not liveness evidence: AgentAlive
+// ignores it. Never regresses, so a late out-of-order delivery cannot shorten
+// the grace.
+func (h *HealthChecker) NoteResume(at time.Time) {
+	if at.After(h.resumedAt) {
+		h.resumedAt = at
+	}
+}
+
+// inResumeGrace reports whether the system resumed from sleep within
+// staleThreshold.
+func (h *HealthChecker) inResumeGrace() bool {
+	return !h.resumedAt.IsZero() && time.Since(h.resumedAt) <= h.staleThreshold
+}
+
 // LastKnownHeartbeat returns the freshest heartbeat timestamp known from any
 // source: the on-disk agent.state or the IPC state_sync channel. Zero if
 // neither has ever produced one.
@@ -310,10 +336,14 @@ func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 		h.staleVetoCount = 0
 		return CheckOK
 	}
-	if time.Since(hb) > h.staleThreshold {
+	// A heartbeat that aged past the threshold while the system slept is not
+	// a missed heartbeat: within staleThreshold of a resume, measure from the
+	// resume instead (NoteResume).
+	if time.Since(hb) > h.staleThreshold && !h.inResumeGrace() {
 		return CheckHeartbeatStale
 	}
-	// A fresh heartbeat re-arms the stale-veto budget.
+	// A fresh heartbeat (or a resume) re-arms the stale-veto budget, so vetoes
+	// spent during earlier wakes cannot fast-track this one to a restart.
 	h.staleVetoCount = 0
 	return CheckOK
 }
