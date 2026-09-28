@@ -84,8 +84,10 @@ describe('brokered write cleanup job', () => {
 
   runDb('abandons a reserved id of an ended job only after its URLs expire (rule 4)', async () => {
     const t = await seedWriteTenant({ jobStatus: 'running' });
-    const expired = await reservation(t, { state: 'reserved', horizon: new Date(Date.now() - 60_000) });
+    const expired = await reservation(t, { state: 'reserved', horizon: new Date(Date.now() - 16 * 60_000) });
     const live = await reservation(t, { state: 'reserved', horizon: new Date(Date.now() + 120_000) });
+    // Expired, but an upload started just before expiry may still be landing.
+    const landing = await reservation(t, { state: 'reserved', horizon: new Date(Date.now() - 60_000) });
     await upload(t, expired, 'open', 'u-e');
     await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${t.jobId}`);
     const s = storage();
@@ -93,6 +95,7 @@ describe('brokered write cleanup job', () => {
     expect(await uploadStates(expired.id)).toEqual(['aborted']);
     expect((await reservationRow(expired.id))?.state).toBe('abandoned');
     expect((await reservationRow(live.id))?.state).toBe('reserved');
+    expect((await reservationRow(landing.id))?.state).toBe('reserved');
   });
 
   runDb('publishes a sealing reservation once its horizon has passed (rule 3)', async () => {
