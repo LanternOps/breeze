@@ -2119,7 +2119,8 @@
         "description": "Incidents suivis et constats EDR dans vos organisations.",
         "filters": {
           "tracked": "Suivis",
-          "findings": "Constats"
+          "findings": "Constats",
+          "kindLabel": "Genre"
         },
         "emptyTitle": "Aucun incident trouvé",
         "emptyFiltered": "Aucun incident ne correspond aux filtres actuels.",

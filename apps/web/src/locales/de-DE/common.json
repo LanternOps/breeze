@@ -2119,7 +2119,8 @@
         "description": "Verfolgen Sie Vorfälle und EDR-Befunde in all Ihren Organisationen.",
         "filters": {
           "tracked": "Verfolgt",
-          "findings": "Befunde"
+          "findings": "Befunde",
+          "kindLabel": "Art"
         },
         "emptyTitle": "Keine Vorfälle gefunden",
         "emptyFiltered": "Keine Vorfälle entsprechen den aktuellen Filtern.",

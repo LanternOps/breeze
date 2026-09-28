@@ -157,7 +157,8 @@
       "itsOwningOrganization": "son organisation propriétaire",
       "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
       "summary": "{{filtered}} de {{total}} politiques",
-      "inheritsBadge": "Hérite"
+      "inheritsBadge": "Hérite",
+      "statusFilterLabel": "État"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",

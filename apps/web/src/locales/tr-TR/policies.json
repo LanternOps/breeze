@@ -157,7 +157,8 @@
       "itsOwningOrganization": "kendi sahibi kuruluş",
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
       "summary": "{{filtered}} / {{total}} politikaları",
-      "inheritsBadge": "Devralıyor"
+      "inheritsBadge": "Devralıyor",
+      "statusFilterLabel": "Durum"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",

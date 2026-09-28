@@ -2119,7 +2119,8 @@
         "description": "Seguimiento de incidentes y hallazgos de EDR en todas sus organizaciones.",
         "filters": {
           "tracked": "Rastreado",
-          "findings": "Hallazgos"
+          "findings": "Hallazgos",
+          "kindLabel": "Tipo"
         },
         "emptyTitle": "No se encontraron incidentes",
         "emptyFiltered": "Ningún incidente coincide con los filtros actuales.",

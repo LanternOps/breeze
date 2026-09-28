@@ -2119,7 +2119,8 @@
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
-          "findings": "Achados"
+          "findings": "Achados",
+          "kindLabel": "Tipo"
         },
         "emptyTitle": "Nenhum incidente encontrado",
         "emptyFiltered": "Nenhum incidente corresponde aos filtros atuais.",

@@ -2119,7 +2119,8 @@
         "description": "Tieni traccia degli incidenti e dei risultati EDR nelle tue organizzazioni.",
         "filters": {
           "tracked": "Monitorati",
-          "findings": "Risultati"
+          "findings": "Risultati",
+          "kindLabel": "Tipo"
         },
         "emptyTitle": "Nessun incidente trovato",
         "emptyFiltered": "Nessun incidente corrisponde ai filtri attuali.",

@@ -147,6 +147,7 @@
       "policies": "policies",
       "searchPolicies": "Search policies...",
       "allStatus": "All Status",
+      "statusFilterLabel": "Status",
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",

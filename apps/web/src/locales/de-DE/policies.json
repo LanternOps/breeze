@@ -157,7 +157,8 @@
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
-      "inheritsBadge": "Erbt"
+      "inheritsBadge": "Erbt",
+      "statusFilterLabel": "Status"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",

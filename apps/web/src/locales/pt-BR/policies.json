@@ -157,7 +157,8 @@
       "itsOwningOrganization": "sua organização proprietária",
       "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
       "summary": "{{filtered}} de {{total}} políticas",
-      "inheritsBadge": "Herda"
+      "inheritsBadge": "Herda",
+      "statusFilterLabel": "Status"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",

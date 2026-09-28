@@ -606,7 +606,8 @@
       "generated": "Gerado em",
       "noSoftwareData": "Sem dados de software",
       "configuration": "Configuração"
-    }
+    },
+    "timeRangeSelectLabel": "Intervalo de tempo"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Falha ao carregar o status de conformidade",

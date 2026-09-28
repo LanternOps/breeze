@@ -606,7 +606,8 @@
       "generated": "Oluşturuldu",
       "noSoftwareData": "Yazılım verisi yok",
       "configuration": "Yapılandırma"
-    }
+    },
+    "timeRangeSelectLabel": "Zaman aralığı"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Uyumluluk durumu yüklenemedi",

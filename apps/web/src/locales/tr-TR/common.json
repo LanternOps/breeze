@@ -2119,7 +2119,8 @@
         "description": "Kuruluşlarınız genelinde takip edilen olaylar ve EDR bulguları.",
         "filters": {
           "tracked": "Takip edildi",
-          "findings": "Bulgular"
+          "findings": "Bulgular",
+          "kindLabel": "Tür"
         },
         "emptyTitle": "Hiçbir olay bulunamadı",
         "emptyFiltered": "Mevcut filtrelerle eşleşen olay yok.",
