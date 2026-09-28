@@ -353,7 +353,8 @@ describe('write-scoped storage sessions: schema', () => {
     // Every issued URL expired → published at once.
     const quiet = sid('seal-quiet');
     await reserveAs(a.orgId, { snapshotId: quiet, deviceId: a.deviceId, configId: a.configId, jobId: a.jobId });
-    const s1 = await insertWriteSession(a, quiet, { horizon: new Date(Date.now() - 200_000), conditional: false });
+    // (expired longer ago than the transfer margin an upload may still take)
+    const s1 = await insertWriteSession(a, quiet, { horizon: new Date(Date.now() - 16 * 60_000 - 200_000), conditional: false });
     await insertSnapshotRow(a, quiet);
     expect(await reservationRow(quiet)).toMatchObject({ state: 'published' });
     const s1Row = await getTestDb().execute(sql`SELECT revoked_reason FROM backup_storage_sessions WHERE id = ${s1}`);
@@ -368,7 +369,7 @@ describe('write-scoped storage sessions: schema', () => {
     await insertSnapshotRow({ ...a, jobId: jobC }, conditional);
     expect(await reservationRow(conditional)).toMatchObject({ state: 'sealing' });
 
-    // An unconditional URL still usable → sealing until its expiry (+ skew).
+    // An unconditional URL still usable → sealing until its expiry (+ transfer margin + skew).
     const job2 = await seedBackupJob(a.orgId, a.configId, a.deviceId, 'running');
     const busy = sid('seal-busy');
     await reserveAs(a.orgId, { snapshotId: busy, deviceId: a.deviceId, configId: a.configId, jobId: job2 });
@@ -377,7 +378,8 @@ describe('write-scoped storage sessions: schema', () => {
     await insertSnapshotRow({ ...a, jobId: job2 }, busy);
     const r = await reservationRow(busy);
     expect(r?.state).toBe('sealing');
-    expect(new Date(r!.sealed_until as string).getTime()).toBeGreaterThanOrEqual(horizon.getTime() + 59_000);
+    // Its expiry, plus the transfer margin, plus clock skew.
+    expect(new Date(r!.sealed_until as string).getTime()).toBeGreaterThanOrEqual(horizon.getTime() + 15 * 60_000 + 59_000);
   });
 
   runDb('an abandoned id is adoptable by its own job only within the adoption window', async () => {

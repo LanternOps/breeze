@@ -14,8 +14,9 @@
  *     succeeded in storage but was never recorded.
  *  3. A sealing reservation whose sealed_until has passed, with no recorded
  *     upload still open, is published.
- *  4. A reserved id whose job has ended, whose issued URLs have all expired,
- *     and with no recorded upload or delete still in flight, is abandoned
+ *  4. A reserved id whose job has ended, whose issued URLs have all expired
+ *     (plus the transfer margin), and with no recorded upload or delete still
+ *     in flight, is abandoned
  *     (a late result or reconcile for that job may still publish it within
  *     the adoption window; storage reclaim may remove the prefix once it is
  *     older than the orphan window).
@@ -40,7 +41,11 @@ import {
 import { recordBackupWriteJanitor } from '../services/backupMetrics';
 import { resolveBackupWriteCommandDestination } from '../services/backupProviderConfig';
 import { abortMultipartUpload, listMultipartUploads } from '../services/backupStoragePresign';
-import { STORAGE_DELETE_SETTLE_MS, STORAGE_WRITE_SESSION_DEADLINE_MS } from '../services/backupStorageWriteSessions';
+import {
+  STORAGE_DELETE_SETTLE_MS,
+  STORAGE_WRITE_SESSION_DEADLINE_MS,
+  STORAGE_WRITE_TRANSFER_MARGIN_MS,
+} from '../services/backupStorageWriteSessions';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
@@ -145,6 +150,8 @@ async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary):
 /** Rule 4: re-checked inside the updating statement. */
 async function abandonEndedReservations(deps: JanitorDeps, summary: JanitorSummary): Promise<void> {
   const now = deps.now();
+  // An upload started just before its URL expired may still be landing.
+  const horizonCutoff = new Date(now.getTime() - STORAGE_WRITE_TRANSFER_MARGIN_MS);
   const rows = await withSystemDbAccessContext(() =>
     db.execute(sql`
       UPDATE backup_snapshot_id_reservations r
@@ -158,7 +165,7 @@ async function abandonEndedReservations(deps: JanitorDeps, summary: JanitorSumma
                SELECT 1 FROM backup_storage_sessions s
                 WHERE s.reservation_snapshot_id = r.snapshot_id
                   AND s.url_horizon_at IS NOT NULL
-                  AND s.url_horizon_at >= ${now.toISOString()}::timestamptz)
+                  AND s.url_horizon_at >= ${horizonCutoff.toISOString()}::timestamptz)
          AND NOT EXISTS (
                SELECT 1 FROM backup_storage_session_uploads u
                 WHERE u.reservation_snapshot_id = r.snapshot_id

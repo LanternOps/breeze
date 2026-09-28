@@ -127,10 +127,21 @@ describe('presignUploadPart', () => {
 
 describe('server-side multipart operations', () => {
   it('creates an upload with the planned encryption', async () => {
-    holder.send.mockResolvedValueOnce({ UploadId: 'u-1' });
-    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-kms', keyId: 'k' })).resolves.toBe('u-1');
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-1', ServerSideEncryption: 'aws:kms', SSEKMSKeyId: 'arn:aws:kms:r:a:key/k' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-kms', keyId: 'k' })).resolves.toEqual({
+      uploadId: 'u-1',
+      encryption: { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:r:a:key/k' },
+    });
     const input = holder.send.mock.calls[0]![0].input;
     expect(input).toMatchObject({ Bucket: 'tenant-bucket', Key: KEY, ServerSideEncryption: 'aws:kms', SSEKMSKeyId: 'k' });
+  });
+
+  it('reports no confirmed encryption when storage returns none', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-2' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-s3' })).resolves.toEqual({
+      uploadId: 'u-2',
+      encryption: { algorithm: null, kmsKeyId: null },
+    });
   });
 
   it('completes with the create-only condition and maps a 412 to ObjectExistsError', async () => {

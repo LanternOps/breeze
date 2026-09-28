@@ -305,6 +305,13 @@ const backupConditionalWriteProbeTotal = new Counter({
   registers: [register]
 });
 
+const backupSnapshotPublishRefusedTotal = new Counter({
+  name: 'breeze_backup_snapshot_publish_refused_total',
+  help: 'Backup results whose snapshot row was refused because the id is owned elsewhere, by reason (not_current_job, foreign_claim)',
+  labelNames: ['reason'] as const,
+  registers: [register]
+});
+
 const backupWriteJanitorTotal = new Counter({
   name: 'breeze_backup_write_janitor_total',
   help: 'Brokered backup write cleanup actions by action (abort_upload, sweep_prefix, publish, abandon) and outcome (ok, failed)',
@@ -964,6 +971,12 @@ function recordConditionalWriteProbeMetric(outcome: string, reason: string, coun
   backupConditionalWriteProbeTotal.labels(normalizeMetricLabel(outcome, 'unknown'), normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
 }
 
+function recordSnapshotPublishRefusedMetric(reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupSnapshotPublishRefusedTotal.labels(normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
 function recordBackupWriteJanitorMetric(action: string, outcome: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1166,6 +1179,7 @@ function bindMetricsRecorders(): void {
     onWriteJanitor: recordBackupWriteJanitorMetric,
     onUnexpectedLegacyWrite: recordUnexpectedLegacyWriteMetric,
     onConditionalWriteProbe: recordConditionalWriteProbeMetric,
+    onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
   });
 
   setAnomalyMetricsRecorder({

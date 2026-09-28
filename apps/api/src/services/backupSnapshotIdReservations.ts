@@ -15,14 +15,17 @@
  *   sealing   → the snapshot row exists, but an upload URL issued without a
  *               create-only condition may still be usable (until sealed_until);
  *   published → no issued URL can change an object of the snapshot;
- *   abandoned → the job ended without publishing; storage reclaim may remove
- *               the prefix once it is old enough, which tombstones the id.
+ *   abandoned → the job ended without publishing; a later job of the same
+ *               device, configuration, destination and base may take it over
+ *               (back to reserved) while it is young enough; storage reclaim
+ *               may remove the prefix once it is old enough, which tombstones
+ *               the id.
  * The database moves reserved → sealing/published when the snapshot row is
  * inserted (trigger); the cleanup job (jobs/backupWriteSessionJanitor.ts)
  * completes sealing and abandonment.
  */
 import { randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -124,31 +127,69 @@ export async function findReservedForJob(jobId: string): Promise<SnapshotIdReser
 export const ABANDONED_ADOPTION_WINDOW_MS = 108 * 60 * 60 * 1000;
 
 /**
+ * How old (from issue) an unfinished server-issued id may be for a LATER job
+ * of the same device, configuration, destination and dispatched base to take
+ * it over and continue writing it (backupStorageWriteSessions.ts,
+ * decideResumeTarget). 108 hours, the same as the adoption window: shorter
+ * than the helper's 7-day checkpoint-journal age, and more than two days
+ * inside the 7-day floor below which storage reclaim never removes an
+ * abandoned prefix — so a prefix being continued is never reclaimed under
+ * the writer. Measured from the reservation's creation, so repeated takeovers
+ * cannot keep an id alive past it.
+ */
+export const SNAPSHOT_TAKEOVER_MAX_AGE_MS = 108 * 60 * 60 * 1000;
+
+/**
  * The snapshot ids a job's write sessions were allowed to produce: every
- * reservation one of its write sessions holds, except one it gave up by
- * resuming onto another id (abandoned with no job). An id the cleanup job
- * abandoned after this job ended still counts — the database decides whether
- * it is still adoptable. Null when the job never had a write session (an
- * unbrokered backup, which reports whatever id its helper chose).
+ * reservation one of its write sessions holds whose CURRENT job is this job
+ * (after another job has taken an unfinished id over, the earlier job may no
+ * longer publish it; an id given up by resuming onto another one has no job),
+ * plus a sealing or published id one of its sessions resumed onto read-only
+ * (it reports that published manifest). An id the cleanup job abandoned after
+ * this job ended still counts — the database decides whether it is still
+ * adoptable. Null when the job never had a write session (an unbrokered
+ * backup, which reports whatever id its helper chose; the backup_snapshots
+ * insert trigger still refuses a server-issued id reserved to another job).
  */
 export async function allowedSnapshotIdsForJob(jobId: string): Promise<string[] | null> {
   const sessions = await db
-    .select({ reservationSnapshotId: backupStorageSessions.reservationSnapshotId })
+    .select({ reservationSnapshotId: backupStorageSessions.reservationSnapshotId, readOnly: backupStorageSessions.readOnly })
     .from(backupStorageSessions)
     .where(and(eq(backupStorageSessions.jobId, jobId), eq(backupStorageSessions.scope, 'snapshot_write')));
   const ids = [...new Set(sessions.map((s) => s.reservationSnapshotId).filter((v): v is string => !!v))];
   if (ids.length === 0) return null;
+  const readOnlyIds = [...new Set(sessions.filter((s) => s.readOnly).map((s) => s.reservationSnapshotId).filter((v): v is string => !!v))];
   const live = await db
     .select({ snapshotId: backupSnapshotIdReservations.snapshotId })
     .from(backupSnapshotIdReservations)
     .where(and(
       inArray(backupSnapshotIdReservations.snapshotId, ids),
       or(
-        ne(backupSnapshotIdReservations.state, 'abandoned'),
         eq(backupSnapshotIdReservations.currentJobId, jobId),
+        readOnlyIds.length > 0
+          ? and(
+            inArray(backupSnapshotIdReservations.snapshotId, readOnlyIds),
+            inArray(backupSnapshotIdReservations.state, ['sealing', 'published']),
+          )
+          : sql`false`,
       ),
     ));
   return live.map((r) => r.snapshotId);
+}
+
+/**
+ * True when this server-issued id is reserved, in the caller's organization,
+ * to a backup job other than `jobId` (another job took it over). Runs in the
+ * caller's DB context: a reservation of another organization is invisible
+ * and reads as false.
+ */
+export async function isReservedToAnotherJob(snapshotId: string, jobId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ source: backupSnapshotIdReservations.source, currentJobId: backupSnapshotIdReservations.currentJobId })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
+  return !!row && row.source === 'server_minted' && row.currentJobId !== jobId;
 }
 
 /** Loads one reservation, optionally locking it for the rest of the caller's transaction. */
@@ -167,23 +208,27 @@ export async function loadReservation(
 
 /**
  * For storage reconcile (system scope): which of these ids are reserved to
- * another organization, and which server-issued ids are still being written
- * or sealed by a live backup job (never adoptable — the job's own result
- * publishes them).
+ * another organization, which server-issued ids are still being written or
+ * sealed by a live backup job (never adoptable — the job's own result
+ * publishes them), and, for each server-issued id, the job currently holding
+ * it — the only job whose result may publish it (after a takeover, earlier
+ * jobs still record the id but can no longer publish it).
  */
 export async function loadSnapshotIdClaims(
   snapshotIds: string[],
   orgId: string,
-): Promise<{ foreign: Set<string>; live: Set<string> }> {
+): Promise<{ foreign: Set<string>; live: Set<string>; currentJobs: Map<string, string> }> {
   const foreign = new Set<string>();
   const live = new Set<string>();
-  if (snapshotIds.length === 0) return { foreign, live };
+  const currentJobs = new Map<string, string>();
+  if (snapshotIds.length === 0) return { foreign, live, currentJobs };
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
       orgId: backupSnapshotIdReservations.orgId,
       state: backupSnapshotIdReservations.state,
       source: backupSnapshotIdReservations.source,
+      currentJobId: backupSnapshotIdReservations.currentJobId,
       jobStatus: backupJobs.status,
     })
     .from(backupSnapshotIdReservations)
@@ -198,8 +243,9 @@ export async function loadSnapshotIdClaims(
       && (row.jobStatus === 'pending' || row.jobStatus === 'running')) {
       live.add(row.snapshotId);
     }
+    if (row.source === 'server_minted' && row.currentJobId) currentJobs.set(row.snapshotId, row.currentJobId);
   }
-  return { foreign, live };
+  return { foreign, live, currentJobs };
 }
 
 // ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────

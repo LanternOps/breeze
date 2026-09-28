@@ -133,6 +133,7 @@ const allowedSnapshotIdsForJobMock = vi.hoisted(() => vi.fn(async (): Promise<st
 vi.mock('./backupSnapshotIdReservations', () => ({
   SNAPSHOT_ID_RESERVATION_CONSTRAINT: 'backup_snapshot_id_reservations_pkey',
   allowedSnapshotIdsForJob: allowedSnapshotIdsForJobMock,
+  isReservedToAnotherJob: vi.fn(async () => false),
 }));
 const createAuditLogMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('./auditService', () => ({ createAuditLog: createAuditLogMock }));

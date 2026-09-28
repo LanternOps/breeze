@@ -1,12 +1,23 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT } from './backupGcKnobs';
+import { MAX_WRITE_URL_TTL_SECONDS } from './backupStoragePresign';
+import { SNAPSHOT_TAKEOVER_MAX_AGE_MS } from './backupSnapshotIdReservations';
 import {
   STORAGE_WRITE_CAPABILITIES,
   STORAGE_WRITE_PART_SIZE_BYTES,
+  STORAGE_WRITE_TRANSFER_MARGIN_MS,
+  appliedEncryptionOf,
   authorizeWriteKey,
   buildWriteEnvelope,
+  decideResumeTarget,
   decideWriteBrokering,
+  helperStorageIdentity,
   isAllowedWriteListPrefix,
+  urlExpiresIn,
   writeDeleteDecision,
+  type ResumeTargetView,
 } from './backupStorageWriteSessions';
 
 const ID = 'snapshot-20261108T120000Z-0123456789abcdef01234567';
@@ -114,6 +125,7 @@ describe('buildWriteEnvelope', () => {
       deadline: new Date('2026-11-09T12:00:00Z'),
       snapshotId: ID,
       conditionalWrites: true,
+      storageIdentity: 's3|https://storage.example|us-east-1|bucket-a',
     });
     expect(envelope).toEqual({
       version: 1,
@@ -128,6 +140,7 @@ describe('buildWriteEnvelope', () => {
       maxBatch: 100,
       partSizeBytes: 64 * 1024 * 1024,
       conditionalWrites: true,
+      storageIdentity: 's3|https://storage.example|us-east-1|bucket-a',
     });
     expect(STORAGE_WRITE_CAPABILITIES).toContain('resume');
     expect(STORAGE_WRITE_PART_SIZE_BYTES).toBe(64 * 1024 * 1024);
@@ -145,5 +158,129 @@ describe('delete settle window', () => {
     const worstCaseMs = Math.ceil(STORAGE_WRITE_DELETE_MAX_KEYS / DELETE_OBJECTS_BATCH_KEYS) * STORAGE_CALL_TIMEOUT_MS;
     expect(DELETE_OBJECTS_BATCH_KEYS).toBeGreaterThan(0);
     expect(worstCaseMs * 2).toBeLessThanOrEqual(STORAGE_DELETE_SETTLE_MS);
+  });
+});
+
+describe('helperStorageIdentity', () => {
+  it('is the identity the helper\'s own S3 provider reports for the same destination', () => {
+    expect(helperStorageIdentity('s3', { endpoint: 'https://storage.example', region: 'us-east-1', bucket: 'b' }))
+      .toBe('s3|https://storage.example|us-east-1|b');
+  });
+  it('keeps the configured spelling verbatim (no normalization) and blanks missing fields', () => {
+    expect(helperStorageIdentity('s3', { endpoint: 'https://Storage.example/', bucket: 'B ' }))
+      .toBe('s3|https://Storage.example/||B ');
+    expect(helperStorageIdentity('s3', { endpoint: 42, region: null, bucket: 'b' })).toBe('s3|||b');
+  });
+});
+
+describe('appliedEncryptionOf', () => {
+  const ARN = 'arn:aws:kms:us-east-1:000000000000:key/1111-2222';
+  const none = { algorithm: null, kmsKeyId: null };
+  it('is null when nothing was requested and storage confirmed nothing', () => {
+    expect(appliedEncryptionOf({ mode: 'disabled' }, none)).toBeNull();
+  });
+  it('reports what storage confirmed, what was requested, and whether they match', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, { algorithm: 'AES256', kmsKeyId: null }))
+      .toEqual({ algorithm: 'AES256', requested: { algorithm: 'AES256' }, matches: true });
+    expect(appliedEncryptionOf({ mode: 'disabled' }, { algorithm: 'AES256', kmsKeyId: null }))
+      .toEqual({ algorithm: 'AES256', requested: null, matches: true });
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'aws:kms', kmsKeyId: ARN }))
+      .toEqual({ algorithm: 'aws:kms', kmsKeyId: ARN, requested: { algorithm: 'aws:kms', kmsKeyId: ARN }, matches: true });
+  });
+  it('accepts a key id or alias request confirmed as the key ARN', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111-2222' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'alias/backups' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'arn:aws:kms:us-east-1:000000000000:alias/backups' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111-2222' }, { algorithm: 'aws:kms', kmsKeyId: null })?.matches).toBe(true);
+  });
+  it('reports an explicit mismatch when storage confirms nothing, another algorithm or another key', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, none))
+      .toEqual({ algorithm: null, requested: { algorithm: 'AES256' }, matches: false });
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'AES256', kmsKeyId: null })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'aws:kms', kmsKeyId: `${ARN}-other` })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(false);
+  });
+});
+
+describe('write URL transfer margin', () => {
+  it('covers a maximum-size part on a slow link and is what sealing waits out', () => {
+    // A 64 MiB part at 1 Mbit/s takes about 9 minutes.
+    expect(STORAGE_WRITE_TRANSFER_MARGIN_MS).toBe(15 * 60 * 1000);
+    expect((STORAGE_WRITE_PART_SIZE_BYTES * 8) / 1_000_000 / 60).toBeLessThan(STORAGE_WRITE_TRANSFER_MARGIN_MS / 60_000);
+    const migration = readFileSync(
+      join(__dirname, '../../migrations/2026-11-08-160000-backup-snapshot-reservation-current-job.sql'),
+      'utf8',
+    );
+    expect(migration).toContain(`interval '${STORAGE_WRITE_TRANSFER_MARGIN_MS / 60_000} minutes'`);
+    expect(MAX_WRITE_URL_TTL_SECONDS * 1000).toBeLessThan(STORAGE_WRITE_TRANSFER_MARGIN_MS);
+  });
+});
+
+describe('decideResumeTarget', () => {
+  const now = new Date('2026-11-10T00:00:00Z');
+  const session = { orgId: 'org', deviceId: 'dev', configId: 'cfg', storageIdentity: 'ident', jobId: 'job-new' };
+  const target: ResumeTargetView = {
+    source: 'server_minted', orgId: 'org', deviceId: 'dev', configId: 'cfg', storageIdentity: 'ident',
+    state: 'abandoned', currentJobId: 'job-old', publishedSnapshotDbId: null,
+    uploadsSweptAt: new Date('2026-11-09T00:00:00Z'), createdAt: new Date('2026-11-08T00:00:00Z'),
+  };
+  const prior: { status: string; baseSnapshotId: string | null } = { status: 'failed', baseSnapshotId: 'snapshot-base' };
+  const own: { status: string; baseSnapshotId: string | null } = { status: 'running', baseSnapshotId: 'snapshot-base' };
+  const decide = (t: Partial<ResumeTargetView> = {}, p: Partial<typeof prior> | null = {}, o: Partial<typeof own> = {}, s: Partial<typeof session> = {}) =>
+    decideResumeTarget({ ...target, ...t }, { ...session, ...s }, p === null ? null : { ...prior, ...p }, { ...own, ...o }, now);
+
+  it('lets a later job of the same device, configuration, destination and base take over an unfinished id', () => {
+    expect(decide()).toEqual({ kind: 'write', takeover: true });
+    expect(decide({ state: 'reserved', uploadsSweptAt: null })).toEqual({ kind: 'write', takeover: true });
+    expect(decide({}, { baseSnapshotId: null }, { baseSnapshotId: '' })).toEqual({ kind: 'write', takeover: true });
+  });
+
+  it.each([
+    ['another device', { deviceId: 'dev-2' }],
+    ['another organization', { orgId: 'org-2' }],
+    ['another configuration', { configId: 'cfg-2' }],
+    ['a configuration that is gone', { configId: null }],
+    ['another storage destination', { storageIdentity: 'ident-2' }],
+    ['an id not issued by the server', { source: 'legacy_job' }],
+    ['an id given up by a resume (no job)', { currentJobId: null }],
+    ['an id that already has a snapshot row', { publishedSnapshotDbId: 'snap-row' }],
+    ['a retired id', { state: 'retired' }],
+    ['an id older than the takeover limit', { createdAt: new Date(now.getTime() - SNAPSHOT_TAKEOVER_MAX_AGE_MS - 1) }],
+  ])('refuses %s', (_label, patch) => {
+    expect(decide(patch as Partial<ResumeTargetView>)).toEqual({ kind: 'refuse' });
+  });
+
+  it('refuses another dispatched base, and an earlier job whose base cannot be read', () => {
+    expect(decide({}, { baseSnapshotId: 'snapshot-other' })).toEqual({ kind: 'refuse' });
+    expect(decide({}, { baseSnapshotId: null })).toEqual({ kind: 'refuse' });
+    expect(decide({}, null)).toEqual({ kind: 'refuse' });
+    expect(decide({ state: 'published' }, { baseSnapshotId: 'snapshot-other' })).toEqual({ kind: 'refuse' });
+  });
+
+  it('waits while the earlier job is still running, or while its unfinished uploads are still being swept', () => {
+    expect(decide({ state: 'reserved' }, { status: 'running' })).toMatchObject({ kind: 'wait' });
+    expect(decide({ uploadsSweptAt: null })).toMatchObject({ kind: 'wait' });
+  });
+
+  it('keeps same-job resume and read-only completion of a published id', () => {
+    expect(decide({ state: 'reserved', currentJobId: 'job-new' }, { status: 'running' })).toEqual({ kind: 'write', takeover: false });
+    expect(decide({ state: 'published', publishedSnapshotDbId: 'snap-row' })).toEqual({ kind: 'read_only' });
+    expect(decide({ state: 'sealing', publishedSnapshotDbId: 'snap-row' })).toEqual({ kind: 'read_only' });
+  });
+
+  it('keeps the takeover limit inside the window after which storage reclaim may remove an abandoned prefix', () => {
+    expect(SNAPSHOT_TAKEOVER_MAX_AGE_MS).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000);
+    // Reclaim never runs below the helper journal age (7 days); keep a full day of margin.
+    expect(SNAPSHOT_TAKEOVER_MAX_AGE_MS + 24 * 60 * 60 * 1000).toBeLessThan(7 * 24 * 60 * 60 * 1000);
+    expect(SNAPSHOT_TAKEOVER_MAX_AGE_MS).toBeLessThan(BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT);
+  });
+});
+
+describe('urlExpiresIn', () => {
+  it('is the whole seconds a URL has left on the server clock, never negative', () => {
+    const now = new Date('2026-11-08T12:00:00.250Z');
+    expect(urlExpiresIn(new Date('2026-11-08T12:05:00.250Z'), now)).toBe(300);
+    expect(urlExpiresIn(new Date('2026-11-08T12:05:00.000Z'), now)).toBe(299);
+    expect(urlExpiresIn(new Date('2026-11-08T11:59:00Z'), now)).toBe(0);
   });
 });

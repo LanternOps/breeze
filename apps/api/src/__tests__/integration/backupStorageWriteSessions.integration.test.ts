@@ -74,7 +74,7 @@ function fakeDeps(overrides: Partial<WriteSessionDeps['storage']> = {}): WriteSe
         expiresAt: new Date(Date.now() + ttl * 1000),
       }),
       presignGet: async (_cfg, key) => `https://storage.example/${key}?get`,
-      createMultipart: async () => `upload-${randomUUID()}`,
+      createMultipart: async () => ({ uploadId: `upload-${randomUUID()}`, encryption: { algorithm: null, kmsKeyId: null } }),
       completeMultipart: async () => undefined,
       abortMultipart: async () => undefined,
       listMultipart: async () => [],
@@ -167,6 +167,13 @@ describe('write-scoped storage sessions', () => {
     const key = `snapshots/${first.snapshotId}/files/a.bin`;
     const issued = await asAgent(t, s1, (r) => resolveWriteSessionObjects(s1, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
     expect(issued.status).toBe(200);
+    if (issued.status === 200) {
+      // Remaining lifetime on the server clock, alongside the absolute expiry.
+      const o = issued.body.objects[0]!;
+      expect(o.expiresIn).toBeGreaterThan(290);
+      expect(o.expiresIn).toBeLessThanOrEqual(300);
+      expect(Math.abs(Date.parse(o.expiresAt) - Date.now() - o.expiresIn * 1000)).toBeLessThan(5_000);
+    }
 
     const second = await mint(t);
     if (second.mode !== 'brokered') throw new Error('expected brokered');
@@ -179,7 +186,12 @@ describe('write-scoped storage sessions', () => {
     const get = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'GET', key }], fakeDeps()));
     expect(get.status).toBe(200);
 
+    // Expired, but an upload started just before expiry may still be landing.
     await getTestDb().execute(sql`UPDATE backup_storage_sessions SET url_horizon_at = now() - interval '1 second' WHERE id = ${s1.id}`);
+    const landing = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
+    expect(landing).toMatchObject({ status: 409, code: 'previous_writer_active' });
+
+    await getTestDb().execute(sql`UPDATE backup_storage_sessions SET url_horizon_at = now() - interval '16 minutes' WHERE id = ${s1.id}`);
     const later = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
     expect(later.status).toBe(200);
   });
@@ -352,7 +364,7 @@ describe('resuming a journaled snapshot id', () => {
         reservation_generation, url_horizon_at, revoked_at)
       VALUES (${t.orgId}, ${t.deviceId}, ${t.deviceId}, ${t.configId}, ${WRITE_IDENTITY}, 'snapshot_write', false,
         ${randomBytes(32).toString('hex')}, 1, 10, 10, now() + interval '1 minute', now() + interval '1 hour', 1, 1, now(),
-        ${prevJob}, ${j}, 1, ${(opts.horizon === undefined ? new Date(Date.now() - 60_000) : opts.horizon)?.toISOString() ?? null}, now())
+        ${prevJob}, ${j}, 1, ${(opts.horizon === undefined ? new Date(Date.now() - 16 * 60_000) : opts.horizon)?.toISOString() ?? null}, now())
     `);
     return j;
   }
@@ -377,6 +389,7 @@ describe('resuming a journaled snapshot id', () => {
     expect(wins).toHaveLength(1);
     expect(results.filter((r) => r.status === 409)).toHaveLength(1);
     const winner = results[0]!.status === 200 ? a : b;
+    expect(wins[0]).toMatchObject({ body: { mode: 'write', takeover: true } });
     expect(await reservationRow(j)).toMatchObject({ current_job_id: winner.job, write_generation: 2, state: 'reserved' });
     expect((await reservationRow(winner.minted.snapshotId))?.state).toBe('abandoned');
   });
