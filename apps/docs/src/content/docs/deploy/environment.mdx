@@ -1000,7 +1000,7 @@ The warranty worker looks each physical device's serial number up against its ma
 | `XERO_CLIENT_ID` | — | Client ID of your Xero Web app (developer.xero.com → My Apps). The Xero card only appears when this is set. |
 | `XERO_CLIENT_SECRET` | — | That app's client secret |
 | `XERO_REDIRECT_URI` | — | OAuth callback registered on the app, e.g. `https://your-domain/api/v1/accounting/xero/callback` |
-| `XERO_WEBHOOK_KEY` | — | The app's webhook signing key. Read once payment pull-back for Xero ships; safe to set now. |
+| `XERO_WEBHOOK_KEY` | — | The app's webhook signing key. In the Xero app's Webhooks page, subscribe to Invoices with delivery URL `https://your-domain/api/v1/webhooks/xero`, then send "Intent to receive". Without it, payments recorded in Xero still reach Breeze through the 15-minute sweep, just more slowly. |
 | `XERO_DAILY_CALL_LIMIT` | `1000` | Per-organisation daily API budget for your Xero tier (Starter 1000; Core, Plus and Advanced 5000). Background sweeps pause below 20% of it; invoice and payment pushes keep priority. |
 
 <Aside>

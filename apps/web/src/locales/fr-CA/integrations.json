@@ -1147,7 +1147,8 @@
       "saveFailed": "Impossible d'enregistrer les paramètres {{provider}}.",
       "loadFailed": "Impossible de charger les paramètres de {{provider}}.",
       "retry": "Réessayer",
-      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les de nouveau — les choix de l'ancienne organisation ont été effacés."
+      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les de nouveau — les choix de l'ancienne organisation ont été effacés.",
+      "paymentAccountMissing": "Les paiements enregistrés dans Breeze ne sont pas envoyés à {{provider}} tant que vous n'avez pas choisi de compte bancaire."
     }
   },
   "accountingMapping": {

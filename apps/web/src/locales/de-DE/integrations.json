@@ -1147,7 +1147,8 @@
       "saveFailed": "{{provider}}-Einstellungen konnten nicht gespeichert werden.",
       "loadFailed": "Einstellungen von {{provider}} konnten nicht geladen werden.",
       "retry": "Erneut versuchen",
-      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht."
+      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht.",
+      "paymentAccountMissing": "In Breeze erfasste Zahlungen werden erst an {{provider}} übertragen, wenn Sie ein Bankkonto auswählen."
     }
   },
   "accountingMapping": {

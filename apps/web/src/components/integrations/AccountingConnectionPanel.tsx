@@ -688,6 +688,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
             defaultExemptTaxCodeRef: status.defaultExemptTaxCodeRef ?? null,
             defaultPaymentAccountRef: status.defaultPaymentAccountRef ?? null,
           }}
+          paymentPushOn={status?.pushPayments === true && caps.paymentPush}
           onSaved={(v) => setStatus((prev) => (prev ? { ...prev, ...v } : prev))}
           onUnauthorized={onUnauthorized}
         />

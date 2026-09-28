@@ -17,7 +17,7 @@ interface Options {
   organisation: { name: string | null; isDemoCompany: boolean | null };
   incomeAccounts: Option[]; taxRates: Option[]; bankAccounts: Option[];
 }
-interface Props { provider: AccountingProviderId; values: SettingsValues; onSaved: (v: SettingsValues) => void; onUnauthorized: () => void }
+interface Props { provider: AccountingProviderId; values: SettingsValues; paymentPushOn?: boolean; onSaved: (v: SettingsValues) => void; onUnauthorized: () => void }
 
 const FIELDS: Array<{ field: keyof SettingsValues; labelKey: string; source: keyof Omit<Options, "organisation"> }> = [
   { field: "defaultIncomeAccountRef", labelKey: "incomeAccount", source: "incomeAccounts" },
@@ -30,7 +30,7 @@ const FIELDS: Array<{ field: keyof SettingsValues; labelKey: string; source: key
  *  Form screen → one page Save (settings rule 7). Whether the "pick defaults"
  *  notice shows is driven by the SAVED `values` prop, never the in-progress
  *  draft — the draft is what the operator is about to save, not what's live. */
-export default function AccountingSettingsStep({ provider, values, onSaved, onUnauthorized }: Props) {
+export default function AccountingSettingsStep({ provider, values, paymentPushOn, onSaved, onUnauthorized }: Props) {
   const { t } = useTranslation("integrations");
   const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
   const [options, setOptions] = useState<Options | null>(null);
@@ -159,6 +159,11 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
               );
             })}
           </div>
+          {paymentPushOn && !draft.defaultPaymentAccountRef && (
+            <p role="status" className="text-sm text-amber-700" data-testid={`${provider}-payment-account-warning`}>
+              {t("accountingConnection.settingsStep.paymentAccountMissing", { provider: providerName })}
+            </p>
+          )}
           {mfaRequired && (
             <p role="alert" className="text-sm text-amber-700" data-testid={`${provider}-settings-mfa`}>
               {t("accountingConnection.mfaRequiredHint", { provider: providerName })}

@@ -109,4 +109,22 @@ describe('AccountingSettingsStep', () => {
     expect(select.value).toBe('gone-1');
     expect(Array.from(select.options).some((o) => o.value === 'gone-1')).toBe(true);
   });
+
+  describe('payment account warning (Xero W05 refinement 17)', () => {
+    it('shows while payment push is on and no bank account is chosen, and hides once one is picked', async () => {
+      m.fetchWithAuth.mockReturnValueOnce(ok({ data: options }));
+      render(<AccountingSettingsStep provider="xero" values={empty} paymentPushOn onSaved={vi.fn()} onUnauthorized={vi.fn()} />);
+      expect(await screen.findByTestId('xero-payment-account-warning'))
+        .toHaveTextContent('Payments recorded in Breeze are not sent to Xero until you choose a bank account.');
+      fireEvent.change(screen.getByTestId('xero-setting-defaultPaymentAccountRef'), { target: { value: 'bank-1' } });
+      await waitFor(() => expect(screen.queryByTestId('xero-payment-account-warning')).toBeNull());
+    });
+
+    it('stays hidden when payment push is off or the prop is absent', async () => {
+      m.fetchWithAuth.mockReturnValueOnce(ok({ data: options }));
+      render(<AccountingSettingsStep provider="xero" values={empty} onSaved={vi.fn()} onUnauthorized={vi.fn()} />);
+      await screen.findByTestId('xero-settings-step');
+      expect(screen.queryByTestId('xero-payment-account-warning')).toBeNull();
+    });
+  });
 });

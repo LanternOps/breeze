@@ -1147,7 +1147,8 @@
       "saveFailed": "Não foi possível salvar as configurações do {{provider}}.",
       "loadFailed": "Não foi possível carregar as configurações do {{provider}}.",
       "retry": "Tentar novamente",
-      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas."
+      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas.",
+      "paymentAccountMissing": "Os pagamentos registrados no Breeze não são enviados ao {{provider}} até que você escolha uma conta bancária."
     }
   },
   "accountingMapping": {
