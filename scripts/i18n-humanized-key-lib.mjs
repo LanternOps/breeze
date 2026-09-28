@@ -28,6 +28,11 @@ export function humanizeTitleCase(leaf) {
   return words.map((w) => capitalize(w.toLowerCase())).join(' ');
 }
 
+/** Number of words in a camelCase / snake / kebab key leaf ("sentToAgent" -> 3). */
+export function leafWordCount(leaf) {
+  return splitWords(leaf).length;
+}
+
 function splitWords(leaf) {
   return leaf
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')

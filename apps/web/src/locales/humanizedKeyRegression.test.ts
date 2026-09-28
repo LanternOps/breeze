@@ -40,23 +40,23 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isHumanizedKeyPlaceholder } from '../../../../scripts/i18n-humanized-key-lib.mjs';
+import { isHumanizedKeyPlaceholder, leafWordCount } from '../../../../scripts/i18n-humanized-key-lib.mjs';
 
 const LOCALES_DIR = dirname(fileURLToPath(import.meta.url));
 const EN_DIR = join(LOCALES_DIR, 'en');
 const BASELINE: string[] = JSON.parse(
   readFileSync(join(LOCALES_DIR, 'humanizedKeyBaseline.json'), 'utf8'),
 );
-// Copy that a human deliberately wrote and that happens to read like its own
-// key (e.g. key `sentToAgent`, copy "Sent to agent"). This is NOT the baseline
-// of known-broken extraction placeholders above; add an entry here only for
-// intentionally-authored copy, with the PR that introduced it.
-const CONFIRMED_LEGITIMATE_KEYS = new Set<string>([
-  'policies.software.deploymentProgress.sentToAgent', // #7370 (#3578)
-  'backup.vMRestoreConfirmStep.rebuildEngine', // #7283 (#7183)
-  'backup.vMRestoreWizard.selectRebuildHost', // #7283 (#7183)
-]);
-const ALLOWLIST_KEYS = new Set<string>([...BASELINE, ...CONFIRMED_LEGITIMATE_KEYS]);
+// New-hit threshold. Short labels routinely and legitimately read like their
+// own key ("Created by" / createdBy, "Try again" / tryAgain, "Sent to agent" /
+// sentToAgent), so flagging every 2–3 word match made this test red on
+// ordinary new copy and dequeued unrelated PRs. The #2340 damage this guards
+// against is sentence-length keys ("thisMacIsBelowTheMacos"), so NEW hits are
+// only reported for leaves of MIN_WORDS_FOR_NEW_HIT+ words. The scanner
+// (scripts/i18n-humanized-key-scan.mjs) still reports every length, and the
+// baseline below is still checked for staleness with the full heuristic.
+const MIN_WORDS_FOR_NEW_HIT = 4;
+const ALLOWLIST_KEYS = new Set<string>(BASELINE);
 
 function flattenJson(obj: Record<string, unknown>, prefix = ''): [string, string][] {
   const out: [string, string][] = [];
@@ -78,6 +78,7 @@ function findHumanizedKeyHits(namespace: string, json: Record<string, unknown>):
     if (ALLOWLIST_KEYS.has(dottedKey)) continue;
 
     const leaf = key.split('.').pop()!;
+    if (leafWordCount(leaf) < MIN_WORDS_FOR_NEW_HIT) continue;
     if (isHumanizedKeyPlaceholder(leaf, value)) {
       hits.push(`${dottedKey}: "${value}" looks like a humanized key, not real copy`);
     }
