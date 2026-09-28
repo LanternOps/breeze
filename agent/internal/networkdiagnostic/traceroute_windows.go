@@ -21,10 +21,18 @@ import (
 // request with the requested TTL from the bound source address and returns
 // the first answer, which the API itself matches to the request.
 //
-// LAB-VERIFY (native Windows): the reply-buffer offsets below follow
-// ipexport.h (ICMP_ECHO_REPLY: Address@0, Status@4, RoundTripTime@8;
-// ICMPV6_ECHO_REPLY: packed IPV6_ADDRESS_EX with sin6_addr@6, Status@28,
-// RoundTripTime@32). Unknown status codes are refused, never interpreted.
+// The reply-buffer offsets below follow ipexport.h (ICMP_ECHO_REPLY:
+// Address@0, Status@4, RoundTripTime@8; ICMPV6_ECHO_REPLY: packed
+// IPV6_ADDRESS_EX with sin6_addr@6, Status@28, RoundTripTime@32). Unknown
+// status codes are refused, never interpreted.
+//
+// Lab-verified on Windows 11 build 26200 (2026-09-27, raw buffers in the M3
+// verification record; rerun with traceroute_lab_windows_test.go): every IPv4
+// offset, with status 0, 11013 (TTL expired) and a router's and the local
+// stack's destination-unreachable (a recognized code; which one was not logged);
+// IPv6 sin6_addr@6, RoundTripTime@32 and Status@28 for status 0.
+// LAB-VERIFY: a non-zero IPv6 status (hop limit exceeded, unreachable) at @28
+// has not been observed; the lab host had no multi-hop IPv6 path.
 
 var (
 	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")

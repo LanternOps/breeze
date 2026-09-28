@@ -104,3 +104,55 @@ What `topology-operations.spec.ts` asserts:
 - `apps/api/src/services/topology/metrics.ts` (Prometheus domain metrics listed in the original Task 11 file list). **Not implemented** in this task.
 - Manual browser checks: long labels, contrast, reduced motion.
 - The full `pnpm lint` (turbo) and full unit suites for all packages. Only the suites listed above were run.
+
+## Native Windows traceroute lab run (2026-09-27)
+
+This run closes the "Native Windows traceroute" item above for IPv4. IPv6 is partly covered: see the last list in this section.
+
+**Host.** The two Server 2022 lab VMs (`WIN-IMDR2GAIDMV`, `WIN-DHQNR1F8LO2`) were offline on Tailscale, so the run used `dell70601`. This is the physical Windows 11 Pro test workstation, build 10.0.26200.8653. It sits on Ethernet `192.168.10.103/24` behind gateway `192.168.10.1`. It has Tailscale IPv6 (ULA `fd7a:115c:a1e0::/48`) but no global IPv6. Its installed Breeze agent was not touched, and no second agent ran. Only a `go test` binary ran, from the scratch directory `C:\tmp\trace-lab-20260927`, which was deleted afterwards.
+
+**Method.** Test binaries were cross-compiled on the Mac (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c`, Go 1.26.6 per `agent/go.mod`) and copied to the host with `scp`. An ASCII `.cmd` file ran them. Shared vector JSON was staged at the relative path the tests read. The lab suite is `agent/internal/networkdiagnostic/traceroute_lab_windows_test.go`. It is gated by `//go:build windows` and `BREEZE_LAB_TRACE`, so CI skips it. Each case takes the production path: `networkcontext.NewReader` → `NativeIO` → sealed `trace_route` command → `Run` → `executeTrace` → `windowsICMPTraceTransport`. Rerun it with:
+
+```
+set BREEZE_LAB_TRACE=1
+set BREEZE_LAB_TRACE_V6_TARGET=<reachable IPv6, optional>
+set BREEZE_LAB_TRACE_UNREACHABLE=<unused on-link IPv4, optional>
+networkdiagnostic.test.exe -test.v -test.count=1 -test.run TestLabWindows
+```
+
+**Raw reply buffers** (`TestLabWindowsICMPReplyLayout`, first 40 bytes):
+
+| Probe | Decoded | Raw |
+|---|---|---|
+| IPv4 → 1.1.1.1, TTL 1 | responder 192.168.10.1, status 11013, RTT 0 ms | `c0a80a01 052b0000 00000000 00000000 …` |
+| IPv4 → 1.1.1.1, TTL 64 | responder 1.1.1.1, status 0, RTT 13 ms | `01010101 00000000 0d000000 20000000 …` |
+| IPv6 → fd7a:…:903a:5777, hop limit 64 | responder = destination, status 0, RTT 4 ms | `0000 00000000 fd7a115ca1e0000000000000903a5777 00000000 0000 00000000 04000000 …` |
+
+IPv4: Address@0, Status@4 and RoundTripTime@8 match `ipexport.h`. IPv6: sin6_port@0, flowinfo@2, sin6_addr@6–22 and scope@22 are followed by 2 bytes of padding, then Status@28 and RoundTripTime@32. The 4 ms read at @32 matches `ping -6` (3–5 ms). Status@28 was only seen with a value of 0.
+
+**Results** (final run, all 7 lab tests PASS, `LAB_EXIT=0`):
+
+| Case | Result | Evidence |
+|---|---|---|
+| Capability: `TraceSupported()` and `NativeIO.TraceTransport()` | PASS | true and non-nil |
+| (a) Default gateway 192.168.10.1, max 4 hops | PASS | `succeeded`: 1 hop, `192.168.10.1`, 1.08 ms, `observed` |
+| (b) 1.1.1.1, 30×2 | PASS | `succeeded` in 2.1 s. 21 hops: `192.168.10.1` → `10.27.29.3` → `68.85.220.5` → `68.85.89.229` → `68.86.103.37` → `96.216.22.245` → `96.110.43.245` → `96.110.33.126` → TTL 9 **both probes `address:null, rttMs:null, outcome:timeout, unknown`** → `172.68.32.12` → `1.1.1.1` (destination confirmed at TTL 11, attempt 1, 22 ms) |
+| (c) 192.0.2.1 blackhole, 8×1 | PASS | `failed_check / trace_destination_unreachable`. Hops 1–6 replied. TTL 7 `96.110.43.253` answered **destination unreachable**, and the trace stopped at that router. No hop claimed 192.0.2.1 |
+| (d) IPv6 `fd7a:115c:a1e0::903a:5777` (the Mac over Tailscale), 30×1 | PASS **after the fix below** | `succeeded`: 1 hop, destination, 3 ms, `observed`, source `fd7a:115c:a1e0::6c3a:7c71` |
+| (e) Unused on-link address 192.168.10.250, 2×1 (observational) | PASS | Run 1: both hops `null` + `timeout` (ARP had not failed within the 1 s hop budget). Run 2: TTL 1 `unreachable` from **the host's own address** `192.168.10.103`, 987 ms, then stop |
+
+Across all runs, every answered hop had a valid responder in the destination's family, and every RTT was in (0, 1000] ms. No panics. The `nd` unit suite ran natively: every assertion passed. The 16–18 reds were all `TempDir RemoveAll cleanup: … journal.lock … being used by another process` (see the findings), plus the vector-path reds before the vector files were staged.
+
+**Findings.**
+
+1. **Bug, fixed in this commit.** `networkcontext.WindowsReader.LookupRoute` set `sin6_scope_id` = interface index on every IPv6 destination. `GetBestRoute2` rejects a scope id on a global or ULA destination with `ERROR_INVALID_PARAMETER` (87), measured on the host. As a result, every interface-pinned IPv6 diagnostic step (`Origin.InterfaceKey` set), including trace, icmp and tcp, returned `unsupported / unsupported_context` on Windows. The unpinned lookup worked, which hid the bug. Fix: `winSockaddr` now sets the scope only for link-local addresses. The new unit test `TestWindowsSockaddrScopesOnlyLinkLocalIPv6` failed on the host before the fix (`2001:db8::1: scope 31, want 0`) and passes after it. The pinned IPv6 lookup and case (d) then passed. This code shipped in M1 (#6115), so main has the same bug.
+2. **Behaviour to decide on, unchanged.** When ARP fails for an on-link host, the Windows ICMP API reports `DEST_HOST_UNREACHABLE` with the **local source address** as the responder. The trace then records the agent's own IP as an `unreachable` hop at TTL 1 (case (e), run 2). The hop is what the OS reported, not an invented responder, but a renderer may show the device itself as a router. Whether to relabel it is a product decision.
+3. **Test hygiene, unchanged.** The existing `networkdiagnostic` unit tests never `Close()` the journals they open. On Windows, `t.TempDir` cleanup then fails on the held `journal.lock`, and 16 otherwise-green tests fail. This package is not in CI's `test-agent-windows` list, so CI does not see it. The lab suite closes its journals.
+4. Windows reports sub-millisecond RTTs as 0. The transport then falls back to wall-clock time (gateway 0.58–1.08 ms). That fallback is expected, not a defect.
+
+**Still unverified.**
+
+- A non-zero IPv6 status at @28 (hop limit exceeded or unreachable). The host had no multi-hop IPv6 path, so the `LAB-VERIFY` note for it stays in `traceroute_windows.go`.
+- A link-local IPv6 trace destination (zone/scope path).
+- Windows Server 2022 specifically. This run used Windows 11 26200.
+- A trace delivered through a real enrolled agent and rendered from the server.
