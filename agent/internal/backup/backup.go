@@ -898,13 +898,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// timing in snapshot.go (#2790).
 	log.Info("scanning backup paths", "jobId", job.ID, "pathCount", len(backupPaths))
 	scanStart := time.Now()
-	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes), journalDirsForExclude)
+	files, reparseSkipped, scanErr := m.collectBackupFilesWithSkips(runCtx, backupPaths, newExcludeMatcher(excludes), journalDirsForExclude)
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
 		}
 		log.Warn("backup file scan completed with errors", "error", scanErr.Error())
 	}
+	// Junctions and mount points the walk skipped (#7051). Reported right
+	// after a completed scan, so the Warning is on the job however the rest
+	// of the run ends. A run stopped mid-scan (above) produces no snapshot
+	// and reports none.
+	if vssSession != nil {
+		for i := range reparseSkipped.sample {
+			reparseSkipped.sample[i].path = livePathForVSS(reparseSkipped.sample[i].path, vssSession.ShadowPaths)
+		}
+	}
+	reportSkippedReparsePoints(job, reparseSkipped)
 	log.Info("scan complete",
 		"jobId", job.ID,
 		"files", len(files),
@@ -1722,7 +1732,21 @@ func cleanBackupRoot(root string) string {
 // another run's, in the same directory) as ordinary backup content. Empty
 // for callers with no journal context (the collectBackupFiles() test/legacy
 // helper above).
+//
+// It discards the skipped-reparse-point record; runBackup uses
+// collectBackupFilesWithSkips so that record reaches the job's Warning.
 func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, error) {
+	files, _, err := m.collectBackupFilesWithSkips(ctx, paths, excl, journalDirs)
+	return files, err
+}
+
+// collectBackupFilesWithSkips is collectBackupFilesFromPaths plus a record of
+// every reparse point the walk skipped (#7051): junctions, volume mount points
+// and other reparse points Go reports as os.ModeIrregular. Those are neither
+// traversed nor captured, but no longer silently. The returned *reparseSkips
+// is never nil.
+func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, *reparseSkips, error) {
+	skips := newReparseSkips()
 	if m.config.CaptureSecurityDescriptors {
 		// Scoped to this walk: SeBackupPrivilege/SeSecurityPrivilege are
 		// disabled again on return, never left enabled process-wide.
@@ -1735,7 +1759,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 
 	for idx, root := range paths {
 		if err := ctx.Err(); err != nil {
-			return files, errBackupStopped
+			return files, skips, errBackupStopped
 		}
 		if root == "" {
 			errs = append(errs, fmt.Errorf("backup path at index %d is empty", idx))
@@ -1894,6 +1918,18 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return nil
 			}
 			if !info.Mode().IsRegular() {
+				// Neither a directory, a regular file nor a symlink: on
+				// Windows that includes junctions and volume mount points,
+				// which Go reports as ModeIrregular and WalkDir therefore
+				// never descends into. Not captured, but recorded so the
+				// run's Warning names it (#7051). Either way the entry is
+				// not in the backup, so it must not count as a child: a
+				// directory whose only child was skipped is empty and
+				// needs its own entry to be recreated on restore.
+				childCount[filepath.Dir(path)]--
+				if sp, ok := skippedReparsePointFor(path, info); ok {
+					skips.add(sp)
+				}
 				return nil
 			}
 			seen[snapshotPath] = struct{}{}
@@ -1912,7 +1948,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 		})
 		if err != nil {
 			if errors.Is(err, errBackupStopped) {
-				return files, errBackupStopped
+				return files, skips, errBackupStopped
 			}
 			errs = append(errs, fmt.Errorf("backup walk failed for %s: %w", cleanRoot, err))
 		}
@@ -1955,9 +1991,9 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 	})
 
 	if len(files) == 0 && len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, skips, errors.Join(errs...)
 	}
-	return files, errors.Join(errs...)
+	return files, skips, errors.Join(errs...)
 }
 
 // extractVolumes returns unique volume roots from a list of paths.
