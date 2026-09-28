@@ -10,6 +10,7 @@ type BackupMetricsRecorder = {
   ) => void;
   onLowReadinessDevices: (count: number) => void;
   onReadDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
+  onCapabilityRegressed: (capability: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -22,6 +23,7 @@ let recorder: BackupMetricsRecorder = {
   onVerificationResult: noop,
   onLowReadinessDevices: noop,
   onReadDispatch: noop,
+  onCapabilityRegressed: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -33,6 +35,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onVerificationResult: next?.onVerificationResult ?? noop,
     onLowReadinessDevices: next?.onLowReadinessDevices ?? noop,
     onReadDispatch: next?.onReadDispatch ?? noop,
+    onCapabilityRegressed: next?.onCapabilityRegressed ?? noop,
   };
 }
 
@@ -83,4 +86,17 @@ export function recordBackupReadDispatch(
   count = 1,
 ): void {
   recorder.onReadDispatch(commandType, mode, reason, count);
+}
+
+/** Backup-helper protocols a device reports (routes/agents/heartbeat.ts). */
+export type BackupHelperCapability = 'read' | 'integrity' | 'write';
+
+/**
+ * A device's backup helper reported a LOWER protocol version than the one
+ * stored for it (a helper downgrade or reinstall, or an agent that stopped
+ * reporting it). Counted once per drop, never per heartbeat; the per-device
+ * record is the `device.backup_capability.regressed` audit event.
+ */
+export function recordBackupCapabilityRegressed(capability: BackupHelperCapability, count = 1): void {
+  recorder.onCapabilityRegressed(capability, count);
 }

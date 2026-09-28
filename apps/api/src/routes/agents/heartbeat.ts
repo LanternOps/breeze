@@ -21,6 +21,11 @@ import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
+import {
+  normalizeBackupIntegrityProtocolVersion,
+  normalizeBackupWriteProtocolVersion,
+} from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -294,6 +299,15 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 {
 export function normalizeBackupReadProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
+
+/** Backup-helper protocols reported in the heartbeat, by device column. */
+const BACKUP_HELPER_CAPABILITY_FIELDS: ReadonlyArray<
+  readonly [BackupHelperCapability, 'backupReadProtocolVersion' | 'backupIntegrityProtocolVersion' | 'backupWriteProtocolVersion']
+> = [
+  ['read', 'backupReadProtocolVersion'],
+  ['integrity', 'backupIntegrityProtocolVersion'],
+  ['write', 'backupWriteProtocolVersion'],
+];
 
 // #5250 — the agent recomputes `checkedAt` (and, on macOS/Linux, the whole
 // DesktopAccessState) fresh on EVERY heartbeat regardless of whether access
@@ -954,6 +968,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // downgrade (or an agent that stops reporting it) reads as 0 on the next
     // beat, so restore commands stop receiving storage sessions.
     backupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
+    // Snapshot integrity and storage write protocols of the same installed
+    // helper: same non-sticky contract, only versions this server implements.
+    backupIntegrityProtocolVersion: normalizeBackupIntegrityProtocolVersion(data.backupIntegrityProtocolVersion),
+    backupWriteProtocolVersion: normalizeBackupWriteProtocolVersion(data.backupWriteProtocolVersion),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -1358,19 +1376,37 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
-    // Backup helper storage-read protocol dropping from a brokered-capable
-    // value to 0: restore commands for this device go back to carrying the
-    // storage destination. Recorded per device (the dispatch metric has no
-    // device dimension) so an unexpected downgrade can be found and followed.
-    const priorBackupReadProtocol = Number(device.backupReadProtocolVersion ?? 0);
-    if (priorBackupReadProtocol >= 1 && deviceUpdates.backupReadProtocolVersion === 0) {
-      changes.push({ field: 'backupReadProtocolVersion', before: priorBackupReadProtocol, after: 0 });
-      console.warn('[heartbeat] backup read protocol dropped to 0; restore commands will carry the storage destination', {
-        deviceId: device.id,
+    // Backup helper protocols dropping below the stored value (a helper
+    // downgrade or reinstall, or an agent that stopped reporting them). Each
+    // drop is recorded per device (the metrics have no device dimension) as a
+    // state change AND a dedicated capability-regression audit event, so an
+    // unexpected downgrade can be found and followed. The stored value is
+    // rewritten by this same guarded write, so a steady report afterwards is
+    // not a drop and is not audited again.
+    for (const [capability, field] of BACKUP_HELPER_CAPABILITY_FIELDS) {
+      const before = Number(device[field] ?? 0);
+      const after = Number(deviceUpdates[field] ?? 0);
+      if (!(after < before)) continue;
+      changes.push({ field, before, after });
+      writeAuditEvent(c, {
         orgId: device.orgId,
-        before: priorBackupReadProtocol,
-        after: 0,
+        actorType: 'agent',
+        actorId: agentId,
+        action: 'device.backup_capability.regressed',
+        resourceType: 'device',
+        resourceId: device.id,
+        result: 'success',
+        details: { capability, before, after },
       });
+      recordBackupCapabilityRegressed(capability);
+      if (capability === 'read') {
+        console.warn('[heartbeat] backup read protocol dropped; restore commands for this device are refused until its backup helper is updated', {
+          deviceId: device.id,
+          orgId: device.orgId,
+          before,
+          after,
+        });
+      }
     }
 
     if (changes.length > 0) {
