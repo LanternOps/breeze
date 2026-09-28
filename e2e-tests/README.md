@@ -214,6 +214,31 @@ that performs it is unusable afterwards ("Your session expired"). Enrol the key
 in a session that has no in-app work left, and carry it to the next context with
 `exportCredentials` / `importCredentials` (`e2e-tests/webauthn.ts`).
 
+## Topology browser performance gate (manual, reference host)
+
+`tests/topology-performance.spec.ts` is the M1 enablement gate for the topology explorer's browser budgets (design spec §9, `docs/superpowers/specs/monitoring/2026-09-15-intelligent-network-topology-design.md`). It is **not** a CI job and the default config ignores it. It has its own config, `playwright.topology-performance.config.ts`, which starts the **built** production web server (real module layout worker, real ELK engine worker, shipped CSP) and serves the V200/V500/V1000 projections (seed `topology-v1`) through a controlled in-page API. It needs no Postgres, Redis or API.
+
+What it measures, per projection: a cold open (reported separately) plus 30 independent opens of the discovery topology tab at 1440×900, 4× CPU throttle, 100 ms RTT and 10 Mbps. For each open it records time-to-interactive after the graph response, worker layout time, and whether the layout fell back (ELK failure, the controller's 3 s timeout, or a worker crash). The spec header defines every timing point.
+
+Budgets, enforced only when `TOPOLOGY_PERF_REFERENCE=1`: V200/V500 interactive p95 ≤ 2 s, V200 layout p95 ≤ 1 s, V1000 layout p95 ≤ 3 s, every projection interactive p95 ≤ 4 s (INDEX rollback line), and layout fallbacks ≤ 1% of measured layouts. Without the flag the run records and prints the same report but does not fail on budgets. A laptop run is never gate evidence.
+
+Reference host (§9: Linux x86-64, Intel Core i7-12700 with 8 performance cores, 16 GiB, SSD, no competing jobs):
+
+```bash
+pnpm install --frozen-lockfile
+(cd e2e-tests && npm ci && npx playwright install chromium)
+pnpm --filter @breeze/web build:prod
+# Pin the run to the P-cores (check yours with `lscpu --extended`; on an i7-12700, P-core threads are usually CPUs 0-15).
+cd e2e-tests && TOPOLOGY_PERF_REFERENCE=1 TOPOLOGY_PERF_HOST_NOTE="OptiPlex, taskset 0-15, performance governor" \
+  taskset -c 0-15 npx playwright test --config=playwright.topology-performance.config.ts
+```
+
+The machine-readable artifact is written to `e2e-tests/test-results/topology-performance.json`, or to `TOPOLOGY_PERF_OUTPUT` if set. Playwright empties `test-results/` at the start of every run, so copy the file somewhere else before running again. The artifact holds the mode, verdict, commit, dirty flag, lockfile hashes, bundle worker assets, host CPU/OS/memory/governor, browser version, throttle profile, and each projection's raw samples with p50/p95/max. It also records the budget verdicts and a CPU-throttle calibration. The baseline and the candidate must come from the same host with the same settings.
+
+Record-mode knobs, which a reference run refuses: `TOPOLOGY_PERF_SAMPLES` (default 30), `TOPOLOGY_PERF_PROJECTIONS` (e.g. `V200,V500`), `TOPOLOGY_PERF_CPU_RATE`. On a host that does not match §9, `TOPOLOGY_PERF_ALLOW_HOST_MISMATCH=1` records the mismatch instead of failing on it.
+
+Known limitation: Chromium applies CDP CPU throttling to the page main thread only. Worker targets reject `Emulation.setCPUThrottlingRate`, so the layout workers run at host speed. The artifact's per-projection `calibration` records the effective main-thread and worker ratios, and the main-thread ratio is asserted.
+
 ## Troubleshooting
 
 ### `globalSetup` fails on docker exec
