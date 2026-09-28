@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { authenticatorRoutes, approverDevicesRoutes } from './authenticator';
 import { loadPartnerPolicy } from '../services/authenticatorPolicy';
@@ -1001,24 +1001,78 @@ describe('approval-security policy routes (Phase 4)', () => {
     app.route('/authenticator', authenticatorRoutes);
   });
 
-  it('GET /policy returns the Breeze defaults when no policy is set', async () => {
+  const originalDefaultFrom = process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+  afterEach(() => {
+    if (originalDefaultFrom === undefined) delete process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+    else process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = originalDefaultFrom;
+  });
+
+  it('GET /policy with no row: blank enforcement choice, platform default shown as upcoming', async () => {
+    process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2999-01-01T00:00:00Z';
     const res = await app.request('/authenticator/policy');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      policy: { floorOverrides: {}, requireEnrollment: false, enforceFrom: null },
+      policy: { floorOverrides: {}, requireEnrollment: null, enforceFrom: null },
+      effective: {
+        source: 'platform_default',
+        mode: 'grace',
+        requireEnrollment: true,
+        enforceFrom: '2999-01-01T00:00:00.000Z',
+        enforcedTiers: ['high', 'critical'],
+        defaultNotice: 'upcoming',
+      },
+      platformDefault: { enforceFrom: '2999-01-01T00:00:00.000Z', enforcedTiers: ['high', 'critical'] },
     });
   });
 
-  it('GET /policy returns the stored policy', async () => {
+  it('GET /policy with no row after the platform date reports the default as active', async () => {
+    process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2000-01-01T00:00:00Z';
+    const body = await (await app.request('/authenticator/policy')).json();
+    expect(body.effective).toMatchObject({ source: 'platform_default', mode: 'enforcing', defaultNotice: 'active' });
+  });
+
+  it('GET /policy returns the stored policy as an explicit choice', async () => {
     mockLoadPolicy.mockResolvedValue({
       floorOverrides: { high: 4 },
       requireEnrollment: true,
       enforceFrom: new Date('2026-07-01T00:00:00.000Z'),
     });
-    const res = await app.request('/authenticator/policy');
-    expect(await res.json()).toEqual({
-      policy: { floorOverrides: { high: 4 }, requireEnrollment: true, enforceFrom: '2026-07-01T00:00:00.000Z' },
+    const body = await (await app.request('/authenticator/policy')).json();
+    expect(body.policy).toEqual({ floorOverrides: { high: 4 }, requireEnrollment: true, enforceFrom: '2026-07-01T00:00:00.000Z' });
+    expect(body.effective).toMatchObject({ source: 'explicit', mode: 'enforcing', defaultNotice: null });
+  });
+
+  it('GET /policy keeps an explicit "not required" choice as explicit off', async () => {
+    process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2000-01-01T00:00:00Z';
+    mockLoadPolicy.mockResolvedValue({ floorOverrides: {}, requireEnrollment: false, enforceFrom: null });
+    const body = await (await app.request('/authenticator/policy')).json();
+    expect(body.policy.requireEnrollment).toBe(false);
+    expect(body.effective).toMatchObject({ source: 'explicit', mode: 'off', defaultNotice: null });
+  });
+
+  it('PUT /policy with a blank enforcement choice stores null (inherit) and clears the date', async () => {
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: { high: 4 }, requireEnrollment: null, enforceFrom: '2026-12-01T00:00:00.000Z' }),
     });
+    expect(res.status).toBe(200);
+    expect(dbState.insertValues[0]).toMatchObject({
+      partnerId: 'partner-123',
+      requireEnrollment: null,
+      enforceFrom: null,
+      floorOverrides: { high: 4 },
+    });
+  });
+
+  it('PUT /policy stores an explicit "not required" choice as false', async () => {
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: {}, requireEnrollment: false, enforceFrom: null }),
+    });
+    expect(res.status).toBe(200);
+    expect(dbState.insertValues[0]).toMatchObject({ requireEnrollment: false });
   });
 
   it('PUT /policy upserts a raise-only policy and audits it', async () => {

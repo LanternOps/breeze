@@ -10,8 +10,11 @@ export const authenticatorPolicies = pgTable('authenticator_policies', {
     .references(() => partners.id, { onDelete: 'cascade' }),
   // Raise-only overrides of the Breeze default floor. {} = use defaults.
   floorOverrides: jsonb('floor_overrides').$type<AssuranceFloorOverrides>().notNull().default({}),
-  // When true (after enforceFrom), L2+ approvals require an enrolled device.
-  requireEnrollment: boolean('require_enrollment').notNull().default(false),
+  // Enforcement choice. true = required (after enforceFrom) at every tier;
+  // false = explicitly not required; null = inherit the platform default
+  // (required for high/critical from APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM).
+  // See services/authenticatorPolicy.ts resolveEffectivePolicy.
+  requireEnrollment: boolean('require_enrollment'),
   enforceFrom: timestamp('enforce_from', { withTimezone: true }),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

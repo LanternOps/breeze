@@ -100,6 +100,28 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM', () => {
+    it('is valid when unset or blank', () => {
+      withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('accepts an ISO date or timestamp', () => {
+      withEnv({ ...validEnv, APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: '2027-01-15' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: '2027-01-15T09:00:00Z' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('refuses to boot on an unparseable value', () => {
+      withEnv({ ...validEnv, APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: 'next tuesday' }, () => {
+        expect(() => validateConfig()).toThrow(/APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM/);
+      });
+    });
+  });
+
   it('does not require IP classification provider configuration', () => {
     const previousProvider = process.env.IP_CLASSIFY_PROVIDER;
     const previousKey = process.env.IP_CLASSIFY_API_KEY;

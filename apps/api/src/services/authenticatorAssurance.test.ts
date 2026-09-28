@@ -794,11 +794,70 @@ describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-
     expect(d.graceDowngrade).toBe(true);
   });
 
-  it('NO POLICY: under-assured approve never blocks (unchanged default)', async () => {
-    mockLoadPolicy.mockResolvedValue(null);
-    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: null, decision: 'approved' });
-    expect(d.decidedAssuranceLevel).toBe(1);
-    expect(d.graceDowngrade).toBe(true);
+  describe('platform default (no explicit enforcement choice)', () => {
+    const original = process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+    const setDefaultFrom = (iso: string) => { process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = iso; };
+    afterEach(() => {
+      if (original === undefined) delete process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+      else process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = original;
+    });
+
+    it('before the platform date: an under-assured high/critical approve is allowed and flagged', async () => {
+      setDefaultFrom('2999-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      for (const riskTier of ['high', 'critical'] as const) {
+        const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier, partnerId: 'p', decision: 'approved' });
+        expect(d.decidedAssuranceLevel).toBe(1);
+        expect(d.graceDowngrade).toBe(true);
+      }
+    });
+
+    it('from the platform date: no policy row BLOCKS an under-assured high approve at the L3 floor', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'high', partnerId: 'p', decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError', requiredLevel: 3, achievedLevel: 1 });
+    });
+
+    it('from the platform date: a blank enforcement choice blocks critical at the L4 floor', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue({ requireEnrollment: null, enforceFrom: null, floorOverrides: {} });
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError', requiredLevel: 4, achievedLevel: 1 });
+    });
+
+    it('from the platform date: no partner at all also gets the platform default', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'high', partnerId: null, decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError' });
+    });
+
+    it('from the platform date: medium stays allowed-and-flagged under the default', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p', decision: 'approved' });
+      expect(d.decidedAssuranceLevel).toBe(1);
+      expect(d.graceDowngrade).toBe(true);
+    });
+
+    it('from the platform date: an explicit "not required" choice is respected', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: {} });
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'approved' });
+      expect(d.decidedAssuranceLevel).toBe(1);
+      expect(d.graceDowngrade).toBe(true);
+    });
+
+    it('from the platform date: a DENY is never blocked', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'denied' });
+      expect(d.decidedVia).toBe('session_tap');
+    });
   });
 });
 
