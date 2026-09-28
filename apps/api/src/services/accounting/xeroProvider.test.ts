@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { slotMock } = vi.hoisted(() => ({
@@ -330,9 +331,8 @@ describe('methods behind later waves', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('paymentMarker throws until W05; verifyWebhook fails closed until W05', () => {
+  it('paymentMarker throws until W05', () => {
     expect(() => xeroProvider.paymentMarker.embed(null, 'm')).toThrow(/W05/);
-    expect(xeroProvider.verifyWebhook('sig', '{}', 'key')).toBe(false);
   });
 });
 
@@ -380,5 +380,27 @@ describe('invoice push and void (Xero W04)', () => {
 
   it('still does not declare invoicePush through W04a', () => {
     expect(xeroProvider.capabilities.invoicePush).toBe(false);
+  });
+});
+
+describe('verifyWebhook (Xero W05 refinement 2)', () => {
+  const KEY = 'test-signing-key';
+  const body = '{"events":[],"firstEventSequence":0,"lastEventSequence":0,"entropy":"ABC"}';
+  const sign = (raw: string, key = KEY) => createHmac('sha256', key).update(raw, 'utf8').digest('base64');
+
+  it('accepts base64(HMAC-SHA256(raw body, key))', () => {
+    expect(xeroProvider.verifyWebhook(sign(body), body, KEY)).toBe(true);
+  });
+  it.each([
+    ['a different key', () => sign(body, 'other')],
+    ['a different body', () => sign(`${body} `)],
+    ['a same-length wrong signature', () => sign(body).replace(/^./, (c) => (c === 'A' ? 'B' : 'A'))],
+    ['a truncated signature', () => sign(body).slice(0, 10)],
+    ['an empty signature', () => ''],
+  ])('rejects %s', (_l, sig) => {
+    expect(xeroProvider.verifyWebhook(sig(), body, KEY)).toBe(false);
+  });
+  it('rejects everything when no key is configured', () => {
+    expect(xeroProvider.verifyWebhook(sign(body, ''), body, '')).toBe(false);
   });
 });

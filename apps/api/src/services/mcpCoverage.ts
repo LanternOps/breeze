@@ -598,4 +598,5 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/emailProvider.ts': { exempt: 'inbound_integration' },
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
+  'webhooks/xero.ts': { exempt: 'inbound_integration' },
 };

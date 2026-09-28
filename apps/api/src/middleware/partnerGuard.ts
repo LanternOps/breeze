@@ -20,6 +20,11 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return true;
   if (path.startsWith('/api/v1/agents/')) return true;
   if (path.startsWith('/api/v1/internal/synthetic/')) return true;   // synthetic test router — self-gated (token + canary latch)
+  // Xero W05: signature-authenticated, unauthenticated webhook. partnerGuard must
+  // not verify a bearer token, read `partners` or activate a partner on this
+  // path BEFORE the route has checked the Xero HMAC (quorum finding 10). Exact
+  // match only; no partner is ever acted for here.
+  if (path === '/api/v1/webhooks/xero') return true;
   return false;
 }
 

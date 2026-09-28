@@ -8,6 +8,7 @@
  * capability gates in routes, producers and workers keep them unreachable; the
  * refusal is the backstop.
  */
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
 import { AccountingProviderError } from './accountingProviderError';
 import {
@@ -255,8 +256,19 @@ export class XeroProvider implements AccountingProvider {
   async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
   async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
   async reconcileChanges(_conn: AccountingConnection, _since: Date | null): Promise<ChangeSet> { return notYet('payment pull', 'W05'); }
-  /** Fails closed until W05 ships POST /webhooks/xero (which uses XERO_WEBHOOK_KEY). */
-  verifyWebhook(_signatureHeader: string, _rawBody: string, _verifierToken: string): boolean { return false; }
+
+  /**
+   * `x-xero-signature` = base64(HMAC-SHA256(raw body, XERO_WEBHOOK_KEY))
+   * (Webhooks guide). Constant-time on equal-length buffers; a length mismatch
+   * is false without comparing. Never throws.
+   */
+  verifyWebhook(signatureHeader: string, rawBody: string, signingKey: string): boolean {
+    if (!signatureHeader || !signingKey) return false;
+    const expected = createHmac('sha256', signingKey).update(rawBody, 'utf8').digest('base64');
+    const left = Buffer.from(signatureHeader.trim(), 'utf8');
+    const right = Buffer.from(expected, 'utf8');
+    return left.length === right.length && timingSafeEqual(left, right);
+  }
 }
 
 export const xeroProvider = new XeroProvider();

@@ -83,7 +83,9 @@ vi.mock('../config/env', async (importOriginal) => ({
   QBO_WEBHOOK_VERIFIER_TOKEN: 'test-verifier-token'
 }));
 vi.mock('../services/accounting/providerRegistry', () => ({
-  getAccountingProvider: () => ({ verifyWebhook: qboVerifyWebhookMock })
+  getAccountingProvider: (provider: string) => (provider === 'xero'
+    ? { verifyWebhook: () => false }
+    : { verifyWebhook: qboVerifyWebhookMock })
 }));
 vi.mock('../services/accounting/accountingConnectionService', () => ({
   findConnectionByRealmFingerprint: vi.fn().mockResolvedValue(null)
@@ -105,6 +107,7 @@ import { webhookRoutes } from './webhooks';
 import { emailWebhookRoutes } from './tickets/emailWebhook';
 import { stripeWebhookRoutes } from './webhooks/stripe';
 import { quickbooksWebhookRoutes } from './webhooks/quickbooks';
+import { xeroWebhookRoutes } from './webhooks/xero';
 
 // Reproduce the index.ts mount order: CRUD router first, then the public
 // signature-gated siblings — emailWebhookRoutes at /webhooks/tickets,
@@ -116,6 +119,7 @@ function buildApp() {
   app.route('/webhooks/tickets', emailWebhookRoutes);
   app.route('/webhooks', stripeWebhookRoutes);
   app.route('/webhooks', quickbooksWebhookRoutes);
+  app.route('/webhooks', xeroWebhookRoutes);
   return app;
 }
 
@@ -184,6 +188,14 @@ describe('webhooks mount-order regression (#2053)', () => {
     expect(body.error).toBe('Unauthorized');
     expect(body.error).not.toBe('Missing or invalid authorization header');
     expect(qboVerifyWebhookMock).not.toHaveBeenCalled();
+  });
+
+  it('Xero webhook reaches the signature handler, not session auth (no sig → empty 401)', async () => {
+    process.env.XERO_WEBHOOK_KEY = 'k';
+    const res = await buildApp().request('/webhooks/xero', { method: 'POST', body: '{}' });
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(''); // session auth answers JSON "Missing or invalid authorization header"
+    delete process.env.XERO_WEBHOOK_KEY;
   });
 
   it('the Svix-signed delivery webhook is reachable under the shared /webhooks prefix', async () => {

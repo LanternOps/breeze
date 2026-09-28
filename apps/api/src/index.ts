@@ -44,6 +44,7 @@ import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
@@ -958,6 +959,13 @@ api.route('/webhooks', stripeWebhookRoutes);
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
+// Xero webhook (W05) — no session auth, HMAC-gated with XERO_WEBHOOK_KEY.
+// partnerGuard skips this exact path (isPartnerGuardExemptPath), so even a
+// request carrying a bearer token does no partner read before the HMAC check.
+// The route reads the raw body itself via c.req.text(), so no body-consuming
+// middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// there is no ambient auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', xeroWebhookRoutes);
 // Resend delivery webhook for partner sending domains (W06) — no session auth,
 // Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
 // is unset. partnerGuard passes through (no Authorization header); the route
