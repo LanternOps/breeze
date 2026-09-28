@@ -424,6 +424,11 @@ export const backupSnapshots = pgTable(
     ).on(table.storageIdentity, table.snapshotId).where(
       sql`${table.storageIdentity} IS NOT NULL`
     ),
+    // Storage GC looks up rows with a non-default layout on every run; almost
+    // every row is 'legacy_flat', so the partial index stays tiny.
+    keyLayoutNonDefaultIdx: index('backup_snapshots_key_layout_non_default_idx')
+      .on(table.keyLayout)
+      .where(sql`${table.keyLayout} <> 'legacy_flat'`),
   })
 );
 

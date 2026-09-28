@@ -2111,7 +2111,12 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         const unsupportedLayoutRows = await db
           .select({ storageIdentity: backupSnapshots.storageIdentity, configId: backupSnapshots.configId, keyLayout: backupSnapshots.keyLayout })
           .from(backupSnapshots)
-          .where(notInArray(backupSnapshots.keyLayout, [...BACKUP_KEY_LAYOUTS]));
+          // The redundant `<> 'legacy_flat'` lets the planner use the partial
+          // index instead of scanning every snapshot row each run.
+          .where(and(
+            sql`${backupSnapshots.keyLayout} <> 'legacy_flat'`,
+            notInArray(backupSnapshots.keyLayout, [...BACKUP_KEY_LAYOUTS]),
+          ));
         for (const row of unsupportedLayoutRows) {
           if (isSupportedKeyLayout(row.keyLayout)) continue;
           if (row.storageIdentity !== null) layoutBlockedIdentityKeys.add(row.storageIdentity);

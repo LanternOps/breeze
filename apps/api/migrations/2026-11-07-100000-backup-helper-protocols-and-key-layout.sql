@@ -34,3 +34,9 @@ BEGIN
     ADD CONSTRAINT backup_snapshots_key_layout_chk CHECK (key_layout IN ('legacy_flat', 'device_scoped'));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+-- Storage GC looks up rows whose layout is not the default on every run; a
+-- partial index keeps that lookup off a full scan of backup_snapshots.
+CREATE INDEX IF NOT EXISTS backup_snapshots_key_layout_non_default_idx
+  ON backup_snapshots (key_layout)
+  WHERE key_layout <> 'legacy_flat';
