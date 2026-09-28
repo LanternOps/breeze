@@ -1,8 +1,8 @@
 /**
  * Fix memory (AI Suggested Fixes W1). Every literal set below is mirrored 1:1
- * by a CHECK constraint in apps/api/migrations/2026-11-06-100000-fix-memory-tables.sql,
- * 2026-11-06-100100-remediation-suggestion-origin.sql or
- * 2026-11-06-100200-alert-resolution-reason.sql — edit both sides together;
+ * by a CHECK constraint in apps/api/migrations/2026-11-07-100000-fix-memory-tables.sql,
+ * 2026-11-07-100100-remediation-suggestion-origin.sql or
+ * 2026-11-07-100200-alert-resolution-reason.sql — edit both sides together;
  * apps/api/src/db/schema/fixMemory.registry.test.ts fails otherwise.
  *
  * Leaf module: no imports. The package root barrel is bundled into the browser.
