@@ -627,6 +627,17 @@ describe('payment refusals (Xero W05 refinement 16)', () => {
     ['Payments can only be made against Authorised documents', 'remote_missing'],
     ['Payments can only be made against Authorized documents', 'remote_missing'],
     ['This payment has been reconciled and cannot be deleted', 'remote_locked'],
+    // #7300: a payment inside a Xero batch payment. The first text is the one
+    // integrators report (Bookeo's Xero-sync help); the rest are defensive
+    // variants until lab X55/X56 records Xero's real words.
+    ['Payments within a batch cannot be deleted.', 'remote_batched'],
+    ['This payment is part of a batch payment and cannot be deleted', 'remote_batched'],
+    ['Payment cannot be deleted because it belongs to a batch payment', 'remote_batched'],
+    ['A batch payment cannot be removed from here', 'remote_batched'],
+    ['Batched payments cannot be deleted individually', 'remote_batched'],
+    // Batch AND reconciled: the batch is the more specific instruction.
+    ['This payment is part of a batch payment that has been reconciled', 'remote_batched'],
+    ['Batch payment reference is required', undefined], // mentions a batch, refuses nothing
     ['The contact name Acme is already assigned to another contact.', 'duplicate_name'], // W03 unchanged
     ['Account code 999 is not a valid code for this document.', undefined],
   ] as const)('%s → %s', (message, expected) => {

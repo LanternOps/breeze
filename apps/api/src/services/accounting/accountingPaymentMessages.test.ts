@@ -16,6 +16,7 @@ import {
   paymentRemoteAmbiguousMessage,
   paymentRemoteDeletedMessage,
   paymentRemoteLockedMessage,
+  paymentRemoteBatchedMessage,
   paymentRemoteMissingMessage,
   paymentSyncInProgressMessage,
   reconcileWindowTruncatedError,
@@ -89,6 +90,9 @@ describe('payment push operator text — QuickBooks byte-identical (Xero W05 ref
       'This payment was deleted in Xero after Breeze sent it — push the invoice to Xero again to send it again');
     expect(paymentRemoteLockedMessage('Xero')).toBe(
       'Xero will not delete this payment because it is reconciled to a bank transaction — unreconcile it in Xero and delete it there');
+    expect(paymentRemoteBatchedMessage('Xero')).toBe(
+      'Xero will not delete this payment on its own because it is part of a batch payment there — '
+      + 'delete it through the batch payment in Xero, and check the other payments in that batch first');
   });
 
   it('the create-side permission refusal adds the re-push step (Xero W05b F5)', () => {

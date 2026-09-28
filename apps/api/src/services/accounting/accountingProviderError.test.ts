@@ -166,3 +166,11 @@ describe('remote_locked refusal code (Xero W04)', () => {
       .toBe('remote_locked');
   });
 });
+
+describe('remote_batched refusal code (#7300)', () => {
+  it('is a neutral refusal code on a validation error', () => {
+    expect(ACCOUNTING_REFUSAL_CODES).toContain('remote_batched');
+    expect(refusalCodeOf(new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'op', providerCode: 'remote_batched' })))
+      .toBe('remote_batched');
+  });
+});

@@ -177,6 +177,14 @@ export function classifyXeroValidation(text: string): AccountingRefusalCode | un
     // undocumented. Lab X55/X56 record the real messages; adjust here if they differ.
     if (/^Payment amount exceeds the amount outstanding/i.test(message)) return 'amount_exceeds_due';
     if (/can only be made against Authori[sz]ed documents/i.test(message)) return 'remote_missing';
+    // #7300: a member of a batch payment. BEFORE the reconciled test: a batch can
+    // also be reconciled, and the batch is the more specific instruction. The
+    // first form is the text integrators report ("Payments within a batch cannot
+    // be deleted."); the rest are defensive until lab X55/X56 records Xero's words.
+    // Every form needs both a batch AND a refusal, so a text that merely names a
+    // batch payment is not read as one.
+    if (/\b(within|part of|belongs? to|member of) a batch\b/i.test(message)
+      || /\bbatch(ed)?\b[^.]*\b(cannot|can ?not|can't|unable to)\b[^.]*\b(delet|remov|void)/i.test(message)) return 'remote_batched';
     if (/\b(has been|is) reconciled\b|\breconciled (payment|transaction)/i.test(message)) return 'remote_locked';
   }
   return undefined;
