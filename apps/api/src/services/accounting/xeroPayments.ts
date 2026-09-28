@@ -163,7 +163,8 @@ interface SeekRead<T> {
   rows: T[];
   /** The request cap was hit: rows newer than `newest` may remain. */
   capped: boolean;
-  /** A full page made no progress (1,000 rows inside one second). */
+  /** A full page ended no later than the previous one (about 1,000 rows within
+   * the ~2 s re-read window), or its last row had no parseable date. */
   stalled: boolean;
   newest: Date | null;
 }
@@ -248,8 +249,8 @@ async function readSeek<T extends { UpdatedDateUTC?: string }>(
  * `reconcileChanges` for Xero (refinements 9–13). Two paged, conditional reads:
  * AR payments (AUTHORISED → lines, DELETED → deletions) and voided/deleted AR
  * invoices. The cursor is the newest UpdatedDateUTC actually read, never below
- * the window start; a list that hit the page cap limits it to that list's last
- * row; a capped list with no progress at all is `overflowed`.
+ * the window start; a list that hit the request cap limits it to that list's
+ * last row; a capped list with no progress at all is `overflowed`.
  *
  * Assumes `conn.accessToken` is valid (the worker resolves it first); issues no
  * DB queries.

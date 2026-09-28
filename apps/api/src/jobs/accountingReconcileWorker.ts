@@ -272,10 +272,10 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 }
 
 /**
- * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, all
- * four conditions below collapsed into one silent `return null` — a
- * switched-off connection, a lost connection, a stale job target and a
- * genuine connectivity problem were indistinguishable from the outside.
+ * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, the
+ * conditions below collapsed into one silent `return null` — a switched-off
+ * connection, a lost connection, a stale job target and a genuine
+ * connectivity problem were indistinguishable from the outside.
  *
  *   - `missing`: the connection this job names no longer exists (Xero W01:
  *     loaded by id, so a disconnect or a provider switch lands here).
@@ -296,7 +296,10 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
  *   - `capability_unavailable` (Xero W01, checked by the caller after these):
  *     the connection's provider has no payment pull.
  *   - `daily_budget_low` (Xero W05, webhook trigger only): the provider's
- *     daily call budget is under 20%; the sweep catches up (refinement 6).
+ *     daily call budget is under 20%. The sweep catches up once the budget
+ *     recovers — it defers under the same rule (pass 1, above) — and a
+ *     connection that owes an unresolved payment delete is never deferred,
+ *     by either path.
  */
 type ReconcileSkipReason =
   | 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off' | 'capability_unavailable'
@@ -392,7 +395,11 @@ export async function processReconcileConnectionJob(
     // The sweep defers at enqueue; this is the same rule for the doorbell, so a
     // signed-delivery storm cannot spend the tenant's daily budget. QuickBooks
     // declares no daily budget, so the ratio is null and this never fires.
-    // Sync now ('manual') is interactive and never defers.
+    // Sync now ('manual') is interactive and never defers. But a Sync now that
+    // arrives while a delayed webhook job is already queued under the same
+    // jobId (see enqueueAccountingReconcile) joins that job instead of
+    // starting a new one — that run still carries trigger 'webhook', so it can
+    // defer on budget even though Sync now triggered it.
     if (data.trigger === 'webhook' && conn) {
       const budgetProvider = findAccountingProvider(conn.provider);
       if (
@@ -669,16 +676,33 @@ export async function processReconcileSweep(): Promise<{
     let deferred = 0;
     for (const connection of connections) {
       const provider = findAccountingProvider(connection.provider);
-      if (
-        provider
-        && await shouldDeferBackgroundWork(connection.provider, provider.limits.rate, connection.id)
-        && !(await withSystemDbAccessContext(
-          () => connectionOwesUnresolvedPaymentDelete(db, connection.id, connection.partnerId),
-          'accountingReconcile.sweep.owedDelete',
-        ))
-      ) {
-        deferred++;
-        continue;
+      if (provider && await shouldDeferBackgroundWork(connection.provider, provider.limits.rate, connection.id)) {
+        // The owed-delete check is its own try/catch (review finding A): a DB
+        // error reading ONE connection must not throw out of the sweep loop —
+        // the remaining connections still need their chance to enqueue or
+        // defer, and passes 2/3 below still need to run this tick. On error we
+        // treat the connection as OWING (never deferred, falls through to
+        // enqueue): an extra pull only costs budget, while a wrongly deferred
+        // pull can orphan a Xero payment past the 24 h delete grace.
+        let owesDelete = true;
+        try {
+          owesDelete = await withSystemDbAccessContext(
+            () => connectionOwesUnresolvedPaymentDelete(db, connection.id, connection.partnerId),
+            'accountingReconcile.sweep.owedDelete',
+          );
+        } catch (err) {
+          console.error(
+            '[AccountingReconcileWorker] sweep pass 1 owed-delete check failed',
+            err instanceof Error ? err.message : err,
+          );
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.owedDelete',
+          });
+        }
+        if (!owesDelete) {
+          deferred++;
+          continue;
+        }
       }
       if (await enqueueAccountingReconcile(connection.id, connection.partnerId, 'sweep')) enqueued++;
       else failed++;
@@ -827,7 +851,10 @@ export async function enqueueAccountingReconcile(
     const jobId = `accounting-reconcile-${connectionId}`;
     // A delayed job still holds its jobId, so every enqueue for this connection
     // during the delay (another webhook, a sweep tick, Sync now) is dropped by
-    // BullMQ and the one run starts AFTER the burst (Xero W05 refinement 5).
+    // BullMQ (Xero W05 refinement 5). The run starts `delayMs` after the FIRST
+    // enqueue — a fixed window; later events do not extend it. Enqueues while
+    // that job is active are dropped too; the next sweep or event picks up
+    // anything later.
     const jobOpts = opts?.delayMs && opts.delayMs > 0
       ? { jobId, ...ENQUEUE_OPTS, delay: opts.delayMs }
       : { jobId, ...ENQUEUE_OPTS };

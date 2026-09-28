@@ -9,8 +9,10 @@ import { shouldActivatePendingPartner, activatePartnerRow } from '../services/pa
  * Paths the global partner-status guard skips (mounted in index.ts). They must
  * stay reachable while the partner is not `active`: sign-in and MFA enrollment
  * (/auth/*), public config, the caller's own profile, the caller's own partner
- * status (read by the account-inactive screen), agent traffic, and the
- * self-gated synthetic router. Adding a path here lets an inactive tenant use
+ * status (read by the account-inactive screen), agent traffic, the
+ * self-gated synthetic router, and the exact-path Xero webhook (Xero W05:
+ * signature-authenticated, no partner acted for; #7296 tracks the same
+ * exemption for QuickBooks). Adding a path here lets an inactive tenant use
  * it — keep the list minimal.
  */
 export function isPartnerGuardExemptPath(path: string): boolean {

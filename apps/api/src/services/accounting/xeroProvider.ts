@@ -3,10 +3,12 @@
  * tenant selection, organisation settings, pickers and targeted disconnect.
  * W03 implements contacts and items; the `mapping`/`customerImport`
  * capabilities flip in W03b. W04 ships invoice push and void (capability
- * flipped in W04b). Every other method refuses with capability_unavailable
- * until its wave flips the capability (W05 payments (pull wired in W05a, push
- * in W05b; capabilities flip in W05c)). The capability gates in routes,
- * producers and workers keep them unreachable; the refusal is the backstop.
+ * flipped in W04b). W05 ships payments: pull (reconcileChanges) and the
+ * webhook doorbell (verifyWebhook) are wired in W05a; `createPayment` and
+ * `deletePayment` remain W05b stubs that refuse with capability_unavailable
+ * until W05c flips the paymentPush capability. The capability gates in
+ * routes, producers and workers keep them unreachable; the refusal is the
+ * backstop.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
@@ -249,9 +251,6 @@ export class XeroProvider implements AccountingProvider {
     return findPushedXeroInvoice(callContext(conn), invoiceId);
   }
 
-  // --- later waves (capability false; unreachable behind the gates) ---
-  async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
-  async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
   // Assumes conn.accessToken is valid (the reconcile worker resolves it first); issues no DB queries.
   async reconcileChanges(conn: AccountingConnection, since: Date | null): Promise<ChangeSet> {
     return readXeroPaymentChanges(callContext(conn), conn, since);
@@ -269,6 +268,10 @@ export class XeroProvider implements AccountingProvider {
     const right = Buffer.from(expected, 'utf8');
     return left.length === right.length && timingSafeEqual(left, right);
   }
+
+  // --- later waves (capability false; unreachable behind the gates) ---
+  async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
+  async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
 }
 
 export const xeroProvider = new XeroProvider();

@@ -36,7 +36,7 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: m.runOutsideDbContext,
 }));
 
-import { MAX_TENANTS_PER_PAYLOAD, XERO_WEBHOOK_RECONCILE_DELAY_MS, xeroWebhookRoutes } from './xero';
+import { MAX_EVENTS_SCANNED, MAX_TENANTS_PER_PAYLOAD, XERO_WEBHOOK_RECONCILE_DELAY_MS, xeroWebhookRoutes } from './xero';
 
 const KEY = 'test-signing-key';
 const T1 = '11111111-2222-3333-4444-555555555555';
@@ -185,6 +185,46 @@ describe('POST /webhooks/xero', () => {
   it('a thrown lookup answers 503, never a bare 500', async () => {
     m.route.mockRejectedValueOnce(new Error('db down'));
     expect((await post(payload([event()]))).status).toBe(503);
+  });
+
+  it('scans only the first MAX_EVENTS_SCANNED events — a valid event past the cap is invisible, and the summary reports scanned vs events', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const ignoredEvents = Array.from({ length: MAX_EVENTS_SCANNED }, () => event({ eventCategory: 'CONTACT' }));
+    const beyondCap = event({ eventCategory: 'INVOICE', tenantType: 'ORGANISATION', tenantId: T1 });
+    const res = await post(payload([...ignoredEvents, beyondCap]));
+
+    expect(res.status).toBe(200);
+    expect(m.route).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      '[xeroWebhook] processed webhook delivery',
+      expect.objectContaining({ scanned: MAX_EVENTS_SCANNED, events: MAX_EVENTS_SCANNED + 1 }),
+    );
+  });
+
+  it('re-arms the Sentry throttle after the window elapses, and stays silent inside it', async () => {
+    vi.useFakeTimers();
+    try {
+      delete process.env.XERO_WEBHOOK_KEY;
+      const body = payload([event()]);
+
+      // Clear the throttle state left by the earlier missing-key test by letting
+      // a full window elapse before this test's first capture.
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      expect((await post(body)).status).toBe(503);
+      expect(m.captureMessage).toHaveBeenCalledTimes(1);
+
+      // Within the window: throttled, no second capture.
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect((await post(body)).status).toBe(503);
+      expect(m.captureMessage).toHaveBeenCalledTimes(1);
+
+      // Past the window: re-armed, captures again.
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+      expect((await post(body)).status).toBe(503);
+      expect(m.captureMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never logs tenant or resource ids', async () => {

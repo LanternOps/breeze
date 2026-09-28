@@ -1050,6 +1050,35 @@ describe('processReconcileSweep', () => {
     shouldDeferMock.mockResolvedValue(false);
     owesDeleteMock.mockResolvedValue(false);
   });
+
+  it('isolates a failed owed-delete check to its own connection — the sweep still resolves, that connection is enqueued (fail toward pulling), and later passes still run', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([
+      { id: 'c1', partnerId: 'p1', provider: 'xero' },
+      { id: 'c2', partnerId: 'p2', provider: 'xero' },
+    ]);
+    shouldDeferMock.mockResolvedValue(true);
+    owesDeleteMock
+      .mockRejectedValueOnce(new Error('owed-delete check boom'))
+      .mockResolvedValueOnce(false);
+
+    const result = await processReconcileSweep();
+
+    expect(result.enqueued).toBe(1);
+    expect(result.deferred).toBe(1);
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, {
+      service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.owedDelete',
+    });
+    // Pass 2/3 still ran despite pass 1's owed-delete error.
+    expect(listOwedPaymentMappingsMock).toHaveBeenCalled();
+    expect(reapStalePendingTenantsMock).toHaveBeenCalled();
+
+    shouldDeferMock.mockResolvedValue(false);
+    owesDeleteMock.mockReset();
+    owesDeleteMock.mockResolvedValue(false);
+    captureExceptionMock.mockClear();
+  });
 });
 
 describe('pending_tenant reaper (Xero W02)', () => {

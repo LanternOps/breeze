@@ -192,10 +192,13 @@ describe('webhooks mount-order regression (#2053)', () => {
 
   it('Xero webhook reaches the signature handler, not session auth (no sig → empty 401)', async () => {
     process.env.XERO_WEBHOOK_KEY = 'k';
-    const res = await buildApp().request('/webhooks/xero', { method: 'POST', body: '{}' });
-    expect(res.status).toBe(401);
-    expect(await res.text()).toBe(''); // session auth answers JSON "Missing or invalid authorization header"
-    delete process.env.XERO_WEBHOOK_KEY;
+    try {
+      const res = await buildApp().request('/webhooks/xero', { method: 'POST', body: '{}' });
+      expect(res.status).toBe(401);
+      expect(await res.text()).toBe(''); // session auth answers JSON "Missing or invalid authorization header"
+    } finally {
+      delete process.env.XERO_WEBHOOK_KEY;
+    }
   });
 
   it('the Svix-signed delivery webhook is reachable under the shared /webhooks prefix', async () => {

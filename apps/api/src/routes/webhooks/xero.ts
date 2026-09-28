@@ -18,7 +18,8 @@
 // disables the subscription after 24 h of failures):
 //   429 — IP limiter denies (fails closed on a Redis outage)              -> retried
 //   503 — XERO_WEBHOOK_KEY unset (never 200: nothing was verified)        -> retried
-//   401 — missing or bad x-xero-signature, EMPTY body (intent to receive) -> not retried
+//   401 — missing or bad x-xero-signature, EMPTY body (the answer Xero's
+//         intent-to-receive probe expects for a bad signature)
 //   400 — signed body is not JSON / has no events[]                       -> retried
 //   503 — ANY enqueue failed, or a lookup threw                           -> retried (jobId dedupe)
 //   200 — handled, EMPTY body, incl. intent-to-receive (events: []) and
