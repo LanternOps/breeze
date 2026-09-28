@@ -122,8 +122,18 @@ describe('finalizeConnection', () => {
     expect(m.resetConnectionForRealmChange).not.toHaveBeenCalled();
   });
 
-  it('a settings capture that fails on a plain provider Error (e.g. missing tenant id) is non-fatal and reported', async () => {
-    m.fetchRealmSettings.mockRejectedValueOnce(new Error('Xero connection is missing a tenant id'));
+  it('a settings capture that fails on a plain provider Error is non-fatal and reported', async () => {
+    m.fetchRealmSettings.mockRejectedValueOnce(new Error('boom'));
+    await expect(finalizeConnection(c, { provider: 'xero', partnerId: 'p1', realmId: 't1', prior: { known: true, realmId: null }, persist: async () => conn }))
+      .resolves.toEqual({ ok: true, connection: conn });
+    expect(m.captureException).toHaveBeenCalledTimes(1);
+    expect(m.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('a settings capture that fails on the typed Xero validation error (missing tenant id) is non-fatal and reported', async () => {
+    m.fetchRealmSettings.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'call context', message: 'Xero connection is missing a tenant id',
+    }));
     await expect(finalizeConnection(c, { provider: 'xero', partnerId: 'p1', realmId: 't1', prior: { known: true, realmId: null }, persist: async () => conn }))
       .resolves.toEqual({ ok: true, connection: conn });
     expect(m.captureException).toHaveBeenCalledTimes(1);

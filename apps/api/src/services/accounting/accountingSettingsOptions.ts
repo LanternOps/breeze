@@ -23,8 +23,8 @@ export async function listProviderSettingsOptions(
   }
   // not_connected (incl. a pending_tenant row) → 404, reauth_required → 409, token throttle → 429.
   const { liveConn } = await resolveConnectionAndToken(input.partnerId, { provider: input.provider }, runInDbContext);
-  // Throttle → 429 rate_limited with retryAfterMs; anything else (incl. a plain
-  // Error such as a missing tenant id) → 502 provider_error with no upstream text.
+  // Throttle → 429 rate_limited with retryAfterMs; anything else (incl. a typed
+  // validation error such as a missing tenant id) → 502 provider_error with no upstream text.
   return callProviderOrThrow(
     () => impl.listSettingsOptions!(liveConn),
     `${label} returned an error while loading settings options`,

@@ -57,8 +57,18 @@ describe('listProviderSettingsOptions', () => {
     expect(m.capture).not.toHaveBeenCalled();
   });
 
-  it('anything else (incl. a plain Error such as a missing tenant id) is a 502 provider_error that leaks no upstream text', async () => {
+  it('anything else (incl. a plain Error) is a 502 provider_error that leaks no upstream text', async () => {
     m.options.mockRejectedValueOnce(new Error('Xero connection is missing a tenant id'));
+    const err = await listProviderSettingsOptions({ partnerId: 'p1', provider: 'xero' }, runner).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 502, code: 'provider_error' });
+    expect((err as Error).message).not.toContain('tenant id');
+    expect(m.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('a typed Xero validation error (missing tenant id) is also a 502 provider_error that leaks no upstream text', async () => {
+    m.options.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'call context', message: 'Xero connection is missing a tenant id',
+    }));
     const err = await listProviderSettingsOptions({ partnerId: 'p1', provider: 'xero' }, runner).catch((e: unknown) => e);
     expect(err).toMatchObject({ status: 502, code: 'provider_error' });
     expect((err as Error).message).not.toContain('tenant id');
