@@ -16,6 +16,7 @@ import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
   parseEventPermissionEpochMode,
+  parseApproverAssuranceDefaultEnforceFrom,
   parseOAuthAuthEpochEnforceAfter,
 } from './env';
 
@@ -610,6 +611,19 @@ const envObjectSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
     AGENT_BACKUP_SERVER_URL: z.string().optional(),
+
+    // Platform date from which partners without an explicit approval-security
+    // enforcement choice require an approver device for high/critical
+    // approvals. Read at runtime by approverAssuranceDefaultEnforceFrom() in
+    // env.ts (blank = built-in date). Validated here so a typo fails boot
+    // rather than silently keeping the built-in date.
+    APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v?.trim() || parseApproverAssuranceDefaultEnforceFrom(v) !== null,
+        'APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM must be an ISO date (YYYY-MM-DD) or timestamp',
+      ),
 
     // Controlled agent-fleet rollout (decouple registration from promotion).
     // When false, binarySync registers new binaries WITHOUT touching

@@ -78,7 +78,8 @@ export type MobileHwKeyRegister = z.infer<typeof mobileHwKeyRegisterSchema>;
  * RAISE a tier's required assurance level above the Breeze default — the
  * raise-only invariant is re-validated server-side (`validateRaiseOnly`); this
  * schema only constrains the wire shape (each level 1-4). `enforceFrom` is the
- * grace-window cutoff (null = enforce immediately when `requireEnrollment`).
+ * grace-window cutoff (null = enforce immediately when `requireEnrollment` is
+ * true; ignored and stored as null while `requireEnrollment` is null).
  */
 export const authenticatorPolicySchema = z.object({
   // Literal levels (not z.number().min/max) so the inferred type is
@@ -94,7 +95,10 @@ export const authenticatorPolicySchema = z.object({
       z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     )
     .default({}),
-  requireEnrollment: z.boolean(),
+  // null = leave the choice blank and inherit the platform default (required
+  // for high/critical approvals from the platform date); true/false = an
+  // explicit choice that the platform default never overrides.
+  requireEnrollment: z.boolean().nullable(),
   enforceFrom: z.string().datetime().nullable(),
 });
 

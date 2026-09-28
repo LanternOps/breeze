@@ -973,8 +973,7 @@
         "passwordRequired": "Bu kritik isteği onaylamak için hesap parolanızı girin.",
         "invalid": "Bu parola veya kod kabul edilmedi. Kontrol edip tekrar deneyin.",
         "required": "Bu kritik bir istek. Parolanızı (veya kimlik doğrulayıcı kodunu) yeniden girin ve tekrar onaylayın.",
-        "assertionFailed": "Onaylayıcı cihazınızın doğrulaması kabul edilmedi. Tekrar deneyin.",
-        "stepUpRequired": "Kuruluşunuz bu isteği onaylamak için kayıtlı bir onaylayıcı cihaz (Windows Hello veya Touch ID) gerektiriyor. Profil → Güvenlik altından bir tane kaydedin."
+        "assertionFailed": "Onaylayıcı cihazınızın doğrulaması kabul edilmedi. Tekrar deneyin."
       }
     }
   },

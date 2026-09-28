@@ -111,5 +111,13 @@
       "unknown": "Desconocido"
     }
   },
-  "proposedByAgentExecuteNotice": "Aprobar esto lo ejecuta ahora mismo, no es una simulación, ni siquiera en modo sombra."
+  "proposedByAgentExecuteNotice": "Aprobar esto lo ejecuta ahora mismo, no es una simulación, ni siquiera en modo sombra.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Se requerirán dispositivos de aprobación a partir del {{date}}",
+    "upcomingBody": "No se guardó ninguna opción de seguridad de aprobaciones para su cuenta de partner, así que se aplica el predeterminado de la plataforma: a partir del {{date}}, aprobar una solicitud de riesgo alto o crítico requiere un dispositivo de aprobación registrado en lugar de un solo clic. Registre un dispositivo antes de esa fecha para que las aprobaciones no se retrasen.",
+    "activeTitle": "Las aprobaciones de alto riesgo requieren un dispositivo de aprobación",
+    "activeBody": "Desde el {{date}}, el predeterminado de la plataforma exige un dispositivo de aprobación registrado para aprobar solicitudes de riesgo alto y crítico, porque no se guardó ninguna opción de seguridad de aprobaciones para su cuenta de partner. Por eso estas aprobaciones piden su dispositivo.",
+    "settingsLink": "Revisar la seguridad de aprobaciones",
+    "registerLink": "Registrar un dispositivo de aprobación"
+  }
 }

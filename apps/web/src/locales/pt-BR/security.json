@@ -973,8 +973,7 @@
         "passwordRequired": "Digite a senha da sua conta para aprovar esta solicitação crítica.",
         "invalid": "Essa senha ou código não foi aceito. Verifique e tente novamente.",
         "required": "Esta é uma solicitação crítica. Digite novamente sua senha (ou o código do autenticador) e aprove novamente.",
-        "assertionFailed": "A verificação do seu dispositivo de aprovador não foi aceita. Tente novamente.",
-        "stepUpRequired": "Sua organização exige um dispositivo de aprovador registrado (Windows Hello ou Touch ID) para aprovar esta solicitação. Registre um em Perfil → Segurança."
+        "assertionFailed": "A verificação do seu dispositivo de aprovador não foi aceita. Tente novamente."
       }
     }
   },

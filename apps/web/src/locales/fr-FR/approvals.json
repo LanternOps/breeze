@@ -111,5 +111,13 @@
       "unknown": "Inconnu"
     }
   },
-  "proposedByAgentExecuteNotice": "Approuver ceci l'exécute maintenant — ce n'est pas un essai, même en mode ombre."
+  "proposedByAgentExecuteNotice": "Approuver ceci l'exécute maintenant — ce n'est pas un essai, même en mode ombre.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Les appareils d’approbateur seront requis à partir du {{date}}",
+    "upcomingBody": "Aucun choix de sécurité des approbations n’a été enregistré pour votre compte partenaire ; la valeur par défaut de la plateforme s’applique donc : à partir du {{date}}, approuver une demande à risque élevé ou critique nécessite un appareil d’approbateur enregistré au lieu d’un simple clic. Enregistrez un appareil d’ici là pour ne pas retarder les approbations.",
+    "activeTitle": "Les approbations à risque élevé nécessitent un appareil d’approbateur",
+    "activeBody": "Depuis le {{date}}, la valeur par défaut de la plateforme exige un appareil d’approbateur enregistré pour approuver les demandes à risque élevé et critique, car aucun choix de sécurité des approbations n’a été enregistré pour votre compte partenaire. C’est pourquoi ces approbations demandent votre appareil.",
+    "settingsLink": "Vérifier la sécurité des approbations",
+    "registerLink": "Enregistrer un appareil d’approbateur"
+  }
 }

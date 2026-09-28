@@ -1077,8 +1077,19 @@
       "3": "L3 — biométrique + code PIN",
       "4": "L4 — clé matérielle + code PIN"
     },
+    "unreachableLevelHint": "Les niveaux qu’un appareil d’approbateur ne peut pas atteindre pour un niveau de risque ne sont pas offerts.",
     "requireEnrollment": "Exiger un appareil d’approbateur enregistré (appliquer — bloquer les approbations sous-assurées)",
+    "enforcement": {
+      "inherit": "Valeur par défaut de la plateforme",
+      "required": "Obligatoire",
+      "notRequired": "Non obligatoire",
+      "inheritedValue": "Valeur par défaut de la plateforme : un appareil d’approbateur est requis pour les approbations à risque élevé et critique à compter du {{date}}.",
+      "inheritedSource": "Définie par la plateforme, car aucun choix n’a été enregistré ici. Choisissez Obligatoire ou Non obligatoire pour la remplacer.",
+      "requiredHint": "Obligatoire s’applique à chaque niveau de risque à compter de la date ci-dessous.",
+      "notRequiredHint": "Les approbations sous le seuil sont permises et consignées comme rétrogradées."
+    },
     "enforceFrom": "Appliquer depuis (fenêtre de grâce coupée)",
+    "enforceFromHint": "Laissez vide pour appliquer immédiatement.",
     "toasts": {
       "saved": "Politique de sécurité d’approbation enregistrée."
     },

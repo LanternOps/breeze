@@ -1077,8 +1077,19 @@
       "3": "L3 — biometria + PIN",
       "4": "L4 — chiave hardware + PIN"
     },
+    "unreachableLevelHint": "I livelli che un dispositivo approvatore non può raggiungere per un livello di rischio non sono disponibili.",
     "requireEnrollment": "Richiedi un dispositivo approvatore registrato (applica — blocca approvazioni con garanzia insufficiente)",
+    "enforcement": {
+      "inherit": "Predefinito della piattaforma",
+      "required": "Obbligatorio",
+      "notRequired": "Non obbligatorio",
+      "inheritedValue": "Predefinito della piattaforma: dal {{date}} è richiesto un dispositivo approvatore per le approvazioni a rischio alto e critico.",
+      "inheritedSource": "Impostato dalla piattaforma perché qui non è stata salvata alcuna scelta. Scegli Obbligatorio o Non obbligatorio per sostituirlo.",
+      "requiredHint": "Obbligatorio si applica a ogni livello di rischio dalla data indicata sotto.",
+      "notRequiredHint": "Le approvazioni sotto la soglia sono consentite e registrate come declassate."
+    },
     "enforceFrom": "Applica da (termine finestra di tolleranza)",
+    "enforceFromHint": "Lascia vuoto per applicare subito.",
     "toasts": {
       "saved": "Criterio di sicurezza approvazioni salvato."
     },

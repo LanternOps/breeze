@@ -52,6 +52,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   API_PORT: 'listen port',
   // APP_*
   APP_VERSION: 'shown as report.version',
+  // APPROVER_*
+  APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: 'approval security rollout date',
   // AUDIT_*
   AUDIT_CHAIN_ANCHOR_ENABLED: 'audit job kill switch',
   AUDIT_CHAIN_VERIFY_ENABLED: 'audit job toggle',

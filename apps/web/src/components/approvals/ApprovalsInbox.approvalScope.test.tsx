@@ -13,7 +13,8 @@ const authenticatorMock = vi.hoisted(() => ({
   getBatchApprovalAssertion: vi.fn(),
 }));
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// registerOrgIdProvider: orgStore (read by the approver-device notice) registers itself on import.
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../stores/authenticator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/authenticator')>()),

@@ -19,7 +19,8 @@ const authenticatorMock = vi.hoisted(() => ({
   getBatchApprovalAssertion: vi.fn(),
 }));
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// registerOrgIdProvider: orgStore (read by the approver-device notice) registers itself on import.
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 // Resolved relative to THIS file (components/approvals/), the same module
 // runAction.ts reaches via '../components/shared/Toast' — matches the
 // established pattern (AiAgentGraduationPanel.test.tsx) for intercepting
@@ -144,6 +145,39 @@ afterEach(() => {
 });
 
 describe('ApprovalsInbox', () => {
+  it('shows the platform-default approver-device notice to a partner without an explicit choice', async () => {
+    fetchMock.mockImplementation((async (url: string) => {
+      if (String(url).includes('/authenticator/policy')) {
+        return response({
+          policy: { floorOverrides: {}, requireEnrollment: null, enforceFrom: null },
+          effective: {
+            source: 'platform_default',
+            mode: 'grace',
+            requireEnrollment: true,
+            enforceFrom: '2026-11-05T00:00:00.000Z',
+            enforcedTiers: ['high', 'critical'],
+            defaultNotice: 'upcoming',
+          },
+          platformDefault: { enforceFrom: '2026-11-05T00:00:00.000Z', enforcedTiers: ['high', 'critical'] },
+        });
+      }
+      return response({ approvals: [pendingApproval], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+    render(<ApprovalsInbox />);
+    const notice = await screen.findByTestId('approver-assurance-default-notice');
+    expect(notice).toHaveAttribute('data-state', 'upcoming');
+  });
+
+  it('shows no approver-device notice when the policy cannot be read', async () => {
+    fetchMock.mockImplementation((async (url: string) => {
+      if (String(url).includes('/authenticator/policy')) return response({ error: 'Forbidden' }, false, 403);
+      return response({ approvals: [pendingApproval], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+    expect(screen.queryByTestId('approver-assurance-default-notice')).toBeNull();
+  });
+
   it('renders pending approval details', async () => {
     render(<ApprovalsInbox />);
 
@@ -445,8 +479,12 @@ describe('ApprovalsInbox', () => {
     // — see loadApprovals' `withCount`. The org display name now rides on
     // each row's own server-resolved `orgName` field, so there is no
     // separate org-names lookup to count here.
+    // The approver-device notice reads /authenticator/policy once on mount;
+    // it is not part of the approvals poll, so count approvals calls only.
+    const approvalsCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => !String(url).includes('/authenticator/policy')).length;
     await act(async () => {});
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(approvalsCalls()).toBe(2);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
@@ -454,7 +492,7 @@ describe('ApprovalsInbox', () => {
     // The poll is silent and intentionally skips the count refresh (see
     // `withCount` in loadApprovals), so it adds exactly ONE more call — the
     // list itself.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(approvalsCalls()).toBe(3);
   });
 
   it('refreshes silently: no loading spinner while re-fetching an already-loaded list', async () => {

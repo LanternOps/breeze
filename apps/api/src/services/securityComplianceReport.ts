@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '../db';
+import { isEnforcing, loadPartnerPolicy } from './authenticatorPolicy';
 import {
-  authenticatorPolicies,
   backupConfigs,
   c2cConnections,
   devicePatches,
@@ -327,17 +327,15 @@ export async function generateSecurityCompliancePostureReport(
         .from(elevationRequests)
         .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
 
-      let mfaStepUpEnforced = false;
-      if (orgRow?.partnerId) {
-        const [authPol] = await db
-          .select({ requireEnrollment: authenticatorPolicies.requireEnrollment, enforceFrom: authenticatorPolicies.enforceFrom })
-          .from(authenticatorPolicies)
-          .where(eq(authenticatorPolicies.partnerId, orgRow.partnerId))
-          .limit(1);
-        mfaStepUpEnforced =
-          Boolean(authPol?.requireEnrollment) &&
-          (!authPol?.enforceFrom || new Date(authPol.enforceFrom).getTime() <= Date.now());
-      }
+      // Step-up counts as enforced when under-assured high AND critical
+      // approvals are refused right now — an explicit Required policy past its
+      // grace date, or the platform default once it applies. Read through
+      // loadPartnerPolicy (system-context partner-axis read) so an explicit
+      // "not required" row is never hidden and mistaken for the default.
+      const authPol = orgRow?.partnerId ? await loadPartnerPolicy(orgRow.partnerId) : null;
+      const policyNow = new Date();
+      const mfaStepUpEnforced =
+        isEnforcing(authPol, policyNow, 'high') && isEnforcing(authPol, policyNow, 'critical');
 
       const [postureRow] = await db
         .select({ overallScore: securityPostureOrgSnapshots.overallScore })

@@ -13,6 +13,22 @@ export const DEFAULT_ASSURANCE_FLOOR: Record<RiskTier, AssuranceLevel> = {
 };
 
 /**
+ * The highest assurance level an approval at each tier can actually record.
+ * The server's ladder (apps/api services/authenticatorAssurance.ts
+ * `escalateAchievedLevel`) turns a verified approver-device proof into L2 for
+ * low/medium, L3 for high (L2 + recency) and L4 for critical (L3 + attested
+ * platform-bound key + fresh re-auth); step-up grants and batches reuse the
+ * same ladder. A partner floor above this can never be met, so it is refused
+ * on save and clamped when read.
+ */
+export const MAX_REACHABLE_ASSURANCE: Record<RiskTier, AssuranceLevel> = {
+  low: 2,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
+/**
  * Partner policy may only RAISE a rung above the Breeze floor, never lower it.
  * Keys are risk tiers; values are the minimum level the partner demands.
  */

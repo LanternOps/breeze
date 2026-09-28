@@ -111,5 +111,13 @@
       "unknown": "Unbekannt"
     }
   },
-  "proposedByAgentExecuteNotice": "Eine Genehmigung führt dies jetzt aus — kein Testlauf, auch nicht im Schattenmodus."
+  "proposedByAgentExecuteNotice": "Eine Genehmigung führt dies jetzt aus — kein Testlauf, auch nicht im Schattenmodus.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Genehmigergeräte sind ab {{date}} erforderlich",
+    "upcomingBody": "Für Ihr Partnerkonto wurde keine Auswahl zur Genehmigungssicherheit gespeichert, daher gilt der Plattformstandard: Ab {{date}} erfordert die Genehmigung einer Anfrage mit hohem oder kritischem Risiko ein registriertes Genehmigergerät statt eines einzelnen Klicks. Registrieren Sie vorher ein Gerät, damit Genehmigungen nicht aufgehalten werden.",
+    "activeTitle": "Genehmigungen mit hohem Risiko erfordern ein Genehmigergerät",
+    "activeBody": "Seit {{date}} verlangt der Plattformstandard ein registriertes Genehmigergerät, um Anfragen mit hohem und kritischem Risiko zu genehmigen, da für Ihr Partnerkonto keine Auswahl zur Genehmigungssicherheit gespeichert wurde. Deshalb fragen diese Genehmigungen nach Ihrem Gerät.",
+    "settingsLink": "Genehmigungssicherheit prüfen",
+    "registerLink": "Genehmigergerät registrieren"
+  }
 }

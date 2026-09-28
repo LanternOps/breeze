@@ -234,7 +234,10 @@ describe('#2822 — loadPartnerPolicy (step-up MFA fail-open, highest severity)'
     // session tap while a partner-scoped technician on the same row got 403.
     expect(policy).not.toBeNull();
     expect(policy!.requireEnrollment).toBe(true);
-    expect(isEnforcing(policy, new Date())).toBe(true);
+    // 'medium': only the partner's explicit Required choice enforces this
+    // tier (the platform default covers high/critical only), so a null policy
+    // could not make this pass.
+    expect(isEnforcing(policy, new Date(), 'medium')).toBe(true);
   });
 
   runDb('still resolves under a system context (the skip-the-escape branch is not a regression)', async () => {

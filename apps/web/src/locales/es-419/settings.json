@@ -1077,8 +1077,19 @@
       "3": "L3 — biométrico + PIN",
       "4": "L4 — llave de hardware + PIN"
     },
+    "unreachableLevelHint": "Los niveles que un dispositivo de aprobación no puede alcanzar para un nivel de riesgo no están disponibles.",
     "requireEnrollment": "Requerir un dispositivo de aprobación inscrito (aplicar: bloquear aprobaciones no aseguradas)",
+    "enforcement": {
+      "inherit": "Predeterminado de la plataforma",
+      "required": "Obligatorio",
+      "notRequired": "No obligatorio",
+      "inheritedValue": "Predeterminado de la plataforma: se requiere un dispositivo de aprobación para las aprobaciones de riesgo alto y crítico a partir del {{date}}.",
+      "inheritedSource": "Lo establece la plataforma porque aquí no se guardó ninguna opción. Elija Obligatorio o No obligatorio para reemplazarlo.",
+      "requiredHint": "Obligatorio se aplica a todos los niveles de riesgo a partir de la fecha indicada abajo.",
+      "notRequiredHint": "Las aprobaciones por debajo del mínimo se permiten y se registran como degradadas."
+    },
     "enforceFrom": "Aplicar desde (corte de ventana de gracia)",
+    "enforceFromHint": "Déjelo en blanco para aplicarlo de inmediato.",
     "toasts": {
       "saved": "Política de seguridad de aprobación guardada."
     },

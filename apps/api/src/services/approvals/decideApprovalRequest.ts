@@ -442,7 +442,7 @@ async function redeemGrantForDecide(input: {
   if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
     // An ENFORCING partner whose floor now outranks what the grant proves:
     // refuse, so the operator runs a ceremony that can actually clear it.
-    if (isEnforcing(policy, new Date())) return null;
+    if (isEnforcing(policy, new Date(), input.riskTier)) return null;
     decision.graceDowngrade = true;
   }
   return decision;
@@ -1065,7 +1065,7 @@ export async function decideApprovalRequest(
     ? await loadPartnerPolicy(input.auth.partnerId ?? null)
     : null;
   const isPartnerEnforcingForSupervised = checksSupervisedPolicy
-    ? isEnforcing(supervisedPartnerPolicy, new Date())
+    ? isEnforcing(supervisedPartnerPolicy, new Date(), existing.riskTier as RiskTier)
     : false;
   // #5601: a presented grant suppresses the shortcut for the same reason a
   // presented proof does — a credential the caller offered must be ADJUDICATED
