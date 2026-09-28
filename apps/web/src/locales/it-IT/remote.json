@@ -66,6 +66,14 @@
     },
     "launching": "Avvio in corso...",
     "launchingViewer": "Avvio del visualizzatore in corso...",
+    "loginWindow": {
+      "connectVnc": "Connetti con il relay VNC",
+      "description": "macOS blocca l’input remoto di tastiera e mouse nella finestra di login, quindi Desktop remoto non è stato avviato.",
+      "enableVncRelay": "Abilita il relay VNC nel criterio di configurazione di questo dispositivo per accedere dalla schermata di login, oppure riconnettiti dopo che un utente ha effettuato l’accesso.",
+      "title": "Questo Mac è nella finestra di login",
+      "unavailableTitle": "Desktop remoto non disponibile",
+      "useVncRelay": "Usa il relay VNC per accedere dalla schermata di login."
+    },
     "openInBrowser": "Apri nel browser",
     "policyDisabled": "Il desktop remoto è disabilitato dai criteri",
     "policyDisabledNamed": "Il desktop remoto è disabilitato dal criterio \"{{name}}\"",
@@ -92,7 +100,7 @@
       "missingEntitlement": "Il desktop nella finestra di login è bloccato finché l'autorizzazione Apple richiesta non viene approvata",
       "missingPermission": "Mancano ancora le autorizzazioni macOS necessarie per l'accesso desktop non presidiato",
       "noDisplaySession": "Nessuna sessione grafica attiva: accedi prima tramite RDP o dalla console",
-      "unsupportedOs": "Il desktop nella finestra di login richiede macOS 14 (Sonoma) o versione successiva. Abilita il relay VNC nel criterio di configurazione del dispositivo per connetterti dalla schermata di login.",
+      "unsupportedOs": "macOS blocca l’input remoto di tastiera e mouse nella finestra di login, quindi Desktop remoto non può controllare questo Mac in quella schermata. Abilita il relay VNC nel criterio di configurazione del dispositivo per connetterti dalla schermata di login.",
       "virtualDisplay": "Non è disponibile alcuno schermo acquisibile per questo Mac. Abilita il relay VNC per connetterti tramite Condivisione schermo di macOS.",
       "waylandUnsupported": "Questo è un desktop Wayland: per il desktop remoto è necessario un agente più recente",
       "x11AuthFailed": "Impossibile autenticarsi sul server grafico (autorità X)",

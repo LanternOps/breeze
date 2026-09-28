@@ -66,6 +66,14 @@
     },
     "launching": "Iniciando...",
     "launchingViewer": "Lanzando visor...",
+    "loginWindow": {
+      "connectVnc": "Conectar con VNC Relay",
+      "description": "macOS bloquea la entrada remota de teclado y mouse en la ventana de inicio de sesión, por lo que no se inició Escritorio remoto.",
+      "enableVncRelay": "Habilite VNC Relay en la política de configuración de este dispositivo para iniciar sesión en la pantalla de inicio de sesión, o vuelva a conectarse después de que un usuario inicie sesión.",
+      "title": "Esta Mac está en la ventana de inicio de sesión",
+      "unavailableTitle": "Escritorio remoto no disponible",
+      "useVncRelay": "Use VNC Relay para iniciar sesión en la pantalla de inicio de sesión."
+    },
     "openInBrowser": "Abrir en el navegador",
     "policyDisabled": "El escritorio remoto está deshabilitado por la política",
     "policyDisabledNamed": "El escritorio remoto está deshabilitado por la política \"{{name}}\"",
@@ -92,7 +100,7 @@
       "missingEntitlement": "El escritorio de la ventana de inicio de sesión está bloqueado hasta que se apruebe el derecho de Apple requerido",
       "missingPermission": "Todavía faltan los permisos macOS necesarios para el acceso al escritorio desatendido",
       "noDisplaySession": "No hay una sesión gráfica activa — inicie sesión primero mediante RDP o la consola",
-      "unsupportedOs": "El escritorio con ventana de inicio de sesión requiere macOS 14 (Sonoma) o posterior. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
+      "unsupportedOs": "macOS bloquea la entrada remota de teclado y mouse en la ventana de inicio de sesión, por lo que Escritorio remoto no puede controlar esta Mac allí. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
       "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing.",
       "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",

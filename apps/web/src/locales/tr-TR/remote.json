@@ -66,6 +66,14 @@
     },
     "launching": "Başlatılıyor...",
     "launchingViewer": "Görüntüleyici başlatılıyor...",
+    "loginWindow": {
+      "connectVnc": "VNC Aktarması ile bağlan",
+      "description": "macOS, oturum açma penceresinde uzaktan klavye ve fare girişini engeller; bu nedenle Uzak Masaüstü başlatılmadı.",
+      "enableVncRelay": "Oturum açma ekranında oturum açmak için bu cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin veya bir kullanıcı oturum açtıktan sonra yeniden bağlanın.",
+      "title": "Bu Mac oturum açma penceresinde",
+      "unavailableTitle": "Uzak Masaüstü kullanılamıyor",
+      "useVncRelay": "Oturum açma ekranında oturum açmak için VNC Aktarmasını kullanın."
+    },
     "openInBrowser": "Tarayıcıda Aç",
     "policyDisabled": "Uzak masaüstü politika nedeniyle devre dışı bırakıldı",
     "policyDisabledNamed": "Uzak masaüstü \"{{name}}\" politikası tarafından devre dışı bırakıldı",
@@ -92,7 +100,7 @@
       "missingEntitlement": "Oturum açma penceresi masaüstü, gerekli Apple yetkisi onaylanana kadar engellenir",
       "missingPermission": "macOS gözetimsiz masaüstü erişimi için gereken izinler hâlâ eksik",
       "noDisplaySession": "Aktif grafik oturumu yok — önce RDP veya konsol aracılığıyla oturum açın",
-      "unsupportedOs": "Oturum açma penceresi masaüstü, macOS 14 (Sonoma) veya üzerini gerektirir. Oturum açma ekranına bağlanmak için cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin.",
+      "unsupportedOs": "macOS, oturum açma penceresinde uzaktan klavye ve fare girişini engeller; bu nedenle Uzak Masaüstü bu Mac'i orada denetleyemez. Oturum açma ekranına bağlanmak için cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin.",
       "virtualDisplay": "Bu Mac için yakalanabilir ekran mevcut değil. macOS Ekran Paylaşımı yoluyla bağlanmak için VNC Aktarmasını etkinleştirin.",
       "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",

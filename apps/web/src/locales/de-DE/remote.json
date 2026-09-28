@@ -66,6 +66,14 @@
     },
     "launching": "Start...",
     "launchingViewer": "Viewer wird gestartet...",
+    "loginWindow": {
+      "connectVnc": "Mit VNC Relay verbinden",
+      "description": "macOS blockiert im Anmeldefenster entfernte Tastatur- und Mauseingaben, daher wurde Remote Desktop nicht gestartet.",
+      "enableVncRelay": "Aktivieren Sie VNC Relay in der Konfigurationsrichtlinie des Geräts, um sich am Anmeldebildschirm anzumelden, oder verbinden Sie sich erneut, nachdem sich ein Benutzer angemeldet hat.",
+      "title": "Dieser Mac befindet sich im Anmeldefenster",
+      "unavailableTitle": "Remote Desktop nicht verfügbar",
+      "useVncRelay": "Verwenden Sie VNC Relay, um sich am Anmeldebildschirm anzumelden."
+    },
     "openInBrowser": "Im Browser öffnen",
     "policyDisabled": "Remote-Desktop ist durch Richtlinie deaktiviert",
     "policyDisabledNamed": "Der Remotedesktop ist durch die Richtlinie „{{name}}“ deaktiviert.",
@@ -92,7 +100,7 @@
       "missingEntitlement": "Der Desktop im Anmeldefenster ist blockiert, bis die erforderliche Apple-Berechtigung genehmigt wurde",
       "missingPermission": "Es fehlen noch die für den unbeaufsichtigten Desktop-Zugriff erforderlichen macOS-Berechtigungen",
       "noDisplaySession": "Keine aktive grafische Sitzung — melden Sie sich zuerst per RDP oder an der Konsole an",
-      "unsupportedOs": "Der Anmeldefenster-Desktop erfordert macOS 14 (Sonoma) oder höher. Aktivieren Sie VNC Relay in der Konfigurationsrichtlinie des Geräts, um eine Verbindung auf dem Anmeldebildschirm herzustellen.",
+      "unsupportedOs": "macOS blockiert im Anmeldefenster entfernte Tastatur- und Mauseingaben, daher kann Remote Desktop diesen Mac dort nicht steuern. Aktivieren Sie VNC Relay in der Konfigurationsrichtlinie des Geräts, um eine Verbindung auf dem Anmeldebildschirm herzustellen.",
       "virtualDisplay": "Für diesen Mac ist keine erfassbare Anzeige verfügbar. Aktivieren Sie VNC Relay, um eine Verbindung über macOS Screen Sharing herzustellen.",
       "waylandUnsupported": "Dies ist ein Wayland-Desktop — Remote-Desktop erfordert einen neueren Agenten",
       "x11AuthFailed": "Authentifizierung am Anzeigeserver (X-Authority) nicht möglich",
