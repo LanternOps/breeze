@@ -10,6 +10,7 @@ import { isPgUniqueViolation } from '../utils/pgErrors';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { checkVncConsentGate } from './remote/vncConsentGate';
 import { HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import {
@@ -445,6 +446,11 @@ tunnelRoutes.post(
     }
 
     const isVNC = body.type === 'vnc';
+    // VNC has no end-user consent prompt: refuse it on a consent-mode device.
+    if (isVNC) {
+      const consentGate = await checkVncConsentGate(device.id);
+      if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
+    }
     const targetHost = isVNC ? '127.0.0.1' : body.targetHost;
     const targetPort = isVNC ? 5900 : body.targetPort;
 
@@ -1215,6 +1221,13 @@ tunnelRoutes.post(
     const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
     if (trustDenial) return c.json(trustDenial, 403);
 
+    // A fresh ticket reconnects the relay, so a VNC tunnel re-checks the
+    // device's consent policy (it may have changed since the tunnel opened).
+    if (session.type === 'vnc') {
+      const consentGate = await checkVncConsentGate(session.deviceId);
+      if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
+    }
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
@@ -1362,6 +1375,9 @@ tunnelRoutes.post(
     const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
     if (trustDenial) return c.json(trustDenial, 403);
 
+    const consentGate = await checkVncConsentGate(session.deviceId);
+    if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
+
     try {
       const result = await createVncConnectCode({
         tunnelId: session.id,
@@ -1452,6 +1468,9 @@ vncExchangeRoutes.post(
 
     const liveAuthority = await authorizeTunnelContinuation(record.tunnelId, record.userId);
     if (!liveAuthority.ok) return liveAuthorizationResponse(c, liveAuthority);
+
+    const consentGate = await checkVncConsentGate(result.deviceId);
+    if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
 
     // Build the WebSocket URL from the canonical external base URL. Using
     // c.req.url would yield an internal http://api:3001 in Caddy-fronted
@@ -1770,6 +1789,11 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   if (!policyCheck.allowed) {
     return c.json({ error: policyCheck.reason ?? 'VNC relay is disabled by policy' }, 403);
   }
+
+  // Falling back from the desktop viewer to VNC would drop the consent prompt:
+  // refuse it on a consent-mode device.
+  const consentGate = await checkVncConsentGate(bound.deviceId);
+  if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
 
   // Insert the tunnel session row, then kick the agent off.
   const tunnel = await withSystemDbAccessContext(() => createRemoteSession('tunnel', {
