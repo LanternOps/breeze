@@ -616,3 +616,28 @@ describe('If-Modified-Since reads (Xero W05)', () => {
     await expect(xeroApiGet(ctx, 'Payments', 'op')).rejects.toMatchObject({ kind: 'transient', httpStatus: 304 });
   });
 });
+
+describe('payment refusals (Xero W05 refinement 16)', () => {
+  const body = (...messages: string[]) => JSON.stringify({
+    ErrorNumber: 10, Type: 'ValidationException', Message: 'A validation exception occurred',
+    Elements: [{ ValidationErrors: messages.map((Message) => ({ Message })) }],
+  });
+  it.each([
+    ['Payment amount exceeds the amount outstanding on this document', 'amount_exceeds_due'],
+    ['Payments can only be made against Authorised documents', 'remote_missing'],
+    ['Payments can only be made against Authorized documents', 'remote_missing'],
+    ['This payment has been reconciled and cannot be deleted', 'remote_locked'],
+    ['The contact name Acme is already assigned to another contact.', 'duplicate_name'], // W03 unchanged
+    ['Account code 999 is not a valid code for this document.', undefined],
+  ] as const)('%s → %s', (message, expected) => {
+    expect(classifyXeroValidation(body(message))).toBe(expected);
+  });
+
+  it('a create refused for exceeding the amount due reaches the core as validation + amount_exceeds_due', async () => {
+    const ctx = { connectionId: 'c1', tenantId: 'ten-A', accessToken: 'at', rate: SPEC };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json(
+      { Elements: [{ ValidationErrors: [{ Message: 'Payment amount exceeds the amount outstanding on this document' }] }] }, 400));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Payments', {}, 'Xero payment create', { idempotencyKey: 'k' }))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'amount_exceeds_due' });
+  });
+});

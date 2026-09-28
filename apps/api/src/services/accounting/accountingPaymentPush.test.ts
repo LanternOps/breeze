@@ -40,6 +40,7 @@ const {
   writeAuditEventMock,
   captureExceptionMock,
   AccountingMappingError,
+  providerExtras,
 } = vi.hoisted(() => {
   // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs / throttleSource / cause).
   class AccountingMappingError extends Error {
@@ -69,6 +70,8 @@ const {
     writeAuditEventMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     AccountingMappingError,
+    // Optional provider capabilities a test switches on (Xero W05: `paymentPushPreflight`).
+    providerExtras: {} as Record<string, unknown>,
   };
 });
 
@@ -100,7 +103,7 @@ vi.mock('./providerRegistry', () => ({
   // `limits.paymentRefMax` mirrors QuickBooks' published 21-char PaymentRefNum
   // cap (Xero W01 Task 9: the coordinator reads the cap off the provider).
   getAccountingProvider: () => ({
-    createPayment: createPaymentMock, deletePayment: deletePaymentMock, limits: { paymentRefMax: 21 },
+    createPayment: createPaymentMock, deletePayment: deletePaymentMock, limits: { paymentRefMax: 21 }, ...providerExtras,
   }),
   providerSupports: (id: string) => id === 'quickbooks',
   LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
@@ -372,6 +375,7 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
   if (!eqOn('breeze_entity_id', row.breezeEntityId)) return false;
   if (!eqOn('remote_entity_id', row.remoteEntityId)) return false;
   if (!eqOn('pending_op', row.pendingOp)) return false;
+  if (!eqOn('push_generation', row.pushGeneration)) return false;
   if (refs('terminal_reason')) {
     // `IS DISTINCT FROM '<v>'` — the re-own CAS's orphan exclusion. Read off the
     // compiled SQL because it is not an equality and `eqOn` cannot see it.
@@ -410,7 +414,7 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
 const HANDLED_MAPPING_COLUMNS: ReadonlySet<string> = new Set([
   'id', 'partner_id', 'integration_id', 'breeze_entity_type', 'breeze_entity_id',
   'remote_entity_id', 'pending_op', 'breeze_origin', 'terminal_reason',
-  'claimed_at', 'updated_at',
+  'claimed_at', 'updated_at', 'push_generation',
 ]);
 
 /** Live row references (so an UPDATE's `Object.assign` sticks). */
@@ -596,6 +600,7 @@ function installDbMocks(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const k of Object.keys(providerExtras)) delete providerExtras[k];
   ctx.depth = 0;
   ambientScope = 'system';
   stmts = [];
@@ -2665,5 +2670,162 @@ describe('connectionOwesUnresolvedPaymentDelete (Xero W05, quorum finding 3)', (
     await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(false);
     currentMappings = [paymentMapRow({ pendingOp: 'delete', remoteEntityId: null, integrationId: 'other-conn' })];
     await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(false);
+  });
+});
+
+describe('Xero W05: preflight park, provider refusals, labels', () => {
+  const xeroRefusal = (providerCode: string, kind: 'validation' | 'not_found' = 'validation') =>
+    new AccountingProviderError({ kind, provider: 'xero', operation: 'Xero payment create', httpStatus: kind === 'not_found' ? 404 : 400, providerCode });
+
+  beforeEach(() => {
+    currentConns = [connRow({ provider: 'xero' })];
+    resolveConnectionMock.mockImplementation(async () => ({ ...currentConns[0], provider: 'xero' }));
+  });
+
+  it('a preflight refusal PARKS the payment: pending_op kept, lease released, no attempt counted, no token, no provider call', async () => {
+    providerExtras.paymentPushPreflight = vi.fn(() => 'Choose a bank account for payments in Integrations → Accounting → Xero; Breeze will send this payment when one is chosen');
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'push_settings_incomplete', status: 409 });
+
+    expect(resolveLiveConnectionMock).not.toHaveBeenCalled();
+    expect(createPaymentMock).not.toHaveBeenCalled();
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', claimedAt: null, syncStatus: 'error', syncAttempts: 0,
+      lastError: 'Choose a bank account for payments in Integrations → Accounting → Xero; Breeze will send this payment when one is chosen',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a provider without a preflight still pushes (QuickBooks regression guard)', async () => {
+    currentConns = [connRow()];
+    resolveConnectionMock.mockImplementation(async () => ({ ...currentConns[0], provider: 'quickbooks' }));
+    createPaymentMock.mockResolvedValueOnce({ id: '181', remoteVersion: '0' });
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
+  });
+
+  it.each<[string, 'validation' | 'not_found', string, string]>([
+    ['remote_missing', 'validation', 'remote_missing',
+      'The Xero invoice this payment belongs to is no longer approved there (voided, deleted or back to draft), so the payment cannot be recorded against it — check the invoice in Xero'],
+    ['amount_exceeds_due', 'validation', 'amount_exceeds_due',
+      'Xero refused the payment because it is more than the amount still due on the invoice there — check for a payment or credit already recorded in Xero, then push the invoice to Xero again'],
+    ['insufficient_scope', 'validation', 'provider_permission',
+      'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission, then push the invoice to Xero again'],
+  ])('create refusal %s → terminal %s, pending_op cleared, persisted, no Sentry', async (providerCode, kind, code, message) => {
+    createPaymentMock.mockRejectedValueOnce(xeroRefusal(providerCode, kind));
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code, status: 409, message });
+    expect(mapping()).toMatchObject({ pendingOp: null, syncStatus: 'error', lastError: message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('remote_deleted → terminal, pending_op cleared, no Sentry (our create was deleted in Xero; quorum finding 4)', async () => {
+    createPaymentMock.mockRejectedValueOnce(xeroRefusal('remote_deleted'));
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_deleted', status: 409,
+      message: 'This payment was deleted in Xero after Breeze sent it — push the invoice to Xero again to send it again',
+    });
+    expect(mapping()).toMatchObject({ pendingOp: null, syncStatus: 'error' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a late create refusal does NOT erase a delete a concurrent void put on the row (quorum finding 2)', async () => {
+    createPaymentMock.mockImplementationOnce(async () => {
+      // While the provider call is in flight: the pull adopted the payment and a void owes its delete.
+      Object.assign(mapping()!, { remoteEntityId: 'xp-1/xi-1', pendingOp: 'delete', claimedAt: null, syncStatus: 'pending' });
+      throw xeroRefusal('amount_exceeds_due');
+    });
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'amount_exceeds_due' });
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', remoteEntityId: 'xp-1/xi-1', syncStatus: 'pending' });
+  });
+
+  it('a late create refusal that stamps nothing still RELEASES its own lease (a concurrent void keeps the lease untouched)', async () => {
+    createPaymentMock.mockImplementationOnce(async () => {
+      // A Breeze void during the provider call: `requestPaymentDelete` flips the
+      // row to delete and leaves `claimed_at` (this job's lease) as it was.
+      const leased = mapping()!.claimedAt;
+      expect(leased).not.toBeNull();
+      Object.assign(mapping()!, { pendingOp: 'delete', syncStatus: 'pending', lastError: null });
+      throw xeroRefusal('amount_exceeds_due');
+    });
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'amount_exceeds_due' });
+    // The owed delete survives untouched, and the delete job is not blocked for
+    // the 10-minute lease by a claim nobody holds any more.
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', syncStatus: 'pending', lastError: null, claimedAt: null });
+  });
+
+  it('a late delete refusal on a mapping removed during the call writes nothing and still throws the refusal', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete', syncStatus: 'pending',
+    })];
+    deletePaymentMock.mockImplementationOnce(async () => {
+      // A disconnect / tenant erasure removed the mapping while Xero answered.
+      currentMappings = currentMappings.filter((m) => m.id !== MAPPING);
+      throw new AccountingProviderError({
+        kind: 'validation', provider: 'xero', operation: 'Xero payment delete', httpStatus: 400, providerCode: 'remote_locked',
+      });
+    });
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'remote_locked', status: 409 });
+    expect(mapping()).toBeNull(); // not resurrected by the stamp or the lease release
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('duplicate_key → remote_ambiguous, terminal, and it DOES reach Sentry (should never happen)', async () => {
+    createPaymentMock.mockRejectedValueOnce(xeroRefusal('duplicate_key'));
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'remote_ambiguous', status: 409 });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('delete refusal remote_locked → terminal, pending_op cleared, the remote id KEPT, no Sentry', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete', syncStatus: 'pending',
+    })];
+    deletePaymentMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'Xero payment delete', httpStatus: 400, providerCode: 'remote_locked',
+    }));
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_locked', status: 409,
+      message: 'Xero will not delete this payment because it is reconciled to a bank transaction — unreconcile it in Xero and delete it there',
+    });
+    expect(mapping()).toMatchObject({ pendingOp: null, remoteEntityId: 'xp-1/xi-1', syncStatus: 'error' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('delete refusal insufficient_scope PARKS: 409 provider_permission, the owed delete KEPT, no attempt, no Sentry', async () => {
+    // A delete row is NEVER dropped (coordinator invariant): a missing grant is
+    // fixed by reconnecting, after which the sweep must still find this delete.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete',
+      syncStatus: 'pending', syncAttempts: 3,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'Xero payment delete', httpStatus: 403, providerCode: 'insufficient_scope',
+    }));
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'provider_permission', status: 409,
+      message: 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission',
+    });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', remoteEntityId: 'xp-1/xi-1', syncStatus: 'error', syncAttempts: 3, claimedAt: null,
+      lastError: 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission',
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('a QuickBooks validation fault is still the retryable 502 with Sentry — QuickBooks unchanged (refinement 16)', async () => {
+    currentConns = [connRow()];
+    resolveConnectionMock.mockImplementation(async () => ({ ...currentConns[0], provider: 'quickbooks' }));
+    createPaymentMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks payment create', httpStatus: 400, providerCode: '6000',
+    }));
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(mapping()!.pendingOp).toBe('push');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels coordinator refusals with the connection provider', async () => {
+    currentMappings = [invoiceMapRow(), paymentMapRow()]; // no org mapping
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'customer_not_mapped',
+      message: 'This organization is not mapped to a Xero customer yet — confirm or create a mapping first',
+    });
   });
 });

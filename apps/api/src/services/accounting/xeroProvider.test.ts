@@ -320,14 +320,25 @@ describe('items and income accounts (Xero W03)', () => {
   });
 });
 
-describe('methods behind later waves', () => {
-  it.each([
-    ['createPayment', () => xeroProvider.createPayment(conn(), {} as any)],
-    ['deletePayment', () => xeroProvider.deletePayment(conn(), {} as any)],
-  ])('%s refuses with capability_unavailable and makes no HTTP call', async (_name, call) => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    await expect(call()).rejects.toMatchObject({ kind: 'validation', provider: 'xero', providerCode: 'capability_unavailable' });
-    expect(fetchMock).not.toHaveBeenCalled();
+describe('payment push wiring (Xero W05b)', () => {
+  it('declares a preflight that reads the bank account', () => {
+    expect(xeroProvider.paymentPushPreflight!(conn({ defaultPaymentAccountRef: null }))).toMatch(/Choose a bank account/);
+    expect(xeroProvider.paymentPushPreflight!(conn({ defaultPaymentAccountRef: 'bank-1' }))).toBeNull();
+  });
+  it('createPayment embeds the marker first in Reference', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Payments: [{ PaymentID: 'xp-1' }] }));
+    await xeroProvider.createPayment(conn({ defaultPaymentAccountRef: 'bank-1' }), {
+      invoicePaymentId: '0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f', remoteCustomerId: 'c', remoteInvoiceId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      amount: '10.00', currencyCode: 'GBP', txnDate: '2026-09-02', reference: 'pi_1',
+      marker: 'Breeze payment 0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f', pushGeneration: 0,
+    });
+    const sent = JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body));
+    expect(sent.Payments[0].Reference).toBe('Breeze payment 0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f | pi_1');
+  });
+  it('still declares paymentPush false until W05c', () => {
+    expect(xeroProvider.capabilities.paymentPush).toBe(false);
   });
 });
 

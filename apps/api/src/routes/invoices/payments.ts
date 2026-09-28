@@ -49,11 +49,16 @@ invoicePaymentRoutes.delete('/:id/payments/:pid', scopes, sendPerm, zValidator('
         // because no CDC sweep would re-import it. The QuickBooks Payment is
         // still standing; the service also writes its own durable entry, but a
         // reader of THIS event must not have to go find that one.
-        ...(audit.quickbooksRecordUntouched
+        // Persisted audit key — kept byte-identical (refinement 21); details carry no provider-neutral twin.
+        ...(audit.providerRecordUntouched
           ? { quickbooksRecordUntouched: true, untouchedReason: audit.untouchedReason }
           : {}),
       }
     });
-    return c.json({ data: invoice, quickbooksRecordUntouched: audit.quickbooksRecordUntouched === true });
+    const untouched = audit.providerRecordUntouched === true;
+    // `quickbooksRecordUntouched` is a deprecated alias for one release, so a
+    // browser tab loaded before this deploy still shows its warning. Remove it
+    // in #7298.
+    return c.json({ data: invoice, providerRecordUntouched: untouched, quickbooksRecordUntouched: untouched });
   } catch (err) { return handleServiceError(c, err); }
 });

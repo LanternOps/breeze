@@ -785,7 +785,9 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),
     // so the two worker files reach out of it.
-    ['accounting/accountingPaymentPush.ts', 12], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
+    // 12 -> 14: Xero W05 — the create-side `remote_ambiguous` refusal capture and
+    // `markPaymentRefusedIfStillOwed`'s own best-effort catch.
+    ['accounting/accountingPaymentPush.ts', 14], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
     // #6082: the sync-mapping terminal-failure path (`AccountingMappingError`)
     // added a third tag-bearing capture (`accounting_entity_id`).
     ['../jobs/accountingSyncWorker.ts', 3],

@@ -220,9 +220,18 @@ export function providerPermissionMessage(label: string): string {
  *                         scope change) is the only fix. Surfaced; never retried.
  *  - remote_locked      — the remote record exists but the provider will not change
  *                         it (Xero: an invoice with a payment or credit applied whose
- *                         content differs). Surfaced; never retried.
+ *                         content differs; a payment reconciled to a bank
+ *                         transaction). Surfaced; never retried.
+ *  - amount_exceeds_due — a payment create is more than the remote invoice still
+ *                         has due (Xero W05). Payment create only. Surfaced; never retried.
+ *  - remote_deleted     — the payment this create re-sends was deleted remotely after
+ *                         Breeze sent it (Xero W05). Payment create only. Surfaced;
+ *                         never retried.
  */
-export const ACCOUNTING_REFUSAL_CODES = ['duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope', 'remote_locked'] as const;
+export const ACCOUNTING_REFUSAL_CODES = [
+  'duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope', 'remote_locked',
+  'amount_exceeds_due', 'remote_deleted',
+] as const;
 export type AccountingRefusalCode = typeof ACCOUNTING_REFUSAL_CODES[number];
 
 /** The code when `err` is a provider error of kind `validation` or `not_found` carrying one; else null. */

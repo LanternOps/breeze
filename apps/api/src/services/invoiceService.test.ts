@@ -2446,7 +2446,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     ]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
-      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      status: 409, code: 'PROVIDER_OWNED_PAYMENT',
     });
     expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
     expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
@@ -2478,7 +2478,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: true }]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
-      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      status: 409, code: 'PROVIDER_OWNED_PAYMENT',
     });
     expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
     expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
@@ -2495,7 +2495,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
 
     const res = await svc.voidPayment('pay1', actor);
 
-    expect(res.audit).toMatchObject({ paymentId: 'pay1', quickbooksRecordUntouched: true });
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', providerRecordUntouched: true });
     expect(requestPaymentDeleteMock).toHaveBeenCalled();
     // No QuickBooks write: Breeze never created that Payment.
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
@@ -2521,6 +2521,20 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     }));
   });
 
+  it('keeps the persisted audit action and names the provider (Xero W05 refinement 21)', async () => {
+    // Reuse the setup of the existing "writes its own durable audit" test for a
+    // remote-origin void with pull off.
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: false }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      details: expect.objectContaining({ provider: 'quickbooks' }),
+    }));
+  });
+
   it('writes no such audit for an ordinary Breeze payment void', async () => {
     requestPaymentDeleteMock.mockResolvedValue('map-1');
     queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
@@ -2538,7 +2552,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
 
     const res = await svc.voidPayment('pay1', actor);
 
-    expect(res.audit).toMatchObject({ quickbooksRecordUntouched: true });
+    expect(res.audit).toMatchObject({ providerRecordUntouched: true });
   });
 
   it('ALLOWS voiding a QuickBooks-origin payment when the connection is gone entirely', async () => {
@@ -2546,7 +2560,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], []);
 
     await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({
-      audit: { quickbooksRecordUntouched: true },
+      audit: { providerRecordUntouched: true },
     });
   });
 
@@ -2556,7 +2570,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
 
     const res = await svc.voidPayment('pay1', actor);
 
-    expect(res.audit).not.toHaveProperty('quickbooksRecordUntouched');
+    expect(res.audit).not.toHaveProperty('providerRecordUntouched');
   });
 
   // Xero W01: the refusal and the untouched audit name the connection's provider.
@@ -2564,16 +2578,16 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ provider: 'quickbooks', status: 'connected', pullPayments: true }]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
-      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      status: 409, code: 'PROVIDER_OWNED_PAYMENT',
       message: 'This payment came from QuickBooks; reverse it in QuickBooks instead',
     });
   });
 
-  it('names the owning provider in the refusal, keeping the QUICKBOOKS_OWNED_PAYMENT code', async () => {
+  it('names the owning provider in the refusal, keeping the PROVIDER_OWNED_PAYMENT code', async () => {
     queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ provider: 'xero', status: 'connected', pullPayments: true }]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
-      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+      status: 409, code: 'PROVIDER_OWNED_PAYMENT',
       message: 'This payment came from Xero; reverse it in Xero instead',
     });
   });

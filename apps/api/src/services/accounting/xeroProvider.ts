@@ -4,11 +4,10 @@
  * W03 implements contacts and items; the `mapping`/`customerImport`
  * capabilities flip in W03b. W04 ships invoice push and void (capability
  * flipped in W04b). W05 ships payments: pull (reconcileChanges) and the
- * webhook doorbell (verifyWebhook) are wired in W05a; `createPayment` and
- * `deletePayment` remain W05b stubs that refuse with capability_unavailable
- * until W05c flips the paymentPush capability. The capability gates in
- * routes, producers and workers keep them unreachable; the refusal is the
- * backstop.
+ * webhook doorbell (verifyWebhook) are wired in W05a; `createPayment`,
+ * `deletePayment` and `paymentPushPreflight` are wired in W05b, and stay
+ * unreachable behind the capability gates in routes, producers and workers
+ * until W05c flips the paymentPush capability.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
@@ -20,7 +19,10 @@ import {
 import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
 import { getXeroItem, listXeroItems, upsertXeroItem } from './xeroItems';
 import { findPushedXeroInvoice, pushXeroInvoice, voidXeroInvoice, xeroInvoicePreflight } from './xeroInvoices';
-import { embedXeroPaymentMarker, extractXeroPaymentMarker, readXeroPaymentChanges, XERO_PAYMENT_REF_MAX } from './xeroPayments';
+import {
+  createXeroPayment, deleteXeroPayment, embedXeroPaymentMarker, extractXeroPaymentMarker, readXeroPaymentChanges,
+  xeroPaymentPreflight, XERO_PAYMENT_REF_MAX,
+} from './xeroPayments';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
   AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
@@ -44,16 +46,6 @@ const XERO_SETTINGS_TIMEOUT_MS = 8_000;
 interface XeroOrganisation { Name?: string; BaseCurrency?: string; IsDemoCompany?: boolean }
 interface XeroAccount { AccountID?: string; Code?: string; Name?: string; Type?: string; Status?: string; BankAccountNumber?: string }
 interface XeroTaxRate { Name?: string; TaxType?: string; Status?: string; CanApplyToRevenue?: boolean; DisplayTaxRate?: number }
-
-function notYet(operation: string, wave: string): never {
-  throw new AccountingProviderError({
-    kind: 'validation',
-    provider: 'xero',
-    operation,
-    message: `Xero ${operation} is not available yet (ships in ${wave})`,
-    providerCode: 'capability_unavailable',
-  });
-}
 
 function normalizeCurrency(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -269,9 +261,21 @@ export class XeroProvider implements AccountingProvider {
     return left.length === right.length && timingSafeEqual(left, right);
   }
 
-  // --- later waves (capability false; unreachable behind the gates) ---
-  async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
-  async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
+  // --- payment push (Xero W05b; capability gate: see the file header) ---
+  /** Refinement 17: a missing bank account parks the payment before any token refresh or call. */
+  paymentPushPreflight(conn: AccountingConnection): string | null {
+    return xeroPaymentPreflight(conn);
+  }
+
+  // Assumes conn.accessToken is valid (the coordinator resolves it first); issues no DB queries.
+  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+    return createXeroPayment(callContext(conn), conn, payment, this.paymentMarker.embed(payment.reference, payment.marker));
+  }
+
+  async deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> {
+    // Xero has no optimistic concurrency: the stored version is not needed (refinement 18).
+    return deleteXeroPayment(callContext(conn), payment.remotePaymentId);
+  }
 }
 
 export const xeroProvider = new XeroProvider();

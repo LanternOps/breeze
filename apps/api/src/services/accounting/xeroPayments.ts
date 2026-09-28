@@ -11,11 +11,18 @@
  * No function here is named createPayment/deletePayment (the call-site guard in
  * accountingInvoicePushCallSites.test.ts); the provider class wires them.
  */
+import { createHash } from 'node:crypto';
 import { toMinorUnits } from '@breeze/shared';
+import { AccountingProviderError } from './accountingProviderError';
 import { parseBreezePaymentMarker } from './accountingPaymentMarker';
-import { parseXeroDate, xeroApiGet, xeroArray, xeroQuery, type XeroCallContext } from './xeroHttp';
+import {
+  classifyXeroValidation, parseXeroDate, requireXeroBody, xeroApiGet, xeroApiWrite, xeroArray, xeroQuery,
+  type XeroCallContext,
+} from './xeroHttp';
 import type { AccountingConnection } from './accountingConnectionService';
-import type { ChangeSet, ChangeSetPaymentLine } from './types';
+import type {
+  AccountingPaymentPayload, ChangeSet, ChangeSetPaymentLine, PaymentDeleteResult, RemoteRef,
+} from './types';
 
 /** `limits.paymentRefMax`: the RAW human reference the core may pass (refinement 14). */
 export const XERO_PAYMENT_REF_MAX = 64;
@@ -312,4 +319,210 @@ export async function readXeroPaymentChanges(
     deletedInvoices,
     overflowed,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Push (W05b)
+// ---------------------------------------------------------------------------
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Refinement 17: parked, not failed; shown on the payment row and fixed in the settings step. */
+export const XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE =
+  'Choose a bank account for payments in Integrations → Accounting → Xero; Breeze will send this payment when one is chosen';
+
+export function xeroPaymentPreflight(conn: Pick<AccountingConnection, 'defaultPaymentAccountRef'>): string | null {
+  return conn.defaultPaymentAccountRef?.trim() ? null : XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE;
+}
+
+/**
+ * One key per request IDENTITY, never per request bytes (refinement 15, W04's
+ * lesson): the body carries a mutable setting (the bank account). Same inputs as
+ * QuickBooks' requestid (`invoicePaymentId[:g<n>]`), so a fan-out re-own gets a
+ * new key. 75 chars (Xero's cap is 128). Xero keeps a key only 6 minutes —
+ * adoption, not the key, is the duplicate guard.
+ */
+export function xeroPaymentIdempotencyKey(tenantId: string, invoicePaymentId: string, pushGeneration: number): string {
+  return `breeze-pay-${createHash('sha256').update([tenantId, invoicePaymentId, String(pushGeneration)].join('\n')).digest('hex')}`;
+}
+
+function paymentError(
+  kind: 'validation' | 'transient',
+  operation: string,
+  message: string,
+  providerCode?: string,
+): AccountingProviderError {
+  return new AccountingProviderError({ kind, provider: 'xero', operation, message, providerCode });
+}
+
+/** Xero ids are GUIDs; anything else must never be interpolated into a path or a `where` clause. */
+function requireXeroGuid(value: string, operation: string): string {
+  if (!GUID_RE.test(value)) throw paymentError('validation', operation, `${operation}: not a Xero id`);
+  return value;
+}
+
+function toRemoteRef(p: XeroPayment): RemoteRef {
+  const version = xeroPaymentVersion(p);
+  return version ? { id: p.PaymentID!, remoteVersion: version } : { id: p.PaymentID! };
+}
+
+/** Payments on ONE invoice whose Reference carries THIS Breeze payment's marker, split live / deleted. */
+export interface XeroMarkerHits { live: XeroPayment[]; deleted: XeroPayment[] }
+
+/**
+ * The adoption lookup (refinement 15). Fails CLOSED when the invoice's payment
+ * list cannot be enumerated in one page (quorum finding 5): "no hit" must mean
+ * "none exists", never "none on page 1". A thousand payments on one invoice is
+ * not a real Breeze invoice, so this refuses (duplicate_key → remote_ambiguous)
+ * rather than guessing.
+ */
+export async function lookUpXeroPaymentsByMarker(
+  ctx: XeroCallContext,
+  remoteInvoiceId: string,
+  invoicePaymentId: string,
+): Promise<XeroMarkerHits> {
+  const operation = 'Xero payment lookup';
+  const invoiceId = requireXeroGuid(remoteInvoiceId, operation);
+  const body = await xeroApiGet<{ Payments?: unknown } | null>(
+    ctx,
+    `Payments${xeroQuery({ where: `Invoice.InvoiceID==guid("${invoiceId}")`, page: 1, pageSize: XERO_RECONCILE_PAGE_SIZE })}`,
+    operation,
+  );
+  const all = xeroArray<XeroPayment>(body?.Payments);
+  if (all.length >= XERO_RECONCILE_PAGE_SIZE) {
+    throw paymentError('validation', operation, 'Xero returned too many payments on this invoice to rule out a duplicate', 'duplicate_key');
+  }
+  const ours = all.filter((p) =>
+    isReceivable(p)
+    && p.Invoice!.InvoiceID!.toLowerCase() === invoiceId.toLowerCase()
+    && extractXeroPaymentMarker(p.Reference) === invoicePaymentId);
+  return {
+    live: ours.filter((p) => p.Status === 'AUTHORISED'),
+    deleted: ours.filter((p) => p.Status === 'DELETED'),
+  };
+}
+
+/**
+ * Create one Xero payment for one Breeze payment (refinements 15, 19).
+ * Adoption lookup BEFORE the create and after any uncertain (`transient`)
+ * outcome:
+ *  - one live hit with the SAME amount and currency is returned instead of
+ *    creating (quorum finding 6: a hit with another amount is not ours to adopt);
+ *  - two live hits, or a mismatched one, refuse (duplicate_key → remote_ambiguous);
+ *  - no live hit but a DELETED one, on a first-generation push, refuses with
+ *    remote_deleted: a human deleted the payment Breeze created (whose response
+ *    was lost), and re-creating it would resurrect it (quorum finding 4). A
+ *    re-owned push (pushGeneration > 0, i.e. the operator pushed the invoice
+ *    again) creates anew.
+ * `reference` is `paymentMarker.embed(payment.reference, payment.marker)`.
+ */
+export async function createXeroPayment(
+  ctx: XeroCallContext,
+  conn: Pick<AccountingConnection, 'defaultPaymentAccountRef'>,
+  payment: AccountingPaymentPayload,
+  reference: string,
+): Promise<RemoteRef> {
+  const op = 'Xero payment create';
+  const accountId = conn.defaultPaymentAccountRef?.trim();
+  if (!accountId) throw paymentError('validation', op, XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE);
+  requireXeroGuid(payment.remoteInvoiceId, op);
+  const currency = payment.currencyCode.trim().toUpperCase();
+  const wantMinor = toMinorUnits(Number(payment.amount), currency);
+
+  const look = async (): Promise<XeroPayment | null> => {
+    const { live, deleted } = await lookUpXeroPaymentsByMarker(ctx, payment.remoteInvoiceId, payment.invoicePaymentId);
+    if (live.length > 1) {
+      throw paymentError('validation', op, 'Xero holds more than one payment for this Breeze payment', 'duplicate_key');
+    }
+    const hit = live[0];
+    if (hit) {
+      const hitCurrency = normalizeCurrency(hit.Invoice?.CurrencyCode) ?? currency;
+      const hitMinor = typeof hit.Amount === 'number' ? toMinorUnits(hit.Amount, hitCurrency) : Number.NaN;
+      if (hitCurrency !== currency || hitMinor !== wantMinor) {
+        throw paymentError('validation', op, 'A Xero payment carries this Breeze payment marker with a different amount or currency', 'duplicate_key');
+      }
+      return hit;
+    }
+    if (deleted.length > 0 && payment.pushGeneration === 0) {
+      throw paymentError('validation', op, 'The Xero payment Breeze created for this payment was deleted there', 'remote_deleted');
+    }
+    return null;
+  };
+
+  const existing = await look();
+  if (existing) return toRemoteRef(existing);
+
+  const body = {
+    Payments: [{
+      Invoice: { InvoiceID: payment.remoteInvoiceId },
+      Account: { AccountID: accountId },
+      Date: payment.txnDate,
+      // 2dp decimal string → JSON number at the wire only; home currency only (refinement 19).
+      Amount: Number(payment.amount),
+      Reference: reference,
+    }],
+  };
+
+  let created: { Payments?: unknown } | null;
+  try {
+    created = await xeroApiWrite<{ Payments?: unknown } | null>(
+      ctx, 'PUT', `Payments${xeroQuery({ summarizeErrors: true })}`, body, op,
+      { idempotencyKey: xeroPaymentIdempotencyKey(ctx.tenantId, payment.invoicePaymentId, payment.pushGeneration) },
+    );
+  } catch (err) {
+    // Uncertain: a timeout, a 5xx, or Xero's key-reuse 400 (W04 → transient). Did it land?
+    if (err instanceof AccountingProviderError && err.kind === 'transient') {
+      const adopted = await look();
+      if (adopted) return toRemoteRef(adopted);
+    }
+    throw err;
+  }
+
+  const row = xeroArray<XeroPayment>(requireXeroBody(created, op).Payments)[0];
+  if (row?.HasValidationErrors || (row?.ValidationErrors?.length ?? 0) > 0) {
+    const text = JSON.stringify({ Elements: [{ ValidationErrors: row!.ValidationErrors ?? [] }] });
+    throw paymentError('validation', op, 'Xero rejected the payment', classifyXeroValidation(text));
+  }
+  if (!row?.PaymentID) throw paymentError('transient', op, `${op} returned no PaymentID`);
+  // A create answered with a DELETED row (e.g. a replayed response for a payment
+  // deleted since) must never be recorded as live: the pull would then reverse
+  // the Breeze payment on its next read. Park it for an operator instead.
+  if (row.Status === 'DELETED') {
+    throw paymentError('validation', op, 'Xero reports the payment Breeze created as deleted', 'remote_deleted');
+  }
+  return toRemoteRef(row);
+}
+
+/**
+ * Delete one Xero payment (refinement 18). Read first: gone or DELETED →
+ * already_absent (no write); reconciled → remote_locked (no write); else
+ * POST Status DELETED with NO idempotency key (a cached error must not replay).
+ */
+export async function deleteXeroPayment(ctx: XeroCallContext, remotePaymentId: string): Promise<PaymentDeleteResult> {
+  const op = 'Xero payment delete';
+  const id = requireXeroGuid(remotePaymentId, op);
+  const readOp = 'Xero payment read';
+  let current: XeroPayment | undefined;
+  try {
+    const body = await xeroApiGet<{ Payments?: unknown } | null>(ctx, `Payments/${id}`, readOp);
+    current = xeroArray<XeroPayment>(requireXeroBody(body, readOp).Payments)[0];
+  } catch (err) {
+    if (err instanceof AccountingProviderError && err.kind === 'not_found') return 'already_absent';
+    throw err;
+  }
+  // Xero answers an unknown id with 404 (handled above). A 2xx with no row is a
+  // malformed response, not proof of absence: `already_absent` would drop the
+  // mapping while a live payment may remain in Xero, so retry instead.
+  if (!current) throw paymentError('transient', op, `${readOp} returned no payment`);
+  if (current.Status === 'DELETED') return 'already_absent';
+  if (current.IsReconciled === true) {
+    throw paymentError('validation', op, 'Xero will not delete a reconciled payment', 'remote_locked');
+  }
+  try {
+    await xeroApiWrite(ctx, 'POST', `Payments/${id}`, { Status: 'DELETED' }, op);
+  } catch (err) {
+    if (err instanceof AccountingProviderError && err.kind === 'not_found') return 'already_absent';
+    throw err;
+  }
+  return 'deleted';
 }
