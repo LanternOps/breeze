@@ -128,6 +128,27 @@ describe('TicketWorkbench — organization record link', () => {
   });
 });
 
+describe('TicketWorkbench — page item name', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.title = 'Tickets | Breeze RMM';
+  });
+
+  it('names the tab in full-page mode', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ internalNumber: 'T-2026-0001', subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" expanded />);
+    await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(document.title).toBe('T-2026-0001 Printer is down · Tickets | Breeze RMM'));
+  });
+
+  it('leaves the list page alone when embedded in the /tickets split pane', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ internalNumber: 'T-2026-0001', subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(document.title).toBe('Tickets | Breeze RMM');
+  });
+});
+
 describe('TicketWorkbench resolve-flow gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();

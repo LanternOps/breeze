@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useAuthStore } from '../../stores/auth';
 import { useRecentsStore } from '../../stores/recentsStore';
+import { stripPageItemName } from './usePageItemName';
 
 // Layout.astro renders "<page title> | Breeze RMM"; keep only the page part.
 const TITLE_SUFFIX = /\s*\|[^|]*$/;
@@ -8,7 +9,7 @@ const TITLE_SUFFIX = /\s*\|[^|]*$/;
 export function currentPageEntry(): { path: string; title: string } {
   return {
     path: `${window.location.pathname}${window.location.search}`,
-    title: document.title.replace(TITLE_SUFFIX, '').trim(),
+    title: stripPageItemName(document.title).replace(TITLE_SUFFIX, '').trim(),
   };
 }
 

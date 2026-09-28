@@ -36,6 +36,7 @@ import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 import { currencyLabel, currencyOptions } from '../../lib/currencies';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { ACCOUNTING_PROVIDER_NAMES, accountingPath, useActivePushProvider } from '../../lib/accountingProviders';
+import { useCreateIntent } from '../../lib/keyboard/createIntent';
 
 interface Organization {
   id: string;
@@ -298,6 +299,10 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
     setAssembleOpen(true);
     if (contextOrgId) void loadAssembleSites(contextOrgId);
   }, [loadAssembleSites, lockedOrgId]);
+
+  // "c then i" from anywhere lands here with a create intent. Only the
+  // standalone list answers it, not an org-record embed.
+  useCreateIntent('invoice', openAssemble, can('invoices', 'write') && !lockedOrgId);
 
   // `currencyOverride` lets the blocked-group shortcut re-submit in the same
   // tick it sets the select — the state write alone would not be visible to

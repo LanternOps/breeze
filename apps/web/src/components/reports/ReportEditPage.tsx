@@ -72,6 +72,7 @@ import { useTranslation } from 'react-i18next';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -143,6 +144,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const handleCancel = useCallback(() => {
     void navigateTo('/reports');
   }, []);
+
+  usePageItemName(report?.name);
 
   if (loading) {
     return (

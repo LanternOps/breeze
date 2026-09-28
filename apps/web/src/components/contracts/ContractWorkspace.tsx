@@ -14,6 +14,7 @@ import {
 import { listContractDocuments, type ContractDocument } from '../../lib/api/contractDocuments';
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -38,6 +39,7 @@ export default function ContractWorkspace({ contractId }: Props) {
   );
 
   const [detail, setDetail] = useState<ContractDetailData | null>(null);
+  usePageItemName(detail?.contract.name);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string>();
   // Active contracts are read-mostly; an explicit toggle reveals the editor.

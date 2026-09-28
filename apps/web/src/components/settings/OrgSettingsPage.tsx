@@ -51,6 +51,7 @@ import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import Pax8OrgTab from '../organizations/Pax8OrgTab';
 import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
@@ -289,6 +290,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     return () => window.removeEventListener('beforeunload', warn);
   }, [saveState.hasUnsavedChanges]);
   const [orgDetails, setOrgDetails] = useState<OrgDetails | null>(null);
+  usePageItemName(orgDetails?.name);
   const [locked, setLocked] = useState<string[]>([]);
   // Issue #2124: registered versions for the pin selectors + the partner's
   // effective pins (shown when `defaults.agentVersionPins` is partner-locked).

@@ -21,6 +21,7 @@ import { usePermissions } from '@/lib/permissions';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type ScriptExecutionsPageProps = {
   scriptId: string;
@@ -237,6 +238,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     }
     return admission;
   };
+
+  usePageItemName(script?.name);
 
   if (loading && !script) {
     return (

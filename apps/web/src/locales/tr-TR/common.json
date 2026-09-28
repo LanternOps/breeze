@@ -749,7 +749,8 @@
         "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
         "keyboardShortcuts": "Klavye kısayolları",
         "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
-      }
+      },
+      "numberHint": "Açmak için {{mod}}1–9"
     },
     "notifications": {
       "title": "Bildirimler",
@@ -815,7 +816,17 @@
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
-      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır."
+      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
+      "create": "Oluştur",
+      "createHint": "c tuşuna basıp bırakın, ardından tuşa basın.",
+      "paletteNumber": "Bir arama sonucunu numarasıyla açın",
+      "newItems": {
+        "ticket": "Yeni talep",
+        "quote": "Yeni teklif",
+        "invoice": "Yeni fatura",
+        "contract": "Yeni sözleşme",
+        "script": "Yeni betik"
+      }
     }
   },
   "migrationBanner": {

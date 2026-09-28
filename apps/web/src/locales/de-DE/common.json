@@ -749,7 +749,8 @@
         "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
         "keyboardShortcuts": "Tastenkürzel",
         "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
-      }
+      },
+      "numberHint": "{{mod}}1–9 zum Öffnen"
     },
     "notifications": {
       "title": "Benachrichtigungen",
@@ -815,7 +816,17 @@
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
       "close": "Dialog oder Menü schließen",
-      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen."
+      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
+      "create": "Erstellen",
+      "createHint": "Drücke c, lass los, dann die Taste.",
+      "paletteNumber": "Suchergebnis über seine Nummer öffnen",
+      "newItems": {
+        "ticket": "Neues Ticket",
+        "quote": "Neues Angebot",
+        "invoice": "Neue Rechnung",
+        "contract": "Neuer Vertrag",
+        "script": "Neues Skript"
+      }
     }
   },
   "migrationBanner": {

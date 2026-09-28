@@ -749,7 +749,8 @@
         "alertRulesDescription": "Administrar alertas en Políticas de configuración",
         "keyboardShortcuts": "Atajos de teclado",
         "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta"
-      }
+      },
+      "numberHint": "{{mod}}1–9 para abrir"
     },
     "notifications": {
       "title": "Notificaciones",
@@ -815,7 +816,17 @@
       "help": "Abrir el panel de ayuda",
       "showThis": "Mostrar esta tarjeta",
       "close": "Cerrar un diálogo o menú",
-      "typingNote": "Los atajos de una sola tecla se pausan mientras escribes en un campo."
+      "typingNote": "Los atajos de una sola tecla se pausan mientras escribes en un campo.",
+      "create": "Crear",
+      "createHint": "Presiona c, suelta y luego la tecla.",
+      "paletteNumber": "Abrir un resultado de búsqueda por su número",
+      "newItems": {
+        "ticket": "Nuevo ticket",
+        "quote": "Nueva cotización",
+        "invoice": "Nueva factura",
+        "contract": "Nuevo contrato",
+        "script": "Nuevo script"
+      }
     }
   },
   "migrationBanner": {

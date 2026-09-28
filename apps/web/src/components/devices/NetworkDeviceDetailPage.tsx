@@ -35,6 +35,7 @@ import { SnmpSection } from './networkDevice/SnmpSection';
 
 import { NetworkAssetSettingsModal } from './networkDevice/settings/NetworkAssetSettingsModal';
 import { buildDetailHash, parseDetailHash, type SettingsSection } from './networkDevice/settings/settingsHash';
+import { usePageItemName } from '../layout/usePageItemName';
 
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
   const { t } = useTranslation('devices');
@@ -54,6 +55,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   } = useNetworkAsset(assetId);
 
   const { collection, snmpDevice } = useAssetMonitoring(assetId);
+  usePageItemName(asset ? asset.label || asset.hostname || asset.ip : undefined);
   const probeState = useAssetProbe({
     assetId,
     probe: extras.probe,

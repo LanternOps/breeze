@@ -12,6 +12,7 @@ import InvoiceDocumentPreview from './InvoiceDocument';
 import InvoiceActions from './InvoiceActions';
 import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES } from './invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -49,6 +50,7 @@ export default function InvoiceWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
+  usePageItemName(detail?.invoice.invoiceNumber);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');

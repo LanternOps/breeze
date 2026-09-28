@@ -27,6 +27,7 @@ import type {
   AiOperatorWaitReason,
 } from '@breeze/shared';
 import { taskStateLabel } from './operatorTaskLabels';
+import { usePageItemName } from '../layout/usePageItemName';
 
 interface OperatorTaskDetailProps {
   taskId: string;
@@ -186,6 +187,8 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   useEffect(() => {
     void load(taskId);
   }, [taskId, load]);
+
+  usePageItemName(task?.objective);
 
   if (loading) {
     return (

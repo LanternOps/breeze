@@ -749,7 +749,8 @@
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
         "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
-      }
+      },
+      "numberHint": "{{mod}}1–9 per aprire"
     },
     "notifications": {
       "title": "Notifiche",
@@ -815,7 +816,17 @@
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
       "close": "Chiudi una finestra di dialogo o un menu",
-      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo."
+      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
+      "create": "Crea",
+      "createHint": "Premi c, rilascia, poi il tasto.",
+      "paletteNumber": "Apri un risultato di ricerca dal suo numero",
+      "newItems": {
+        "ticket": "Nuovo ticket",
+        "quote": "Nuovo preventivo",
+        "invoice": "Nuova fattura",
+        "contract": "Nuovo contratto",
+        "script": "Nuovo script"
+      }
     }
   },
   "migrationBanner": {
