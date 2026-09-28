@@ -47,7 +47,16 @@ const EN_DIR = join(LOCALES_DIR, 'en');
 const BASELINE: string[] = JSON.parse(
   readFileSync(join(LOCALES_DIR, 'humanizedKeyBaseline.json'), 'utf8'),
 );
-const ALLOWLIST_KEYS = new Set<string>(BASELINE);
+// Copy that a human deliberately wrote and that happens to read like its own
+// key (e.g. key `sentToAgent`, copy "Sent to agent"). This is NOT the baseline
+// of known-broken extraction placeholders above; add an entry here only for
+// intentionally-authored copy, with the PR that introduced it.
+const CONFIRMED_LEGITIMATE_KEYS = new Set<string>([
+  'policies.software.deploymentProgress.sentToAgent', // #7370 (#3578)
+  'backup.vMRestoreConfirmStep.rebuildEngine', // #7283 (#7183)
+  'backup.vMRestoreWizard.selectRebuildHost', // #7283 (#7183)
+]);
+const ALLOWLIST_KEYS = new Set<string>([...BASELINE, ...CONFIRMED_LEGITIMATE_KEYS]);
 
 function flattenJson(obj: Record<string, unknown>, prefix = ''): [string, string][] {
   const out: [string, string][] = [];
