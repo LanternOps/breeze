@@ -20,6 +20,9 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
 import { escapeLike } from '../utils/sql';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const softwareInventoryRoutes = new Hono();
 const requireSoftwareInventoryRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -261,7 +264,7 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   // session — nothing drops them for us. Both aggregates below are raw SQL, but
   // each already INNER JOINs `devices` and interpolates this same `whereClause`,
   // so pushing the predicate here covers the count and the row query alike.
-  const conditions: SQL[] = [eq(devices.isEphemeral, false)];
+  const conditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
   const deviceOrgFilter = orgScope.applyTo(devices.orgId);
   if (deviceOrgFilter) conditions.push(deviceOrgFilter);
   if (perms?.allowedSiteIds) {
@@ -385,7 +388,7 @@ softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('
   if ('error' in orgScope) return c.json({ error: orgScope.error }, orgScope.status);
 
   const conditions: SQL[] = [
-    eq(devices.isEphemeral, false),
+    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
     sql`${softwareInventory.name} ILIKE ${pattern}`,
   ];
   const orgCondition = orgScope.applyTo(devices.orgId);
@@ -435,6 +438,8 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
     return c.json({ error: orgResult.error }, orgResult.status);
   }
   const { orgId } = orgResult;
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
   // Find or create "Default Allowlist" policy
   const [existing] = await db
@@ -566,6 +571,8 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
     return c.json({ error: orgResult.error }, orgResult.status);
   }
   const { orgId } = orgResult;
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
   // Find or create "Default Blocklist" policy
   const [existing] = await db
@@ -694,6 +701,8 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
     return c.json({ error: orgResult.error }, orgResult.status);
   }
   const { orgId } = orgResult;
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
   // Remove from both Default Allowlist and Default Blocklist
   const defaults = await db

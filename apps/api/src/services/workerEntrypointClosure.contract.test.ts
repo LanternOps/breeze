@@ -293,7 +293,7 @@ const EXPECTED_NAMES = [
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
-  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
+  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).
   'helperScreenshotRetentionWorker',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',

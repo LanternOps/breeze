@@ -43,6 +43,26 @@ vi.mock('./partnerTrust.commands', async () => {
   };
 });
 
+// Devices parked in a holding org, by id. The eligibility helper is mocked at
+// its module seam (its real query is proven against Postgres in
+// parkedCommandDelivery.integration.test.ts); the refusal semantics are kept.
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('./unassignedPool/deliveryEligibility', async () => {
+  const actual = await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  );
+  return {
+    ...actual,
+    isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+    assertCommandDeliverable: vi.fn(async (_reader: unknown, input: { deviceId: string; commandType: string }) => {
+      if (actual.isParkedDeliverableCommandType(input.commandType)) return;
+      if (parkedDeviceIds.has(input.deviceId)) {
+        throw new actual.ParkedDeviceCommandRefusedError(input.deviceId, input.commandType);
+      }
+    }),
+  };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -100,6 +120,7 @@ vi.mock('../db/schema', async (importOriginal) => {
 describe('command queue service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    parkedDeviceIds.clear();
     partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockImplementation(
       async (_deviceId, type) => {
         if (type === 'script') {
@@ -142,6 +163,61 @@ describe('command queue service', () => {
     await expect(
       queueCommand('d1', 'self_uninstall', { removeConfig: true }, 'u1'),
     ).resolves.toBeTruthy();
+  });
+
+  it('queueCommand refuses a parked device before inserting anything', async () => {
+    parkedDeviceIds.add('d-parked');
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        }),
+      }),
+    } as any);
+
+    await expect(queueCommand('d-parked', 'refresh_inventory', {}, 'u1')).rejects.toMatchObject({
+      name: 'ParkedDeviceCommandRefusedError',
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      status: 409,
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('queueCommand still queues lifecycle removal for a parked device', async () => {
+    parkedDeviceIds.add('d-parked');
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-parked-uninstall' }]),
+      }),
+    } as any);
+
+    await expect(queueCommand('d-parked', 'self_uninstall', {}, 'u1')).resolves.toMatchObject({
+      id: 'cmd-parked-uninstall',
+    });
+  });
+
+  it('executeCommand answers a parked device with a failed result and inserts nothing', async () => {
+    parkedDeviceIds.add('d-parked');
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'd-parked', status: 'online', orgId: 'pool-org' }]),
+        }),
+      }),
+    } as any);
+
+    const result = await executeCommand('d-parked', 'list_services', {});
+
+    expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('waiting to be assigned') });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(partnerTrustCommandMocks.assertDeviceExecuteAllowed).not.toHaveBeenCalled();
   });
 
   it('queueCommand never persists an inline storage destination in plaintext', async () => {

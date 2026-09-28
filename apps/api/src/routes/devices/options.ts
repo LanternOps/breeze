@@ -14,6 +14,7 @@ import {
   encodeDeviceOptionsCursor,
 } from './optionsCursor';
 
+import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_INCLUDE_IDS = 500;
@@ -147,7 +148,7 @@ optionsRoutes.get(
     // includeIds remain inside this scope even though they bypass search,
     // status, and OS filters to preserve already-selected labels.
     const scopeConditions: SQL[] = [
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ];
     const orgCondition = auth.orgCondition(devices.orgId);

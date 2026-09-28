@@ -27,6 +27,7 @@ import {
   type PersistedSiteScopeColumns,
 } from '../../services/siteScope';
 
+import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 export const complianceRoutes = new Hono();
 
 // A device_patches row that still needs installing. 'missing' is a stale
@@ -77,7 +78,7 @@ complianceRoutes.get(
     // Get devices scoped to org (or all accessible orgs for partner/system).
     // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
     // design, so exclude them from the patch-compliance population explicitly.
-    const deviceConditions = [eq(devices.isEphemeral, false)];
+    const deviceConditions = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (effectiveOrgId) {
       deviceConditions.push(eq(devices.orgId, effectiveOrgId));

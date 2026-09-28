@@ -111,8 +111,8 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `apply_cis_remediation:` this file's own allowlist entry covers. Both
   // values (and the omitted/default case) reach the identical unguarded
   // `approvedBy`/`requestedBy` insert, so all three keys are required.
-  ['services/aiToolsCisBenchmark.ts:519', ['', 'apply', 'rollback']],
-  ['services/aiToolsCisBenchmark.ts:522', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:520', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:523', ['', 'apply', 'rollback']],
 ]);
 
 /**
@@ -147,8 +147,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsAgentLogs.ts:378', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:439', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:537', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:442', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:540', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must
@@ -164,18 +164,18 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsIntegrations.ts:338', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:714', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1701', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:715', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1702', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:807', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:808', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:630', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:719', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:631', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:720', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.

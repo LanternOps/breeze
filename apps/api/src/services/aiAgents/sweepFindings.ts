@@ -127,6 +127,7 @@ import {
 import { resolveEffectiveScheduleActMode } from './sweepActMode';
 import { sweepSubjectIndexKey, type SweepEvidenceSubject } from './sweepEvidence';
 import { isToolAllowlisted } from './toolAllowlist';
+import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 
 /**
  * Same skip-if-already-system shape as every other file in this directory
@@ -366,6 +367,7 @@ export async function persistSweepFindings(
         // hygiene sweep should ever act on — the same exclusion every
         // `loadSweepEvidence` statement carries.
         eq(devices.isEphemeral, false),
+        notParkedDeviceCondition(),
       )));
     inOrg = new Set(rows.map((row) => row.id));
   }

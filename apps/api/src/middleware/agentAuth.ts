@@ -16,6 +16,10 @@ import {
 } from './deviceCredentialLifecycle';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import { checkAgentStorageSessionRateLimit } from '../services/agentStorageSessionRateLimit';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../services/drainClaimAllowlist';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
+import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
+import { isParkedAllowedAgentPath, PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -84,6 +88,17 @@ export interface AgentAuthContext {
    * branch keys on.
    */
   deviceUninstallDraining?: boolean;
+  /**
+   * True when the device's org is its partner's holding org (a "parked"
+   * device).
+   * The middleware has already restricted the route surface to the positive
+   * allowlist in ./agentAuthParked.ts, and narrowed `claimTypeAllowlist` to
+   * `self_uninstall`; the heartbeat returns its minimal parked beat.
+   *
+   * Optional at the type level only so hand-built agent contexts in tests keep
+   * typechecking; the real middleware always sets it.
+   */
+  isPreAssignment?: boolean;
   /**
    * The ONE derived command-type allowlist for every `device_commands` claim
    * site on this request. `undefined` means unrestricted — which is also
@@ -474,67 +489,11 @@ const BOTH_DRAINS_ALLOWED_ACTIONS = new Set(
 );
 
 /**
- * The ONLY command type a drained agent — tenant-offboarding (#2774) or
- * device-remove (#3986) — may claim, ack, or have delivered.
- *
- * Exported so no handler has to restate the literal. `claimPendingCommandsForDevice`'s
- * `typeAllowlist` parameter is OPTIONAL and defaults to unrestricted, so every
- * restatement is a place a future edit can silently drop the narrowing and
- * hand a departing (or removed) machine the full command surface. There is
- * exactly one definition, surfaced on the agent context as `claimTypeAllowlist`.
+ * The ONLY command type a drained (or parked) agent may claim, ack, or have
+ * delivered. Defined in a dependency-free leaf so the command-insert
+ * chokepoint can share it; re-exported here for the existing importers.
  */
-export const DRAIN_CLAIM_TYPE_ALLOWLIST = ['self_uninstall'] as const;
-
-/**
- * The CORE agent mount, as absolute leading path segments.
- *
- * `index.ts` mounts `app.route('/api/v1', api)` and `api.route('/agents', agentRoutes)`,
- * so every core agent route is exactly `/api/v1/agents/<agentId>/...`.
- * `agentAuth.test.ts` pins this against those two mount lines in `index.ts`, so
- * a mount move is caught by a unit test rather than by drain mode silently
- * refusing the whole fleet.
- */
-const CORE_AGENT_MOUNT_SEGMENTS = ['api', 'v1', 'agents'] as const;
-
-/**
- * True when `pathSegments` is EXACTLY `/api/v1/agents/<agentId>/…` with
- * `expectedLength` segments in total.
- *
- * ABSOLUTE anchoring — indexed from the FRONT, with an exact length. The
- * previous implementation indexed from the END (`at(3) === 'agents'`), which
- * matched any path whose TAIL happened to look like `agents/<id>/<action>`.
- * That was a real hole with a false comment on it: this middleware also serves
- * the extension gateway, which mounts agent routes at `<prefix>/agent/<id>/*`
- * (singular) and at `/api/v1/<routeNamespace>/agent/<id>/*`, and extension
- * route paths are copied verbatim with no validation
- * (extensions/contributionRegistry.ts). A crafted request such as
- *
- *   /api/v1/ext/acme/agent/<id>/agents/<id>/rotate-token
- *
- * has a matching tail and would have joined the drain surface. Nothing shipped
- * registers such a route today, but the AGENT supplies the tail, so it needed
- * no extension-author complicity — and the old comment claiming "no extension
- * route can join the drain surface" is exactly what would have licensed
- * someone to write one.
- *
- * Fails CLOSED in both directions: an unrecognised shape is refused during a
- * drain, and if the core mount ever moves, drain mode blocks rather than
- * admits.
- */
-function isCoreAgentPath(
-  pathSegments: string[],
-  agentId: string,
-  expectedLength: number,
-): boolean {
-  if (pathSegments.length !== expectedLength) return false;
-  for (const [index, segment] of CORE_AGENT_MOUNT_SEGMENTS.entries()) {
-    if (pathSegments[index] !== segment) return false;
-  }
-  return pathSegments[CORE_AGENT_MOUNT_SEGMENTS.length] === agentId;
-}
-
-/** Index of the `<action>` segment in `/api/v1/agents/<agentId>/<action>`. */
-const CORE_AGENT_ACTION_INDEX = CORE_AGENT_MOUNT_SEGMENTS.length + 1;
+export { DRAIN_CLAIM_TYPE_ALLOWLIST };
 
 /**
  * #2774 / #3986 — the narrowed agent surface during a drain window.
@@ -642,6 +601,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         // authenticate at all. A LEFT join would instead hand that device a
         // NULL partner and silently degrade it to the pre-W02 blind behaviour.
         partnerId: organizations.partnerId,
+        // Pre-assignment admission: a device in its partner's holding org is
+        // admitted to the parked allowlist only (see the gate below).
+        organizationType: organizations.type,
       })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -1007,6 +969,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     );
   }
 
+  // Pre-assignment: a device parked in its partner's
+  // holding org is admitted to a positive allowlist only — credential rotation
+  // and lifecycle removal. Applied AFTER the drain gate so the two compose by
+  // intersection (a request must pass both); a route that does not exist yet
+  // is refused by default. Distinct error code so the agent (and an operator
+  // reading logs) can tell "waiting for assignment" from an auth failure.
+  const isPreAssignment = isUnassignedPoolOrgType(device.organizationType);
+  if (isPreAssignment && !isParkedAllowedAgentPath(pathSegments, agentId)) {
+    return c.json(PARKED_DEVICE_REFUSAL, 403);
+  }
+
   // Security remediation Wave 5, Task 6 — shared certificate/device binding
   // decision (services/agentCertificateBinding.ts). Runs AFTER bearer/token
   // auth and the tenant-status gate, BEFORE the request is granted access.
@@ -1058,7 +1031,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // command type, because `claimPendingCommandsForDevice`'s `typeAllowlist`
     // defaults to unrestricted. `undefined` here still means unrestricted, but
     // now there is exactly one place that decides it.
-    claimTypeAllowlist: drainNarrowed ? DRAIN_CLAIM_TYPE_ALLOWLIST : undefined,
+    //
+    // A parked device takes the same narrowing: lifecycle removal
+    // (`self_uninstall`) is the only command type it may claim or ack.
+    claimTypeAllowlist: drainNarrowed || isPreAssignment ? DRAIN_CLAIM_TYPE_ALLOWLIST : undefined,
+    isPreAssignment,
   });
 
   // #1105 — high-frequency, high-concurrency routes that self-manage their DB
@@ -1131,7 +1108,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       // policy is FOR SELECT, it grants no write targeting: a foreign partner's
       // rows stay invisible, and UPDATE/DELETE still see only the org-owned
       // rows they saw before.
-      currentPartnerId: device.partnerId
+      //
+      // A parked device receives no configuration at all, so it does not get
+      // this read axis either: its allowed wrapped routes (token rotation,
+      // uninstall-intent) touch only its own device row.
+      currentPartnerId: isPreAssignment ? null : device.partnerId
     },
     async () => {
       await next();

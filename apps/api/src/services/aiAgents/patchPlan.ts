@@ -125,6 +125,7 @@ import {
   type PatchEpisodeHistoryEntry,
 } from './patchEpisode';
 import { isToolAllowlisted } from './toolAllowlist';
+import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
@@ -314,6 +315,7 @@ export async function persistPatchPlan(
         inArray(devices.id, toCheck),
         eq(devices.orgId, run.orgId),
         eq(devices.isEphemeral, false),
+        notParkedDeviceCondition(),
       )));
     const present = new Set(rows.map((row) => row.id));
     items.forEach((item, index) => {

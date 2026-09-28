@@ -28,6 +28,7 @@ import { checkSsrfSafe } from '../services/ssrfGuard';
 import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
+import { isUnassignedPoolOrgType, PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);
 
@@ -1084,12 +1085,17 @@ sentinelOneRoutes.post(
       }
 
       const [targetOrg] = await db
-        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
         .from(organizations)
         .where(eq(organizations.id, body.orgId))
         .limit(1);
       if (!targetOrg || targetOrg.partnerId !== integration.partnerId) {
         return c.json({ error: 'Target organization does not belong to this partner' }, 403);
+      }
+      // canAccessOrg is true for system scope; the holding org is never a
+      // mapping target.
+      if (isUnassignedPoolOrgType(targetOrg.type)) {
+        return c.json(PROTECTED_ORG_ERROR, 409);
       }
     }
 

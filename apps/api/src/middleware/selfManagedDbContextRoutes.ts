@@ -184,6 +184,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // Parked-device assignment. Each assignment runs in its own short system
+  // transaction (one per device for a bulk batch of up to 50), and the list
+  // opens its own system read. Under the ambient request transaction every one
+  // of those would take a SECOND pooled connection while the request's sat
+  // idle-in-transaction (#1105). The handlers hold no context of their own;
+  // the service and the audit writer open and close theirs.
+  { method: 'GET', pattern: /^\/api\/v1\/pre-assignment\/devices\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/devices\/[^/]+\/assign\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/devices\/assign-bulk\/?$/ },
+  // Incident actions: the switch write and the per-device expiry
+  // transactions each open their own system context.
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/switch\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/expire-devices\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request

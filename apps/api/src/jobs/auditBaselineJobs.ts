@@ -9,6 +9,7 @@ import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -55,8 +56,8 @@ async function processCollectAuditPolicy(
   // fleet-wide sweep is NOT filtered for us — we must not push audit-policy
   // collection commands onto a home PC, nor count it toward the work estimate.
   const where = data.orgId
-    ? and(eq(devices.isEphemeral, false), eq(devices.orgId, data.orgId), eq(devices.status, 'online'))
-    : and(eq(devices.isEphemeral, false), eq(devices.status, 'online'));
+    ? and(eq(devices.isEphemeral, false), notParkedDeviceCondition(), eq(devices.orgId, data.orgId), eq(devices.status, 'online'))
+    : and(eq(devices.isEphemeral, false), notParkedDeviceCondition(), eq(devices.status, 'online'));
 
   const rows = await db
     .selectDistinct({ id: devices.id })
@@ -244,8 +245,8 @@ export async function enqueueAuditDriftEvaluation(orgId?: string): Promise<strin
 
 export async function getOnlineDeviceCountForAuditCollection(orgId?: string): Promise<number> {
   const deviceStatusFilter = orgId
-    ? and(eq(devices.isEphemeral, false), eq(devices.status, 'online'), eq(devices.orgId, orgId))
-    : and(eq(devices.isEphemeral, false), eq(devices.status, 'online'));
+    ? and(eq(devices.isEphemeral, false), notParkedDeviceCondition(), eq(devices.status, 'online'), eq(devices.orgId, orgId))
+    : and(eq(devices.isEphemeral, false), notParkedDeviceCondition(), eq(devices.status, 'online'));
 
   const [row] = await db
     .select({ count: sql<number>`count(distinct ${devices.id})::int` })

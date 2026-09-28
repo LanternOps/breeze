@@ -17,7 +17,7 @@ import * as dbModule from '../db';
  */
 let missingGuardWarned = false;
 
-function assertOutsideHeldDbContextSafe(operation: string): void {
+export function assertOutsideHeldDbContextSafe(operation: string): void {
   let assertFn: ((op: string) => void) | undefined;
   try {
     assertFn = (dbModule as { assertOutsideHeldDbContext?: (op: string) => void })

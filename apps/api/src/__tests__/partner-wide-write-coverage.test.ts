@@ -232,6 +232,12 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // mean only a partner admin could dismiss their own suggestion, which is the
   // opposite of the intent. Same class as timeEntryService.ts above.
   'services/timeSuggestionService.ts': 'per-technician suggestion decisions keyed on user_id (partner_id is only the RLS axis); never partner-wide config',
+  // Same class as quickSupportOrg.ts above: provisions the partner's hidden
+  // unassigned-device holding org (an org-axis container). It writes no
+  // partner-owned config row, and its callers (deploy-key minting) are
+  // full-partner-admin surfaces gated at the route.
+  'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
+  'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------

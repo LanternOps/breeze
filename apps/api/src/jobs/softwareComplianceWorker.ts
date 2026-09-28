@@ -39,6 +39,7 @@ import {
 } from '../services/softwareInstallRemediationKnobs';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -605,7 +606,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     const rows = await db
       .select({ id: devices.id, orgId: devices.orgId })
       .from(devices)
-      .where(and(inArray(devices.id, chunk), eq(devices.isEphemeral, false)));
+      .where(and(inArray(devices.id, chunk), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
     for (const row of rows) orgByDevice.set(row.id, row.orgId);
   }
   deviceIds = deviceIds.filter((id) => orgByDevice.has(id));

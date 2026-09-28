@@ -20,6 +20,8 @@ import { resolveScopedOrgId } from './helpers';
 import { getCookieValue } from '../auth/helpers';
 import { PERMISSIONS } from '../../services/permissions';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 const M365_CONSENT_COOKIE_NAME = 'breeze_c2c_m365_consent';
 const M365_CONSENT_COOKIE_PATH = '/api/v1/c2c/m365/callback';
 const M365_CONSENT_COOKIE_MAX_AGE_SECONDS = 10 * 60;
@@ -100,6 +102,8 @@ m365AuthRoutes.get('/m365/consent-url', requireC2cWrite, requireMfa(), async (c)
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
   const config = getPlatformConfig();
   if (!config) {

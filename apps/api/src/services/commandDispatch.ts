@@ -1,8 +1,13 @@
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { deviceCommands, devices, peripheralPolicyDeviceStates } from '../db/schema';
+import { deviceCommands, devices, organizations, peripheralPolicyDeviceStates } from '../db/schema';
 import { partitionClaimable, revalidateCommandForDelivery } from './commandClaimEligibility';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+import {
+  isParkedDeliverableCommandType,
+  PARKED_DEVICE_CANCEL_REASON,
+} from './unassignedPool/deliveryEligibility';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // Side-effect import: registers the `network_diagnostic` delivery
 // revalidation. Both delivery legs live in this module, so this is the one
 // place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
@@ -17,6 +22,9 @@ import './scriptCommandRevalidation';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
+/** Refused rows a parked device's claim cancels per heartbeat; the rest go on the next one. */
+const PARKED_REFUSED_CANCEL_BATCH = 100;
+
 export async function claimPendingCommandForDelivery(
   commandId: string,
   executedAt: Date = new Date(),
@@ -30,6 +38,11 @@ export async function claimPendingCommandForDelivery(
     // site, context or deadline moved cannot reach the agent through the direct
     // push instead. The claim itself stays a compare-and-set on `pending`, so a
     // concurrent heartbeat claim still wins or loses atomically.
+    //
+    // The device's org type rides the same read: a device parked in a holding
+    // org receives lifecycle removal only, on this leg exactly as on the batch
+    // claim. Inner joins, so a row whose device or org this context cannot see
+    // is simply not delivered here (it stays `pending` for the heartbeat).
     const [candidate] = await db
       .select({
         id: deviceCommands.id,
@@ -37,12 +50,18 @@ export async function claimPendingCommandForDelivery(
         deviceId: deviceCommands.deviceId,
         payload: deviceCommands.payload,
         createdBy: deviceCommands.createdBy,
+        orgType: organizations.type,
       })
       .from(deviceCommands)
+      .innerJoin(devices, eq(devices.id, deviceCommands.deviceId))
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')))
       .limit(1);
     if (!candidate) return [];
-    const revalidation = await revalidateCommandForDelivery(db, candidate);
+    const revalidation =
+      isUnassignedPoolOrgType(candidate.orgType) && !isParkedDeliverableCommandType(candidate.type)
+        ? PARKED_DEVICE_CANCEL_REASON
+        : await revalidateCommandForDelivery(db, candidate);
     if (revalidation) {
       await db
         .update(deviceCommands)
@@ -245,6 +264,46 @@ export async function claimPendingCommandsForDevice(
       unsupportedProtocolTypes.push('pam_apply_v2', 'pam_cleanup_v2');
     }
 
+    // A device parked in a holding org is claimed under the removal allowlist
+    // (agentAuth narrows it), so the scan below never sees its other rows —
+    // they would sit `pending` until the reaper's clock. Cancel them here, in
+    // this claim transaction, through the same claim-time eligibility that
+    // terminalises and propagates every other refusal. Only on the narrowed
+    // path: an unrestricted claim reaches that eligibility through the scan,
+    // and a drained device in an ordinary org keeps its rows pending.
+    if (typeAllowlist !== undefined) {
+      const [parkedDevice] = await tx
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          status: devices.status,
+          orgType: organizations.type,
+        })
+        .from(devices)
+        .innerJoin(organizations, eq(organizations.id, devices.orgId))
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (parkedDevice && isUnassignedPoolOrgType(parkedDevice.orgType)) {
+        const refused = await tx
+          .select()
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.status, 'pending'),
+              eq(deviceCommands.targetRole, targetRole),
+              notInArray(deviceCommands.type, [...typeAllowlist]),
+            ),
+          )
+          .orderBy(deviceCommands.createdAt)
+          .limit(PARKED_REFUSED_CANCEL_BATCH)
+          .for('update', { skipLocked: true });
+        if (refused.length > 0) {
+          await partitionClaimable(tx, parkedDevice, refused);
+        }
+      }
+    }
+
     const now = new Date();
     const pendingCommands = await tx
       .select()
@@ -273,13 +332,18 @@ export async function claimPendingCommandsForDevice(
     // this rejects cannot be delivered by a concurrent claim.
     let deliverable = pendingCommands;
     if (pendingCommands.length > 0) {
+      // Inner join for the org type (a holding-org device gets lifecycle
+      // removal only). A device whose org this context cannot see is treated
+      // like a vanished device: nothing in the batch is delivered.
       const [dev] = await tx
         .select({
           id: devices.id,
           orgId: devices.orgId,
           status: devices.status,
+          orgType: organizations.type,
         })
         .from(devices)
+        .innerJoin(organizations, eq(organizations.id, devices.orgId))
         .where(eq(devices.id, deviceId))
         .limit(1);
       if (!dev) return [];

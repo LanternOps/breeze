@@ -39,6 +39,7 @@ import {
 import { devices, organizations } from '../db/schema';
 import { escapeLike } from '../utils/sql';
 
+import { notHiddenOrgType } from './unassignedPool/visibility';
 type OrganizationRow = typeof organizations.$inferSelect;
 
 /**
@@ -173,7 +174,7 @@ function archiveLifecycleEligibility(): SQL {
   return and(
     archiveLifecycleCondition(),
     isNull(organizations.deletedAt),
-    ne(organizations.type, 'quick_support'),
+    notHiddenOrgType(),
   ) as SQL;
 }
 

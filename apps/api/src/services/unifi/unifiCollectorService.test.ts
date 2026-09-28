@@ -53,6 +53,16 @@ describe('unifiCollectorService', () => {
     expect(advertise).toHaveBeenCalledWith('c1');
   });
 
+  it('listCollectorsForDevice never returns (or decrypts) collectors bound to a parked device', async () => {
+    const where = vi.fn((_cond: unknown) => []);
+    const db = { select: vi.fn(() => ({ from: () => ({ where }) })) } as unknown as svc.DbExecutor;
+    await svc.listCollectorsForDevice(db, 'dev-1', 'org-1');
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const rendered = new PgDialect().sqlToQuery(where.mock.calls[0]![0] as never).sql;
+    expect(rendered).toContain("parked_org.type = 'unassigned_pool'");
+    expect(rendered).toContain('"unifi_collectors"."collector_device_id"');
+  });
+
   it('deleteCollector returns false when no row deleted', async () => {
     const db = makeDb({ deleteRows: [] });
     await expect(svc.deleteCollector(db, 'int-1', 'h1')).resolves.toBe(false);

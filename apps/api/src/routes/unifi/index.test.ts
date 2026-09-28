@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The holding-org refusal reads the org; the positional db mocks below do not model it.
+vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
+
 const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const SITE_ID = '33333333-3333-3333-3333-333333333333';
@@ -131,6 +134,7 @@ import * as svc from '../../services/unifi/unifiConnectionService';
 import * as collectorSvc from '../../services/unifi/unifiCollectorService';
 import { db, runOutsideDbContext } from '../../db';
 import * as topologyAuthority from '../../services/topology/unifiAuthority';
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
 
 describe('unifi routes', () => {
   beforeEach(() => {
@@ -333,6 +337,45 @@ describe('unifi routes', () => {
     await expect(res.json()).resolves.toMatchObject({ success: false, message: 'Not connected' });
   });
 
+  it("PUT /mappings refuses a site of another partner's org, even when org reach allows it", async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID, partnerId: PARTNER_ID, connectionType: 'cloud', baseUrl: 'https://api.ui.com', accountLabel: null,
+      isActive: true, status: 'connected', lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' }]) })) })),
+    } as any);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] }),
+    });
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings refuses a site of a holding org before writing anything', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID, partnerId: PARTNER_ID, connectionType: 'cloud', baseUrl: 'https://api.ui.com', accountLabel: null,
+      isActive: true, status: 'connected', lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })) })),
+    } as any);
+    vi.mocked(isHoldingOrg).mockResolvedValueOnce(true);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] }),
+    });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'ORG_PROTECTED' });
+    expect(isHoldingOrg).toHaveBeenCalledWith(ORG_ID);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('PUT /mappings derives orgId from Breeze site and upserts', async () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
@@ -350,7 +393,7 @@ describe('unifi routes', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]),
+          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]),
         })),
       })),
     } as any);
@@ -406,7 +449,7 @@ describe('unifi routes', () => {
     // Site lookup for the single submitted mapping.
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })),
       })),
     } as any);
     vi.mocked(db.insert).mockReturnValueOnce({
@@ -457,7 +500,7 @@ describe('unifi routes', () => {
     });
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })),
       })),
     } as any);
     vi.mocked(db.insert).mockReturnValueOnce({
@@ -503,7 +546,7 @@ describe('unifi routes', () => {
     });
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })),
       })),
     } as any);
     vi.mocked(db.insert).mockReturnValueOnce({
@@ -738,7 +781,7 @@ describe('unifi routes', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]),
+          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]),
         })),
       })),
     } as any);

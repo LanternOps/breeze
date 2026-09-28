@@ -20,12 +20,13 @@ export function shouldRotateAgentToken(params: {
   pendingRotationLive: boolean;
   watchdogTokenHash: string | null | undefined;
   tokenIssuedAt: Date | null | undefined;
+  now?: Date;
 }): boolean {
   return (
     !params.tenantDraining &&
     !params.authenticatedWithPreviousToken &&
     !params.pendingRotationLive &&
-    (!params.watchdogTokenHash || isAgentTokenRotationDue(params.tokenIssuedAt))
+    (!params.watchdogTokenHash || isAgentTokenRotationDue(params.tokenIssuedAt, params.now))
   );
 }
 

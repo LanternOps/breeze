@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import UnassignedDevicesPage from '../../components/devices/UnassignedDevicesPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout titleKey="titles.devicesUnassigned">
+  <Breadcrumbs client:load items={[
+    { label: 'Devices', href: '/devices' },
+    { label: 'Unassigned' }
+  ]} />
+  <UnassignedDevicesPage client:load />
+</DashboardLayout>

@@ -9,6 +9,8 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { reconcilePeripheralPolicyDevice } from '../services/peripheralPolicyState';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -218,7 +220,7 @@ export async function processPolicyDistribution(
   // otherwise push the MSP's USB/peripheral-blocking policy onto a home PC.
   // Bail on the org, and belt-and-braces exclude ephemeral devices from the
   // device sweep so a stray org-owned policy cannot reach them either.
-  if (orgRow?.type === 'quick_support') {
+  if (orgRow?.type === 'quick_support' || isUnassignedPoolOrgType(orgRow?.type)) {
     return { queued: 0, immediate: 0, failed: 0 };
   }
 
@@ -439,6 +441,7 @@ export async function resolvePeripheralPolicyDeviceIds(
         .where(and(
           eq(organizations.partnerId, policy.partnerId),
           ne(organizations.type, 'quick_support'),
+          notHoldingOrgCondition(),
         ))).map(({ id }) => id)
       : [];
   if (orgIds.length === 0) return [];
@@ -497,6 +500,7 @@ export async function processPeripheralPolicyReconciliationSweep(
     .from(devices)
     .where(and(
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       eq(devices.peripheralPolicyProtocolVersion, 2),
       ne(devices.status, 'decommissioned'),
       ...(afterId ? [gt(devices.id, afterId)] : []),

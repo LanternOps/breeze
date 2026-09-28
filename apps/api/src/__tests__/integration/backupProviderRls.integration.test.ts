@@ -539,6 +539,23 @@ describe('backup provider — lifecycle against real Postgres', () => {
     `)) as unknown as Array<{ org_id: string }>;
     expect(row!.org_id).toBe(fx.a.org.id);
   });
+  runDb('remapCustomer refuses the partner\'s holding org, writing nothing', async () => {
+    const { remapCustomer, RemapCustomerError } = await import('../../services/backupProviders/mapping');
+    const fx = await withSystemDbAccessContext(async () => {
+      const tenant = await seedTenant('remap-holding');
+      const holding = await createOrganization({
+        partnerId: tenant.partner.id, name: 'Unassigned devices', slug: `unassigned-pool-${tenant.partner.id}`, type: 'unassigned_pool',
+      });
+      return { tenant, holding };
+    });
+    await expect(withSystemDbAccessContext(() => remapCustomer(
+      fx.tenant.customer.id, fx.holding.id, { userId: fx.tenant.user.id, partnerId: fx.tenant.partner.id },
+    ))).rejects.toBeInstanceOf(RemapCustomerError);
+    const [row] = (await (getTestDb() as typeof db).execute(sql`
+      SELECT org_id FROM backup_provider_customers WHERE id = ${fx.tenant.customer.id}::uuid
+    `)) as unknown as Array<{ org_id: string }>;
+    expect(row!.org_id).toBe(fx.tenant.org.id);
+  });
 });
 
 describe('backup provider — HTTP-level FK mapping through the real router', () => {

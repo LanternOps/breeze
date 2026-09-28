@@ -24,6 +24,7 @@ import {
 import { isManagedAutomation } from './aiAgents/managedAutomation';
 import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
@@ -1215,7 +1216,8 @@ async function policyDeviceScopeCondition(policy: PolicyRow): Promise<SQL | null
   // org, so both the org-owned and the partner-wide fan-out below would otherwise
   // pick them up. Policies must never target a transient support session. Folded
   // in here so every branch of resolveTargetDevices() inherits it.
-  const notEphemeral = eq(devices.isEphemeral, false);
+  // Nor a device parked in its partner's holding org (not managed yet).
+  const notEphemeral = and(eq(devices.isEphemeral, false), notParkedDeviceCondition())!;
 
   if (policy.orgId) {
     return and(eq(devices.orgId, policy.orgId), notEphemeral)!;
@@ -1229,7 +1231,7 @@ async function policyDeviceScopeCondition(policy: PolicyRow): Promise<SQL | null
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
+    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
 
   if (orgRows.length === 0) {
     return null;
@@ -2151,7 +2153,7 @@ async function resolveDevicesForAssignmentTarget(
       const orgRows = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support')));
+        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
       const orgIds = orgRows.map((r) => r.id);
       if (orgIds.length === 0) return [];
 

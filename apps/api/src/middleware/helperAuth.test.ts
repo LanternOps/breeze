@@ -30,6 +30,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     partnerId: 'organizations.partnerId',
+    type: 'organizations.type',
   },
 }));
 
@@ -134,6 +135,27 @@ describe('helperAuth middleware', () => {
 
     const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
     expect(res.status).toBe(401);
+  });
+
+  // Pre-assignment: a device parked in its partner's
+  // holding org gets credential rotation and nothing else. A Helper session is
+  // interactive AI/remote surface, so its helper token is refused.
+  it('refuses a helper token for a device parked in a holding org', async () => {
+    mockDeviceRow({ organizationType: 'unassigned_pool' });
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('admits a helper token for a device in a regular org (positive control)', async () => {
+    mockDeviceRow({ organizationType: 'customer' });
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+
+    expect(res.status).toBe(200);
   });
 
   it('sets helperDevice and synthetic org auth for a valid token', async () => {

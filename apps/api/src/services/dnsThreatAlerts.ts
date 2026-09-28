@@ -14,11 +14,12 @@
  * `alertRules` row to fire. This avoids the auto-rule-creation problem
  * the wider alert engine has and ships a working signal today.
  */
-import { and, eq, gt, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, devices } from '../db/schema';
 import { isDnsThreatCategory } from '../db/schema/dnsSecurity';
 import type { BreezeEvent } from './eventBus';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 
@@ -98,6 +99,7 @@ export async function handleDnsThreatBlocked(
       hostname: devices.hostname,
       displayName: devices.displayName,
       isEphemeral: devices.isEphemeral,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
     })
     .from(devices)
     .where(eq(devices.id, payload.deviceId))
@@ -110,6 +112,10 @@ export async function handleDnsThreatBlocked(
   // home network is not the MSP's incident and must not page an on-call tech.
   if (device?.isEphemeral) {
     return { alertId: null, reason: 'ephemeral_device' };
+  }
+  // Nor for a device parked in its partner's holding org.
+  if (device?.parked === true) {
+    return { alertId: null, reason: 'device_pending_assignment' };
   }
 
   const hostname = device?.displayName || device?.hostname || payload.deviceId;

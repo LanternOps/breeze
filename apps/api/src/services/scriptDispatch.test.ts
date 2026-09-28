@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SQL, Param } from 'drizzle-orm';
 
+// Devices parked in a holding org, by id. The helper's query is proven against
+// Postgres in parkedCommandDelivery.integration.test.ts.
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+}));
+
 vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -222,6 +232,21 @@ describe('dispatchScriptToDevice — invariants', () => {
     // Decommission is permanent — checked against the caller's snapshot with
     // no live re-read.
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses a parked device before any row is written or payload sealed', async () => {
+    const parked = device();
+    parkedDeviceIds.add(parked.id);
+    try {
+      const r = await dispatchScriptToDevice({ device: parked, source: { kind: 'saved', script: savedScript() } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('device_pending_assignment');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(encryptSensitivePayloadFields).not.toHaveBeenCalled();
+      expect(queueCommand).not.toHaveBeenCalled();
+    } finally {
+      parkedDeviceIds.clear();
+    }
   });
 
   it('rejects offline device under a reject policy (snapshot and live read agree)', async () => {

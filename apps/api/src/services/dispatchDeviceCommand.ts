@@ -14,6 +14,11 @@ import { queueCommand, type CommandPayload, type QueuedCommand } from './command
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
 import { captureException } from './sentry';
+import {
+  isParkedDeliverableCommandType,
+  isParkedDevice,
+  PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE,
+} from './unassignedPool/deliveryEligibility';
 import { decryptCommandForDelivery, toAgentCommandFrame } from './sensitiveCommandPayload';
 
 import type { AiOriginRef } from '@breeze/shared';
@@ -78,6 +83,8 @@ export type DispatchDeviceCommandResult =
         | 'device_not_found'
         | 'device_offline'
         | 'device_decommissioned'
+        /** The device is parked in a holding org: lifecycle removal only. */
+        | 'device_pending_assignment'
         | 'trust_denied'
         | 'backup_helper_update_required';
       error: string;
@@ -188,6 +195,13 @@ async function prepareDeviceCommand(
       code: 'device_decommissioned',
       error: `Device is ${device.status}, cannot execute command`,
     };
+  }
+
+  // A device parked in a holding org receives lifecycle removal only. Refused
+  // here, before trust and persistence, so the caller gets a structured code
+  // instead of `queueCommand`'s thrown refusal.
+  if (!isParkedDeliverableCommandType(input.type) && (await isParkedDevice(db, input.deviceId))) {
+    return { ok: false, code: 'device_pending_assignment', error: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
   // OFFLINE-REJECT COMES BEFORE TRUST, deliberately (#5128 review round 2, M).

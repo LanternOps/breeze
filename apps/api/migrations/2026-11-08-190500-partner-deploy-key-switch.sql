@@ -1,0 +1,12 @@
+-- Per-partner switch for deploy-key enrollment into the partner's holding area
+-- (unassigned devices). Paired with the platform flag
+-- PRE_ASSIGNMENT_ENROLLMENT_ENABLED: deploy-key enrollment runs only when both
+-- are on. Default OFF, so an upgrade never enables a new enrollment path.
+--
+-- A dedicated column, not a partners.settings sub-key: settings cards replace
+-- sub-objects wholesale, and a column keeps the gate equal to its read-back.
+--
+-- Idempotent (ADD COLUMN IF NOT EXISTS); writes no rows; no inner
+-- transaction block (autoMigrate wraps each file). partners has no org_id, so
+-- none of the org-scoped cascade or export registries apply.
+ALTER TABLE partners ADD COLUMN IF NOT EXISTS deploy_key_enrollment_enabled boolean NOT NULL DEFAULT false;

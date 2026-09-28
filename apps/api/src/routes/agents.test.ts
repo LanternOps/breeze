@@ -100,6 +100,17 @@ function mockResolvedEnrollmentPartner(partnerId = 'partner-123') {
   } as any);
 }
 
+// Holding-org delivery eligibility is its own read, covered by the
+// helpers.filesystemAnalysis suite and parkedCommandDelivery.integration.test.ts;
+// kept out of this suite's ordered select queue.
+vi.mock('../services/unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('../services/unassignedPool/deliveryEligibility')>(
+    '../services/unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+  assertCommandDeliverable: vi.fn(async () => undefined),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => defaultSelectChain()),

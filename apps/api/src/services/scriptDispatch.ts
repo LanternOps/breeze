@@ -24,6 +24,7 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { createAuditLogAsync } from './auditService';
 import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
@@ -248,6 +249,9 @@ export type DispatchScriptResult =
       ok: false;
       code:
         | 'device_decommissioned'
+        // The device is parked in a holding org, where only lifecycle removal
+        // is delivered. Refused before any row is written or secret sealed.
+        | 'device_pending_assignment'
         | 'device_offline'
         // #4919 — an active maintenance window with `suppressScripts`. The
         // operator's own schedule: every caller records this as a SKIP, keeps
@@ -327,6 +331,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // live re-read needed.
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
+  }
+  // A device parked in a holding org receives lifecycle removal only — never a
+  // script. Live read (the org type is not on the caller's snapshot), ahead of
+  // the maintenance gate and every write, so no execution row is created and
+  // no secret is sealed for it.
+  if (await isParkedDevice(db, device.id)) {
+    return { ok: false, code: 'device_pending_assignment', error: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
   // #4919 — before the liveness read and before any row is written. Ordered
   // ahead of the offline gate deliberately: "we would not have run this

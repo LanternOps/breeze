@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { backupProviderDevices, deviceNetwork, devices } from '../../db/schema';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type { ProviderSyncTx } from './persist';
+import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 
 export interface MatchProviderRow {
   id: string;
@@ -209,6 +210,8 @@ export async function matchProviderDevices(
     .where(and(
       inArray(devices.orgId, orgIds),
       ne(devices.status, 'decommissioned'),
+      // A device parked in a holding org is never linked to a provider device.
+      notParkedDeviceCondition(),
       or(
         inArray(sql<string>`lower(${devices.hostname})`, names),
         inArray(sql<string>`lower(${devices.displayName})`, names),

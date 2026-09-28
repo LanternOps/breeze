@@ -175,6 +175,16 @@ describe('workspace agent routes', () => {
     expect(h.crawlRunsService.getActive).toHaveBeenCalledWith(ORG_ID, SOURCE_ID, DEVICE_ID);
   });
 
+  it('refuses a device parked in a holding org on every route, before any source or credential read', async () => {
+    const h = makeHarness({ ...agent, isPreAssignment: true } as typeof agent);
+    const config = await h.app.request('/crawl-config');
+    expect(config.status).toBe(403);
+    const credential = await h.app.request(`/sources/${SOURCE_ID}/credential`, { method: 'POST' });
+    expect(credential.status).toBe(403);
+    expect(h.sourcesService.listForDevice).not.toHaveBeenCalled();
+    expect(h.credentialService.decryptForDevice).not.toHaveBeenCalled();
+  });
+
   it('honors the kill switch without querying sources', async () => {
     process.env.WORKSPACE_CRAWL_ENABLED = 'false';
     const h = makeHarness();

@@ -106,6 +106,8 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
+      // Parked devices awaiting assignment (full partner admins only).
+      '/devices/unassigned',
       '/configuration-policies',
       '/software',
       '/software-inventory',

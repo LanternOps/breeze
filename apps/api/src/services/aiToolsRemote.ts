@@ -25,6 +25,7 @@ import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCr
 import { aiExecuteCommand } from './aiDispatch';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { checkScreenAccessConsentGate, type ScreenAccessSurface } from '../routes/remote/screenAccessConsentGate';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 /**
  * #6911: `create_remote_session` is user-owned on release
@@ -48,7 +49,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);

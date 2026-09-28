@@ -1,5 +1,6 @@
 import { deviceCommands } from '../db/schema';
 import { aiOriginColumns } from './aiOriginColumns';
+import { assertCommandDeliverable } from './unassignedPool/deliveryEligibility';
 import type { AiOriginRef } from '@breeze/shared';
 // TYPE-ONLY, and load-bearing that it stays that way: `commandQueue.ts`
 // statically imports `routes/agentWs.ts`, and a RUNTIME edge from this module
@@ -54,6 +55,9 @@ export async function insertQueuedCommandInTransaction(
     targetRole?: 'agent' | 'watchdog';
   },
 ): Promise<QueuedCommand> {
+  // A device parked in a holding org receives lifecycle removal only. Read on
+  // the caller's transaction, so the check and the insert share a snapshot.
+  await assertCommandDeliverable(tx, { deviceId: input.deviceId, commandType: input.type });
   const [command] = await tx
     .insert(deviceCommands)
     .values({

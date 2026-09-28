@@ -7,6 +7,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { rollupDeviceMetricsRange, type MetricRollupResult } from '../services/metricRollups';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const METRIC_ROLLUPS_QUEUE = 'metric-rollups';
 const DEFAULT_LOOKBACK_MINUTES = 15;
@@ -109,7 +110,7 @@ async function findRollupOrgRows(): Promise<Array<{ orgId: string }>> {
   return db
     .select({ orgId: devices.orgId })
     .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`)
     .groupBy(devices.orgId);
 }
 

@@ -37,6 +37,17 @@ const { ctxState, dbState, partnerTrustMocks, agentWsMocks, commandDispatchMocks
   sentryMocks: { captureMessage: vi.fn() },
 }));
 
+// Holding-org delivery eligibility is its own read, proven against Postgres
+// in parkedCommandDelivery.integration.test.ts; kept out of this suite's
+// context-depth event trace.
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+  assertCommandDeliverable: vi.fn(async () => undefined),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({

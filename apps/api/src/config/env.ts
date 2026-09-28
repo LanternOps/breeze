@@ -153,6 +153,15 @@ export function approverAssuranceDefaultEnforceFrom(): Date {
   );
 }
 
+// Pre-assignment enrollment: the platform switch for deploy-key enrollment
+// into a partner's holding area. Default OFF. Deploy-key enrollment runs only
+// when this AND the partner's own deploy_key_enrollment_enabled column are on
+// (services/unassignedPool/switches.ts). Turning it off stops it everywhere.
+// Read at CALL time so it can be flipped without a module reload.
+export function preAssignmentEnrollmentEnabled(): boolean {
+  return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
+}
+
 // Caller verification (anti-vishing, #6354). W01 ships the backend dark:
 // every caller-verification route returns 404 `feature_disabled` to an
 // AUTHENTICATED caller (auth runs first, so an anonymous request still gets

@@ -22,6 +22,7 @@ import { rateLimiter } from '../../services/rate-limit';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
+import { buildEnrollmentResponseBody } from './enrollmentResponse';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { dispatchHook } from '../../services/partnerHooks';
@@ -1174,23 +1175,28 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
               collidingDeviceIds: collidingDevices.map((candidate) => candidate.id),
             }
           : undefined,
-      responseBody: {
-        agentId: agentId,
-        deviceId: device.id,
-        authToken: apiKey,
-        watchdogAuthToken: watchdogApiKey,
-        helperAuthToken: helperApiKey,
-        orgId: key.orgId,
-        siteId: key.siteId,
-        backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim() || undefined,
-        config: {
-          heartbeatIntervalSeconds: 60,
-          metricsCollectionIntervalSeconds: 30
+      // Built by enrollmentResponse.ts so a pre-assignment enrollment can
+      // omit backup and trust material. Per-org enrollment: unchanged.
+      responseBody: buildEnrollmentResponseBody(
+        {
+          agentId: agentId,
+          deviceId: device.id,
+          authToken: apiKey,
+          watchdogAuthToken: watchdogApiKey,
+          helperAuthToken: helperApiKey,
+          orgId: key.orgId,
+          siteId: key.siteId,
+          backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim() || undefined,
+          config: {
+            heartbeatIntervalSeconds: 60,
+            metricsCollectionIntervalSeconds: 30
+          },
+          mtls: mtlsCert,
+          manifestTrustKeys,
+          manifestKeyDelegations,
         },
-        mtls: mtlsCert,
-        manifestTrustKeys,
-        manifestKeyDelegations,
-      },
+        { preAssignment: false },
+      ),
     };
   });
 

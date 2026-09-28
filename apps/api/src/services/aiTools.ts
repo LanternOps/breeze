@@ -208,7 +208,8 @@ export async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  // Never a device parked in a holding org, whatever the caller's scope.
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -296,6 +297,7 @@ export { resolveWritableToolOrgId } from './aiToolWriteOrg';
 // modules that still import `aiTools/hasCoreAiToolName` from here.
 export { aiTools, hasCoreAiToolName } from './aiToolNames';
 import { aiTools, hasCoreAiToolName, registerReservedAiToolNamePredicate } from './aiToolNames';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Register all domain modules
 registerAgentLogTools(aiTools);

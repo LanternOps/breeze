@@ -8,6 +8,7 @@ import {
   organizations,
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 export type AuditBaselineOsType = 'windows' | 'macos' | 'linux';
 export type AuditBaselineProfile = 'cis_l1' | 'cis_l2' | 'custom';
@@ -294,7 +295,8 @@ export async function seedDefaultAuditBaselines(): Promise<{ created: number }> 
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(ne(organizations.type, 'quick_support'));
+    // Nor the holding org for devices waiting to be assigned.
+    .where(and(ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
   if (orgRows.length === 0) {
     return { created: 0 };
   }

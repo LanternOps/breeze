@@ -9,6 +9,8 @@ import { PERMISSIONS } from '../../services/permissions';
 import { createC2cConfigSchema, updateC2cConfigSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const c2cConfigsRoutes = new Hono();
 const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
@@ -49,6 +51,8 @@ c2cConfigsRoutes.post(
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const payload = c.req.valid('json');
 

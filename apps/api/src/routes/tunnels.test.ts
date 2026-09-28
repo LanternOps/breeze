@@ -221,6 +221,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
 import {
   createViewerAccessToken,
@@ -398,6 +399,26 @@ describe('POST /tunnels (VNC)', () => {
     expect(body).toHaveProperty('id', SESSION_ID);
     expect(body).toHaveProperty('type', 'vnc');
     expect(body).toHaveProperty('status', 'pending');
+  });
+
+  it('refuses a device parked in a holding org with 403 before inserting or sending anything', async () => {
+    vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as any);
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: expect.stringMatching(/waiting to be assigned/),
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+    }));
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('maps partner-trust denial to a 403 without inserting a tunnel session', async () => {
@@ -755,6 +776,26 @@ describe('POST /tunnels/proxy-connect', () => {
     expect(body).toHaveProperty('tunnel');
     expect(body.tunnel).toMatchObject({ type: 'proxy', targetHost: '10.0.5.20', targetPort: 8080 });
     expect(body).not.toHaveProperty('ticket');
+  });
+
+  it('refuses a device parked in a holding org with 403 before resolving the asset or creating anything', async () => {
+    vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([onlineDevice]) as any);
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
+    expect(checkRemoteAccess).toHaveBeenCalledWith(DEVICE_ID, 'proxy');
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('maps partner-trust denial to a 403 without creating a tunnel session (allowlist rule still created)', async () => {
@@ -1820,6 +1861,46 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
     expect(createWsTicket).not.toHaveBeenCalled();
   });
 
+  it('passes the parked-device code through and creates no desktop session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-parked',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'pending',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as any);
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
   it('maps partner-trust denial to a 403 without creating a desktop session', async () => {
     partnerTrustMode.mockReturnValueOnce('enforce');
     evaluateCapability.mockResolvedValueOnce({
@@ -1905,6 +1986,46 @@ describe('POST /vnc-viewer/downgrade-to-vnc assurance', () => {
     expect(response.status).toBe(403);
     expect(createViewerDescendantAccessToken).not.toHaveBeenCalled();
     expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('passes the parked-device code through and opens no tunnel', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-parked-down',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as any);
+
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
     expect(db.insert).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });

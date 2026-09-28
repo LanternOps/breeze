@@ -49,6 +49,7 @@ vi.mock('../services/peripheralPolicyState', () => ({
   reconcilePeripheralPolicyDevice: vi.fn(),
 }));
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { and, eq, ne } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import {
@@ -164,6 +165,8 @@ describe('schedulePeripheralPolicyDevice', () => {
     expect(where).toHaveBeenCalledTimes(1);
     expect(where.mock.calls[0]?.[0]).toEqual(and(
       eq(devices.isEphemeral, false),
+      // Never a device parked in its partner's holding org.
+      notParkedDeviceCondition(),
       eq(devices.peripheralPolicyProtocolVersion, 2),
       ne(devices.status, 'decommissioned'),
     ));

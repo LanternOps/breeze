@@ -352,6 +352,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PORTAL_COOKIE_FORCE_SECURE: 'cookie policy override',
   PORTAL_COOKIE_SAME_SITE: 'cookie policy override',
   PORTAL_STATE_BACKEND: 'portal rate-limit store selector',
+  // PRE_*
+  PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
   // PROVISION_*

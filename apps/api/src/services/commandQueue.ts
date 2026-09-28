@@ -23,6 +23,12 @@ import {
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
+import {
+  assertCommandDeliverable,
+  isParkedDeliverableCommandType,
+  isParkedDevice,
+  PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE,
+} from './unassignedPool/deliveryEligibility';
 import { recordCommandDispatch } from './anomalyMetrics';
 // #5128. `dispatchDeviceCommand` imports back from this module; both uses are
 // function-level (neither evaluates the other's exports at module load), so the
@@ -645,8 +651,13 @@ export async function queueCommand(
   // here with no request context; when a caller context IS open this is a no-op
   // and the insert stays on the caller's transaction, exactly as before. Matches
   // executeCommand's insert site, which was already wrapped for this reason.
-  const [command] = await withSystemDbAccessContext(() =>
-    db
+  //
+  // A device parked in a holding org receives lifecycle removal only. Checked
+  // on the same context as the insert, so a background caller with no context
+  // of its own reads the device under system scope rather than seeing nothing.
+  const [command] = await withSystemDbAccessContext(async () => {
+    await assertCommandDeliverable(db, { deviceId, commandType: type });
+    return db
       .insert(deviceCommands)
       .values({
         ...(persisted.commandId ? { id: persisted.commandId } : {}),
@@ -659,8 +670,8 @@ export async function queueCommand(
         ...(options.submittedOrgId ? { submittedOrgId: options.submittedOrgId } : {}),
         ...aiOriginColumns(options.aiOrigin),
       })
-      .returning(),
-  );
+      .returning();
+  });
 
   // Audit log for mutating commands — fire-and-forget under a system-scope
   // connection outside any caller tx, matching `services/auditService.ts`.
@@ -1208,6 +1219,16 @@ async function precheckCommandExecution(
     // holding a device id it no longer has any claim to must not learn from
     // the error string that the device still exists somewhere.
     return { ok: false, result: { status: 'failed', error: 'Device not found' } };
+  }
+
+  // A device parked in a holding org receives lifecycle removal only. After
+  // the tenancy gate (a wrong-tenant device answers not-found first) and
+  // before trust, so nothing about the device's trust state is revealed.
+  if (!isParkedDeliverableCommandType(type) && (await isParkedDevice(db, deviceId))) {
+    return {
+      ok: false,
+      result: { status: 'failed', error: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE },
+    };
   }
 
   try {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import {
   db,
   runOutsideDbContext,
@@ -168,6 +169,8 @@ async function discoverAccessibleOrgIds(partnerId: string): Promise<string[]> {
       eq(organizations.status, 'active'),
       isNull(organizations.deletedAt),
       ne(organizations.type, 'quick_support'),
+      // Holding org is never human-reachable.
+      ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
     ));
   return activeOrganizations.map((organization) => organization.id);
 }

@@ -35,6 +35,7 @@ import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
 // it does not re-open the hole the contract scan closes.
 import { CommandTypes } from './commandTypes';
 import type { ToolExecutionContext } from './toolExecutionContext';
+import { notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -572,7 +573,8 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
-      const conditions: SQL[] = [inArray(sensitiveDataFindings.id, findingIds)];
+      // Never a finding on a device parked in a holding org, whatever the scope.
+      const conditions: SQL[] = [inArray(sensitiveDataFindings.id, findingIds), notInHoldingOrgCondition(sensitiveDataFindings.orgId)];
       const orgCondition = auth.orgCondition(sensitiveDataFindings.orgId);
       if (orgCondition) conditions.push(orgCondition);
 

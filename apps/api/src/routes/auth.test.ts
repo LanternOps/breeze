@@ -253,6 +253,10 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // operation, and a dispatch that fell through to another digest function
   // would produce the wrong constant and fail the assertion below.
   moveOrgResourceDigest: vi.fn(() => 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000'),
+  // Parked-device assignment: two more distinct constants, same reason.
+  parkedAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001'),
+  parkedBulkAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002'),
+  preAssignmentEnableResourceDigest: vi.fn(() => 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -475,7 +479,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -4958,6 +4962,90 @@ describe('auth routes', () => {
 				operation: 'device_move_org',
 				resourceDigest: 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000',
 			}));
+		});
+
+		it('mints a parked_device_assign grant bound to the single-assignment digest', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-parked');
+			const resource = {
+				deviceId: '00000000-0000-4000-8000-000000000010',
+				targetOrgId: '00000000-0000-4000-8000-000000000020',
+				targetSiteId: '00000000-0000-4000-8000-000000000030',
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'parked_device_assign', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(parkedAssignResourceDigest).toHaveBeenCalledWith(expect.objectContaining(resource));
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'parked_device_assign',
+				resourceDigest: 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001',
+			}));
+		});
+
+		it('mints a parked_device_assign_bulk grant bound to the whole batch', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-parked-bulk');
+			const items = [
+				{ deviceId: '00000000-0000-4000-8000-000000000010', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' },
+				{ deviceId: '00000000-0000-4000-8000-000000000011', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' },
+			];
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'parked_device_assign_bulk', resource: { items } }),
+			});
+			expect(res.status).toBe(200);
+			expect(parkedBulkAssignResourceDigest).toHaveBeenCalledWith(items);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'parked_device_assign_bulk',
+				resourceDigest: 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002',
+			}));
+		});
+
+		it('mints a pre_assignment_enable grant bound to the partner and enabled=true', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-enable');
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', enabled: true };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'pre_assignment_enable', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(preAssignmentEnableResourceDigest).toHaveBeenCalledWith({ partnerId: resource.partnerId });
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'pre_assignment_enable',
+				resourceDigest: 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003',
+			}));
+		});
+
+		it('refuses a pre_assignment_enable grant for enabled=false (disabling needs no step-up)', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'pre_assignment_enable', resource: { partnerId: '00000000-0000-4000-8000-000000000040', enabled: false } }),
+			});
+			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('rejects parked_device_assign carrying a bulk-shaped resource, before factor verification', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'passkey',
+					credential: { id: 'credential-1' },
+					operation: 'parked_device_assign',
+					resource: { items: [{ deviceId: '00000000-0000-4000-8000-000000000010', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' }] },
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('rejects device_move_org without a resource binding, before factor verification', async () => {

@@ -11,6 +11,9 @@ export interface Features {
    *  Off ⇒ every /tool-sources route answers 404, so the nav item and pages
    *  must be hidden rather than linking to a dead surface. */
   toolSources: boolean;
+  /** The server's PRE_ASSIGNMENT_ENROLLMENT_ENABLED platform switch. Off ⇒
+   *  the Unassigned Devices nav entry and page are hidden. */
+  preAssignmentEnrollment: boolean;
 }
 
 export interface CfAccessLoginConfig {
@@ -39,7 +42,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -80,6 +83,8 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
           // /config must hide a surface that authors credentials reaching
           // customer systems, never flash it.
           toolSources: !!data.features?.toolSources,
+          // Default CLOSED: an older or unreachable /config hides the surface.
+          preAssignmentEnrollment: data.features?.preAssignmentEnrollment === true,
         },
         cfAccessLogin: {
           enabled: !!data.cfAccessLogin?.enabled,
@@ -160,6 +165,20 @@ export function usePackageUploadsGate(active = true): {
 // lets callers distinguish "not yet known" from "known disabled".
 export function useToolSourcesGate(): { enabled: boolean; loaded: boolean } {
   const enabled = useFeaturesStore((s) => s.features.toolSources);
+  const loaded = useFeaturesStore((s) => s.loaded);
+  const load = useFeaturesStore((s) => s.load);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return { enabled, loaded };
+}
+
+// usePreAssignmentGate ensures the runtime /config is loaded and reports
+// whether the Unassigned Devices surface is shown on this deployment
+// (PRE_ASSIGNMENT_ENROLLMENT_ENABLED). `loaded` distinguishes "not yet known"
+// from "known disabled".
+export function usePreAssignmentGate(): { enabled: boolean; loaded: boolean } {
+  const enabled = useFeaturesStore((s) => s.features.preAssignmentEnrollment);
   const loaded = useFeaturesStore((s) => s.loaded);
   const load = useFeaturesStore((s) => s.load);
   useEffect(() => {

@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors } from '../../db/schema';
 import { encryptSecret, decryptForColumn } from '../secretCrypto';
 import type { DbExecutor } from './unifiConnectionService';
+import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
 export type { DbExecutor } from './unifiConnectionService';
 
@@ -200,7 +201,13 @@ export async function listCollectorsForDevice(
       pollIntervalSeconds: unifiCollectors.pollIntervalSeconds,
     })
     .from(unifiCollectors)
-    .where(and(eq(unifiCollectors.collectorDeviceId, deviceId), eq(unifiCollectors.orgId, orgId), eq(unifiCollectors.isEnabled, true)));
+    .where(and(
+      eq(unifiCollectors.collectorDeviceId, deviceId),
+      eq(unifiCollectors.orgId, orgId),
+      eq(unifiCollectors.isEnabled, true),
+      // Never hand a controller key to a device parked in a holding org.
+      notInHoldingOrgCondition(sql`(SELECT d.org_id FROM devices d WHERE d.id = ${unifiCollectors.collectorDeviceId})`),
+    ));
   const out: AgentCollectorConfig[] = [];
   for (const r of rows as any[]) {
     const topology = opts.topologyAdvertisement ? await opts.topologyAdvertisement(r.id) : null;

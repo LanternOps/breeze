@@ -19,6 +19,7 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, discoveredAssets } from '../db/schema';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export type NetworkExecutorPick = { agentId: string } | { error: 'no_agent_in_site' };
 
@@ -43,6 +44,8 @@ export async function selectNetworkExecutor(input: {
   const conditions = [
     eq(devices.orgId, input.orgId),
     eq(devices.isEphemeral, false),
+    // Never a device parked in its partner's holding org.
+    notParkedDeviceCondition(),
     eq(devices.status, 'online'),
     isNull(devices.agentTokenSuspendedAt),
   ];

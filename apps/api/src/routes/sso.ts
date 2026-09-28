@@ -115,6 +115,8 @@ import {
   withLockedSsoProviderAuthority,
 } from '../services/ssoBrowserTransition';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const ssoRoutes = new Hono();
 
 // ============================================
@@ -1007,6 +1009,8 @@ ssoRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
     // JIT-provisions, so an org admin could delegate a role broader than their
     // own authority to every future SSO sign-in.
@@ -1779,6 +1783,8 @@ ssoRoutes.post(
       if ('error' in orgResult) {
         return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
       }
+      // canAccessOrg is true for system scope: the holding org is never a target.
+      if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
       // Every other branch proves authority against an RLS-visible row before
       // the system-context PII read below. This branch's checks are app-layer
       // only (canAccessOrg), so add the DB-enforced equivalent: the org must
@@ -1951,6 +1957,8 @@ ssoRoutes.post(
     const body = c.req.valid('json');
     const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     let pending;
     try {

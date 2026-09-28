@@ -47,6 +47,7 @@
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
+    "unassignedDevices": "Atanmamış Cihazlar",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
     "cloudBackup": "Bulut Yedekleme",

@@ -12,6 +12,7 @@ import { captureException } from '../sentry';
 // Package ROOT — deriveBackupHealth is a VALUE import (see Global Constraints).
 import { deriveBackupHealth, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
 import { getBackupProvider } from './registry';
+import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
 /** `alerts.context->>'source'` for every row this module writes. */
 export const BACKUP_PROVIDER_ALERT_SOURCE = 'backup_provider';
@@ -212,6 +213,8 @@ export async function evaluateProviderAlerts(
         // alerts (spec, Non-goals). They are excluded here rather than filtered
         // later so they never even acquire a pending_condition.
         eq(backupProviderDevices.accountType, 'backup_manager'),
+        // No provider alert is raised under the holding org.
+        notInHoldingOrgCondition(backupProviderDevices.orgId),
       ))) as ProviderAlertRow[];
 
     // Every open provider alert of THIS connection, including ones whose row has

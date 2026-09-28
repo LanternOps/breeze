@@ -10,6 +10,7 @@ import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -161,7 +162,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
     db
       .select({ orgId: devices.orgId })
       .from(devices)
-      .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+      .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`)
       .groupBy(devices.orgId)
   );
 

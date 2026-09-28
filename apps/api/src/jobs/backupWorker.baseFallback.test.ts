@@ -9,6 +9,13 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
+// A device parked in a holding org is covered in backupWorker.test.ts; here
+// every device is an ordinary customer device.
+vi.mock('../services/unassignedPool/deliveryEligibility', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/unassignedPool/deliveryEligibility')>()),
+  isParkedDevice: vi.fn(async () => false),
+}));
+
 vi.mock('../db', () => ({
   db: {},
   runOutsideDbContext: <T>(fn: () => T): T => fn(),

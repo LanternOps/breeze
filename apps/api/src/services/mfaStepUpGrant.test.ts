@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -122,6 +122,51 @@ describe('moveOrgResourceDigest', () => {
 
   it('emits the sha256: prefixed shape the grant store compares literally', () => {
     expect(moveOrgResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('parkedAssignResourceDigest', () => {
+  const base = {
+    deviceId: '55555555-5555-4555-8555-555555555555',
+    targetOrgId: '22222222-2222-4222-8222-222222222222',
+    targetSiteId: '44444444-4444-4444-8444-444444444444',
+  };
+
+  it('is stable and insensitive to input key order', () => {
+    const reordered = { targetSiteId: base.targetSiteId, targetOrgId: base.targetOrgId, deviceId: base.deviceId };
+    expect(parkedAssignResourceDigest(reordered)).toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('binds each field', () => {
+    expect(parkedAssignResourceDigest({ ...base, deviceId: '55555555-5555-4555-8555-555555555556' })).not.toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest({ ...base, targetOrgId: '22222222-2222-4222-8222-222222222223' })).not.toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest({ ...base, targetSiteId: '44444444-4444-4444-8444-444444444445' })).not.toBe(parkedAssignResourceDigest(base));
+  });
+
+  it('never equals the move-org digest for the same values', () => {
+    expect(parkedAssignResourceDigest(base)).not.toBe(moveOrgResourceDigest(base));
+  });
+});
+
+describe('parkedBulkAssignResourceDigest', () => {
+  const a = { deviceId: '11111111-1111-4111-8111-111111111111', targetOrgId: '22222222-2222-4222-8222-222222222222', targetSiteId: '33333333-3333-4333-8333-333333333333' };
+  const b = { deviceId: '44444444-4444-4444-8444-444444444444', targetOrgId: '22222222-2222-4222-8222-222222222222', targetSiteId: '33333333-3333-4333-8333-333333333333' };
+  const c = { deviceId: '66666666-6666-4666-8666-666666666666', targetOrgId: '77777777-7777-4777-8777-777777777777', targetSiteId: '88888888-8888-4888-8888-888888888888' };
+
+  it('sorts by deviceId, so item order does not matter', () => {
+    expect(parkedBulkAssignResourceDigest([b, a, c])).toBe(parkedBulkAssignResourceDigest([a, b, c]));
+  });
+
+  it('changes when an item is added, removed or changed', () => {
+    const digest = parkedBulkAssignResourceDigest([a, b]);
+    expect(parkedBulkAssignResourceDigest([a, b, c])).not.toBe(digest);
+    expect(parkedBulkAssignResourceDigest([a])).not.toBe(digest);
+    expect(parkedBulkAssignResourceDigest([a, { ...b, targetSiteId: c.targetSiteId }])).not.toBe(digest);
+  });
+
+  it('a one-item batch never equals the single-assignment digest for that item', () => {
+    expect(parkedBulkAssignResourceDigest([a])).not.toBe(parkedAssignResourceDigest(a));
   });
 });
 

@@ -24,6 +24,7 @@ import {
   selectNetworkCheckOrgIds,
 } from '../services/monitors/networkCheckAlertSweep';
 import { drainSubjectAlertOutbox } from '../services/subjectAlertOutbox';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -195,7 +196,9 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
       .from(organizations)
       .where(and(
         eq(organizations.status, 'active'),
-        ne(organizations.type, 'quick_support')
+        ne(organizations.type, 'quick_support'),
+        // Nor the holding org: parked devices raise no alerts.
+        notHoldingOrgCondition()
       ))
   );
 
@@ -227,6 +230,7 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
     const conditions = [
       inArray(devices.orgId, orgIds),
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       eq(devices.status, 'online'),
       gte(devices.lastSeenAt, recentThreshold)
     ];

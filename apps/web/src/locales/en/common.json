@@ -47,6 +47,7 @@
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
     "deviceGroups": "Device Groups",
+    "unassignedDevices": "Unassigned Devices",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
     "cloudBackup": "Cloud Backup",

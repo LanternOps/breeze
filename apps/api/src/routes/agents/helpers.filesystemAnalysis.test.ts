@@ -39,6 +39,16 @@ const { dbMock, insertValuesMock, selectQueue, whereMock } = vi.hoisted(() => {
   return { dbMock, insertValuesMock, selectQueue, whereMock };
 });
 
+// Devices parked in a holding org, by id (the helper's query is proven
+// against Postgres in parkedCommandDelivery.integration.test.ts).
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('../../services/unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('../../services/unassignedPool/deliveryEligibility')>(
+    '../../services/unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+}));
+
 vi.mock('../../db', () => ({
   db: dbMock,
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -75,7 +85,7 @@ vi.mock('../metrics', () => ({ recordSoftwareRemediationDecision: vi.fn() }));
 
 import { queueCommandForExecution } from '../../services/commandQueue';
 
-import { handleFilesystemAnalysisCommandResult } from './helpers';
+import { handleFilesystemAnalysisCommandResult, maybeQueueThresholdFilesystemAnalysis } from './helpers';
 import {
   claimFilesystemScanGeneration,
   setFilesystemScanGeneration,
@@ -105,6 +115,7 @@ function result(): z.infer<typeof commandResultSchema> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  parkedDeviceIds.clear();
   selectQueue.length = 0;
   dbMock.transaction.mockImplementation(async (fn) => fn(dbMock));
   vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('claimed');
@@ -369,3 +380,41 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     },
   );
  });
+
+describe('filesystem analysis for a device parked in a holding org', () => {
+  it('never queues a threshold scan', async () => {
+    parkedDeviceIds.add(DEVICE_ID);
+    const queued = await maybeQueueThresholdFilesystemAnalysis(
+      { id: DEVICE_ID, osType: 'windows', orgId: ORG_ID } as never,
+      99,
+    );
+    expect(queued).toEqual({ queued: false });
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('never falls back to a raw continuation insert', async () => {
+    parkedDeviceIds.add(DEVICE_ID);
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ error: 'refused' } as never);
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([{ path: 'D:\\media', depth: 1 }]);
+    selectQueue.push([{ osType: 'windows' }]);
+    selectQueue.push([{ mountPoint: 'D:\\', usedPercent: 5 }]);
+    selectQueue.push([]);
+
+    await handleFilesystemAnalysisCommandResult(
+      {
+        id: '00000000-0000-4000-8000-0000000000cc',
+        deviceId: DEVICE_ID,
+        payload: { scanMode: 'baseline', trigger: 'on_demand', autoContinue: true, resumeAttempt: 0, path: 'D:\\' },
+        createdBy: null,
+      } as never,
+      result(),
+      ORG_ID,
+    );
+
+    const commandInserts = insertValuesMock.mock.calls.filter(
+      ([vals]) => (vals as { type?: string }).type === 'filesystem_analysis',
+    );
+    expect(commandInserts).toEqual([]);
+  });
+});

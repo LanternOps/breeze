@@ -157,9 +157,16 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
   // authenticated agent hitting an unmatched /agent/* path still falls through
   // to the catch-all 404 mounted alongside this app in index.ts.
   app.use('*', async (c, next) => {
-    if (!c.get('agent')) {
+    const agent = c.get('agent');
+    if (!agent) {
       deps.log('warn', `workspace agent request without identity ${c.req.method} ${c.req.path}`);
       return c.json({ error: 'agent identity required' }, 401);
+    }
+    // A device waiting in its partner's holding org gets no sources and no
+    // credentials. The host already refuses it on extension routes; this is
+    // the extension's own refusal.
+    if (agent.isPreAssignment === true) {
+      return c.json({ error: 'device pending assignment', code: 'DEVICE_PENDING_ASSIGNMENT' }, 403);
     }
     await next();
   });

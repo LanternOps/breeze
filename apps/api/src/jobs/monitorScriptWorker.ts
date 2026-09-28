@@ -62,6 +62,7 @@ import { excludeEphemeralDevices, excludeQuickSupportOrgs } from '../services/qu
 import { withQueueMeta, type QueueActorMeta } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 // Same pattern as monitorWorker.ts: a background worker legitimately reads
@@ -120,7 +121,7 @@ async function resolveCandidateOrgIds(monitor: {
   const rows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(and(eq(organizations.partnerId, monitor.partnerId), excludeQuickSupportOrgs()));
+    .where(and(eq(organizations.partnerId, monitor.partnerId), excludeQuickSupportOrgs(), notHoldingOrgCondition()));
 
   if (rows.length > PARTNER_FANOUT_ORG_LIMIT) {
     console.error(
@@ -227,7 +228,7 @@ export async function processScriptMonitorTick(): Promise<ScriptMonitorTickResul
         // an ephemeral (Quick Support session) device must never be a
         // candidate for an unattended monitor probe, same exclusion
         // automationWorker.ts/featureConfigResolver.ts apply.
-        .where(and(inArray(devices.orgId, orgIds), excludeEphemeralDevices()));
+        .where(and(inArray(devices.orgId, orgIds), excludeEphemeralDevices(), notParkedDeviceCondition()));
 
       for (const device of deviceRows) {
         result.devicesConsidered++;

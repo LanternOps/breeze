@@ -68,6 +68,7 @@ import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
@@ -1567,6 +1568,10 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
     return { queued: false };
   }
+  // A device parked in a holding org receives lifecycle removal only.
+  if (await isParkedDevice(db, device.id)) {
+    return { queued: false };
+  }
 
   const cooldownStart = new Date(Date.now() - filesystemThresholdCooldownMinutes * 60 * 1000);
   const [recentSnapshot] = await db
@@ -1824,6 +1829,12 @@ export async function handleFilesystemAnalysisCommandResult(
   );
   if (queued.command) {
     await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, queued.command.id);
+    return;
+  }
+
+  // The queue refused (or could not reach) the device. Never hand-write the
+  // row for a device parked in a holding org: it receives removal only.
+  if (await isParkedDevice(db, command.deviceId)) {
     return;
   }
 

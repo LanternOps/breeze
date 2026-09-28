@@ -13,6 +13,7 @@ import { captureException } from './sentry';
 import { decryptForColumn, encryptSecret } from './secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL, Pax8Client, type Pax8CompanyRecord, type Pax8SubscriptionRecord } from './pax8Client';
 
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
@@ -451,11 +452,12 @@ export async function mapPax8Company(input: {
 }): Promise<{ pax8CompanyId: string; orgId: string | null; ignored: boolean }> {
   if (input.orgId) {
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
       .from(organizations)
       .where(eq(organizations.id, input.orgId))
       .limit(1);
     if (!org || org.partnerId !== input.partnerId) throw new Error('Target organization does not belong to this partner');
+    if (isUnassignedPoolOrgType(org.type)) throw new Error('The unassigned-device holding area cannot be a mapping target');
   }
 
   const [updated] = await db.update(pax8CompanyMappings).set({

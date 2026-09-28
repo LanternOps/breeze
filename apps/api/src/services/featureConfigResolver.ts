@@ -31,6 +31,8 @@ import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // ============================================
 // Types
@@ -111,7 +113,7 @@ async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db):
 
   // 2. Load org for partnerId
   const [org] = await executor
-    .select({ partnerId: organizations.partnerId })
+    .select({ partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
@@ -126,7 +128,9 @@ async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db):
     deviceId: device.id,
     orgId: device.orgId,
     siteId: device.siteId,
-    partnerId: org?.partnerId ?? null,
+    // A device parked in its partner's holding org gets no partner-level
+    // assignment: nothing partner-wide applies to it until it is assigned.
+    partnerId: isUnassignedPoolOrgType(org?.type) ? null : org?.partnerId ?? null,
     groupIds: groupRows.map((r) => r.groupId),
     deviceRole: device.deviceRole,
     osType: device.osType,
@@ -947,7 +951,7 @@ async function resolveAssignmentDeviceIds(level: string, targetId: string): Prom
       const orgs = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support')));
+        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
       if (orgs.length === 0) return [];
       const rows = await db
         .select({ id: devices.id })
@@ -1168,7 +1172,7 @@ export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<strin
         const orgs = await db
           .select({ id: organizations.id })
           .from(organizations)
-          .where(and(eq(organizations.partnerId, assignment.targetId), ne(organizations.type, 'quick_support')));
+          .where(and(eq(organizations.partnerId, assignment.targetId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
         if (orgs.length === 0) {
           ids = [];
           break;
@@ -1523,7 +1527,8 @@ function getRetentionImmutableDays(retention: Record<string, unknown> | null): n
  * `drizzle-orm` at import.
  */
 function backupTargetableDeviceCondition(): SQL {
-  return sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`;
+  // Never a device parked in its partner's holding org.
+  return sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`;
 }
 
 /**

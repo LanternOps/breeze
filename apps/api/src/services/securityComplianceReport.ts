@@ -40,6 +40,7 @@ import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabi
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { classifyDeviceProtection } from './portal/protection';
 
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
 
@@ -198,7 +199,7 @@ export async function generateSecurityCompliancePostureReport(
 
   // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
   // design — exclude them from the compliance population explicitly.
-  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
+  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
   if (cfg.sites.length > 0) {
     deviceConditions.push(inArray(devices.siteId, cfg.sites));
   }

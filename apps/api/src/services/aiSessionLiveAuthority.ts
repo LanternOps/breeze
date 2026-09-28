@@ -1,6 +1,7 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, users } from '../db/schema';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { UNASSIGNED_POOL_ORG_TYPE } from './unassignedPool/orgType';
 import {
   buildOrgAccessClosures,
   computeAccessibleOrgIds,
@@ -107,6 +108,8 @@ export async function resolveLiveSessionToolAuthority(
     }).from(organizations).where(and(
       eq(organizations.id, session.orgId),
       inArray(organizations.status, ['active', 'trial']),
+      // Holding org is never human-reachable.
+      ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
       isNull(organizations.deletedAt),
     )).limit(1);
     if (!organization) return { ok: false, reason: 'Organization authority was removed' };

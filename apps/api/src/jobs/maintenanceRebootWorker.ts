@@ -45,6 +45,7 @@ import {
   emitRebootPendingAlert,
   loadOldestRebootRequiredSince,
 } from '../services/patchAlerts';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -195,6 +196,7 @@ export async function getRebootCandidates(): Promise<RebootCandidate[]> {
     .where(
       and(
         eq(devices.isEphemeral, false),
+        notParkedDeviceCondition(),
         eq(devices.pendingReboot, true),
         eq(devices.status, 'online'),
         inArray(devices.osType, ['windows', 'linux']),

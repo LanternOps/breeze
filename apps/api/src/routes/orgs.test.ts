@@ -1,6 +1,8 @@
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
+const { isHoldingOrg } = vi.hoisted(() => ({ isHoldingOrg: vi.fn(async (_orgId: string) => false) }));
+vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg }));
 import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
@@ -463,6 +465,7 @@ describe('org routes', () => {
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
     selectedOrgIds.current = [];
+    isHoldingOrg.mockReset().mockResolvedValue(false);
     setAuthContext();
     siteDeleteTransaction();
     app = new Hono();
@@ -486,6 +489,36 @@ describe('org routes', () => {
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
     delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
   }));
+
+  describe('unassigned-pool holding org is protected', () => {
+    beforeEach(() => { isHoldingOrg.mockReset(); isHoldingOrg.mockResolvedValue(true); });
+
+    it.each([
+      ['PATCH', '/orgs/organizations/pool-1', { name: 'x' }],
+      ['PATCH', '/orgs/organizations/pool-1', { type: 'customer' }],
+      ['PATCH', '/orgs/organizations/pool-1', { status: 'churned' }],
+      ['PUT', '/orgs/organizations/pool-1', { name: 'x' }],
+      ['DELETE', '/orgs/organizations/pool-1', undefined],
+      ['POST', '/orgs/sites', { orgId: '11111111-1111-4111-8111-111111111111', name: 'x', timezone: 'UTC' }],
+      ['PATCH', '/orgs/sites/site-1', { name: 'x' }],
+      ['DELETE', '/orgs/sites/site-1', undefined],
+    ])('%s %s → 409 ORG_PROTECTED with no write (system scope)', async (method, path, body) => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: 'pool-1', name: 's' }]) }) }),
+      } as any);
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'ORG_PROTECTED' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+  });
 
   describe('MFA policy activation safety', () => {
     const id = '00000000-0000-4000-8000-000000000167';

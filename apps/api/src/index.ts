@@ -89,6 +89,7 @@ import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
+import { preAssignmentRoutes } from './routes/preAssignment';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
 import { webhookRoutes } from './routes/webhooks';
@@ -945,6 +946,9 @@ api.route('/sso', ssoRoutes);
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
 // per Task 11's consumed contract (#2183).
 api.route('/partners', partnerLoginBrandingRoutes);
+// Parked-device holding area: full partner admins list and assign devices
+// waiting in their partner's holding org.
+api.route('/pre-assignment', preAssignmentRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
 api.route('/webhooks', webhookRoutes);

@@ -326,6 +326,33 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     ]);
   });
 
+  it('mark-offline reports the status write for a parked device and enqueues nothing', async () => {
+    const device = {
+      id: '00000000-0000-4000-8000-000000000004',
+      orgId: '10000000-0000-4000-8000-000000000004',
+      siteId: '20000000-0000-4000-8000-000000000004',
+      hostname: 'parked', displayName: null, status: 'offline',
+      lastSeenAt: new Date('2026-05-17T00:00:00.000Z'), isEphemeral: false,
+    };
+    mockDb.update.mockImplementation(updateChain([device]) as never);
+    const { persistOfflineTransition } = await import('../services/offlineEffectsStore');
+    vi.mocked(persistOfflineTransition).mockImplementationOnce(async () => {
+      ctxState.events.push(`persistEffects@depth${ctxState.depth}`);
+      return [];
+    });
+
+    const result = await runJob({
+      type: 'mark-offline',
+      transitionId: offlineTransitionId(device.orgId, device.id, device.lastSeenAt.toISOString()),
+      deviceId: device.id,
+      orgId: device.orgId,
+      observedLastSeenAt: device.lastSeenAt.toISOString(),
+    }) as { transitioned: boolean; alertCreated: boolean };
+
+    expect(result).toEqual({ transitioned: true, alertCreated: false });
+    expect(ctxState.events).toEqual(['ctx:enter', 'markOfflineCas@depth1', 'persistEffects@depth1', 'ctx:exit']);
+  });
+
   it('duplicate or stale mark-offline work loses the CAS and emits nothing', async () => {
     mockDb.update.mockImplementation(updateChain([]) as never);
 

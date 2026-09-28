@@ -11,6 +11,7 @@ import {
 import { CommandTypes } from './commandQueue';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
+import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
@@ -19,7 +20,9 @@ export type WakeFailureCode =
   | 'IPV6_ONLY'
   | 'NO_RELAY'
   | 'RELAY_OVERRIDE_INVALID'
-  | 'WS_SEND_FAILED';
+  | 'WS_SEND_FAILED'
+  /** Target or relay is parked in a holding org: lifecycle removal only. */
+  | 'DEVICE_PENDING_ASSIGNMENT';
 
 export interface WakeSuccess {
   ok: true;
@@ -301,6 +304,9 @@ export async function dispatchWake(
   if (!target) {
     return { ok: false, code: 'TARGET_NOT_FOUND', message: 'Target device not found.' };
   }
+  if (await isParkedDevice(db, target.id)) {
+    return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
+  }
 
   const macs = await resolveTargetMacs(target.id);
   if (macs.length === 0) {
@@ -373,6 +379,13 @@ export async function dispatchWake(
       code: 'NO_RELAY',
       message: `No online peer agent at the target's site has a recorded IPv4 on any of the ${candidates.length} candidate subnet(s) for this target.`,
     };
+  }
+
+  // The row is addressed to the relay, so the relay is the device that
+  // receives a command. A relay shares the target's site, so this only fires
+  // if that invariant ever changes — kept so the write is gated either way.
+  if (await isParkedDevice(db, relay.deviceId)) {
+    return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
   const wakeAttemptId = randomUUID();

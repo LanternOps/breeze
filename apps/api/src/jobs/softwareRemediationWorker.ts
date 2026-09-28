@@ -20,6 +20,7 @@ import {
 } from '../services/softwarePolicyInstallRemediation';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -294,7 +295,11 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // would let an old-tenant authorization act on a just-moved device. The lock
   // makes the ownership check and the uninstall atomic w.r.t. device retenanting.
   const [deviceRow] = await db
-    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
+    .select({
+      orgId: devices.orgId,
+      isEphemeral: devices.isEphemeral,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
+    })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1)
@@ -305,7 +310,8 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // borrowed for one ~20-minute session. The compliance evaluator already keeps
   // them out of the remediation queue, but this worker installs and uninstalls
   // software, so a stale or hand-enqueued job must not slip through either.
-  if (deviceRow?.isEphemeral) {
+  // Same for a device parked in its partner's holding org.
+  if (deviceRow?.isEphemeral || deviceRow?.parked === true) {
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
@@ -820,7 +826,12 @@ async function admitRemediateDeviceInstall(
   // worker's system transaction so a concurrent org move cannot land between
   // reading the device's org and creating a deployment under it (#3553).
   const [deviceRow] = await db
-    .select({ orgId: devices.orgId, osType: devices.osType, isEphemeral: devices.isEphemeral })
+    .select({
+      orgId: devices.orgId,
+      osType: devices.osType,
+      isEphemeral: devices.isEphemeral,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
+    })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1)
@@ -829,7 +840,7 @@ async function admitRemediateDeviceInstall(
   // Quick Support exclusion: an ephemeral device is a stranger's personal
   // machine borrowed for one ~20-minute session. Installing software on it
   // would be strictly worse than the uninstall this same guard already blocks.
-  if (!deviceRow || deviceRow.isEphemeral) {
+  if (!deviceRow || deviceRow.isEphemeral || deviceRow.parked === true) {
     // This guard is defence-in-depth — the compliance evaluator already
     // excludes ephemeral devices — which makes a hit here a signal that the
     // upstream filter regressed. Silent absorption would hide that forever.

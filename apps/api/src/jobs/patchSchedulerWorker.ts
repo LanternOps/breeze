@@ -44,6 +44,7 @@ import {
   summarizePatchInventory,
   type PatchInlineSettings,
 } from '../services/configPolicyPatching';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -443,6 +444,8 @@ async function resolveDeviceIdsForAssignment(
     const conditions = [
       eq(organizations.partnerId, assignmentTargetId),
       eq(devices.isEphemeral, false),
+      // Never a device parked in the partner's holding org.
+      notHoldingOrgCondition(),
     ];
     if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
     const partnerDevices = await db

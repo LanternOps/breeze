@@ -10,6 +10,16 @@ const AGENT_ID = 'agent-001';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// Devices parked in a holding org, by id. The helper's query is proven against
+// Postgres in parkedCommandDelivery.integration.test.ts.
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('../services/unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('../services/unassignedPool/deliveryEligibility')>(
+    '../services/unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -30,6 +40,10 @@ vi.mock('../db/schema', () => ({
   users: {
     id: 'id',
     mfaEnabled: 'mfa_enabled',
+  },
+  organizations: {
+    id: 'id',
+    type: 'type',
   },
 }));
 
@@ -117,7 +131,7 @@ vi.mock('fs', () => ({
 
 import { mkdir, statfs, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
-import { createWriteStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { authMiddleware, requireMfa } from '../middleware/auth';
 import { db } from '../db';
 import { devPushRoutes } from './devPush';
@@ -127,6 +141,7 @@ import { devPushRoutes } from './devPush';
 function mockUsersSelect(rows: unknown[]) {
   const chain: any = {
     from: vi.fn(() => chain),
+    innerJoin: vi.fn(() => chain),
     where: vi.fn(() => chain),
     limit: vi.fn(() => Promise.resolve(rows)),
   };
@@ -143,6 +158,7 @@ describe('devPush routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    parkedDeviceIds.clear();
     process.env.NODE_ENV = 'development';
     process.env.PUBLIC_API_URL = 'https://api.breeze.local';
 
@@ -473,6 +489,63 @@ describe('devPush routes', () => {
   // ------------------------------------------------------------------
   // GET /push/download/:token
   // ------------------------------------------------------------------
+
+  describe('devices parked in a holding org', () => {
+    async function pushTo(device: { id: string; agentId: string; orgId: string }) {
+      mockGetDeviceWithOrgCheck.mockResolvedValue(device);
+      mockSendCommandToAgent.mockReturnValue(true);
+      const formData = new FormData();
+      formData.append('agentId', device.agentId);
+      formData.append('binary', new File(['test-binary-content'], 'agent.bin'));
+      return app.request('/dev/push', {
+        method: 'POST',
+        body: formData,
+        headers: { Authorization: 'Bearer token' },
+      });
+    }
+
+    it('refuses a push to a parked device before staging or dispatching', async () => {
+      parkedDeviceIds.add(DEVICE_ID);
+
+      const res = await pushTo({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'DEVICE_PENDING_ASSIGNMENT' });
+      expect(createWriteStream).not.toHaveBeenCalled();
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('refuses the binary download to an agent whose device is parked', async () => {
+      const pushed = await pushTo({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      expect(pushed.status).toBe(200);
+      const { downloadToken } = await pushed.json();
+
+      // The download authenticates the agent token and reads the device's org.
+      mockUsersSelect([{ id: DEVICE_ID, agentTokenSuspendedAt: null, orgType: 'unassigned_pool' }]);
+      const res = await app.request(`/dev/push/download/${downloadToken}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer agent-token' },
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: 'device_pending_assignment' });
+      expect(createReadStream).not.toHaveBeenCalled();
+    });
+
+    it('still streams the binary to a device in a regular org (positive control)', async () => {
+      const pushed = await pushTo({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      const { downloadToken } = await pushed.json();
+
+      mockUsersSelect([{ id: DEVICE_ID, agentTokenSuspendedAt: null, orgType: 'customer' }]);
+      const res = await app.request(`/dev/push/download/${downloadToken}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer agent-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(createReadStream).toHaveBeenCalledOnce();
+    });
+  });
 
   describe('GET /dev/push/download/:token', () => {
     it('should return 404 for unknown token', async () => {

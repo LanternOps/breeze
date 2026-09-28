@@ -554,3 +554,17 @@ it('#7347 self-manages the manual automation trigger and software deploy/retry P
     expect(isSelfManagedDbContextRoute(method, path), `${method} ${path}`).toBe(false);
   }
 });
+
+// Parked-device assignment: every pre-assignment route runs one short system
+// context per device (and the list its own read), so none may hold the request
+// transaction's connection while it does.
+it('self-manages the three pre-assignment routes and nothing near them', () => {
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/devices')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/devices/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/devices/abc-123/assign')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/devices/assign-bulk')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/devices/assign-bulk/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/devices')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/devices/abc-123/assign')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/move-org')).toBe(false);
+});

@@ -60,6 +60,18 @@ export type StepUpOperation =
   // operator was shown, so a grant can never be replayed against a different
   // device, destination, or billing acknowledgement.
   | 'device_move_org'
+  // Parked-device assignment: moving a device out of the partner's holding
+  // area into a customer org. Single: bound to { deviceId, targetOrgId,
+  // targetSiteId }. Bulk: ONE grant bound to the whole sorted batch — a
+  // single-device grant never covers a batch, and a batch grant never covers
+  // a different batch.
+  | 'parked_device_assign'
+  | 'parked_device_assign_bulk'
+  // Turning ON deploy-key enrollment for a partner (a new way for devices to
+  // enroll into its holding area). Bound to the partner; the resource schema
+  // only accepts enabled=true. Turning it OFF is a kill switch and needs no
+  // step-up.
+  | 'pre_assignment_enable'
   // AI script authoring W04 (#5612): enabling the unattended lane on an org
   // is the same class of action as enabling agent act mode — a fresh MFA
   // proof, bound to the org AND to the value being set, so a grant minted to
@@ -225,6 +237,42 @@ export function moveOrgResourceDigest(input: {
     targetOrgId: input.targetOrgId,
     targetSiteId: input.targetSiteId,
   });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+export interface ParkedAssignResource {
+  deviceId: string;
+  targetOrgId: string;
+  targetSiteId: string;
+}
+
+/** Binding for a single parked-device assignment. */
+export function parkedAssignResourceDigest(input: ParkedAssignResource): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'parked_device_assign',
+    deviceId: input.deviceId,
+    targetOrgId: input.targetOrgId,
+    targetSiteId: input.targetSiteId,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Binding for a bulk parked-device assignment: the whole batch, sorted by
+ * deviceId so item order does not matter, while adding, removing or changing
+ * any item changes the digest.
+ */
+export function parkedBulkAssignResourceDigest(items: readonly ParkedAssignResource[]): `sha256:${string}` {
+  const sorted = [...items]
+    .map((item) => ({ deviceId: item.deviceId, targetOrgId: item.targetOrgId, targetSiteId: item.targetSiteId }))
+    .sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
+  const canonical = JSON.stringify({ kind: 'parked_device_assign_bulk', items: sorted });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Binding for turning ON deploy-key enrollment for one partner. */
+export function preAssignmentEnableResourceDigest(input: { partnerId: string }): `sha256:${string}` {
+  const canonical = JSON.stringify({ kind: 'pre_assignment_enable', partnerId: input.partnerId, enabled: true });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

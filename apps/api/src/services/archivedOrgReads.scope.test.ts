@@ -223,7 +223,7 @@ describe('archive-lifecycle predicate (#4166)', () => {
       const { sql } = compiledWhere(index);
       expect(sql).toMatch(LIFECYCLE_ARM);
       expect(sql).toContain('"organizations"."deleted_at" is null');
-      expect(sql).toContain('"organizations"."type" <>');
+      expect(sql).toContain('"organizations"."type" not in (');
     }
   });
 

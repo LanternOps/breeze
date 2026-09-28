@@ -43,6 +43,10 @@ vi.mock('../db/schema', () => ({
     id: 'users.id',
     status: 'users.status',
   },
+  organizations: {
+    id: 'organizations.id',
+    type: 'organizations.type',
+  },
 }));
 
 // Spy on inArray/notInArray/gt/isNull (pass-through to the real implementation)
@@ -102,15 +106,15 @@ function selectChain(pending: unknown[], opts: { device?: unknown; inFlight?: nu
   const limit = vi.fn()
     .mockResolvedValueOnce(device === undefined ? [] : [device])
     .mockResolvedValueOnce([{ inFlight: opts.inFlight ?? 0 }]);
-  return vi.fn(() => ({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        orderBy: vi.fn(() => ({
-          limit: vi.fn(() => ({ for: vi.fn().mockResolvedValue(pending) })),
-        })),
-        limit,
-      })),
+  const where = vi.fn(() => ({
+    orderBy: vi.fn(() => ({
+      limit: vi.fn(() => ({ for: vi.fn().mockResolvedValue(pending) })),
     })),
+    limit,
+  }));
+  // The device-row lookup joins `organizations` for the org type.
+  return vi.fn(() => ({
+    from: vi.fn(() => ({ where, innerJoin: vi.fn(() => ({ where })) })),
   }));
 }
 
@@ -119,11 +123,11 @@ function selectChain(pending: unknown[], opts: { device?: unknown; inFlight?: nu
  * share one revalidation seam. Stub that lookup for the direct-claim tests.
  */
 function stubSingleClaimCandidate(row: unknown = { id: 'cmd-1', type: 'script', deviceId: 'dev-1', payload: null }) {
-  vi.mocked(db.select).mockReturnValue({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
-    })),
-  } as any);
+  const where = vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }));
+  // The candidate read joins the device and its org (for the org type).
+  const joined: Record<string, unknown> = { where };
+  joined.innerJoin = vi.fn(() => joined);
+  vi.mocked(db.select).mockReturnValue({ from: vi.fn(() => joined) } as any);
 }
 
 describe('command dispatch helpers', () => {
@@ -489,5 +493,112 @@ describe('command dispatch helpers', () => {
     expect(where).toHaveBeenCalledTimes(1);
     expect(vi.mocked(gt)).toHaveBeenCalledWith('deviceCommands.deliverBy', expect.any(Date));
     expect(vi.mocked(isNull)).toHaveBeenCalledWith('deviceCommands.deliverBy');
+  });
+  it('the batch claim hands the device org type to claim-time eligibility', async () => {
+    const pendingRows = [
+      { id: 'cmd-1', deviceId: 'dev-1', status: 'pending', createdAt: new Date('2026-03-31T00:00:00Z') },
+    ];
+    const parkedDevice = { ...DEVICE_ROW, orgType: 'unassigned_pool' };
+    partitionClaimableMock.mockResolvedValue({
+      claimable: [],
+      cancelled: [{ id: 'cmd-1', reason: 'device_pending_assignment' }],
+      held: [],
+    });
+    const tx = {
+      select: selectChain(pendingRows, { device: parkedDevice }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+    );
+
+    expect(claimed).toEqual([]);
+    expect(partitionClaimableMock).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ orgType: 'unassigned_pool' }),
+      pendingRows,
+      { inFlight: 0 },
+    );
+  });
+
+  it('the single-command claim cancels a non-removal row for a parked device', async () => {
+    stubSingleClaimCandidate({
+      id: 'cmd-1', type: 'script', deviceId: 'dev-1', payload: {}, orgType: 'unassigned_pool',
+    });
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'cancelled',
+      result: expect.objectContaining({ reason: 'device_pending_assignment' }),
+    }));
+    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
+    expect(revalidateCommandForDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('the single-command claim still delivers lifecycle removal to a parked device', async () => {
+    stubSingleClaimCandidate({
+      id: 'cmd-1', type: 'self_uninstall', deviceId: 'dev-1', payload: {}, orgType: 'unassigned_pool',
+    });
+    const set = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    const at = new Date('2026-03-31T00:00:00Z');
+    expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ id: 'cmd-1', executedAt: at });
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
+  });
+  it('a parked device claimed under the removal allowlist hands its refused rows to eligibility to cancel', async () => {
+    const refusedRows = [{ id: 'cmd-script', type: 'script', deviceId: 'dev-1', status: 'pending' }];
+    const allowedRows = [{ id: 'cmd-uninstall', type: 'self_uninstall', deviceId: 'dev-1', status: 'pending' }];
+    const parkedDevice = { ...DEVICE_ROW, orgType: 'unassigned_pool' };
+    const forMock = vi.fn()
+      .mockResolvedValueOnce(refusedRows) // the refused-work scan
+      .mockResolvedValueOnce(allowedRows); // the allowlisted pending scan
+    const limit = vi.fn()
+      .mockResolvedValueOnce([parkedDevice]) // parked check (org type)
+      .mockResolvedValueOnce([parkedDevice]) // claim-time eligibility device read
+      .mockResolvedValueOnce([{ inFlight: 0 }]);
+    const where = vi.fn(() => ({
+      orderBy: vi.fn(() => ({ limit: vi.fn(() => ({ for: forMock })) })),
+      limit,
+    }));
+    const tx = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where, innerJoin: vi.fn(() => ({ where })) })) })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([allowedRows[0]]) }),
+        }),
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    partitionClaimableMock.mockImplementation(async (_tx: unknown, _dev: unknown, rows: any[]) => ({
+      claimable: rows.filter((r) => r.type === 'self_uninstall'),
+      cancelled: rows.filter((r) => r.type !== 'self_uninstall').map((r) => ({ id: r.id, reason: 'device_pending_assignment' })),
+      held: [],
+    }));
+
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+    );
+
+    expect(partitionClaimableMock).toHaveBeenCalledWith(tx, parkedDevice, refusedRows);
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith('deviceCommands.type', ['self_uninstall']);
+    expect(claimed.map((c: any) => c.id)).toEqual(['cmd-uninstall']);
+  });
+
+  it('a drain allowlist on a device in an ordinary org leaves refused rows alone', async () => {
+    const tx = { select: selectChain([]), update: vi.fn() };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await claimPendingCommandsForDevice('dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 });
+
+    expect(partitionClaimableMock).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });

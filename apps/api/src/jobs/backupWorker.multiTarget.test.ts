@@ -26,6 +26,13 @@ const mockDb = {
   selectDistinct: vi.fn(),
 };
 
+// A device parked in a holding org is covered in backupWorker.test.ts; here
+// every device is an ordinary customer device.
+vi.mock('../services/unassignedPool/deliveryEligibility', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/unassignedPool/deliveryEligibility')>()),
+  isParkedDevice: vi.fn(async () => false),
+}));
+
 vi.mock('../db', () => ({
   db: mockDb,
   withSystemDbAccessContext: undefined,

@@ -8,7 +8,18 @@ vi.mock('./configurationPolicy', async (importOriginal) => {
   };
 });
 
+vi.mock('./unassignedPool/deliveryEligibility', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...(actual as object),
+    isParkedDevice: vi.fn(async () => false),
+  };
+});
+
+vi.mock('../db', () => ({ db: { execute: vi.fn() } }));
+
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
+import { isParkedDevice } from './unassignedPool/deliveryEligibility';
 import {
   checkRemoteAccess,
   resolveRemoteAccessForDevice,
@@ -174,5 +185,58 @@ describe('maxSessionDurationHours clamp [1, 12]', () => {
     clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: 8 }, { policyId: 'p' });
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Devices parked in a holding org: no remote access, even with no policy rows
+// ---------------------------------------------------------------------------
+
+describe('checkRemoteAccess for a parked device', () => {
+  const capabilities = ['webrtcDesktop', 'vncRelay', 'remoteTools', 'proxy'] as const;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateRemoteAccessCache();
+    vi.mocked(resolveEffectiveConfig).mockResolvedValue({
+      deviceId: 'any',
+      features: {},
+      inheritanceChain: [],
+    });
+  });
+
+  for (const capability of capabilities) {
+    for (const bypassCache of [false, true]) {
+      it(`denies ${capability} (bypassCache=${bypassCache}) with no policy rows`, async () => {
+        vi.mocked(isParkedDevice).mockResolvedValue(true);
+        const result = await checkRemoteAccess('parked-device', capability, { bypassCache });
+        expect(result.allowed).toBe(false);
+        expect(result.code).toBe('DEVICE_PENDING_ASSIGNMENT');
+        expect(result.reason).toMatch(/waiting to be assigned/i);
+        expect(isParkedDevice).toHaveBeenCalledWith(expect.anything(), 'parked-device');
+      });
+    }
+  }
+
+  it('denies even when a cached allowed resolution exists for the device', async () => {
+    vi.mocked(isParkedDevice).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await expect(checkRemoteAccess('cached-device', 'remoteTools')).resolves.toEqual({ allowed: true });
+    await expect(checkRemoteAccess('cached-device', 'remoteTools'))
+      .resolves.toMatchObject({ allowed: false, code: 'DEVICE_PENDING_ASSIGNMENT' });
+  });
+
+  it('fails closed when the parked lookup errors', async () => {
+    vi.mocked(isParkedDevice).mockRejectedValueOnce(new Error('db down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await checkRemoteAccess('some-device', 'webrtcDesktop');
+    expect(result.allowed).toBe(false);
+    errSpy.mockRestore();
+  });
+
+  it('keeps a customer-org device with no policy rows allowed (control)', async () => {
+    vi.mocked(isParkedDevice).mockResolvedValue(false);
+    for (const capability of capabilities) {
+      await expect(checkRemoteAccess('customer-device', capability)).resolves.toEqual({ allowed: true });
+    }
   });
 });

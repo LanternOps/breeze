@@ -181,6 +181,22 @@ describe('beginOrgArchive', () => {
     expect(beginOrganizationOffboarding).not.toHaveBeenCalled();
   });
 
+  // The unassigned-device holding org is refused for the same reason, plus
+  // its one-way membership invariant.
+  it('refuses an unassigned_pool organization before any write', async () => {
+    state.selectRows.push([{ status: 'active', type: 'unassigned_pool' }]);
+
+    await expect(beginOrgArchive({
+      orgId: ORG_ID,
+      retentionDays: 90,
+      actor: ACTOR_ID,
+      now: NOW,
+    })).rejects.toBeInstanceOf(OrgArchiveStateError);
+
+    expect(state.updates).toHaveLength(0);
+    expect(beginOrganizationOffboarding).not.toHaveBeenCalled();
+  });
+
   it('skips the drain for suspended and finalizes archive immediately', async () => {
     state.selectRows.push([{ status: 'suspended', type: 'customer' }]);
     state.updateRows.push([{ id: ORG_ID }]);

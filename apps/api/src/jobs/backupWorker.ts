@@ -58,6 +58,8 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { jobSchedule } from './scheduleRegistry';
+import { isParkedDevice, PARKED_DEVICE_CANCEL_REASON } from '../services/unassignedPool/deliveryEligibility';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -219,7 +221,9 @@ async function loadScheduledBackupOrgIds(): Promise<Set<string>> {
         .from(organizations)
         .where(and(
           inArray(organizations.partnerId, partnerIds),
-          ne(organizations.type, 'quick_support')
+          ne(organizations.type, 'quick_support'),
+          // Nor the holding org: parked devices are never backed up.
+          notHoldingOrgCondition()
         ))
     : [];
 
@@ -812,6 +816,13 @@ async function loadBackupDispatchPrecheck(
   }
 
   if (await isBackupJobCancelled(data.jobId)) {
+    return { status: 'done', result: { dispatched: false } };
+  }
+
+  // A device parked in its partner's holding org is never backed up: fail the
+  // job before any destination credential is loaded into a payload.
+  if (await isParkedDevice(db, data.deviceId)) {
+    await markJobFailed(data.jobId, PARKED_DEVICE_CANCEL_REASON);
     return { status: 'done', result: { dispatched: false } };
   }
 
@@ -1619,19 +1630,23 @@ async function processDispatchBackup(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
   let parentFailureDetail: string | null = null;
-  let deviceOrgChanged = false;
+  let dispatchRefusal: string | null = null;
 
   try {
     for (const target of prepared) {
       // Re-read after payload preparation and between sends: enqueue-time
       // ownership cannot authorize a backup on a device moved to another org.
       // Keep the relay acknowledgement wait outside the short DB context.
-      const admitted = await runWithSystemDbAccess(async () => {
+      // A device parked in a holding org is refused here as well.
+      const refusal = await runWithSystemDbAccess(async (): Promise<string | null> => {
         const [device] = await db.select({ orgId: devices.orgId }).from(devices)
           .where(eq(devices.id, data.deviceId)).limit(1);
-        if (device?.orgId === data.orgId) return true;
+        const reason = device?.orgId !== data.orgId
+          ? 'device_org_changed'
+          : (await isParkedDevice(db, data.deviceId)) ? PARKED_DEVICE_CANCEL_REASON : null;
+        if (reason === null) return null;
 
-        console.warn('[BackupWorker] Refusing backup dispatch: device_org_changed', {
+        console.warn(`[BackupWorker] Refusing backup dispatch: ${reason}`, {
           jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
         });
         createAuditLogAsync({
@@ -1642,20 +1657,20 @@ async function processDispatchBackup(
           resourceType: 'backup_job',
           resourceId: data.jobId,
           result: 'failure',
-          details: { deviceId: data.deviceId, reason: 'device_org_changed' },
+          details: { deviceId: data.deviceId, reason },
         });
-        return false;
+        return reason;
       });
-      if (!admitted) {
-        deviceOrgChanged = true;
+      if (refusal !== null) {
+        dispatchRefusal = refusal;
         for (const pending of prepared) {
           if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
           sendState.set(pending.commandJobId, 'failed');
-          failedTargets.push(`${pending.commandType} (device_org_changed)`);
+          failedTargets.push(`${pending.commandType} (${refusal})`);
           if (pending.commandJobId === data.jobId) {
-            parentFailureDetail = 'device_org_changed';
+            parentFailureDetail = refusal;
           } else {
-            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: 'device_org_changed' });
+            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: refusal });
           }
         }
         break;
@@ -1717,11 +1732,10 @@ async function processDispatchBackup(
       if (sentCount === 0) {
         await markJobFailed(
           data.jobId,
-          deviceOrgChanged
-            ? 'device_org_changed'
-            : lastNonOfflineOutcomeStatus
+          dispatchRefusal
+            ?? (lastNonOfflineOutcomeStatus
               ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-              : 'Failed to send command to agent',
+              : 'Failed to send command to agent'),
         );
         return { dispatched: false };
       }

@@ -736,6 +736,29 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Pre-assignment holding area: hourly expiry of devices parked past the
+    // window. socket-owner: it disconnects the expired agent's socket
+    // (routes/agentWs.ts), so it must run where the sockets live.
+    name: 'parkedDeviceExpiry',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/parkedDeviceExpiry');
+      return { init: m.initializeParkedDeviceExpiry, shutdown: m.shutdownParkedDeviceExpiry };
+    },
+  },
+  {
+    // Pre-assignment holding area: daily hard purge of expired parked
+    // devices. socket-owner for the same reason as removedDevicePurge above:
+    // services/deviceLifecycle -> services/deviceDeletion reaches
+    // routes/agentWs.ts.
+    name: 'parkedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/parkedDevicePurge');
+      return { init: m.initializeParkedDevicePurge, shutdown: m.shutdownParkedDevicePurge };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {

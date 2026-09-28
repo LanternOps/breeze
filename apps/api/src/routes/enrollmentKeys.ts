@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, ne, sql, desc, inArray, lt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
+import { and, eq, sql, desc, inArray, lt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
@@ -64,6 +64,7 @@ import { captureException } from "../services/sentry";
 import { evaluateCapability, requireCapability } from "../services/partnerTrust";
 import { partnerTrustMode } from "../config/partnerTrustMode";
 
+import { notHiddenOrgType } from '../services/unassignedPool/visibility';
 // ============================================================
 // Signing-spend caps for the authenticated installer endpoint.
 // These bound how many costly MSI-sign / child-key operations
@@ -588,9 +589,9 @@ export async function mintChildEnrollmentKey(
     const [org] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      // The hidden 'quick_support' org may be the partner's oldest org — a child
-      // enrollment key must never default into it.
-      .where(and(eq(organizations.partnerId, input.partnerId), ne(organizations.type, 'quick_support')))
+      // A hidden org (Quick Support, the holding org) may be the partner's
+      // oldest org — a child enrollment key must never default into one.
+      .where(and(eq(organizations.partnerId, input.partnerId), notHiddenOrgType()))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     if (!org) {

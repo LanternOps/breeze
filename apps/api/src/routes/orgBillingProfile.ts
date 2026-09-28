@@ -6,6 +6,7 @@ import { organizations } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { partnerMemberMayReachOrg } from '../services/partnerOrgSelection';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   getOrgAssignment, assignProfileToOrg, clearOrgAssignment, BillingProfileServiceError,
@@ -25,7 +26,7 @@ async function resolveAccessibleOrg(c: Context): Promise<{ id: string; partnerId
   if (!auth.canAccessOrg(id) && !await partnerMemberMayReachOrg(auth, id)) {
     return c.json({ error: 'Organization not found' }, 404);
   }
-  const load = () => db.select({ id: organizations.id, partnerId: organizations.partnerId })
+  const load = () => db.select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(and(eq(organizations.id, id), eq(organizations.partnerId, auth.partnerId!), isNull(organizations.deletedAt)))
     .limit(1);
@@ -33,6 +34,9 @@ async function resolveAccessibleOrg(c: Context): Promise<{ id: string; partnerId
     ? await load()
     : await runOutsideDbContext(() => withSystemDbAccessContext(load));
   if (!org || org.partnerId !== auth.partnerId) return c.json({ error: 'Organization not found' }, 404);
+  // The partner's holding org is managed by Breeze and has no billing identity
+  // of its own; refuse it indistinguishably from "not found".
+  if (isUnassignedPoolOrgType(org.type)) return c.json({ error: 'Organization not found' }, 404);
   return { id: org.id, partnerId: auth.partnerId };
 }
 

@@ -65,6 +65,8 @@ import {
   isRunCancelledError,
   RunCancelledError,
 } from './automationRunCancellation';
+import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
 // the same reason softwareDeployment is below: it pulls the
 // agentWs → commandQueue → configurationPolicy chain in at module load.
@@ -271,7 +273,7 @@ async function automationOwnerOrgIds(
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(and(eq(organizations.partnerId, automation.partnerId), ne(organizations.type, 'quick_support')));
+    .where(and(eq(organizations.partnerId, automation.partnerId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
 
   return orgRows.map((row) => row.id);
 }
@@ -3137,7 +3139,9 @@ async function lockCurrentAutomationTargetDevices(
     if (!org) return false;
     if (automation.orgId) return row.orgId === automation.orgId;
     if (!automation.partnerId) return false;
-    return org.partnerId === automation.partnerId && org.type !== 'quick_support';
+    return org.partnerId === automation.partnerId
+      && org.type !== 'quick_support'
+      && !isUnassignedPoolOrgType(org.type);
   });
 }
 

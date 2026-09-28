@@ -61,6 +61,7 @@ import {
   TrendingUp,
   Power,
   ServerCog,
+  Inbox,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -69,7 +70,7 @@ import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts'
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
@@ -168,6 +169,7 @@ type NavItem = {
   requiresAiForOffice?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
+  requiresPreAssignment?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -184,6 +186,10 @@ type NavItem = {
   // (`native`) means a failed mode fetch shows the module rather than hiding
   // one the partner pays for.
   requiresModule?: 'service_management';
+  // Hidden unless the user may administer partner-wide state (see navGates.ts).
+  requiresPartnerWideAdmin?: boolean;
+  // Additional permissions the user must all hold (see navGates.ts).
+  alsoRequiredPermissions?: readonly PermissionGrant[];
 };
 
 // ---------------------------------------------------------------------------
@@ -269,6 +275,9 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      // Parked devices waiting for assignment — full partner admins only; the
+      // pre-assignment routes also require devices:write and organizations:write.
+      { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },
       { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
       // Three distinct pages: /software is the catalog (Catalog + Deployments),
       // /software-inventory and /software-policies mount SoftwarePage (#7123).
@@ -585,6 +594,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
 
   // Runtime-extension navigation (see the comment above `navSections`).
   // `useExtensionNavigation` never throws — an empty list here (registry
@@ -614,6 +624,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
+  const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -821,8 +832,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       permissions,
       getScope: () => getJwtClaims().scope,
       toolSourcesEnabled,
+      preAssignmentEnabled,
       aiForOfficeEnabled,
       serviceManagementMode,
+      canManagePartnerWide,
     });
 
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {

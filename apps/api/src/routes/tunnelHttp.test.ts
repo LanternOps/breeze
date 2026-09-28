@@ -356,6 +356,20 @@ describe('tunnelHttp dispatch (cookie-authed)', () => {
     expect(await res.text()).toBe('hello');
   });
 
+  it('refuses a device parked in a holding org with 403 and sends nothing to the agent', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    checkRemoteAccessMock.mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as never);
+    const res = await app.request(`${TOKEN_BASE}/admin/page`, { method: 'GET', headers: { cookie } });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/waiting to be assigned/);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
   it('derives https scheme for port 443', async () => {
     setJoinRow(defaultJoinRow({ port: 443 }));
     const app = makeApp();

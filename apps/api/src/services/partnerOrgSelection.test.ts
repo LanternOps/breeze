@@ -7,20 +7,29 @@
  * are archive, restore and the archived-org reads.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { rows } = vi.hoisted(() => ({ rows: [] as Array<{ orgIds: string[] | null }> }));
+// One result set per awaited query, in order: the selection re-read first
+// (only for 'selected'), then the target-org lookup.
+const { results } = vi.hoisted(() => ({ results: [] as unknown[][] }));
+const rows = { push: (row: { orgIds: string[] | null }) => results.push([row]) };
 
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'limit']) chain[m] = vi.fn(() => chain);
   (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
-    Promise.resolve(rows).then(resolve);
+    Promise.resolve(results.shift() ?? []).then(resolve);
   return {
     db: chain,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
 });
+
+/** The target org exists, belongs to the caller's partner and is not the holding org. */
+const orgFound = () => results.push([{ id: 'target' }]);
+/** The target-org lookup matched nothing (missing, other partner, or the holding org). */
+const orgNotFound = () => results.push([]);
 
 import { db } from '../db';
 import {
@@ -46,7 +55,7 @@ function auth(overrides: Partial<PartnerOrgSelectionAuth> = {}): PartnerOrgSelec
 
 beforeEach(() => {
   vi.clearAllMocks();
-  rows.length = 0;
+  results.length = 0;
 });
 
 describe('readPartnerSelectedOrgIds', () => {
@@ -96,6 +105,7 @@ describe('resolvePartnerOrgReach', () => {
 describe('partnerMemberMayReachOrg', () => {
   it('admits an org inside the selection', async () => {
     rows.push({ orgIds: [ORG_IN, 'other'] });
+    orgFound();
     expect(await partnerMemberMayReachOrg(auth(), ORG_IN)).toBe(true);
   });
 
@@ -108,7 +118,28 @@ describe('partnerMemberMayReachOrg', () => {
     expect(await partnerMemberMayReachOrg(auth({ partnerOrgAccess: 'none' }), ORG_IN)).toBe(false);
   });
 
-  it("admits any org of the partner for org_access='all'", async () => {
+  it("admits a regular org of the partner for org_access='all'", async () => {
+    orgFound();
     expect(await partnerMemberMayReachOrg(auth({ partnerOrgAccess: 'all' }), ORG_OUT)).toBe(true);
+  });
+
+  it("refuses when the target-org lookup matches nothing, even for org_access='all'", async () => {
+    orgNotFound();
+    expect(await partnerMemberMayReachOrg(auth({ partnerOrgAccess: 'all' }), ORG_OUT)).toBe(false);
+  });
+
+  it('refuses a selected org the target-org lookup does not match', async () => {
+    rows.push({ orgIds: [ORG_IN] });
+    orgNotFound();
+    expect(await partnerMemberMayReachOrg(auth(), ORG_IN)).toBe(false);
+  });
+
+  it('scopes the target-org lookup to the caller partner and excludes the holding org', async () => {
+    orgFound();
+    await partnerMemberMayReachOrg(auth({ partnerOrgAccess: 'all' }), ORG_OUT);
+    const where = vi.mocked((db as unknown as { where: (c: unknown) => unknown }).where).mock.calls.at(-1)?.[0];
+    const rendered = new PgDialect().sqlToQuery(where as never);
+    expect(rendered.sql).toMatch(/"organizations"\."type" <> \$\d+/);
+    expect(rendered.params).toEqual(expect.arrayContaining([ORG_OUT, PARTNER_ID, 'unassigned_pool']));
   });
 });

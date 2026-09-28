@@ -24,6 +24,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
   devices: {
     id: 'id',
     hostname: 'hostname',
@@ -185,6 +186,29 @@ describe('huntress routes', () => {
 
     expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses to map a Huntress organization onto a holding org, even for system scope', async () => {
+    authState.scope = 'system';
+    authState.orgId = null;
+    authState.partnerId = null as any;
+    const HOLDING = '11111111-1111-1111-1111-111111111111';
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', partnerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }]) })) })),
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: HOLDING, partnerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', type: 'unassigned_pool' }]) })) })),
+    } as any);
+
+    const res = await app.request('/huntress/organizations/map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ integrationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', huntressOrgId: 'huntress-org-1', orgId: HOLDING }),
+    });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('ORG_PROTECTED');
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   describe('GET /status partner-wide authority', () => {

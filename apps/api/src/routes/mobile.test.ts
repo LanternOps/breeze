@@ -69,6 +69,23 @@ const {
   };
 });
 
+// Devices parked in a holding org, by id. The helper's query is proven against
+// Postgres in parkedCommandDelivery.integration.test.ts.
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('../services/unassignedPool/deliveryEligibility', async () => {
+  const actual = await vi.importActual<typeof import('../services/unassignedPool/deliveryEligibility')>(
+    '../services/unassignedPool/deliveryEligibility',
+  );
+  return {
+    ...actual,
+    assertCommandDeliverable: vi.fn(async (_reader: unknown, input: { deviceId: string; commandType: string }) => {
+      if (!actual.isParkedDeliverableCommandType(input.commandType) && parkedDeviceIds.has(input.deviceId)) {
+        throw new actual.ParkedDeviceCommandRefusedError(input.deviceId, input.commandType);
+      }
+    }),
+  };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -2212,6 +2229,27 @@ describe('mobile routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('refuses a device action for a device parked in a holding org', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', siteId: null }
+        ]) as any
+      );
+      parkedDeviceIds.add('11111111-2222-4333-8444-555555555555');
+      try {
+        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reboot' })
+        });
+        expect(res.status).toBe(409);
+        await expect(res.json()).resolves.toMatchObject({ code: 'DEVICE_PENDING_ASSIGNMENT' });
+      } finally {
+        parkedDeviceIds.clear();
+      }
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('should reject decommissioned devices', async () => {

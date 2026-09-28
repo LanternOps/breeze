@@ -10,6 +10,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 //
 // Mocks mirror scriptDispatch.aiAuditProvenance.test.ts.
 // ============================================================================
+// Holding-org delivery eligibility (a live device/org read) is out of this
+// suite's scope; scriptDispatch.test.ts covers the refusal and
+// parkedCommandDelivery.integration.test.ts the query.
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+}));
 vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

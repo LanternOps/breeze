@@ -18,6 +18,8 @@ import { clientAiAdminSessionRoutes } from './adminSessions';
 import { clientAiAdminUsageRoutes } from './adminUsage';
 import { clientAiAdminTemplateRoutes } from './adminTemplates';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 /**
  * MSP-facing admin surface for Breeze AI for Office (spec §9, consumed by the
  * Plan-4 dashboard): tenant mapping + per-org policy. Mirrors routes/m365.ts:
@@ -111,6 +113,8 @@ clientAiAdminRoutes.put(
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const { entraTenantId } = c.req.valid('json');
     const now = new Date();

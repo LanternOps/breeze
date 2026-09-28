@@ -47,6 +47,7 @@
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",
+    "unassignedDevices": "Nicht zugewiesene Geräte",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
     "cloudBackup": "Cloud-Backup",

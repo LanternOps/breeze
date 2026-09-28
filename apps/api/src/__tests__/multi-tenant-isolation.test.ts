@@ -24,6 +24,17 @@ const ALERT_ID  = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
 // ─── Mock DB (before any imports that touch it) ───────────────────────────────
 
+// Holding-org delivery eligibility is its own read (covered by the
+// scriptDispatch suite and parkedCommandDelivery.integration.test.ts); kept
+// out of this suite's db mock.
+vi.mock('../services/unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('../services/unassignedPool/deliveryEligibility')>(
+    '../services/unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+  assertCommandDeliverable: vi.fn(async () => undefined),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
