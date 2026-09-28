@@ -6,6 +6,7 @@
 // Task 2.
 import { z } from 'zod';
 import { createAuditLogAsync } from './auditService';
+import { hypervOptionsSchema, isAbsoluteRebuildPath } from './bareMetalRebuildSchemas';
 import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { CommandTypes } from './commandTypes';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
@@ -23,10 +24,14 @@ export const bareMetalRebuildPayloadSchema = z.object({
   server: z.string().url(),
   target: z.object({
     kind: z.enum(['vhdx', 'image']),
-    path: z.string().min(1).max(1024).refine((p) => p.startsWith('/'), 'absolute path required'),
+    // POSIX `/…` or a Windows drive-letter `X:\…` (W06d); never UNC.
+    path: z.string().min(1).max(1024).refine(isAbsoluteRebuildPath, 'absolute path required (POSIX or a Windows drive letter, no UNC)'),
     imageSizeBytes: z.number().int().positive().optional(),
   }),
   identity: z.enum(['original', 'new']),
+  // W06d: create a Hyper-V VM from the rebuilt VHDX (Windows rebuild hosts
+  // only — the caller refuses it for any other host before queueing).
+  hyperv: hypervOptionsSchema,
 });
 export type BareMetalRebuildPayload = z.infer<typeof bareMetalRebuildPayloadSchema>;
 
@@ -74,6 +79,7 @@ async function queueBareMetalRebuildVia(
       commandId: command?.id ?? null,
       target: input.payload.target,
       identity: input.payload.identity,
+      ...(input.payload.hyperv ? { hyperv: input.payload.hyperv } : {}),
     },
   }).catch(() => {
     // Already retried + Sentry-captured inside createAuditLogAsync.

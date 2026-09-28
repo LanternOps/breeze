@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -56,6 +57,7 @@ const bmrMocks = vi.hoisted(() => ({
   queueBareMetalRebuild: vi.fn(),
   queueBareMetalRebuildWithSystemPrecheck: vi.fn(),
   resolveLatestRestorableSnapshotId: vi.fn(),
+  resolveLatestRestorableSnapshot: vi.fn(),
   createAuditLogAsync: vi.fn(async () => undefined),
 }));
 
@@ -77,6 +79,7 @@ vi.mock('./bareMetalRebuildCommand', () => ({
 vi.mock('./drBareMetalRebuildStep', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./drBareMetalRebuildStep')>()),
   resolveLatestRestorableSnapshotId: bmrMocks.resolveLatestRestorableSnapshotId,
+  resolveLatestRestorableSnapshot: bmrMocks.resolveLatestRestorableSnapshot,
 }));
 vi.mock('./auditService', () => ({
   createAuditLogAsync: bmrMocks.createAuditLogAsync,
@@ -577,8 +580,14 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     vi.clearAllMocks();
     delete process.env.BREEZE_SERVER;
     process.env.PUBLIC_API_URL = 'https://breeze.example.test/';
+    // The authorization pass (reached through reconcile) keeps the bare-id
+    // resolver; the dispatcher resolves {id, platform} (W06d).
     bmrMocks.resolveLatestRestorableSnapshotId.mockImplementation(async (_org: string, deviceId: string) =>
       deviceId === DEVICE_ID ? SNAP_1 : SNAP_2);
+    bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_org: string, deviceId: string) =>
+      ({ id: deviceId === DEVICE_ID ? SNAP_1 : SNAP_2, platform: 'linux' }));
+    // Rehearsal rebuild-host lookup (W06d): a Linux host unless a test says otherwise.
+    vi.mocked(db.select).mockImplementation(() => createQueryChain([{ osType: 'linux' }]) as any);
     let n = 0;
     bmrMocks.createBareMetalRecovery.mockImplementation(async (input: any) => {
       n += 1;
@@ -757,7 +766,7 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
   });
 
   it('a device with no restorable snapshot at dispatch time is a failedDispatches entry', async () => {
-    bmrMocks.resolveLatestRestorableSnapshotId.mockImplementation(async (_o: string, d: string) => (d === DEVICE_ID ? SNAP_1 : null));
+    bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_o: string, d: string) => (d === DEVICE_ID ? { id: SNAP_1, platform: 'linux' } : null));
 
     const { results } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
 
@@ -765,6 +774,115 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     expect(results.failedDispatches).toEqual([
       expect.objectContaining({ deviceId: DEVICE_2, error: 'no_restorable_snapshot' }),
     ]);
+  });
+
+  // ── W06d (Task 20): rehearsal rebuild host must match the snapshot platform ──
+  describe('rehearsal host/platform matching (W06d)', () => {
+    function windowsSnapshots() {
+      bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_org: string, deviceId: string) =>
+        ({ id: deviceId === DEVICE_ID ? SNAP_1 : SNAP_2, platform: 'windows' }));
+    }
+    function hostOsType(osType: string | null) {
+      vi.mocked(db.select).mockImplementation(() => createQueryChain(osType === null ? [] : [{ osType }]) as any);
+    }
+
+    it('records a rebuild_host_unsupported failedDispatch per device (no recovery, no pending send) when the host OS does not match', async () => {
+      windowsSnapshots();
+      hostOsType('linux');
+
+      const { results, pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+
+      expect(results.failedDispatches).toEqual([
+        expect.objectContaining({ groupId: GROUP_ID, deviceId: DEVICE_ID, commandType: 'BARE_METAL_REBUILD', error: 'rebuild_host_unsupported' }),
+        expect.objectContaining({ groupId: GROUP_ID, deviceId: DEVICE_2, commandType: 'BARE_METAL_REBUILD', error: 'rebuild_host_unsupported' }),
+      ]);
+      expect(bmrMocks.createBareMetalRecovery).not.toHaveBeenCalled();
+      expect(bmrMocks.mintRecoveryTokenForRecovery).not.toHaveBeenCalled();
+      expect(pending).toEqual([]);
+      expect(results.dispatchStatus).toBe('failed');
+    });
+
+    it('refuses a snapshot whose layout has no platform as snapshot_not_bare_metal_restorable', async () => {
+      bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_org: string, deviceId: string) =>
+        ({ id: deviceId === DEVICE_ID ? SNAP_1 : SNAP_2, platform: deviceId === DEVICE_ID ? null : 'linux' }));
+
+      const { results, pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+
+      expect(results.failedDispatches).toEqual([
+        expect.objectContaining({ deviceId: DEVICE_ID, error: 'snapshot_not_bare_metal_restorable' }),
+      ]);
+      expect(pending.map((p) => p.deviceId)).toEqual([DEVICE_2]);
+      expect(results.dispatchStatus).toBe('partial');
+    });
+
+    it('fails the group with rebuild_host_not_found when the host is not a device of the execution org', async () => {
+      hostOsType(null);
+
+      const { results, pending } = await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+
+      expect(results.failedDispatches).toEqual([
+        expect.objectContaining({ groupId: GROUP_ID, commandType: 'BARE_METAL_REBUILD', error: 'rebuild_host_not_found' }),
+      ]);
+      expect(bmrMocks.createBareMetalRecovery).not.toHaveBeenCalled();
+      expect(pending).toEqual([]);
+      expect(results.dispatchStatus).toBe('failed');
+    });
+
+    it('scopes the rebuild-host lookup to the execution org (defence in depth under system context)', async () => {
+      await dispatchGroup(execution('rehearsal'), bmrGroup() as any, initialResults());
+
+      expect(db.select).toHaveBeenCalledTimes(1);
+      const chain = vi.mocked(db.select).mock.results[0]!.value;
+      const rendered = new PgDialect().sqlToQuery(chain.where.mock.calls[0][0]);
+      expect(rendered.sql).toContain('"devices"."id"');
+      expect(rendered.sql).toContain('"devices"."org_id"');
+      expect(rendered.params).toEqual(expect.arrayContaining([HOST_ID, ORG_ID]));
+    });
+
+    it('builds the VHDX path from the Windows default dir when config.outputDir is the (normalised) default', async () => {
+      windowsSnapshots();
+      hostOsType('windows');
+      const group = bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID } });
+
+      const { pending } = await dispatchGroup(execution('rehearsal'), group as any, initialResults());
+
+      expect(pending.map((p) => p.kind === 'bare_metal_rebuild' ? p.payload.target.path : null)).toEqual([
+        `C:\\ProgramData\\Breeze\\rebuild\\out\\${DEVICE_ID}-${REC_1}.vhdx`,
+        `C:\\ProgramData\\Breeze\\rebuild\\out\\${DEVICE_2}-${REC_2}.vhdx`,
+      ]);
+      for (const p of pending) {
+        if (p.kind === 'bare_metal_rebuild') expect(p.payload).not.toHaveProperty('hyperv');
+      }
+    });
+
+    it('joins a custom Windows outputDir with a backslash', async () => {
+      windowsSnapshots();
+      hostOsType('windows');
+      const group = bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID, outputDir: 'D:\\dr\\out\\' } });
+
+      const { pending } = await dispatchGroup(execution('rehearsal'), group as any, initialResults());
+
+      expect(pending[0]).toMatchObject({ payload: { target: { kind: 'vhdx', path: `D:\\dr\\out\\${DEVICE_ID}-${REC_1}.vhdx` } } });
+    });
+
+    it('keeps the Linux default dir for a Linux host', async () => {
+      const group = bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID } });
+
+      const { pending } = await dispatchGroup(execution('rehearsal'), group as any, initialResults());
+
+      expect(pending[0]).toMatchObject({ payload: { target: { path: `/var/lib/breeze/rebuild/out/${DEVICE_ID}-${REC_1}.vhdx` } } });
+    });
+
+    it('failover never looks up a rebuild host and is not gated on the snapshot platform', async () => {
+      bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_org: string, deviceId: string) =>
+        ({ id: deviceId === DEVICE_ID ? SNAP_1 : SNAP_2, platform: null }));
+
+      const { results } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+
+      expect(db.select).not.toHaveBeenCalled();
+      expect(results.failedDispatches).toEqual([]);
+      expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('computeGroupResults from recovery rows', () => {

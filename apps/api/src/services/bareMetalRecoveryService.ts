@@ -25,6 +25,7 @@ import {
   hashRecoveryNonce,
   RECOVERY_CODE_TTL_MS,
 } from './bareMetalRecoveryCodes';
+import { resolveSnapshotPlatform } from './bareMetalRebuildSchemas';
 import { generateRecoveryToken, hashRecoveryToken } from './recoveryBootstrap';
 import { RECOVERY_REFUSAL_MESSAGES } from './recoveryCapabilities';
 
@@ -301,16 +302,6 @@ export async function createBareMetalRecovery(input: {
   });
 
   return { row, code: formatRecoveryCode(code) };
-}
-
-/** resolveSnapshotPlatform reads layout_manifest.platform defensively: an
- * absent manifest, an absent platform field, or a value outside the known
- * set all resolve to null rather than throwing — older snapshots captured
- * before the layout package shipped `platform` must still create a recovery. */
-export function resolveSnapshotPlatform(layoutManifest: unknown): 'linux' | 'windows' | null {
-  if (!layoutManifest || typeof layoutManifest !== 'object') return null;
-  const platform = (layoutManifest as { platform?: unknown }).platform;
-  return platform === 'linux' || platform === 'windows' ? platform : null;
 }
 
 /**

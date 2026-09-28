@@ -324,6 +324,73 @@ describe('restore_as_vm — rebuild engine (W05a)', () => {
     expect(result).toEqual({ error: 'snapshot_not_bare_metal_restorable' });
   });
 
+  // W06d (Task 20): the rebuild engine runs on Linux AND Windows hosts
+  // (platform-matched server-side), and a Windows host can create the VM.
+  it('validates a Windows drive-letter output path and an optional hyperv block on the rebuild variant', () => {
+    const windowsInput = { ...rebuildInput, outputPath: 'C:\\ProgramData\\Breeze\\rebuild\\out\\dev-1.vhdx' };
+    expect(validateToolInput('restore_as_vm', windowsInput)).toEqual({ success: true });
+    expect(validateToolInput('restore_as_vm', { ...windowsInput, hyperv: { vmName: 'w06-proof', switchName: 'lab-switch', memoryMb: 4096, cpuCount: 2 } })).toEqual({ success: true });
+    expect(validateToolInput('restore_as_vm', { ...windowsInput, hyperv: { vmName: '' } }).success).toBe(false);
+    expect(validateToolInput('restore_as_vm', { ...windowsInput, hyperv: { vmName: 'x', diskSizeGb: 40 } }).success).toBe(false);
+    expect(validateToolInput('restore_as_vm', { ...rebuildInput, outputPath: '\\\\server\\share\\dev-1.vhdx' }).success).toBe(false);
+    expect(validateToolInput('restore_as_vm', { ...rebuildInput, outputPath: 'C:\\out\\..\\dev-1.vhdx' }).success).toBe(false);
+  });
+
+  it('describes the rebuild engine platform-neutrally and exposes the hyperv block', () => {
+    const definition = toolMap.get('restore_as_vm')!.definition;
+    expect(definition.description).not.toMatch(/Linux whole-machine snapshot/);
+    expect(definition.description).toMatch(/Windows/);
+    const properties = (definition.input_schema as any).properties;
+    expect(properties.hyperv).toMatchObject({ type: 'object' });
+    expect(Object.keys(properties.hyperv.properties)).toEqual(['vmName', 'switchName', 'memoryMb', 'cpuCount']);
+    expect(properties.rebuildHostDeviceId.description).not.toMatch(/^Linux/);
+  });
+
+  it('forwards the hyperv block to the rebuild service and says the VM will be created', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockResolvedValue({
+      ok: true, jobId: RESTORE_JOB_ID, recoveryId: RECOVERY_ID, commandId: COMMAND_ID, status: 'queued',
+    });
+    const hyperv = { vmName: 'w06-proof', switchName: 'lab-switch' };
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(
+      { ...rebuildInput, outputPath: 'C:\\out\\dev-1.vhdx', hyperv } as Record<string, unknown>,
+      makeAuth(),
+    ));
+
+    expect(startRebuildEngineVmRestore).toHaveBeenCalledWith(expect.objectContaining({ outputPath: 'C:\\out\\dev-1.vhdx', hyperv }));
+    expect(result).toMatchObject({ success: true, engine: 'rebuild', hyperv });
+    expect(result.note).toMatch(/w06-proof/);
+    expect(result.note).not.toMatch(/arrives with the Windows engine/);
+  });
+
+  it('does not pass hyperv when the input carries none', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockResolvedValue({
+      ok: true, jobId: RESTORE_JOB_ID, recoveryId: RECOVERY_ID, commandId: COMMAND_ID, status: 'queued',
+    });
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(rebuildInput as Record<string, unknown>, makeAuth()));
+
+    expect(vi.mocked(startRebuildEngineVmRestore).mock.calls[0]![0]).not.toHaveProperty('hyperv');
+    expect(result.note).toMatch(/manually/);
+    expect(result.note).not.toMatch(/arrives with the Windows engine/);
+  });
+
+  it('returns the service refusal message for a hyperv block on a non-Windows host', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockResolvedValue({
+      ok: false, status: 400, error: 'hyperv_requires_windows_host', message: 'hyperv is only valid for Windows rebuild hosts',
+    });
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(
+      { ...rebuildInput, hyperv: { vmName: 'x' } } as Record<string, unknown>,
+      makeAuth(),
+    ));
+
+    expect(result).toEqual({ error: 'hyperv_requires_windows_host', message: 'hyperv is only valid for Windows rebuild hosts' });
+  });
+
   it('denies a cross-site snapshot before touching the rebuild service', async () => {
     mockSelectSequence([[]]);
     const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(rebuildInput as Record<string, unknown>, makeAuth()));

@@ -6,6 +6,7 @@ import {
   backupSnapshots,
   bareMetalRecoveries,
   deviceCommands,
+  devices,
   drExecutions,
   drPlanGroups,
   type BareMetalRecoveryStatus,
@@ -39,9 +40,13 @@ import {
   type ResilienceResourceRef,
 } from './resilienceSiteAuthorization';
 import {
+  DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
   DR_STEP_BARE_METAL_REBUILD,
+  defaultRebuildOutputDir,
   drBareMetalRebuildConfigSchema,
   isBareMetalRebuildConfig,
+  joinRebuildOutputPath,
+  resolveLatestRestorableSnapshot as resolveLatestRestorableSnapshotWithDb,
   resolveLatestRestorableSnapshotId as resolveLatestRestorableSnapshotIdWithDb,
   type DrBareMetalRebuildConfig,
 } from './drBareMetalRebuildStep';
@@ -769,12 +774,15 @@ export async function createDrExecutionAndEnqueue(input: {
  * (identity `original`), and the operator boots media and types the code.
  * A rehearsal creates the rows with identity `new` on the rebuild host, mints
  * a token per recovery and queues one `bare_metal_rebuild` per device to the
- * HOST, producing `${outputDir}/${deviceId}-${recoveryId}.vhdx`.
+ * HOST, producing `<outputDir><sep><deviceId>-<recoveryId>.vhdx` (W06d: the
+ * default dir and the separator follow the host's OS). The host must run the
+ * snapshot's platform; a rehearsal never creates a VM (no `hyperv` block).
  *
  * Dedupe key is `(groupId, deviceId)` in `queuedRecoveries`, so reconcile can
  * never mint a second recovery. Per-device service refusals
- * (`recovery_in_progress`, no restorable snapshot) become `failedDispatches`
- * entries; anything else propagates.
+ * (`recovery_in_progress`, no restorable snapshot, a platform-less layout or a
+ * host/platform mismatch on a rehearsal) become `failedDispatches` entries;
+ * anything else propagates.
  */
 async function dispatchBareMetalRebuildGroup(
   execution: DrExecutionRecord,
@@ -811,6 +819,22 @@ async function dispatchBareMetalRebuildGroup(
     serverUrl = resolveServerUrl();
   }
 
+  // W06d: the rebuild host must run the snapshot's platform (Linux snapshot →
+  // Linux host, Windows → Windows). Look its OS up once, scoped to the
+  // execution's org: dispatch runs in system context, so RLS does not scope
+  // this read — the org predicate is what keeps a plan from naming another
+  // tenant's device.
+  let hostOsType: string | null = null;
+  if (rehearsal && host) {
+    const [hostRow] = await db
+      .select({ osType: devices.osType })
+      .from(devices)
+      .where(and(eq(devices.id, host), eq(devices.orgId, execution.orgId)))
+      .limit(1);
+    if (!hostRow) return failGroup('rebuild_host_not_found');
+    hostOsType = hostRow.osType;
+  }
+
   const alreadyQueued = new Set(
     nextResults.queuedRecoveries
       .filter((entry) => entry.groupId === group.id)
@@ -828,10 +852,23 @@ async function dispatchBareMetalRebuildGroup(
 
     // Re-resolved at dispatch (not taken from the authorization pass) so a
     // snapshot published between trigger and dispatch is the one restored.
-    const snapshotId = await resolveLatestRestorableSnapshotIdWithDb(execution.orgId, deviceId);
-    if (!snapshotId) {
+    const snapshot = await resolveLatestRestorableSnapshotWithDb(execution.orgId, deviceId);
+    if (!snapshot) {
       failDevice('no_restorable_snapshot');
       continue;
+    }
+    const snapshotId = snapshot.id;
+    // Only a rehearsal runs the engine on a rebuild host; failover/failback
+    // boot media on the device itself, so neither check applies to them.
+    if (rehearsal) {
+      if (!snapshot.platform) {
+        failDevice('snapshot_not_bare_metal_restorable');
+        continue;
+      }
+      if (hostOsType !== snapshot.platform) {
+        failDevice('rebuild_host_unsupported');
+        continue;
+      }
     }
 
     let recoveryId: string;
@@ -858,7 +895,12 @@ async function dispatchBareMetalRebuildGroup(
     }
 
     if (rehearsal && host && serverUrl) {
-      const target = { kind: 'vhdx' as const, path: `${config.outputDir.replace(/\/+$/, '')}/${deviceId}-${recoveryId}.vhdx` };
+      // The stored default (unset by the operator) is the Linux dir; map it to
+      // the host's own default, and join with the dir's separator (W06d).
+      const outputDir = config.outputDir === DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR
+        ? defaultRebuildOutputDir(hostOsType ?? 'linux')
+        : config.outputDir;
+      const target = { kind: 'vhdx' as const, path: joinRebuildOutputPath(outputDir, `${deviceId}-${recoveryId}.vhdx`) };
       let token: string;
       try {
         token = (await mintRecoveryTokenForRecovery({ recoveryId, orgId: execution.orgId, createdBy: userId })).token;

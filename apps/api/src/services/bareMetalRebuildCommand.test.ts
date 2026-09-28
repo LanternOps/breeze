@@ -22,6 +22,7 @@ vi.mock('./sensitiveCommandPayload', async (importOriginal) => {
 import { CommandTypes } from './commandTypes';
 import { TERMINAL_PAYLOAD_STRIP_KEYS, hasSensitivePayload } from './sensitiveCommandPayload';
 import { bareMetalRebuildPayloadSchema, queueBareMetalRebuild, queueBareMetalRebuildWithSystemPrecheck } from './bareMetalRebuildCommand';
+import { isAbsoluteRebuildPath } from './bareMetalRebuildSchemas';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const HOST_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -76,6 +77,78 @@ describe('bareMetalRebuildPayloadSchema', () => {
   });
 });
 
+// W06d (Task 20): a Windows rebuild host writes to a drive-letter path, so
+// "absolute" means POSIX `/…` OR `X:\…` — never a UNC share or a relative path.
+describe('isAbsoluteRebuildPath', () => {
+  it.each([
+    ['/dev/sdb', true],
+    ['/srv/rebuild/dev-1.vhdx', true],
+    ['C:\\images\\x.vhdx', true],
+    ['c:\\images\\x.vhdx', true],
+    ['images/x.vhdx', false],
+    ['x.vhdx', false],
+    ['C:images\\x.vhdx', false], // drive-relative, not absolute
+    ['C:/images/x.vhdx', false], // forward-slash drive paths are not accepted
+    ['\\\\server\\share\\x.vhdx', false], // UNC explicitly rejected
+    ['\\\\?\\C:\\images\\x.vhdx', false], // extended-length prefix is UNC-shaped
+    ['\\images\\x.vhdx', false], // root-relative on the current drive
+    ['/srv/rebuild/x\0.vhdx', false], // NUL byte
+    ['', false],
+  ])('isAbsoluteRebuildPath(%j) === %s', (input, expected) => {
+    expect(isAbsoluteRebuildPath(input)).toBe(expected);
+  });
+});
+
+describe('bareMetalRebuildPayloadSchema — Windows target + hyperv block (W06d)', () => {
+  it('accepts a Windows drive-letter target path', () => {
+    expect(bareMetalRebuildPayloadSchema.safeParse({
+      ...validPayload,
+      target: { kind: 'vhdx', path: 'C:\\ProgramData\\Breeze\\rebuild\\out\\x.vhdx' },
+    }).success).toBe(true);
+  });
+
+  it('rejects a UNC target path', () => {
+    expect(bareMetalRebuildPayloadSchema.safeParse({
+      ...validPayload,
+      target: { kind: 'vhdx', path: '\\\\server\\share\\x.vhdx' },
+    }).success).toBe(false);
+  });
+
+  it('accepts an optional hyperv block on a Windows drive-letter target', () => {
+    const parsed = bareMetalRebuildPayloadSchema.safeParse({
+      ...validPayload,
+      target: { kind: 'vhdx', path: 'C:\\ProgramData\\Breeze\\rebuild\\out\\x.vhdx' },
+      hyperv: { vmName: 'w06-proof', switchName: 'External' },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.hyperv).toEqual({ vmName: 'w06-proof', switchName: 'External' });
+  });
+
+  it('accepts memoryMb and cpuCount in the hyperv block', () => {
+    const parsed = bareMetalRebuildPayloadSchema.safeParse({
+      ...validPayload,
+      hyperv: { vmName: 'w06-proof', memoryMb: 4096, cpuCount: 2 },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it.each([
+    ['an empty vmName', { vmName: '' }],
+    ['a vmName over 100 characters', { vmName: 'v'.repeat(101) }],
+    ['an empty switchName', { vmName: 'x', switchName: '' }],
+    ['memoryMb below 512', { vmName: 'x', memoryMb: 256 }],
+    ['a zero cpuCount', { vmName: 'x', cpuCount: 0 }],
+    ['an unknown key', { vmName: 'x', diskSizeGb: 40 }],
+  ])('rejects a hyperv block with %s', (_label, hyperv) => {
+    expect(bareMetalRebuildPayloadSchema.safeParse({ ...validPayload, hyperv }).success).toBe(false);
+  });
+
+  it('parses a payload without hyperv to one without the key', () => {
+    const parsed = bareMetalRebuildPayloadSchema.parse(validPayload);
+    expect('hyperv' in parsed).toBe(false);
+  });
+});
+
 describe('queueBareMetalRebuild', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -110,6 +183,16 @@ describe('queueBareMetalRebuild', () => {
       details: { recoveryId: RECOVERY_ID, hostDeviceId: HOST_ID, commandId: 'cmd-1', target: validPayload.target },
     });
     expect(JSON.stringify(entry)).not.toContain(validPayload.token);
+  });
+
+  it('passes the hyperv block through to the command and records it in the audit details (W06d)', async () => {
+    const hyperv = { vmName: 'w06-proof', switchName: 'External' };
+    const payload = { ...validPayload, target: { kind: 'vhdx' as const, path: 'C:\\out\\dev-1.vhdx' }, hyperv };
+
+    await queueBareMetalRebuild({ orgId: ORG_ID, hostDeviceId: HOST_ID, payload, userId: USER_ID });
+
+    expect(queueCommandForExecutionMock.mock.calls[0]![2]).toMatchObject({ hyperv });
+    expect(createAuditLogAsyncMock.mock.calls[0]![0]).toMatchObject({ details: { hyperv } });
   });
 
   it('returns the queue error and records the dispatch failure in the audit trail', async () => {
