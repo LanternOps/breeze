@@ -31,7 +31,7 @@ export const CREDENTIAL_RETENTION_MS = 120 * 24 * 60 * 60 * 1000;
 export const CREDENTIAL_RETENTION_HARD_CAP_MS = 400 * 24 * 60 * 60 * 1000;
 
 // Pinned API version — must match partnerStripe.ts. The SDK default moves on upgrade.
-const API_VERSION = '2026-06-24.dahlia';
+const API_VERSION = '2026-08-26.dahlia';
 
 export class StripeCredentialUnavailableError extends Error {
   constructor(message: string, readonly reason: 'credential_unavailable') {
