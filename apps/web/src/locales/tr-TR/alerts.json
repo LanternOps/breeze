@@ -221,7 +221,11 @@
       "resolved": "Çözüldü",
       "suppressed": "Bastırıldı",
       "dismissed": "Görevden alındı"
-    }
+    },
+    "filterStatusLabel": "Durum filtresi",
+    "filterSeverityLabel": "Önem derecesi filtresi",
+    "filterDeviceLabel": "Cihaz filtresi",
+    "filterDateRangeLabel": "Tarih aralığı filtresi"
   },
   "alertRuleEditPage": {
     "loadingAlertRule": "Uyarı kuralı yükleniyor...",
@@ -868,7 +872,8 @@
       "webhook": "Web kancası",
       "sms": "SMS",
       "pushover": "Pushover"
-    }
+    },
+    "typeLabel": "Tür"
   },
   "notificationChannelsPage": {
     "loadingNotificationChannels": "Bildirim kanalları yükleniyor...",

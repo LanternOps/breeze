@@ -1136,7 +1136,8 @@
           "title": "No PSA connections configured"
         },
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "connection": "Connection",
@@ -1205,7 +1206,8 @@
           "title": "No PSA tickets synced"
         },
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "linkedAlert": "Linked Alert",
@@ -1341,7 +1343,8 @@
         "empty": "No webhooks found.",
         "failedCount": "{{count}} failed",
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "events": "Events",
@@ -2119,7 +2122,8 @@
         "description": "Tracked incidents and EDR findings across your organizations.",
         "filters": {
           "tracked": "Tracked",
-          "findings": "Findings"
+          "findings": "Findings",
+          "kindLabel": "Kind"
         },
         "emptyTitle": "No incidents found",
         "emptyFiltered": "No incidents match the current filters.",
@@ -2342,7 +2346,9 @@
           "unknown": "Unknown"
         },
         "lastSeen": "Last seen",
-        "noDeviceInventory": "No device inventory available from customers yet."
+        "noDeviceInventory": "No device inventory available from customers yet.",
+        "healthFilterLabel": "Health",
+        "sortFilterLabel": "Sort by"
       }
     },
     "remediation": {

@@ -15,6 +15,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
@@ -399,48 +400,51 @@ export default function SessionHistory({
             />
           </div>
 
-          <select
+          <FilterSelect
+            label={t('sessionHistory.filters.typeFilterLabel')}
             value={typeFilter}
             onChange={event => {
               setTypeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-10"
           >
             <option value="all">{t('sessionHistory.filters.allTypes')}</option>
             <option value="terminal">{t('sessionHistory.types.terminal')}</option>
             <option value="desktop">{t('sessionHistory.types.desktop')}</option>
             <option value="file_transfer">{t('sessionHistory.types.fileTransfer')}</option>
-          </select>
+          </FilterSelect>
 
-          <select
+          <FilterSelect
+            label={t('sessionHistory.filters.userFilterLabel')}
             value={userFilter}
             onChange={event => {
               setUserFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-10"
           >
             <option value="all">{t('sessionHistory.filters.allUsers')}</option>
             {uniqueUsers.map(user => (
               <option key={user.id} value={user.id}>{user.name}</option>
             ))}
-          </select>
+          </FilterSelect>
 
-          <select
+          <FilterSelect
+            label={t('sessionHistory.filters.dateFilterLabel')}
             value={dateFilter}
             onChange={event => {
               setDateFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-10"
           >
             <option value="all">{t('sessionHistory.filters.allTime')}</option>
             <option value="today">{t('sessionHistory.filters.today')}</option>
             <option value="yesterday">{t('sessionHistory.filters.yesterday')}</option>
             <option value="week">{t('sessionHistory.filters.lastSevenDays')}</option>
             <option value="month">{t('sessionHistory.filters.lastThirtyDays')}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

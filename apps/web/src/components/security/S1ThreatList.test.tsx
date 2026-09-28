@@ -48,6 +48,18 @@ beforeEach(() => {
   navigateTo.mockReset();
 });
 
+describe('S1ThreatList filter selects accessible name (#7156)', () => {
+  it('gives the severity and status filter selects a real accessible name', async () => {
+    routeFetch([]);
+    render(<S1ThreatList />);
+
+    await waitFor(() => expect(getS1ThreatUrls().length).toBeGreaterThan(0));
+
+    expect(screen.getByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
 describe('S1ThreatList', () => {
   it('fetches fleet threats without orgId and navigates rows to the device', async () => {
     routeFetch([

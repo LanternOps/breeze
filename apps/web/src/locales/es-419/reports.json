@@ -64,7 +64,8 @@
           "label": "Tiempo de actividad de la flota",
           "title": "tiempo de actividad"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Rango de fechas"
     },
     "capacityForecast": {
       "actual": "Real",
@@ -893,7 +894,12 @@
         "tuesday": "Martes",
         "wednesday": "Miércoles"
       },
-      "where": "Dónde"
+      "where": "Dónde",
+      "filterLabels": {
+        "logic": "Lógica de filtro",
+        "field": "Campo de filtro",
+        "operator": "Operador de filtro"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Configure un informe desde cero o comience con una configuración en blanco.",

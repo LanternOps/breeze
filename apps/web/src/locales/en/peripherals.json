@@ -31,7 +31,8 @@
       "policy": "Policy"
     },
     "pagination": "Showing {{from}}–{{to}} of {{total}}",
-    "prev": "Prev"
+    "prev": "Prev",
+    "eventFilterLabel": "Event type"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Created"
     },
     "partnerWideTitle": "Partner-wide policy — enforced on devices in every organization",
-    "allOrgs": "Partner-wide"
+    "allOrgs": "Partner-wide",
+    "classFilterLabel": "Device class",
+    "actionFilterLabel": "Action",
+    "statusFilterLabel": "Status"
   },
   "peripheralPolicyForm": {
     "errors": {

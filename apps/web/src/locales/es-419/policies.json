@@ -157,7 +157,8 @@
       "itsOwningOrganization": "su organización propietaria",
       "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}",
       "summary": "{{filtered}} de {{total}} políticas",
-      "inheritsBadge": "Hereda"
+      "inheritsBadge": "Hereda",
+      "statusFilterLabel": "Estado"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "No se pudieron recuperar las políticas de configuración",
@@ -1628,7 +1629,8 @@
       "bulkSoftwareDeployment": "Implementación masiva de software",
       "catalogTab": "Catálogo",
       "summaryCompleted7d": "Completadas (7 días)",
-      "summaryFailed7d": "Fallidas (7 días)"
+      "summaryFailed7d": "Fallidas (7 días)",
+      "categoryFilterLabel": "Categoría"
     },
     "softwareInventory": {
       "allowed": "Permitido",

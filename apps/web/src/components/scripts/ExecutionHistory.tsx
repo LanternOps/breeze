@@ -8,6 +8,7 @@ import { executionRowStatusConfig as statusConfig, resolveExecutionStatusLabel }
 import type { ExecutionStatus, CancelState } from '@breeze/shared';
 import type { RunContextValue } from '@/components/common/RunContext';
 import { hasPermission } from '@/lib/permissions';
+import { FilterSelect } from '../shared/FilterSelect';
 import type { Permission } from '@/stores/auth';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 export type { ExecutionStatus } from '@breeze/shared';
@@ -292,13 +293,14 @@ export default function ExecutionHistory({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={t('executionHistory.filters.statusLabel')}
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('executionHistory.filters.allStatus')}</option>
             <option value="pending">{t('executionHistory.status.pending')}</option>
@@ -309,21 +311,22 @@ export default function ExecutionHistory({
             <option value="failed">{t('executionHistory.status.failed')}</option>
             <option value="timeout">{t('executionHistory.status.timeout')}</option>
             <option value="cancelled">{t('executionHistory.status.cancelled')}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t('executionHistory.filters.dateLabel')}
             value={dateFilter}
             onChange={event => {
               setDateFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('executionHistory.filters.allTime')}</option>
             <option value="hour">{t('executionHistory.filters.lastHour')}</option>
             <option value="day">{t('executionHistory.filters.lastDay')}</option>
             <option value="week">{t('executionHistory.filters.lastWeek')}</option>
             <option value="month">{t('executionHistory.filters.lastMonth')}</option>
-          </select>
+          </FilterSelect>
         </div>
         <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
           {t('executionHistory.summary', { shown: filteredExecutions.length, total: executions.length })}

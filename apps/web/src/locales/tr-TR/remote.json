@@ -639,7 +639,10 @@
       "lastSevenDays": "Son Yedi Gün",
       "lastThirtyDays": "Son Otuz Gün",
       "today": "Bugün",
-      "yesterday": "Dün"
+      "yesterday": "Dün",
+      "typeFilterLabel": "Oturum türü",
+      "userFilterLabel": "Kullanıcı",
+      "dateFilterLabel": "Tarih aralığı"
     },
     "noSessions": "Oturum Yok",
     "page": "Sayfa {{current}} / {{total}}",

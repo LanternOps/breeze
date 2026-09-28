@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Prova a modificare la ricerca o i filtri.",
     "active": "Attiva",
     "revoked": "Revocata",
-    "expired": "Scaduta"
+    "expired": "Scaduta",
+    "statusFilterLabel": "Stato della chiave"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Caricamento chiavi API...",
@@ -4013,7 +4014,8 @@
     "cannotDeleteAssignedRole": "Impossibile eliminare un ruolo con utenti assegnati",
     "inheritedFromParentRole": "Ereditato dal ruolo padre",
     "waitingForPermissionCatalog": "In attesa del caricamento del catalogo autorizzazioni",
-    "summary": "{{filtered}} di {{total}} ruoli"
+    "summary": "{{filtered}} di {{total}} ruoli",
+    "typeFilterLabel": "Tipo di ruolo"
   },
   "roleSelector": {
     "currentRole": "Ruolo attuale",
@@ -4138,7 +4140,8 @@
     "delete": "Elimina",
     "allStatuses": "Tutti gli stati",
     "deactivate": "Disattiva",
-    "activate": "Attiva"
+    "activate": "Attiva",
+    "statusFilterLabel": "Stato del provider"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Recupero provider SSO non riuscito",
@@ -5417,7 +5420,8 @@
       "title": "Elimina campo personalizzato",
       "messagePrefix": "Sei sicuro di voler eliminare",
       "messageSuffix": " Questo rimuoverà la definizione del campo e tutti i valori archiviati sui dispositivi."
-    }
+    },
+    "typeFilterLabel": "Tipo di campo"
   },
   "knownGuestsSettings": {
     "title": "Ospiti noti",

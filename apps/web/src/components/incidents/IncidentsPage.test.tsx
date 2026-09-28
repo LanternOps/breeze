@@ -20,6 +20,14 @@ beforeEach(() => {
   navigateTo.mockReset();
 });
 
+describe('IncidentsPage kind-filter select accessible name (#7156)', () => {
+  it('gives the kind filter select a real accessible name', async () => {
+    fetchWithAuth.mockResolvedValueOnce(feed([]));
+    render(<IncidentsPage />);
+    expect(await screen.findByRole('combobox', { name: 'Kind' })).toBeInTheDocument();
+  });
+});
+
 describe('IncidentsPage feed', () => {
   it('renders source badges for tracked and finding rows', async () => {
     fetchWithAuth.mockResolvedValueOnce(feed([trackedRow, findingRow]));

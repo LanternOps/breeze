@@ -157,7 +157,8 @@
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
-      "inheritsBadge": "Erbt"
+      "inheritsBadge": "Erbt",
+      "statusFilterLabel": "Status"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -1628,7 +1629,8 @@
       "bulkSoftwareDeployment": "Massensoftwarebereitstellung",
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
-      "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
+      "summaryFailed7d": "Fehlgeschlagen (7 Tage)",
+      "categoryFilterLabel": "Kategorie"
     },
     "softwareInventory": {
       "allowed": "Erlaubt",

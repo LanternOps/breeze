@@ -221,7 +221,11 @@
       "resolved": "Resolvido",
       "suppressed": "Suprimido",
       "dismissed": "Dispensado"
-    }
+    },
+    "filterStatusLabel": "Filtro de status",
+    "filterSeverityLabel": "Filtro de gravidade",
+    "filterDeviceLabel": "Filtro de dispositivo",
+    "filterDateRangeLabel": "Filtro de intervalo de datas"
   },
   "alertRuleEditPage": {
     "loadingAlertRule": "Carregando regra de alerta...",
@@ -868,7 +872,8 @@
       "webhook": "Webhook",
       "sms": "SMS",
       "pushover": "Pushover"
-    }
+    },
+    "typeLabel": "Tipo"
   },
   "notificationChannelsPage": {
     "loadingNotificationChannels": "Carregando canais de notificação...",

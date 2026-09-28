@@ -639,7 +639,10 @@
       "lastSevenDays": "Últimos siete días",
       "lastThirtyDays": "Últimos treinta días",
       "today": "Hoy",
-      "yesterday": "Ayer"
+      "yesterday": "Ayer",
+      "typeFilterLabel": "Tipo de sesión",
+      "userFilterLabel": "Usuario",
+      "dateFilterLabel": "Rango de fechas"
     },
     "noSessions": "Sin sesiones",
     "page": "Página {{current}} de {{total}}",

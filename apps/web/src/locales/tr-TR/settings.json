@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "active": "Aktif",
     "revoked": "İptal edildi",
-    "expired": "Süresi dolmuş"
+    "expired": "Süresi dolmuş",
+    "statusFilterLabel": "Anahtar durumu"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -4018,7 +4019,8 @@
     "cannotDeleteAssignedRole": "Atanan kullanıcılarla rol silinemiyor",
     "inheritedFromParentRole": "Üst rolden devralındı",
     "waitingForPermissionCatalog": "İzin kataloğunun yüklenmesi bekleniyor",
-    "summary": "{{filtered}} / {{total}} rol"
+    "summary": "{{filtered}} / {{total}} rol",
+    "typeFilterLabel": "Rol türü"
   },
   "roleSelector": {
     "currentRole": "Mevcut görev",
@@ -4143,7 +4145,8 @@
     "delete": "Sil",
     "allStatuses": "Tüm durumlar",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "statusFilterLabel": "Sağlayıcı durumu"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "SSO sağlayıcıları getirilemedi",
@@ -5422,7 +5425,8 @@
       "title": "Özel Alanı Sil",
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
-    }
+    },
+    "typeFilterLabel": "Alan türü"
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",

@@ -31,7 +31,8 @@
       "policy": "Política"
     },
     "pagination": "Exibindo {{from}}–{{to}} de {{total}}",
-    "prev": "Anterior"
+    "prev": "Anterior",
+    "eventFilterLabel": "Tipo de evento"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Criada"
     },
     "partnerWideTitle": "Política de todo o parceiro — aplicada aos dispositivos de todas as organizações",
-    "allOrgs": "Todo o parceiro"
+    "allOrgs": "Todo o parceiro",
+    "classFilterLabel": "Classe de dispositivo",
+    "actionFilterLabel": "Ação",
+    "statusFilterLabel": "Status da política"
   },
   "peripheralPolicyForm": {
     "errors": {

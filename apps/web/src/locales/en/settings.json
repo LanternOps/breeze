@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Try adjusting your search or filters.",
     "active": "Active",
     "revoked": "Revoked",
-    "expired": "Expired"
+    "expired": "Expired",
+    "statusFilterLabel": "Status"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4018,7 +4019,8 @@
     "cannotDeleteAssignedRole": "Cannot delete role with assigned users",
     "inheritedFromParentRole": "Inherited from parent role",
     "waitingForPermissionCatalog": "Waiting for permission catalog to load",
-    "summary": "{{filtered}} of {{total}} roles"
+    "summary": "{{filtered}} of {{total}} roles",
+    "typeFilterLabel": "Role type"
   },
   "roleSelector": {
     "currentRole": "Current role",
@@ -4143,7 +4145,8 @@
     "delete": "Delete",
     "allStatuses": "All statuses",
     "deactivate": "Deactivate",
-    "activate": "Activate"
+    "activate": "Activate",
+    "statusFilterLabel": "Status"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Failed to fetch SSO providers",
@@ -5417,7 +5420,8 @@
       "title": "Delete Custom Field",
       "messagePrefix": "Are you sure you want to delete",
       "messageSuffix": " This will remove the field definition and all stored values on devices."
-    }
+    },
+    "typeFilterLabel": "Field type"
   },
   "knownGuestsSettings": {
     "title": "Known Guests",

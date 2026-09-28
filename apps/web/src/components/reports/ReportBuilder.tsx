@@ -31,6 +31,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
+import { FilterSelect } from '../shared/FilterSelect';
 import { FilterPreview } from '../filters/FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { useTranslation } from 'react-i18next';
@@ -1814,7 +1815,12 @@ export default function ReportBuilder({
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {dataSourceFields.map(field => (
               <div key={field.id} className="space-y-2 min-w-0">
-                <label className="text-xs font-medium text-muted-foreground">{getDataSourceFieldLabel(field.id)}</label>
+                <label
+                  htmlFor={field.type === 'toggle' ? undefined : `data-source-${field.id}`}
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  {getDataSourceFieldLabel(field.id)}
+                </label>
                 {field.type === 'toggle' ? (
                   <label className="flex items-center gap-2 text-sm font-medium">
                     <input
@@ -1832,6 +1838,7 @@ export default function ReportBuilder({
                   </label>
                 ) : (
                   <select
+                    id={`data-source-${field.id}`}
                     value={String(dataSource[field.id] ?? '')}
                     onChange={event =>
                       setDataSource(prev => ({
@@ -1985,37 +1992,40 @@ export default function ReportBuilder({
                           {t('reports.reportBuilder.where')}
                         </div>
                       ) : (
-                        <select
+                        <FilterSelect
+                          label={t('reports.reportBuilder.filterLabels.logic')}
                           value={condition.logic}
                           onChange={event => updateFilterCondition(condition.id, { logic: event.target.value as 'and' | 'or' })}
-                          className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                          className="h-9 px-2 text-xs"
                         >
                           <option value="and">{t('reports.reportBuilder.logic.and')}</option>
                           <option value="or">{t('reports.reportBuilder.logic.or')}</option>
-                        </select>
+                        </FilterSelect>
                       )}
-                      <select
+                      <FilterSelect
+                        label={t('reports.reportBuilder.filterLabels.field')}
                         value={condition.field}
                         onChange={event => updateFilterCondition(condition.id, { field: event.target.value })}
-                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        className="h-9 px-2 text-xs"
                       >
                         {fieldDefinitions.map(field => (
                           <option key={field.id} value={field.id}>
                             {getFieldLabel(field.id)}
                           </option>
                         ))}
-                      </select>
-                      <select
+                      </FilterSelect>
+                      <FilterSelect
+                        label={t('reports.reportBuilder.filterLabels.operator')}
                         value={condition.operator}
                         onChange={event => updateFilterCondition(condition.id, { operator: event.target.value })}
-                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        className="h-9 px-2 text-xs"
                       >
                         {filterOperators.map(operator => (
                           <option key={operator.value} value={operator.value}>
                             {getFilterOperatorLabel(operator.value)}
                           </option>
                         ))}
-                      </select>
+                      </FilterSelect>
                       <input
                         value={condition.value}
                         onChange={event => updateFilterCondition(condition.id, { value: event.target.value })}
@@ -2076,8 +2086,11 @@ export default function ReportBuilder({
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.groupBy')}</label>
+              <label htmlFor="report-group-by" className="text-xs font-medium text-muted-foreground">
+                {t('reports.reportBuilder.groupBy')}
+              </label>
               <select
+                id="report-group-by"
                 value={groupBy}
                 onChange={event => setGroupBy(event.target.value)}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -2091,8 +2104,11 @@ export default function ReportBuilder({
               </select>
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.aggregation')}</label>
+              <label htmlFor="report-aggregation" className="text-xs font-medium text-muted-foreground">
+                {t('reports.reportBuilder.aggregation')}
+              </label>
               <select
+                id="report-aggregation"
                 value={aggregation.type}
                 onChange={event => {
                   const nextType = event.target.value as AggregationType;
@@ -2115,8 +2131,11 @@ export default function ReportBuilder({
 
           {aggregation.type !== 'count' && (
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.aggregationField')}</label>
+              <label htmlFor="report-aggregation-field" className="text-xs font-medium text-muted-foreground">
+                {t('reports.reportBuilder.aggregationField')}
+              </label>
               <select
+                id="report-aggregation-field"
                 value={aggregation.field ?? ''}
                 onChange={event => setAggregation(prev => ({ ...prev, field: event.target.value }))}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -2207,8 +2226,11 @@ export default function ReportBuilder({
                 </div>
                 {schedule === 'weekly' && (
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.dayOfWeek')}</label>
+                    <label htmlFor="report-schedule-day-of-week" className="text-xs font-medium text-muted-foreground">
+                      {t('reports.reportBuilder.dayOfWeek')}
+                    </label>
                     <select
+                      id="report-schedule-day-of-week"
                       value={scheduleDay}
                       onChange={event => setScheduleDay(event.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -2223,8 +2245,11 @@ export default function ReportBuilder({
                 )}
                 {schedule === 'monthly' && (
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.dayOfMonth')}</label>
+                    <label htmlFor="report-schedule-day-of-month" className="text-xs font-medium text-muted-foreground">
+                      {t('reports.reportBuilder.dayOfMonth')}
+                    </label>
                     <select
+                      id="report-schedule-day-of-month"
                       value={scheduleDate}
                       onChange={event => setScheduleDate(event.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"

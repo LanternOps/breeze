@@ -64,7 +64,8 @@
           "label": "Uptime della flotta",
           "title": "Uptime"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Intervallo di date"
     },
     "capacityForecast": {
       "actual": "Effettivo",
@@ -893,7 +894,12 @@
         "tuesday": "Martedì",
         "wednesday": "Mercoledì"
       },
-      "where": "Dove"
+      "where": "Dove",
+      "filterLabels": {
+        "logic": "Logica del filtro",
+        "field": "Campo del filtro",
+        "operator": "Operatore del filtro"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Configura un report da zero o inizia con una configurazione vuota.",

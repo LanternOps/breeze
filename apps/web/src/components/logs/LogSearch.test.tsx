@@ -1,3 +1,4 @@
+import '@/lib/i18n';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import LogSearch from './LogSearch';
@@ -36,5 +37,19 @@ describe('LogSearch', () => {
     expect(screen.getByLabelText('Source')).toBeInTheDocument();
     expect(screen.getByLabelText('Start')).toBeInTheDocument();
     expect(screen.getByLabelText('End')).toBeInTheDocument();
+  });
+});
+
+describe('LogSearch rows select accessible name (#7156)', () => {
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse({ results: [], total: 0 }),
+    );
+  });
+
+  it('ties the "Rows" label to the select via htmlFor/id', () => {
+    render(<LogSearch />);
+    expect(screen.getByRole('combobox', { name: 'Rows' })).toBeInTheDocument();
   });
 });

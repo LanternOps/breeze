@@ -17,6 +17,7 @@
         "operations": "Operations Overview",
         "sla": "SLA Compliance"
       },
+      "dateRangeSelectLabel": "Date range",
       "dateRanges": {
         "customRange": "Custom range",
         "last24Hours": "Last 24 hours",
@@ -771,6 +772,11 @@
       "logic": {
         "and": "AND",
         "or": "OR"
+      },
+      "filterLabels": {
+        "logic": "Filter logic",
+        "field": "Filter field",
+        "operator": "Filter operator"
       },
       "noFieldsSelected": "No fields selected yet.",
       "noFilters": "No filters yet. Add your first condition.",

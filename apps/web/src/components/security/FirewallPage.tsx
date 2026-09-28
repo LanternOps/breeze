@@ -17,6 +17,7 @@ import {
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import AccessDenied from "../shared/AccessDenied";
+import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type FirewallProfile = {
@@ -220,25 +221,27 @@ export default function FirewallPage() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={t("securityFirewallPage.statusFilterLabel")}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityFirewallPage.allStatuses")}</option>
           <option value="enabled">{t("securityFirewallPage.enabled")}</option>
           <option value="disabled">{t("securityFirewallPage.disabled")}</option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityFirewallPage.osFilterLabel")}
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityFirewallPage.allOS")}</option>
           <option value="windows">{t("securityFirewallPage.windows")}</option>
           <option value="macos">{t("securityFirewallPage.macos")}</option>
           <option value="linux">{t("securityFirewallPage.linux")}</option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">

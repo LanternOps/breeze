@@ -271,8 +271,9 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.rows')}</label>
+            <label htmlFor="log-search-rows" className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.rows')}</label>
             <select
+              id="log-search-rows"
               value={limit}
               onChange={(event) => setLimit(Number(event.target.value))}
               className="w-full rounded-md border px-3 py-2 text-sm"

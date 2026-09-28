@@ -157,7 +157,8 @@
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
       "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
       "summary": "{{filtered}} di {{total}} criteri",
-      "inheritsBadge": "Eredita"
+      "inheritsBadge": "Eredita",
+      "statusFilterLabel": "Stato"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -1628,7 +1629,8 @@
       "bulkSoftwareDeployment": "Distribuzione software massiva",
       "catalogTab": "Catalogo",
       "summaryCompleted7d": "Completate (7 gg)",
-      "summaryFailed7d": "Non riuscite (7 gg)"
+      "summaryFailed7d": "Non riuscite (7 gg)",
+      "categoryFilterLabel": "Categoria"
     },
     "softwareInventory": {
       "allowed": "Consentito",

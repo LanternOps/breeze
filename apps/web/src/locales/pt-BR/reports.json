@@ -64,7 +64,8 @@
           "label": "Disponibilidade da frota",
           "title": "Disponibilidade"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Intervalo de datas"
     },
     "capacityForecast": {
       "actual": "Real",
@@ -893,7 +894,12 @@
         "tuesday": "Terca-feira",
         "wednesday": "Quarta-feira"
       },
-      "where": "Onde"
+      "where": "Onde",
+      "filterLabels": {
+        "logic": "Lógica do filtro",
+        "field": "Campo do filtro",
+        "operator": "Operador do filtro"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Configure um relatório do zero ou comece com uma configuração em branco.",

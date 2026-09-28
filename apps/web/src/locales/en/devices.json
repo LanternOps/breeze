@@ -582,6 +582,7 @@
       "6h": "Last 6 hours",
       "24h": "Last 24 hours"
     },
+    "timeRangeSelectLabel": "Time range",
     "labels": {
       "os": "OS",
       "cpu": "CPU",

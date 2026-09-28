@@ -79,6 +79,19 @@ const ITEM = {
   createdAt: '2026-06-14T00:00:00Z'
 };
 
+describe('SoftwareCatalog category filter select accessible name (#7156)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it('gives the category filter select a real accessible name', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    render(<SoftwareCatalog />);
+    expect(await screen.findByRole('combobox', { name: 'Category' })).toBeInTheDocument();
+  });
+});
+
 describe('SoftwareCatalog package-manager badges', () => {
   beforeEach(() => {
     fetchMock.mockReset();

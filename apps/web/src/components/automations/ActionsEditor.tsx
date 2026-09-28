@@ -108,7 +108,11 @@ export default function ActionsEditor({
                 </div>
                 <div className="flex-1 space-y-3">
                   <div className="flex items-center gap-3">
+                    <label htmlFor={`action-${index}-type`} className="sr-only">
+                      {t('automationForm.fields.actionType')}
+                    </label>
                     <select
+                      id={`action-${index}-type`}
                       className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       {...register(`${name}.${index}.type`)}
                     >
@@ -122,10 +126,11 @@ export default function ActionsEditor({
 
                   {watchActions?.[index]?.type === 'run_script' && (
                     <div className="space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground">
+                      <label htmlFor={`action-${index}-script`} className="text-xs font-medium text-muted-foreground">
                         {t('automationForm.fields.script')}
                       </label>
                       <select
+                        id={`action-${index}-script`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`${name}.${index}.scriptId`)}
                       >
@@ -186,10 +191,14 @@ export default function ActionsEditor({
 
                   {watchActions?.[index]?.type === 'send_notification' && (
                     <div className="space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground">
+                      <label
+                        htmlFor={`action-${index}-notification-channel`}
+                        className="text-xs font-medium text-muted-foreground"
+                      >
                         {t('automationForm.fields.notificationChannel')}
                       </label>
                       <select
+                        id={`action-${index}-notification-channel`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`${name}.${index}.notificationChannelId`)}
                       >
@@ -206,10 +215,14 @@ export default function ActionsEditor({
                   {watchActions?.[index]?.type === 'create_alert' && (
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">
+                        <label
+                          htmlFor={`action-${index}-alert-severity`}
+                          className="text-xs font-medium text-muted-foreground"
+                        >
                           {t('automationForm.fields.severity')}
                         </label>
                         <select
+                          id={`action-${index}-alert-severity`}
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`${name}.${index}.alertSeverity`)}
                         >
@@ -274,10 +287,11 @@ export default function ActionsEditor({
 
                   {watchActions?.[index]?.type === 'deploy_software' && (
                     <div className="space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground">
+                      <label htmlFor={`action-${index}-catalog`} className="text-xs font-medium text-muted-foreground">
                         {t('automationForm.fields.software')}
                       </label>
                       <select
+                        id={`action-${index}-catalog`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`${name}.${index}.catalogId`)}
                       >

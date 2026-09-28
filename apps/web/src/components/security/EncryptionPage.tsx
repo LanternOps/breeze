@@ -13,6 +13,7 @@ import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import AccessDenied from "../shared/AccessDenied";
+import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 import RecoveryKeysPanel from "./RecoveryKeysPanel";
@@ -254,10 +255,11 @@ export default function EncryptionPage() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={t("securityEncryptionPage.statusFilterLabel")}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityEncryptionPage.allStatuses")}</option>
           <option value="encrypted">
@@ -267,21 +269,23 @@ export default function EncryptionPage() {
           <option value="unencrypted">
             {t("securityEncryptionPage.unencrypted")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityEncryptionPage.osFilterLabel")}
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityEncryptionPage.allOS")}</option>
           <option value="windows">{t("securityEncryptionPage.windows")}</option>
           <option value="macos">{t("securityEncryptionPage.macos")}</option>
           <option value="linux">{t("securityEncryptionPage.linux")}</option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityEncryptionPage.escrowFilterLabel")}
           value={escrowFilter}
           onChange={(e) => setEscrowFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">
             {t("securityEncryptionPage.allEscrowStates")}
@@ -292,7 +296,7 @@ export default function EncryptionPage() {
           <option value="missing">
             {t("securityEncryptionPage.keyMissing")}
           </option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">

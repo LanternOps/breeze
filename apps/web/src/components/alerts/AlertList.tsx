@@ -19,6 +19,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import {
   severityConfig,
   statusConfig,
@@ -286,13 +287,14 @@ export default function AlertList({
       {/* Collapsible filter panel */}
       {filtersExpanded && (
         <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-3">
-          <select
+          <FilterSelect
+            label={t('alertList.filterStatusLabel')}
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-8 px-2 text-sm"
           >
             <option value="all">{t('alertList.allStatus')}</option>
             <option value="active">{t('alertList.active')}</option>
@@ -300,14 +302,15 @@ export default function AlertList({
             <option value="resolved">{t('alertList.resolved')}</option>
             <option value="suppressed">{t('alertList.suppressed')}</option>
             <option value="dismissed">{t('alertList.dismissed')}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t('alertList.filterSeverityLabel')}
             value={severityFilter}
             onChange={event => {
               setSeverityFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-8 px-2 text-sm"
           >
             <option value="all">{t('alertList.allSeverity')}</option>
             <option value="critical">{t('alertList.critical')}</option>
@@ -315,15 +318,16 @@ export default function AlertList({
             <option value="medium">{t('alertList.medium')}</option>
             <option value="low">{t('alertList.low')}</option>
             <option value="info">{t('alertList.info')}</option>
-          </select>
+          </FilterSelect>
           {availableDevices.length > 0 && (
-            <select
+            <FilterSelect
+              label={t('alertList.filterDeviceLabel')}
               value={deviceFilter}
               onChange={event => {
                 setDeviceFilter(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              className="h-8 px-2 text-sm"
             >
               <option value="all">{t('alertList.allDevices')}</option>
               {availableDevices.map(device => (
@@ -331,22 +335,23 @@ export default function AlertList({
                   {device.name}
                 </option>
               ))}
-            </select>
+            </FilterSelect>
           )}
-          <select
+          <FilterSelect
+            label={t('alertList.filterDateRangeLabel')}
             value={dateRangeFilter}
             onChange={event => {
               setDateRangeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-8 px-2 text-sm"
           >
             <option value="all">{t('alertList.allTime')}</option>
             <option value="1h">{t('alertList.lastHour')}</option>
             <option value="24h">{t('alertList.last24h')}</option>
             <option value="7d">{t('alertList.last7Days')}</option>
             <option value="30d">{t('alertList.last30Days')}</option>
-          </select>
+          </FilterSelect>
           {onHideAiNoiseChange && (
             <label className="flex h-8 items-center gap-1.5 rounded-md border bg-background px-2 text-sm">
               <input

@@ -366,7 +366,11 @@ export default function OrgDefaultsEditor({
             <Layers className="h-4 w-4" />
             {t('orgDefaultsEditor.deviceGroup.title')}
           </div>
+          <label htmlFor="org-defaults-device-group" className="sr-only">
+            {t('orgDefaultsEditor.deviceGroup.title')}
+          </label>
           <select
+            id="org-defaults-device-group"
             value={deviceGroup}
             disabled={isLocked('deviceGroup')}
             data-testid="default-device-group"
@@ -395,7 +399,11 @@ export default function OrgDefaultsEditor({
             <Bell className="h-4 w-4" />
             {t('orgDefaultsEditor.alertSeverity.title')}
           </div>
+          <label htmlFor="org-defaults-alert-threshold" className="sr-only">
+            {t('orgDefaultsEditor.alertSeverity.title')}
+          </label>
           <select
+            id="org-defaults-alert-threshold"
             value={alertThreshold}
             disabled={isLocked('alertThreshold')}
             onChange={event => {
@@ -479,7 +487,11 @@ export default function OrgDefaultsEditor({
             <RefreshCcw className="h-4 w-4" />
             {t('orgDefaultsEditor.agentUpdates.title')}
           </div>
+          <label htmlFor="org-defaults-agent-update-policy" className="sr-only">
+            {t('orgDefaultsEditor.agentUpdates.title')}
+          </label>
           <select
+            id="org-defaults-agent-update-policy"
             value={agentUpdatePolicy}
             disabled={isLocked('agentUpdatePolicy')}
             onChange={event => {

@@ -147,6 +147,7 @@
       "policies": "policies",
       "searchPolicies": "Search policies...",
       "allStatus": "All Status",
+      "statusFilterLabel": "Status",
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
@@ -1628,7 +1629,8 @@
       "bulkSoftwareDeployment": "Bulk Software Deployment",
       "catalogTab": "Catalog",
       "summaryCompleted7d": "Completed (7d)",
-      "summaryFailed7d": "Failed (7d)"
+      "summaryFailed7d": "Failed (7d)",
+      "categoryFilterLabel": "Category"
     },
     "softwareInventory": {
       "allowed": "Allowed",

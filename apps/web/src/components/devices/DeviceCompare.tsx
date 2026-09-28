@@ -1704,7 +1704,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                     </button>
                   ))}
                 </div>
+                <label htmlFor="device-compare-time-range" className="sr-only">
+                  {t("deviceCompare.timeRangeSelectLabel")}
+                </label>
                 <select
+                  id="device-compare-time-range"
                   value={timeRange}
                   onChange={(event) =>
                     setTimeRange(event.target.value as TimeRange)

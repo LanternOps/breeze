@@ -15,6 +15,13 @@ function provider(overrides: Partial<SsoProvider>): SsoProvider {
   };
 }
 
+describe('SsoProviderList status filter select accessible name (#7156)', () => {
+  it('gives the status filter select a real accessible name', () => {
+    render(<SsoProviderList providers={[]} />);
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
 describe('SsoProviderList partner badge', () => {
   it('renders a Partner badge for partner-wide providers', () => {
     render(<SsoProviderList providers={[provider({ id: 'a', name: 'Team Login', partnerId: 'pt-1' })]} />);

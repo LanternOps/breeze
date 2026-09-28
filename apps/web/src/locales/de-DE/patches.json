@@ -264,7 +264,11 @@
       "moreFilters": "Weitere Filter",
       "lessFilters": "Weniger Filter",
       "allSources": "Alle Quellen",
-      "allOs": "Alle Betriebssysteme"
+      "allOs": "Alle Betriebssysteme",
+      "severityLabel": "Schweregrad",
+      "statusLabel": "Genehmigungsstatus",
+      "sourceLabel": "Quelle",
+      "osLabel": "Betriebssystem"
     },
     "actions": {
       "deploy": "Bereitstellen",

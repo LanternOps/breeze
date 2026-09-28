@@ -8,6 +8,7 @@ import {
   Trash2,
   Building2,} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { FilterSelect } from "../shared/FilterSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { FEATURE_META, type FeatureType } from "./featureTabs/types";
@@ -179,13 +180,16 @@ export default function ConfigPolicyList({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={i18n.t(
+              "policies:configurationPolicies.configPolicyList.statusFilterLabel",
+            )}
             value={statusFilter}
             onChange={(event) => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">
               {i18n.t(
@@ -199,7 +203,7 @@ export default function ConfigPolicyList({
                 "policies:configurationPolicies.configPolicyList.archived2",
               )}
             </option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 
