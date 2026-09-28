@@ -21,6 +21,7 @@ type PatchJobResultRow = {
   completedAt: string | null;
   rebootRequired: boolean;
   rebootedAt: string | null;
+  errorMessage: string | null;
 };
 
 type PatchJobDetailPayload = {
@@ -46,6 +47,7 @@ function normalizeResult(row: Record<string, unknown>): PatchJobResultRow {
     completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
     rebootRequired: Boolean(row.rebootRequired),
     rebootedAt: typeof row.rebootedAt === 'string' ? row.rebootedAt : null,
+    errorMessage: typeof row.errorMessage === 'string' ? row.errorMessage : null,
   };
 }
 
@@ -175,6 +177,11 @@ export default function PatchJobDetail({ jobId, onClose }: PatchJobDetailProps) 
                         </span>
                       </div>
                       <span className="truncate text-xs text-muted-foreground">{result.patchTitle ?? '—'}</span>
+                      {result.status === 'failed' && result.errorMessage && (
+                        <span data-testid={`patch-job-result-error-${result.id}`} className="break-words text-xs text-red-600 dark:text-red-400">
+                          {result.errorMessage}
+                        </span>
+                      )}
                       <div className="flex flex-wrap gap-x-4 text-xs text-muted-foreground">
                         <span>{t('patchJobDetail.columns.started')}: {result.startedAt ? formatDateTime(result.startedAt) : t('patchJobsList.notScheduled')}</span>
                         <span>{t('patchJobDetail.columns.completed')}: {result.completedAt ? formatDateTime(result.completedAt) : t('patchJobsList.notScheduled')}</span>

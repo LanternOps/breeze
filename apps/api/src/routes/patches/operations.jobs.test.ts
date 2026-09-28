@@ -131,15 +131,26 @@ function orgScopedAuth(orgId: string) {
 // also thenable so `await` resolves it to `result` (mirrors the shape of the
 // real Drizzle builder without needing to hand-nest .from().where()... chains
 // for every method-call permutation across the two endpoints under test).
-function chain(result: unknown) {
+//
+// `capture`, when passed, records every (method, args) call so a test can
+// assert on the actual join/where conditions built by the route — the plain
+// pass-through chain otherwise swallows them, which would let a regression
+// (e.g. dropping the `devices.orgId = job.orgId` guard on patch_job_results)
+// through every test in this file silently (see the dedicated test below).
+type CapturedCall = { method: string; args: unknown[] };
+function chain(result: unknown, capture?: CapturedCall[]) {
+  const record = (method: string) => (...args: unknown[]) => {
+    capture?.push({ method, args });
+    return chainObj;
+  };
   const handler = {
-    from: () => chainObj,
-    leftJoin: () => chainObj,
-    innerJoin: () => chainObj,
-    where: () => chainObj,
-    orderBy: () => chainObj,
-    limit: () => chainObj,
-    offset: () => chainObj,
+    from: record('from'),
+    leftJoin: record('leftJoin'),
+    innerJoin: record('innerJoin'),
+    where: record('where'),
+    orderBy: record('orderBy'),
+    limit: record('limit'),
+    offset: record('offset'),
     then: (resolve: (value: unknown) => void) => resolve(result),
   };
   const chainObj: any = handler;
@@ -248,5 +259,34 @@ describe('GET /patches/jobs/:id', () => {
 
     expect(res.status).toBe(400);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('scopes patch_job_results to the JOB\'S org via the devices join (patch_job_results carries no org_id/RLS of its own)', async () => {
+    // This is the regression this test exists to catch: dropping (or loosening)
+    // the `eq(devices.orgId, job.orgId)` clause on the results query would
+    // leak patch_job_results across tenants, because that table has no org_id
+    // column and no RLS policy of its own (see the route's comment). A plain
+    // pass-through chain() mock can't catch this — every arg is swallowed —
+    // so this test captures the actual innerJoin call and asserts the
+    // condition it built references the job's orgId.
+    const jobRow = { id: JOB_ID, orgId: ORG_ID, name: 'AI-initiated patch install', status: 'completed' };
+    const joinCalls: CapturedCall[] = [];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([jobRow]))
+      .mockReturnValueOnce(chain([], joinCalls));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID)).request(`/patches/jobs/${JOB_ID}`);
+
+    expect(res.status).toBe(200);
+    const innerJoinCall = joinCalls.find((c) => c.method === 'innerJoin');
+    expect(innerJoinCall).toBeDefined();
+    const conditionText = JSON.stringify(innerJoinCall?.args, (_key, value) =>
+      typeof value === 'function' ? '[function]' : value,
+    );
+    // The join must reference the org column and be scoped to THIS job's org
+    // (not, say, an unscoped `devices.id = patch_job_results.device_id` alone).
+    expect(conditionText).toContain('devices.orgId');
+    expect(conditionText).toContain(ORG_ID);
   });
 });

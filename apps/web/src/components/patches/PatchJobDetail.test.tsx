@@ -39,6 +39,7 @@ const JOB_DETAIL = {
       completedAt: '2026-09-01T10:03:00.000Z',
       rebootRequired: true,
       rebootedAt: '2026-09-01T10:04:00.000Z',
+      errorMessage: null,
     },
   ],
 };
@@ -59,6 +60,31 @@ describe('PatchJobDetail', () => {
     expect(screen.getByTestId('patch-job-detail-results')).toBeInTheDocument();
     expect(screen.getByText('WORKSTATION-1')).toBeInTheDocument();
     expect(screen.getByText('Security Update KB123')).toBeInTheDocument();
+  });
+
+  it('surfaces the per-device error message for a failed result', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({
+      data: {
+        ...JOB_DETAIL,
+        results: [{
+          id: 'result-2',
+          deviceId: 'device-2',
+          deviceHostname: 'WORKSTATION-2',
+          patchId: 'patch-1',
+          patchTitle: 'Security Update KB123',
+          status: 'failed',
+          startedAt: '2026-09-01T10:01:00.000Z',
+          completedAt: '2026-09-01T10:02:00.000Z',
+          rebootRequired: false,
+          rebootedAt: null,
+          errorMessage: 'MSI 1603: install failed, insufficient disk space',
+        }],
+      },
+    }));
+
+    render(<PatchJobDetail jobId="job-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('MSI 1603: install failed, insufficient disk space')).toBeInTheDocument();
   });
 
   it('shows an empty-results message when the job has no per-device results', async () => {
