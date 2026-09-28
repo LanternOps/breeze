@@ -633,7 +633,9 @@
     "searchPlaceholder": "Cerca criteri...",
     "filters": {
       "allEnforcement": "Tutti i livelli di applicazione",
-      "allStatus": "Tutti gli stati"
+      "allStatus": "Tutti gli stati",
+      "enforcementLabel": "Applicazione",
+      "statusLabel": "Stato"
     },
     "enforcement": {
       "monitor": {

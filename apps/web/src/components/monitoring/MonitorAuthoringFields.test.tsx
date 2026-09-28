@@ -25,6 +25,11 @@ function Harness({ submit }: { submit: (v: unknown) => void }) {
   );
 }
 
+it('gives the composite-match select a real accessible name (#7156)', () => {
+  render(<Harness submit={vi.fn()} />);
+  expect(screen.getByRole('combobox', { name: 'Match' })).toBeInTheDocument();
+});
+
 it('edits child fields and restart bounds without losing zero attempts', async () => {
   const submit = vi.fn();
   render(<Harness submit={submit} />);

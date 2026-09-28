@@ -633,7 +633,9 @@
     "searchPlaceholder": "Rechercher des politiques...",
     "filters": {
       "allEnforcement": "Tous les niveaux d’application",
-      "allStatus": "Tous les statuts"
+      "allStatus": "Tous les statuts",
+      "enforcementLabel": "Application",
+      "statusLabel": "État"
     },
     "enforcement": {
       "monitor": {

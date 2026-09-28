@@ -633,7 +633,9 @@
     "searchPlaceholder": "Search policies...",
     "filters": {
       "allEnforcement": "All Enforcement",
-      "allStatus": "All Status"
+      "allStatus": "All Status",
+      "enforcementLabel": "Enforcement",
+      "statusLabel": "Status"
     },
     "enforcement": {
       "monitor": {

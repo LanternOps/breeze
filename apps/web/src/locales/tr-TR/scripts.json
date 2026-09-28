@@ -633,7 +633,9 @@
     "searchPlaceholder": "Arama politikaları...",
     "filters": {
       "allEnforcement": "Tüm Yaptırımlar",
-      "allStatus": "Tüm Durumlar"
+      "allStatus": "Tüm Durumlar",
+      "enforcementLabel": "Uygulama",
+      "statusLabel": "Durum"
     },
     "enforcement": {
       "monitor": {

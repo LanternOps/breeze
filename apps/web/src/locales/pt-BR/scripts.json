@@ -633,7 +633,9 @@
     "searchPlaceholder": "Pesquisar políticas...",
     "filters": {
       "allEnforcement": "Todos os níveis de aplicação",
-      "allStatus": "Todos os status"
+      "allStatus": "Todos os status",
+      "enforcementLabel": "Aplicação",
+      "statusLabel": "Status de ativação"
     },
     "enforcement": {
       "monitor": {

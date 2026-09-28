@@ -155,7 +155,8 @@
     },
     "composite": {
       "children": "Condizioni figlie",
-      "add": "Aggiungi condizione"
+      "add": "Aggiungi condizione",
+      "matchLabel": "Corrispondenza"
     },
     "restart": {
       "label": "Riavvia servizio sul dispositivo",

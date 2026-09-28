@@ -17,6 +17,7 @@ import {
   XCircle,
   Globe} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 
 export type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
 type ScriptsT = TFunction<'scripts'>;
@@ -217,31 +218,33 @@ export default function PolicyList({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={t('policyList.filters.enforcementLabel')}
             value={enforcementFilter}
             onChange={event => {
               setEnforcementFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('policyList.filters.allEnforcement')}</option>
             <option value="monitor">{t('policyList.enforcement.monitor.label')}</option>
             <option value="warn">{t('policyList.enforcement.warn.label')}</option>
             <option value="enforce">{t('policyList.enforcement.enforce.label')}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t('policyList.filters.statusLabel')}
             value={statusFilter}
             onChange={event => {
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
+            className="w-full sm:w-32"
           >
             <option value="all">{t('policyList.filters.allStatus')}</option>
             <option value="enabled">{t('common:states.enabled')}</option>
             <option value="disabled">{t('common:states.disabled')}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

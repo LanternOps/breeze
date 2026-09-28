@@ -155,7 +155,8 @@
     },
     "composite": {
       "children": "Condiciones secundarias",
-      "add": "Agregar condición"
+      "add": "Agregar condición",
+      "matchLabel": "Coincidencia"
     },
     "restart": {
       "label": "Reiniciar servicio en el dispositivo",

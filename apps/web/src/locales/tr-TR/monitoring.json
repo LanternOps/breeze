@@ -155,7 +155,8 @@
     },
     "composite": {
       "children": "Alt koşullar",
-      "add": "Koşul ekle"
+      "add": "Koşul ekle",
+      "matchLabel": "Eşleşme"
     },
     "restart": {
       "label": "Cihazdaki hizmeti yeniden başlat",

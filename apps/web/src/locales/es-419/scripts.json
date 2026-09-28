@@ -633,7 +633,9 @@
     "searchPlaceholder": "Buscar políticas...",
     "filters": {
       "allEnforcement": "Todo el cumplimiento",
-      "allStatus": "Todo el estado"
+      "allStatus": "Todo el estado",
+      "enforcementLabel": "Cumplimiento",
+      "statusLabel": "Estado"
     },
     "enforcement": {
       "monitor": {

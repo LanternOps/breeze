@@ -18,6 +18,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import type { NotificationChannelType } from '@breeze/shared';
 import { formatRelativeTime } from './alertConfig';
 
@@ -260,13 +261,14 @@ export default function NotificationChannelList({
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
-          <select
+          <FilterSelect
+            label={t('notificationChannelList.typeLabel')}
             value={typeFilter}
             onChange={event => {
               setTypeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+            className="w-full sm:w-40"
           >
             <option value="all">{t('notificationChannelList.allTypes')}</option>
             <option value="email">{t('notificationChannelList.email')}</option>
@@ -276,7 +278,7 @@ export default function NotificationChannelList({
             <option value="webhook">{t('notificationChannelList.webhook')}</option>
             <option value="sms">{t('notificationChannelList.sms')}</option>
             <option value="pushover">{t('notificationChannelList.pushover')}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

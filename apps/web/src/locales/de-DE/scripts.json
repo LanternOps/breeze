@@ -633,7 +633,9 @@
     "searchPlaceholder": "Richtlinien suchen...",
     "filters": {
       "allEnforcement": "Alle Durchsetzung",
-      "allStatus": "Alle Status"
+      "allStatus": "Alle Status",
+      "enforcementLabel": "Durchsetzung",
+      "statusLabel": "Aktivierungsstatus"
     },
     "enforcement": {
       "monitor": {

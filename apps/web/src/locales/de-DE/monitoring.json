@@ -155,7 +155,8 @@
     },
     "composite": {
       "children": "Teilbedingungen",
-      "add": "Bedingung hinzufügen"
+      "add": "Bedingung hinzufügen",
+      "matchLabel": "Übereinstimmung"
     },
     "restart": {
       "label": "Dienst auf dem Gerät neu starten",
