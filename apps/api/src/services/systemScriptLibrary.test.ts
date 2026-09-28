@@ -211,6 +211,20 @@ describe('edition migration hand-off to a detached stage 2 (#5016)', () => {
     expect(s1).toContain("'S-1-5-32-544'");
   });
 
+  it('stage 1 never re-uses a work dir it did not create or verify, and re-checks it after locking the ACL', () => {
+    const s1 = stage1();
+    // Created without -Force: if something appeared at the path after the
+    // checks (a planted junction), creation fails and the script aborts.
+    expect(s1).toContain('New-Item -ItemType Directory -Path $work -ErrorAction Stop');
+    expect(s1).not.toMatch(/New-Item -ItemType Directory -Force -Path \$work/);
+    // After icacls, the dir and every top-level entry must be a non-link owned
+    // by SYSTEM/Administrators — a child planted before the ACL landed aborts.
+    const lock = s1.indexOf('& icacls $work');
+    const recheck = s1.indexOf('Get-ChildItem -LiteralPath $work -Force');
+    expect(lock).toBeGreaterThan(-1);
+    expect(recheck).toBeGreaterThan(lock);
+  });
+
   // Parses both stages with the real PowerShell parser when pwsh is on PATH
   // (developer machines); CI images without pwsh skip it.
   const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;

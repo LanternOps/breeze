@@ -67,7 +67,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, resolve } from 'node:path';
-import { and, eq, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
@@ -318,10 +318,11 @@ export async function findUnresolvedOrgEditionMigration(args: {
         or(isNull(devices.agentEdition), ne(devices.agentEdition, args.targetEdition)),
         or(
           isNull(devices.lastSeenAt),
-          lt(
-            devices.lastSeenAt,
-            sql`${devices.editionMigrationDispatchedAt} + ${EDITION_MIGRATION_SETTLE_INTERVAL}::interval`,
-          ),
+          // last_seen_at is `timestamp` holding UTC wall-clock time, the stamp
+          // is `timestamptz`: read last_seen_at AS UTC explicitly. A raw
+          // comparison casts it through the session TimeZone and shifts the
+          // settle window by the zone offset.
+          sql`(${devices.lastSeenAt} AT TIME ZONE 'UTC') < ${devices.editionMigrationDispatchedAt} + ${EDITION_MIGRATION_SETTLE_INTERVAL}::interval`,
         ),
       ),
     )
