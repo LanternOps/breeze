@@ -362,6 +362,9 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     const fullPage = Array.from({ length: 1000 }, (_, i) => activityRecord({ domain: `d${i}.example` }));
     queueTokenThen(
       { data: fullPage },
+      // A full first page triggers the offset-cap probe (#7207): an empty
+      // page at offset 10000 proves the window fits under Cisco's cap.
+      { data: [] },
       { data: [activityRecord({ domain: 'last.example' })] },
       { data: [] }
     );
@@ -369,11 +372,12 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
 
     const calls = activityCalls();
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(new URL(urlOf(calls[0]!)).searchParams.get('offset')).toBe('0');
-    expect(new URL(urlOf(calls[1]!)).searchParams.get('offset')).toBe('1000');
+    expect(new URL(urlOf(calls[1]!)).searchParams.get('offset')).toBe('10000');
+    expect(new URL(urlOf(calls[2]!)).searchParams.get('offset')).toBe('1000');
     // 1001, not 2000: a short page must not leave a hole in the offset walk.
-    expect(new URL(urlOf(calls[2]!)).searchParams.get('offset')).toBe('1001');
+    expect(new URL(urlOf(calls[3]!)).searchParams.get('offset')).toBe('1001');
     expect(events).toHaveLength(1001);
   });
 
@@ -423,21 +427,23 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     expect(activityCalls()).toHaveLength(1);
   });
 
-  it('respects the maxPages guard when every page comes back full, and says so', async () => {
+  it('stops at the per-run request budget when every page comes back full, and says so', async () => {
     const fullPage = Array.from({ length: 1000 }, (_, i) => activityRecord({ domain: `d${i}.example` }));
     requestJsonMock.mockImplementation(async (input) => {
       if (String(input) === TOKEN_URL) return { access_token: 'tok-1', expires_in: 3600 } as never;
       return { data: fullPage } as never;
     });
 
-    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+    await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
 
-    // 100 requests hard cap — an endlessly-full upstream must not loop forever.
-    expect(activityCalls()).toHaveLength(100);
-    expect(events).toHaveLength(100_000);
-    // The remainder is never retried (the job advances `lastSync` to `until`
-    // on success), so a truncated run must not look like a complete one.
-    expect(warnings()).toMatch(/reached the 100-request cap/);
+    // 100-request hard cap — an endlessly-full upstream must not loop forever.
+    expect(activityCalls().length).toBeLessThanOrEqual(100);
+    // ...and never past Cisco's offset cap, even against a server that never
+    // runs dry (#7207).
+    for (const call of activityCalls()) {
+      expect(Number(new URL(urlOf(call)).searchParams.get('offset'))).toBeLessThanOrEqual(10_000);
+    }
+    expect(warnings()).toMatch(/100-request budget/);
   });
 
   it('warns when it clamps the window, instead of narrowing it mutely', async () => {
