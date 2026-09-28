@@ -20,6 +20,45 @@ describe('ActionsEditor filter selects accessible name (#7156)', () => {
     expect(screen.getByRole('combobox', { name: 'Action type' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Script' })).toBeInTheDocument();
   });
+
+  it('gives the notification-channel select a real accessible name', () => {
+    function NotifyHost() {
+      const form = useForm({ defaultValues: { actions: [{ type: 'send_notification' }] } });
+      return (
+        <FormProvider {...form}>
+          <ActionsEditor name="actions" />
+        </FormProvider>
+      );
+    }
+    render(<NotifyHost />);
+    expect(screen.getByRole('combobox', { name: 'Notification Channel' })).toBeInTheDocument();
+  });
+
+  it('gives the alert-severity select a real accessible name', () => {
+    function AlertHost() {
+      const form = useForm({ defaultValues: { actions: [{ type: 'create_alert' }] } });
+      return (
+        <FormProvider {...form}>
+          <ActionsEditor name="actions" />
+        </FormProvider>
+      );
+    }
+    render(<AlertHost />);
+    expect(screen.getByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
+  });
+
+  it('gives the software-catalog select a real accessible name', () => {
+    function DeployHost() {
+      const form = useForm({ defaultValues: { actions: [{ type: 'deploy_software' }] } });
+      return (
+        <FormProvider {...form}>
+          <ActionsEditor name="actions" />
+        </FormProvider>
+      );
+    }
+    render(<DeployHost />);
+    expect(screen.getByRole('combobox', { name: 'Software' })).toBeInTheDocument();
+  });
 });
 
 describe('ActionsEditor (#5289)', () => {

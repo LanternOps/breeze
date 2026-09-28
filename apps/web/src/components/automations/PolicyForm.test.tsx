@@ -27,4 +27,14 @@ describe('PolicyForm filter selects accessible name (#7156)', () => {
     expect(screen.getAllByRole('combobox', { name: 'Rule type' }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('combobox', { name: 'Version Check' }).length).toBeGreaterThan(0);
   });
+
+  it('gives the os-version rule row an operating-system select with a real accessible name', () => {
+    render(<PolicyForm defaultValues={{ rules: [{ type: 'os_version' }] }} />);
+    expect(screen.getByRole('combobox', { name: 'Operating System' })).toBeInTheDocument();
+  });
+
+  it('gives the enforce-level remediation-script select a real accessible name', () => {
+    render(<PolicyForm defaultValues={{ enforcementLevel: 'enforce' }} />);
+    expect(screen.getByRole('combobox', { name: 'Remediation Script' })).toBeInTheDocument();
+  });
 });

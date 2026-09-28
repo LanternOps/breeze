@@ -97,6 +97,15 @@ describe('PatchList filter selects accessible name (#7156)', () => {
     expect(screen.getByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Approval status' })).toBeInTheDocument();
   });
+
+  it('gives the source and os "more filters" selects a real accessible name once expanded', () => {
+    render(<PatchList patches={[]} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /more filters/i }));
+
+    expect(screen.getByRole('combobox', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Operating system' })).toBeInTheDocument();
+  });
 });
 
 describe('PatchList severity (#3758)', () => {
