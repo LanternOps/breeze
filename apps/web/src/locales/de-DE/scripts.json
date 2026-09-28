@@ -164,7 +164,8 @@
       "command": "Befehl",
       "whenOffline": "Wenn das Gerät offline ist",
       "software": "Software",
-      "failureNotificationChannel": "Fehlerbenachrichtigungskanal"
+      "failureNotificationChannel": "Fehlerbenachrichtigungskanal",
+      "actionType": "Aktionstyp"
     },
     "options": {
       "whenOffline": {
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Automatisierungen suchen...",
     "filters": {
       "allTriggers": "Alle Auslöser",
-      "allStatus": "Alle Status"
+      "allStatus": "Alle Status",
+      "triggerLabel": "Auslöser",
+      "statusLabel": "Aktivierungsstatus"
     },
     "trigger": {
       "schedule": "Zeitplan",
@@ -572,7 +575,8 @@
       "configFilePath": "Konfigurationsdateipfad",
       "configKey": "Konfigurationsschlüssel",
       "remediationScript": "Korrekturskript",
-      "evaluateEvery": "Bewerten Sie alle"
+      "evaluateEvery": "Bewerten Sie alle",
+      "ruleType": "Regeltyp"
     },
     "placeholders": {
       "name": "Sicherheitsgrundrichtlinie",
@@ -743,7 +747,9 @@
       "lastHour": "Letzte Stunde",
       "lastDay": "Letzte 24 Stunden",
       "lastWeek": "Letzte 7 Tage",
-      "lastMonth": "Letzte 30 Tage"
+      "lastMonth": "Letzte 30 Tage",
+      "statusLabel": "Ausführungsstatus",
+      "dateLabel": "Zeitraum"
     },
     "status": {
       "pending": "Ausstehend",
@@ -1455,7 +1461,8 @@
       "notStarted": "Der Lauf wurde nicht gestartet (das Gerät befindet sich möglicherweise in Wartung).",
       "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf.",
       "pollFailed": "Ergebnis konnte nicht gelesen werden — der Lauf wurde möglicherweise gelöscht oder Ihr Zugriff hat sich geändert."
-    }
+    },
+    "deviceSelectLabel": "Testgerät"
   },
   "provenance": {
     "origin": "Herkunft",

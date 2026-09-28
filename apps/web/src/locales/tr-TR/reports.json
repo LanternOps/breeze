@@ -893,7 +893,12 @@
         "tuesday": "Salı",
         "wednesday": "Çarşamba"
       },
-      "where": "Nerede"
+      "where": "Nerede",
+      "filterLabels": {
+        "logic": "Filtre mantığı",
+        "field": "Filtre alanı",
+        "operator": "Filtre operatörü"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Bir raporu sıfırdan yapılandırın veya boş bir yapılandırmayla başlayın.",

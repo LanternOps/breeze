@@ -430,7 +430,9 @@
     "status": "Status",
     "threat": "Bedrohung",
     "threatsMatchYourFilters": "{{count}} Bedrohungen entsprechen Ihren Filtern",
-    "unknownThreat": "Unbekannte Bedrohung"
+    "unknownThreat": "Unbekannte Bedrohung",
+    "severityFilterLabel": "Schweregrad",
+    "statusFilterLabel": "Bedrohungsstatus"
   },
   "securityScoreDetailPage": {
     "a": "A",

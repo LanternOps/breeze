@@ -164,7 +164,8 @@
       "command": "Commande",
       "whenOffline": "Si l'appareil est hors ligne",
       "software": "Logiciel",
-      "failureNotificationChannel": "Canal de notification d’échec"
+      "failureNotificationChannel": "Canal de notification d’échec",
+      "actionType": "Type d'action"
     },
     "options": {
       "whenOffline": {
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Rechercher des automatisations...",
     "filters": {
       "allTriggers": "Tous les déclencheurs",
-      "allStatus": "Tous les statuts"
+      "allStatus": "Tous les statuts",
+      "triggerLabel": "Déclencheur",
+      "statusLabel": "État"
     },
     "trigger": {
       "schedule": "Planification",
@@ -572,7 +575,8 @@
       "configFilePath": "Chemin du fichier de configuration",
       "configKey": "Clé de configuration",
       "remediationScript": "Script de remédiation",
-      "evaluateEvery": "Évaluer toutes les"
+      "evaluateEvery": "Évaluer toutes les",
+      "ruleType": "Type de règle"
     },
     "placeholders": {
       "name": "Politique de référence sécurité",
@@ -743,7 +747,9 @@
       "lastHour": "Dernière heure",
       "lastDay": "Dernières 24 heures",
       "lastWeek": "7 derniers jours",
-      "lastMonth": "30 derniers jours"
+      "lastMonth": "30 derniers jours",
+      "statusLabel": "État",
+      "dateLabel": "Plage de dates"
     },
     "status": {
       "pending": "En attente",
@@ -1455,7 +1461,8 @@
       "notStarted": "L'exécution n'a pas démarré (l'appareil est peut-être en maintenance).",
       "pollDeadline": "Toujours aucun résultat — consultez l'historique des exécutions.",
       "pollFailed": "Impossible de lire le résultat — l'exécution a peut-être été supprimée ou votre accès a changé."
-    }
+    },
+    "deviceSelectLabel": "Appareil de test"
   },
   "provenance": {
     "origin": "Origine",

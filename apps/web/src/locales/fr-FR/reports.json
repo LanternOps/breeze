@@ -893,7 +893,12 @@
         "tuesday": "Mardi",
         "wednesday": "Mercredi"
       },
-      "where": "Où"
+      "where": "Où",
+      "filterLabels": {
+        "logic": "Logique de filtre",
+        "field": "Champ de filtre",
+        "operator": "Opérateur de filtre"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Configurez un rapport à partir de zéro ou commencez avec une configuration vide.",

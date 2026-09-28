@@ -264,7 +264,11 @@
       "moreFilters": "Daha fazla filtre",
       "lessFilters": "Daha az filtre",
       "allSources": "Tüm Kaynaklar",
-      "allOs": "Tüm İşletim Sistemi"
+      "allOs": "Tüm İşletim Sistemi",
+      "severityLabel": "Önem derecesi",
+      "statusLabel": "Onay durumu",
+      "sourceLabel": "Kaynak",
+      "osLabel": "İşletim sistemi"
     },
     "actions": {
       "deploy": "Dağıt",

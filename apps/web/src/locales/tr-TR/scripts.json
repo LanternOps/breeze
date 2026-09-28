@@ -164,7 +164,8 @@
       "command": "Komut",
       "whenOffline": "Cihaz çevrimdışıysa",
       "software": "Yazılım",
-      "failureNotificationChannel": "Arıza Bildirim Kanalı"
+      "failureNotificationChannel": "Arıza Bildirim Kanalı",
+      "actionType": "Eylem türü"
     },
     "options": {
       "whenOffline": {
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Arama otomasyonları...",
     "filters": {
       "allTriggers": "Tüm Tetikleyiciler",
-      "allStatus": "Tüm Durumlar"
+      "allStatus": "Tüm Durumlar",
+      "triggerLabel": "Tetikleyici",
+      "statusLabel": "Durum"
     },
     "trigger": {
       "schedule": "Program",
@@ -572,7 +575,8 @@
       "configFilePath": "Yapılandırma Dosyası Yolu",
       "configKey": "Yapılandırma Anahtarı",
       "remediationScript": "Düzeltme Komut Dosyası",
-      "evaluateEvery": "Her Şeyi Değerlendirin"
+      "evaluateEvery": "Her Şeyi Değerlendirin",
+      "ruleType": "Kural türü"
     },
     "placeholders": {
       "name": "Güvenlik temel politikası",
@@ -743,7 +747,9 @@
       "lastHour": "Son Saat",
       "lastDay": "Son 24 Saat",
       "lastWeek": "Son 7 Gün",
-      "lastMonth": "Son 30 Gün"
+      "lastMonth": "Son 30 Gün",
+      "statusLabel": "Durum",
+      "dateLabel": "Tarih aralığı"
     },
     "status": {
       "pending": "Beklemede",
@@ -1455,7 +1461,8 @@
       "pollDeadline": "Hâlâ sonuç yok — sonucu görmek için çalıştırma geçmişini kontrol edin.",
       "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
     },
-    "devicesLoadFailed": "Cihazlar yüklenemedi"
+    "devicesLoadFailed": "Cihazlar yüklenemedi",
+    "deviceSelectLabel": "Test cihazı"
   },
   "provenance": {
     "origin": "Köken",

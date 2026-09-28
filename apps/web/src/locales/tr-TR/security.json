@@ -430,7 +430,9 @@
     "status": "Durum",
     "threat": "Tehdit",
     "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
-    "unknownThreat": "Bilinmeyen tehdit"
+    "unknownThreat": "Bilinmeyen tehdit",
+    "severityFilterLabel": "Önem derecesi",
+    "statusFilterLabel": "Durum"
   },
   "securityScoreDetailPage": {
     "a": "A",

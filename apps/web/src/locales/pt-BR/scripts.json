@@ -164,7 +164,8 @@
       "command": "Comando",
       "whenOffline": "Se o dispositivo estiver offline",
       "software": "Software",
-      "failureNotificationChannel": "Canal de notificação de falha"
+      "failureNotificationChannel": "Canal de notificação de falha",
+      "actionType": "Tipo de ação"
     },
     "options": {
       "whenOffline": {
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Pesquisar automações...",
     "filters": {
       "allTriggers": "Todos os gatilhos",
-      "allStatus": "Todos os status"
+      "allStatus": "Todos os status",
+      "triggerLabel": "Gatilho",
+      "statusLabel": "Status de ativação"
     },
     "trigger": {
       "schedule": "Agendamento",
@@ -572,7 +575,8 @@
       "configFilePath": "Caminho do arquivo de configuração",
       "configKey": "Chave de configuração",
       "remediationScript": "Script de correção",
-      "evaluateEvery": "Avaliar a cada"
+      "evaluateEvery": "Avaliar a cada",
+      "ruleType": "Tipo de regra"
     },
     "placeholders": {
       "name": "Política de baseline de segurança",
@@ -743,7 +747,9 @@
       "lastHour": "Última hora",
       "lastDay": "Últimas 24 horas",
       "lastWeek": "Últimos 7 dias",
-      "lastMonth": "Últimos 30 dias"
+      "lastMonth": "Últimos 30 dias",
+      "statusLabel": "Status de execução",
+      "dateLabel": "Intervalo de datas"
     },
     "status": {
       "pending": "Pendente",
@@ -1455,7 +1461,8 @@
       "notStarted": "A execução não foi iniciada (o dispositivo pode estar em manutenção).",
       "pollDeadline": "Ainda sem resultado — verifique o histórico de execuções.",
       "pollFailed": "Não foi possível ler o resultado — a execução pode ter sido excluída ou seu acesso mudou."
-    }
+    },
+    "deviceSelectLabel": "Dispositivo de teste"
   },
   "provenance": {
     "origin": "Origem",

@@ -430,7 +430,9 @@
     "status": "Stato",
     "threat": "Minaccia",
     "threatsMatchYourFilters": "{{count}} minacce corrispondono ai filtri",
-    "unknownThreat": "Minaccia sconosciuta"
+    "unknownThreat": "Minaccia sconosciuta",
+    "severityFilterLabel": "Gravità",
+    "statusFilterLabel": "Stato"
   },
   "securityScoreDetailPage": {
     "a": "A",
