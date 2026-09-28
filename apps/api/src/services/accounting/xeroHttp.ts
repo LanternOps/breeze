@@ -176,22 +176,48 @@ export function classifyXeroValidation(text: string): AccountingRefusalCode | un
   return undefined;
 }
 
+/**
+ * 400s that are not plain validation refusals (Xero W04):
+ *  - duplicate_doc_number — Xero's OpenAPI example text "Invoice # must be unique."
+ *    The provider absorbs it (adoption look, then one numberless retry).
+ *  - payment_linked — a void (or a line edit) refused because a payment or credit
+ *    note is allocated. Texts reported by Xero integrators; lab X39 confirms.
+ *  - transient — "Idempotency Key: … is used with a different request." The same
+ *    request identity was sent earlier with other bytes (a concurrent push, or a
+ *    settings change inside the 6-minute window): an UNCERTAIN outcome, so the
+ *    caller looks again instead of treating it as a refusal (refinement 2).
+ * Runs over every validation message, untruncated, and the top-level Message.
+ */
+export function classifyXeroInvoiceKind(text: string): 'duplicate_doc_number' | 'payment_linked' | 'transient' | undefined {
+  let topLevel: string | null = null;
+  try {
+    const parsed = JSON.parse(text) as { Message?: unknown } | null;
+    topLevel = typeof parsed?.Message === 'string' ? parsed.Message : null;
+  } catch { /* not JSON: no verdict from the top level */ }
+  for (const message of [...allValidationMessages(text), ...(topLevel ? [topLevel] : [])]) {
+    if (/^Invoice # must be unique/i.test(message)) return 'duplicate_doc_number';
+    if (/(has|have) (payments? or credit notes?|a payment or credit note) allocated/i.test(message)) return 'payment_linked';
+    if (/^Idempotency Key: .* is used with a different request/i.test(message)) return 'transient';
+  }
+  return undefined;
+}
+
 /** Matches `insufficient_scope` and Xero's documented misspelling `insufficent_scope` (the optional `i`). */
 const INSUFFICIENT_SCOPE_RE = /insuffici?ent_scope/i;
 
-function apiKindFor(status: number, headers: Headers): AccountingProviderErrorKind {
+function apiKindFor(status: number, headers: Headers, text: string): AccountingProviderErrorKind {
   // 429 first: a throttle is never read as any other verdict (W01c P5).
   if (status === 429) return 'rate_limited';
   // A token that lacks a scope is a partner-fixable refusal (reconnect with the
   // scope), never a transient to retry forever.
   if ((status === 401 || status === 403) && INSUFFICIENT_SCOPE_RE.test(headers.get('www-authenticate') ?? '')) return 'validation';
-  if (status === 400) return 'validation';
+  if (status === 400) return classifyXeroInvoiceKind(text) ?? 'validation';
   if (status === 404) return 'not_found';
   return 'transient'; // 401/403 (link removed), 5xx, anything else
 }
 
 export function xeroApiError(operation: string, status: number, headers: Headers, text: string): AccountingProviderError {
-  const kind = apiKindFor(status, headers);
+  const kind = apiKindFor(status, headers, text);
   const providerCode = kind === 'rate_limited'
     ? headers.get('x-rate-limit-problem') ?? undefined // 'minute' | 'day' | 'appminute' | 'concurrent'
     : kind === 'validation'

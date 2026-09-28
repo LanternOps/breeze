@@ -115,6 +115,22 @@ export async function listXeroItems(ctx: XeroCallContext, query?: string): Promi
   return items.filter((i) => [i.displayName, i.sku, i.description].some((v) => normalized(v).includes(q)));
 }
 
+/** What an invoice line needs from a mapped item: its Code, and its sales account if it has one (Xero W04). */
+export interface XeroItemRef { code: string; accountCode: string | null }
+
+/**
+ * ItemID → { Code, SalesDetails.AccountCode } for the whole price list, in one
+ * unpaged call (Xero W04). The mapping row stores Xero's ItemID; an invoice
+ * line takes ItemCode. Items without an ItemID or a Code are skipped.
+ */
+export async function readXeroItemRefs(ctx: XeroCallContext): Promise<Map<string, XeroItemRef>> {
+  const refs = new Map<string, XeroItemRef>();
+  for (const item of await readAllItems(ctx, 'Xero item codes')) {
+    if (item.ItemID && item.Code) refs.set(item.ItemID, { code: item.Code, accountCode: item.SalesDetails?.AccountCode ?? null });
+  }
+  return refs;
+}
+
 async function readItem(ctx: XeroCallContext, itemId: string): Promise<XeroItem | null> {
   const operation = 'Xero item read';
   let body: ItemsBody | null;
