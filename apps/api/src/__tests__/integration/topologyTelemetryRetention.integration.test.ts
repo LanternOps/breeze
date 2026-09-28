@@ -182,7 +182,11 @@ describe('topology interface retention', () => {
     // More samples land, then maintenance stops (nothing rolls them up) for 8 days.
     for (let i = 21; i <= 30; i += 1) await t.write(T + i * MIN, BigInt(i) * 7500n);
     expect(new Date((await t.source()).dirty!).getTime()).toBe(T + 21 * MIN);
-    const shift = 8 * DAY;
+    // 7.5 d, not 8: T sits 3-4 h before now, so an 8-day shift lands on
+    // today-9 whenever the run starts before ~04:00 UTC, outside the raw
+    // partition window (today-8 onward). 7.5 d keeps the whole history past
+    // the 7-day raw cutoff while staying inside that window at any hour.
+    const shift = 7.5 * DAY;
     await system(async () => {
       for (const resolution of ['raw', '5m', '1h']) {
         await db.execute(sql`SELECT public.breeze_ensure_topology_interface_sample_partition(${resolution}, ${new Date(T - shift).toISOString().slice(0, 10)}::date)`);
