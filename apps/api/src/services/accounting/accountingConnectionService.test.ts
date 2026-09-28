@@ -853,7 +853,7 @@ describe('accountingConnectionService', () => {
       return { db, deleteWhereMock, updateSetMock };
     }
 
-    it('deletes every mapping row for the connection and nulls the CDC watermark', async () => {
+    it('deletes every mapping row for the connection, nulls the CDC watermark and clears the old organisation\'s default refs (review J)', async () => {
       const { db, deleteWhereMock, updateSetMock } = makeResetDb([{ id: 'm1' }, { id: 'm2' }]);
       const { resetConnectionForRealmChange } = await import('./accountingConnectionService');
 
@@ -862,9 +862,16 @@ describe('accountingConnectionService', () => {
       expect(out).toEqual({ mappingsDeleted: 2, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
       const del = new PgDialect().sqlToQuery(deleteWhereMock.mock.calls.at(-1)![0] as SQL);
       expect(del.params).toEqual(['c1', 'p1']);
+      // Every ref the settings PATCH writes names an account / tax code IN the old
+      // organisation (Xero AccountCodes like "200" repeat across orgs, so a kept
+      // ref would silently resolve to a different account in the new one).
       expect(updateSetMock.mock.calls.at(-1)![0]).toEqual({
         cdcCursor: null,
         lastReconcileAt: null,
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        defaultExemptTaxCodeRef: null,
+        defaultPaymentAccountRef: null,
         updatedAt: expect.any(Date),
       });
     });

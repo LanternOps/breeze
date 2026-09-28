@@ -131,6 +131,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // manages its own short DB access contexts around it — the same treatment as
   // the mapping routes above.
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/refresh\/?$/ },
+  // Xero W02 — the organisation picker (GET .../tenants lists this sign-in's
+  // links at Xero identity; POST .../tenants/select claims one, captures its
+  // settings and releases the rest), cancel (best-effort cleanup of this
+  // sign-in's links), and the settings pickers (live Accounting API reads) all
+  // call the provider; disconnect makes a best-effort DELETE /connections/{id}
+  // before deleting the row. Each takes a runInDbContext runner (same treatment
+  // as the mapping routes above). routes/accounting/connectionSetupRoutes.ts.
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/tenants\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/tenants\/select\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/tenants\/cancel\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/options\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/disconnect\/?$/ },
   // Phase C Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual
   // invoice push and remote-candidate search. `pushInvoiceToAccounting`
   // (accountingInvoicePush.ts) and `resolveConnectionAndToken` +

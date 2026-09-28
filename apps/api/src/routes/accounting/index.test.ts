@@ -81,6 +81,23 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // Captures the UPDATE's `set` payload so a test can assert what the route
       // actually writes, not just what it echoes back.
       dbUpdateSet: vi.fn(),
+      // Xero W02 (Task 7) — a registered tenant-selecting provider stub, so the
+      // callback's tenant-selection branch runs through the real route.
+      xeroExchangeCode: vi.fn(),
+      xeroFetchRealmSettings: vi.fn(),
+      xeroListSettingsOptions: vi.fn(),
+      xeroReleaseConnection: vi.fn(),
+      // Xero W02 (Task 8) — disconnect's provider-side release and the
+      // pending_tenant cancel path.
+      releaseProviderConnection: vi.fn(),
+      discardPendingTenantSelection: vi.fn(),
+      xeroSelection: {
+        connectableTenantType: 'ORGANISATION',
+        authEventIdOf: vi.fn(),
+        listGrantTenants: vi.fn(),
+        listAllTenants: vi.fn(),
+        removeTenantConnection: vi.fn(),
+      },
     },
     AccountingConnectionErrorClass,
   };
@@ -101,6 +118,9 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  // The callback holds no request DB context (no authMiddleware); the tenant
+  // release path asserts exactly that (dbContextGuard).
+  hasDbAccessContext: () => false,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -140,9 +160,13 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', async (importOriginal) => ({
-  // The REAL conflict class, so its message is the one the route returns.
+  // The REAL conflict / held classes, so their messages are the ones the route returns
+  // and connectFinalize's instanceof checks see the same constructors.
   AccountingProviderConflictError: (await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>())
     .AccountingProviderConflictError,
+  AccountingTenantHeldError: (await importOriginal<typeof import('../../services/accounting/accountingConnectionService')>())
+    .AccountingTenantHeldError,
+  PENDING_TENANT_STATUS: 'pending_tenant',
   getConnection: mocks.getConnection,
   resolveActiveConnectionRef: mocks.resolveActiveConnectionRef,
   getPartnerConnectionRef: mocks.getPartnerConnectionRef,
@@ -157,6 +181,16 @@ vi.mock('../../services/accounting/accountingConnectionService', async (importOr
   // the error CODE, so the test exercises the real predicate.
   isHomeCurrencyCasAbort: (err: unknown) => typeof err === 'object' && err !== null
     && (err as { code?: unknown }).code === 'ACCOUNTING_HOME_CURRENCY_CAS_ABORT',
+}));
+
+vi.mock('../../services/accounting/accountingProviderRelease', () => ({
+  releaseProviderConnection: mocks.releaseProviderConnection,
+}));
+
+// Real error classes (F4): connectFinalize's instanceof checks must see the same constructors.
+vi.mock('../../services/accounting/accountingTenantSelection', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/accounting/accountingTenantSelection')>()),
+  discardPendingTenantSelection: mocks.discardPendingTenantSelection,
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -180,9 +214,25 @@ vi.mock('../../services/accounting/providerRegistry', () => {
     exchangeCode: mocks.exchangeCode,
     fetchRealmSettings: mocks.fetchRealmSettings,
   };
+  // Xero W02 (Task 7): registered for the tenant-selecting callback branch. Its
+  // capabilities still come from `mocks.providerSupports` (QuickBooks-only by
+  // default), so every existing "xero is refused" assertion is unchanged.
+  const xero = {
+    provider: 'xero',
+    displayName: 'Xero',
+    capabilities: { connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false },
+    configError: () => null,
+    connectEnvironment: () => 'production',
+    buildAuthUrl: mocks.buildAuthUrl,
+    exchangeCode: mocks.xeroExchangeCode,
+    fetchRealmSettings: mocks.xeroFetchRealmSettings,
+    tenantSelection: mocks.xeroSelection,
+    listSettingsOptions: mocks.xeroListSettingsOptions,
+    releaseConnection: mocks.xeroReleaseConnection,
+  };
   return {
-    getAccountingProvider: vi.fn(() => qbo),
-    findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : null),
+    getAccountingProvider: vi.fn((id: string) => (id === 'xero' ? xero : qbo)),
+    findAccountingProvider: (id: string) => (id === 'quickbooks' ? qbo : id === 'xero' ? xero : null),
     providerSupports: (id: string, cap: string) => mocks.providerSupports(id, cap),
     accountingProviderDisplayName: (id: string) => ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? id,
     listRegisteredAccountingProviders: () => [qbo],
@@ -194,7 +244,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
 import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
-import { AccountingProviderConflictError } from '../../services/accounting/accountingConnectionService';
+import { AccountingProviderConflictError, AccountingTenantHeldError } from '../../services/accounting/accountingConnectionService';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
@@ -256,6 +306,8 @@ describe('accounting routes', () => {
     mocks.getPartnerConnectionRef.mockResolvedValue(null);
     mocks.configError.mockReturnValue(null);
     mocks.providerSupports.mockImplementation(defaultProviderSupports);
+    mocks.releaseProviderConnection.mockResolvedValue('skipped');
+    mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -397,6 +449,24 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('error=exchange_failed');
     expect(mocks.upsertConnection).not.toHaveBeenCalled();
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('callback redirects to error=exchange_failed WITHOUT a Sentry capture when the code exchange is throttled', async () => {
+    mocks.exchangeCode.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'exchangeCode', retryAfterMs: 5_000,
+    }));
+    const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
+
+    const res = await app.request(
+      `/accounting/quickbooks/callback?code=bad&realmId=realm-1&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=exchange_failed');
+    expect(mocks.upsertConnection).not.toHaveBeenCalled();
+    expect(mocks.captureException).not.toHaveBeenCalled();
   });
 
   it('callback captures the realm home currency and persists it against the row it just wrote', async () => {
@@ -1094,6 +1164,7 @@ describe('accounting routes', () => {
   });
   describe('owed QuickBooks payment deletes discarded (review wave 2, finding 3)', () => {
     it('POST /:provider/disconnect audits the owed deletes it cascades away, and still disconnects', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
       // The disconnect must NOT be blocked — but the remote ids are the only
       // thing that lets a human find those Payments in QuickBooks afterwards.
       mocks.deleteConnection.mockResolvedValueOnce({
@@ -1122,6 +1193,7 @@ describe('accounting routes', () => {
     });
 
     it('POST /:provider/disconnect writes no such audit when nothing is owed', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
       mocks.deleteConnection.mockResolvedValueOnce({
         removed: true,
         connectionId: CONNECTION_ID,
@@ -1277,6 +1349,7 @@ describe('accounting routes', () => {
     });
 
     it('disconnect still works on an unconfigured instance, so a stale row can never be stranded', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
       mocks.configError.mockReturnValue('QuickBooks OAuth is not configured on this instance');
       const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
       expect(res.status).toBe(200);
@@ -1293,6 +1366,364 @@ describe('accounting routes', () => {
         activeConnection: { provider: 'quickbooks', status: 'connected' },
       });
       expect(mocks.getConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('callback generalisation (Xero W02)', () => {
+    const USER_ID = '33333333-3333-3333-3333-333333333333';
+    const EVT = 'evt-00001';
+    const tenant = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: EVT });
+    const allowXeroConnect = () => mocks.providerSupports.mockImplementation(
+      (id: string, cap: string) => defaultProviderSupports(id, cap) || (id === 'xero' && cap === 'connect'),
+    );
+    async function xeroCallback(query = 'code=xc') {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID, Date.now() + 60_000, 'xero');
+      return app.request(`/accounting/xero/callback?${query}&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+    }
+
+    beforeEach(() => {
+      mocks.xeroExchangeCode.mockResolvedValue(exchangedTokens(''));
+      mocks.xeroFetchRealmSettings.mockResolvedValue({ homeCurrency: 'NZD', multiCurrencyEnabled: false });
+      mocks.xeroSelection.authEventIdOf.mockReset();
+      mocks.xeroSelection.authEventIdOf.mockReturnValue(EVT);
+      mocks.xeroSelection.listGrantTenants.mockReset();
+      mocks.xeroSelection.listAllTenants.mockReset();
+      mocks.getConnection.mockResolvedValue(null);
+    });
+
+    it('consent cancelled at the provider redirects cleanly, with no state work', async () => {
+      const res = await app.request('/accounting/quickbooks/callback?error=access_denied&state=anything');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
+      // An unverified state never clears the browser's in-flight binding cookie.
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('consent cancelled with the flow\'s own verified state clears the binding cookie', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('an over-long provider error value still redirects consent_denied (never a JSON 400, never reflected) (review E)', async () => {
+      const long = 'x'.repeat(150);
+      const res = await app.request(`/accounting/quickbooks/callback?error=${long}&state=anything`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(res.headers.get('location')).not.toContain(long);
+    });
+
+    it('consent cancelled on one provider\'s callback with a state issued for ANOTHER provider does not clear the binding cookie (review G)', async () => {
+      allowXeroConnect();
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID, Date.now() + 60_000, 'quickbooks');
+      const res = await app.request(`/accounting/xero/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=consent_denied#accounting');
+      expect(res.headers.get('set-cookie')).toBeNull();
+      // Control: the same state on its own provider's callback does clear it.
+      const own = await app.request(`/accounting/quickbooks/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(own.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
+    it('a callback with neither code nor error is still a 400', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?realmId=realm-A&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Missing code or state' });
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('QuickBooks still requires realmId (400)', async () => {
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID);
+      const res = await app.request(`/accounting/quickbooks/callback?code=c&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Missing realmId' });
+      expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it('a QuickBooks realm held by another partner now redirects with error=tenant_held', async () => {
+      mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+      mocks.upsertConnection.mockRejectedValueOnce(new AccountingTenantHeldError('quickbooks'));
+      const res = await runCallback(app, 'realm-A');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=tenant_held#accounting');
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+      expect(mocks.fetchRealmSettings).not.toHaveBeenCalled();
+      expect(mocks.captureException).not.toHaveBeenCalled();
+    });
+
+    it('Xero: no realmId is fine; a token with no auth-event claim fails closed (auth_event_missing, nothing listed or persisted)', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.authEventIdOf.mockReturnValue(null);
+      const res = await xeroCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=auth_event_missing#accounting');
+      expect(mocks.xeroExchangeCode).toHaveBeenCalledWith('xc', '');
+      expect(mocks.xeroSelection.listGrantTenants).not.toHaveBeenCalled();
+      expect(mocks.xeroSelection.listAllTenants).not.toHaveBeenCalled();
+      expect(mocks.xeroSelection.removeTenantConnection).not.toHaveBeenCalled();
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
+    it('Xero: one organisation connects it (tenant id + connection ref) and captures its settings', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockResolvedValue([tenant('A')]);
+      mocks.upsertConnection.mockResolvedValueOnce({ id: CONNECTION_ID, partnerId: authState.partnerId, provider: 'xero', realmId: 'ten-A', updatedAt: PERSISTED_AT });
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&connected=1#accounting');
+      expect(mocks.xeroSelection.listGrantTenants).toHaveBeenCalledWith('at', EVT);
+      expect(mocks.upsertConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero', expect.objectContaining({
+        realmId: 'ten-A', providerConnectionRef: 'conn-A', status: 'connected', connectedBy: USER_ID, homeCurrency: null,
+      }));
+      expect(mocks.xeroFetchRealmSettings).toHaveBeenCalledTimes(1);
+      expect(mocks.updateHomeCurrency).toHaveBeenCalledWith(expect.anything(), CONNECTION_ID, authState.partnerId, { updatedAt: PERSISTED_AT, realmId: 'ten-A' }, 'NZD');
+    });
+
+    it('Xero: several organisations park the row and send the browser to the picker', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockResolvedValue([tenant('A'), tenant('B')]);
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&select_tenant=1#accounting');
+      expect(mocks.upsertConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero', expect.objectContaining({ status: 'pending_tenant' }));
+      expect(mocks.xeroFetchRealmSettings).not.toHaveBeenCalled();
+    });
+
+    it('Xero: a failed organisation lookup redirects with error=tenant_lookup_failed', async () => {
+      allowXeroConnect();
+      mocks.xeroSelection.listGrantTenants.mockRejectedValue(new Error('xero 503'));
+      const res = await xeroCallback();
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=tenant_lookup_failed#accounting');
+      expect(mocks.upsertConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('disconnect, settings and status (Xero W02)', () => {
+    const allowXeroConnect = () => mocks.providerSupports.mockImplementation(
+      (id: string, cap: string) => defaultProviderSupports(id, cap) || (id === 'xero' && cap === 'connect'),
+    );
+    const xeroConnection = (over: Record<string, unknown> = {}) => ({
+      id: CONNECTION_ID, partnerId: authState.partnerId, provider: 'xero', realmId: 'ten-A', providerConnectionRef: 'conn-A',
+      accessToken: 'at', refreshToken: 'rt', accessTokenExpiresAt: new Date(), refreshTokenExpiresAt: new Date(),
+      environment: 'production', homeCurrency: 'NZD', multiCurrencyEnabled: false,
+      defaultIncomeAccountRef: '200', defaultTaxCodeRef: 'OUTPUT2', defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-1',
+      pushMode: 'auto', status: 'connected', createdAt: new Date('2026-09-20T00:00:00Z'), updatedAt: new Date(), lastError: null,
+      pullPayments: true, lastReconcileAt: null, pushPayments: true, ...over,
+    });
+    const auditActions = () => mocks.writeRouteAudit.mock.calls.map((call) => call[1] as Record<string, unknown>);
+    const disconnect = (provider = 'xero') => app.request(`/accounting/${provider}/disconnect`, { method: 'POST' });
+
+    beforeEach(() => {
+      allowXeroConnect();
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'connected' });
+      mocks.getConnection.mockResolvedValue(xeroConnection());
+      mocks.deleteConnection.mockResolvedValue({ removed: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
+    });
+
+    it('disconnect releases the provider link BEFORE deleting, and never blocks on a release failure', async () => {
+      const order: string[] = [];
+      mocks.releaseProviderConnection.mockImplementation(async () => { order.push('release'); return 'failed'; });
+      mocks.deleteConnection.mockImplementation(async () => {
+        order.push('delete');
+        return { removed: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } };
+      });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ disconnected: true });
+      expect(order).toEqual(['release', 'delete']);
+      expect(mocks.releaseProviderConnection).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, providerConnectionRef: 'conn-A' }));
+      expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero');
+    });
+
+    it('disconnect runs every DB step through the request\'s auth runner (self-managed: the release is an outbound call)', async () => {
+      await disconnect();
+      // ref read, full read, delete — each its own short context, none held across the release.
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(3);
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledWith(expect.objectContaining({ partnerId: authState.partnerId }), expect.any(Function));
+    });
+
+    it('disconnect audits the disconnect with the release outcome', async () => {
+      mocks.releaseProviderConnection.mockResolvedValue('released');
+      await disconnect();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        resourceType: 'accounting_connection', resourceId: CONNECTION_ID,
+        details: { provider: 'xero', status: 'connected', providerRelease: 'released' },
+      });
+    });
+
+    it('404 when the partner has no connection, or one to a DIFFERENT provider (nothing released or deleted)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValueOnce(null);
+      expect((await disconnect()).status).toBe(404);
+      mocks.getPartnerConnectionRef.mockResolvedValueOnce({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
+      expect((await disconnect()).status).toBe(404);
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+    });
+
+    it('disconnect of a pending_tenant row is a cancel (no release, no plain delete), audited like any disconnect (F19)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ disconnected: true });
+      expect(mocks.discardPendingTenantSelection).toHaveBeenCalledWith(expect.objectContaining({
+        partnerId: authState.partnerId, provider: 'xero', reason: 'cancel', runInDbContext: expect.any(Function),
+      }));
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        resourceId: CONNECTION_ID, details: { provider: 'xero', status: 'pending_tenant' },
+      });
+    });
+
+    it('a pending row that was claimed in the meantime still disconnects through the normal path', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(mocks.releaseProviderConnection).toHaveBeenCalledTimes(1);
+      expect(mocks.deleteConnection).toHaveBeenCalledTimes(1);
+    });
+
+    it('a connected row RE-PARKED to pending_tenant before the full read goes through the held-checked discard, not release + plain delete (review H)', async () => {
+      mocks.getConnection.mockResolvedValue(xeroConnection({ status: 'pending_tenant', providerConnectionRef: null }));
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ disconnected: true });
+      expect(mocks.discardPendingTenantSelection).toHaveBeenCalledWith(expect.objectContaining({
+        partnerId: authState.partnerId, provider: 'xero', reason: 'cancel',
+      }));
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'xero', status: 'pending_tenant' },
+      });
+    });
+
+    it('the audit names the re-read status, not the first read\'s: a pending row claimed meanwhile is audited as connected (review I)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
+      mocks.releaseProviderConnection.mockResolvedValue('released');
+      await disconnect();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'xero', status: 'connected', providerRelease: 'released' },
+      });
+    });
+
+    it('a provider with no release hook (QuickBooks) skips the decrypting full read: two DB contexts, not three (review K)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
+      const res = await disconnect('quickbooks');
+      expect(res.status).toBe(200);
+      expect(mocks.getConnection).not.toHaveBeenCalled();
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(2);
+      expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'quickbooks');
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'quickbooks', status: 'connected', providerRelease: 'skipped' },
+      });
+    });
+
+    it('a token that cannot be decrypted still disconnects (release skipped), and the failure is Sentry-captured', async () => {
+      mocks.getConnection.mockRejectedValue(new Error('decrypt failed'));
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.deleteConnection).toHaveBeenCalledTimes(1);
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { providerRelease: 'skipped' },
+      });
+      expect(mocks.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('PATCH settings writes and returns the two new refs (F18)', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto', defaultIncomeAccountRef: '200', defaultTaxCodeRef: 'OUTPUT2',
+        defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-1', lastError: null, pullPayments: true, pushPayments: true,
+      }]);
+      const res = await app.request('/accounting/xero/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-1' }),
+      });
+      expect(res.status).toBe(200);
+      expect(mocks.dbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-1' }));
+      expect(await res.json()).toMatchObject({ defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-1' });
+    });
+
+    it('PATCH settings clears a ref with null, and leaves the other untouched', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{ status: 'connected' }]);
+      const res = await app.request('/accounting/xero/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ defaultPaymentAccountRef: null }),
+      });
+      expect(res.status).toBe(200);
+      const patch = mocks.dbUpdateSet.mock.calls[0]![0] as Record<string, unknown>;
+      expect(patch).toHaveProperty('defaultPaymentAccountRef', null);
+      expect('defaultExemptTaxCodeRef' in patch).toBe(false);
+    });
+
+    it('PATCH settings rejects a ref longer than the 64-char column (400)', async () => {
+      const res = await app.request('/accounting/xero/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ defaultExemptTaxCodeRef: 'x'.repeat(65), pushMode: 'auto' }),
+      });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateSet).not.toHaveBeenCalled();
+    });
+
+    it('GET /:provider exposes capabilities and features on both branches, and the new refs when connected', async () => {
+      const connected = await (await app.request('/accounting/xero')).json();
+      expect(connected).toMatchObject({
+        status: 'connected',
+        defaultExemptTaxCodeRef: 'NONE',
+        defaultPaymentAccountRef: 'bank-1',
+        capabilities: { connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false },
+        features: { tenantSelection: true, settingsOptions: true },
+      });
+      mocks.getConnection.mockResolvedValueOnce(null);
+      const disconnected = await (await app.request('/accounting/xero')).json();
+      expect(disconnected.status).toBe('disconnected');
+      expect(disconnected.capabilities).toEqual(connected.capabilities);
+      expect(disconnected.features).toEqual({ tenantSelection: true, settingsOptions: true });
+      // DB-only: the status route never calls the provider.
+      expect(mocks.xeroListSettingsOptions).not.toHaveBeenCalled();
+    });
+
+    it('GET /:provider reports QuickBooks features off (no picker, no settings options)', async () => {
+      mocks.getConnection.mockResolvedValueOnce(null);
+      const body = await (await app.request('/accounting/quickbooks')).json();
+      expect(body.features).toEqual({ tenantSelection: false, settingsOptions: false });
+      expect(body.capabilities).toMatchObject({ connect: true, invoicePush: true });
+    });
+
+    it('the connection-setup routes are mounted behind the accounting chain (MFA on select)', async () => {
+      authState.mfa = false;
+      const res = await app.request('/accounting/xero/tenants/select', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenantId: 'ten-A' }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'MFA required' });
+    });
+
+    it('cancel is mounted and discards the partner\'s pending row', async () => {
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      const res = await app.request('/accounting/xero/tenants/cancel', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cancelled: true });
+      expect(mocks.discardPendingTenantSelection).toHaveBeenCalledWith(expect.objectContaining({ partnerId: authState.partnerId, provider: 'xero' }));
     });
   });
 });

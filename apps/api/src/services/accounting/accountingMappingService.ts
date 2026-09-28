@@ -127,7 +127,9 @@ export type AccountingMappingErrorCode =
   // Throttled by the provider or Breeze's own limiter (429, `retryAfterMs`).
   // Routes answer 429 + Retry-After; the sync worker delays the job without
   // consuming an attempt. Deliberately NOT in MAPPING_TERMINAL_CODES.
-  | 'rate_limited';
+  | 'rate_limited'
+  // The provider lacks the hook a route needs (Xero W02: settings pickers). 409.
+  | 'capability_unavailable';
 
 // Typed failure the route translates straight to an HTTP status (mirrors
 // AccountingImportError in accountingCustomerImport.ts). Narrowing `code`/`status` to
@@ -322,7 +324,7 @@ export async function resolveConnectionAndToken(
  * Sentry for forensics but never surfaced in the thrown message, so a caller
  * can't leak an upstream response body to the client.
  */
-async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: string): Promise<T> {
+export async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: string): Promise<T> {
   try {
     return await action();
   } catch (err) {

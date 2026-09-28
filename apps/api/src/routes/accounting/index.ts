@@ -14,23 +14,19 @@ import {
   AccountingConnectionError,
   AccountingProviderConflictError,
   deleteConnection, getConnection,
+  PENDING_TENANT_STATUS,
+  type AccountingConnection,
   getPartnerConnectionRef,
-  isHomeCurrencyCasAbort,
   refreshRealmSettings,
-  updateHomeCurrency,
-  updateMultiCurrencyEnabled,
   upsertConnection,
-  resetConnectionForRealmChange,
   resolveActiveConnectionRef,
 } from '../../services/accounting/accountingConnectionService';
-import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
   importAccountingCustomers,
   listAccountingCustomersAnnotated,
   AccountingImportError,
 } from '../../services/accounting/accountingCustomerImport';
 import {
-  AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
   resolveConnectionAndToken,
@@ -44,14 +40,19 @@ import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../.
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
-  accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
+  findAccountingProvider, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
 } from '../../services/accounting/providerRegistry';
-import {
-  isAccountingProviderError, providerRateLimitedTryAgainMessage, rateLimitRetryAfterMs, rateLimitSourceOf,
-} from '../../services/accounting/accountingProviderError';
-import { captureException, captureMessage } from '../../services/sentry';
+import { captureException } from '../../services/sentry';
 import { ACCOUNTING_PROVIDER_IDS } from '../../services/accounting/types';
+import { discardPendingTenantSelection } from '../../services/accounting/accountingTenantSelection';
+import { rateLimitRetryAfterMs } from '../../services/accounting/accountingProviderError';
+import { releaseProviderConnection } from '../../services/accounting/accountingProviderRelease';
+import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import { listProvidersHandler, providerGateResponse } from './providerGate';
+import { handleMappingError, setRetryAfter } from './routeErrors';
+import { registerConnectionSetupRoutes } from './connectionSetupRoutes';
+import { connectRedirectPath, finalizeConnection, homeCurrencyField, readPriorRealm } from './connectFinalize';
+import { completeTenantSelectingCallback } from './tenantConnect';
 import { constantTimeEqual, createState, STATE_TTL_MS, stateCookieValue, verifyState } from './oauthState';
 import {
   canManagePartnerWidePolicies,
@@ -153,9 +154,13 @@ const requireAccountingManage = partnerScopedPermission(
 const providerParamSchema = z.object({ provider: z.enum(ACCOUNTING_PROVIDER_IDS) });
 const partnerQuerySchema = z.object({ partnerId: z.string().guid().optional() });
 const callbackQuerySchema = z.object({
-  code: z.string().min(1),
-  realmId: z.string().min(1),
-  state: z.string().min(1),
+  code: z.string().min(1).optional(),
+  // QuickBooks sends realmId; Xero does not (its tenant is chosen after the exchange).
+  realmId: z.string().min(1).optional(),
+  state: z.string().min(1).optional(),
+  // The provider's own OAuth error (e.g. access_denied when the user cancels consent).
+  // Truncated, never refused: any value redirects consent_denied and is never reflected.
+  error: z.string().transform((v) => v.slice(0, 100)).optional(),
 });
 const settingsSchema = z.object({
   pushMode: z.enum(['auto', 'manual']).optional(),
@@ -170,6 +175,11 @@ const settingsSchema = z.object({
   // connection. Same tier as pushMode/pullPayments: a plain connection setting,
   // not a captured external fact.
   pushPayments: z.boolean().optional(),
+  // Xero W02 — defaults the push applies when a line is tax-exempt / when a
+  // payment is recorded (a Xero TaxType and a bank AccountID). Plain connection
+  // settings, same tier as the income-account / tax-code refs above.
+  defaultExemptTaxCodeRef: z.string().max(64).nullable().optional(),
+  defaultPaymentAccountRef: z.string().max(64).nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -214,31 +224,8 @@ function handleImportError(c: { json: (b: unknown, s: number) => Response }, err
   throw err;
 }
 
-/** A throttle answers 429 with Retry-After in whole seconds, rounded up (Xero W01). */
-function setRetryAfter(c: Context, err: unknown): number | null {
-  const retryAfterMs = rateLimitRetryAfterMs(err);
-  if (retryAfterMs !== null) c.header('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
-  return retryAfterMs;
-}
-
-function handleMappingError(c: Context, err: unknown): Response {
-  // AccountingMappingError.status is a narrowed literal union (404|409|429|502),
-  // so no cast, and every current/future code (including item_price_required)
-  // flows through generically — the route never re-enumerates codes.
-  if (err instanceof AccountingMappingError) {
-    setRetryAfter(c, err);
-    return c.json({ error: err.message, code: err.code }, err.status);
-  }
-  // A raw provider throttle (remote-candidates calls the provider directly).
-  if (isAccountingProviderError(err) && setRetryAfter(c, err) !== null) {
-    const label = accountingProviderDisplayName(err.provider);
-    return c.json({ error: providerRateLimitedTryAgainMessage(label, rateLimitSourceOf(err) ?? undefined), code: 'rate_limited' }, 429);
-  }
-  throw err;
-}
-
 /**
- * Deliberately a DIFFERENT body shape from `handleMappingError` above
+ * Deliberately a DIFFERENT body shape from `handleMappingError` (./routeErrors)
  * (`{ error: code, message }`, not `{ error: message, code }`) — the invoice
  * push coordinator's error taxonomy (Phase C, Task 3) is a separate typed
  * class from the mapping workbench's, and this shape is what Task 5's spec
@@ -438,239 +425,141 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   const gate = providerGateResponse(c, provider, 'connect');
   if (gate) return gate;
 
+  // The signed state + binding cookie authenticate the callback; null = not this browser's flow.
+  const bindingValid = (stateParam: string): boolean => {
+    const expectedCookie = stateCookieValue(stateParam);
+    const presentedCookie = getCookie(c, ACCOUNTING_STATE_COOKIE);
+    return Boolean(expectedCookie && presentedCookie && constantTimeEqual(presentedCookie, expectedCookie));
+  };
+
+  if (query.error) {
+    // Consent cancelled or refused at the provider: no grant exists, nothing to
+    // exchange or clean up. Only this browser's own verified flow FOR THIS
+    // provider clears the binding cookie, so a crafted link cannot cancel an
+    // in-flight connect.
+    const denied = query.state ? verifyState(query.state) : null;
+    if (denied && (denied.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) === provider && bindingValid(query.state!)) {
+      deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
+    }
+    return c.redirect(connectRedirectPath(provider, { kind: 'error', error: 'consent_denied' }));
+  }
+  if (!query.code || !query.state) return c.json({ error: 'Missing code or state' }, 400);
+  const code = query.code;
+
   const state = verifyState(query.state);
   if (!state) return c.json({ error: 'Invalid or expired OAuth state' }, 400);
   // Pre-W01 states carry no provider; they were QuickBooks flows (10-minute TTL spans at most one deploy).
   if ((state.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) !== provider) {
     return c.json({ error: 'OAuth state was issued for a different provider' }, 400);
   }
-
-  const expectedCookie = stateCookieValue(query.state);
-  const presentedCookie = getCookie(c, ACCOUNTING_STATE_COOKIE);
-  if (!expectedCookie || !presentedCookie || !constantTimeEqual(presentedCookie, expectedCookie)) {
-    return c.json({ error: 'OAuth state binding mismatch' }, 400);
-  }
+  if (!bindingValid(query.state)) return c.json({ error: 'OAuth state binding mismatch' }, 400);
 
   const providerClient = getAccountingProvider(provider);
+  // A provider without tenant selection names its realm in the callback (QuickBooks).
+  if (!providerClient.tenantSelection && !query.realmId) return c.json({ error: 'Missing realmId' }, 400);
+
   let tokens;
   try {
-    tokens = await runOutsideDbContext(() => providerClient.exchangeCode(query.code, query.realmId));
+    tokens = await runOutsideDbContext(() => providerClient.exchangeCode(code, query.realmId ?? ''));
   } catch (err) {
     // Never log query.code / realmId / token bodies — only partner + provider.
-    captureException(err instanceof Error ? err : new Error(String(err)), c);
-    console.error(`[accounting] ${providerClient.displayName} code exchange failed`, { partnerId: state.partnerId, provider });
+    // A provider/local throttle is not an incident (matches connectFinalize's
+    // F7 guard) — warn only; anything else still goes to Sentry.
+    if (rateLimitRetryAfterMs(err) === null) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.error(`[accounting] ${providerClient.displayName} code exchange failed`, { partnerId: state.partnerId, provider });
+    } else {
+      console.warn(`[accounting] ${providerClient.displayName} code exchange throttled`, { partnerId: state.partnerId, provider });
+    }
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-    return c.redirect(`/integrations?accounting=${provider}&error=exchange_failed#accounting`);
+    return c.redirect(connectRedirectPath(provider, { kind: 'error', error: 'exchange_failed' }));
   }
 
-  // No request auth context here, so the write would match 0 rows under
-  // breeze_app RLS (silent failure). Run it in system context with the
-  // partnerId taken from the verified state. Guard the persist: a failure
-  // after a successful exchange leaves a live-but-unrecorded grant, so surface
-  // it rather than 500-ing on a raw page.
-  // Does this reconnect change realms? A DIFFERENT realm's home currency must
-  // never persist, but blanking it on a SAME-realm reconnect degrades a healthy
-  // connection: capture below is non-fatal and there is no retry, no refresh
-  // route and no job, so a transient Preferences failure would strand the row at
-  // NULL until someone completes another full OAuth round-trip that succeeds.
-  // Read failure falls back to the fail-closed answer (null) rather than losing
-  // the freshly-exchanged grant.
-  let priorRealmId: string | null = null;
-  let priorRealmKnown = false;
-  try {
-    const existing = await withSystemDbAccessContext(() => getConnection(db, state.partnerId, provider));
-    priorRealmId = existing?.realmId ?? null;
-    priorRealmKnown = true;
-  } catch (err) {
-    captureException(err instanceof Error ? err : new Error(String(err)), c);
-    console.warn(`[accounting] ${providerClient.displayName} pre-reconnect realm read failed; clearing home currency`, { partnerId: state.partnerId, provider });
+  if (providerClient.tenantSelection) {
+    const outcome = await completeTenantSelectingCallback(c, { provider, tokens, partnerId: state.partnerId, userId: state.userId });
+    deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
+    return c.redirect(connectRedirectPath(provider, outcome));
   }
-  const sameRealm = priorRealmKnown && priorRealmId !== null && priorRealmId === tokens.realmId;
 
-  let connection: AccountingConnection;
-  try {
-    connection = await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
-      realmId: tokens.realmId,
+  // Persist, realm-change reset and settings capture: connectFinalize.ts (moved, Xero W02).
+  const realmId = tokens.realmId;
+  const prior = await readPriorRealm(c, state.partnerId, provider);
+  const result = await finalizeConnection(c, {
+    provider, partnerId: state.partnerId, realmId, prior,
+    persist: () => withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
+      realmId,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       environment: providerClient.connectEnvironment(),
-      // Explicit null on a realm CHANGE, not omission: upsertConnection's
-      // conflict set strips undefined, so omitting it would carry a PREVIOUS
-      // realm's home currency across a reconnect. Unknown must fail closed at
-      // push time instead (multi-currency §11). On a same-realm reconnect the
-      // undefined is deliberate — it leaves an already-captured currency intact.
-      homeCurrency: sameRealm ? undefined : null,
+      homeCurrency: homeCurrencyField(prior, realmId),
       status: 'connected',
       lastError: null,
       connectedBy: state.userId,
-    }));
-  } catch (err) {
-    // The partner connected another provider while this flow was in flight (spec D2).
-    if (err instanceof AccountingProviderConflictError) {
-      deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-      return c.redirect(`/integrations?accounting=${provider}&error=provider_conflict#accounting`);
-    }
-    captureException(err instanceof Error ? err : new Error(String(err)), c);
-    console.error(`[accounting] ${providerClient.displayName} connection persist failed`, { partnerId: state.partnerId, provider });
-    deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-    return c.redirect(`/integrations?accounting=${provider}&error=persist_failed#accounting`);
-  }
-
-  // A reconnect that landed on a DIFFERENT QuickBooks company gets DISCONNECT
-  // SEMANTICS (finding C): every `accounting_entity_mappings` row under this
-  // connection still names the OLD realm's Customer/Item/Invoice/Payment ids,
-  // and `cdc_cursor` is a watermark in the old realm's change stream. Left
-  // alone, the next push would "update" a stranger's invoice and the next pull
-  // would skip the new realm's first window as already read.
-  //
-  // Only fires on a POSITIVELY KNOWN change: `priorRealmKnown` false means the
-  // pre-upsert read failed, and destroying a healthy connection's entire
-  // mapping set on a guess is far worse than the divergence it would prevent.
-  // Non-fatal for the same reason the currency capture is: the grant is already
-  // live, and a reconcile job that arrives before this lands is caught by the
-  // worker's own compare-and-set on the fingerprint.
-  const realmChanged = priorRealmKnown && priorRealmId !== null && priorRealmId !== tokens.realmId;
-  if (realmChanged) {
-    try {
-      const { mappingsDeleted, owedPaymentDeletes } = await withSystemDbAccessContext(
-        () => resetConnectionForRealmChange(db, connection.id, state.partnerId),
-      );
-      // Same rule as the disconnect route below: the reset cannot be blocked
-      // (the new grant is already live), and the remote ids of the payment
-      // deletes it discards are all a human has left to reconcile with. They
-      // name Payments in the OLD company file, which is exactly why they cannot
-      // simply be retained.
-      if (owedPaymentDeletes.count > 0) {
-        writeRouteAudit(c, {
-          orgId: null,
-          action: 'accounting.connection.owed_deletes_discarded',
-          resourceType: 'accounting_connection',
-          resourceId: connection.id,
-          result: 'failure',
-          details: {
-            provider,
-            reason: 'realm_changed',
-            count: owedPaymentDeletes.count,
-            remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
-          },
-        });
-      }
-      console.warn(`[accounting] ${providerClient.displayName} realm changed on reconnect; mappings and CDC cursor cleared`, {
-        partnerId: state.partnerId, provider, mappingsDeleted,
-      });
-      writeRouteAudit(c, {
-        orgId: null,
-        action: 'accounting.connection.realm_changed',
-        resourceType: 'accounting_connection',
-        resourceId: connection.id,
-        details: { provider, mappingsDeleted },
-      });
-    } catch (err) {
-      captureException(err instanceof Error ? err : new Error(String(err)), c);
-      console.error(`[accounting] ${providerClient.displayName} realm-change cleanup failed`, { partnerId: state.partnerId, provider });
-    }
-  }
-
-  // Capture the realm's home currency (multi-currency §11). NON-FATAL by design:
-  // the connection is already live and usable for customer import, and the
-  // invoice-push guard fails closed on a NULL home currency, so a Preferences
-  // outage must never turn a successful OAuth grant into a connect error.
-  // The QBO call runs with no ambient DB context; the write is a short
-  // compare-and-set on the row we just persisted.
-  let capturedSettings: { homeCurrency: string | null; multiCurrencyEnabled: boolean | null } | null = null;
-  // The generation both realm-derived writes below stake their compare-and-set
-  // on. `updateHomeCurrency` BUMPS it, so it hands back the new one for the
-  // multi-currency write to chain onto; a lost CAS clears it, which skips the
-  // second write rather than issuing it against a claim we know has expired.
-  let generation: Date | null = connection.updatedAt;
-  try {
-    capturedSettings = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
-    const { homeCurrency } = capturedSettings;
-    if (homeCurrency && generation) {
-      // The generation this capture belongs to: the row as we just wrote it
-      // (updatedAt) AND the realm we just exchanged for. A reconnect to another
-      // realm in between — even inside the same millisecond — aborts the write.
-      generation = await withSystemDbAccessContext(() => updateHomeCurrency(
-        db,
-        connection.id,
-        state.partnerId,
-        { updatedAt: generation as Date, realmId: tokens.realmId },
-        homeCurrency,
-      ));
-    } else if (!homeCurrency) {
-      // The realm reported nothing — an ordinary external condition. Push-time
-      // fails closed on NULL, so a warning is the whole response.
-      console.warn(`[accounting] ${providerClient.displayName} home currency unavailable`, { partnerId: state.partnerId, provider });
-    } else {
-      // A GOOD capture we cannot anchor: the row we just upserted came back with
-      // no updatedAt, so the compare-and-set has no generation to target. That is
-      // an unexpected row shape, not an external outage — report it instead of
-      // discarding the value under an "unavailable" warning.
-      captureException(new Error('Accounting home currency captured but the persisted connection carried no updatedAt to compare-and-set against'), c);
-      console.error(`[accounting] ${providerClient.displayName} home currency captured but the persisted row has no updatedAt`, { partnerId: state.partnerId, provider });
-    }
-  } catch (err) {
-    // A lost compare-and-set is an EXPECTED race (double connect, concurrent
-    // reconnect), not a defect: the winning capture already wrote a currency for
-    // the generation that survived. Report it as a warning so it stops filing
-    // Sentry issues on a normal user action; genuine failures stay exceptions.
-    if (isHomeCurrencyCasAbort(err)) {
-      generation = null;
-      captureMessage(`[accounting] ${providerClient.displayName} home currency capture lost the compare-and-set`, {
-        eventCode: 'accounting_home_currency_cas_lost',
-      });
-      console.warn(`[accounting] ${providerClient.displayName} home currency capture lost the compare-and-set`, { partnerId: state.partnerId, provider });
-    } else {
-      // A throttled capture is not an incident (F7): a provider/local throttle
-      // never reaches Sentry, and a limiter-store outage is reported once,
-      // centrally, by the limiter itself — capturing it here would double it.
-      if (rateLimitRetryAfterMs(err) === null) captureException(err instanceof Error ? err : new Error(String(err)), c);
-      console.warn(`[accounting] ${providerClient.displayName} home currency capture failed`, {
-        partnerId: state.partnerId, provider, throttleSource: rateLimitSourceOf(err) ?? undefined,
-      });
-    }
-  }
-
-  // Persist the realm's multi-currency flag, under the SAME realm+generation
-  // compare-and-set as the home currency (a reconnect to a different realm
-  // must not be stamped with the old realm's flag). It runs AFTER the block
-  // above and chains onto the generation that write returned — both writes
-  // bump updated_at, so ordering and chaining are both load-bearing.
-  // A null flag is left untouched (unknown must never blank a previously
-  // captured true/false), matching the home-currency "never blank" rule above.
-  if (typeof capturedSettings?.multiCurrencyEnabled === 'boolean' && generation) {
-    try {
-      await withSystemDbAccessContext(() => updateMultiCurrencyEnabled(
-        db,
-        connection.id,
-        state.partnerId,
-        { updatedAt: generation as Date, realmId: tokens.realmId },
-        capturedSettings!.multiCurrencyEnabled,
-      ));
-    } catch (err) {
-      if (isHomeCurrencyCasAbort(err)) {
-        console.warn(`[accounting] ${providerClient.displayName} multi-currency flag capture lost the compare-and-set`, { partnerId: state.partnerId, provider });
-      } else {
-        captureException(err instanceof Error ? err : new Error(String(err)), c);
-        console.warn(`[accounting] ${providerClient.displayName} multi-currency flag capture failed`, { partnerId: state.partnerId, provider });
-      }
-    }
-  }
-
+    })),
+  });
   deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-  return c.redirect(`/integrations?accounting=${provider}&connected=1#accounting`);
+  return c.redirect(connectRedirectPath(provider, result.ok ? { kind: 'connected' } : { kind: 'error', error: result.error }));
 });
 
 accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const gate = providerGateResponse(c, provider, 'connect', { requireConfigured: false });
   if (gate) return gate;
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const { removed, connectionId, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
+  // Self-managed (SELF_MANAGED_DB_CONTEXT_ROUTES): the provider-side release is
+  // an outbound call, so every DB step is its own short context, none held across it.
+  const runInDb: DbContextRunner = (fn) => withAuthDbAccessContext(auth, fn);
+  const ref = await runInDb(() => getPartnerConnectionRef(db, partner.partnerId));
+  if (!ref || ref.provider !== provider) return c.json({ error: 'Accounting connection not found' }, 404);
+  // `status` is the latest pre-delete read (the decrypting re-read when one ran,
+  // otherwise the first read) (review I), not the first read's.
+  const audit = (resourceId: string, status: string, details: Record<string, unknown>) => writeRouteAudit(c, {
+    orgId: null, action: 'accounting.connection.disconnected', resourceType: 'accounting_connection', resourceId,
+    details: { provider, status, ...details },
+  });
+  // A row waiting for an organisation is a cancel: no chosen link to release,
+  // and this flow's links go through the held-checked cleanup. False = it was
+  // claimed (or removed) in the meantime.
+  const discardPending = async () => (await discardPendingTenantSelection({
+    partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
+  })).discarded;
+  if (ref.status === PENDING_TENANT_STATUS && await discardPending()) {
+    audit(ref.id, PENDING_TENANT_STATUS, {});
+    return c.json({ disconnected: true });
+  }
+  // Best-effort provider-side release BEFORE the row and its tokens are gone
+  // (spec W02 "Disconnect"; never token revocation). Only a provider with a
+  // release hook needs the decrypting read (review K). A row whose tokens
+  // cannot be decrypted skips the release but still disconnects.
+  let full: AccountingConnection | null = null;
+  if (findAccountingProvider(provider)?.releaseConnection) {
+    try {
+      full = await runInDb(() => getConnection(db, partner.partnerId, provider));
+    } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c, { service: 'accounting' });
+      console.warn('[accounting] disconnect could not read the connection; skipping the provider-side release', {
+        partnerId: partner.partnerId, provider, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // A concurrent reconnect re-parked the row (review H): its new grant's links
+    // need the held-checked cleanup, and a pending row is never refreshed. If
+    // it was claimed yet again, disconnect it without a release (best-effort).
+    if (full?.status === PENDING_TENANT_STATUS) {
+      if (await discardPending()) {
+        audit(full.id, PENDING_TENANT_STATUS, {});
+        return c.json({ disconnected: true });
+      }
+      full = null;
+    }
+  }
+  const providerRelease = full ? await releaseProviderConnection(full) : 'skipped';
+  const { removed, connectionId, owedPaymentDeletes } = await runInDb(() => deleteConnection(db, partner.partnerId, provider));
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
+  audit(connectionId ?? ref.id, full?.status ?? ref.status, { providerRelease });
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
   // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
   // — the only thing that lets a human find those Payments afterwards (review
@@ -696,6 +585,13 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   return c.json({ disconnected: true });
 });
 
+// Organisation picker, cancel and settings pickers (Xero W02): connect chain, manage-gated.
+registerConnectionSetupRoutes(accountingRoutes, {
+  auth: [authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage],
+  mfa: requireMfa(),
+  resolvePartnerId,
+});
+
 // Registered BEFORE GET /:provider, which would otherwise capture it (and the enum 400 it).
 accountingRoutes.get('/providers', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('query', partnerQuerySchema), async (c) => {
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
@@ -710,8 +606,16 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const connection = await getConnection(db, partner.partnerId, provider);
+  // What the provider can do and which setup steps it has (Xero W02). DB-only:
+  // the organisation name / demo badge come from GET /:provider/settings/options.
+  const impl = getAccountingProvider(provider);
+  const providerShape = {
+    capabilities: impl.capabilities,
+    features: { tenantSelection: !!impl.tenantSelection, settingsOptions: typeof impl.listSettingsOptions === 'function' },
+  };
   if (!connection) {
     return c.json({
+      ...providerShape,
       status: 'disconnected',
       environment: null,
       pushMode: 'auto',
@@ -730,6 +634,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
     });
   }
   return c.json({
+    ...providerShape,
     status: connection.status,
     environment: connection.environment,
     pushMode: connection.pushMode,
@@ -737,6 +642,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
     lastError: connection.lastError,
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
+    defaultExemptTaxCodeRef: connection.defaultExemptTaxCodeRef,
+    defaultPaymentAccountRef: connection.defaultPaymentAccountRef,
     // A captured external fact, exposed so an operator can see whether connect-time
     // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
     // accept it.
@@ -877,6 +784,8 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('pushMode' in body ? { pushMode: body.pushMode } : {}),
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
+      ...('defaultExemptTaxCodeRef' in body ? { defaultExemptTaxCodeRef: body.defaultExemptTaxCodeRef } : {}),
+      ...('defaultPaymentAccountRef' in body ? { defaultPaymentAccountRef: body.defaultPaymentAccountRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
       ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
       // Turning the switch back ON restarts the horizon, so a deliberate pause
@@ -902,6 +811,8 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       pushMode: accountingConnections.pushMode,
       defaultIncomeAccountRef: accountingConnections.defaultIncomeAccountRef,
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
+      defaultExemptTaxCodeRef: accountingConnections.defaultExemptTaxCodeRef,
+      defaultPaymentAccountRef: accountingConnections.defaultPaymentAccountRef,
       lastError: accountingConnections.lastError,
       pullPayments: accountingConnections.pullPayments,
       pushPayments: accountingConnections.pushPayments,

@@ -1,14 +1,18 @@
 import { quickbooksProvider } from './quickbooksProvider';
+import { xeroProvider } from './xeroProvider';
 import type { AccountingCapability, AccountingProvider, AccountingProviderId } from './types';
 
 const providers: Partial<Record<AccountingProviderId, AccountingProvider>> = {
   quickbooks: quickbooksProvider,
+  // Xero W02: connect only. W03–W05 flip capabilities as they land.
+  xero: xeroProvider,
 };
 
 /**
- * Brand names for ids with NO registered implementation yet (Xero until W02),
- * so a message about a refused or conflicting provider can still name it. A
- * registered provider's own `displayName` always wins.
+ * Brand names for ids with no registered implementation, so a message about a
+ * refused or conflicting provider can still name it. Every current id is
+ * registered (Xero since W02); the table stays for any future id. A registered
+ * provider's own `displayName` always wins.
  */
 const FALLBACK_DISPLAY_NAMES: Record<AccountingProviderId, string> = {
   quickbooks: 'QuickBooks',
