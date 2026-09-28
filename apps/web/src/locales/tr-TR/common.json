@@ -92,6 +92,8 @@
     "fleetOrchestration": "Filo Orkestrasyonu",
     "aiAssistant": "Yapay Zeka Asistanı",
     "software": "Yazılım",
+    "softwareInventory": "Yazılım Envanteri",
+    "softwarePolicies": "Yazılım Politikaları",
     "securityOverview": "Genel Bakış",
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",

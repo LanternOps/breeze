@@ -92,6 +92,8 @@
     "fleetOrchestration": "Orchestrazione flotta",
     "aiAssistant": "Assistente IA",
     "software": "Software",
+    "softwareInventory": "Inventario software",
+    "softwarePolicies": "Criteri software",
     "securityOverview": "Panoramica",
     "aiRisk": "Rischio IA",
     "deviceBackup": "Backup dispositivi",
