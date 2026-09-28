@@ -2,12 +2,13 @@
  * Fix-outcome state machine (AI Suggested Fixes W1, spec "Outcome lifecycle").
  *
  *   pending ─script failed/timeout─► failed      ─cancelled─► cancelled
+ *      │     ─never delivered (delivery-clock expiry)─► inconclusive
  *      │ script ok
  *      ▼
  *   awaiting_recovery ─still active at deadline─► failed ("ran, didn't fix")
  *      │             ─human/cleanup/expiry/dismiss─► inconclusive
  *      │ objective condition clear (resolution_reason = condition_cleared,
- *      ▼                            resolved_by IS NULL, after the fix)
+ *      ▼       resolved_by IS NULL, after the script started — else dispatch)
  *   holding ─same signature recurs on the device─► recurred
  *      │    ─telemetry gap / device offline────► inconclusive
  *      ▼
@@ -20,7 +21,9 @@
 import { and, asc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS, isFixOutcomeTerminal, type FixOutcomeState } from '@breeze/shared';
 import { db } from '../../db';
-import { alerts, devices, fixOutcomes, metricAnomalies, metricAnomalyEpisodes, scriptExecutions, type FixOutcomeRow } from '../../db/schema';
+import {
+  alerts, deviceCommands, devices, fixOutcomes, metricAnomalies, metricAnomalyEpisodes, scriptExecutions, type FixOutcomeRow,
+} from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import {
   inSystemDbContext, probeTelemetryFreshness, readAlertRecovery, telemetryProbeFor,
@@ -34,7 +37,11 @@ const EVENT_FANOUT_LIMIT = 50;
 const RECURRENCE_PAGE = 50;
 const RECURRENCE_MAX_PAGES = 20;
 
-export interface ScriptReading { status: string; exitCode: number | null }
+/**
+ * `neverDelivered`: the execution failed because its command expired on the
+ * reaper's DELIVERY clock (it never reached the device). Not evidence about the fix.
+ */
+export interface ScriptReading { status: string; exitCode: number | null; neverDelivered?: boolean }
 export interface EpisodeReading { status: string; closeReason: string | null; resolvedByUserId: string | null; resolvedAt: Date | null }
 export type RecoveryReading =
   | { kind: 'still_active' }
@@ -54,8 +61,10 @@ export function decidePending(i: { script: ScriptReading | null; deadlineAt: Dat
         to: 'awaiting_recovery', reason: 'script_succeeded',
         deadlineAt: new Date(i.now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),
       };
-    case 'failed': return { to: 'failed', reason: 'script_failed' };
-    case 'timeout': return { to: 'failed', reason: 'script_timeout' };
+    case 'failed':
+    case 'timeout':
+      if (i.script.neverDelivered) return { to: 'inconclusive', reason: 'script_never_delivered' };
+      return { to: 'failed', reason: i.script.status === 'failed' ? 'script_failed' : 'script_timeout' };
     case 'cancelled': return { to: 'cancelled', reason: 'script_cancelled' };
     default: return deadlinePassed ? { to: 'inconclusive', reason: 'script_never_finished' } : null;
   }
@@ -80,7 +89,15 @@ export function readingFromEpisode(e: EpisodeReading | 'unassembled' | 'missing'
   return { kind: 'cleared_other', reason: `episode_${e.closeReason ?? 'closed'}` };
 }
 
-export function decideAwaitingRecovery(i: { reading: RecoveryReading; createdAt: Date; deadlineAt: Date; now: Date }): OutcomeTransition | null {
+/**
+ * `startedAt` is when the fix's script actually started on the device
+ * (script_executions.started_at), when recorded. A recovery before that point
+ * cannot be the fix's doing, even if it came after the attempt was dispatched
+ * (`createdAt`). Without a start time, dispatch time is the best bound.
+ */
+export function decideAwaitingRecovery(i: {
+  reading: RecoveryReading; createdAt: Date; startedAt?: Date | null; deadlineAt: Date; now: Date;
+}): OutcomeTransition | null {
   const deadlinePassed = i.now.getTime() >= i.deadlineAt.getTime();
   const r = i.reading;
   switch (r.kind) {
@@ -89,7 +106,7 @@ export function decideAwaitingRecovery(i: { reading: RecoveryReading; createdAt:
     case 'source_missing': return { to: 'inconclusive', reason: 'source_missing' };
     case 'cleared_other': return { to: 'inconclusive', reason: r.reason };
     case 'recovered':
-      if (r.at.getTime() < i.createdAt.getTime()) return { to: 'inconclusive', reason: 'cleared_before_fix' };
+      if (r.at.getTime() < (i.startedAt ?? i.createdAt).getTime()) return { to: 'inconclusive', reason: 'cleared_before_fix' };
       return {
         to: 'holding', reason: 'condition_cleared', recoveredAt: r.at,
         holdingUntil: new Date(r.at.getTime() + FIX_OUTCOME_WINDOWS.holdHours * HOUR_MS),
@@ -126,11 +143,42 @@ async function deviceLeftOrg(row: FixOutcomeRow): Promise<boolean> {
   return !device || device.orgId !== row.orgId;
 }
 
-async function readScript(executionId: string | null): Promise<ScriptReading | null> {
+/**
+ * A failed/timed-out execution that never started is checked against its
+ * command row: only a DELIVERY-clock expiry (staleCommandReaper,
+ * result.clock = 'delivery') means it never reached the device. A missing
+ * started_at alone is not enough: agents on the HTTP polling path never get
+ * one, and their reported failures are real.
+ */
+async function readScript(executionId: string | null, deviceId: string): Promise<ScriptReading | null> {
   if (!executionId) return null;
-  const [s] = await db.select({ status: scriptExecutions.status, exitCode: scriptExecutions.exitCode })
+  const [s] = await db.select({ status: scriptExecutions.status, exitCode: scriptExecutions.exitCode, startedAt: scriptExecutions.startedAt })
     .from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
-  return s ? { status: s.status, exitCode: s.exitCode ?? null } : null;
+  if (!s) return null;
+  const reading: ScriptReading = { status: s.status, exitCode: s.exitCode ?? null };
+  if ((s.status === 'failed' || s.status === 'timeout') && !s.startedAt) {
+    const [expired] = await db.select({ id: deviceCommands.id }).from(deviceCommands).where(and(
+      eq(deviceCommands.deviceId, deviceId),
+      eq(deviceCommands.type, 'script'),
+      sql`${deviceCommands.payload}->>'executionId' = ${executionId}`,
+      sql`${deviceCommands.result}->>'clock' = 'delivery'`,
+    )).limit(1);
+    if (expired) reading.neverDelivered = true;
+  }
+  return reading;
+}
+
+/**
+ * When the fix's script started on the device. script_executions.started_at is
+ * `timestamp without time zone`; Drizzle reads it as UTC, the same convention
+ * it was written with (scriptDispatch sets it from a JS Date), so it compares
+ * directly with the timestamptz recovery times.
+ */
+async function readScriptStartedAt(executionId: string | null): Promise<Date | null> {
+  if (!executionId) return null;
+  const [s] = await db.select({ startedAt: scriptExecutions.startedAt })
+    .from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
+  return s?.startedAt ?? null;
 }
 
 async function readRecovery(row: FixOutcomeRow, alertOverride?: AlertRecoveryReading): Promise<RecoveryReading> {
@@ -259,11 +307,13 @@ async function decide(
 ): Promise<OutcomeTransition | null> {
   if (row.state === 'pending') {
     if (moved) return { to: 'cancelled', reason: 'device_moved' };
-    return decidePending({ script: overrides.script ?? await readScript(row.scriptExecutionId), deadlineAt: row.deadlineAt, now });
+    return decidePending({ script: overrides.script ?? await readScript(row.scriptExecutionId, row.deviceId), deadlineAt: row.deadlineAt, now });
   }
   if (row.state === 'awaiting_recovery') {
     const reading: RecoveryReading = moved ? { kind: 'device_moved' } : await readRecovery(row, overrides.alert);
-    return decideAwaitingRecovery({ reading, createdAt: row.createdAt, deadlineAt: row.deadlineAt, now });
+    // The start time only matters when there is a recovery to date.
+    const startedAt = reading.kind === 'recovered' ? await readScriptStartedAt(row.scriptExecutionId) : null;
+    return decideAwaitingRecovery({ reading, createdAt: row.createdAt, startedAt, deadlineAt: row.deadlineAt, now });
   }
   if (!row.holdingUntil || !row.recoveredAt) return { to: 'inconclusive', reason: 'hold_window_missing' };
   const recurrence: Recurrence = moved ? 'clear' : await scanRecurrence(row, now);

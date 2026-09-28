@@ -4,7 +4,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { alerts, deviceMetrics, devices, fixMemory, fixOutcomes, remediationSuggestions, scriptExecutions, scripts, scriptVersions } from '../../db/schema';
+import { alerts, deviceCommands, deviceMetrics, devices, fixMemory, fixOutcomes, remediationSuggestions, scriptExecutions, scripts, scriptVersions } from '../../db/schema';
+import { propagateTimedOutDeviceCommand } from '../../jobs/staleCommandReaper';
 import { eraseOrgWithFixMemory } from '../../jobs/tenantErasure';
 import { advanceOutcome, handleFixOutcomeEvent } from '../../services/fixMemory/outcomeWatcher';
 import { lookupFixes } from '../../services/fixMemory/lookup';
@@ -510,6 +511,63 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     await sys(() => recomputeForOutcome(a.outcomeId)); // what the sweeper's recount pass runs
     expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 1, failedCount: 1 });
     expect((await outcomeRow(a.outcomeId)).recountRequestedAt).toBeNull();
+  });
+
+  it('a script whose command expired undelivered is inconclusive, on both the inline and the sweeper path (I2)', async () => {
+    const w = await world();
+    const t0 = new Date(Date.UTC(2026, 10, 25));
+    // Inline path: the reaper's delivery clock expires the command.
+    const a = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
+    const executionId = (await outcomeRow(a.outcomeId)).scriptExecutionId!;
+    await sys(() => db.update(scriptExecutions).set({ status: 'pending', completedAt: null, exitCode: null }).where(eq(scriptExecutions.id, executionId)));
+    await sys(() => propagateTimedOutDeviceCommand({
+      commandId: randomUUID(), payload: { executionId }, errorMsg: 'never delivered', completedAt: new Date(), kind: 'expired',
+    }));
+    expect(await outcomeRow(a.outcomeId)).toMatchObject({ state: 'inconclusive', stateReason: 'script_never_delivered' });
+
+    // Sweeper path: the execution is already failed (hook missed), started_at NULL,
+    // and its command row carries the reaper's delivery-clock marker.
+    const b = await attempt(w, w.o2, w.d2, w.partnerScript, t0);
+    const execB = (await outcomeRow(b.outcomeId)).scriptExecutionId!;
+    await sys(() => db.update(scriptExecutions).set({ status: 'failed', exitCode: null }).where(eq(scriptExecutions.id, execB)));
+    await sys(() => db.insert(deviceCommands).values({
+      deviceId: w.d2, type: 'script', status: 'failed', payload: { executionId: execB },
+      result: { status: 'timeout', reason: 'not_delivered_before_deadline', clock: 'delivery', timedOutBy: 'server' },
+    }));
+    expect(await advanceOutcome(b.outcomeId, { now: new Date(t0.getTime() + 2 * 60_000) })).toBe('inconclusive');
+    expect((await outcomeRow(b.outcomeId)).stateReason).toBe('script_never_delivered');
+
+    // Control: a delivered script that failed is still a failed attempt.
+    const c = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
+    const execC = (await outcomeRow(c.outcomeId)).scriptExecutionId!;
+    await sys(() => db.update(scriptExecutions).set({ status: 'failed', exitCode: 1, startedAt: t0 }).where(eq(scriptExecutions.id, execC)));
+    expect(await advanceOutcome(c.outcomeId, { now: new Date(t0.getTime() + 2 * 60_000) })).toBe('failed');
+  });
+
+  it('"cleared before the fix" is measured from the script start (timestamp WITHOUT time zone, read as UTC) (I3)', async () => {
+    const w = await world();
+    const t0 = new Date(Date.UTC(2026, 10, 26));
+    const startedAt = new Date(t0.getTime() + 30 * 60_000);
+    const advanceInFarZone = (id: string, now: Date) => sys(async () => {
+      // UTC+14: a zone-dependent read of started_at would shift it 14 h.
+      await db.execute(sql`SET LOCAL TIME ZONE 'Pacific/Kiritimati'`);
+      return advanceOutcome(id, { now });
+    });
+    // Cleared after dispatch (t0) but before the script started → inconclusive.
+    const a = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
+    const execA = (await outcomeRow(a.outcomeId)).scriptExecutionId!;
+    await sys(() => db.update(scriptExecutions).set({ startedAt }).where(eq(scriptExecutions.id, execA)));
+    expect(await advanceInFarZone(a.outcomeId, new Date(t0.getTime() + 2 * 60_000))).toBe('awaiting_recovery');
+    await resolveByCondition(a.alertId, new Date(t0.getTime() + 10 * 60_000));
+    expect(await advanceInFarZone(a.outcomeId, new Date(t0.getTime() + H))).toBe('inconclusive');
+    expect((await outcomeRow(a.outcomeId)).stateReason).toBe('cleared_before_fix');
+    // Cleared after the script started → hold.
+    const b = await attempt(w, w.o2, w.d2, w.partnerScript, t0);
+    const execB = (await outcomeRow(b.outcomeId)).scriptExecutionId!;
+    await sys(() => db.update(scriptExecutions).set({ startedAt }).where(eq(scriptExecutions.id, execB)));
+    expect(await advanceInFarZone(b.outcomeId, new Date(t0.getTime() + 2 * 60_000))).toBe('awaiting_recovery');
+    await resolveByCondition(b.alertId, new Date(t0.getTime() + 40 * 60_000));
+    expect(await advanceInFarZone(b.outcomeId, new Date(t0.getTime() + H))).toBe('holding');
   });
 
   it('a hold whose source alert re-opened in place is inconclusive, never verified (source_not_resolved)', async () => {

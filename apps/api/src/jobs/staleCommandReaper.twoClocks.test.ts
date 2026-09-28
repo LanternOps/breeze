@@ -76,7 +76,8 @@ vi.mock('../services/automationActionResults', () => ({
 }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { reapStaleDeviceCommands } from './staleCommandReaper';
+import { fixOutcomes, scriptExecutions } from '../db/schema';
+import { propagateTimedOutDeviceCommand, reapStaleDeviceCommands } from './staleCommandReaper';
 
 /**
  * The mocked `deviceCommands` columns are plain strings, not Drizzle Column
@@ -411,5 +412,42 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy: null })]));
     routeUpdates([{ id: 'c1' }]);
     expect(await reapStaleDeviceCommands()).toBe(1);
+  });
+});
+
+describe('propagateTimedOutDeviceCommand — fix outcomes learn which clock expired (AI Suggested Fixes I2)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Routes the script_executions CAS to a winner and captures the fix_outcomes write the inline hook makes. */
+  function routeForFixOutcome(): Array<Record<string, unknown>> {
+    const outcomeSets: Array<Record<string, unknown>> = [];
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === scriptExecutions) return updateChain([{ id: 'exec-1' }]);
+      if (table === fixOutcomes) {
+        const chain = updateChain([{ id: 'o-1' }]);
+        chain.set = vi.fn((set: Record<string, unknown>) => { outcomeSets.push(set); return chain; });
+        return chain;
+      }
+      return updateChain([]);
+    });
+    return outcomeSets;
+  }
+
+  it('a delivery-clock expiry (kind=expired) records the attempt as inconclusive script_never_delivered', async () => {
+    const outcomeSets = routeForFixOutcome();
+    await propagateTimedOutDeviceCommand({
+      commandId: 'c1', payload: { executionId: 'exec-1' }, errorMsg: 'never delivered', completedAt: new Date(), kind: 'expired',
+    });
+    expect(outcomeSets).toHaveLength(1);
+    expect(outcomeSets[0]).toMatchObject({ state: 'inconclusive', stateReason: 'script_never_delivered' });
+  });
+
+  it('an execution-clock timeout (delivered, never answered) still counts as a failed attempt', async () => {
+    const outcomeSets = routeForFixOutcome();
+    await propagateTimedOutDeviceCommand({
+      commandId: 'c1', payload: { executionId: 'exec-1' }, errorMsg: 'no response', completedAt: new Date(), kind: 'timeout',
+    });
+    expect(outcomeSets).toHaveLength(1);
+    expect(outcomeSets[0]).toMatchObject({ state: 'failed', stateReason: 'script_failed' });
   });
 });

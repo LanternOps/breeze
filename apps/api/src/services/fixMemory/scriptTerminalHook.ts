@@ -23,7 +23,20 @@ export type ScriptTerminalStatus = 'completed' | 'failed' | 'timeout' | 'cancell
 export type OutcomeUpdateExecutor = Pick<typeof db, 'update' | 'transaction'>;
 type OutcomeWriter = Pick<typeof db, 'update'>;
 
-export function terminalVerdict(status: ScriptTerminalStatus): { state: 'awaiting_recovery' | 'failed' | 'cancelled'; reason: string } {
+/**
+ * `neverDelivered`: the caller KNOWS the script never reached the device (the
+ * reaper's delivery clock expired it — staleCommandReaper
+ * propagateTimedOutDeviceCommand, kind 'expired'). That says nothing about
+ * whether the fix works, so a failed/timed-out verdict becomes inconclusive
+ * instead of a failed attempt. A script that started and then failed stays failed.
+ */
+export function terminalVerdict(
+  status: ScriptTerminalStatus,
+  opts: { neverDelivered?: boolean } = {},
+): { state: 'awaiting_recovery' | 'failed' | 'cancelled' | 'inconclusive'; reason: string } {
+  if (opts.neverDelivered && (status === 'failed' || status === 'timeout')) {
+    return { state: 'inconclusive', reason: 'script_never_delivered' };
+  }
   switch (status) {
     case 'completed': return { state: 'awaiting_recovery', reason: 'script_succeeded' };
     case 'failed': return { state: 'failed', reason: 'script_failed' };
@@ -33,10 +46,10 @@ export function terminalVerdict(status: ScriptTerminalStatus): { state: 'awaitin
 }
 
 export async function advanceOutcomesForTerminalExecution(
-  input: { executionId: string; status: ScriptTerminalStatus },
+  input: { executionId: string; status: ScriptTerminalStatus; neverDelivered?: boolean },
   executor?: OutcomeUpdateExecutor,
 ): Promise<number> {
-  const verdict = terminalVerdict(input.status);
+  const verdict = terminalVerdict(input.status, { neverDelivered: input.neverDelivered });
   const now = new Date();
   const set: Partial<typeof fixOutcomes.$inferInsert> = verdict.state === 'awaiting_recovery'
     ? { state: verdict.state, stateReason: verdict.reason, updatedAt: now,

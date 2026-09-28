@@ -41,6 +41,39 @@ describe('decidePending', () => {
   it('waits while the script is still running before the deadline', () => {
     expect(decidePending({ script: { status: 'running', exitCode: null }, deadlineAt: at(24), now: at(1) })).toBeNull();
   });
+  it.each(['failed', 'timeout'] as const)('a %s execution that was never delivered is inconclusive, not a failed attempt (I2)', (status) => {
+    expect(decidePending({ script: { status, exitCode: null, neverDelivered: true }, deadlineAt: at(24), now: at(1) }))
+      .toEqual({ to: 'inconclusive', reason: 'script_never_delivered' });
+  });
+});
+
+describe('advanceOutcome pending → the sweeper tells an undelivered script from a failed one (I2)', () => {
+  beforeEach(() => { rows.length = 0; transitionMock.mockReset().mockResolvedValue(true); });
+  const pending = {
+    id: 'o-p', orgId: 'org-1', partnerId: 'p-1', deviceId: 'd-1', state: 'pending', countedAt: null,
+    signatureKey: 'k'.repeat(64), sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1',
+    scriptExecutionId: 'e-1', deadlineAt: at(24), createdAt: at(0),
+  };
+
+  it('failed, never started, and its command expired on the delivery clock → inconclusive script_never_delivered', async () => {
+    // outcome row, device org, script execution, the delivery-clock command row
+    rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'failed', exitCode: null, startedAt: null }], [{ id: 'c-1' }]);
+    expect(await advanceOutcome('o-p', { now: at(1) })).toBe('inconclusive');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'script_never_delivered' });
+  });
+
+  it('failed after it started stays a failed attempt (no delivery lookup needed)', async () => {
+    rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'failed', exitCode: 1, startedAt: at(0) }], [{ id: 'c-1' }]);
+    expect(await advanceOutcome('o-p', { now: at(1) })).toBe('failed');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'failed', reason: 'script_failed' });
+    expect(rows).toHaveLength(1); // the command row was never read
+  });
+
+  it('failed with no started_at but no delivery-clock expiry (polling agent reported a failure) stays failed', async () => {
+    rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'failed', exitCode: 1, startedAt: null }], []);
+    expect(await advanceOutcome('o-p', { now: at(1) })).toBe('failed');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'failed', reason: 'script_failed' });
+  });
 });
 
 describe('readingFromAlert (Review Focus 2)', () => {
@@ -77,6 +110,17 @@ describe('decideAwaitingRecovery', () => {
   it('objective recovery after the fix starts a 24h hold from the recovery time', () => {
     expect(decideAwaitingRecovery({ ...common, now: at(3), reading: { kind: 'recovered', at: at(2) } }))
       .toEqual({ to: 'holding', reason: 'condition_cleared', recoveredAt: at(2), holdingUntil: at(26) });
+  });
+  it('measures "before the fix" from when the script STARTED when that is known (I3)', () => {
+    // cleared after dispatch (createdAt) but before the script started → not the fix's doing
+    expect(decideAwaitingRecovery({ ...common, startedAt: at(1), now: at(2), reading: { kind: 'recovered', at: at(0.5) } }))
+      .toEqual({ to: 'inconclusive', reason: 'cleared_before_fix' });
+    // cleared after the script started → hold
+    expect(decideAwaitingRecovery({ ...common, startedAt: at(1), now: at(2), reading: { kind: 'recovered', at: at(1.5) } }))
+      .toEqual({ to: 'holding', reason: 'condition_cleared', recoveredAt: at(1.5), holdingUntil: at(25.5) });
+    // no start time (never recorded) → dispatch time, as before
+    expect(decideAwaitingRecovery({ ...common, startedAt: null, now: at(2), reading: { kind: 'recovered', at: at(0.5) } }))
+      .toMatchObject({ to: 'holding' });
   });
   it('a condition that cleared before the fix was admitted is inconclusive', () => {
     expect(decideAwaitingRecovery({ ...common, now: at(1), reading: { kind: 'recovered', at: new Date(at(0).getTime() - 60_000) } }))
@@ -172,6 +216,33 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     expect(transitionMock).not.toHaveBeenCalled();
     // Neither branch touched the db: both seeded 3-row batches are still queued.
     expect(rows.length).toBe(6);
+  });
+});
+
+describe('advanceOutcome awaiting_recovery reads the execution start time (I3)', () => {
+  beforeEach(() => {
+    rows.length = 0;
+    transitionMock.mockReset().mockResolvedValue(true);
+    vi.mocked(readAlertRecovery).mockReset();
+  });
+  const awaitingRow = {
+    id: 'o-a', orgId: 'org-1', partnerId: 'p-1', deviceId: 'd-1', state: 'awaiting_recovery', countedAt: null,
+    signatureKey: 'k'.repeat(64), sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1',
+    scriptExecutionId: 'e-1', deadlineAt: at(24), createdAt: at(0),
+  };
+
+  it('an alert that cleared after dispatch but before the script started is inconclusive cleared_before_fix', async () => {
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(0.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
+    expect(await advanceOutcome('o-a', { now: at(2) })).toBe('inconclusive');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'cleared_before_fix' });
+  });
+
+  it('an alert that cleared after the script started starts the hold', async () => {
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(1.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
+    expect(await advanceOutcome('o-a', { now: at(2) })).toBe('holding');
+    expect(transitionMock.mock.calls[0]![1]).toMatchObject({ to: 'holding', recoveredAt: at(1.5) });
   });
 });
 

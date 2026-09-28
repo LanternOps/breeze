@@ -231,6 +231,9 @@ export async function propagateTimedOutDeviceCommand(params: {
       outcome: 'failed',
       errorMessage: errorMsg,
       completedAt,
+      // The delivery clock: the script never reached the device, so a fix
+      // attempt riding on it is inconclusive rather than a failed fix.
+      neverDelivered: params.kind === 'expired',
     });
   }
 

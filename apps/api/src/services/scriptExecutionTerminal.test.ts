@@ -274,12 +274,18 @@ describe('finalizeScriptExecutionTerminal (#5128 I)', () => {
   it('advances fix outcomes only for the call that won the CAS, through the caller’s executor', async () => {
     const won = executor({ execReturning: [{ id: EXEC }] });
     await finalizeScriptExecutionTerminal({ executionId: EXEC, outcome: 'timeout', errorMessage: 'timed out', completedAt: new Date(), executor: won.exec });
-    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXEC, status: 'timeout' }, won.exec);
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXEC, status: 'timeout', neverDelivered: false }, won.exec);
 
     advanceMock.mockClear();
     const lost = executor({ execReturning: [] });
     await finalizeScriptExecutionTerminal({ executionId: EXEC, outcome: 'timeout', errorMessage: 'timed out', completedAt: new Date(), executor: lost.exec });
     expect(advanceMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the caller’s never-delivered signal through to the fix-outcome hook', async () => {
+    const won = executor({ execReturning: [{ id: EXEC }] });
+    await finalizeScriptExecutionTerminal({ executionId: EXEC, outcome: 'failed', errorMessage: 'never delivered', completedAt: new Date(), executor: won.exec, neverDelivered: true });
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXEC, status: 'failed', neverDelivered: true }, won.exec);
   });
 
   it('batchIdFromPayload only accepts a non-empty string', () => {

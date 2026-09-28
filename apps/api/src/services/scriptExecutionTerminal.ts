@@ -47,6 +47,12 @@ export async function finalizeScriptExecutionTerminal(params: {
   errorMessage: string | null;
   completedAt: Date;
   executor?: ScriptTerminalExecutor;
+  /**
+   * The caller knows the command never reached the device (the reaper's
+   * delivery clock, `kind: 'expired'`). Only the fix-outcome hook reads it: an
+   * undelivered fix attempt is inconclusive, not a failed attempt.
+   */
+  neverDelivered?: boolean;
 }): Promise<{ terminalised: boolean }> {
   const { executionId, outcome, errorMessage, completedAt } = params;
   const executor: ScriptTerminalExecutor = params.executor ?? db;
@@ -76,7 +82,10 @@ export async function finalizeScriptExecutionTerminal(params: {
   // the caller's own executor so a reaper transaction stays one transaction.
   // The hook opens a SAVEPOINT on that executor and swallows its own failure, so
   // a fix-outcome error can never abort the cancel / reap it rides on.
-  await advanceOutcomesForTerminalExecution({ executionId, status: outcome }, params.executor);
+  await advanceOutcomesForTerminalExecution(
+    { executionId, status: outcome, neverDelivered: params.neverDelivered === true },
+    params.executor,
+  );
 
   return { terminalised: true };
 }

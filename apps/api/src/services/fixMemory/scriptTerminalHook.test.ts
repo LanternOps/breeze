@@ -26,6 +26,13 @@ describe('terminalVerdict', () => {
   ] as const)('%s → %s', (status, state, reason) => {
     expect(terminalVerdict(status)).toEqual({ state, reason });
   });
+  it.each(['failed', 'timeout'] as const)('%s that was never delivered → inconclusive (never evidence about the fix)', (status) => {
+    expect(terminalVerdict(status, { neverDelivered: true })).toEqual({ state: 'inconclusive', reason: 'script_never_delivered' });
+  });
+  it('neverDelivered does not change a completed or cancelled verdict', () => {
+    expect(terminalVerdict('completed', { neverDelivered: true })).toEqual({ state: 'awaiting_recovery', reason: 'script_succeeded' });
+    expect(terminalVerdict('cancelled', { neverDelivered: true })).toEqual({ state: 'cancelled', reason: 'script_cancelled' });
+  });
 });
 
 describe('advanceOutcomesForTerminalExecution', () => {
@@ -45,6 +52,14 @@ describe('advanceOutcomesForTerminalExecution', () => {
     await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'timeout' });
     expect(h.sets[0]).toMatchObject({ state: 'failed', stateReason: 'script_timeout' });
     expect(h.sets[0]!.terminalAt).toBeInstanceOf(Date);
+    expect(h.sets[0]!.countedAt).toBeInstanceOf(Date);
+    expect(h.sets[0]!.recountRequestedAt).toBeInstanceOf(Date);
+  });
+
+  it('an execution whose command expired undelivered is terminal + counted as inconclusive, not failed', async () => {
+    h.returning.push([{ id: 'o-1' }]);
+    await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'failed', neverDelivered: true });
+    expect(h.sets[0]).toMatchObject({ state: 'inconclusive', stateReason: 'script_never_delivered' });
     expect(h.sets[0]!.countedAt).toBeInstanceOf(Date);
     expect(h.sets[0]!.recountRequestedAt).toBeInstanceOf(Date);
   });
