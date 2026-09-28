@@ -1082,10 +1082,95 @@ type BackupGcSnapshotSummary = {
   // directory would fail with ENOTDIR).
   bareItem: BackupObjectListing | null;
   hasPathKeys: boolean;
+  // Root pass only (#6843 gap 4). A fixed-size, order-independent digest of
+  // every key listed under this group EXCEPT the layout key, plus whether the
+  // layout key was listed. sweepRootedLoose compares it with the same digest
+  // of the group's live keys to prove "every listed key is live" without
+  // holding the keys — see listedKeysProvablyAllLive.
+  listedKeys: KeySetFingerprint;
+  hasLayoutKey: boolean;
 };
 
 function emptySnapshotSummary(): BackupGcSnapshotSummary {
-  return { manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: false };
+  return {
+    manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: false,
+    listedKeys: emptyKeySetFingerprint(), hasLayoutKey: false,
+  };
+}
+
+// ── #6843 gap 4: skip the rooted re-list when nothing can be deleted ────────
+//
+// A rooted group's re-list exists only to find keys that are (a) not live and
+// (b) older than the grace window. When the root pass listed EXACTLY the
+// group's live keys, (a) is empty and the re-list is pure cost: one more LIST
+// of every object in every rooted snapshot, on every run.
+//
+// "Exactly" is checked with a count plus two 32-bit lane sums of a SHA-256
+// of each key — a multiset digest, O(1) memory per group, independent of
+// listing order. Equal digests are taken as equal sets. That is sound in the
+// only direction that matters: a false "equal" (a 2^-64 collision) SKIPS the
+// group, so its garbage survives this run; it can never cause a delete. Any
+// mismatch — a non-live key, a live key missing from storage, a key listed
+// twice — falls back to the re-list, i.e. to exactly the pre-#6843 behaviour.
+//
+// The layout key (`snapshots/<id>/layout.json`) is marked live for every root
+// WITHOUT being fetched, so it is live whether or not it exists. It is left
+// out of both digests and checked on its own: listed ⇒ must be in the live
+// set; not listed ⇒ nothing to delete either way.
+
+type KeySetFingerprint = { count: number; lane0: number; lane1: number };
+
+function emptyKeySetFingerprint(): KeySetFingerprint {
+  return { count: 0, lane0: 0, lane1: 0 };
+}
+
+function addKeyToFingerprint(fp: KeySetFingerprint, key: string): void {
+  const digest = createHash('sha256').update(key).digest();
+  fp.count++;
+  fp.lane0 = (fp.lane0 + digest.readUInt32BE(0)) >>> 0;
+  fp.lane1 = (fp.lane1 + digest.readUInt32BE(4)) >>> 0;
+}
+
+function sameKeySetFingerprint(a: KeySetFingerprint, b: KeySetFingerprint): boolean {
+  return a.count === b.count && a.lane0 === b.lane0 && a.lane1 === b.lane1;
+}
+
+function isLayoutKeyOf(snapshotId: string, key: string): boolean {
+  return key === backupLayoutManifestKey(snapshotId);
+}
+
+/** Digest of the live keys that group under each snapshot id (same grouping rule as the root pass). */
+export function fingerprintLiveKeysBySnapshotId(liveSet: ReadonlySet<string>): Map<string, KeySetFingerprint> {
+  const bySnapshotId = new Map<string, KeySetFingerprint>();
+  for (const key of liveSet) {
+    const snapshotId = snapshotIdOfKey(key);
+    if (!snapshotId || isLayoutKeyOf(snapshotId, key)) continue;
+    let fp = bySnapshotId.get(snapshotId);
+    if (!fp) {
+      fp = emptyKeySetFingerprint();
+      bySnapshotId.set(snapshotId, fp);
+    }
+    addKeyToFingerprint(fp, key);
+  }
+  return bySnapshotId;
+}
+
+/**
+ * True only when the root pass proves every key it listed under `snapshotId`
+ * is live, so the group has no deletion candidate of any age. False means
+ * "not proven" (the caller re-lists), never "has garbage". Exported for a
+ * direct test of the layout-key guard, which sweepUnreferencedBackupObjects
+ * cannot reach today (every root's layout key is marked live).
+ */
+export function listedKeysProvablyAllLive(
+  snapshotId: string,
+  summary: BackupGcSnapshotSummary,
+  liveSet: ReadonlySet<string>,
+  liveFingerprints: ReadonlyMap<string, KeySetFingerprint>,
+): boolean {
+  if (summary.hasLayoutKey && !liveSet.has(backupLayoutManifestKey(snapshotId))) return false;
+  const live = liveFingerprints.get(snapshotId) ?? emptyKeySetFingerprint();
+  return sameKeySetFingerprint(summary.listedKeys, live);
 }
 
 function bareSnapshotKey(snapshotId: string): string {
@@ -1139,6 +1224,8 @@ async function summarizeListingBySnapshotId(
       }
       if (item.key === bareSnapshotKey(snapshotId)) summary.bareItem = item;
       else summary.hasPathKeys = true;
+      if (isLayoutKeyOf(snapshotId, item.key)) summary.hasLayoutKey = true;
+      else addKeyToFingerprint(summary.listedKeys, item.key);
       foldIntoSnapshotSummary(summary, snapshotId, item);
     }
   }
@@ -1726,10 +1813,18 @@ async function sweepStorageIdentity(
     return result.deletedKeys;
   }
 
-  async function sweepRootedLoose(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
+  async function sweepRootedLoose(
+    snapshotId: string,
+    summary: BackupGcSnapshotSummary,
+    liveSet: Set<string>,
+    liveFingerprints: ReadonlyMap<string, KeySetFingerprint>,
+  ): Promise<void> {
     // A candidate needs a known last-modified at/before the grace threshold;
     // if no object in the root pass was that old, there is none to find.
     if (summary.oldestMs === null || summary.oldestMs > graceThreshold) return;
+    // #6843 gap 4: a candidate must also be non-live; if the root pass listed
+    // only live keys there is none to find either (see listedKeysProvablyAllLive).
+    if (listedKeysProvablyAllLive(snapshotId, summary, liveSet, liveFingerprints)) return;
     const remainingAtGroupStart = remaining;
     const groupCap = candidateBufferCap(remaining);
     const candidates = new OldestFirstCandidates(groupCap, skipSet);
@@ -1830,11 +1925,12 @@ async function sweepStorageIdentity(
     const rootsForMark = new Set([...alwaysRootedIds, ...everyListedManifestIds]);
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+    const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
 
     for (const [snapshotId, group] of ownGroups) {
       if (remaining <= 0) break;
       const ok = await runGroup(() => (group.manifestItem
-        ? sweepRootedLoose(snapshotId, group, liveSet)
+        ? sweepRootedLoose(snapshotId, group, liveSet, liveFingerprints)
         : sweepManifestless(snapshotId, group, liveSet)));
       if (!ok) break;
     }
@@ -1843,6 +1939,7 @@ async function sweepStorageIdentity(
     const rootsForMark = new Set([...alwaysRootedIds, ...orphanIds]);
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+    const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
 
     // Review round 1 (suggestion, accepted as a known limitation rather than
     // fixed): the per-run cap is spent in LISTING order across groups here
@@ -1863,7 +1960,7 @@ async function sweepStorageIdentity(
       if (remaining <= 0) break;
       let step: (() => Promise<void>) | null = null;
       let countsAsOrphan = false;
-      if (rootsForMark.has(snapshotId)) step = () => sweepRootedLoose(snapshotId, group, liveSet);
+      if (rootsForMark.has(snapshotId)) step = () => sweepRootedLoose(snapshotId, group, liveSet, liveFingerprints);
       else if (retiredSnapshotIds.has(snapshotId)) step = () => reclaimUnrooted(snapshotId, group, liveSet);
       else if (!group.manifestItem) step = () => sweepManifestless(snapshotId, group, liveSet);
       else if (manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs)) {
