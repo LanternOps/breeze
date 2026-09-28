@@ -302,6 +302,9 @@
     "username": "Nombre de usuario (autenticación básica)",
     "password": "Contraseña (autenticación básica)",
     "notSet": "No configurado: las organizaciones se configuran individualmente",
+    "savedSecretPlaceholder": "Guardado: déjelo en blanco para conservarlo",
+    "secretRemovedPlaceholder": "Se eliminará al guardar",
+    "removeSecret": "Quitar",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Cuando esté habilitado, todas las organizaciones secundarias enviarán registros de eventos al punto final configurado. Funciona con cualquier tienda <bulk>_bulk</bulk> compatible con Elasticsearch/OpenSearch (Elasticsearch, OpenSearch, indexador Wazuh, AWS OpenSearch Service). Déjelo deshabilitado para permitir que cada organización se configure individualmente."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elástico",
       "password": "Contraseña",
       "passwordPlaceholder": "Ingrese la contraseña",
+      "savedSecretPlaceholder": "Guardado: déjelo en blanco para conservarlo",
       "credentialsDescription": "Las credenciales se almacenan cifradas. Las credenciales existentes se enmascaran cuando se cargan."
     },
     "collection": {

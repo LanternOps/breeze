@@ -2192,6 +2192,156 @@ describe('PATCH /org/:orgId/settings/log-forwarding', () => {
     expect(stored.elasticsearchApiKey).toMatch(/^enc:v1:/);
     expect(stored.elasticsearchApiKey).not.toContain('existing-plaintext-key');
     const body = await res.json();
-    expect(body.settings.logForwarding.elasticsearchApiKey).toBe('****');
+    expect(body.settings.logForwarding.elasticsearchApiKey).toBe('********');
+  });
+
+  describe('stored credentials and the destination origin', () => {
+    const storedForwarding = () => ({
+      logForwarding: {
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'existing',
+        elasticsearchApiKey: 'enc:v1:stored-forwarding-key',
+      },
+    });
+
+    function patchForwarding(body: Record<string, unknown>) {
+      return buildApp().request(`/agents/org/${ORG_ID}/settings/log-forwarding`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    function captureUpdate() {
+      const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      dbUpdateMock.mockReturnValueOnce({ set: setMock } as any);
+      return setMock;
+    }
+
+    it('keeps the stored key when the shared masked marker is echoed back', async () => {
+      mockOrgLookup(storedForwarding());
+      const setMock = captureUpdate();
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: '********',
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock.mock.calls[0]?.[0].settings.logForwarding.elasticsearchApiKey).toBe('enc:v1:stored-forwarding-key');
+    });
+
+    it('refuses a new destination origin when the masked marker would keep the stored key', async () => {
+      mockOrgLookup(storedForwarding());
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://1.1.1.1:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: '********',
+      });
+
+      expect(res.status).toBe(400);
+      expect(dbUpdateMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a new destination origin when the key is omitted and so kept', async () => {
+      mockOrgLookup(storedForwarding());
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://1.1.1.1:9200',
+        indexPrefix: 'breeze-logs',
+      });
+
+      expect(res.status).toBe(400);
+      expect(dbUpdateMock).not.toHaveBeenCalled();
+    });
+
+    it('allows a new destination origin with a freshly typed key', async () => {
+      mockOrgLookup(storedForwarding());
+      const setMock = captureUpdate();
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://1.1.1.1:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: 'typed-new-key',
+      });
+
+      expect(res.status).toBe(200);
+      const stored = setMock.mock.calls[0]?.[0].settings.logForwarding;
+      expect(stored.elasticsearchUrl).toBe('https://1.1.1.1:9200');
+      expect(stored.elasticsearchApiKey).toMatch(/^enc:v1:/);
+      expect(stored.elasticsearchApiKey).not.toBe('enc:v1:stored-forwarding-key');
+    });
+
+    it('allows a new destination origin when switching to basic auth clears the stored key', async () => {
+      mockOrgLookup(storedForwarding());
+      const setMock = captureUpdate();
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://1.1.1.1:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchUsername: 'svc',
+        elasticsearchPassword: 'typed-password',
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock.mock.calls[0]?.[0].settings.logForwarding.elasticsearchApiKey).toBeUndefined();
+    });
+
+    it('refuses a sealed value that is not the stored one', async () => {
+      mockOrgLookup(storedForwarding());
+
+      const res = await patchForwarding({
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: 'enc:v1:sealed-value-from-elsewhere',
+      });
+
+      expect(res.status).toBe(400);
+      expect(dbUpdateMock).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('GET /org/:orgId/settings/log-forwarding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports stored credentials with the shared masked marker', async () => {
+    dbSelectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            settings: {
+              logForwarding: {
+                enabled: true,
+                elasticsearchUrl: 'https://8.8.8.8:9200',
+                elasticsearchUsername: 'svc',
+                elasticsearchPassword: 'enc:v1:stored-password',
+              },
+            },
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await buildApp().request(`/agents/org/${ORG_ID}/settings/log-forwarding`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('enc:');
+    expect(body.settings.logForwarding.elasticsearchPassword).toBe('********');
+    expect(body.settings.logForwarding.elasticsearchApiKey).toBeUndefined();
   });
 });

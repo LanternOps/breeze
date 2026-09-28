@@ -25,7 +25,14 @@ import { getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helper
 import { disconnectAgent } from '../agentWs';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
-import { encryptSecret } from '../../services/secretCrypto';
+import { encryptSecret, isEncryptedSecret } from '../../services/secretCrypto';
+import { isMaskedIntegrationSecret } from '../../services/notificationChannelSecrets';
+import {
+  LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
+  LOG_FORWARDING_SECRET_DESTINATIONS,
+  MASKED_SETTINGS_SECRET,
+} from '../../services/settingsSecretMasking';
+import { settingsSecretWouldFollowNewOrigin } from '../../services/credentialOriginBinding';
 import { isPrivateIp } from '../../services/urlSafety';
 import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../../services/ipRanges';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
@@ -53,7 +60,6 @@ const MTLS_RENEW_ATTEMPT_LIMIT = 1;
 const MTLS_RENEW_ATTEMPT_WINDOW_SECONDS = 30;
 const MTLS_RENEW_SUCCESS_LIMIT = 1;
 const MTLS_RENEW_SUCCESS_WINDOW_SECONDS = 3600;
-const LOG_FORWARDING_MASK = '****';
 
 // Wave 5 Task 4: proof-of-possession + two-phase renewal.
 //
@@ -178,12 +184,31 @@ async function validateLogForwardingTarget(rawUrl: string | undefined): Promise<
   return [];
 }
 
+class LogForwardingSecretInputError extends Error {}
+
+// The masked marker (any run of asterisks, so the shorter one earlier
+// responses used still works) keeps the stored secret; an empty value clears
+// it; plaintext replaces it. A sealed value is only accepted when it is the
+// stored one — a client is never given ciphertext, so anything else is refused.
 function resolveSecretForStorage(incoming: unknown, existing: unknown): string | undefined {
   if (typeof incoming !== 'string') return undefined;
   const trimmed = incoming.trim();
   if (!trimmed) return undefined;
-  if (trimmed === LOG_FORWARDING_MASK) return encryptSecret(toOptionalString(existing)) ?? undefined;
+  if (isMaskedIntegrationSecret(trimmed)) return encryptSecret(toOptionalString(existing)) ?? undefined;
+  if (isEncryptedSecret(trimmed) && trimmed !== existing) {
+    throw new LogForwardingSecretInputError('Log forwarding credentials must be re-entered, not submitted as a sealed value');
+  }
   return encryptSecret(trimmed) ?? undefined;
+}
+
+// A kept secret is reported as `undefined` in the request shape handed to the
+// origin check (omitted = kept); a cleared one as ''; a typed one as itself.
+function secretRequestShape(incoming: Record<string, unknown>, key: string, cleared: boolean): unknown {
+  if (cleared) return '';
+  if (!Object.prototype.hasOwnProperty.call(incoming, key)) return undefined;
+  const value = incoming[key];
+  if (typeof value !== 'string') return undefined;
+  return value.trim().length === 0 ? '' : value.trim();
 }
 
 type OrgMtlsPolicy = { certLifetimeDays: number; expiredCertPolicy: 'auto_reissue' | 'quarantine' };
@@ -1865,8 +1890,8 @@ mtlsRoutes.get(
     const forwarding = (isObject(settings.logForwarding) ? settings.logForwarding : { enabled: false }) as Record<string, unknown>;
     const safe = {
       ...forwarding,
-      elasticsearchApiKey: forwarding.elasticsearchApiKey ? '****' : undefined,
-      elasticsearchPassword: forwarding.elasticsearchPassword ? '****' : undefined,
+      elasticsearchApiKey: forwarding.elasticsearchApiKey ? MASKED_SETTINGS_SECRET : undefined,
+      elasticsearchPassword: forwarding.elasticsearchPassword ? MASKED_SETTINGS_SECRET : undefined,
     };
 
     return c.json({ settings: { logForwarding: safe } });
@@ -1918,22 +1943,50 @@ mtlsRoutes.patch(
     const resolvedIndexPrefix = hasOwn(incoming, 'indexPrefix')
       ? toOptionalString(incoming.indexPrefix)
       : toOptionalString(existingForwarding.indexPrefix);
-    let resolvedApiKey = hasOwn(incoming, 'elasticsearchApiKey')
-      ? resolveSecretForStorage(incoming.elasticsearchApiKey, existingForwarding.elasticsearchApiKey)
-      : encryptSecret(toOptionalString(existingForwarding.elasticsearchApiKey)) ?? undefined;
+    let resolvedApiKey: string | undefined;
+    let resolvedPassword: string | undefined;
+    try {
+      resolvedApiKey = hasOwn(incoming, 'elasticsearchApiKey')
+        ? resolveSecretForStorage(incoming.elasticsearchApiKey, existingForwarding.elasticsearchApiKey)
+        : encryptSecret(toOptionalString(existingForwarding.elasticsearchApiKey)) ?? undefined;
+      resolvedPassword = hasOwn(incoming, 'elasticsearchPassword')
+        ? resolveSecretForStorage(incoming.elasticsearchPassword, existingForwarding.elasticsearchPassword)
+        : encryptSecret(toOptionalString(existingForwarding.elasticsearchPassword)) ?? undefined;
+    } catch (err) {
+      if (err instanceof LogForwardingSecretInputError) {
+        return c.json({ error: err.message }, 400);
+      }
+      throw err;
+    }
     let resolvedUsername = hasOwn(incoming, 'elasticsearchUsername')
       ? toOptionalString(incoming.elasticsearchUsername)
       : toOptionalString(existingForwarding.elasticsearchUsername);
-    let resolvedPassword = hasOwn(incoming, 'elasticsearchPassword')
-      ? resolveSecretForStorage(incoming.elasticsearchPassword, existingForwarding.elasticsearchPassword)
-      : encryptSecret(toOptionalString(existingForwarding.elasticsearchPassword)) ?? undefined;
 
     // Explicit auth-method updates should clear stale credentials from the other mode.
-    if (providedBasic && !providedApiKey) {
+    const clearsApiKey = providedBasic && !providedApiKey;
+    const clearsBasic = providedApiKey && !providedBasic;
+    if (clearsApiKey) {
       resolvedApiKey = undefined;
-    } else if (providedApiKey && !providedBasic) {
+    } else if (clearsBasic) {
       resolvedUsername = undefined;
       resolvedPassword = undefined;
+    }
+
+    // A stored credential must not follow the endpoint to a new origin unless
+    // it is entered again (same contract as credentialOriginBinding.ts).
+    if (resolvedUrl && settingsSecretWouldFollowNewOrigin(
+      {
+        logForwarding: {
+          elasticsearchUrl: resolvedUrl,
+          elasticsearchApiKey: secretRequestShape(incoming, 'elasticsearchApiKey', clearsApiKey),
+          elasticsearchPassword: secretRequestShape(incoming, 'elasticsearchPassword', clearsBasic),
+        },
+      },
+      { logForwarding: existingForwarding },
+      LOG_FORWARDING_SECRET_DESTINATIONS,
+      isMaskedIntegrationSecret,
+    )) {
+      return c.json({ error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE }, 400);
     }
 
     if (data.enabled) {
@@ -1968,8 +2021,8 @@ mtlsRoutes.patch(
     const { elasticsearchApiKey, elasticsearchPassword, ...safeData } = normalizedForwarding;
     const maskedDetails = {
       ...safeData,
-      elasticsearchApiKey: elasticsearchApiKey ? '****' : undefined,
-      elasticsearchPassword: elasticsearchPassword ? '****' : undefined,
+      elasticsearchApiKey: elasticsearchApiKey ? MASKED_SETTINGS_SECRET : undefined,
+      elasticsearchPassword: elasticsearchPassword ? MASKED_SETTINGS_SECRET : undefined,
     };
 
     writeAuditEvent(c, {
