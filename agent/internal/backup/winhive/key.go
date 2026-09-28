@@ -90,13 +90,21 @@ type DCStatus struct {
 // and a warning is returned so the operator knows the check was
 // inconclusive rather than a confirmed non-DC.
 //
+// A ServerNT/WinNT ProductType is authoritative (not a DC) even when DSA
+// values are present — demoted DCs leave them behind — but that pairing is
+// returned as a warning, since it may also be a promotion in progress.
+// Warnings are only ever "not a DC" notes, so a DC verdict returns none.
+//
 // It fails closed on errors: a hive whose selected control sets cannot be
 // resolved, or a key/value that cannot be read for any reason other than
 // absence, is an error, never "not a DC". Every key it opens is closed
 // before it returns: an open handle under a loaded hive makes
 // RegUnLoadKeyW fail with ERROR_ACCESS_DENIED.
 func IsDomainController(root Key) (DCStatus, error) {
-	var st DCStatus
+	// warnings are all "not a DC" notes: a DC verdict from any control set
+	// returns without them, so a refusal never sits next to "treating the
+	// source as not a domain controller".
+	var warnings []string
 	sets, err := ControlSets(root)
 	if err != nil {
 		return DCStatus{}, fmt.Errorf("resolve control sets: %w", err)
@@ -106,30 +114,32 @@ func IsDomainController(root Key) (DCStatus, error) {
 		if err != nil {
 			return DCStatus{}, err
 		}
-		switch {
-		case strings.EqualFold(pt, "LanmanNt"):
-			st.IsDC = true
-			st.Evidence = cs + `\Control\ProductOptions\ProductType is LanmanNt`
-			return st, nil
-		case strings.EqualFold(pt, "ServerNT"), strings.EqualFold(pt, "WinNT"):
-			continue
+		if strings.EqualFold(pt, "LanmanNt") {
+			return DCStatus{IsDC: true, Evidence: cs + `\Control\ProductOptions\ProductType is LanmanNt`}, nil
 		}
 		dsa, err := ntdsDatabaseValue(root, cs)
 		if err != nil {
 			return DCStatus{}, err
+		}
+		if strings.EqualFold(pt, "ServerNT") || strings.EqualFold(pt, "WinNT") {
+			// ProductType is authoritative: DSA values beside a non-DC
+			// ProductType are usually a demoted DC's leftovers, but may be a
+			// promotion in progress, so the operator is told.
+			if dsa != "" {
+				warnings = append(warnings, fmt.Sprintf(`domain-controller check: %s\Control\ProductOptions\ProductType is %s but %s\Services\NTDS\Parameters has %q (a demoted domain controller's leftover, or a promotion in progress); treating the source as not a domain controller`, cs, pt, cs, dsa))
+			}
+			continue
 		}
 		what := cs + `\Control\ProductOptions\ProductType is missing`
 		if pt != "" {
 			what = fmt.Sprintf(`%s\Control\ProductOptions\ProductType is unrecognized (%q)`, cs, pt)
 		}
 		if dsa != "" {
-			st.IsDC = true
-			st.Evidence = fmt.Sprintf(`%s and %s\Services\NTDS\Parameters has %q`, what, cs, dsa)
-			return st, nil
+			return DCStatus{IsDC: true, Evidence: fmt.Sprintf(`%s and %s\Services\NTDS\Parameters has %q`, what, cs, dsa)}, nil
 		}
-		st.Warnings = append(st.Warnings, fmt.Sprintf(`domain-controller check inconclusive: %s and %s\Services\NTDS\Parameters has no AD DS database value; treating the source as not a domain controller`, what, cs))
+		warnings = append(warnings, fmt.Sprintf(`domain-controller check inconclusive: %s and %s\Services\NTDS\Parameters has no AD DS database value; treating the source as not a domain controller`, what, cs))
 	}
-	return st, nil
+	return DCStatus{Warnings: warnings}, nil
 }
 
 // readProductType returns cs\Control\ProductOptions\ProductType, or ""

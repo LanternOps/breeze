@@ -303,6 +303,7 @@ func TestIsDomainController(t *testing.T) {
 		wantDC   bool
 		evidence string // substring of Evidence when wantDC
 		wantWarn bool
+		warnHas  string // substring of the first warning; "inconclusive" when empty
 	}{
 		{name: "standalone server with empty NTDS key", current: 1,
 			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), emptyNTDS("ControlSet001")}},
@@ -316,8 +317,27 @@ func TestIsDomainController(t *testing.T) {
 			seed: []func(*Fake){productType("ControlSet001", "ServerNT")}},
 		{name: "WinNT is not a DC", current: 1,
 			seed: []func(*Fake){productType("ControlSet001", "WinNT")}},
-		{name: "ServerNT wins over stray DSA values", current: 1,
-			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), ntdsParam("ControlSet001", "DSA Database file")}},
+		// Review item 1: a non-DC ProductType stays not-a-DC (post-demotion
+		// leftovers are common) but DSA values beside it are surfaced — it
+		// may be a promotion in progress.
+		{name: "ServerNT wins over stray DSA values, with a warning", current: 1,
+			seed:     []func(*Fake){productType("ControlSet001", "ServerNT"), ntdsParam("ControlSet001", "DSA Database file")},
+			wantWarn: true, warnHas: `ProductType is ServerNT but ControlSet001\Services\NTDS\Parameters has "DSA Database file"`},
+		{name: "WinNT with DSA Working Directory warns", current: 1,
+			seed:     []func(*Fake){productType("ControlSet001", "WinNT"), ntdsParam("ControlSet001", "DSA Working Directory")},
+			wantWarn: true, warnHas: `"DSA Working Directory"`},
+		// Review item 2: a DC verdict from a later control set drops the
+		// earlier sets' not-a-DC warnings.
+		{name: "inconclusive Default set then LanmanNt Current set: no warnings", current: 2,
+			seed:   []func(*Fake){productType("ControlSet002", "LanmanNt")},
+			wantDC: true, evidence: `ControlSet002\Control`},
+		{name: "ServerNT+DSA Default set then LanmanNt Current set: no warnings", current: 2,
+			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), ntdsParam("ControlSet001", "DSA Database file"),
+				productType("ControlSet002", "LanmanNt")},
+			wantDC: true, evidence: `ControlSet002\Control`},
+		{name: "inconclusive Default set then DSA-proven Current set: no warnings", current: 2,
+			seed:   []func(*Fake){ntdsParam("ControlSet002", "DSA Database file")},
+			wantDC: true, evidence: `ControlSet002\Services\NTDS\Parameters`},
 		{name: "ProductOptions missing, DSA Database file present", current: 1,
 			seed:   []func(*Fake){ntdsParam("ControlSet001", "DSA Database file")},
 			wantDC: true, evidence: `ProductType is missing and ControlSet001\Services\NTDS\Parameters has "DSA Database file"`},
@@ -367,8 +387,12 @@ func TestIsDomainController(t *testing.T) {
 			if got := len(st.Warnings) > 0; got != tc.wantWarn {
 				t.Fatalf("Warnings = %v, want warning=%v", st.Warnings, tc.wantWarn)
 			}
-			if tc.wantWarn && !strings.Contains(st.Warnings[0], "inconclusive") {
-				t.Fatalf("Warnings = %v", st.Warnings)
+			warnHas := tc.warnHas
+			if warnHas == "" {
+				warnHas = "inconclusive"
+			}
+			if tc.wantWarn && !strings.Contains(st.Warnings[0], warnHas) {
+				t.Fatalf("Warnings = %v, want the first to contain %q", st.Warnings, warnHas)
 			}
 		})
 	}
