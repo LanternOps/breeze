@@ -12,8 +12,18 @@ func init() {
 	handlerRegistry[tools.CmdSoftwareInstall] = handleSoftwareInstall
 }
 
+// Seams (vars, not direct calls) solely so tests can prove handleSoftwareInstall
+// wires this command's id through to the WebSocket without running a real
+// install or completing a real capability handshake.
+var (
+	installSoftwareWithProgress = tools.InstallSoftwareWithProgress
+	sendCommandProgress         = func(c *websocket.Client, commandID, stage string) error {
+		return c.SendCommandProgress(commandID, stage)
+	}
+)
+
 func handleSoftwareInstall(h *Heartbeat, cmd Command) tools.CommandResult {
-	return tools.InstallSoftwareWithProgress(cmd.Payload, h.commandProgressReporter(cmd.ID))
+	return installSoftwareWithProgress(cmd.Payload, h.commandProgressReporter(cmd.ID))
 }
 
 // commandProgressReporter returns a reporter that forwards in-flight stages for
@@ -25,7 +35,10 @@ func (h *Heartbeat) commandProgressReporter(commandID string) tools.ProgressRepo
 	if h == nil || h.wsClient == nil || commandID == "" {
 		return nil
 	}
-	return newCommandProgressReporter(commandID, h.wsClient.SendCommandProgress)
+	client := h.wsClient
+	return newCommandProgressReporter(commandID, func(id, stage string) error {
+		return sendCommandProgress(client, id, stage)
+	})
 }
 
 func newCommandProgressReporter(commandID string, send func(commandID, stage string) error) tools.ProgressReporter {
