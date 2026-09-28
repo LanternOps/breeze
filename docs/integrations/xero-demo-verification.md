@@ -212,8 +212,76 @@ Run on a `worktree-stack` of the W04b branch **with Task 10's capability flip ap
 | X45 | | |
 | X46 | | |
 
+## 5. W05 checklist — payments
+
+Run on a `worktree-stack` of the W05c branch **with Task 12's capability flip applied locally**; it is committed only after X47, X50, X51, X52 and X58 pass. Set up first:
+
+- The stack must be reachable from the internet over HTTPS on 443, because Xero delivers webhooks. Use a Cloudflare tunnel or the lab host.
+- `XERO_WEBHOOK_KEY` must be set.
+- Sections 2–4 must be done: the Demo Company is connected, the settings step has a bank account, and an org and an item are mapped.
+- Push mode is **auto**: bulk push is a no-op in manual mode until #7251 lands.
+
+Record each result, with Xero's raw text where asked.
+
+| # | Step | Expected |
+|---|---|---|
+| X47 | Xero app → Webhooks: subscribe to **Invoices**, delivery URL `https://<host>/api/v1/webhooks/xero`, key into `XERO_WEBHOOK_KEY`; press **Send "Intent to receive"** | Xero reports the endpoint OK. **GATE** |
+| X48 | `curl -si -X POST https://<host>/api/v1/webhooks/xero -H 'x-xero-signature: AAAA' -d '{"events":[]}'`; then look at Xero's delivery log for X47 | `401`, empty body, **no `Set-Cookie` header**; Xero's log shows a response well under 5 s |
+| X49 | Before the flip (W05a/b deployed, capability off): edit a pushed invoice's due date in Xero | Webhook answers 200; API log `[xeroWebhook] processed webhook delivery` with `dropped: 1`; no reconcile run |
+| X50 | After the flip: issue + push an invoice from Breeze, then **apply a 50.00 payment to it in Xero** | The payment appears on the Breeze invoice (method "Other", reference as typed in Xero). Record **whether an INVOICE webhook fired for the payment** (API log `categories.INVOICE ≥ 1`, `enqueued: 1`, run ~30 s later) or the payment arrived only with the 15-minute sweep. **GATE** (either path must deliver it; refinement 3) |
+| X51 | Delete X50's payment in Xero; press **Sync now** (or wait) | The Breeze payment is reversed and the balance restored. In Postman, `GET Payments` with `If-Modified-Since` a minute before the deletion returns that payment with `Status: DELETED`. **GATE** (refinement 11) |
+| X52 | Record a cash payment of 25.00 in Breeze with reference `CHQ 1001` on a pushed invoice | One Xero payment on the chosen bank account, dated as in Breeze, amount 25.00, Reference `Breeze payment <uuid> \| CHQ 1001`; Breeze payment badge "Synced". **GATE** |
+| X53 | Reverse (void) X52's payment in Breeze | The Xero payment is DELETED; API log shows `GET Payments/<id>` then `POST Payments/<id>`; mapping gone |
+| X54 | Push another payment; then in psql set its mapping back to `pending_op='push', remote_entity_id=null, sync_status='pending'` and wait for the sweep | The mapping is re-adopted with the **same** PaymentID; API log shows the lookup GET and **no** `PUT Payments`; Xero still has one payment |
+| X55 | Reconcile a Breeze-pushed payment in the Demo Company's bank reconciliation; then reverse it in Breeze | Payment row: "Xero will not delete this payment because it is reconciled to a bank transaction — unreconcile it in Xero and delete it there"; no retries in the worker log. In Postman, `POST Payments/<id> {"Status":"DELETED"}` and record Xero's raw message (refinement 16). Then unreconcile + delete in Xero → next pull clears the mapping |
+| X56 | Turn **pull** off; record a full payment on a pushed invoice **in Xero**; then record the same amount in Breeze | Breeze payment row: "Xero refused the payment because it is more than the amount still due…"; record Xero's raw message |
+| X57 | Delete all payments on a pushed invoice in Xero, then **Void** it in Xero | The Breeze invoice's sync card shows "Deleted in Xero" after the next pull |
+| X58 | Postman: `PUT Payments` with a Reference of 118 characters (`Breeze payment <uuid> \| ` + 64 × `R`), then 255, then 300 | The 118-character Reference **round-trips unchanged** (`GET Payments/<id>`). **GATE** (refinement 14). Record whether 255/300 are accepted, truncated or refused |
+| X59 | Postman: `GET Payments` with `If-Modified-Since` one hour in the future | Record `200` with an empty list, or `304` (refinement 9) |
+| X60 | Postman: `GET Payments?where=PaymentType=="ACCRECPAYMENT"` and `?where=Invoice.InvoiceID==guid("<id>")` | Both `200`. If `==` is refused, record the error and retry with the documented single `=` |
+| X61 | Clear the bank account in the settings step with payment push on; then record a Breeze payment | The settings step shows "Payments recorded in Breeze are not sent to Xero until you choose a bank account."; the payment row shows "Choose a bank account…"; the API log shows **no** Xero call. Choose the account again → the next sweep (≤ 15 min) pushes it. Also, in Postman, `PUT` a payment to a non-BANK account and record Xero's message |
+| X62 | Note `X-DayLimit-Remaining` before and after one **Sync now** with nothing changed; then make five quick edits to pushed invoices in Xero within 30 s | One run costs 2 calls; the five events produce **one** reconcile run (one `[AccountingReconcileWorker]` run line) |
+| X63 | Postman: send the same `PUT Payments` body with the same `Idempotency-Key` twice within 6 minutes; then the same key with a different Amount | One payment; the second body gets `400 … is used with a different request.` |
+| X64 | Allocate a credit note to a pushed invoice in Xero | Breeze's invoice balance does **not** change (documented v1 limitation, spec "Scope boundaries"); a later Breeze payment for the full amount shows the X56 message |
+
+### Also record (carry-overs from W05a/W05b)
+
+- X50: confirm the tenant-id casing Xero sends in the webhook `tenantId` matches the casing stored at connect (the connection is found by `hmacFingerprint(tenantId)` of the raw string; a case mismatch means the webhook routes nothing and only the sweep delivers). Record both strings.
+- X47/X62: record the webhook response time from Xero's delivery log. The route fingerprints and routes up to 50 tenants sequentially inside Xero's 5-second budget; note the timing (a single-tenant delivery is expected; flag anything above ~1 s).
+- X55/X56: the refusal-classification regexes in `xeroHttp.ts` (reconciled-delete → `remote_locked`, amount over due → `amount_exceeds_due`) are unconfirmed until these rows record Xero's raw text. If a message does not match, the error falls back to the loud, retryable path — record the raw text for a fix.
+- A delete refused for missing scope stays parked and is re-read once per 15-minute sweep until the partner reconnects. If you can reproduce it (connect with a scope removed), record `X-DayLimit-Remaining` across two sweeps to measure the per-sweep call cost.
+- #7300: Xero's refusal to delete a payment that is a member of a batch payment is not yet classified. If the Demo Company allows creating a batch payment, void a Breeze payment whose Xero payment is in a batch and record Xero's raw message. The paymentPush flip is also held on #7300 merging.
+
+### W05 Results
+
+| # | Result | Notes / raw Xero text |
+|---|---|---|
+| X47 | | |
+| X48 | | |
+| X49 | | |
+| X50 | | |
+| X51 | | |
+| X52 | | |
+| X53 | | |
+| X54 | | |
+| X55 | | |
+| X56 | | |
+| X57 | | |
+| X58 | | |
+| X59 | | |
+| X60 | | |
+| X61 | | |
+| X62 | | |
+| X63 | | |
+| X64 | | |
+
+**If X51 fails** (a deleted payment never comes back from `If-Modified-Since`): stop, do not flip, and escalate. The pull would then need an invoice-level allocation diff (the invoice's `Payments[]` against Breeze's mappings), which is a plan change. **If X58 fails** (Xero alters the 118-character Reference): lower `XERO_PAYMENT_REF_MAX` until the round-trip holds, and re-run X52 and X54.
+
+The capability flip commit is held until X47, X50, X51, X52 and X58 pass AND #7300 is merged.
+
 ## Change log
 
 - W02 — initial checklist (X1–X19); X14 and X7 block the W02c merge.
 - W03 — contacts, items and import (X16–X31, plus X65–X66, numbered after W05 to avoid colliding with W04 X32–X46 and W05 X47–X64); X16 gates the mapping capability flip.
 - W04 — invoice push and void (X32–X46); X32, X34/X35 and X38 gate the invoicePush capability flip.
+- W05 — payments (X47–X64); X47, X50, X51, X52 and X58 (and #7300) gate the paymentPull/paymentPush flip.
