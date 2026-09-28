@@ -873,6 +873,7 @@
           "title": "Tipo report"
         }
       },
+      "removeField": "Rimuovi {{field}}",
       "selectedFields": "Campi selezionati",
       "success": {
         "created": "Report \"{{name}}\" salvato.",

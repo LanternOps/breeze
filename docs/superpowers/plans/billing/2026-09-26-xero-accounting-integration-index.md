@@ -17,7 +17,7 @@ tracking_issue: LanternOps/breeze#7167
 |---|---|---|---|---|
 | W01 Core neutralization (#7168) | `2026-09-26-xero-w01-core-neutralization.md` | resolver, one-provider index, neutral errors, capabilities, totals invariant, rate limiter, generic API/web shell, guard test. **No QBO behaviour change.** | — | none (Xero not registered) |
 | W02 Xero connection (#7169) | `2026-09-26-xero-w02-connection.md` | OAuth + `authEventId` tenant picker, tokens, org settings, 3 new columns, targeted disconnect, env/compose | W01 | `connect` |
-| W03 Contacts, items, import (#7170) | written at wave start | contact/item upsert with adoption, mapping workbench, import | W02 | `+ mapping, customerImport` |
+| W03 Contacts, items, import (#7170) | `2026-09-27-xero-w03-contacts-items-import.md` | contact/item upsert with adoption, mapping workbench, import | W02 | `+ mapping, customerImport` |
 | W04 Invoice push + void (#7171) | written at wave start | ACCREC push, tax allocation, variant idempotency keys, void | W03 | `+ invoicePush` |
 | W05 Payments (#7172) | written at wave start | `/webhooks/xero`, If-Modified-Since reconcile, payment push/delete | W04 | `+ paymentPull, paymentPush` |
 

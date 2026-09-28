@@ -227,8 +227,9 @@ export default function LogSearch() {
       <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="grid gap-3 lg:grid-cols-6">
           <div className="lg:col-span-2">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:actions.search')}</label>
+            <label htmlFor="log-search-query" className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:actions.search')}</label>
             <input
+              id="log-search-query"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t('longTail.logs.LogSearch.searchPlaceholder')}
@@ -237,8 +238,9 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.source')}</label>
+            <label htmlFor="log-search-source" className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.source')}</label>
             <input
+              id="log-search-source"
               value={source}
               onChange={(event) => setSource(event.target.value)}
               placeholder={t('longTail.logs.LogSearch.sourcePlaceholder')}
@@ -247,8 +249,9 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.start')}</label>
+            <label htmlFor="log-search-start" className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.start')}</label>
             <input
+              id="log-search-start"
               type="datetime-local"
               value={startTime}
               onChange={(event) => setStartTime(event.target.value)}
@@ -257,8 +260,9 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.end')}</label>
+            <label htmlFor="log-search-end" className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.end')}</label>
             <input
+              id="log-search-end"
               type="datetime-local"
               value={endTime}
               onChange={(event) => setEndTime(event.target.value)}

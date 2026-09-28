@@ -10,6 +10,11 @@ import {
 } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
 import type { BreezeEvent } from './eventBus';
+import {
+  handleConfigComplianceCompliant,
+  handleConfigComplianceViolation,
+  isConfigCompliancePayload,
+} from './configComplianceAlertBridge';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -278,6 +283,12 @@ async function handlePolicyCompliant(orgId: string, payload: PolicyEventPayload)
  */
 export async function handlePolicyViolationEvent(event: BreezeEvent): Promise<void> {
   await runWithSystemDbAccess(async () => {
+    // Configuration-policy compliance (#6669) publishes the same event type
+    // with a compliance-rule payload and no policyId.
+    if (isConfigCompliancePayload(event.payload)) {
+      await handleConfigComplianceViolation(event.orgId, event.payload);
+      return;
+    }
     await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
   });
 }
@@ -285,6 +296,10 @@ export async function handlePolicyViolationEvent(event: BreezeEvent): Promise<vo
 /** Handle a `policy.compliant` event. See handlePolicyViolationEvent. */
 export async function handlePolicyCompliantEvent(event: BreezeEvent): Promise<void> {
   await runWithSystemDbAccess(async () => {
+    if (isConfigCompliancePayload(event.payload)) {
+      await handleConfigComplianceCompliant(event.orgId, event.payload);
+      return;
+    }
     await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
   });
 }

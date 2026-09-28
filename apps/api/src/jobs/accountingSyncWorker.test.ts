@@ -170,6 +170,35 @@ describe('processAccountingSyncJob', () => {
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
+  // #7251: pushMode gates AUTOMATIC pushes (issue / quote-accept hooks) only.
+  // An operator who bulk-pushes in manual mode asked for exactly this push.
+  it('runs an OPERATOR push job when pushMode is manual (#7251)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pushMode: 'manual' }));
+    pushInvoiceMock.mockResolvedValue({});
+
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1', requestedBy: 'operator' });
+
+    expect(pushInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID, expect.any(Function), { connectionId: 'conn-1' });
+  });
+
+  it('still skips an AUTOMATIC push job (no marker — also every job enqueued before #7251) when pushMode is manual', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pushMode: 'manual' }));
+
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' });
+
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('runs both operator and automatic push jobs when pushMode is auto', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pushMode: 'auto' }));
+    pushInvoiceMock.mockResolvedValue({});
+
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1', requestedBy: 'operator' });
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1' });
+
+    expect(pushInvoiceMock).toHaveBeenCalledTimes(2);
+  });
+
   it('still processes a void job when pushMode is manual — books must not keep a voided invoice open', async () => {
     getConnectionMock.mockResolvedValue(connectionRow({ pushMode: 'manual' }));
     voidInvoiceMock.mockResolvedValue(undefined);
@@ -304,6 +333,28 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
       }),
     );
     const jobId = queueAddMock.mock.calls[0]![2].jobId as string;
+    expect(jobId).not.toContain(':');
+  });
+
+  it('marks an operator push and gives it its OWN jobId so a pending automatic job cannot swallow it (#7251)', async () => {
+    queueAddMock.mockResolvedValue({ id: 'j1' });
+    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID, 'conn-1', { requestedBy: 'operator' })).resolves.toBe(true);
+    expect(queueAddMock).toHaveBeenCalledWith(
+      'push-invoice',
+      { type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID, connectionId: 'conn-1', requestedBy: 'operator' },
+      expect.objectContaining({
+        jobId: `accounting-push-operator-${INV_ID}`,
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: true,
+        removeOnFail: true,
+      }),
+    );
+    const jobId = queueAddMock.mock.calls[0]![2].jobId as string;
+    // BullMQ dedupes on jobId: sharing `accounting-push-<id>` with the issue
+    // hook's automatic job (which a manual-mode worker drops) would make the
+    // operator's request a silent no-op while it sits in wait/delayed.
+    expect(jobId).not.toBe(`accounting-push-${INV_ID}`);
     expect(jobId).not.toContain(':');
   });
 

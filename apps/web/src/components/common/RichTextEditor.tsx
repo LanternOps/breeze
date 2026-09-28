@@ -329,7 +329,7 @@ export default function RichTextEditor({ value, onChange, ariaLabel, testId }: R
         role: 'textbox',
         'aria-multiline': 'true',
         class:
-          'prose prose-sm max-w-none min-h-24 px-3 py-2 text-sm focus:outline-hidden',
+          'prose prose-sm dark:prose-invert max-w-none min-h-24 px-3 py-2 text-sm focus:outline-hidden',
       },
     },
     onUpdate: ({ editor: e }) => {

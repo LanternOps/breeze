@@ -10,7 +10,7 @@ import { db } from '../../db';
 import {
   accountingProviderDisplayName, findAccountingProvider, listRegisteredAccountingProviders, providerSupports,
 } from '../../services/accounting/providerRegistry';
-import { resolveActiveConnectionRef } from '../../services/accounting/accountingConnectionService';
+import { getPartnerConnectionRef } from '../../services/accounting/accountingConnectionService';
 import type { AccountingCapability, AccountingProviderId } from '../../services/accounting/types';
 
 /**
@@ -45,10 +45,11 @@ export function providerGateResponse(
  * GET /accounting/providers. Reads the partner's connection through the
  * NON-decrypting ref on the request's ambient context (the same context the
  * GET /:provider status handler reads under), so a rotated encryption key can
- * never 500 the listing.
+ * never 500 the listing. Any-status lookup (Xero W02): a pending_tenant row
+ * must still be reported so the other provider's card greys out.
  */
 export async function listProvidersHandler(c: Context, partnerId: string): Promise<Response> {
-  const active = await resolveActiveConnectionRef(db, partnerId);
+  const active = await getPartnerConnectionRef(db, partnerId);
   return c.json({
     data: listRegisteredAccountingProviders().map((p) => ({
       id: p.provider, displayName: p.displayName, configured: p.configError() === null, capabilities: p.capabilities,

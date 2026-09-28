@@ -416,3 +416,33 @@ describe('ScriptsPage bundle import result persistence (#6005)', () => {
     expect(screen.queryByTestId('bundle-import-choose-files')).not.toBeInTheDocument();
   });
 });
+
+describe('ScriptsPage header (#7151)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) {
+        return makeJsonResponse({ data: [baseScript] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+  });
+
+  it('stacks the title/description and action buttons below md, via the shared PageHeader', async () => {
+    render(<ScriptsPage />);
+
+    const heading = await screen.findByTestId('scripts-heading');
+    // Outer header row must be the shared PageHeader's stacking wrapper, not
+    // a bare `flex items-center justify-between` row that never wraps.
+    const headerRow = heading.closest('[class*="flex-col"]');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.className).toContain('md:flex-row');
+
+    // Action buttons must be able to wrap onto their own line instead of
+    // being clipped at the viewport edge.
+    const importButton = screen.getByTestId('bundle-import-open');
+    const actionsContainer = importButton.closest('[class*="flex-wrap"]');
+    expect(actionsContainer).not.toBeNull();
+  });
+});

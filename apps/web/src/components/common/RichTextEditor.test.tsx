@@ -71,6 +71,15 @@ describe('RichTextEditor', () => {
     }
   });
 
+  it('pairs the prose typography class with dark:prose-invert (#7177)', () => {
+    render(
+      <RichTextEditor value="<p>Hello</p>" onChange={() => {}} ariaLabel="Proposal text" testId="rte-test" />,
+    );
+    const editable = screen.getByTestId('rte-test');
+    expect(editable).toHaveClass('prose');
+    expect(editable).toHaveClass('dark:prose-invert');
+  });
+
   it('exposes the editable region with the provided aria-label and testId', () => {
     render(
       <RichTextEditor value="<p>Hello</p>" onChange={() => {}} ariaLabel="Proposal text" testId="rte-test" />,

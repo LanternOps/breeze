@@ -104,6 +104,7 @@ function alertFromSearch(result: Extract<MobileSearchResult, { kind: 'alert' }>)
     message: result.meta.message ?? '',
     severity,
     type: 'alert',
+    source: result.meta.source ?? undefined,
     deviceId: result.meta.deviceId ?? undefined,
     deviceName: result.meta.deviceName ?? undefined,
     acknowledged:

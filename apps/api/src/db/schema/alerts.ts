@@ -139,7 +139,7 @@ export const alerts = pgTable('alerts', {
   // `alerts_open_rule_device_subject_uidx` enforces open-alert identity below.
   subjectKey: text('subject_key'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  // Topology M3 (M3-D6, migration 2026-11-06-090400): a recurring topology
+  // Topology M3 (M3-D6, migration 2026-11-06-210400): a recurring topology
   // check alert is OWNED by the topology site (immutable), not by the origin
   // device (`device_id`, provenance only). Set together at insert, or both
   // NULL for every other alert; site authorization follows this column.
@@ -261,15 +261,12 @@ export const notificationChannels = pgTable('notification_channels', {
   partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   type: notificationChannelTypeEnum('type').notNull(),
-  // `config` (destination + secrets) is READ from notificationChannelConfigs
-  // below, NOT from this row (#6379): an org session can read a partner-wide
+  // `config` (destination + secrets) lives in notificationChannelConfigs
+  // below, NOT on this row (#6379): an org session can read a partner-wide
   // channel row through the SELECT-only partner-wide branch, and RLS cannot hide
-  // a column. The legacy `config` column still exists in the database (nullable)
-  // for one release so an image rollback keeps delivering; it is deliberately
-  // NOT declared here so no select()/returning() on this table can read it. It
-  // is written only through a module-private view in
-  // services/notificationChannelConfig.ts and is dropped by the contract step
-  // (follow-up to #6379). Guard: notificationChannelLegacyConfig.test.ts.
+  // a column. The legacy `config` column was kept for one release as a
+  // write-only rollback mirror and then dropped (#7028,
+  // 2026-11-06-100100-drop-notification-channels-config.sql).
   templates: jsonb('templates').default({}),
   enabled: boolean('enabled').notNull().default(true),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
@@ -305,8 +302,7 @@ export const notificationChannels = pgTable('notification_channels', {
  * notificationChannelSecrets.ts and encryptedColumnRegistry.ts.
  *
  * Every channel is written with its config row in the same transaction
- * (services/notificationChannelConfig.ts), which also mirrors the value into the
- * legacy parent column until the contract step drops it. No org_id: it reaches its tenant
+ * (services/notificationChannelConfig.ts). No org_id: it reaches its tenant
  * through the parent and is removed by the parent's ON DELETE CASCADE.
  */
 export const notificationChannelConfigs = pgTable('notification_channel_configs', {

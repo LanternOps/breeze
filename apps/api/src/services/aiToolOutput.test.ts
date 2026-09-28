@@ -594,6 +594,82 @@ describe('array truncation in-band sentinel (#3521)', () => {
   });
 });
 
+// #7131: array items landing exactly at the depth ceiling used to be replaced
+// wholesale by the opaque `[truncated: max depth reached]` marker. These tests
+// pin the generic contract directly against `compactValue`'s depth-ceiling
+// branch (via an unrecognized tool name, so the generic path is exercised)
+// rather than only through get_fleet_health, and without relying on the
+// overall payload being large enough to force a tighter compaction tier: five
+// levels of object nesting (a.b.c.d.e) put the array itself at depth 5, so its
+// items land at depth 6 — DEFAULT_CONFIG's own maxDepth — exercising the
+// ceiling with tier0 already.
+describe('array items at the depth ceiling are bounded, not dropped (#7131)', () => {
+  function nestedAt(items: unknown): string {
+    return JSON.stringify({ a: { b: { c: { d: { e: items } } } } });
+  }
+  function itemsOf(raw: string): unknown[] {
+    const parsed = JSON.parse(compactToolResultForChat('get_quote', raw)) as {
+      a: { b: { c: { d: { e: unknown[] } } } };
+    };
+    return parsed.a.b.c.d.e;
+  }
+
+  it('keeps a couple of small items whole plus a sentinel, instead of an opaque depth marker', () => {
+    const raw = nestedAt([
+      { type: 'crashes', severity: 'critical' },
+      { type: 'services', severity: 'error' },
+      { type: 'hangs', severity: 'warning' },
+      { type: 'hardware', severity: 'warning' },
+    ]);
+    const out = itemsOf(raw);
+
+    expect(out.some((x) => x === '[truncated: max depth reached]')).toBe(false);
+    expect(out[0]).toMatchObject({ type: 'crashes', severity: 'critical' });
+    expect(out[1]).toMatchObject({ type: 'services', severity: 'error' });
+    const last = out[out.length - 1];
+    expect(typeof last).toBe('string');
+    expect(last as string).toMatch(/truncated: 2 more items omitted/);
+  });
+
+  it('does not append a sentinel when every item already fits within the keep count', () => {
+    const out = itemsOf(nestedAt([{ type: 'crashes' }]));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ type: 'crashes' });
+  });
+
+  it('reduces an oversized object item to a short preview instead of keeping it unbounded', () => {
+    const big = { type: 'crashes', detail: 'x'.repeat(400) };
+    const out = itemsOf(nestedAt([big]));
+
+    expect(typeof out[0]).toBe('string');
+    expect((out[0] as string).length).toBeLessThan(JSON.stringify(big).length);
+    expect(out[0] as string).toMatch(/truncated at depth limit/);
+  });
+
+  it('still caps an oversized STRING item at the ceiling — not left unbounded', () => {
+    const longString = 'y'.repeat(5_000);
+    const out = itemsOf(nestedAt([longString]));
+
+    expect(typeof out[0]).toBe('string');
+    expect((out[0] as string).length).toBeLessThan(longString.length);
+  });
+
+  it('carries a prior truncation count forward when the array already carried a sentinel', () => {
+    const PRIOR = 12;
+    const raw = nestedAt([
+      { type: 'crashes' },
+      { type: 'services' },
+      `...[truncated: ${PRIOR} more items omitted. Use pagination or the REST API]`,
+    ]);
+    const out = itemsOf(raw);
+    const marker = out[out.length - 1] as string;
+    const n = Number(/truncated: (\d+) more/.exec(marker)![1]);
+    // The 2 real items minus the 1 kept (DEPTH_LIMIT_ARRAY_KEEP=2 means both
+    // survive here) plus the prior count — carried forward, not reset/dropped.
+    expect(n).toBeGreaterThanOrEqual(PRIOR);
+  });
+});
+
 describe('compactToolResultForChat — capture envelope (execution-plane W01, spec §5.2)', () => {
   const bigStdout = 'L'.repeat(30_000);
   const nativeResult = JSON.stringify({ status: 'success', exitCode: 0, stdout: bigStdout });

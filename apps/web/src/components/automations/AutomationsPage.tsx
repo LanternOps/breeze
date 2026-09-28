@@ -459,14 +459,23 @@ export default function AutomationsPage() {
         </a>
       </div>
 
-      <nav className="flex gap-1 border-b" aria-label={t('automationsPage.tabs.ariaLabel')}>
+      {/* #7148: this row overflowed by 33px at 390px, clipping "Event rules"
+          mid-word. It stayed a plain button row (not OverflowTabs) because an
+          existing test contract (AutomationsPage.tabs.test.tsx) — and the
+          AutomationList trigger-select reverse-mapping it drives — depends on
+          `role="button"` + `aria-current="page"` semantics that OverflowTabs'
+          ARIA tabs pattern (`role="tab"` + `aria-selected`) doesn't provide.
+          overflow-x-auto + shrink-0 + whitespace-nowrap fixes the clipping
+          without changing that contract. */}
+      <nav className="flex gap-1 overflow-x-auto border-b" aria-label={t('automationsPage.tabs.ariaLabel')}>
         {JOB_TABS.map((key) => (
           <button
             key={key}
             type="button"
             onClick={() => switchTab(key)}
             aria-current={tab === key ? 'page' : undefined}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            data-testid={`automations-tab-${key}`}
+            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           >
             {t(/* i18n-dynamic */ `automationsPage.tabs.${key}`)}
           </button>

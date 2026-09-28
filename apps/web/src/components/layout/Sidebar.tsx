@@ -959,7 +959,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         ) : (
           <button
             onClick={() => toggleSection(section.id)}
-            className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-muted-foreground cursor-pointer transition-colors"
+            className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
             <span>{section.labelKey ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label }) : section.label}</span>

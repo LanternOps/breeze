@@ -1645,3 +1645,45 @@ describe('per-IP rate limiting on the remaining unauthenticated agent/helper dow
     expect(res.status).toBe(503);
   });
 });
+
+// Server-only images: the local binaries volume holds the PAIRED binaries
+// release, so the local-mode "is this the build on disk?" guard must compare a
+// requested version against the pairing (via the real getBinariesVersion), not
+// the server's own BREEZE_VERSION.
+describe('local-mode version guard follows the binaries pairing', () => {
+  const originalEnv = process.env;
+
+  beforeEach(async () => {
+    process.env = { ...originalEnv };
+    delete process.env.BINARY_VERSION;
+    process.env.BREEZE_VERSION = '0.118.2';
+    process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+    const actual = await vi.importActual<typeof import('../../services/binarySource')>(
+      '../../services/binarySource',
+    );
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(getGithubReleaseVersion).mockImplementation(actual.getBinariesVersion);
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue('0.118.0');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.mocked(getGithubReleaseVersion).mockReset();
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    vi.mocked(getRegisteredComponentVersion).mockReset();
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(null);
+    vi.restoreAllMocks();
+  });
+
+  it('serves a request for the paired version (not a 409)', async () => {
+    const res = await downloadRoutes.request('/download/linux/amd64?version=0.118.0');
+    // No binary staged in this test env: 404 proves the guard let it through.
+    expect(res.status).toBe(404);
+  });
+
+  it("refuses a request for the server's own version, which has no binaries", async () => {
+    const res = await downloadRoutes.request('/download/linux/amd64?version=0.118.2');
+    expect(res.status).toBe(409);
+  });
+});

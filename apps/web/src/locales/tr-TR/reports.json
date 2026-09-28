@@ -873,6 +873,7 @@
           "title": "Rapor türü"
         }
       },
+      "removeField": "{{field}} alanını kaldır",
       "selectedFields": "Seçilen alanlar",
       "success": {
         "created": "\"{{name}}\" raporu kaydedildi.",

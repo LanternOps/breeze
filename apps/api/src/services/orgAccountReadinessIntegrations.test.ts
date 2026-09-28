@@ -36,6 +36,7 @@ describe('accountingConnectorState', () => {
     ['reauth_required', 'reauth_required'],
     ['disconnected', 'disconnected'],
     ['error', 'error'],
+    ['pending_tenant', 'disconnected'],
     ['something-new', 'error'],
   ])('%s → %s', (status, expected) => {
     expect(accountingConnectorState(status)).toBe(expected);

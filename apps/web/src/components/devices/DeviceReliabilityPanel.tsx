@@ -143,6 +143,7 @@ function buildReliabilitySeedPrompt(snapshot: ReliabilitySnapshot, drivers: Reli
     `Score ${snapshot.reliabilityScore}/100 (${scoreBandLabel(snapshot.reliabilityScore)}), trend ${snapshot.trendDirection}.`,
     `30-day uptime ${formatPercent(snapshot.uptime30d / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}, MTBF ${mtbf}.`,
     `Top factors dragging the score: ${driverText}.`,
+    `Before diagnosing, call get_device_hardware_health with includeReliability=true to see the actual scored events (source, event ID, count) behind these factors — do not guess a cause that tool output doesn't support.`,
     `What are the likely root causes, and what remediation — scripts, checks, or a ticket — do you recommend?`,
   ].join(' ');
 }

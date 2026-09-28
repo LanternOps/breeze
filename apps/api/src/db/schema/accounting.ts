@@ -33,6 +33,12 @@ export const accountingConnections = pgTable('accounting_connections', {
   multiCurrencyEnabled: boolean('multi_currency_enabled'),
   defaultIncomeAccountRef: varchar('default_income_account_ref', { length: 64 }),
   defaultTaxCodeRef: varchar('default_tax_code_ref', { length: 64 }),
+  // Xero W02. Nullable, provider-neutral names; QuickBooks leaves them null.
+  defaultExemptTaxCodeRef: varchar('default_exempt_tax_code_ref', { length: 64 }),
+  defaultPaymentAccountRef: varchar('default_payment_account_ref', { length: 64 }),
+  // The provider's id for Breeze's link to the tenant (Xero connection id),
+  // used by the targeted DELETE /connections/{id} on disconnect. Not a secret.
+  providerConnectionRef: varchar('provider_connection_ref', { length: 64 }),
   pushMode: varchar('push_mode', { length: 10 }).notNull().default('auto'), // 'auto' | 'manual'
   // RESERVED, unused: the Intuit webhook verifier token is app-level
   // (QBO_WEBHOOK_VERIFIER_TOKEN, config/env.ts), not per-connection — Intuit

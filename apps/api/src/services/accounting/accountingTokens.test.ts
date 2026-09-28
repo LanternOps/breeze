@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encryptSecret } from '../secretCrypto';
 import { qboErrorToProviderError } from './quickbooksFault';
+import { AccountingProviderError } from './accountingProviderError';
 
 const { mocks, ctx } = vi.hoisted(() => ({
   mocks: {
@@ -39,6 +40,9 @@ vi.mock('./accountingConnectionService', () => ({
 
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: vi.fn(() => mocks.provider),
+  // Status messages are labelled by provider (Xero W02); the real registry's
+  // names are stable enough to hardcode here.
+  accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : id === 'xero' ? 'Xero' : id),
 }));
 
 function connection(overrides: Record<string, unknown> = {}) {
@@ -464,5 +468,128 @@ describe('accountingTokens', () => {
     // A non-invalid_grant failure never needs the recovery re-read: only
     // Transaction A (the capture) was opened.
     expect(db.transaction).toHaveBeenCalledOnce();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Xero W02 (Review Focus 5). Xero rotates the refresh token on every refresh and
+// honours the previous one for a 30-minute grace window. The Xero-shaped error is
+// built directly as the neutral AccountingProviderError the Xero boundary throws
+// for invalid_grant — this core suite stays provider-neutral and never imports
+// the Xero HTTP module.
+// -----------------------------------------------------------------------------
+describe('Xero rotation race (Review Focus 5)', () => {
+  const xeroInvalidGrant = () => new AccountingProviderError({
+    kind: 'reauth',
+    provider: 'xero',
+    operation: 'Xero token refresh',
+    httpStatus: 400,
+    providerCode: 'invalid_grant',
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.provider.refresh.mockReset();
+    ctx.depth = 0;
+    ctx.ambient = false;
+    ctx.events.length = 0;
+  });
+
+  it('a loser whose refresh gets invalid_grant after a peer rotated returns the PEER token and never marks reauth', async () => {
+    const { db, state } = makeLockableDb(lockedRow());
+    mocks.provider.refresh.mockImplementationOnce(async () => {
+      state.row = lockedRow({
+        refreshTokenEncrypted: encryptSecret('PEER-rt'),
+        accessTokenEncrypted: encryptSecret('PEER-at'),
+        accessTokenExpiresAt: new Date(Date.now() + 30 * 60_000),
+      });
+      throw xeroInvalidGrant();
+    });
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+    const token = await getValidAccessToken(db, connection({ provider: 'xero', accessTokenExpiresAt: new Date(Date.now() + 60_000) }));
+
+    expect(token).toBe('PEER-at');
+    expect(mocks.markStatus).not.toHaveBeenCalled();
+    expect(mocks.updateTokens).not.toHaveBeenCalled();
+  });
+
+  it('a loser whose refresh SUCCEEDS (Xero 30-minute grace) discards its own rotation for the peer\'s', async () => {
+    const { db, state } = makeLockableDb(lockedRow());
+    mocks.provider.refresh.mockImplementationOnce(async () => {
+      state.row = lockedRow({
+        refreshTokenEncrypted: encryptSecret('PEER-rt'),
+        accessTokenEncrypted: encryptSecret('PEER-at'),
+        accessTokenExpiresAt: new Date(Date.now() + 30 * 60_000),
+      });
+      return {
+        realmId: '',
+        accessToken: 'MINE-at',
+        refreshToken: 'MINE-rt',
+        accessTokenExpiresAt: new Date(Date.now() + 30 * 60_000),
+        refreshTokenExpiresAt: new Date(Date.now() + 60 * 86_400_000),
+      };
+    });
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+    const token = await getValidAccessToken(db, connection({ provider: 'xero', accessTokenExpiresAt: new Date(Date.now() + 60_000) }));
+
+    expect(token).toBe('PEER-at');
+    expect(mocks.updateTokens).not.toHaveBeenCalled();
+    expect(mocks.markStatus).not.toHaveBeenCalled();
+  });
+
+  // Mock-level: asserts the CLASSIFICATION (Xero invalid_grant → reauth) and the label. That the
+  // status actually PERSISTS is the reauth-rollback fix's contract; Task 10 proves it on real Postgres.
+  it('a genuine Xero invalid_grant (row still holds our token) marks reauth with a Xero-labelled message', async () => {
+    const { db } = makeLockableDb(lockedRow());
+    mocks.provider.refresh.mockRejectedValueOnce(xeroInvalidGrant());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
+    await expect(getValidAccessToken(db, connection({ provider: 'xero', accessTokenExpiresAt: new Date(Date.now() + 60_000) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+
+    expect(mocks.markStatus).toHaveBeenCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'Xero refresh token is invalid or expired');
+    expect(errorSpy).toHaveBeenCalledWith('[accounting] Xero refresh returned invalid_grant', expect.any(Object));
+    errorSpy.mockRestore();
+  });
+
+  it('an expired Xero refresh token is labelled Xero on both the fast-fail and the under-lock path', async () => {
+    const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
+
+    await expect(getValidAccessToken({} as any, connection({ provider: 'xero', refreshTokenExpiresAt: new Date(Date.now() - 1) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'Xero refresh token expired');
+
+    const { db } = makeLockableDb(lockedRow({ refreshTokenExpiresAt: new Date(Date.now() - 1) }));
+    await expect(getValidAccessToken(db, connection({ provider: 'xero', accessTokenExpiresAt: new Date(Date.now() + 60_000) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'Xero refresh token expired');
+  });
+
+  it('QuickBooks messages are byte-identical', async () => {
+    const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
+
+    // Fast-fail path.
+    await expect(getValidAccessToken({} as any, connection({ refreshTokenExpiresAt: new Date(Date.now() - 1) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'QuickBooks refresh token expired');
+
+    // Under-lock expiry path.
+    const locked = makeLockableDb(lockedRow({ refreshTokenExpiresAt: new Date(Date.now() - 1) }));
+    await expect(getValidAccessToken(locked.db, connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'QuickBooks refresh token expired');
+
+    // Genuine invalid_grant path.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const revoked = makeLockableDb(lockedRow());
+    mocks.provider.refresh.mockRejectedValueOnce(qboErrorToProviderError({ status: 400, qboError: 'invalid_grant', message: 'invalid_grant' }, 'QuickBooks token refresh'));
+    await expect(getValidAccessToken(revoked.db, connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) })))
+      .rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), expect.any(String), 'reauth_required', 'QuickBooks refresh token is invalid or expired');
+    expect(errorSpy).toHaveBeenCalledWith('[accounting] QuickBooks refresh returned invalid_grant', expect.any(Object));
+    errorSpy.mockRestore();
   });
 });

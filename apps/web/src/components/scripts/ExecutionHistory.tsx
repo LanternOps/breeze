@@ -388,13 +388,8 @@ export default function ExecutionHistory({
                 return (
                   <tr
                     key={execution.id}
-                    tabIndex={0}
-                    role="button"
-                    className="transition hover:bg-muted/40 cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-hidden"
+                    className="transition hover:bg-muted/40 cursor-pointer"
                     onClick={() => onViewDetails?.(execution)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewDetails?.(execution); }
-                    }}
                   >
                     {showScriptName && (
                       <td className="px-4 py-3 text-sm font-medium">{execution.scriptName}</td>

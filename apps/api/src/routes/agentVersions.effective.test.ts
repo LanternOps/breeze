@@ -41,7 +41,7 @@ vi.mock('../services/promotedAgentVersion', () => ({
   PromotedVersionUnavailableError: class extends Error {},
 }));
 
-vi.mock('../services/binarySync', () => ({ syncFromGitHub: vi.fn() }));
+vi.mock('../services/binarySync', () => ({ syncFromGitHub: vi.fn(), ServerOnlyReleaseError: class ServerOnlyReleaseError extends Error {} }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/manifestSigning', () => ({

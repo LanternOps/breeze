@@ -213,7 +213,7 @@ export function AccountBoardTable({
     );
 
   const table = (
-    <table className="w-full min-w-[1040px] text-sm" data-testid="org-board-table">
+    <table className="w-full min-w-[min(1040px,100%)] text-sm" data-testid="org-board-table">
       <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
         <tr>
           {manualOrder && (

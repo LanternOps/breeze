@@ -225,7 +225,7 @@ export default function AntivirusPage() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         {pieData.length > 0 && (
-          <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+          <div className="min-w-0 rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
             <p className="text-sm font-semibold">
               {t("securityAntivirusPage.providerDistribution")}
             </p>

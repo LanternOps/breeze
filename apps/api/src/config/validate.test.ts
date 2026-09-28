@@ -2998,6 +2998,22 @@ describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
   });
 });
 
+describe('Xero env (W02)', () => {
+  const KEYS = ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET', 'XERO_REDIRECT_URI', 'XERO_WEBHOOK_KEY', 'XERO_DAILY_CALL_LIMIT'] as const;
+  it.each(KEYS)('declares %s in the env schema', (key) => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+  it('boots with every Xero var unset (all optional)', () => {
+    withEnv({ ...validEnv }, () => { expect(() => validateConfig()).not.toThrow(); });
+  });
+  it.each(['unlimited', '0', '-3', '12.5'])('refuses an invalid XERO_DAILY_CALL_LIMIT %s', (value) => {
+    withEnv({ ...validEnv, XERO_DAILY_CALL_LIMIT: value }, () => {
+      expect(() => validateConfig()).toThrow(/XERO_DAILY_CALL_LIMIT/);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #3374 — the CONVERSE of #2896: a key READ inside validateConfig() /
 // collectWarnings() but never DECLARED in envSchema.

@@ -825,6 +825,16 @@ const envObjectSchema = z
     // on the 15-minute reconcile sweep instead.
     QBO_WEBHOOK_VERIFIER_TOKEN: z.string().optional(),
 
+    // Xero accounting integration (W02). All optional at boot: the connect flow
+    // validates the OAuth trio lazily (provider.configError()), the webhook key
+    // is only read by POST /webhooks/xero (W05), and the daily limit defaults to
+    // the Starter tier's 1000.
+    XERO_CLIENT_ID: z.string().optional(),
+    XERO_CLIENT_SECRET: z.string().optional(),
+    XERO_REDIRECT_URI: z.string().optional(),
+    XERO_WEBHOOK_KEY: z.string().optional(),
+    XERO_DAILY_CALL_LIMIT: z.string().optional(),
+
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
     S3_ACCESS_KEY: z.string().optional(),
@@ -2212,6 +2222,15 @@ const envSchema = envObjectSchema
           message: `${knob} must be a positive integer when set.`,
         });
       }
+    }
+
+    const xeroDailyRaw = (data.XERO_DAILY_CALL_LIMIT ?? '').trim();
+    if (xeroDailyRaw && (!/^\d+$/.test(xeroDailyRaw) || Number(xeroDailyRaw) < 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['XERO_DAILY_CALL_LIMIT'],
+        message: 'XERO_DAILY_CALL_LIMIT must be a positive integer when set (your Xero tier\'s per-organisation daily call limit; Starter is 1000).',
+      });
     }
 
     // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a

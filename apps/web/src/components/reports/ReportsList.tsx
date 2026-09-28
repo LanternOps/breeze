@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { PageHeader } from '../shared/PageHeader';
 import { useJwtClaims } from '@/lib/authScope';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
@@ -478,35 +479,35 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportsList.title')}</h1>
-          <p className="text-muted-foreground">{t('reports.reportsList.description')}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <a
-            href="/reports/templates"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-          >
-            <LayoutTemplate className="h-4 w-4" />
-            {t('reports.reportsList.templates')}
-          </a>
-          <a
-            href="/reports/builder"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-          >
-            <FileText className="h-4 w-4" />
-            {t('reports.reportsList.adhocReport')}
-          </a>
-          <a
-            href="/reports/new"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            {t('reports.reportsList.newReport')}
-          </a>
-        </div>
-      </div>
+      <PageHeader
+        title={t('reports.reportsList.title')}
+        description={t('reports.reportsList.description')}
+        actions={
+          <>
+            <a
+              href="/reports/templates"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+              {t('reports.reportsList.templates')}
+            </a>
+            <a
+              href="/reports/builder"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+            >
+              <FileText className="h-4 w-4" />
+              {t('reports.reportsList.adhocReport')}
+            </a>
+            <a
+              href="/reports/new"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              {t('reports.reportsList.newReport')}
+            </a>
+          </>
+        }
+      />
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

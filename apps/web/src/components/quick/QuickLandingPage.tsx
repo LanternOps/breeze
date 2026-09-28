@@ -29,7 +29,7 @@ export type QuickBranding = {
 type CheckState =
   | { phase: 'idle' }
   | { phase: 'checking' }
-  | { phase: 'valid'; code: string; branding: QuickBranding | null }
+  | { phase: 'valid'; code: string; branding: QuickBranding | null; signed: boolean }
   | { phase: 'invalid' }
   | { phase: 'rateLimited'; code: string }
   | { phase: 'unreachable'; code: string };
@@ -134,11 +134,14 @@ export default function QuickLandingPage() {
         return;
       }
       const body = (await response.json()) as
-        | { valid?: boolean; branding?: QuickBranding | null }
+        | { valid?: boolean; branding?: QuickBranding | null; signed?: boolean }
         | null;
       setState(
         response.ok && body?.valid === true
-          ? { phase: 'valid', code, branding: body.branding ?? null }
+          // `signed` missing or anything but `true` (a stale API, a fetch
+          // failure the server already resolved to false, ...) defaults to
+          // the honest unsigned copy — never the stronger claim (#7185).
+          ? { phase: 'valid', code, branding: body.branding ?? null, signed: body.signed === true }
           : { phase: 'invalid' },
       );
     } catch {
@@ -434,8 +437,10 @@ export default function QuickLandingPage() {
 
               <div className="space-y-1 border-t pt-3">
                 <p className="text-sm font-semibold">{t('windowsPrompt.title')}</p>
-                <p className="text-sm text-muted-foreground">
-                  {t('windowsPrompt.body', { publisher: t('windowsPrompt.publisher') })}
+                <p data-testid="quick-windows-prompt-body" className="text-sm text-muted-foreground">
+                  {state.signed
+                    ? t('windowsPrompt.body', { publisher: t('windowsPrompt.publisher') })
+                    : t('windowsPrompt.bodyUnsigned')}
                 </p>
               </div>
             </>

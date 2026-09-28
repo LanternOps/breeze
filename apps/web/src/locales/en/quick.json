@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "Windows will ask you before it runs",
     "body": "When you open the file, Windows shows a prompt asking whether you want to allow it to run. The file is digitally signed, so that prompt names a publisher: it should read {{publisher}}. If it says the publisher is unknown, or names anyone you were not expecting, close the prompt and call the person helping you instead of continuing.",
+    "bodyUnsigned": "When you open the file, Windows shows a prompt asking whether you want to allow it to run. It may say the publisher is unknown — that is expected for this program and is not a sign of a problem. Continue only if you started this session with the person helping you. If you did not, close the prompt and do not run the file.",
     "publisher": "the publisher of Breeze"
   },
   "trust": {

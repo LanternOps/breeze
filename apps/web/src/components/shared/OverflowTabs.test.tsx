@@ -123,6 +123,18 @@ describe('OverflowTabs', () => {
 
       expect(screen.getByTestId('t-a').getAttribute('aria-controls')).toBe(overflowPanelId('a', 't-'));
     });
+
+    // axe (aria-required-children): role="tablist" must contain only
+    // role="tab" children. The "More" trigger is a menu-disclosure button,
+    // not a tab, so it must sit outside the tablist rather than as a child
+    // of it.
+    it('keeps the "More" trigger outside the tablist', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+
+      const tablist = screen.getByRole('tablist');
+      const more = screen.getByText('More');
+      expect(tablist.contains(more)).toBe(false);
+    });
   });
 
   describe('with a wide (all-tabs-visible) layout — roving focus', () => {
@@ -140,6 +152,19 @@ describe('OverflowTabs', () => {
       expect(screen.getByTestId('t-b').tabIndex).toBe(0);
       expect(screen.getByTestId('t-b').getAttribute('aria-selected')).toBe('true');
       expect(screen.getByTestId('t-c').tabIndex).toBe(-1);
+    });
+
+    // axe (aria-valid-attr-value, #7179): consumers mount only the ACTIVE
+    // tab's panel, so an inactive (but simultaneously VISIBLE, i.e. not
+    // collapsed into "More") tab's aria-controls would dangle at an id with
+    // no matching element if every tab declared it unconditionally.
+    it('omits aria-controls on visible tabs other than the active one', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="b" onTabChange={() => {}} testIdPrefix="t-" />);
+
+      expect(screen.getByTestId('t-a')).not.toHaveAttribute('aria-controls');
+      expect(screen.getByTestId('t-b')).toHaveAttribute('aria-controls', overflowPanelId('b', 't-'));
+      expect(screen.getByTestId('t-c')).not.toHaveAttribute('aria-controls');
+      expect(screen.getByTestId('t-d')).not.toHaveAttribute('aria-controls');
     });
 
     it('ArrowRight moves focus to the next tab and selects it, wrapping past the last', () => {

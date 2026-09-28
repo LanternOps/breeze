@@ -6,6 +6,7 @@ import { authMiddleware } from '../middleware/auth';
 import { API_VERSION } from '../version';
 import { semverCompare } from '@breeze/shared';
 import { getLatestVersion } from '../services/latestVersion';
+import { getBinariesVersion } from '../services/binarySource';
 
 export const systemRoutes = new Hono();
 
@@ -17,6 +18,9 @@ systemRoutes.get('/version', async (c) => {
   const isStale = cmp !== null && cmp < 0;
   return c.json({
     version: API_VERSION,
+    // The agent-binaries release this server serves; differs from `version`
+    // only on a server-only release image.
+    binariesVersion: getBinariesVersion(),
     latest,
     isStale,
     latestFetchedAt: fetchedAt.toISOString(),

@@ -25,7 +25,8 @@
     },
     "actions": {
       "create": "Crea automazione",
-      "saveChanges": "Salva modifiche"
+      "saveChanges": "Salva modifiche",
+      "backToAutomations": "Torna ai lavori"
     }
   },
   "automationForm": {
@@ -434,6 +435,7 @@
       "generic": "Si è verificato un errore"
     },
     "loading": "Caricamento dati di conformità...",
+    "backToPolicies": "Torna ai criteri",
     "policyTitle": "Conformità: {{policy}}",
     "policyFallback": "Criterio",
     "title": "Dashboard conformità",
@@ -491,7 +493,8 @@
     },
     "actions": {
       "create": "Crea criterio",
-      "saveChanges": "Salva modifiche"
+      "saveChanges": "Salva modifiche",
+      "backToPolicies": "Torna ai criteri"
     }
   },
   "policyForm": {
@@ -550,7 +553,8 @@
     },
     "actions": {
       "savePolicy": "Salva criterio",
-      "addRule": "Aggiungi regola"
+      "addRule": "Aggiungi regola",
+      "removeRule": "Rimuovi regola"
     },
     "fields": {
       "name": "Nome criterio",
@@ -981,6 +985,7 @@
     "loading": "Caricamento esecuzioni...",
     "actions": {
       "backToScripts": "Torna agli script",
+      "backToScript": "Torna allo script",
       "runScript": "Esegui script"
     },
     "breadcrumb": {

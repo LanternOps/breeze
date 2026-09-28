@@ -288,3 +288,18 @@ describe('ScriptExecutionsPage post-run navigation (#4886 mirror)', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 });
+
+describe('ScriptExecutionsPage back link (#7158 a11y)', () => {
+  beforeEach(() => {
+    mockApi(() => jsonResponse({ ...listRow }));
+  });
+
+  it('gives the icon-only back-to-script link an accessible name', async () => {
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+
+    expect(await screen.findByRole('link', { name: 'Back to Script' })).toHaveAttribute(
+      'href',
+      `/scripts/${SCRIPT_ID}`,
+    );
+  });
+});

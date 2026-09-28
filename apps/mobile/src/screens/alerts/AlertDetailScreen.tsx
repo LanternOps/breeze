@@ -1,9 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
-import type { Alert as AlertModel } from '../../services/api';
+import {
+  deviceNeedsRestart,
+  getAlert,
+  hasQueuedReboot,
+  sendDeviceAction,
+  type Alert as AlertModel,
+} from '../../services/api';
+import { needsAlertLookup, rebootPlan } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
@@ -80,6 +87,43 @@ export function AlertDetailScreen({ route }: Props) {
   const dispatch = useAppDispatch();
   const { alert } = route.params;
   const [acking, setAcking] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
+  // Both are keyed to the alert id: navigating to this route again can reuse
+  // the mounted screen with a different alert, and a read or sent restart for
+  // the previous alert must not carry over to it.
+  const [rebootSentFor, setRebootSentFor] = useState<string | null>(null);
+  const [fetched, setFetched] = useState<AlertModel | null>(null);
+  const fresh = fetched && fetched.id === alert.id ? fetched : null;
+  const rebootSent = rebootSentFor === alert.id;
+  const currentAlertId = useRef(alert.id);
+  currentAlertId.current = alert.id;
+  // Reboot now is decided on, and aimed at, the fetched copy alone: it has
+  // the current status, the source a chat-built alert lacks, and the device
+  // the server says the alert belongs to (a chat payload's own deviceId is
+  // never used as the target). Until that read lands, or if it fails, the
+  // button stays hidden.
+  const plan = rebootPlan(fresh);
+  const showReboot = plan !== null;
+
+  useEffect(() => {
+    setFetched(null);
+    if (!needsAlertLookup(alert)) return;
+    let mounted = true;
+    getAlert(alert.id)
+      .then(async (read) => {
+        // The alert can outlive the restart it asked for, so the button also
+        // needs the device to still report a pending restart.
+        const plan = rebootPlan(read);
+        if (!plan || !(await deviceNeedsRestart(plan.deviceId))) return;
+        if (mounted) setFetched(read);
+      })
+      // Only the Reboot now button depends on this; without it the screen
+      // shows Acknowledge alone, as before.
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, [alert]);
 
   async function handleAcknowledge() {
     try {
@@ -92,6 +136,51 @@ export function AlertDetailScreen({ route }: Props) {
     } finally {
       setAcking(false);
     }
+  }
+
+  async function sendReboot(alertId: string, deviceId: string) {
+    try {
+      setRebooting(true);
+      // Re-read at the moment of confirmation: the alert may have been
+      // resolved, or the screen moved to another alert, since the prompt
+      // opened. Send only if the same alert still asks for the same device.
+      if (currentAlertId.current !== alertId) return;
+      const now = rebootPlan(await getAlert(alertId));
+      if (currentAlertId.current !== alertId) return;
+      if (!now || now.deviceId !== deviceId || !(await deviceNeedsRestart(deviceId))) {
+        Alert.alert('Not sent', 'This device no longer needs a restart, so nothing was sent.');
+        return;
+      }
+      // The alert stays open after a restart is sent, so reopening it would
+      // otherwise offer the same restart again.
+      if (await hasQueuedReboot(deviceId)) {
+        if (currentAlertId.current === alertId) setRebootSentFor(alertId);
+        Alert.alert('Already queued', 'A restart is already waiting for this device, so nothing new was sent.');
+        return;
+      }
+      if (currentAlertId.current !== alertId) return;
+      await sendDeviceAction(deviceId, 'reboot');
+      setRebootSentFor(alertId);
+      Alert.alert(
+        'Restart sent',
+        'The device restarts when its agent picks up the command. This alert stays open; acknowledge it once the device is back.',
+      );
+    } catch (err) {
+      const msg = (err as { message?: string })?.message || 'Could not send the restart.';
+      Alert.alert('Failed', msg);
+    } finally {
+      setRebooting(false);
+    }
+  }
+
+  function handleReboot() {
+    if (!plan) return;
+    const { deviceId, message } = plan;
+    const alertId = alert.id;
+    Alert.alert('Restart device', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Restart now', style: 'destructive', onPress: () => void sendReboot(alertId, deviceId) },
+    ]);
   }
 
   const sevBg = severityColor(alert.severity);
@@ -199,6 +288,35 @@ export function AlertDetailScreen({ route }: Props) {
             {acking ? 'Acknowledging' : 'Acknowledge'}
           </Text>
         </Pressable>
+      ) : null}
+
+      {showReboot ? (
+        <Pressable
+          onPress={handleReboot}
+          disabled={rebooting || rebootSent}
+          style={({ pressed }) => ({
+            marginTop: alert.acknowledged ? spacing[8] : spacing[3],
+            paddingVertical: spacing[5],
+            borderRadius: radii.lg,
+            backgroundColor: palette.warning.base,
+            alignItems: 'center',
+            opacity: rebooting || rebootSent ? 0.6 : pressed ? 0.8 : 1,
+          })}
+        >
+          <Text style={[type.bodyMd, { color: palette.warning.onBase }]}>
+            {rebootSent ? 'Restart sent' : rebooting ? 'Sending restart' : 'Reboot now'}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {!alert.acknowledged || showReboot ? (
+        <Text
+          style={[type.body, { color: theme.textLo, marginTop: spacing[3] }]}
+        >
+          {showReboot
+            ? 'Acknowledge only marks this alert as seen. It does not restart the device. Reboot now asks for confirmation, then restarts it.'
+            : 'Acknowledge marks this alert as seen. It does not change anything on the device.'}
+        </Text>
       ) : null}
     </ScrollView>
   );

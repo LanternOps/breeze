@@ -208,8 +208,14 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
           }
           // The review is queued but had not finished inside the inline wait
           // (or the wait was skipped under a caller-held transaction). It means
-          // "not yet", never "failed".
-          : { status: 'pending' },
+          // "not yet", never "failed". `nextStep` spells out the poll-and-retry
+          // loop explicitly (#7129) so the model does not treat `run_script`'s
+          // resulting `proposal_review_pending` deny as a dead end.
+          : {
+            status: 'pending',
+            nextStep: 'Review is still in progress. Poll get_script_proposal with this proposalId until '
+              + 'its status is no longer pending, then call run_script.',
+          },
       });
     },
   });

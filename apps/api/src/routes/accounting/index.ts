@@ -13,8 +13,8 @@ import { PERMISSIONS } from '../../services/permissions';
 import {
   AccountingConnectionError,
   AccountingProviderConflictError,
-  deleteConnection,
-  getConnection,
+  deleteConnection, getConnection,
+  getPartnerConnectionRef,
   isHomeCurrencyCasAbort,
   refreshRealmSettings,
   updateHomeCurrency,
@@ -406,11 +406,11 @@ accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requir
   const auth = c.get('auth');
   const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  // One connection per partner (spec D2): refuse a cross-provider connect before
-  // OAuth starts. Non-decrypting read: a rotated key must not block the check.
-  const active = await resolveActiveConnectionRef(db, partner.partnerId);
-  if (active && active.provider !== provider) {
-    const conflict = new AccountingProviderConflictError(active.provider, provider);
+  // One connection per partner (spec D2): refuse a cross-provider connect before OAuth
+  // starts. Non-decrypting, any-status read: a pending_tenant row still holds the slot (W02).
+  const existing = await getPartnerConnectionRef(db, partner.partnerId);
+  if (existing && existing.provider !== provider) {
+    const conflict = new AccountingProviderConflictError(existing.provider, provider, existing.status);
     return c.json({ error: conflict.message, code: conflict.code }, 409);
   }
 
@@ -1262,7 +1262,8 @@ accountingRoutes.post(
     let skipped = 0;
     for (const invoiceId of invoiceIds) {
       if (!ownedIds.has(invoiceId) || !conn) { skipped++; continue; }
-      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId, conn.id)) enqueued++;
+      // Operator-initiated: runs even in pushMode 'manual' (#7251).
+      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId, conn.id, { requestedBy: 'operator' })) enqueued++;
       else failed++;
     }
 

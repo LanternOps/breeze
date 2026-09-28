@@ -190,6 +190,10 @@ describe("HuntressIntegration", () => {
     );
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/huntress/organizations");
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations?page=1&limit=100", undefined);
+    // #7158: the Name and Account ID inputs must be programmatically linked
+    // to their labels, not merely adjacent to them.
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Account ID/)).toBeInTheDocument();
   });
 
   it("still renders the partner connection and mapping UI when a partner admin has an org selected", async () => {

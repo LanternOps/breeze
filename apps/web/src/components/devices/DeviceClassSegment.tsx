@@ -53,12 +53,18 @@ export function DeviceClassSegment({
     >
       {SEGMENTS.map(({ id, labelKey, icon: Icon }) => {
         const active = value === id;
+        const label = t(/* i18n-dynamic */ labelKey);
         return (
           <button
             key={id}
             type="button"
             data-testid={`device-class-segment-${id}`}
             aria-pressed={active}
+            // Below `sm` the label text collapses to icon + count only (the
+            // 4th segment used to be cut off at 390px). The label is still
+            // announced via aria-label since `hidden` removes it from the
+            // accessible name along with the display.
+            aria-label={label}
             onClick={() => onChange(id)}
             className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
               active
@@ -67,7 +73,7 @@ export function DeviceClassSegment({
             }`}
           >
             <Icon className="h-3.5 w-3.5" />
-            {t(/* i18n-dynamic */ labelKey)}
+            <span className="hidden sm:inline">{label}</span>
             <span
               className={`rounded-full px-1.5 text-xs tabular-nums ${
                 active

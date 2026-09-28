@@ -32,6 +32,13 @@ export default function CollapsibleSection({
         className="grid transition-[grid-template-rows] duration-200 ease-out"
         style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
         aria-hidden={!open}
+        // The CSS collapse (grid-template-rows: 0fr + overflow-hidden below)
+        // only hides the content visually — a focusable control inside it
+        // stays reachable by Tab, which axe flags as aria-hidden-focus
+        // (an aria-hidden ancestor containing a focusable descendant).
+        // `inert` removes the subtree from both the accessibility tree and
+        // the tab order, matching what aria-hidden alone only pretends to do.
+        inert={!open}
       >
         <div className="min-h-0 overflow-hidden">
           <div className="border-t px-4 pb-4 pt-3">

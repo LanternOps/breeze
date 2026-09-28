@@ -682,6 +682,19 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * Why a proposal-backed `run_script` was refused a tier, when the input named
+ * a `proposalId` but `loadProposalGuardrailContext` could not hand back a
+ * reviewed risk tier for it (#7129). Deliberately collapses "no such id" and
+ * "exists in a different org" into the SAME `proposal_not_found` value — the
+ * caller must never be able to tell a cross-tenant id apart from a
+ * nonexistent one.
+ */
+export type ProposalContextDenyReason =
+  | 'proposal_not_found'
+  | 'proposal_review_pending'
+  | 'proposal_review_failed';
+
+/**
  * Optional, DB-FREE context a caller may hand to the guardrail so an
  * input-aware decision can read persisted state without this module importing
  * the schema (aiGuardrails.imports.contract.test.ts).
@@ -692,6 +705,13 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
  */
 export interface GuardrailContext {
   proposal?: { riskTier: RiskTier; strictHits: string[] };
+  /**
+   * Set only when `proposal` is undefined AND the loader actually resolved a
+   * specific reason (vs. no context being supplied at all) — lets the tier-4
+   * deny below give the caller a model-actionable reason instead of the
+   * generic `proposal_context_missing` catch-all.
+   */
+  proposalDenyReason?: ProposalContextDenyReason;
 }
 
 /** A `run_script` call that names a proposal instead of a library script. */
@@ -1790,6 +1810,34 @@ export function resolveActionForTool(toolName: string, input: Record<string, unk
 }
 
 /**
+ * The model-actionable `run_script { proposalId }` deny message (#7129). Three
+ * distinct, model-actionable outcomes instead of one catch-all:
+ * - `proposal_not_found` — no such id in the caller's org. Deliberately the
+ *   SAME message for "doesn't exist" and "exists in a different org" (see
+ *   `ProposalContextDenyReason`) — never leak cross-tenant existence.
+ * - `proposal_review_pending` — the review hasn't finished; tells the model to
+ *   poll `get_script_proposal` and retry instead of giving up.
+ * - `proposal_review_failed` — the review ended negatively (static-scan
+ *   rejection or a technical review failure); a new proposal is required.
+ * `undefined` (no context supplied at all, e.g. a caller that never loaded
+ * one) falls back to the original generic `proposal_context_missing`.
+ */
+function buildProposalDenyReason(denyReason: ProposalContextDenyReason | undefined): string {
+  switch (denyReason) {
+    case 'proposal_not_found':
+      return 'proposal_not_found: no reviewed proposal with that id exists in the caller\'s organization';
+    case 'proposal_review_pending':
+      return 'proposal_review_pending: the proposal\'s review has not completed yet — call get_script_proposal '
+        + 'to check its status, then retry run_script once the review is no longer pending';
+    case 'proposal_review_failed':
+      return 'proposal_review_failed: the proposal\'s review ended negatively (scan rejection or a technical '
+        + 'review failure) — call get_script_proposal for details; submit a new proposal to retry';
+    default:
+      return 'proposal_context_missing: run_script with a proposalId requires a reviewed proposal in the caller\'s organization';
+  }
+}
+
+/**
  * Check guardrails for a tool invocation.
  * Returns the effective tier and whether approval is needed.
  */
@@ -1827,7 +1875,7 @@ export function checkGuardrails(
       tier: 4,
       allowed: false,
       requiresApproval: false,
-      reason: 'proposal_context_missing: run_script with a proposalId requires a reviewed proposal in the caller\'s organization',
+      reason: buildProposalDenyReason(context?.proposalDenyReason),
     };
   }
 

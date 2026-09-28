@@ -145,3 +145,111 @@ describe('binarySource release-source unification', () => {
     });
   });
 });
+
+// Server-only hotfix groundwork: a server-only API image carries the binaries
+// release it pairs with in BREEZE_BINARIES_VERSION (baked at image build time,
+// empty for full releases). Every binaries lookup must follow the pairing, and
+// a full-release image (pairing empty) must resolve exactly as before.
+describe('binaries version pairing', () => {
+  const originalEnv = process.env;
+  const legacy = () =>
+    process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'latest';
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
+    delete process.env.BINARY_VERSION;
+    delete process.env.BREEZE_VERSION;
+    delete process.env.BREEZE_BINARIES_VERSION;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  function setEnv(name: string, value: string | undefined) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  it.each([
+    // [BINARY_VERSION, BREEZE_BINARIES_VERSION, BREEZE_VERSION, expected]
+    [undefined, undefined, undefined, 'latest'],
+    [undefined, undefined, '0.118.2', '0.118.2'],
+    [undefined, '0.118.0', '0.118.2', '0.118.0'],
+    ['0.117.5', '0.118.0', '0.118.2', '0.117.5'],
+    ['', '0.118.0', '0.118.2', '0.118.0'],
+    ['  ', '0.118.0', '0.118.2', '0.118.0'],
+    [undefined, '', '0.118.2', '0.118.2'],
+    [undefined, '   ', '0.118.2', '0.118.2'],
+    [undefined, ' 0.118.0 ', '0.118.2', '0.118.0'],
+    [undefined, 'v0.118.0', '0.118.2', 'v0.118.0'],
+    [undefined, '0.118.0', undefined, '0.118.0'],
+    [undefined, undefined, '  ', 'latest'],
+    [undefined, undefined, 'latest', 'latest'],
+  ])(
+    'BINARY_VERSION=%j BREEZE_BINARIES_VERSION=%j BREEZE_VERSION=%j → %s',
+    async (binaryVersion, paired, server, expected) => {
+      const { getBinariesVersion } = await import('./binarySource');
+      setEnv('BINARY_VERSION', binaryVersion);
+      setEnv('BREEZE_BINARIES_VERSION', paired);
+      setEnv('BREEZE_VERSION', server);
+      expect(getBinariesVersion()).toBe(expected);
+    },
+  );
+
+  it('getPairedBinariesVersion is undefined when unset, empty or whitespace', async () => {
+    const { getPairedBinariesVersion } = await import('./binarySource');
+    expect(getPairedBinariesVersion()).toBeUndefined();
+    process.env.BREEZE_BINARIES_VERSION = '';
+    expect(getPairedBinariesVersion()).toBeUndefined();
+    process.env.BREEZE_BINARIES_VERSION = '  ';
+    expect(getPairedBinariesVersion()).toBeUndefined();
+    process.env.BREEZE_BINARIES_VERSION = ' 0.118.0 ';
+    expect(getPairedBinariesVersion()).toBe('0.118.0');
+  });
+
+  // Full-release images bake BREEZE_BINARIES_VERSION="" — every lookup must
+  // evaluate exactly like the pre-pairing expression.
+  const values = [undefined, '', '0.117.5', 'v0.118.1', 'latest'];
+  const combos: [string | undefined, string | undefined, string | undefined][] = [];
+  for (const b of values) for (const s of values) for (const p of [undefined, '']) combos.push([b, p, s]);
+  it.each(combos)(
+    'no-op for full releases: BINARY_VERSION=%j BREEZE_BINARIES_VERSION=%j BREEZE_VERSION=%j',
+    async (binaryVersion, paired, server) => {
+      const { getBinariesVersion, getGithubReleaseVersion } = await import('./binarySource');
+      setEnv('BINARY_VERSION', binaryVersion);
+      setEnv('BREEZE_BINARIES_VERSION', paired);
+      setEnv('BREEZE_VERSION', server);
+      expect(getBinariesVersion()).toBe(legacy());
+      expect(getGithubReleaseVersion()).toBe(legacy());
+    },
+  );
+
+  it('getGithubReleaseVersion is the same function as getBinariesVersion', async () => {
+    const mod = await import('./binarySource');
+    expect(mod.getGithubReleaseVersion).toBe(mod.getBinariesVersion);
+  });
+
+  it('server-only image: every release URL points at the paired binaries release, not the server version', async () => {
+    const mod = await import('./binarySource');
+    process.env.BREEZE_VERSION = '0.118.2';
+    process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+
+    expect(mod.getGithubReleasePageUrl()).toBe(
+      'https://github.com/lanternops/breeze/releases/tag/v0.118.0',
+    );
+    for (const url of [
+      mod.getGithubAgentUrl('windows', 'amd64'),
+      mod.getGithubViewerUrl('windows'),
+      mod.getGithubReleaseArtifactManifestUrl(),
+      mod.getGithubReleaseArtifactManifestSignatureUrl(),
+      mod.getGithubRecoveryIsoUrl('amd64'),
+    ]) {
+      expect(url).toContain('/releases/download/v0.118.0/');
+      expect(url).not.toContain('0.118.2');
+    }
+    expect(mod.getGithubExpectedReleaseTag()).toBe('v0.118.0');
+  });
+});

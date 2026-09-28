@@ -382,9 +382,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       // compile verbatim into a managed automation that runs as SYSTEM on
       // every device an attaching org-wide policy reaches, so every action
       // here (create, update, enable, disable, delete, attach, detach) takes
-      // the same capability as every other org-wide governance write. This
-      // tool has no TOOL_TIERS entry yet (latent), so the gate must be in
-      // place before it ever gets one.
+      // the same capability as every other org-wide governance write. Chat
+      // reaches this handler (TOOL_TIERS tier 3, #6669), so this gate is live.
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }

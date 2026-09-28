@@ -52,6 +52,17 @@ vi.mock("../services/manifestSigning", () => ({
 // capture so it can be asserted without a DSN.
 vi.mock("../services/binarySync", () => ({
   syncFromGitHub: vi.fn(),
+  // Stand-in with the real class's shape; the route only needs instanceof.
+  ServerOnlyReleaseError: class ServerOnlyReleaseError extends Error {
+    constructor(
+      readonly release: string,
+      readonly binariesRelease: string,
+    ) {
+      super(
+        `${release} is a server-only release; its agent binaries are in ${binariesRelease}.`,
+      );
+    }
+  },
 }));
 vi.mock("../services/sentry", () => ({
   captureException: vi.fn(),
@@ -316,6 +327,23 @@ describe("agentVersions routes", () => {
       expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
         release_sync_failure_reason: "response-too-large",
       });
+    });
+
+    it("answers 409 naming the binaries release when asked to sync a server-only release", async () => {
+      const { ServerOnlyReleaseError } = await import("../services/binarySync");
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new ServerOnlyReleaseError("v0.118.2", "v0.118.0"),
+      );
+
+      const res = await app.request("/agent-versions/sync-github?version=v0.118.2", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string; binariesRelease?: string };
+      expect(body.error).toMatch(/v0\.118\.2 is a server-only release.*v0\.118\.0/);
+      expect(body.binariesRelease).toBe("v0.118.0");
+      expect(vi.mocked(captureException)).not.toHaveBeenCalled();
     });
 
     it("leaves the pre-existing generic classification alone", async () => {

@@ -47,6 +47,7 @@ Other features (maintenance, automation, event_log, compliance, security, sensit
 
 **Monitors (service, process and alert conditions):**
 To monitor a service, process or alert condition, create its definition with manage_monitor_definitions.
+An app that goes missing or is removed: kind "software_presence", condition { name: "<app>", presence: "not_installed" }.
 Attach the definition to a configuration policy with manage_policy_feature_link,
 featureType "monitors", preserving the link's existing items and inheritance setting.
 manage_service_monitors is read-only and lists effective service/process monitors per device.

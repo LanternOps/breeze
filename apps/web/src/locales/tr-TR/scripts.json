@@ -25,7 +25,8 @@
     },
     "actions": {
       "create": "Otomasyon Oluşturun",
-      "saveChanges": "Değişiklikleri Kaydet"
+      "saveChanges": "Değişiklikleri Kaydet",
+      "backToAutomations": "İşlere Dön"
     }
   },
   "automationForm": {
@@ -434,6 +435,7 @@
       "generic": "Bir hata oluştu"
     },
     "loading": "Uyumluluk verileri yükleniyor...",
+    "backToPolicies": "Politikalara Dön",
     "policyTitle": "Uyumluluk: {{policy}}",
     "policyFallback": "Politika",
     "title": "Uyumluluk Kontrol Paneli",
@@ -491,7 +493,8 @@
     },
     "actions": {
       "create": "Politika Oluştur",
-      "saveChanges": "Değişiklikleri Kaydet"
+      "saveChanges": "Değişiklikleri Kaydet",
+      "backToPolicies": "Politikalara Dön"
     }
   },
   "policyForm": {
@@ -550,7 +553,8 @@
     },
     "actions": {
       "savePolicy": "Kaydetme politikası",
-      "addRule": "Kural Ekle"
+      "addRule": "Kural Ekle",
+      "removeRule": "Kuralı Kaldır"
     },
     "fields": {
       "name": "Politika adı",
@@ -981,6 +985,7 @@
     "loading": "Yürütmeler yükleniyor...",
     "actions": {
       "backToScripts": "Komut Dosyalarına Geri Dön",
+      "backToScript": "Komut Dosyasına Geri Dön",
       "runScript": "Komut Dosyasını Çalıştır"
     },
     "breadcrumb": {

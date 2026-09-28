@@ -131,8 +131,36 @@ type ReleaseArtifactManifest = {
   // BYO signing (Deliverable 1): the release's peeled source commit SHA,
   // recorded so downstream signing workflows can pin their checkout.
   sourceCommit?: unknown;
+  // Server-only hotfix releases (additive, top-level; absent ⇒ "full"). A
+  // server-only release rebuilds only the server images and carries a previous
+  // full release's agent binaries forward: binariesRelease names that release,
+  // binariesSourceCommit its source commit, carriedImages the carried image
+  // digests. Read only through verifyReleaseArtifactManifestIdentity, after the
+  // signature has verified.
+  releaseKind?: unknown;
+  binariesRelease?: unknown;
+  binariesSourceCommit?: unknown;
+  carriedImages?: unknown;
   assets?: unknown;
 };
+
+export type ReleaseKind = "full" | "server-only";
+
+export type VerifiedManifestIdentity = {
+  release: string;
+  repository: string;
+  /** The manifest's source commit; null on manifests predating the field. */
+  sourceCommit: string | null;
+  /** "full" when the manifest carries no releaseKind. */
+  releaseKind: ReleaseKind;
+  /** Server-only only: the full release whose agent binaries this release carries. */
+  binariesRelease?: string;
+  /** Server-only only: that full release's source commit (40-hex). */
+  binariesSourceCommit?: string;
+};
+
+const STABLE_RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 type SelectedReleaseArtifactManifestAsset = ReleaseArtifactManifestAsset & {
   sha256: string;
@@ -611,6 +639,73 @@ export function verifyReleaseArtifactManifestIntegrity(
   return {
     release: manifest.release as string,
     repository: manifest.repository as string,
+  };
+}
+
+/**
+ * Verifies a release manifest's signature and identity, then reports what kind
+ * of release it describes. The order is the contract: nothing in the manifest —
+ * least of all releaseKind/binariesRelease, which a caller may FOLLOW to another
+ * release — is read before the signature verifies and the manifest is bound to
+ * the expected repository (case-insensitive, as GitHub routes) and release tag.
+ *
+ * Full manifests (releaseKind absent or "full") are accepted exactly as the
+ * per-asset verifier accepts them; sourceCommit is reported but not required,
+ * since manifests predating the field are still valid full releases.
+ */
+export function verifyReleaseArtifactManifestIdentity(args: {
+  manifestBytes: Buffer;
+  signatureBytes: Buffer;
+  expectedRepository: string;
+  expectedRelease: string;
+}): VerifiedManifestIdentity {
+  verifyManifestSignature(args.manifestBytes, args.signatureBytes);
+  const manifest = parseManifest(args.manifestBytes);
+  const repository = manifest.repository as string;
+  if (repository.toLowerCase() !== args.expectedRepository.toLowerCase()) {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact manifest repository mismatch: expected ${args.expectedRepository}, got ${repository}`,
+    );
+  }
+  assertStringEqual(manifest.release, args.expectedRelease, "release");
+  const release = manifest.release as string;
+  const sourceCommit =
+    typeof manifest.sourceCommit === "string" ? manifest.sourceCommit : null;
+
+  const kind = manifest.releaseKind ?? "full";
+  if (kind === "full") {
+    return { release, repository, sourceCommit, releaseKind: "full" };
+  }
+  if (kind !== "server-only") {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact manifest for ${release} has an unknown releaseKind ${JSON.stringify(kind)}`,
+    );
+  }
+  const { binariesRelease, binariesSourceCommit } = manifest;
+  if (
+    typeof binariesRelease !== "string" ||
+    !STABLE_RELEASE_TAG.test(binariesRelease) ||
+    binariesRelease === release
+  ) {
+    throw new ReleaseManifestAssetLookupError(
+      `Server-only release manifest for ${release} has an invalid binariesRelease ${JSON.stringify(binariesRelease)}`,
+    );
+  }
+  if (
+    typeof binariesSourceCommit !== "string" ||
+    !FULL_COMMIT_SHA.test(binariesSourceCommit)
+  ) {
+    throw new ReleaseManifestAssetLookupError(
+      `Server-only release manifest for ${release} has an invalid binariesSourceCommit ${JSON.stringify(binariesSourceCommit)}`,
+    );
+  }
+  return {
+    release,
+    repository,
+    sourceCommit,
+    releaseKind: "server-only",
+    binariesRelease,
+    binariesSourceCommit,
   };
 }
 

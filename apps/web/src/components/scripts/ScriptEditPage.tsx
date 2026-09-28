@@ -239,11 +239,12 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         { label: t('scriptEditPage.breadcrumb.scripts'), href: '/scripts' },
         { label: isNew ? t('scriptEditPage.breadcrumb.new') : (script?.name || t('scriptEditPage.breadcrumb.edit')) }
       ]} />
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-4">
           <a
             href="/scripts"
-            className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('scriptEditPage.actions.backToScripts')}
           >
             <ArrowLeft className="h-5 w-5" />
           </a>
@@ -260,7 +261,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           )}
         </div>
         {!isNew && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => void handleDuplicate()}

@@ -35,6 +35,35 @@ describe('run_script with a proposalId', () => {
     expect(check.allowed).toBe(false);
   });
 
+  it('denies with proposal_not_found when the loaded context says so', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId: 'p1', deviceIds: devices }, { proposalDenyReason: 'proposal_not_found' },
+    );
+    expect(check.tier).toBe(4);
+    expect(check.allowed).toBe(false);
+    expect(check.reason).toContain('proposal_not_found');
+    expect(check.reason).not.toContain('proposal_context_missing');
+  });
+
+  it('denies with proposal_review_pending and a poll hint when the review has not completed', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId: 'p1', deviceIds: devices }, { proposalDenyReason: 'proposal_review_pending' },
+    );
+    expect(check.tier).toBe(4);
+    expect(check.allowed).toBe(false);
+    expect(check.reason).toContain('proposal_review_pending');
+    expect(check.reason).toContain('get_script_proposal');
+  });
+
+  it('denies with proposal_review_failed when the review ended negatively', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId: 'p1', deviceIds: devices }, { proposalDenyReason: 'proposal_review_failed' },
+    );
+    expect(check.tier).toBe(4);
+    expect(check.allowed).toBe(false);
+    expect(check.reason).toContain('proposal_review_failed');
+  });
+
   it('leaves an ordinary library run_script untouched — supervised, context ignored', () => {
     const check = checkGuardrails('run_script', { scriptId: 's1', deviceIds: devices });
     expect(check.tier).toBe(3);

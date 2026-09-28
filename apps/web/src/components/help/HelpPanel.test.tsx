@@ -90,3 +90,23 @@ describe('HelpPanel collapsed-shell interactivity', () => {
     expect(shell.className).not.toContain('pointer-events-none');
   });
 });
+
+// #7150: the panel is always mounted, sliding off-screen via translate-x-full
+// when closed. Its shadow-2xl stayed on even off-screen, and once its left
+// edge sat exactly on the viewport's right edge the blur spilled back into
+// view as a grey band on every page. shadow-2xl must only apply while open.
+describe('HelpPanel collapsed-shell shadow (#7150)', () => {
+  it('does not carry a box-shadow class when collapsed', () => {
+    useHelpStore.setState({ isOpen: false });
+    render(<HelpPanel />);
+    const shell = screen.getByTestId('help-panel');
+    expect(shell.className).not.toMatch(/shadow-2xl/);
+  });
+
+  it('carries the box-shadow class when open', () => {
+    useHelpStore.setState({ isOpen: true });
+    render(<HelpPanel />);
+    const shell = screen.getByTestId('help-panel');
+    expect(shell.className).toMatch(/shadow-2xl/);
+  });
+});

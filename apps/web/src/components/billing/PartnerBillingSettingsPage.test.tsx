@@ -21,8 +21,23 @@ function renderPage() {
   return render(<I18nextProvider i18n={i18n}><PartnerBillingSettingsPage /></I18nextProvider>);
 }
 
+// OverflowTabs measures button widths via `offsetWidth`, which jsdom always
+// reports as 0 — against a `clientWidth` of 0 that collapses to "fits 1 tab"
+// (see computeVisible in OverflowTabs.tsx), so every tab past Defaults ends
+// up inside the "More" dropdown in tests. Open it before selecting any tab
+// other than the first.
+async function selectTab(id: string) {
+  const visible = screen.queryByTestId(`billing-settings-tab-${id}`);
+  if (visible?.getAttribute('role') === 'tab') {
+    await userEvent.click(visible);
+    return;
+  }
+  await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
+  await userEvent.click(await screen.findByTestId(`billing-settings-tab-${id}`));
+}
+
 async function gotoDocumentsTab() {
-  await userEvent.click(await screen.findByTestId('billing-settings-tab-documents'));
+  await selectTab('documents');
 }
 
 describe('PartnerBillingSettingsPage', () => {
@@ -31,19 +46,22 @@ describe('PartnerBillingSettingsPage', () => {
     window.location.hash = '';
   });
 
-  it('has four visible tabs in order: Defaults, Documents, Rates, Connections', async () => {
+  it('has four tabs in order: Defaults, Documents, Rates, Connections (Documents onward behind "More" under jsdom)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
+    await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
     expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual(['billing-settings-tab-defaults', 'billing-settings-tab-documents', 'billing-settings-tab-rates', 'billing-settings-tab-connections']);
+    const order = ['billing-settings-tab-defaults', ...['documents', 'rates', 'connections'].map(id => `billing-settings-tab-${id}`)];
+    expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual([order[0]]);
+    expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(order.slice(1));
   });
 
   it('mounts Rates and its work types manager when selected, with row saves only', async () => {
     fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
     renderPage();
-    await userEvent.click(await screen.findByTestId('billing-settings-tab-rates'));
+    await selectTab('rates');
     expect(await screen.findByTestId('billing-rates-tab')).toBeInTheDocument();
     expect(await screen.findByTestId('work-types-card')).toBeInTheDocument();
     expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
@@ -55,7 +73,9 @@ describe('PartnerBillingSettingsPage', () => {
     fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
     renderPage();
     expect(await screen.findByTestId('billing-rates-tab')).toBeInTheDocument();
-    expect(screen.getByTestId('billing-settings-tab-rates')).toHaveAttribute('aria-selected', 'true');
+    // Rates is the active tab but collapsed behind "More" under jsdom; the
+    // trigger relabels itself to the active overflow tab (see OverflowTabs).
+    expect(await screen.findByTestId('billing-settings-tab-more')).toHaveTextContent('Rates');
   });
 
   it('one Save button submits the full payload regardless of which tab is active; markup moved to Catalog', async () => {
@@ -71,7 +91,7 @@ describe('PartnerBillingSettingsPage', () => {
   it('the Connections tab renders the real BillingConnectionsTab, not a placeholder (M6)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
-    await userEvent.click(await screen.findByTestId('billing-settings-tab-connections'));
+    await selectTab('connections');
     expect(await screen.findByTestId('billing-connections-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('billing-connections-tab-placeholder')).not.toBeInTheDocument();
   });
@@ -79,7 +99,7 @@ describe('PartnerBillingSettingsPage', () => {
   it('the Connections tab has no editable fields, so it must not render the Save button either (G2-3)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
-    await userEvent.click(await screen.findByTestId('billing-settings-tab-connections'));
+    await selectTab('connections');
     expect(await screen.findByTestId('billing-connections-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
   });

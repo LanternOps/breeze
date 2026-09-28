@@ -87,6 +87,10 @@ ENV NODE_ENV=production
 ENV API_PORT=3001
 ARG APP_VERSION=0.2.0
 ENV APP_VERSION=${APP_VERSION}
+# Server-only release images bake the binaries release they pair with (empty
+# for full releases); read by services/binarySource.ts. Never set via compose.
+ARG BREEZE_BINARIES_VERSION=""
+ENV BREEZE_BINARIES_VERSION=${BREEZE_BINARIES_VERSION}
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \

@@ -666,7 +666,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         />
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <a href="/alerts/monitors" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
+            <a
+              href="/alerts/monitors"
+              className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+              aria-label={t('monitoring:editor.actions.backToMonitors')}
+            >
               <ArrowLeft className="h-5 w-5" />
             </a>
             <h1 className="text-xl font-semibold tracking-tight">

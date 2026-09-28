@@ -205,4 +205,28 @@ describe('AccountBoardTable', () => {
     expect(within(cardA).getByTestId(`org-board-card-more-${A_ID}`)).toBeInTheDocument();
     expect(within(cardA).getByText('4 open')).toBeInTheDocument();
   });
+
+  // Issue #7149: at exactly 1024px (tablet landscape), the whole /organizations
+  // page scrolled sideways (document.documentElement.scrollWidth was 1281 in a
+  // 1024px viewport — the excess matched the sidebar's width). Root cause,
+  // confirmed by live repro against a running dev stack: this table's
+  // unconditional `min-w-[1040px]` forced a wider box than the page had room
+  // for at that breakpoint, and that excess leaked past ResponsiveTable's own
+  // `overflow-x-auto` wrapper into the document's scrollable width. Every
+  // fix that instead tried to add `min-w-0`/`overflow-hidden` up the ancestor
+  // chain (DashboardLayout's <main>, the flex shell, ResponsiveTable's own
+  // wrappers) was tested live and did NOT stop the leak — only bounding the
+  // table's own min-width did. `min-w-[min(1040px,100%)]` keeps the original
+  // 1040px minimum (and the same rendered width) on any viewport with room for
+  // it, while capping at the container's actual available width otherwise —
+  // verified live at 1024px (scrollWidth back to 1024) and 1440px (table still
+  // renders at its full width, no regression).
+  it('caps its min-width at the container width so a narrow viewport cannot force the whole page to scroll sideways (#7149)', () => {
+    renderTable();
+    const table = desktop().getByTestId('org-board-table');
+    expect(table).toHaveClass('min-w-[min(1040px,100%)]');
+    // Guard against a regression to the old unconditional value, which had no
+    // upper bound and could exceed the page's available width.
+    expect(table.className).not.toMatch(/\bmin-w-\[1040px\]/);
+  });
 });

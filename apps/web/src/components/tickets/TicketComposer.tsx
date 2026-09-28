@@ -154,24 +154,28 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
       data-testid="ticket-composer"
     >
       <div className="flex items-center gap-1 px-3 pt-2">
-        <button
-          type="button"
-          onClick={() => setMode('reply')}
-          aria-selected={isPublic}
-          data-testid="ticket-composer-tab-reply"
-          className={cn('rounded-md px-2.5 py-1 text-xs font-medium', isPublic ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}
-        >
-          {t('ticketComposer.reply')}
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode('internal')}
-          aria-selected={!isPublic}
-          data-testid="ticket-composer-tab-internal"
-          className={cn('rounded-md px-2.5 py-1 text-xs font-medium', !isPublic ? 'bg-warning/20 text-warning' : 'text-muted-foreground hover:text-foreground')}
-        >
-          {t('ticketComposer.internalNote')}
-        </button>
+        <div role="tablist" aria-label={t('ticketComposer.reply')} className="flex items-center gap-1">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isPublic}
+            onClick={() => setMode('reply')}
+            data-testid="ticket-composer-tab-reply"
+            className={cn('rounded-md px-2.5 py-1 text-xs font-medium', isPublic ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}
+          >
+            {t('ticketComposer.reply')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isPublic}
+            onClick={() => setMode('internal')}
+            data-testid="ticket-composer-tab-internal"
+            className={cn('rounded-md px-2.5 py-1 text-xs font-medium', !isPublic ? 'bg-warning/20 text-warning' : 'text-muted-foreground hover:text-foreground')}
+          >
+            {t('ticketComposer.internalNote')}
+          </button>
+        </div>
         {!isPublic && (
           <span className="ml-2 text-xs font-medium text-warning" data-testid="ticket-composer-internal-banner">
             {t('ticketComposer.internalBanner')}
