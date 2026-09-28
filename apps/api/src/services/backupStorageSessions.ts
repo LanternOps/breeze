@@ -51,7 +51,7 @@ import {
   PROVIDER_CONFIG_REF_FIELD,
   materializeBackupStorageCredentials,
 } from './backupCommandCredentials';
-import { recordBackupReadDispatch } from './backupMetrics';
+import { recordBackupReadDispatch, recordStorageSessionMint } from './backupMetrics';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
   STORAGE_SESSION_CALL_BURST,
@@ -211,6 +211,8 @@ export interface BrokeredReadDeps {
   /** Resolves a LOCAL destination reference into the command (a path, never a credential). */
   materializeLocalDestination(payload: Record<string, unknown>, ctx: DeliveryRefreshContext): Promise<Record<string, unknown>>;
   recordDispatch(commandType: string, mode: BackupReadDispatchMode, reason: string): void;
+  /** One storage-session issuance decision (minted, or why not). */
+  recordMint(scope: 'snapshot_read', outcome: 'minted' | 'refused' | 'deferred' | 'legacy', reason: string): void;
   /** Run `fn` inside the delivery path's DB context, or an org-scoped one when none is held. */
   inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T>;
   lookupDeviceOrg(deviceId: string): Promise<string | null>;
@@ -264,6 +266,7 @@ export const defaultBrokeredReadDeps: BrokeredReadDeps = {
   publicOrigins: () => defaultPublicOrigins(),
   materializeLocalDestination: (payload, ctx) => materializeBackupStorageCredentials(payload, ctx),
   recordDispatch: (commandType, mode, reason) => recordBackupReadDispatch(commandType, mode, reason),
+  recordMint: (scope, outcome, reason) => recordStorageSessionMint(scope, outcome, reason),
   inOrgContext: (orgId, fn) => defaultInOrgContext(orgId, fn),
   lookupDeviceOrg: (deviceId) => defaultLookupDeviceOrg(deviceId),
 };
@@ -401,18 +404,22 @@ export async function deliverBrokeredReadCommand(
 
   const decision = await decide(payload, ctx, deps);
   if (decision.mode === 'brokered') {
+    deps.recordMint('snapshot_read', 'minted', 'ok');
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
     return decision.payload;
   }
   if (decision.reason === 'index_unavailable') {
+    deps.recordMint('snapshot_read', 'deferred', decision.reason);
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
     throw new CommandDeliveryDeferredError(DEFERRAL_MESSAGE);
   }
   if (REF_TYPES.has(ctx.type)) {
+    deps.recordMint('snapshot_read', 'refused', decision.reason);
     deps.recordDispatch(ctx.type, 'refused', decision.reason);
     throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
   }
   // VM commands name no destination; they go as queued.
+  deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
   return payload;
 }

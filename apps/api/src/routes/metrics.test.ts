@@ -1622,3 +1622,61 @@ describe('metrics routes', () => {
     });
   });
 });
+
+describe('backup storage-session and helper-capability metrics', () => {
+  beforeEach(() => {
+    resetMetricsForTesting();
+  });
+
+  async function seriesOf(name: string): Promise<Array<{ labels: Record<string, string | number>; value: number }>> {
+    const { metricsRegistry } = await import('../services/metricsRegistry');
+    const metric = metricsRegistry.getSingleMetric(name);
+    expect(metric, name).toBeDefined();
+    const data = await metric!.get();
+    return data.values.map((v) => ({ labels: v.labels as Record<string, string | number>, value: v.value }));
+  }
+
+  it('counts storage-session calls, resolved objects and mints without per-session or per-device labels', async () => {
+    const {
+      recordStorageSessionCall,
+      recordStorageSessionObjects,
+      recordStorageSessionMint,
+    } = await import('../services/backupMetrics');
+    recordStorageSessionCall('snapshot_read', 'resolve', 200);
+    recordStorageSessionCall('snapshot_read', 'renew', 410);
+    recordStorageSessionObjects('snapshot_read', 'GET', 7);
+    recordStorageSessionMint('snapshot_read', 'minted', 'ok');
+    recordStorageSessionMint('snapshot_read', 'refused', 'helper_unsupported');
+
+    const calls = await seriesOf('breeze_backup_storage_session_calls_total');
+    expect(calls).toEqual(expect.arrayContaining([
+      { labels: { scope: 'snapshot_read', op: 'resolve', status: '200' }, value: 1 },
+      { labels: { scope: 'snapshot_read', op: 'renew', status: '410' }, value: 1 },
+    ]));
+    for (const s of calls) expect(Object.keys(s.labels).sort()).toEqual(['op', 'scope', 'status']);
+
+    const objects = await seriesOf('breeze_backup_storage_session_objects_total');
+    expect(objects).toEqual([{ labels: { scope: 'snapshot_read', method: 'GET' }, value: 7 }]);
+
+    const mints = await seriesOf('breeze_backup_storage_session_mint_total');
+    expect(mints).toEqual(expect.arrayContaining([
+      { labels: { scope: 'snapshot_read', outcome: 'minted', reason: 'ok' }, value: 1 },
+      { labels: { scope: 'snapshot_read', outcome: 'refused', reason: 'helper_unsupported' }, value: 1 },
+    ]));
+    for (const s of mints) expect(Object.keys(s.labels).sort()).toEqual(['outcome', 'reason', 'scope']);
+  });
+
+  it('counts backup helper capability regressions by capability only', async () => {
+    const { recordBackupCapabilityRegressed } = await import('../services/backupMetrics');
+    recordBackupCapabilityRegressed('integrity');
+    recordBackupCapabilityRegressed('integrity');
+    recordBackupCapabilityRegressed('write');
+
+    const series = await seriesOf('breeze_backup_capability_regressed_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { capability: 'integrity' }, value: 2 },
+      { labels: { capability: 'write' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels)).toEqual(['capability']);
+  });
+});
