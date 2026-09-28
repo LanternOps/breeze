@@ -132,7 +132,7 @@ describe('backup verification service', () => {
     expect(readiness.riskFactors.some((factor) => factor.code === 'no_verification_history')).toBe(true);
   });
 
-  it('penalizes missing restore proof and surfaces zero-history assigned devices', async () => {
+  it('penalizes missing restore proof exactly once (single -20, no double charge) and surfaces zero-history assigned devices', async () => {
     const orgId = `org-readiness-${Date.now()}`;
     const deviceId = `dev-readiness-${Date.now()}`;
     const assignedDeviceId = `dev-assigned-${Date.now()}`;
@@ -167,7 +167,11 @@ describe('backup verification service', () => {
       verificationOrgById.set(verificationId, orgId);
 
       const readiness = await recomputeRecoveryReadinessForDevice(orgId, deviceId);
-      expect(readiness.readinessScore).toBeLessThan(70);
+      // 100% pass rate, fresh, zero failures, no restore test -> 100 - 20
+      // (single MISSING_RESTORE_PROOF_PENALTY charge) = 80, at/above the 70
+      // low-readiness threshold. Pre-#3970-fix this scored 50 (double-charged
+      // by also zeroing the 30-point restoreQuality band).
+      expect(readiness.readinessScore).toBe(80);
       expect(readiness.riskFactors.some((factor) => factor.code === 'restore_test_missing')).toBe(true);
 
       const rows = await listRecoveryReadiness(orgId);
