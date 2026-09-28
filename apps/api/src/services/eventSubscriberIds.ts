@@ -22,7 +22,7 @@ export const EVENT_SUBSCRIBER_IDS = [
   // AI Suggested Fixes W1 — attach proven fix memory to a newly triggered alert.
   'fix-memory-attach',
   // AI Suggested Fixes W1 — fast path for the fix-outcome state machine
-  // (alert.resolved, alert.triggered). The sweeper is authoritative.
+  // (alert.resolved only). The sweeper is authoritative.
   'fix-outcome-watcher',
   'notification-dispatcher',
   'policy-alert-bridge',

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   flag: vi.fn(async () => true), sig: vi.fn(), partner: vi.fn(async () => 'p-1'), lookup: vi.fn(),
   values: vi.fn(), onConflict: vi.fn(async () => undefined),
+  systemCtx: vi.fn((fn: () => unknown) => fn()),
 }));
 vi.mock('../../db', () => ({
   db: { insert: vi.fn(() => ({ values: (v: unknown) => { h.values(v); return { onConflictDoUpdate: h.onConflict }; } })) },
@@ -14,7 +15,7 @@ vi.mock('./signatureLoader', () => ({
 }));
 vi.mock('./catalog', () => ({ resolveOrgPartnerId: h.partner }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
-vi.mock('../outcomeProbes', () => ({ inSystemDbContext: (fn: () => unknown) => fn() }));
+vi.mock('../outcomeProbes', () => ({ inSystemDbContext: h.systemCtx }));
 
 import { attachProvenFixes, handleAlertTriggeredForFixMemory, memoryRationale } from './attach';
 
@@ -59,6 +60,22 @@ describe('attachProvenFixes', () => {
     expect(h.lookup).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', partnerId: 'p-1', limit: 3 }));
     vi.clearAllMocks();
     await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: 'org-1', source: 's', priority: 'normal', payload: {}, metadata: { timestamp: '' } } as never);
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits cheapest-first: a malformed event opens no DB context at all (I5)', async () => {
+    await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: 'org-1', source: 's', priority: 'normal', payload: { alertId: 42 }, metadata: { timestamp: '' } } as never);
+    await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: '', source: 's', priority: 'normal', payload: { alertId: 'a-1' }, metadata: { timestamp: '' } } as never);
+    expect(h.systemCtx).not.toHaveBeenCalled();
+    expect(h.flag).not.toHaveBeenCalled();
+  });
+
+  it('checks the ML flag before any signature, partner or lookup query (I5)', async () => {
+    h.flag.mockResolvedValueOnce(false);
+    await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: 'org-1', source: 's', priority: 'normal', payload: { alertId: 'a-1' }, metadata: { timestamp: '' } } as never);
+    expect(h.flag).toHaveBeenCalledWith('org-1', 'ml.remediation_suggestions.enabled');
+    expect(h.sig).not.toHaveBeenCalled();
+    expect(h.partner).not.toHaveBeenCalled();
     expect(h.lookup).not.toHaveBeenCalled();
   });
 });

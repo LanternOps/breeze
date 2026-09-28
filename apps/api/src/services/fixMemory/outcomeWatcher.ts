@@ -361,9 +361,10 @@ async function outcomeIdsWhere(condition: SQL): Promise<string[]> {
 }
 
 /**
- * Durable subscriber 'fix-outcome-watcher' on alert.resolved / alert.triggered
- * (fast path). The 5-minute sweeper
- * is authoritative; this only shortens latency. Gates on the PUBLISHED
+ * Durable subscriber 'fix-outcome-watcher' on alert.resolved (fast path). The
+ * 5-minute sweeper is authoritative; this only shortens latency. alert.triggered
+ * is deliberately not handled: a recurrence only decides a hold at its end,
+ * where the sweeper scans for it anyway. Gates on the PUBLISHED
  * payload (eventBus contract: publishers may publish before their commit), and
  * every write goes through the CAS, so redelivery is harmless. Throws on DB
  * failure so queue mode retries.
@@ -388,15 +389,6 @@ export async function handleFixOutcomeEvent(event: BreezeEvent): Promise<void> {
       : undefined;
     for (const id of await outcomeIdsWhere(and(eq(fixOutcomes.alertId, alertId), eq(fixOutcomes.state, 'awaiting_recovery'))!)) {
       await advanceOutcome(id, { now, overrides: { alert } });
-    }
-    return;
-  }
-
-  if (event.type === 'alert.triggered') {
-    const deviceId = typeof p.deviceId === 'string' ? p.deviceId : null;
-    if (!deviceId) return;
-    for (const id of await outcomeIdsWhere(and(eq(fixOutcomes.deviceId, deviceId), eq(fixOutcomes.state, 'holding'))!)) {
-      await advanceOutcome(id, { now });
     }
   }
 }

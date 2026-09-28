@@ -199,9 +199,12 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     id: 'fix-outcome-watcher',
     // AI Suggested Fixes W1 — fast path for fix_outcomes. Gates on the
     // published payload; every write is a CAS, so redelivery is a no-op.
-    // Deliberately NOT script.* (decision D-a: inline hook instead).
+    // Deliberately NOT script.* (decision D-a: inline hook instead), and NOT
+    // alert.triggered: this runs inline in publishEvent on a second pooled
+    // connection, recurrence only decides anything at hold end, and the
+    // 5-minute sweeper already scans for it there.
     // Lazy for the same worker-closure reason as the subscribers above.
-    eventTypes: ['alert.resolved', 'alert.triggered'],
+    eventTypes: ['alert.resolved'],
     handler: async (event: BreezeEvent) => {
       const { handleFixOutcomeEvent } = await import('./fixMemory/outcomeWatcher');
       return handleFixOutcomeEvent(event);

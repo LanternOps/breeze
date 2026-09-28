@@ -213,9 +213,13 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
     await handleFixOutcomeEvent({ ...evt, payload: { resolvedAt: at(2).toISOString() } } as unknown as BreezeEvent);
 
+    // alert.triggered is not a watcher event any more (I5): the sweeper owns recurrence.
+    rows.push([{ id: 'o-1' }], [{ ...awaiting, state: 'holding' }], [{ orgId: 'org-1' }]);
+    await handleFixOutcomeEvent({ ...evt, type: 'alert.triggered', payload: { alertId: 'a-2', deviceId: 'd-1' } } as unknown as BreezeEvent);
+
     expect(transitionMock).not.toHaveBeenCalled();
-    // Neither branch touched the db: both seeded 3-row batches are still queued.
-    expect(rows.length).toBe(6);
+    // No branch touched the db: all three seeded 3-row batches are still queued.
+    expect(rows.length).toBe(9);
   });
 });
 
