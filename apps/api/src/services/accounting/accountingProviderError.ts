@@ -200,6 +200,11 @@ export function providerRateLimitedTryAgainMessage(label: string, source: Accoun
   return `${throttlePrefix(label, source)}; try again shortly`;
 }
 
+/** A scope/permission refusal: only reconnecting (and approving every permission) fixes it. */
+export function providerPermissionMessage(label: string): string {
+  return `${label} did not grant Breeze access to this data — reconnect ${label} and approve every requested permission`;
+}
+
 /**
  * Structured refusals a provider may attach as `providerCode` on a `kind:
  * 'validation'` (or, for remote_missing, `kind: 'not_found'`) error (Xero W03).

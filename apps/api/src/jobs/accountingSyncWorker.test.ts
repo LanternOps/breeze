@@ -589,6 +589,14 @@ describe('mapping jobs and recovery sweep', () => {
     await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
     expect(captureExceptionMock).toHaveBeenCalled();
   });
+  it.each<AccountingMappingErrorCode>(['duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission'])(
+    'does not retry user-resolvable %s and does not report it to Sentry (Xero W03)',
+    async (code) => {
+      syncMappingMock.mockRejectedValueOnce(new AccountingMappingError(code, 409, 'x'));
+      await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    },
+  );
   it('does not retry a remote write whose local persistence failed', async () => {
     syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('record_failed', 502, 'remote write landed'));
     await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
