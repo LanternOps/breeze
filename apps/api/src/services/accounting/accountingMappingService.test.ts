@@ -1656,13 +1656,31 @@ describe('provider refusals the user resolves (Xero W03)', () => {
     });
   });
 
-  it('duplicate_name → 409 with the name in details, persisted, no Sentry (Review Focus 2)', async () => {
+  it('duplicate_name on a CREATE → 409 link-instead advice with the name in details, persisted, no Sentry (Review Focus 2)', async () => {
+    // No remote ref yet: Breeze was creating, so linking to the existing record is the right advice.
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
+    });
     upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_name'));
     const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
     expect(err).toMatchObject({
       code: 'duplicate_name', status: 409, details: { remoteName: 'Acme' },
       message: 'Xero already has a customer named "Acme" — link this organization to it instead of creating a new one',
     });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('duplicate_name on an UPDATE → 409 rename advice, NO details (a Link-it would orphan the linked record)', async () => {
+    // beforeEach's row is already linked to xc-1: the rename collided with a different, unlinked contact.
+    upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_name'));
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: 'duplicate_name', status: 409,
+      message: 'Xero already has a different customer named "Acme" — rename this organization or that Xero customer, then sync again',
+    });
+    expect((err as AccountingMappingError).details).toBeUndefined();
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
   });

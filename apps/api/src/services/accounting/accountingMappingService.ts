@@ -1223,14 +1223,27 @@ function buildItemPayload(
  * persisted on the row, answered 409, terminal in the worker, never sent to Sentry.
  * Null for everything else — including every QuickBooks fault, which carries its own
  * fault number in providerCode, never one of these neutral codes.
+ *
+ * `isUpdate` — the mapping already carried a remote ref when this sync started.
+ * A `duplicate_name` then means the rename collided with a DIFFERENT, unlinked
+ * provider record: nothing is being created, and re-pointing the mapping at that
+ * record would orphan the one Breeze owns. So the link-instead advice and
+ * `details.remoteName` appear ONLY when Breeze was creating; an update gets
+ * rename advice with no `details`. W03b must offer "Link it" only when
+ * `details.remoteName` is present.
  */
 function providerRefusal(
-  err: unknown, entityType: MappingEntityType, providerLabel: string, breezeName: string,
+  err: unknown, entityType: MappingEntityType, providerLabel: string, breezeName: string, isUpdate: boolean,
 ): AccountingMappingError | null {
   const noun = entityType === 'org' ? 'customer' : 'item';
   const local = entityType === 'org' ? 'organization' : 'catalog item';
   switch (refusalCodeOf(err)) {
     case 'duplicate_name':
+      if (isUpdate) {
+        return new AccountingMappingError('duplicate_name', 409,
+          `${providerLabel} already has a different ${noun} named "${breezeName}" — rename this ${local} or that ${providerLabel} ${noun}, then sync again`,
+          { cause: err });
+      }
       return new AccountingMappingError('duplicate_name', 409,
         `${providerLabel} already has a ${noun} named "${breezeName}" — link this ${local} to it instead of creating a new one`,
         { details: { remoteName: breezeName }, cause: err });
@@ -1474,7 +1487,9 @@ async function syncMappedEntityUnderLease(
     // as a transient failure — the row is marked `error` so it never reads as
     // silently stuck — but no Sentry event, and a typed 429 the worker delays on
     // and the route answers with Retry-After.
-    const refusal = providerRefusal(err, breezeEntityType, providerLabel, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name);
+    const refusal = providerRefusal(
+      err, breezeEntityType, providerLabel, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name, existingRef !== null,
+    );
     const retryAfterMs = refusal ? null : rateLimitRetryAfterMs(err);
     const throttleSource = rateLimitSourceOf(err) ?? undefined;
     const message = refusal?.message ?? (retryAfterMs !== null
