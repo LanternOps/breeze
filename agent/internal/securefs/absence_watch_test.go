@@ -18,7 +18,21 @@ type absenceReport struct {
 	// it. It wraps the original not-exist error and says what the watcher
 	// actually observed (probe count, continuous span, largest probe gap).
 	persistent error
+	// persistentEvidence is what the watch observed for persistent; nil when
+	// persistent is nil.
+	persistentEvidence *absenceEvidence
+	// excused lists absences that outlasted the recheck window but that the
+	// caller's excuse attributed to something other than a publication gap
+	// (see watchForAbsenceExcusing). Each one reappeared within
+	// absenceCeiling of its first miss.
+	excused []string
 }
+
+// absenceExcuse is asked about an absence that outlasted the recheck window.
+// firstMiss and lastMiss are when the first and last not-exist probes of that
+// absence were ISSUED. It returns why the absence is not a publication gap,
+// or false to let it stand as persistent.
+type absenceExcuse func(firstMiss, lastMiss time.Time) (reason string, ok bool)
 
 const (
 	// absenceMaxProbeGap is the largest interval between two consecutive
@@ -55,6 +69,14 @@ func watchForAbsence(probe func() error, stop <-chan struct{}, recheck time.Dura
 }
 
 func watchForAbsenceWith(probe func() error, stop <-chan struct{}, recheck time.Duration, clock absenceClock) absenceReport {
+	return watchForAbsenceExcusing(probe, stop, recheck, clock, nil)
+}
+
+// watchForAbsenceExcusing is watchForAbsenceWith plus excuse, which may
+// reclassify an absence that outlasted the recheck window. An excused absence
+// must still reappear within absenceCeiling of its first miss, or it is
+// persistent after all. A nil excuse excuses nothing.
+func watchForAbsenceExcusing(probe func() error, stop <-chan struct{}, recheck time.Duration, clock absenceClock, excuse absenceExcuse) absenceReport {
 	var report absenceReport
 	for {
 		select {
@@ -62,22 +84,50 @@ func watchForAbsenceWith(probe func() error, stop <-chan struct{}, recheck time.
 			return report
 		default:
 		}
+		issued := clock.now()
 		err := probe()
 		if !errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if recheck <= 0 {
 			report.persistent = err
+			report.persistentEvidence = &absenceEvidence{probes: 1, firstMiss: issued, lastMiss: issued}
 			return report
 		}
 		evidence, present := recheckAbsence(probe, recheck, clock)
+		evidence.firstMiss = issued
 		if present {
 			report.transient++
 			continue
 		}
+		if excuse != nil {
+			if reason, ok := excuse(evidence.firstMiss, evidence.lastMiss); ok {
+				if awaitPresence(probe, clock, issued.Add(absenceCeiling)) {
+					report.excused = append(report.excused, fmt.Sprintf("%s (%s)", reason, evidence))
+					continue
+				}
+				report.persistent = fmt.Errorf("%w (%s; %s, but it did not reappear within %v of the first miss)",
+					err, evidence, reason, absenceCeiling)
+				report.persistentEvidence = &evidence
+				return report
+			}
+		}
 		report.persistent = fmt.Errorf("%w (%s)", err, evidence)
+		report.persistentEvidence = &evidence
 		return report
 	}
+}
+
+// awaitPresence re-probes every few milliseconds until the destination exists
+// or deadline passes.
+func awaitPresence(probe func() error, clock absenceClock, deadline time.Time) bool {
+	for clock.now().Before(deadline) {
+		if !errors.Is(probe(), fs.ErrNotExist) {
+			return true
+		}
+		clock.sleep(5 * time.Millisecond)
+	}
+	return false
 }
 
 // absenceEvidence is what one recheck observed before giving up.
@@ -86,6 +136,8 @@ type absenceEvidence struct {
 	continuous time.Duration // longest span of densely sampled absence
 	elapsed    time.Duration // wall-clock time since the first miss
 	maxGap     time.Duration // largest interval between consecutive probes
+	firstMiss  time.Time     // when the first missing probe was issued
+	lastMiss   time.Time     // when the last missing probe was issued
 }
 
 func (e absenceEvidence) String() string {
@@ -111,6 +163,7 @@ func recheckAbsence(probe func() error, window time.Duration, clock absenceClock
 	spanStart, last := first, first
 	for delay := 50 * time.Microsecond; ; delay *= 2 {
 		clock.sleep(min(delay, 5*time.Millisecond))
+		issued := clock.now()
 		err := probe()
 		now := clock.now()
 		evidence.probes++
@@ -121,6 +174,7 @@ func recheckAbsence(probe func() error, window time.Duration, clock absenceClock
 		if !errors.Is(err, fs.ErrNotExist) {
 			return evidence, true
 		}
+		evidence.lastMiss = issued
 		if gap > absenceMaxProbeGap {
 			spanStart = now
 		}
@@ -129,4 +183,25 @@ func recheckAbsence(probe func() error, window time.Duration, clock absenceClock
 			return evidence, false
 		}
 	}
+}
+
+// publishRecord is one call to publishTemporary as the Windows concurrency
+// test observed it: when it was entered, when it returned, and its result.
+type publishRecord struct {
+	start, end time.Time
+	err        error
+}
+
+// publishesCompletedWithin counts successful publishes that RETURNED strictly
+// between firstMiss and lastMiss. Each one is a rename whose post-condition
+// (the destination name refers to the published file) held before a lookup
+// issued later, the lastMiss probe, still answered not-exist.
+func publishesCompletedWithin(log []publishRecord, firstMiss, lastMiss time.Time) int {
+	n := 0
+	for _, p := range log {
+		if p.err == nil && p.end.After(firstMiss) && p.end.Before(lastMiss) {
+			n++
+		}
+	}
+	return n
 }

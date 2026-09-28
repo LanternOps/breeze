@@ -3,6 +3,7 @@
 package securefs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -270,50 +271,137 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 // So a miss that a re-probe contradicts within the window is tolerated.
 //
 // #6176 asked whether the rarer "stayed absent past the recheck" failure
-// (merge-queue runs, ~5%) was a real publication gap. It is not one in
-// installFile: in the success path the destination is touched by exactly one
-// NtSetInformationFile rename, and this test asserts all 200 publishes
-// succeeded, so no cleanup or retry path ran. On a Windows Server 2022 lab
-// host, 20,000 publishes unloaded and 32,000 under CPU pressure produced zero
-// not-found answers of any kind. What the old watcher could not tell apart was
-// a starved reader: a descheduled re-probe that also landed on the lookup race
-// was reported as 100ms of absence on the strength of two samples. The watch
-// (absence_watch_test.go) now only claims continuity across densely spaced
-// probes, fails any absence every probe agrees on for absenceCeiling, and puts
-// probe count, continuous span and largest gap in the failure text, so a
-// future failure says which of the two it was.
+// (merge-queue runs, ~5%) was a real publication gap. In the success path
+// installFile touches the destination with exactly one NtSetInformationFile
+// rename, and this test asserts all 200 publishes succeeded, so no cleanup or
+// retry path ran. On a Windows Server 2022 lab host, 20,000 publishes unloaded
+// and 32,000 under CPU pressure produced zero not-found answers of any kind.
+// #7018 made the watch claim continuity only across densely spaced probes. The
+// failures that followed (#7159, #7290, #7304, #7343; all on the
+// windows-2025 runner image) were dense: 25 probes over ~100ms, the largest
+// gap under 6ms, every one answering ERROR_FILE_NOT_FOUND. So the reader was
+// not starved; the by-name lookup really did miss for 100ms.
 //
-// The budget keeps the assertion discriminating: a real publication gap (a
-// regression to delete-then-rename, or copy-into-place) opens a window on every
-// one of the 200 publishes, and the tight reader loop observes it far more than
-// transientMissBudget times. A destination that stays absent past the recheck
-// window fails outright. rename(2) on unix IS linearizable, so the unix twin in
-// path_unix_boundary_test.go stays strict.
+// A 100ms by-name miss is only a publication gap if no publish landed inside
+// it. The test therefore records every publish (publishLog). A successful
+// rename that RETURNED between the first and the last missing probe had
+// already made the destination name refer to its file, and nothing in
+// installFile's success path removes that name again; a lookup issued after
+// it that still misses contradicts the rename's own post-condition. That is the
+// lookup path lagging behind the namespace, which no publisher can prevent,
+// so such an absence is excused (at most lookupLagBudget per run) provided the
+// destination reappears within absenceCeiling. An absence with no publish
+// completing inside it fails as before, now naming how many publishes were in
+// flight at the first miss and how long before it the last one returned, so
+// the next failure distinguishes a stall mid-rename from a removal.
+//
+// The budgets keep the assertion discriminating, and
+// TestInstallFileConcurrentReplacementDetectsAPublicationGap proves it: a real
+// publication gap (a regression to delete-then-rename, or copy-into-place)
+// opens a window on every one of the 200 publishes, and the tight reader loop
+// observes it far more than transientMissBudget times. rename(2) on unix IS
+// linearizable, so the unix twin in path_unix_boundary_test.go stays strict.
 const (
 	transientMissRecheck = 100 * time.Millisecond
 	transientMissBudget  = 3
+	lookupLagBudget      = 1
 )
 
-// Concurrent publication of the same destination must never expose a moment
-// where the destination is absent or partially written, beyond the transient
-// by-name lookup race documented on transientMissBudget.
-func TestInstallFileConcurrentReplacement(t *testing.T) {
+// publishFunc is publishTemporary's signature.
+type publishFunc = func(handle, parent windows.Handle, name string) error
+
+// publishLog records every publishTemporary call made during a test.
+type publishLog struct {
+	mu      sync.Mutex
+	records []publishRecord
+}
+
+func (l *publishLog) wrap(publish publishFunc) publishFunc {
+	return func(handle, parent windows.Handle, name string) error {
+		start := time.Now()
+		err := publish(handle, parent, name)
+		end := time.Now()
+		l.mu.Lock()
+		l.records = append(l.records, publishRecord{start: start, end: end, err: err})
+		l.mu.Unlock()
+		return err
+	}
+}
+
+func (l *publishLog) snapshot() []publishRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]publishRecord(nil), l.records...)
+}
+
+// excuse is the absenceExcuse for the concurrency test: an absence is not a
+// publication gap when a successful publish returned inside it.
+func (l *publishLog) excuse(firstMiss, lastMiss time.Time) (string, bool) {
+	n := publishesCompletedWithin(l.snapshot(), firstMiss, lastMiss)
+	if n == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("lookup missed after %d publish(es) had returned inside the absence", n), true
+}
+
+// describe says what the publishers were doing around an unexcused absence.
+func (l *publishLog) describe(firstMiss, lastMiss time.Time) string {
+	records := l.snapshot()
+	inFlight := 0
+	var lastSuccess time.Time
+	for _, p := range records {
+		if p.start.Before(firstMiss) && p.end.After(firstMiss) {
+			inFlight++
+		}
+		if p.err == nil && !p.end.After(firstMiss) && p.end.After(lastSuccess) {
+			lastSuccess = p.end
+		}
+	}
+	since := "no publish had returned yet"
+	if !lastSuccess.IsZero() {
+		since = fmt.Sprintf("the last successful publish returned %v before it", firstMiss.Sub(lastSuccess))
+	}
+	return fmt.Sprintf("%d publish(es) in flight when the first miss was issued, %d returned inside the absence, %s",
+		inFlight, publishesCompletedWithin(records, firstMiss, lastMiss), since)
+}
+
+// replacementRun is what one concurrent-replacement scenario observed.
+type replacementRun struct {
+	dest      string
+	watch     absenceReport
+	succeeded int64
+	firstErr  any
+	log       *publishLog
+}
+
+// runConcurrentReplacement has 8 writers publish 25 files each onto one
+// destination while a reader watches it by name. mutate, when non-nil, wraps
+// the real publish so a control can inject a publication gap.
+func runConcurrentReplacement(t *testing.T, mutate func(dest string, publish publishFunc) publishFunc) replacementRun {
+	t.Helper()
 	base := t.TempDir()
 	dest := filepath.Join(base, "file.txt")
 	if err := os.WriteFile(dest, []byte("payload-seed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	run := replacementRun{dest: dest, log: &publishLog{}}
+	orig := publishTemporary
+	t.Cleanup(func() { publishTemporary = orig })
+	publish := orig
+	if mutate != nil {
+		publish = mutate(dest, orig)
+	}
+	publishTemporary = run.log.wrap(publish)
 
 	stop := make(chan struct{})
 	var readerWG sync.WaitGroup
 	readerWG.Add(1)
-	var watch absenceReport
 	go func() {
 		defer readerWG.Done()
-		watch = watchForAbsence(func() error {
+		run.watch = watchForAbsenceExcusing(func() error {
 			_, err := os.Stat(dest)
 			return err
-		}, stop, transientMissRecheck)
+		}, stop, transientMissRecheck, absenceClock{now: time.Now, sleep: time.Sleep}, run.log.excuse)
 	}()
 
 	var succeeded atomic.Int64
@@ -334,41 +422,98 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	close(stop)
+	readerWG.Wait()
+	run.succeeded = succeeded.Load()
+	run.firstErr = firstErr.Load()
+	return run
+}
+
+// errPublicationBroken marks a verdict about failed publishes rather than about
+// what the reader saw.
+var errPublicationBroken = errors.New("publication is broken")
+
+// verdict applies the budgets documented on transientMissBudget.
+func (r replacementRun) verdict() error {
 	// Without this the whole test passes vacuously when every publish fails:
 	// the seed file simply stays put and the assertions below still hold. The
 	// error text is reported so the log names the actual NTSTATUS.
-	if succeeded.Load() != 200 {
-		t.Fatalf("only %d of 200 concurrent installs succeeded; publication is broken. First failure: %v",
-			succeeded.Load(), firstErr.Load())
+	if r.succeeded != 200 {
+		return fmt.Errorf("only %d of 200 concurrent installs succeeded; %w. First failure: %v",
+			r.succeeded, errPublicationBroken, r.firstErr)
 	}
-	close(stop)
-	readerWG.Wait()
+	if r.watch.persistent != nil {
+		ev := r.watch.persistentEvidence
+		finalState := "present"
+		if _, err := os.Stat(r.dest); err != nil {
+			finalState = err.Error()
+		}
+		return fmt.Errorf("destination vanished during concurrent replacement and stayed absent (recheck %v, ceiling %v): %v; %s; after the run the destination is %s",
+			transientMissRecheck, absenceCeiling, r.watch.persistent, r.log.describe(ev.firstMiss, ev.lastMiss), finalState)
+	}
+	if r.watch.transient > transientMissBudget {
+		return fmt.Errorf("destination was momentarily absent %d times during 200 concurrent replacements (budget %d); "+
+			"publication has a gap, not the rare NTFS lookup race", r.watch.transient, transientMissBudget)
+	}
+	if len(r.watch.excused) > lookupLagBudget {
+		return fmt.Errorf("destination lookups lagged behind completed publishes %d times (budget %d): %v",
+			len(r.watch.excused), lookupLagBudget, r.watch.excused)
+	}
+	return nil
+}
 
-	if watch.persistent != nil {
-		t.Fatalf("destination vanished during concurrent replacement and stayed absent (recheck %v, ceiling %v): %v",
-			transientMissRecheck, absenceCeiling, watch.persistent)
+// Concurrent publication of the same destination must never expose a moment
+// where the destination is absent or partially written, beyond the transient
+// by-name lookup race documented on transientMissBudget.
+func TestInstallFileConcurrentReplacement(t *testing.T) {
+	run := runConcurrentReplacement(t, nil)
+	if err := run.verdict(); err != nil {
+		t.Fatal(err)
 	}
-	if watch.transient > transientMissBudget {
-		t.Fatalf("destination was momentarily absent %d times during 200 concurrent replacements (budget %d); "+
-			"publication has a gap, not the rare NTFS lookup race", watch.transient, transientMissBudget)
-	}
-	if watch.transient > 0 {
+	if run.watch.transient > 0 {
 		t.Logf("tolerated %d transient not-found answer(s) from os.Stat racing the replace (budget %d, #5705)",
-			watch.transient, transientMissBudget)
+			run.watch.transient, transientMissBudget)
 	}
-	got, err := os.ReadFile(dest)
+	for _, excused := range run.watch.excused {
+		t.Logf("tolerated a by-name lookup lagging behind a completed publish (budget %d, #6176): %s",
+			lookupLagBudget, excused)
+	}
+	got, err := os.ReadFile(run.dest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) == 0 {
 		t.Fatal("destination was left empty by concurrent replacement")
 	}
-	entries, err := os.ReadDir(base)
+	entries, err := os.ReadDir(filepath.Dir(run.dest))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("concurrent replacement left temporaries behind: %v", entries)
+	}
+}
+
+// Control for the budgets above, including the lookup-lag excuse (#6176): a
+// publish that removes the destination before renaming over it is exactly the
+// publication gap the test exists to catch, and it must still fail the
+// verdict, and fail it on what the reader saw rather than on failed installs.
+// The 2ms pause stands in for any work between the delete and the rename.
+func TestInstallFileConcurrentReplacementDetectsAPublicationGap(t *testing.T) {
+	run := runConcurrentReplacement(t, func(dest string, publish publishFunc) publishFunc {
+		return func(handle, parent windows.Handle, name string) error {
+			_ = os.Remove(dest)
+			time.Sleep(2 * time.Millisecond)
+			return publish(handle, parent, name)
+		}
+	})
+	err := run.verdict()
+	if err == nil {
+		t.Fatalf("a delete-then-rename publish passed the concurrent replacement verdict (transient %d, excused %d)",
+			run.watch.transient, len(run.watch.excused))
+	}
+	if errors.Is(err, errPublicationBroken) {
+		t.Fatalf("control is not discriminating: the injected gap broke the installs instead of being observed: %v", err)
 	}
 }
 
