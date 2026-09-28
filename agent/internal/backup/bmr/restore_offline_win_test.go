@@ -2,6 +2,7 @@ package bmr
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,5 +250,131 @@ func TestSelectOfflineHives_CopyFailureLeavesTreeUntouched(t *testing.T) {
 		if b, _ := os.ReadFile(filepath.Join(cfg, h)); string(b) != "tree-"+h {
 			t.Errorf("%s = %q, want the tree hive", h, b)
 		}
+	}
+}
+
+// #5397 follow-up: under VSS the system-state artifacts are the shadow copy's
+// hive FILES plus their .LOG1/.LOG2 (registry/<HIVE>.LOG1), not reg-save
+// output. A lazily reconciled primary is only complete together with its
+// logs, so the all-or-nothing fallback must install each artifact hive's own
+// logs next to it — never the tree's stale ones, never none when the
+// artifact carries them.
+func TestSelectOfflineHives_FallbackInstallsTheArtifactsOwnLogs(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM") // SECURITY missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	_ = os.WriteFile(filepath.Join(cfg, "SYSTEM.LOG1"), []byte("tree-log"), 0o600)
+	_ = os.WriteFile(filepath.Join(cfg, "SAM.LOG2"), []byte("tree-log"), 0o600)
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	for _, l := range []string{"SYSTEM.LOG1", "SYSTEM.LOG2", "SECURITY.LOG1"} {
+		if err := os.WriteFile(filepath.Join(staging, "registry", l), []byte("artifact-"+l), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := selectOfflineHives(root, staging); err != nil {
+		t.Fatalf("selectOfflineHives: %v", err)
+	}
+	for _, l := range []string{"SYSTEM.LOG1", "SYSTEM.LOG2", "SECURITY.LOG1"} {
+		if b, _ := os.ReadFile(filepath.Join(cfg, l)); string(b) != "artifact-"+l {
+			t.Errorf("%s = %q, want the artifact's own log", l, b)
+		}
+	}
+	// SAM's artifact carries no logs: the tree's stale SAM.LOG2 must be gone,
+	// not left to be replayed against the artifact hive.
+	for _, l := range []string{"SAM.LOG1", "SAM.LOG2", "SOFTWARE.LOG1", "SECURITY.LOG2"} {
+		if _, err := os.Stat(filepath.Join(cfg, l)); !os.IsNotExist(err) {
+			t.Errorf("%s must not exist after the fallback (err=%v)", l, err)
+		}
+	}
+	entries, _ := os.ReadDir(cfg)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".brz-fallback-tmp") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+// A log artifact that is present but cannot be copied fails the fallback
+// before the tree is touched.
+func TestSelectOfflineHives_UnreadableArtifactLogLeavesTreeUntouched(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM") // SECURITY missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	_ = os.WriteFile(filepath.Join(cfg, "SYSTEM.LOG1"), []byte("tree-log"), 0o600)
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	if err := os.MkdirAll(filepath.Join(staging, "registry", "SAM.LOG1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SAM.LOG1") {
+		t.Fatalf("err = %v, want a SAM.LOG1 copy failure", err)
+	}
+	entries, _ := os.ReadDir(cfg)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "SAM,SOFTWARE,SYSTEM,SYSTEM.LOG1" {
+		t.Fatalf("config dir = %v, want the untouched tree", names)
+	}
+}
+
+// Review item 2: the swap must install every artifact log first, then the
+// primaries of hives the tree still had, and the tree-MISSING primaries
+// strictly last. A failure anywhere earlier then leaves a tree-missing hive
+// still missing, so a retry re-runs the whole fallback instead of accepting a
+// dirty artifact primary that never got its logs.
+func TestSelectOfflineHives_FailedLogRenameLeavesTreeMissingHiveAbsent(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM", "SECURITY") // SYSTEM missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM.LOG1"), []byte("artifact-SYSTEM.LOG1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var renamed []string
+	renameHive = func(from, to string) error {
+		if filepath.Base(to) == "SYSTEM.LOG1" {
+			return errors.New("injected rename failure")
+		}
+		renamed = append(renamed, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SYSTEM.LOG1") {
+		t.Fatalf("err = %v, want the injected SYSTEM.LOG1 rename failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !os.IsNotExist(err) {
+		t.Fatalf("config\\SYSTEM exists after a failed swap (renamed before the failure: %v); a retry would accept a dirty primary without its logs", renamed)
+	}
+	entries, _ := os.ReadDir(cfg)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".brz-fallback-tmp") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+// The full order, observed through the seam: logs, then tree-present
+// primaries, then tree-missing primaries.
+func TestSelectOfflineHives_RenameOrder(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM") // SYSTEM and SECURITY missing
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	for _, l := range []string{"SYSTEM.LOG1", "SAM.LOG2"} {
+		_ = os.WriteFile(filepath.Join(staging, "registry", l), []byte("artifact-"+l), 0o600)
+	}
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var order []string
+	renameHive = func(from, to string) error {
+		order = append(order, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+	if _, err := selectOfflineHives(root, staging); err != nil {
+		t.Fatalf("selectOfflineHives: %v", err)
+	}
+	want := "SYSTEM.LOG1,SAM.LOG2,SOFTWARE,SAM,SYSTEM,SECURITY"
+	if got := strings.Join(order, ","); got != want {
+		t.Errorf("rename order = %s, want %s", got, want)
 	}
 }

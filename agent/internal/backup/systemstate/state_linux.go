@@ -22,6 +22,11 @@ func NewCollector() Collector {
 	return &LinuxCollector{}
 }
 
+// newCollector ignores opts: only the Windows collector uses them.
+func newCollector(_ CollectOptions) Collector {
+	return &LinuxCollector{}
+}
+
 // CollectState gathers all Linux system state artifacts into stagingDir.
 func (c *LinuxCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
 	hostname, _ := os.Hostname()

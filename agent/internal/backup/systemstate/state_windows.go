@@ -3,6 +3,8 @@
 package systemstate
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,12 +13,17 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/vss"
+	"golang.org/x/sys/windows"
 )
 
 // WindowsCollector gathers Windows system state: registry hives, boot config,
 // driver inventory, certificates, services, scheduled tasks, firewall rules,
 // Windows features, and IIS configuration.
-type WindowsCollector struct{}
+type WindowsCollector struct {
+	opts CollectOptions
+}
 
 // windowsRequiredSteps are the collection steps whose failure makes a Windows
 // system_image unbootable/unrestorable. If any of these fails, CollectState
@@ -29,7 +36,46 @@ var windowsRequiredSteps = map[string]bool{
 
 // NewCollector returns a WindowsCollector.
 func NewCollector() Collector {
-	return &WindowsCollector{}
+	return newCollector(CollectOptions{})
+}
+
+// newCollector defaults opts.SnapshotVolume to a real VSS shadow copy of one
+// volume, so a run without a run-wide VSS session (a system_image run with no
+// paths, the IPC system_state_collect) still copies the registry hives from a
+// shadow copy instead of spawning `reg.exe save` (#5397).
+func newCollector(opts CollectOptions) Collector {
+	if opts.SnapshotVolume == nil {
+		opts.SnapshotVolume = snapshotVolume
+	}
+	return &WindowsCollector{opts: opts}
+}
+
+// snapshotVolumeTimeout bounds the registry step's own snapshot. Creation is
+// normally ~1 s; a VSS subsystem that has not answered by then is wedged, and
+// the step falls back to reg.exe rather than stall the backup.
+const snapshotVolumeTimeout = 3 * time.Minute
+
+// snapshotVolume takes a VSS shadow copy of volume ("C:") through the same
+// provider the backup run uses, returning its shadow map and a release that
+// drops it (a VSS_CTX_BACKUP copy is auto-release: Windows deletes it once
+// the session lets go).
+func snapshotVolume(volume string) (map[string]string, func(), error) {
+	p := vss.NewProvider(vss.DefaultConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotVolumeTimeout)
+	defer cancel()
+	session, err := p.CreateShadowCopy(ctx, []string{volume})
+	if err != nil {
+		return nil, nil, err
+	}
+	if session == nil {
+		return nil, nil, errors.New("vss provider returned no session and no error")
+	}
+	release := func() {
+		if err := p.ReleaseShadowCopy(session); err != nil {
+			slog.Warn("systemstate: failed to release the hive-capture shadow copy", "error", err.Error())
+		}
+	}
+	return session.ShadowPaths, release, nil
 }
 
 // newWindowsManifestSkeleton builds the initial SystemStateManifest before
@@ -92,29 +138,30 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 // Registry hives
 // ---------------------------------------------------------------------------
 
-// registryHives are the hives captured for a bootable bare-metal restore.
-//
-// SECURITY routinely fails to save: `reg save HKLM\SECURITY` trips Microsoft
-// Defender's ML detector (Trojan:Win32/Commando.A!ml) and gets blocked
-// outright - confirmed live on Windows Server 2022 (Defender event 1116/1117
-// at the exact `reg save` timestamp) - so a missing SECURITY hive is the
-// normal case on a Defender-protected host, not an edge case. The durable fix
-// is to read the hive files out of a VSS shadow copy of
-// %SystemRoot%\System32\config instead of spawning reg.exe (which is what
-// trips the ML detector); tracked as O13 in
-// docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md and
-// NOT implemented here. Until then, collectRegistry hard-fails whenever any
-// hive (including SECURITY) is missing, per the 2026-07-15 "hard-fail on
-// required artifacts" decision - see windowsRequiredSteps above.
-var registryHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
-
+// collectRegistry captures the registry hives. When the run holds a VSS shadow
+// copy of the system volume the hive files (and their .LOG1/.LOG2) are copied
+// out of the shadow copy's System32\config; only without one does it fall back
+// to `reg save`, which Microsoft Defender flags as Trojan:Win32/Commando.A!ml
+// for SAM and SECURITY and blocks outright (#5397, confirmed on Server 2022,
+// events 1116/1117). Either way any missing hive fails this required step and
+// is named in the error that reaches errorLog - see windowsRequiredSteps and
+// collectRegistryHivesForRun.
 func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "registry")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
-	return collectRegistryHives(dir, stagingDir, registryHives)
+	return collectRegistryHivesForRun(dir, stagingDir, windowsSystemRoot(), c.opts)
+}
+
+// windowsSystemRoot is %SystemRoot% as the OS reports it (GetSystemWindowsDirectory,
+// not the environment), a var so tests can point it at a fake tree.
+var windowsSystemRoot = func() string {
+	if dir, err := windows.GetSystemWindowsDirectory(); err == nil && dir != "" {
+		return dir
+	}
+	return os.Getenv("SystemRoot")
 }
 
 // ---------------------------------------------------------------------------

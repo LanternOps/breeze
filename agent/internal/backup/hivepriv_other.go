@@ -7,3 +7,9 @@ package backup
 func AcquireHivePrivileges() (release func(), err error) {
 	return func() {}, nil
 }
+
+// acquireBackupReadPrivilege has no token to adjust off Windows (see
+// hivepriv_windows.go).
+func acquireBackupReadPrivilege() (release func(), err error) {
+	return func() {}, nil
+}

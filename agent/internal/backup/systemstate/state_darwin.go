@@ -23,6 +23,11 @@ func NewCollector() Collector {
 	return &DarwinCollector{}
 }
 
+// newCollector ignores opts: only the Windows collector uses them.
+func newCollector(_ CollectOptions) Collector {
+	return &DarwinCollector{}
+}
+
 // CollectState gathers all macOS system state artifacts into stagingDir.
 func (c *DarwinCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
 	hostname, _ := os.Hostname()

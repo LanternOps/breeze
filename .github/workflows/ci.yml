@@ -2001,6 +2001,41 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # Whole-machine Windows capture path. internal/backup and
+      # internal/backup/systemstate are both excluded from the bare package
+      # list above: run natively on Server 2022 (Defender on) each has
+      # pre-existing failures unrelated to this path — internal/backup 9
+      # (mode/mtime/contract-matcher tests written against POSIX semantics),
+      # systemstate 4 (TestHelper* assert POSIX modes/mtimes). So,
+      # like the steps above, name the tests and assert they PASSED.
+      # cleanBackupRoot: a VSS whole-machine root (`C:\` rewritten to
+      # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\) must keep its
+      # trailing separator — filepath.Clean strips it only under Windows path
+      # semantics, and the bare device does not stat, which failed every
+      # whole-machine backup. The systemstate tests pin the #5397 follow-up:
+      # under VSS the registry hive files are copied from the shadow copy
+      # (CreateFile with backup semantics) and reg.exe is never spawned; a run
+      # with no run-wide VSS session (pathless system_image, IPC
+      # system_state_collect) takes its own system-volume snapshot, and only a
+      # VSS failure reaches reg.exe. The
+      # live counterparts (TestLive_WholeMachineShadowRootIsWalkable,
+      # TestLive_CollectRegistryFromRealShadowCopy) stay opt-in behind
+      # BREEZE_VSS_LIVE like the other live VSS suites.
+      - name: Run Windows whole-machine capture path tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe|CollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot|CollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot|CollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave|CollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased|CollectRegistryHivesForRun_SkipSystemVolumeSnapshot|CollectRegistryHivesFromShadow_MissingDefaultIsBestEffort|NewCollector_DefaultsToOwnSystemVolumeSnapshot)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the whole-machine capture path tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 20) { throw "expected exactly 20 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # The real WinSystem (internal/backup/rebuild/winsystem_windows.go) and
       # winhive's RegLoadKeyW/RegUnLoadKeyW are the W06 Windows engine's only
       # contact with the host: VHDX create/attach/detach, GPT write/read,
@@ -2134,7 +2169,10 @@ jobs:
       # minutes), but the path-rewrite seam that decides whether a backup reads
       # the shadow copy or the live volume is pure string logic, and it is only
       # meaningful on Windows because filepath.VolumeName returns "" everywhere
-      # else. Without this it has no CI coverage at all.
+      # else. Without this it has no CI coverage at all. That includes
+      # TestRewritePathsForVSS_DriveRelativePathIsNotRewritten (`C:foo` must
+      # not be glued onto a shadow device root), counted here, not in the
+      # whole-machine capture path step below.
       - name: Run Windows backup error-classification and VSS path-rewrite tests
         working-directory: agent
         env:
@@ -2146,7 +2184,7 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and
