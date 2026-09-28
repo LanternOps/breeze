@@ -283,6 +283,26 @@ describe('remediation suggestion routes', () => {
     }));
   });
 
+  it('Generate returns each suggestion hydrated with its fix outcome, like the list (I4)', async () => {
+    dbMocks.generateMock.mockResolvedValueOnce({
+      orgId: baseSuggestion.orgId, sourceType: 'anomaly', sourceId: baseSuggestion.sourceId, skipped: false,
+      suggestions: [baseSuggestion],
+    });
+    const outcome = { state: 'holding', stateReason: 'condition_cleared', humanVote: null };
+    dbMocks.loadSummariesMock.mockResolvedValueOnce(new Map([[baseSuggestion.id, outcome]]) as never);
+
+    const res = await app.request('/remediation-suggestions/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ sourceType: 'anomaly', sourceId: baseSuggestion.sourceId, limit: 3 }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.loadSummariesMock).toHaveBeenCalledWith([baseSuggestion.id]);
+    const body = await res.json();
+    expect(body.data[0].outcome).toEqual(outcome);
+  });
+
   it('updates suggestion status and emits feedback', async () => {
     mockSuggestionLoad(baseSuggestion);
     dbMocks.updateMock.mockReturnValueOnce({

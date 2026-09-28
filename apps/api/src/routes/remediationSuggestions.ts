@@ -673,9 +673,12 @@ remediationSuggestionRoutes.post(
       },
     });
 
+    // Same shape as the list: the panel replaces its list with this response,
+    // so a suggestion that already has an attempt must keep its outcome.
+    const outcomes = await loadOutcomeSummaries(visible.map((row) => row.id));
     return c.json({
       skipped: result.skipped,
-      data: visible.map((row) => serializeSuggestion(row)),
+      data: visible.map((row) => serializeSuggestion(row, outcomes.get(row.id) ?? null)),
     }, result.skipped ? 200 : 201);
   }
 );
