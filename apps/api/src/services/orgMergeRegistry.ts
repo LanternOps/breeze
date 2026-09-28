@@ -739,6 +739,8 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_provider_devices",
   "backup_sla_configs",
   "backup_sla_events",
+  // Snapshot attestations travel with their device and snapshot.
+  "backup_snapshot_attestations",
   "backup_snapshot_retirements",
   "backup_snapshots",
   // Short-lived storage sessions travel with their device and snapshot.

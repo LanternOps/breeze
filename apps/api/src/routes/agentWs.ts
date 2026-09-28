@@ -1801,13 +1801,17 @@ export async function processOrphanedCommandResult(
             bareMetal: backupData?.bareMetal,
             vssMetadata: backupData?.vssMetadata,
             snapshot: backupData?.snapshot,
+            attestation: backupData?.attestation,
             error: malformedPayloadError || result.error || result.stderr,
           },
           {
             actorType: 'agent',
             actorId: agentId,
             source: 'route:agentWs:backup-result',
-          }
+          },
+          // The expectation was consumed above; the consumer may record an
+          // attestation for this result.
+          { dispatchExpectationVerified: true },
         ));
       } else {
         console.warn(`[AgentWs] Redis unavailable, marking backup job ${backupJob.id} with inline result`);
@@ -1821,6 +1825,7 @@ export async function processOrphanedCommandResult(
             ...(backupData ?? {}),
             error: malformedPayloadError || result.error || result.stderr,
           },
+          dispatchExpectationVerified: true,
         });
         if (!persisted.applied) {
           console.warn(`[AgentWs] Ignoring stale inline backup result for job ${backupJob.id} from agent ${agentId}`);

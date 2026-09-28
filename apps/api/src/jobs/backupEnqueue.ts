@@ -137,6 +137,9 @@ export interface ProcessResultsResult {
     formatVersion?: number;
     backupIdentity?: string;
   };
+  // Snapshot attestation envelope, forwarded verbatim (validated where it is
+  // recorded, services/backupAttestation.ts).
+  attestation?: unknown;
   error?: string;
 }
 
@@ -200,6 +203,7 @@ export async function enqueueBackupResults(
   deviceId: string,
   result: ProcessResultsResult,
   meta: QueueActorMeta = AGENT_RESULT_META,
+  options: { dispatchExpectationVerified?: true } = {},
 ): Promise<string> {
   const queue = getBackupQueue();
   const payload = backupQueueJobDataSchema.parse(withQueueMeta({
@@ -208,6 +212,7 @@ export async function enqueueBackupResults(
     orgId,
     deviceId,
     result,
+    ...(options.dispatchExpectationVerified ? { dispatchExpectationVerified: true as const } : {}),
   }, meta));
   const job = await queue.add(
     'process-results',

@@ -407,6 +407,8 @@ hypervRoutes.post(
           ...parsedBackup.data,
           error: result.error,
         },
+        // The reply to the command this route dispatched to this device.
+        dispatchExpectationVerified: true,
       });
       snapshotDbId = persisted.snapshotDbId;
       providerSnapshotId = persisted.providerSnapshotId;

@@ -392,6 +392,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_provider_devices',
   'backup_sla_configs',
   'backup_sla_events',
+  // Snapshot attestations: org_id denormalised from the device; every FK
+  // except organizations (snapshot, job, device) is ON DELETE CASCADE, so
+  // position is determinism, not correctness.
+  'backup_snapshot_attestations',
   'backup_snapshot_retirements',
   'backup_snapshots',
   // Brokered storage sessions: org_id denormalised from the executing device;

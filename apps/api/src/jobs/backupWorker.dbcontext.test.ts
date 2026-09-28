@@ -162,6 +162,10 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = []; label = 'baseFallbackProbeSelect';
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = []; label = 'baseLockOrRetirementSelect';
+      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+        // stampDispatchPinAndIdentity's helper-capability read: an older
+        // helper, so the legacy base selection runs.
+        rows = []; label = 'deviceIntegritySelect';
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
@@ -240,6 +244,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
       // tentative identity/lease stamp UPDATE, both inside this same short
       // context (no eligible base -> one candidate select, one update).
+      'deviceIntegritySelect@depth1',
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',
@@ -331,6 +336,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
       // tentative identity/lease stamp UPDATE, both inside this same short
       // context (no eligible base -> one candidate select, one update).
+      'deviceIntegritySelect@depth1',
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',

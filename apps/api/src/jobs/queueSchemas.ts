@@ -94,6 +94,10 @@ export const backupProcessResultSchema = z.object({
   // the TOP-LEVEL key has to be declared right here or the job dead-letters.
   vssMetadata: z.unknown().optional(),
   snapshot: backupSnapshotSummarySchema.optional(),
+  // Snapshot attestation envelope, forwarded verbatim; validated where it is
+  // recorded (services/backupAttestation.ts). Same `z.unknown()` reasoning as
+  // vssMetadata above.
+  attestation: z.unknown().optional(),
   error: z.string().min(1).optional(),
 }).strict();
 
@@ -129,6 +133,10 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     orgId: z.string().min(1),
     deviceId: z.string().min(1),
     result: backupProcessResultSchema,
+    // Set by the result handler only after it consumed this job's dispatch
+    // expectation. A queue item without it (enqueued by an older API) never
+    // records a snapshot attestation.
+    dispatchExpectationVerified: z.literal(true).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);

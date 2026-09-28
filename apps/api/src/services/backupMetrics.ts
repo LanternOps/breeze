@@ -15,6 +15,7 @@ type BackupMetricsRecorder = {
   onStorageSessionObjects: (scope: string, method: string, count?: number) => void;
   onStorageSessionMint: (scope: string, outcome: string, reason: string, count?: number) => void;
   onWriteDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
+  onAttestation: (outcome: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -32,6 +33,7 @@ let recorder: BackupMetricsRecorder = {
   onStorageSessionObjects: noop,
   onStorageSessionMint: noop,
   onWriteDispatch: noop,
+  onAttestation: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -48,6 +50,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onStorageSessionObjects: next?.onStorageSessionObjects ?? noop,
     onStorageSessionMint: next?.onStorageSessionMint ?? noop,
     onWriteDispatch: next?.onWriteDispatch ?? noop,
+    onAttestation: next?.onAttestation ?? noop,
   };
 }
 
@@ -181,3 +184,34 @@ export function recordBackupWriteDispatch(
   recorder.onWriteDispatch(commandType, mode, reason, count);
 }
 
+
+/**
+ * Snapshot attestation outcomes (services/backupAttestation.ts and
+ * jobs/backupSnapshotAttestationWorker.ts). At recording: `recorded`,
+ * `duplicate_same`, `conflict`, `binding_mismatch`, `invalid`,
+ * `missing_from_capable` (a capable helper reported no attestation),
+ * `not_offered` (an older helper), `missing_expectation` (the result was not
+ * bound to a consumed dispatch expectation), `job_reuse_refused` (a result
+ * from another job for a snapshot that already carries an attestation). At
+ * verification: `verified`, `mismatch`, `verify_unavailable` (storage not
+ * readable; retried later), `verify_parked` (still pending after the last
+ * automatic attempt).
+ */
+export type BackupAttestationMetricOutcome =
+  | 'recorded'
+  | 'duplicate_same'
+  | 'conflict'
+  | 'binding_mismatch'
+  | 'invalid'
+  | 'missing_from_capable'
+  | 'not_offered'
+  | 'missing_expectation'
+  | 'job_reuse_refused'
+  | 'verified'
+  | 'mismatch'
+  | 'verify_unavailable'
+  | 'verify_parked';
+
+export function recordBackupAttestation(outcome: BackupAttestationMetricOutcome, count = 1): void {
+  recorder.onAttestation(outcome, count);
+}
