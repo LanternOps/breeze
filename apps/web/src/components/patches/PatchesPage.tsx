@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { usePermissions } from '../../lib/permissions';
-import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
+import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw, ClipboardList } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
   type Patch,
@@ -8,6 +8,8 @@ import PatchList, {
 } from './PatchList';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
+import PatchJobsList from './PatchJobsList';
+import PatchJobDetail from './PatchJobDetail';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
@@ -29,8 +31,8 @@ import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 
-type TabKey = 'rings' | 'patches' | 'compliance';
-const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
+type TabKey = 'rings' | 'patches' | 'compliance' | 'jobs';
+const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
 
 // Tab state lives in window.location.hash (`#patches`) per the project
 // convention for transient UI state (CLAUDE.md); DiscoveryPage and DeviceDetails
@@ -177,6 +179,7 @@ export default function PatchesPage() {
   }, [ringAccess, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   // Which tab the approval modal opens on: 'approve' from Review (the default,
   // for not-yet-decided rows), 'decline' from the Unapprove row action on an
@@ -212,6 +215,7 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
+      { id: 'jobs' as TabKey, label: t('patchesPage.tabs.jobs'), icon: <ClipboardList className="h-4 w-4" /> },
       ...(mounted && canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
     [mounted, canManageRings, t]
@@ -931,6 +935,10 @@ export default function PatchesPage() {
 
       {/* Compliance tab — merged device view with summary */}
       {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
+
+      {/* Jobs tab — read-only list of patch_jobs (policy/ring/AI/API-created), #2606 */}
+      {activeTab === 'jobs' && <PatchJobsList onSelectJob={setSelectedJobId} />}
+      {selectedJobId && <PatchJobDetail jobId={selectedJobId} onClose={() => setSelectedJobId(null)} />}
 
       {/* Approval modal — passes ringId and org context for confirmation */}
       <PatchApprovalModal

@@ -9,10 +9,12 @@ import {
   patches,
   devicePatches,
   patchJobs,
+  patchJobResults,
   patchRollbacks,
-  devices
+  devices,
+  users
 } from '../../db/schema';
-import { scanSchema, listJobsSchema, patchIdParamSchema, rollbackSchema } from './schemas';
+import { scanSchema, listJobsSchema, jobIdParamSchema, patchIdParamSchema, rollbackSchema } from './schemas';
 import { getPagination, writePatchAuditForOrgIds } from './helpers';
 
 export const operationsRoutes = new Hono();
@@ -131,6 +133,11 @@ operationsRoutes.post(
 operationsRoutes.get(
   '/jobs',
   requireScope('organization', 'partner', 'system'),
+  // Same RBAC bar as every sibling patch READ (list.ts, compliance.ts,
+  // approvals.ts) — job history is exactly the kind of read DEVICES_READ was
+  // meant to gate. This route previously had no permission check at all
+  // (issue #2606).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listJobsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -145,8 +152,30 @@ operationsRoutes.get(
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const jobs = await db
-      .select()
+      .select({
+        id: patchJobs.id,
+        orgId: patchJobs.orgId,
+        policyId: patchJobs.policyId,
+        ringId: patchJobs.ringId,
+        configPolicyId: patchJobs.configPolicyId,
+        name: patchJobs.name,
+        patches: patchJobs.patches,
+        targets: patchJobs.targets,
+        status: patchJobs.status,
+        scheduledAt: patchJobs.scheduledAt,
+        startedAt: patchJobs.startedAt,
+        completedAt: patchJobs.completedAt,
+        devicesTotal: patchJobs.devicesTotal,
+        devicesCompleted: patchJobs.devicesCompleted,
+        devicesFailed: patchJobs.devicesFailed,
+        devicesPending: patchJobs.devicesPending,
+        devicesQueued: patchJobs.devicesQueued,
+        createdBy: patchJobs.createdBy,
+        createdByName: users.name,
+        createdAt: patchJobs.createdAt
+      })
       .from(patchJobs)
+      .leftJoin(users, eq(users.id, patchJobs.createdBy))
       .where(whereClause)
       .orderBy(desc(patchJobs.createdAt), desc(patchJobs.id))
       .limit(limit)
@@ -161,6 +190,82 @@ operationsRoutes.get(
       data: jobs,
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
     });
+  }
+);
+
+// GET /patches/jobs/:id - Patch job detail with per-device results
+operationsRoutes.get(
+  '/jobs/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', jobIdParamSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+
+    // patch_jobs carries FORCE RLS keyed on org_id (breeze_has_org_access), so
+    // this select is already tenant-scoped at the database level via the
+    // request's withDbAccessContext — an org-scoped caller simply gets zero
+    // rows for a job outside their org, same as any other cross-tenant probe.
+    const [job] = await db
+      .select({
+        id: patchJobs.id,
+        orgId: patchJobs.orgId,
+        policyId: patchJobs.policyId,
+        ringId: patchJobs.ringId,
+        configPolicyId: patchJobs.configPolicyId,
+        name: patchJobs.name,
+        patches: patchJobs.patches,
+        targets: patchJobs.targets,
+        status: patchJobs.status,
+        scheduledAt: patchJobs.scheduledAt,
+        startedAt: patchJobs.startedAt,
+        completedAt: patchJobs.completedAt,
+        devicesTotal: patchJobs.devicesTotal,
+        devicesCompleted: patchJobs.devicesCompleted,
+        devicesFailed: patchJobs.devicesFailed,
+        devicesPending: patchJobs.devicesPending,
+        devicesQueued: patchJobs.devicesQueued,
+        createdBy: patchJobs.createdBy,
+        createdByName: users.name,
+        createdAt: patchJobs.createdAt
+      })
+      .from(patchJobs)
+      .leftJoin(users, eq(users.id, patchJobs.createdBy))
+      .where(eq(patchJobs.id, id))
+      .limit(1);
+
+    if (!job) {
+      return c.json({ error: 'Patch job not found' }, 404);
+    }
+
+    // patch_job_results has no org_id column and no RLS policy of its own
+    // (device-join RLS shape — see schema comment); scope it explicitly by
+    // joining devices for the job's own org rather than trusting job_id alone,
+    // since job_id is a plain (unscoped) equality filter under RLS.
+    const results = await db
+      .select({
+        id: patchJobResults.id,
+        deviceId: patchJobResults.deviceId,
+        deviceHostname: devices.hostname,
+        patchId: patchJobResults.patchId,
+        patchTitle: patches.title,
+        status: patchJobResults.status,
+        startedAt: patchJobResults.startedAt,
+        completedAt: patchJobResults.completedAt,
+        exitCode: patchJobResults.exitCode,
+        output: patchJobResults.output,
+        errorMessage: patchJobResults.errorMessage,
+        rebootRequired: patchJobResults.rebootRequired,
+        rebootedAt: patchJobResults.rebootedAt,
+        createdAt: patchJobResults.createdAt
+      })
+      .from(patchJobResults)
+      .innerJoin(devices, and(eq(devices.id, patchJobResults.deviceId), eq(devices.orgId, job.orgId)))
+      .leftJoin(patches, eq(patches.id, patchJobResults.patchId))
+      .where(eq(patchJobResults.jobId, job.id))
+      .orderBy(desc(patchJobResults.createdAt));
+
+    return c.json({ data: { ...job, results } });
   }
 );
 
