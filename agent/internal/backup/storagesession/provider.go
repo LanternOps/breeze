@@ -937,6 +937,17 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
+// idleTimer is the subset of *time.Timer the idle watchdog uses.
+type idleTimer interface {
+	Reset(d time.Duration) bool
+	Stop() bool
+}
+
+// idleAfterFunc arms the idle watchdog. It is a variable only so tests can
+// drive the watchdog with a fake clock instead of racing real time (#7380);
+// production always uses time.AfterFunc.
+var idleAfterFunc = func(d time.Duration, f func()) idleTimer { return time.AfterFunc(d, f) }
+
 // fetchOnce GETs one resolved URL into localPath. It follows at most
 // MaxRedirectHops redirects by hand: each hop is a fresh request with no
 // headers at all (never the session header, the agent credential or a
@@ -949,7 +960,7 @@ func (p *Provider) fetchOnce(ctx context.Context, obj *resolvedObject, localPath
 	parent := ctx
 	fetchCtx, cancelFetch := context.WithCancelCause(parent)
 	defer cancelFetch(nil)
-	idle := time.AfterFunc(p.idleTimeout, func() { cancelFetch(errStorageStalled) })
+	idle := idleAfterFunc(p.idleTimeout, func() { cancelFetch(errStorageStalled) })
 	defer idle.Stop()
 	progress := func() { idle.Reset(p.idleTimeout) }
 	defer func() {
