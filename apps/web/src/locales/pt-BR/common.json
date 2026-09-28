@@ -1136,7 +1136,8 @@
           "title": "Nenhuma conexão PSA configurada"
         },
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status da conexão"
         },
         "headers": {
           "connection": "Conexão",
@@ -1205,7 +1206,8 @@
           "title": "Nenhum ticket PSA sincronizado"
         },
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status do chamado"
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
@@ -1341,7 +1343,8 @@
         "empty": "Nenhum webhook encontrado.",
         "failedCount": "{{count}} falhou",
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status do webhook"
         },
         "headers": {
           "events": "Eventos",

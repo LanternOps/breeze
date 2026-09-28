@@ -1136,7 +1136,8 @@
           "title": "No PSA connections configured"
         },
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "connection": "Connection",
@@ -1205,7 +1206,8 @@
           "title": "No PSA tickets synced"
         },
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "linkedAlert": "Linked Alert",
@@ -1341,7 +1343,8 @@
         "empty": "No webhooks found.",
         "failedCount": "{{count}} failed",
         "filters": {
-          "allStatuses": "All statuses"
+          "allStatuses": "All statuses",
+          "statusFilterLabel": "Status"
         },
         "headers": {
           "events": "Events",

@@ -465,8 +465,9 @@ export default function WebhooksPage() {
                   </div>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
+                  <label htmlFor="webhook-test-event" className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
                   <select
+                    id="webhook-test-event"
                     value={testEvent}
                     onChange={event => setTestEvent(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

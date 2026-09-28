@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
 import { isOrgImportCapableProvider, type PsaProviderId } from '@breeze/shared';
+import { FilterSelect } from '../shared/FilterSelect';
 
 // Derived from the single-source provider list in @breeze/shared.
 export type PsaProvider = PsaProviderId;
@@ -185,17 +186,18 @@ export default function PsaConnectionList({
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
-          <select
+          <FilterSelect
+            label={t('longTail.psa.PsaConnectionList.filters.statusFilterLabel')}
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value as PsaConnectionStatus | 'all')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+            className="w-full sm:w-40"
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
                 {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ (statusConfig[status as PsaConnectionStatus] ?? statusConfig.active).labelKey)}
               </option>
             ))}
-          </select>
+          </FilterSelect>
         </div>
       </div>
 
