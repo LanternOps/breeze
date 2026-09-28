@@ -2702,6 +2702,14 @@ softwareRoutes.get(
         deviceCommandId: deploymentResults.deviceCommandId,
         hostname: devices.hostname,
         queuedOffline: sql<boolean>`coalesce(${deploymentResults.status} = 'pending' and ${deploymentResults.deviceCommandId} is not null and ${deviceCommands.status} = 'pending', false)`,
+        // #3578 in-flight signals, read off the same join. sentAt is when the
+        // command was handed to the agent (WS push or poll claim) — the
+        // server's own stamp, so it works for every agent version. agentStage/
+        // agentStageAt are the last stage the agent reported
+        // (services/commandProgress.ts); NULL from agents that predate it.
+        sentAt: deviceCommands.executedAt,
+        agentStage: deviceCommands.progressStage,
+        agentStageAt: deviceCommands.progressAt,
       })
         .from(deploymentResults)
         .leftJoin(devices, eq(deploymentResults.deviceId, devices.id))

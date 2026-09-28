@@ -127,7 +127,7 @@ vi.mock('../db/schema', () => ({
     enabled: 'sim_enabled',
   },
   // Distinct literals so cancel-purge assertions are unambiguous vs the other tables.
-  deviceCommands: { id: 'dc_id', deviceId: 'dc_device_id', status: 'dc_status', completedAt: 'dc_completed_at', result: 'dc_result' },
+  deviceCommands: { id: 'dc_id', deviceId: 'dc_device_id', status: 'dc_status', completedAt: 'dc_completed_at', result: 'dc_result', executedAt: 'dc_executed_at', progressStage: 'dc_progress_stage', progressAt: 'dc_progress_at' },
   organizations: { id: 'id', name: 'name' },
   sites: { id: 'id', orgId: 'org_id', name: 'name' },
 }));
@@ -2614,6 +2614,43 @@ describe('software routes', () => {
       expect(page.calls.offset).toEqual([[5]]);
       // one joined page query + one count — never a per-row device fetch
       expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('projects the in-flight signals from the linked command (#3578)', async () => {
+      const resultRow = {
+        id: 'res-1',
+        deploymentId: DEP_ID,
+        deviceId: DEVICE_A,
+        status: 'pending',
+        deviceCommandId: 'cmd-1',
+        hostname: 'WS-01',
+        queuedOffline: false,
+        sentAt: '2026-09-28T10:00:00.000Z',
+        agentStage: 'installing',
+        agentStageAt: '2026-09-28T10:04:00.000Z',
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([resultRow]))
+        .mockReturnValueOnce(selectResult([{ count: 1 }]));
+
+      const res = await app.request(
+        `/software/deployments/${DEP_ID}/results`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      // The page query projects the command's claim time and last reported
+      // stage straight off the existing device_commands join — no extra query.
+      const projection = vi.mocked(db.select).mock.calls[1]![0] as Record<string, unknown>;
+      expect(projection.sentAt).toBe('dc_executed_at');
+      expect(projection.agentStage).toBe('dc_progress_stage');
+      expect(projection.agentStageAt).toBe('dc_progress_at');
+      expect((await res.json()).data[0]).toMatchObject({
+        sentAt: '2026-09-28T10:00:00.000Z',
+        agentStage: 'installing',
+        agentStageAt: '2026-09-28T10:04:00.000Z',
+      });
     });
 
     it('applies the ?status= filter to the results WHERE clause', async () => {

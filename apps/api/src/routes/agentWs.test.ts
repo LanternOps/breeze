@@ -293,6 +293,13 @@ vi.mock('../services/automationActionResults', () => ({
 }));
 
 // Keep the real software result module exports while mocking reconciliation.
+vi.mock('../services/commandProgress', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/commandProgress')>();
+  return {
+    ...actual,
+    applyCommandProgress: vi.fn(),
+  };
+});
 vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/softwareDeploymentResult')>();
   return {
@@ -395,6 +402,7 @@ import {
   AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS,
 } from './agentWs';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
+import { applyCommandProgress, COMMAND_PROGRESS_CAPABILITY } from '../services/commandProgress';
 import {
   applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
@@ -6141,5 +6149,80 @@ describe('update_status write coalescing', () => {
     await b.onMessage(frame('2.0.0'), wsMock() as any);
 
     expect(setMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3578 — command_progress: the agent reports in-flight stages (downloading →
+// installing) for a long-running command so a software install stops reading
+// as an opaque "Pending" for up to 45 minutes.
+// ---------------------------------------------------------------------------
+describe('command_progress frames (#3578)', () => {
+  const preValidatedAgent = { deviceId: 'device-3578', orgId: 'org-3578', partnerId: 'partner-3578' };
+  const COMMAND_ID = '35783578-3578-4578-8578-357835783578';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(applyCommandProgress).mockResolvedValue({ applied: true });
+  });
+
+  it('advertises the command_progress capability so agents know to send it', () => {
+    expect(AGENT_WS_CAPABILITIES).toContain(COMMAND_PROGRESS_CAPABILITY);
+  });
+
+  it('records the stage against the AUTHENTICATED device, and sends no ack', async () => {
+    const handlers = createAgentWsHandlers('agent-3578', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_progress',
+        commandId: COMMAND_ID,
+        stage: 'installing',
+        // An agent-supplied device id must never be trusted.
+        deviceId: 'some-other-device',
+      }),
+    } as any, ws as any);
+
+    expect(vi.mocked(applyCommandProgress)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(applyCommandProgress)).toHaveBeenCalledWith({
+      deviceId: 'device-3578',
+      commandId: COMMAND_ID,
+      stage: 'installing',
+    });
+    // Fire-and-forget: no ack and no INVALID_MESSAGE error frame.
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('drops a frame from a superseded socket without writing', async () => {
+    const handlersA = createAgentWsHandlers('agent-3578-sup', preValidatedAgent);
+    const wsA = wsMock();
+    await connectAgentSocket(handlersA, wsA);
+    const handlersB = createAgentWsHandlers('agent-3578-sup', preValidatedAgent);
+    const wsB = wsMock();
+    await connectAgentSocket(handlersB, wsB);
+
+    await handlersA.onMessage({
+      data: JSON.stringify({ type: 'command_progress', commandId: COMMAND_ID, stage: 'downloading' }),
+    } as any, wsA as any);
+
+    expect(vi.mocked(applyCommandProgress)).not.toHaveBeenCalled();
+  });
+
+  it('does not let a failed progress write escape the message handler', async () => {
+    vi.mocked(applyCommandProgress).mockRejectedValue(new Error('db down'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers = createAgentWsHandlers('agent-3578-err', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+
+    await expect(handlers.onMessage({
+      data: JSON.stringify({ type: 'command_progress', commandId: COMMAND_ID, stage: 'downloading' }),
+    } as any, ws as any)).resolves.toBeUndefined();
+
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('command_progress'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
