@@ -31,7 +31,8 @@
       "policy": "Politique"
     },
     "pagination": "Affichage de {{from}} à {{to}} sur {{total}}",
-    "prev": "Précédent"
+    "prev": "Précédent",
+    "eventFilterLabel": "Type d'événement"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Création"
     },
     "partnerWideTitle": "Politique à l’échelle des partenaires — appliquée sur les appareils de chaque organisation",
-    "allOrgs": "À l’échelle du partenaire"
+    "allOrgs": "À l’échelle du partenaire",
+    "classFilterLabel": "Classe d'appareil",
+    "actionFilterLabel": "Type d'action",
+    "statusFilterLabel": "État"
   },
   "peripheralPolicyForm": {
     "errors": {

@@ -2346,7 +2346,9 @@
           "unknown": "Desconocido"
         },
         "lastSeen": "visto por última vez",
-        "noDeviceInventory": "Aún no hay inventario de dispositivos disponible de los clientes."
+        "noDeviceInventory": "Aún no hay inventario de dispositivos disponible de los clientes.",
+        "healthFilterLabel": "Estado de salud",
+        "sortFilterLabel": "Ordenar por"
       }
     },
     "remediation": {

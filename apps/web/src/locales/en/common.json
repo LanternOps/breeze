@@ -2346,7 +2346,9 @@
           "unknown": "Unknown"
         },
         "lastSeen": "Last seen",
-        "noDeviceInventory": "No device inventory available from customers yet."
+        "noDeviceInventory": "No device inventory available from customers yet.",
+        "healthFilterLabel": "Health",
+        "sortFilterLabel": "Sort by"
       }
     },
     "remediation": {

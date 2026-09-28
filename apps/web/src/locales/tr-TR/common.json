@@ -2346,7 +2346,9 @@
           "unknown": "Bilinmiyor"
         },
         "lastSeen": "Son görülme",
-        "noDeviceInventory": "Henüz müşterilerden gelen cihaz envanteri yok."
+        "noDeviceInventory": "Henüz müşterilerden gelen cihaz envanteri yok.",
+        "healthFilterLabel": "Sağlık",
+        "sortFilterLabel": "Sırala"
       }
     },
     "remediation": {

@@ -2346,7 +2346,9 @@
           "unknown": "Inconnu"
         },
         "lastSeen": "Dernière apparition",
-        "noDeviceInventory": "Aucun inventaire d’appareils disponible pour l’instant chez les clients."
+        "noDeviceInventory": "Aucun inventaire d’appareils disponible pour l’instant chez les clients.",
+        "healthFilterLabel": "Santé",
+        "sortFilterLabel": "Trier par"
       }
     },
     "remediation": {

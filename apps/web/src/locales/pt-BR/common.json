@@ -2346,7 +2346,9 @@
           "unknown": "Desconhecido"
         },
         "lastSeen": "Visto por último",
-        "noDeviceInventory": "Nenhum inventário de dispositivos disponível dos clientes ainda."
+        "noDeviceInventory": "Nenhum inventário de dispositivos disponível dos clientes ainda.",
+        "healthFilterLabel": "Saúde",
+        "sortFilterLabel": "Ordenar por"
       }
     },
     "remediation": {
