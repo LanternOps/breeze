@@ -66,6 +66,14 @@
     },
     "launching": "Iniciando...",
     "launchingViewer": "Abrindo visualizador...",
+    "loginWindow": {
+      "connectVnc": "Conectar com o Retransmissor VNC",
+      "description": "O macOS bloqueia a entrada remota de teclado e mouse na tela de início de sessão, então a Área de Trabalho Remota não foi iniciada.",
+      "enableVncRelay": "Ative o Retransmissor VNC na política de configuração deste dispositivo para iniciar sessão nessa tela, ou conecte novamente depois que um usuário iniciar sessão.",
+      "title": "Este Mac está na tela de início de sessão",
+      "unavailableTitle": "Área de Trabalho Remota indisponível",
+      "useVncRelay": "Use o Retransmissor VNC para iniciar sessão nessa tela."
+    },
     "openInBrowser": "Abrir no navegador",
     "policyDisabled": "A área de trabalho remota está desativada pela política",
     "policyDisabledNamed": "A área de trabalho remota foi desativada pela política \"{{name}}\"",
@@ -92,7 +100,7 @@
       "missingEntitlement": "O acesso à tela de início de sessão ficará bloqueado até que a autorização exigida pela Apple seja aprovada",
       "missingPermission": "Ainda faltam permissões do macOS necessárias para o acesso não assistido à área de trabalho",
       "noDisplaySession": "Nenhuma sessão gráfica ativa — faça login via RDP ou pelo console primeiro",
-      "unsupportedOs": "O acesso à tela de início de sessão requer macOS 14 (Sonoma) ou posterior. Ative o Retransmissor VNC na política de configuração do dispositivo para conectar nessa tela.",
+      "unsupportedOs": "O macOS bloqueia a entrada remota de teclado e mouse na tela de início de sessão, então a Área de Trabalho Remota não consegue controlar este Mac nessa tela. Ative o Retransmissor VNC na política de configuração do dispositivo para conectar na tela de início de sessão.",
       "virtualDisplay": "Não há uma tela capturável disponível neste Mac. Ative o Retransmissor VNC para conectar pelo Compartilhamento de Tela do macOS.",
       "waylandUnsupported": "Esta é uma área de trabalho Wayland — a área de trabalho remota requer um agente mais recente",
       "x11AuthFailed": "Não foi possível autenticar no servidor de exibição (autoridade X)",

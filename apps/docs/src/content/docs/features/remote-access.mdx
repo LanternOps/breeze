@@ -227,11 +227,13 @@ The viewer toolbar includes a keyboard shortcut menu that adapts to the target d
 
 Select a shortcut from the menu to inject it into the remote session. This avoids the problem of your local operating system intercepting the key combination before it reaches the viewer.
 
-### Login Screen Input (macOS)
+### Login Screen (macOS)
 
-Keyboard and mouse input works at the macOS login screen during remote desktop sessions. You can type passwords and interact with login UI elements remotely. This uses a low-level input method that operates below the normal event system, so it functions even when no user session is active.
+WebRTC remote desktop cannot control a Mac at the login window. macOS blocks remote keyboard and mouse input there for third-party agents, so a session would show the login screen while ignoring every click and keystroke. The agent therefore refuses to start a WebRTC session while the Mac is at the login window:
 
-The agent dynamically switches input handling when the console transitions to or from the login window, so keyboard and mouse keep working through sign-in and sign-out events without reconnecting the session.
+- If **VNC Relay** is enabled in the device's configuration policy, **Connect Desktop** opens VNC Relay instead. VNC Relay drives the login screen through macOS Screen Sharing, so you can sign in remotely.
+- If VNC Relay is not enabled, Connect Desktop explains that the Mac is at the login window and how to enable VNC Relay. The Breeze Viewer shows the same reason if it was already open.
+- If a user signs out during a session, the session ends with the same explanation instead of continuing as video only. Reconnect with VNC Relay, or connect again after a user signs in.
 
 ### Network Proxy
 
