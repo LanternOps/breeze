@@ -50,7 +50,7 @@ func writeHelperBackup(src, backupPath string) (helperBackup, error) {
 	if err != nil {
 		return helperBackup{}, err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }() // read-only handle
 	info, err := in.Stat()
 	if err != nil {
 		return helperBackup{}, err
@@ -98,7 +98,7 @@ func (b helperBackup) verify() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle
 	info, err := f.Stat()
 	if err != nil {
 		return err
