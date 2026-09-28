@@ -19,6 +19,11 @@ const RecordFileName = "executable-relocation.json"
 // Full Disk Access re-grant.
 const HealthComponent = "macos_fda_relocation"
 
+// ErrCorruptRecord marks a record file that exists but cannot be parsed.
+// Only this error justifies discarding the record; any other read failure
+// may be transient, and a discarded record is never recreated.
+var ErrCorruptRecord = errors.New("corrupt relocation record")
+
 // Record notes that the agent binary was relocated, so the heartbeat can
 // report the lost Full Disk Access grant until it is re-granted.
 type Record struct {
@@ -78,7 +83,7 @@ func ReadRecord(dir string) (*Record, error) {
 	}
 	var r Record
 	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", RecordFileName, err)
+		return nil, fmt.Errorf("%w: parse %s: %v", ErrCorruptRecord, RecordFileName, err)
 	}
 	return &r, nil
 }

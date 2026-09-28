@@ -1,6 +1,7 @@
 package macrelocate
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,8 +52,23 @@ func TestReadRecordRejectsCorruptRecord(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, RecordFileName), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadRecord(dir); err == nil {
-		t.Fatal("want an error for a corrupt record")
+	_, err := ReadRecord(dir)
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("want ErrCorruptRecord, got %v", err)
+	}
+}
+
+// A read failure that is not corruption (here: the record path is a
+// directory) must not be reported as ErrCorruptRecord, or the heartbeat
+// would discard a record it merely failed to read once.
+func TestReadRecordIOErrorIsNotCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, RecordFileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadRecord(dir)
+	if err == nil || errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("want a non-corrupt read error, got %v", err)
 	}
 }
 

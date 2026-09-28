@@ -1,6 +1,8 @@
 package heartbeat
 
 import (
+	"errors"
+
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/macrelocate"
@@ -33,9 +35,15 @@ func defaultRelocationFDAProbe() relocationFDAProbe {
 func updateRelocationFDAHealth(mon *health.Monitor, p relocationFDAProbe) {
 	rec, err := p.read()
 	if err != nil {
-		log.Warn("relocation record unreadable; discarding it", "error", err.Error())
+		if !errors.Is(err, macrelocate.ErrCorruptRecord) {
+			// Possibly transient: keep the record and retry next beat. A
+			// discarded record is never recreated.
+			log.Warn("could not read relocation record; will retry", "error", err.Error())
+			return
+		}
+		log.Warn("relocation record is corrupt; discarding it", "error", err.Error())
 		if clearErr := p.clear(); clearErr != nil {
-			log.Warn("could not remove unreadable relocation record", "error", clearErr.Error())
+			log.Warn("could not remove corrupt relocation record", "error", clearErr.Error())
 		}
 		return
 	}

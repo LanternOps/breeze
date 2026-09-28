@@ -39,16 +39,17 @@ func (f fakeInfo) Sys() any           { return nil }
 type harness struct {
 	t *testing.T
 
-	euid         int
-	self         string
-	verifyErr    error
-	migrateErr   error
-	plist        []byte
-	plistErr     error
-	files        map[string]fakeInfo // present paths (Lstat)
-	removeErr    error
-	writeRecErr  error
-	allowMigrate bool
+	euid          int
+	self          string
+	verifyErr     error
+	migrateErr    error
+	migrateErrFor map[string]error
+	plist         []byte
+	plistErr      error
+	files         map[string]fakeInfo // present paths (Lstat)
+	removeErr     error
+	writeRecErr   error
+	allowMigrate  bool
 
 	migrated  []string
 	scripts   []string
@@ -88,6 +89,9 @@ func (h *harness) deps() Deps {
 			h.migrated = append(h.migrated, legacyPath+"->"+trustedDir)
 			if h.migrateErr != nil {
 				return "", h.migrateErr
+			}
+			if err := h.migrateErrFor[legacyPath]; err != nil {
+				return "", err
 			}
 			return trustedDir + "/" + baseName(legacyPath), nil
 		},
@@ -191,20 +195,56 @@ func TestRunLegacyLocationDecision(t *testing.T) {
 	}
 }
 
-func TestRunRelocationScriptRepointsPlistAndReloads(t *testing.T) {
+func TestRunRelocationSchedulesScriptForThisBinary(t *testing.T) {
 	h := newHarness(t, testLegacyDir+"/breeze-agent")
 	h.verifyErr = errors.New("not owned by root")
 	Run(h.cfg(), h.deps())
-	script := h.scripts[0]
-	for _, want := range []string{
-		"s|<string>/usr/local/bin/breeze-agent</string>|<string>/Library/Breeze/bin/breeze-agent</string>|",
-		"'" + testPlist + "'",
-		"launchctl unload",
-		"launchctl load",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script missing %q:\n%s", want, script)
-		}
+	if want := BuildRelocateScript(testPlist, testLegacyDir+"/breeze-agent", testTrustedDir+"/breeze-agent"); h.scripts[0] != want {
+		t.Fatalf("script = %q, want %q", h.scripts[0], want)
+	}
+}
+
+// The agent resolves breeze-backup next to its own executable, so a
+// relocation that moved only the agent would break every backup until the
+// next .pkg install. Siblings present in the legacy dir move with it.
+func TestRunRelocationCopiesSiblings(t *testing.T) {
+	h := newHarness(t, testLegacyDir+"/breeze-agent")
+	h.verifyErr = errors.New("not owned by root")
+	h.files[testLegacyDir+"/breeze-backup"] = regular("breeze-backup")
+	if got := Run(h.cfg(), h.deps()); got != OutcomeRelocationScheduled {
+		t.Fatalf("outcome = %q", got)
+	}
+	want := "/usr/local/bin/breeze-agent->/Library/Breeze/bin,/usr/local/bin/breeze-backup->/Library/Breeze/bin"
+	if got := strings.Join(h.migrated, ","); got != want {
+		t.Fatalf("migrated = %s, want %s", got, want)
+	}
+}
+
+// A sibling that cannot be copied aborts the relocation (retried on the
+// next start) rather than leaving a half-moved install.
+func TestRunRelocationSiblingCopyFailureAborts(t *testing.T) {
+	h := newHarness(t, testLegacyDir+"/breeze-agent")
+	h.verifyErr = errors.New("not owned by root")
+	h.files[testLegacyDir+"/breeze-backup"] = regular("breeze-backup")
+	h.migrateErrFor = map[string]error{testLegacyDir + "/breeze-backup": errors.New("disk full")}
+	if got := Run(h.cfg(), h.deps()); got != OutcomeRelocationFailed {
+		t.Fatalf("outcome = %q, want %q", got, OutcomeRelocationFailed)
+	}
+	if len(h.scripts) != 0 {
+		t.Fatal("a failed sibling copy must not repoint the plist")
+	}
+}
+
+// A missing (or symlinked) sibling is not copied and does not block the move.
+func TestRunRelocationSkipsAbsentSibling(t *testing.T) {
+	h := newHarness(t, testLegacyDir+"/breeze-agent")
+	h.verifyErr = errors.New("not owned by root")
+	h.files[testLegacyDir+"/breeze-backup"] = fakeInfo{name: "breeze-backup", mode: os.ModeSymlink | 0o755}
+	if got := Run(h.cfg(), h.deps()); got != OutcomeRelocationScheduled {
+		t.Fatalf("outcome = %q", got)
+	}
+	if len(h.migrated) != 1 {
+		t.Fatalf("migrated = %v, want only the agent", h.migrated)
 	}
 }
 
@@ -274,6 +314,31 @@ func TestRunKeepsLeftoverWhenRecordCannotBeWritten(t *testing.T) {
 
 	if len(h.removed) != 0 {
 		t.Fatalf("leftover removed despite the record write failing: %v", h.removed)
+	}
+}
+
+// The next start retries: once the record can be written, the leftover goes.
+func TestRunRetriesCleanupAfterRecordWriteFailure(t *testing.T) {
+	h := newHarness(t, testTrustedDir+"/breeze-agent")
+	h.allowMigrate = false
+	h.plist = plistNaming(testTrustedDir + "/breeze-agent")
+	h.files[testLegacyDir+"/breeze-agent"] = regular("breeze-agent")
+	h.writeRecErr = errors.New("read-only")
+	Run(h.cfg(), h.deps())
+	if len(h.removed) != 0 || len(h.records) != 0 {
+		t.Fatalf("first start: removed=%v records=%v", h.removed, h.records)
+	}
+
+	h.writeRecErr = nil
+	Run(h.cfg(), h.deps())
+	if len(h.records) != 1 || len(h.removed) != 1 {
+		t.Fatalf("second start: records=%v removed=%v, want one of each", h.records, h.removed)
+	}
+
+	// Third start: nothing left to do, nothing re-recorded.
+	Run(h.cfg(), h.deps())
+	if len(h.records) != 1 || len(h.removed) != 1 {
+		t.Fatalf("third start: records=%v removed=%v", h.records, h.removed)
 	}
 }
 

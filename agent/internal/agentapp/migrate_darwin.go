@@ -3,11 +3,6 @@
 package agentapp
 
 import (
-	"os"
-	"os/exec"
-	"syscall"
-	"time"
-
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/macrelocate"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -27,38 +22,11 @@ func agentRelocateConfig() macrelocate.Config {
 	}
 }
 
-// defaultRelocateDeps is the production wiring shared by the agent and (via
-// its own copy) the watchdog.
-func defaultRelocateDeps() macrelocate.Deps {
-	return macrelocate.Deps{
-		Geteuid:        os.Geteuid,
-		Executable:     os.Executable,
-		VerifyLocation: securefs.VerifyTrustedExecutablePathChain,
-		Migrate: func(legacyPath, trustedDir string) (string, error) {
-			return securefs.MigrateExecutableToTrustedDir(nil, legacyPath, trustedDir)
-		},
-		StartDetached: func(script string) error {
-			cmd := exec.Command("/bin/sh", "-c", script)
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			if err := cmd.Start(); err != nil {
-				return err
-			}
-			return cmd.Process.Release()
-		},
-		ReadFile:         os.ReadFile,
-		Lstat:            os.Lstat,
-		RemoveLegacyFile: securefs.RemoveRegularFileNoFollow,
-		WriteRecord:      macrelocate.WriteRecord,
-		Now:              time.Now,
-		Log:              log,
-	}
-}
-
 // maybeMigrateLegacyInstall is the darwin entry point called from runAgent.
 // It relocates the agent out of /usr/local/bin only when that location is
 // unsafe for a root daemon, and cleans up after a relocation; see
 // internal/macrelocate for the full rationale (#7211). It never blocks or
 // fails startup.
 func maybeMigrateLegacyInstall() {
-	macrelocate.Run(agentRelocateConfig(), defaultRelocateDeps())
+	macrelocate.Run(agentRelocateConfig(), macrelocate.DefaultDeps(log))
 }

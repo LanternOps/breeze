@@ -126,6 +126,22 @@ func relocateIfUnsafe(cfg Config, d Deps, self string) Outcome {
 			"path", self, "reason", unsafeErr.Error(), "error", err.Error())
 		return OutcomeRelocationFailed
 	}
+	// Siblings the agent resolves next to its own executable (breeze-backup)
+	// must move with it, or every backup fails after the reload. A failed
+	// sibling copy aborts: the next start retries the whole move rather than
+	// leaving a half-moved install.
+	for _, sib := range cfg.Siblings {
+		legacySib := filepath.Join(cfg.LegacyDir, sib)
+		if !isRegularFile(d, legacySib) {
+			continue
+		}
+		if _, err := d.Migrate(legacySib, cfg.TrustedDir); err != nil {
+			d.Log.Warn("executable relocation: could not copy a companion binary to the trusted directory; "+
+				"continuing from the legacy location and retrying on the next start",
+				"path", legacySib, "reason", unsafeErr.Error(), "error", err.Error())
+			return OutcomeRelocationFailed
+		}
+	}
 	if err := d.StartDetached(BuildRelocateScript(cfg.PlistPath, self, newPath)); err != nil {
 		d.Log.Warn("executable relocation: copied to the trusted directory but could not schedule the service reload",
 			"path", self, "newPath", newPath, "error", err.Error())
@@ -214,13 +230,23 @@ func plistNames(plist []byte, path string) bool {
 // sleeps briefly first so the caller (still running from oldPath) reaches a
 // stable state before launchd unloads it. The unload kills the caller, which
 // is why this cannot run in-process.
+//
+// If the rewrite did not take (the plist no longer names newPath), the
+// script exits before touching launchd: reloading an unchanged plist would
+// only restart the daemon at the legacy path. The next start retries.
+// `sed -i.bak` is used because it means the same thing to BSD and GNU sed,
+// which lets the rendered script be executed in the Linux CI tests.
 func BuildRelocateScript(plistPath, oldPath, newPath string) string {
+	q := shellQuote(plistPath)
+	qb := shellQuote(plistPath + ".bak")
 	return fmt.Sprintf(
 		"sleep 2\n"+
-			"/usr/bin/sed -i '' 's|<string>%s</string>|<string>%s</string>|' %s\n"+
+			"/usr/bin/sed -i.bak 's|<string>%s</string>|<string>%s</string>|' %s || exit 1\n"+
+			"rm -f %s\n"+
+			"grep -q '<string>%s</string>' %s || exit 1\n"+
 			"/bin/launchctl unload %s 2>/dev/null || true\n"+
 			"/bin/launchctl load %s 2>/dev/null || true\n",
-		oldPath, newPath, shellQuote(plistPath), shellQuote(plistPath), shellQuote(plistPath))
+		oldPath, newPath, q, qb, newPath, q, q, q)
 }
 
 // shellQuote wraps path in single quotes. Every caller passes a

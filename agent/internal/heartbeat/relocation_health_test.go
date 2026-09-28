@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -87,9 +88,21 @@ func TestRelocationFDAHealthWarnsUntilRegranted(t *testing.T) {
 	}
 }
 
-func TestRelocationFDAHealthUnreadableRecordIsCleared(t *testing.T) {
+// A transient read failure must NOT discard the record: nothing would ever
+// recreate it (the leftover it was derived from is already gone), so the
+// re-grant warning would vanish for good while FDA is still missing.
+func TestRelocationFDAHealthTransientReadErrorKeepsRecord(t *testing.T) {
 	mon := health.NewMonitor()
-	f := &fakeRelocationProbe{readErr: errors.New("parse executable-relocation.json: bad json")}
+	f := &fakeRelocationProbe{readErr: errors.New("read executable-relocation.json: input/output error")}
+	updateRelocationFDAHealth(mon, f.probe())
+	if f.cleared != 0 {
+		t.Fatalf("cleared = %d, want the record kept on a non-corrupt read error", f.cleared)
+	}
+}
+
+func TestRelocationFDAHealthCorruptRecordIsCleared(t *testing.T) {
+	mon := health.NewMonitor()
+	f := &fakeRelocationProbe{readErr: fmt.Errorf("parse: %w", macrelocate.ErrCorruptRecord)}
 	updateRelocationFDAHealth(mon, f.probe())
 	if _, ok := mon.Get(macrelocate.HealthComponent); ok {
 		t.Fatal("an unreadable record must not produce a component")
