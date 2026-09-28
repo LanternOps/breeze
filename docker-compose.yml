@@ -254,7 +254,9 @@ x-api-env: &api-env
   M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
   M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
   M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
-  APP_VERSION: ${BREEZE_VERSION:-dev}
+  # APP_VERSION is deliberately NOT set here: the image bakes its own version
+  # (docker/Dockerfile.api), and /health, the upgrade preflight and the version
+  # history must report what is running, not what .env says (#7024).
   BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
   BINARY_SOURCE: ${BINARY_SOURCE:-github}
   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-}

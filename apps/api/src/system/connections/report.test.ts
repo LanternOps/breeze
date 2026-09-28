@@ -65,6 +65,17 @@ describe('buildConnectionsReport', () => {
     expect(total).toBe(CONNECTION_REGISTRY.length);
   });
 
+  it('#7024: reports a BREEZE_VERSION that does not match the running image', () => {
+    const report = buildConnectionsReport({ APP_VERSION: '0.115.0', BREEZE_VERSION: '0.116.0' });
+    expect(report.version).toBe('0.115.0');
+    expect(report.versionMismatch).toEqual({ running: '0.115.0', configured: '0.116.0' });
+  });
+
+  it('#7024: no version mismatch when BREEZE_VERSION matches the image', () => {
+    expect(buildConnectionsReport({ APP_VERSION: '0.116.0', BREEZE_VERSION: '0.116.0' }).versionMismatch).toBeNull();
+    expect(buildConnectionsReport({}).versionMismatch).toBeNull();
+  });
+
   it('defaults version and deployMode from an empty env', () => {
     const report = buildConnectionsReport({});
     expect(report.version).toBe('unknown');

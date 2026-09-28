@@ -78,6 +78,11 @@ export type ConnectionsReportEntry = {
 
 export type ConnectionsReport = {
   version: string;
+  /**
+   * #7024: BREEZE_VERSION (.env) names a different release than the running
+   * image (`version`). Null when they agree or either is not a release.
+   */
+  versionMismatch: { running: string; configured: string } | null;
   deployMode: 'hosted' | 'self_host';
   scope: 'api';
   summary: Record<ConnectionStatus, number>;

@@ -572,6 +572,7 @@
         "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
         "footnote": "Affiche uniquement l'environnement du conteneur de l'API. Les conteneurs web, portail et worker ne sont pas inclus.",
         "meta": "Version en cours {{version}} · {{mode}}",
+        "versionMismatch": "Cette image d’API est {{running}}, mais BREEZE_VERSION est {{configured}}. Modifier BREEZE_VERSION ne change pas une image épinglée par empreinte, et les agents se voient proposer la version BREEZE_VERSION. Mettez à niveau avec guided-setup.sh --upgrade, ou remettez BREEZE_VERSION à {{running}}.",
         "deployMode": {
           "hosted": "Hébergé",
           "self_host": "Auto-hébergé"

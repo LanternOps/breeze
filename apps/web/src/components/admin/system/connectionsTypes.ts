@@ -47,6 +47,11 @@ export interface ConnectionGroupView {
 
 export interface ConnectionsReport {
   version: string;
+  /**
+   * #7024: BREEZE_VERSION names a different release than the running image.
+   * Optional: an older API does not send it.
+   */
+  versionMismatch?: { running: string; configured: string } | null;
   deployMode: 'hosted' | 'self_host';
   scope: 'api';
   summary: Record<ConnectionStatus, number>;
