@@ -157,3 +157,26 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     await waitFor(() => expect(onLinkChanged).toHaveBeenCalledWith(null, 'remote_access'));
   });
 });
+
+describe('RemoteAccessTab — consent-mode help', () => {
+  function selectConsent() {
+    const select = screen.getByTestId('remote-access-session-prompt-mode') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'consent' } });
+  }
+
+  it('describes every case the unavailable-behavior setting covers today', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    selectConsent();
+    const help = screen.getByTestId('remote-access-consent-unavailable-help').textContent ?? '';
+    expect(help).toMatch(/no one is signed in/i);
+    expect(help).toMatch(/can't be shown/i);
+    expect(help).toMatch(/doesn't answer/i);
+  });
+
+  it('tells the admin that VNC is refused while consent is required', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    expect(screen.queryByTestId('remote-access-consent-vnc-note')).toBeNull();
+    selectConsent();
+    expect(screen.getByTestId('remote-access-consent-vnc-note').textContent).toMatch(/VNC/);
+  });
+});

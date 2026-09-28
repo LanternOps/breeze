@@ -42,6 +42,23 @@ describe('formatAuditAction', () => {
     );
   });
 
+  it('labels each remote-session consent outcome distinctly', () => {
+    const labels = [
+      'session_consent_granted',
+      'session_consent_denied',
+      'session_consent_blocked_unanswered',
+      'session_consent_blocked_unavailable',
+      'session_consent_bypassed',
+    ].map((code) => formatAuditAction(code));
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(formatAuditAction('session_consent_blocked_unavailable')).toBe(
+      'Remote session blocked: consent prompt unavailable',
+    );
+    expect(formatAuditAction('session_consent_bypassed')).toBe(
+      'Remote session started without an answer to the consent prompt',
+    );
+  });
+
   it('returns an empty string for a missing action', () => {
     expect(formatAuditAction(null)).toBe('');
     expect(formatAuditAction(undefined)).toBe('');

@@ -54,6 +54,11 @@ const ACTION_DISPLAY: Record<string, string> = {
   'user.logout': 'Signed out',
   'session_initiated': 'Session initiated',
   'session_offer_submitted': 'Session offer submitted',
+  'session_consent_granted': 'Remote session consent granted',
+  'session_consent_denied': 'Remote session declined by user',
+  'session_consent_blocked_unanswered': 'Remote session blocked: consent prompt not answered',
+  'session_consent_blocked_unavailable': 'Remote session blocked: consent prompt unavailable',
+  'session_consent_bypassed': 'Remote session started without an answer to the consent prompt',
 
   // Devices
   'device.wake_on_lan': 'Sent Wake-on-LAN',
