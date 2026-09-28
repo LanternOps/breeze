@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { formatMoney } from '../billing/shared/format';
 import {
   CATALOG_TYPE_CHIP,
@@ -26,13 +27,20 @@ interface Props {
 }
 
 const MAX_RESULTS = 8;
+const POPUP_GAP_PX = 4;
 
 /**
  * Shared catalog typeahead: search active catalog items by name or SKU, see the
  * type chip + the price-book price in the document currency (+ Bundle badge),
- * pick to add. Reused by the invoice and
- * contract line builders. The dropdown is absolutely positioned within a relative
- * wrapper (callers place it in non-overflow-clipped form areas).
+ * pick to add. Reused by the invoice, quote, ticket-parts and contract line
+ * builders.
+ *
+ * The dropdown renders through a portal into `document.body` with `position:
+ * fixed`, anchored to the input's rect (same approach as `ActionMenu`). The
+ * quote editor's block collapse shell is `overflow-hidden` for its grid-rows
+ * animation, and an `absolute` dropdown inside it was clipped to a sliver below
+ * the input. It flips above the input when it would overflow the viewport
+ * bottom and there is more room above, and follows the input on scroll/resize.
  */
 export default function CatalogItemPicker({
   items, onSelect, currencyCode, includeBundles = true, placeholder, disabled, testId = 'catalog-picker',
@@ -43,7 +51,10 @@ export default function CatalogItemPicker({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const popupRef = useRef<HTMLElement | null>(null);
   const listId = useId();
+  const [popupStyle, setPopupStyle] = useState<CSSProperties>({ position: 'fixed', top: 0, left: 0 });
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -58,11 +69,48 @@ export default function CatalogItemPicker({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      // The popup is portalled out of `wrapRef`, so it has to be checked too —
+      // otherwise a mousedown on an option closes the list before its click lands.
+      if (wrapRef.current?.contains(target) || popupRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
+
+  const showList = open && results.length > 0;
+  const showNoResults = open && query.trim() !== '' && results.length === 0;
+  const popupVisible = showList || showNoResults;
+
+  useLayoutEffect(() => {
+    if (!popupVisible) return;
+    const place = () => {
+      const input = inputRef.current;
+      if (!input) return;
+      const rect = input.getBoundingClientRect();
+      const popupHeight = popupRef.current?.offsetHeight ?? 0;
+      const below = rect.bottom + POPUP_GAP_PX;
+      // Flip above the input when the popup would run off the viewport bottom
+      // and there is more room above than below.
+      const flip = below + popupHeight > window.innerHeight && rect.top > window.innerHeight - rect.bottom;
+      setPopupStyle({
+        position: 'fixed',
+        top: flip ? Math.max(POPUP_GAP_PX, rect.top - POPUP_GAP_PX - popupHeight) : below,
+        left: rect.left,
+        width: rect.width,
+      });
+    };
+    place();
+    // Capture phase: a scroll inside ANY ancestor moves the input, and scroll
+    // events do not bubble.
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [popupVisible, results.length]);
 
   const choose = (item: CatalogItem) => {
     onSelect(item);
@@ -80,6 +128,7 @@ export default function CatalogItemPicker({
   return (
     <div ref={wrapRef} className="relative" data-testid={testId}>
       <input
+        ref={inputRef}
         type="text"
         role="combobox"
         aria-expanded={open}
@@ -94,11 +143,16 @@ export default function CatalogItemPicker({
         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
         data-testid={`${testId}-input`}
       />
-      {open && results.length > 0 && (
+      {showList && createPortal(
         <ul
+          ref={(el) => { popupRef.current = el; }}
           id={listId}
           role="listbox"
-          className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-md border bg-card py-1 shadow-lg"
+          style={popupStyle}
+          // Keep focus in the input so typing continues and a host dialog's
+          // focus handling never sees focus leave for the portalled list.
+          onMouseDown={(e) => e.preventDefault()}
+          className="z-50 max-h-64 overflow-auto rounded-md border bg-card py-1 shadow-lg"
           data-testid={`${testId}-list`}
         >
           {results.map((item, idx) => {
@@ -135,15 +189,19 @@ export default function CatalogItemPicker({
             </li>
             );
           })}
-        </ul>
+        </ul>,
+        document.body,
       )}
-      {open && query.trim() !== '' && results.length === 0 && (
+      {showNoResults && createPortal(
         <div
-          className="absolute z-30 mt-1 w-full rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground shadow-lg"
+          ref={(el) => { popupRef.current = el; }}
+          style={popupStyle}
+          className="z-50 rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground shadow-lg"
           data-testid={`${testId}-noresults`}
         >
           {t('longTail.catalog.CatalogItemPicker.noResults')}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

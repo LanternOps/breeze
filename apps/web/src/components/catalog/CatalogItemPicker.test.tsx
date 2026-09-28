@@ -40,3 +40,49 @@ describe('CatalogItemPicker (multi-currency #3775)', () => {
     expect(await screen.findByTestId('catalog-picker-noprice-cat-1')).toHaveTextContent('No USD price');
   });
 });
+
+describe('CatalogItemPicker (dropdown escapes clipping ancestors)', () => {
+  // The quote editor's block collapse shell is `overflow-hidden` (grid-rows
+  // animation); an `absolute` listbox inside it was cut off below the input.
+  it('portals the listbox out of an overflow-hidden ancestor with fixed positioning', async () => {
+    render(
+      <div data-testid="clip" style={{ overflow: 'hidden' }}>
+        <CatalogItemPicker items={[item()]} onSelect={vi.fn()} currencyCode="EUR" />
+      </div>,
+    );
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    const list = await screen.findByTestId('catalog-picker-list');
+    expect(screen.getByTestId('clip').contains(list)).toBe(false);
+    expect(list.style.position).toBe('fixed');
+  });
+
+  it('portals the no-results note too', async () => {
+    render(
+      <div data-testid="clip" style={{ overflow: 'hidden' }}>
+        <CatalogItemPicker items={[item()]} onSelect={vi.fn()} currencyCode="EUR" />
+      </div>,
+    );
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'zzz' } });
+    const note = await screen.findByTestId('catalog-picker-noresults');
+    expect(screen.getByTestId('clip').contains(note)).toBe(false);
+    expect(note.style.position).toBe('fixed');
+  });
+
+  it('selects a portalled option on click (outside-click guard must not close it first)', async () => {
+    const onSelect = vi.fn();
+    render(<CatalogItemPicker items={[item()]} onSelect={onSelect} currencyCode="EUR" />);
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    const option = await screen.findByTestId('catalog-picker-option-cat-1');
+    fireEvent.mouseDown(option);
+    fireEvent.click(screen.getByTestId('catalog-picker-option-cat-1'));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'cat-1' }));
+  });
+
+  it('still closes on a mousedown outside both the input and the portalled list', async () => {
+    render(<CatalogItemPicker items={[item()]} onSelect={vi.fn()} currencyCode="EUR" />);
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    await screen.findByTestId('catalog-picker-list');
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTestId('catalog-picker-list')).toBeNull();
+  });
+});
