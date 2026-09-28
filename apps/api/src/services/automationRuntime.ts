@@ -34,6 +34,7 @@ import {
   createAndEnqueueAgentRun,
   type AgentRunSkipReason,
   type CreateAgentRunInput,
+  type CreateAgentRunResult,
 } from './aiAgents/runService';
 import { resolveAlertCategory } from './aiAgents/patchWorkClassifier';
 import {
@@ -2197,6 +2198,15 @@ async function executeAiTriageAction(
     managedByAgentId: agentId,
   };
 
+  // #7187 — under the dispatch loop (`deferDelivery`) this runs inside the
+  // per-device claim transaction, a SYSTEM context the gate's own
+  // `inSystemDbContext` joins, so the ledger row is uncommitted when the gate
+  // returns. The gate then hands back `enqueue()` instead of enqueueing, and it
+  // runs as this action's `afterCommit`. Direct callers keep the immediate path.
+  const admit = (admission: CreateAgentRunInput) => (context.deferDelivery
+    ? createAndEnqueueAgentRun(admission, { deferEnqueue: true })
+    : createAndEnqueueAgentRun(admission));
+
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>> | null = null;
   // Which lane actually produced `result` — the action type stays `ai_triage`
   // (that is the automation action), but every message and log below names
@@ -2219,7 +2229,7 @@ async function executeAiTriageAction(
     // the pre-W04 behaviour for that alert was a triage run, and an alert
     // must never be dropped because neither agent claimed it. `duplicate` is
     // the one exception: the patch agent already owns this alert.
-    result = await createAndEnqueueAgentRun({
+    result = await admit({
       orgId: context.device.orgId,
       kind: 'patch',
       profile: 'patch',
@@ -2244,7 +2254,7 @@ async function executeAiTriageAction(
     // managedByAgentId is attribution/bookkeeping. The admission gate resolves
     // the effective triage agent for the device org; an org override wins over
     // the managed baseline, while both ids remain traceable through triggerRef.
-    result = await createAndEnqueueAgentRun({
+    result = await admit({
       orgId: context.device.orgId,
       kind: 'triage',
       triggerKind: 'alert',
@@ -2259,6 +2269,50 @@ async function executeAiTriageAction(
     });
   }
 
+  if (result.created && result.enqueue) {
+    const { enqueue, run } = result;
+    const lane = routedTo;
+    return {
+      // Pre-enqueue placeholder: stamped (with the agent run correlation) in
+      // the claim transaction, then replaced by what `afterCommit` returns.
+      ...aiTriageActionResult(result, lane, actionIndex, context.device.id),
+      afterCommit: async () => {
+        let enqueued: CreateAgentRunResult;
+        try {
+          enqueued = await runOutsideDbContext(enqueue);
+        } catch (err) {
+          // Step 10 catches its own failures, so this is unexpected. Whether
+          // the job landed is unknown; fail the action loudly rather than
+          // report a triage that may never run (the stall reaper closes the
+          // row if it was not enqueued).
+          console.error('[automationRuntime] deferred ai_triage enqueue threw', {
+            actionIndex,
+            deviceId: context.device.id,
+            agentRunId: run.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          captureException(err, undefined, {
+            actionIndex: String(actionIndex),
+            deviceId: context.device.id,
+            agentRunId: run.id,
+          });
+          enqueued = { created: true, run: { ...run, status: 'failed', errorCode: 'enqueue_failed' } };
+        }
+        return aiTriageActionResult(enqueued, lane, actionIndex, context.device.id);
+      },
+    };
+  }
+
+  return aiTriageActionResult(result, routedTo, actionIndex, context.device.id);
+}
+
+/** Maps the admission gate's answer to the ai_triage action's outcome. */
+function aiTriageActionResult(
+  result: CreateAgentRunResult,
+  routedTo: 'patch' | 'triage',
+  actionIndex: number,
+  deviceId: string,
+): ActionExecutionResult {
   if (result.created) {
     // `created` is NOT "queued". 3c's gate inserts the ledger row first and
     // announces/enqueues afterwards; when the publish or the BullMQ enqueue
@@ -2279,7 +2333,7 @@ async function executeAiTriageAction(
         log: logEntry(message, 'error', {
           actionType: 'ai_triage',
           actionIndex,
-          deviceId: context.device.id,
+          deviceId,
           details: {
             agentRunId: result.run.id,
             routedTo,
@@ -2301,7 +2355,7 @@ async function executeAiTriageAction(
       log: logEntry(queuedMessage, 'info', {
         actionType: 'ai_triage',
         actionIndex,
-        deviceId: context.device.id,
+        deviceId,
         details: { agentRunId: result.run.id, routedTo },
       }),
     };
@@ -2312,7 +2366,7 @@ async function executeAiTriageAction(
   return {
     outcome: hardFailure ? { status: 'failed', message } : { status: 'succeeded' },
     log: logEntry(message, hardFailure ? 'error' : 'info', {
-      actionType: 'ai_triage', actionIndex, deviceId: context.device.id, details: { routedTo },
+      actionType: 'ai_triage', actionIndex, deviceId, details: { routedTo },
     }),
   };
 }

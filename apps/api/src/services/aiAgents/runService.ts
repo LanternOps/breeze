@@ -429,6 +429,33 @@ export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
   | { created: false; skipped: AgentRunSkipReason };
 
+export type CreateAgentRunOptions = {
+  /**
+   * #7187 — insert the ledger row but do NOT announce or enqueue it; return an
+   * `enqueue()` continuation instead (the #3445 `deliver()` shape).
+   *
+   * For a caller that runs the gate inside a SYSTEM transaction that stays open
+   * after the gate returns (the automation runtime's per-device claim
+   * transaction). `inSystemDbContext` joins that transaction, so the row is
+   * still uncommitted when step 10 would run: the runner's CAS out of `queued`
+   * then matches nothing and the run is stranded until the stall reaper, and a
+   * rollback leaves a job for a row that never existed. Such a caller passes
+   * this flag and calls `enqueue()` after its transaction commits.
+   */
+  deferEnqueue?: boolean;
+};
+
+/**
+ * The gate's result for a caller that passed `deferEnqueue`. `enqueue` is
+ * present only on a created run; it performs step 10 (announce, enqueue, and
+ * mark the row `enqueue_failed` if either fails) and resolves to the result an
+ * immediate admission would have returned. It must run after the caller's
+ * transaction has committed and with no ambient DB context.
+ */
+export type DeferredCreateAgentRunResult =
+  | { created: true; run: AiAgentRunRow; enqueue?: () => Promise<CreateAgentRunResult> }
+  | { created: false; skipped: AgentRunSkipReason };
+
 /**
  * Enqueue seam. `jobs/aiAgentRunner` owns the BullMQ queue AND imports
  * `transitionRunStatus` from this module, so a static import here would close a
@@ -984,11 +1011,13 @@ function profileCaps(
  * cross-table ownership invariant, insert the ledger row, enqueue.
  *
  * It NEVER runs the agent inline. The only side effects are one insert, one
- * event and one BullMQ enqueue.
+ * event and one BullMQ enqueue. With `options.deferEnqueue` the event and the
+ * enqueue move into the returned `enqueue()` continuation (#7187).
  */
 export async function createAndEnqueueAgentRun(
   input: CreateAgentRunInput,
-): Promise<CreateAgentRunResult> {
+  options: CreateAgentRunOptions = {},
+): Promise<DeferredCreateAgentRunResult> {
   const { orgId, kind, triggerKind, deviceId, dedupeKey } = input;
 
   // Branch-review fix (wave 6 PR 3, #3828): `ticketId` must only ever
@@ -1688,9 +1717,25 @@ export async function createAndEnqueueAgentRun(
   if (!admission.created) return admission;
   const run = admission.run;
 
-  // 10. Announce, then enqueue — outside the DB context (see above). A failure
-  //     in either leaves a row no worker will ever pick up, so it is failed
-  //     here rather than left to sit in `queued` forever.
+  // #7187 — the caller's transaction still holds the row uncommitted; step 10
+  // is its to run once that transaction commits.
+  if (options.deferEnqueue) {
+    return { created: true, run, enqueue: () => announceAndEnqueueAgentRun(input, run) };
+  }
+  return announceAndEnqueueAgentRun(input, run);
+}
+
+/**
+ * Step 10 of the admission gate: announce, then enqueue — outside the DB
+ * context (see step 4). A failure in either leaves a row no worker will ever
+ * pick up, so it is failed here rather than left to sit in `queued` forever.
+ * Never throws.
+ */
+async function announceAndEnqueueAgentRun(
+  input: CreateAgentRunInput,
+  run: AiAgentRunRow,
+): Promise<CreateAgentRunResult> {
+  const { orgId, triggerKind, deviceId } = input;
   try {
     await publishEvent(
       'ai.agent.run.queued',
