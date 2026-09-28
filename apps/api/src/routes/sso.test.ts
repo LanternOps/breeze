@@ -3052,6 +3052,69 @@ describe('sso routes', () => {
       }));
     });
 
+    // #7252: a partner admin in the All-organizations view (no org in the body
+    // or auth context, several accessible orgs) got a bare "Organization ID
+    // required" on an org-owned create — nothing said what to do next.
+    it('400s an org-owned create with no resolvable org with an actionable message and code', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID, '00000000-0000-4000-8000-000000000011'],
+        partnerOrgAccess: 'all'
+      });
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Authentik', type: 'oidc' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('sso_provider_org_required');
+      expect(body.error).not.toBe('Organization ID required');
+      expect(body.error).toMatch(/select an organization/i);
+      expect(body.error).toMatch(/ownerScope/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('does not suggest ownerScope=partner to an org-scoped caller (it cannot use it)', async () => {
+      setAuthContext({ scope: 'organization', orgId: null, partnerId: null, accessibleOrgIds: [] });
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Authentik', type: 'oidc' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Organization ID required');
+      expect(body.code).toBeUndefined();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('still 403s an org-owned create for an org the partner user cannot access (no loosening)', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID],
+        partnerOrgAccess: 'selected',
+        canAccessOrg: (orgId) => orgId === ORG_UUID
+      });
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Authentik', type: 'oidc', orgId: '00000000-0000-4000-8000-000000000011' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('403s ownerScope=partner when partnerOrgAccess is not all', async () => {
       setAuthContext({
         scope: 'partner',
@@ -5039,6 +5102,29 @@ describe('sso routes', () => {
         // Self sorts first so the guaranteed-self-lockout case survives truncation.
         expect(data.unlinked[0]).toMatchObject({ id: USER_UUID, isSelf: true });
         expect(data.unlinked[1]).toMatchObject({ email: 'alice@example.com', isSelf: false, hasPasskey: true });
+      });
+
+      // #7252: the create-flow preflight derives the axis exactly like
+      // POST /providers, so it refuses an unresolvable org the same way.
+      it('create flow with no resolvable org: 400 with the actionable provider-create message and code', async () => {
+        setAuthContext({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_UUID,
+          accessibleOrgIds: [ORG_UUID, '00000000-0000-4000-8000-000000000011'],
+          partnerOrgAccess: 'all'
+        });
+
+        const res = await app.request('/sso/providers/enforcement-preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('sso_provider_org_required');
+        expect(body.error).toMatch(/select an organization/i);
       });
 
       it('edit flow (providerId): linked members are excluded and the effective login provider is reported', async () => {
