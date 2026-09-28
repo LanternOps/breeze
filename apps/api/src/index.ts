@@ -233,6 +233,7 @@ import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redi
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
 import { buildHealthPayload } from './services/versionInfo';
+import { warnOnVersionMismatch } from './services/versionMismatch';
 import {
   setWorkerReadinessTransitionHandler,
   workerReadinessRegistry,
@@ -1612,6 +1613,8 @@ async function bootstrap(): Promise<void> {
   }
 
   console.log(`Breeze API starting on port ${port}...`);
+  // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
+  warnOnVersionMismatch();
 
   // Initialize error reporting first so failures during the rest of startup
   // (migrations, seeds, self-tests) and the global onError/unhandledRejection

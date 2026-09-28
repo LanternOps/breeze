@@ -249,11 +249,13 @@ Then pull and restart:
 docker compose pull && docker compose up -d
 ```
 
+That applies to tag-form image refs only. On a digest-pinned install (below), changing `BREEZE_VERSION` alone does not change the images, and `docker compose pull` fetches the same digests again. Upgrade those installs with `guided-setup.sh --upgrade`. See the [Upgrade Guide](/deploy/upgrades/#docker-compose-upgrade).
+
 ### Signed, digest-pinned image references (v0.112.0 and later)
 
 Since v0.112.0 every release publishes a **signed image inventory** — `release-artifact-manifest.json` plus its `.ed25519` signature on the GitHub Release — listing the exact `repository@sha256:…` digest of the API, web, portal and binaries images. `.env.example` now ships the four `BREEZE_*_IMAGE_REF` variables as `@sha256:replace-with-signed-release-digest` placeholders rather than `:${BREEZE_VERSION}` tags, so a fresh install pins to verified digests and a GHCR tag or package page is never the authorization source.
 
-- **Guided installer:** `guided-setup.sh` downloads the inventory for the release you pick, verifies its signature against `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, and fills the four image refs itself. Verification is fail-closed: if it cannot download or verify the inventory, no image is pulled. For a release older than 0.112.0 the installer warns that the release predates signed inventories and falls back to tag-tracking refs.
+- **Guided installer:** `guided-setup.sh` downloads the inventory for the release you pick, verifies its signature against `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, and fills the four image refs itself. Verification is fail-closed: if it cannot download or verify the inventory, no image is pulled. For a release older than 0.112.0 the installer warns that the release predates signed inventories and falls back to tag-tracking refs. To upgrade later, run `bash guided-setup.sh --upgrade [VERSION]`. It runs the same verification for the target release, backs up `.env`, rewrites `BREEZE_VERSION` and the four refs together, then pulls and restarts.
 - **Manual setup:** resolve the digests yourself with the verifier script that ships with the release, then copy the four lines it emits into `.env`:
 
   ```bash
@@ -271,7 +273,7 @@ Since v0.112.0 every release publishes a **signed image inventory** — `release
   cat images.env   # BREEZE_API_IMAGE_REF=…@sha256:…, and the web, portal and binaries refs
   ```
 
-  Repeat this on every upgrade — a digest pin does not follow `BREEZE_VERSION`, so bumping the version alone changes nothing until the four refs are updated too. Keep `BREEZE_VERSION` in step with the pinned release: it still selects the agent release your fleet is offered.
+  Repeat this on every upgrade — a digest pin does not follow `BREEZE_VERSION`, so bumping the version alone changes nothing until the four refs are updated too. Keep `BREEZE_VERSION` in step with the pinned release: it still selects the agent release your fleet is offered. `guided-setup.sh --work-dir <dir> --env-file <file> --upgrade [VERSION]` automates these steps for a manual install as well. If `BREEZE_VERSION` and the running image differ, the API logs a `[version]` warning at startup and shows it under **Administration → System → Connections**.
 - **Existing installs** whose `.env` still carries the older `ghcr.io/lanternops/breeze/api:${BREEZE_VERSION}` form keep working; the upgrade guide's `docker compose pull` line is unchanged for them. Switching to digest pins is recommended but not required.
 
 <Aside type="caution" title="Rotating the manifest signing key is a fleet re-enrollment">

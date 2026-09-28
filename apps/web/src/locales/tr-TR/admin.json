@@ -572,6 +572,7 @@
         "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
         "footnote": "Yalnızca API kapsayıcısının ortamını gösterir. Web, portal ve worker kapsayıcıları dahil değildir.",
         "meta": "Çalışan sürüm {{version}} · {{mode}}",
+        "versionMismatch": "Bu API imajı {{running}}, ancak BREEZE_VERSION {{configured}}. BREEZE_VERSION değerini değiştirmek digest ile sabitlenmiş imajı değiştirmez ve ajanlara BREEZE_VERSION sürümü sunulur. guided-setup.sh --upgrade ile yükseltin veya BREEZE_VERSION değerini {{running}} olarak geri ayarlayın.",
         "deployMode": {
           "hosted": "Barındırılan",
           "self_host": "Kendi sunucusunda"

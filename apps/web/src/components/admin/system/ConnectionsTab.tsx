@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Lock, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Lock, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 // Initializes the shared i18next singleton before any island renders translated text.
 import '../../../lib/i18n';
@@ -197,6 +197,22 @@ export default function ConnectionsTab() {
           <RefreshCw className="w-4 h-4" aria-hidden="true" /> {t('admin.systemPage.connections.refresh')}
         </button>
       </div>
+
+      {report?.versionMismatch && (
+        <div
+          data-testid="connections-version-mismatch"
+          role="alert"
+          className="bg-amber-50 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100 px-4 py-3 rounded-md text-sm flex items-start gap-2"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <span>
+            {t('admin.systemPage.connections.versionMismatch', {
+              running: report.versionMismatch.running,
+              configured: report.versionMismatch.configured,
+            })}
+          </span>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center py-12 text-muted-foreground">{t('admin.systemPage.connections.loading')}</div>

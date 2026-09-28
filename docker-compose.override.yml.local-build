@@ -13,6 +13,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+      args:
+        # Baked into the image; Compose never overrides APP_VERSION (#7024).
+        APP_VERSION: ${BREEZE_VERSION:-dev}
     environment:
       BINARY_SOURCE: local
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}

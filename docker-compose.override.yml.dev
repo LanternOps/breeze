@@ -62,6 +62,8 @@ services:
       - /app/packages/shared/node_modules
     environment:
       NODE_ENV: development
+      # Source-mounted dev image: no baked release version (#7024).
+      APP_VERSION: dev
       LOG_LEVEL: debug
       ENABLE_API_DOCS: "true"
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}

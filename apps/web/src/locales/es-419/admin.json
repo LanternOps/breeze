@@ -572,6 +572,7 @@
         "enabledMeaning": "Habilitado significa configurado. Breeze no contacta al servicio para comprobar que responde.",
         "footnote": "Muestra solo el entorno del contenedor de la API. No incluye los contenedores web, portal y worker.",
         "meta": "Versión en ejecución {{version}} · {{mode}}",
+        "versionMismatch": "Esta imagen de la API es {{running}}, pero BREEZE_VERSION es {{configured}}. Cambiar BREEZE_VERSION no cambia una imagen fijada por digest, y a los agentes se les ofrece la versión de BREEZE_VERSION. Actualiza con guided-setup.sh --upgrade o vuelve a establecer BREEZE_VERSION en {{running}}.",
         "deployMode": {
           "hosted": "Alojado",
           "self_host": "Autoalojado"

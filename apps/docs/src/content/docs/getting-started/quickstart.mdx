@@ -27,6 +27,10 @@ the stack comes back up on its own after a reboot. Accept it on a server you
 want running unattended; you can install or update it later with
 `bash guided-setup.sh --install-systemd`.
 
+The installer pins the Breeze images by digest. To upgrade, run
+`bash guided-setup.sh --upgrade`, not `docker compose pull`. Pulling fetches the
+release you already run. See the [Upgrade Guide](/deploy/upgrades/).
+
 Prefer to configure `.env` yourself? The manual path is below.
 
 <Aside type="tip">
@@ -115,9 +119,10 @@ Prefer to configure `.env` yourself? The manual path is below.
    grep '^BREEZE_VERSION=' .env
    ```
 
-   To upgrade later, set it to a newer release from
-   [the releases page](https://github.com/lanternops/breeze/releases) and re-run
-   `docker compose up -d`.
+   To upgrade later, follow the [Upgrade Guide](/deploy/upgrades/). With the
+   digest-pinned image refs described below, changing `BREEZE_VERSION` alone
+   does not change the images. Update the four refs with it, or run
+   `guided-setup.sh --upgrade`.
 
    <Aside type="caution">
      Pick a version that has **published container images**, which is not always
