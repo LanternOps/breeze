@@ -20,6 +20,7 @@ import CapacityForecast, { type ForecastPoint, type Thresholds } from './Capacit
 import SLAComplianceCard from './SLAComplianceCard';
 import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
+import { FilterSelect } from '../shared/FilterSelect';
 import { cn, formatNumber } from '@/lib/utils';
 import { formatTime } from '@/lib/dateTimeFormat';
 import { formatPercent } from '@/lib/i18n/format';
@@ -988,17 +989,18 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
               {t('analytics.analyticsPage.lastUpdated', { time: formatTime(lastUpdated, { timeZone: timezone }) })}
             </span>
           )}
-          <select
+          <FilterSelect
+            label={t('analytics.analyticsPage.dateRangeSelectLabel')}
             value={dateRange}
             onChange={event => setDateRange(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className="h-9"
           >
             {dateRanges.map(option => (
               <option key={option.value} value={option.value}>
                 {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
-          </select>
+          </FilterSelect>
           <button
             type="button"
             onClick={fetchAnalyticsData}

@@ -1660,7 +1660,8 @@
       "lastScanned": "Son Taranan"
     },
     "loading": "Uyumluluk verileri yükleniyor...",
-    "empty": "Uyumluluk sonucu bulunamadı."
+    "empty": "Uyumluluk sonucu bulunamadı.",
+    "osFilterLabel": "İşletim sistemi"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1761,7 +1762,8 @@
     "title": "Düzeltmeler",
     "tooltip": "Başarısız CIS kontrolleri için otomatik düzeltmeler. Hedef cihazda yürütülmeden önce her birinin onaylanması gerekir.",
     "filters": {
-      "allStatuses": "Tüm durumlar"
+      "allStatuses": "Tüm durumlar",
+      "statusFilterLabel": "Durum"
     },
     "status": {
       "pendingApproval": "Onay Bekleniyor",

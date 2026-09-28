@@ -17,6 +17,7 @@
         "operations": "Operations Overview",
         "sla": "SLA Compliance"
       },
+      "dateRangeSelectLabel": "Date range",
       "dateRanges": {
         "customRange": "Custom range",
         "last24Hours": "Last 24 hours",

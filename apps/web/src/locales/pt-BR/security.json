@@ -1660,7 +1660,8 @@
       "lastScanned": "Última verificação"
     },
     "loading": "Carregando dados de conformidade...",
-    "empty": "Nenhum resultado de conformidade encontrado."
+    "empty": "Nenhum resultado de conformidade encontrado.",
+    "osFilterLabel": "Sistema operacional"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1761,7 +1762,8 @@
     "title": "Remediações",
     "tooltip": "Correções automatizadas para verificações CIS com falha. Cada uma deve ser aprovada antes da execução no dispositivo de destino.",
     "filters": {
-      "allStatuses": "Todos os status"
+      "allStatuses": "Todos os status",
+      "statusFilterLabel": "Status da correção"
     },
     "status": {
       "pendingApproval": "Aprovação pendente",

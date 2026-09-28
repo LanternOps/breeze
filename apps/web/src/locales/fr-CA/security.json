@@ -1660,7 +1660,8 @@
       "lastScanned": "Dernier scan"
     },
     "loading": "Chargement des données de conformité...",
-    "empty": "Aucun résultat de conformité trouvé."
+    "empty": "Aucun résultat de conformité trouvé.",
+    "osFilterLabel": "Système d'exploitation"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1761,7 +1762,8 @@
     "title": "Réhabilitations",
     "tooltip": "Corrections automatisées pour les échecs des vérifications CIS. Chacun doit être approuvé avant l’exécution sur l’appareil cible.",
     "filters": {
-      "allStatuses": "Tous les statuts"
+      "allStatuses": "Tous les statuts",
+      "statusFilterLabel": "État"
     },
     "status": {
       "pendingApproval": "En attente d’approbation",

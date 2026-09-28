@@ -64,7 +64,8 @@
           "label": "Disponibilité de la flotte",
           "title": "Disponibilité"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Plage de dates"
     },
     "capacityForecast": {
       "actual": "Réel",

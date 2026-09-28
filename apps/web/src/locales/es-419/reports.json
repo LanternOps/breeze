@@ -64,7 +64,8 @@
           "label": "Tiempo de actividad de la flota",
           "title": "tiempo de actividad"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Rango de fechas"
     },
     "capacityForecast": {
       "actual": "Real",

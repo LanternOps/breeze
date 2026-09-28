@@ -64,7 +64,8 @@
           "label": "Uptime della flotta",
           "title": "Uptime"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Intervallo di date"
     },
     "capacityForecast": {
       "actual": "Effettivo",

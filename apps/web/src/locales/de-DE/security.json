@@ -1660,7 +1660,8 @@
       "lastScanned": "Zuletzt gescannt"
     },
     "loading": "Compliance-Daten werden geladen...",
-    "empty": "Es wurden keine Compliance-Ergebnisse gefunden."
+    "empty": "Es wurden keine Compliance-Ergebnisse gefunden.",
+    "osFilterLabel": "Betriebssystem"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1761,7 +1762,8 @@
     "title": "Abhilfemaßnahmen",
     "tooltip": "Automatisierte Korrekturen für fehlgeschlagene CIS-Prüfungen. Jedes muss vor der Ausführung auf dem Zielgerät genehmigt werden.",
     "filters": {
-      "allStatuses": "Alle Status"
+      "allStatuses": "Alle Status",
+      "statusFilterLabel": "Behebungsstatus"
     },
     "status": {
       "pendingApproval": "Ausstehende Genehmigung",

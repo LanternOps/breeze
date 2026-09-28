@@ -64,7 +64,8 @@
           "label": "Betriebszeit der Flotte",
           "title": "Betriebszeit"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Zeitraum"
     },
     "capacityForecast": {
       "actual": "Tatsächlich",

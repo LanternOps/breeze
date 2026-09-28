@@ -1645,6 +1645,7 @@
   },
   "cisHardeningCisComplianceTab": {
     "searchPlaceholder": "Search hostname or baseline...",
+    "osFilterLabel": "Operating system",
     "os": {
       "all": "All OS types",
       "windows": "Windows",
@@ -1761,7 +1762,8 @@
     "title": "Remediations",
     "tooltip": "Automated fixes for failed CIS checks. Each must be approved before execution on the target device.",
     "filters": {
-      "allStatuses": "All statuses"
+      "allStatuses": "All statuses",
+      "statusFilterLabel": "Status"
     },
     "status": {
       "pendingApproval": "Pending Approval",

@@ -64,7 +64,8 @@
           "label": "Disponibilidade da frota",
           "title": "Disponibilidade"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Intervalo de datas"
     },
     "capacityForecast": {
       "actual": "Real",

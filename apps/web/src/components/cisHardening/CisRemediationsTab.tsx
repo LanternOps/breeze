@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Loader2 } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth } from '@/stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import HelpTooltip from '../shared/HelpTooltip';
@@ -97,10 +98,11 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
           {t('cisHardeningCisRemediationsTab.title')}
           <HelpTooltip text={t('cisHardeningCisRemediationsTab.tooltip')} />
         </h3>
-        <select
+        <FilterSelect
+          label={t('cisHardeningCisRemediationsTab.filters.statusFilterLabel')}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-10"
         >
           <option value="all">{t('cisHardeningCisRemediationsTab.filters.allStatuses')}</option>
           <option value="pending_approval">{t('cisHardeningCisRemediationsTab.status.pendingApproval')}</option>
@@ -109,7 +111,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
           <option value="completed">{t('cisHardeningCisRemediationsTab.status.completed')}</option>
           <option value="failed">{t('cisHardeningCisRemediationsTab.status.failed')}</option>
           <option value="cancelled">{t('cisHardeningCisRemediationsTab.status.cancelled')}</option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="mt-4 overflow-x-auto rounded-md border">
