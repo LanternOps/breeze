@@ -75,7 +75,10 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { findAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
+import {
+  accountingProviderDisplayName, findAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
+} from '../services/accounting/providerRegistry';
+import { paymentNotConnectedMessage } from '../services/accounting/accountingPaymentMessages';
 import type { AccountingCapability, AccountingProviderId } from '../services/accounting/types';
 import { logJobDrop, resolveJobConnection, type JobConnectionRef } from './accountingJobConnection';
 import { delayJobForRateLimit, rateLimitRetryAfterMs, type AccountingJobContext } from './accountingJobDelay';
@@ -92,7 +95,6 @@ import {
   notePaymentJobSkipped,
   paymentDeleteAwaitsRemoteRef,
   AccountingPaymentPushError,
-  PAYMENT_NOT_CONNECTED_MESSAGE,
   type AccountingPaymentPushErrorCode,
   type PaymentPushOutcome,
   type PaymentDeleteOutcome,
@@ -212,8 +214,9 @@ const PAYMENT_TERMINAL_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new 
 /**
  * Terminal payment codes the OPERATOR resolves (a setting, a Xero-side record):
  * logged, never sent to Sentry. `remote_ambiguous` is deliberately absent — it
- * should never happen and is reported. The pre-W05 terminal codes keep their
- * capture, so QuickBooks telemetry is unchanged.
+ * should never happen and IS reported, once, by the coordinator (with provider
+ * tags); the worker logs it as an error and does not capture it again. The
+ * pre-W05 terminal codes keep their capture, so QuickBooks telemetry is unchanged.
  */
 const PAYMENT_USER_RESOLVABLE_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new Set([
   'push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission', 'amount_exceeds_due', 'remote_deleted',
@@ -354,7 +357,15 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
         return;
       }
       if (data.type === 'push-payment' || data.type === 'delete-payment') {
-        await notePaymentJobSkipped(data.mappingId, data.partnerId, PAYMENT_NOT_CONNECTED_MESSAGE);
+        // Labelled by the row's OWN provider (Xero W05b): for a payment job
+        // `conn` IS the mapping row's connection (`getConnectionForMapping`, the
+        // same partner-guarded join the give-up's `getConnectionProviderForMapping`
+        // reads), so no second read is needed. No row at all reads as the legacy
+        // provider, whose text is the unchanged 'QuickBooks is not connected'.
+        const label = accountingProviderDisplayName(
+          (conn?.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId,
+        );
+        await notePaymentJobSkipped(data.mappingId, data.partnerId, paymentNotConnectedMessage(label));
       }
       return;
     }
@@ -440,6 +451,11 @@ async function processPaymentJob(
       if (PAYMENT_USER_RESOLVABLE_CODES.has(err.code)) {
         // An expected outcome the operator resolves; the mapping row carries the remedy.
         console.warn(...logArgs);
+      } else if (err.code === 'remote_ambiguous') {
+        // Loud but NOT re-captured: the coordinator's create-catch already
+        // reported it to Sentry, with the provider telemetry tags only it has.
+        // A second capture here doubled every event (Xero W05b F3).
+        console.error(...logArgs);
       } else {
         console.error(...logArgs);
         captureException(err, undefined, {

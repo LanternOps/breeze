@@ -1278,13 +1278,14 @@ async function reverseOneInsideTransaction(
 
 /**
  * A Breeze-origin payment mapping the QuickBooks side moved under us
- * (spec decision 5). Four cases, because `reason` and `pending_op` are
+ * (spec decision 5). Five cases, because `reason` and `pending_op` are
  * independent and the wrong pairing loses money state:
  *
  * | reason        | pending_op | outcome |
  * |---------------|------------|---------|
  * | `deleted`     | `'delete'` | The remote deletion SATISFIES the owed delete: drop the row. |
  * | `deleted`     | none       | Keep the payment row (the money moved); clear the ids so the fan-out can re-push. |
+ * | `deleted`     | none, payment row gone | A refused reconciled delete the bookkeeper finished: drop the row (Xero W05 refinement 16). |
  * | `reallocated` | `'delete'` | NO WRITE. The Payment is alive and the delete job is about to remove it outright. |
  * | `reallocated` | none       | An EDIT: mark the mapping diverged and KEEP the ids — a later void still has to delete that Payment. |
  *
@@ -1350,17 +1351,10 @@ async function breezeOriginRemoval(
     };
   }
 
-  if (owesDelete) {
-    // Breeze already wanted this Payment gone and QuickBooks got there first, so
-    // the owed delete is satisfied and the outbox row has nothing left to do.
-    // Nulling its remote id instead would park the delete worker on
-    // `awaiting_remote_ref` for the whole grace window and then raise a false
-    // "a QuickBooks Payment may be orphaned" alarm for a Payment that
-    // demonstrably no longer exists.
-    //
-    // Guarded on the LEASE: a delete worker holding a live claim is mid-flight
-    // on this exact row, and pulling it out from under that job would make its
-    // own write fail. Let it finish its own path instead.
+  // Guarded on the LEASE: a delete worker holding a live claim is mid-flight on
+  // this exact row, and pulling it out from under that job would make its own
+  // write fail. Let it finish its own path instead.
+  const dropSatisfiedMapping = async (): Promise<ApplyOutcome> => {
     const removed = await db
       .delete(accountingEntityMappings)
       .where(and(
@@ -1379,6 +1373,27 @@ async function breezeOriginRemoval(
       ),
       audit: audit('accounting.payment.removed_remotely', { deleteSatisfied: true }),
     };
+  };
+
+  if (owesDelete) {
+    // Breeze already wanted this Payment gone and QuickBooks got there first, so
+    // the owed delete is satisfied and the outbox row has nothing left to do.
+    // Nulling its remote id instead would park the delete worker on
+    // `awaiting_remote_ref` for the whole grace window and then raise a false
+    // "a QuickBooks Payment may be orphaned" alarm for a Payment that
+    // demonstrably no longer exists.
+    return dropSatisfiedMapping();
+  }
+
+  // Nothing owed, but the Breeze payment row is already GONE (Xero W05
+  // refinement 16): a Breeze void deleted it, the provider refused the delete
+  // as reconciled, and the refusal stamp cleared `pending_op` while KEEPING the
+  // remote id — the delete was handed to the bookkeeper. Their deletion is what
+  // satisfies that void, so the mapping goes exactly as in the owed-delete arm.
+  // Marking it re-ownable instead would strand it for good: the fan-out that
+  // re-owns rows iterates `invoice_payments`, and this one no longer exists.
+  if (!await loadPaymentRow(mapping.breezeEntityId)) {
+    return dropSatisfiedMapping();
   }
 
   // Nothing owed, so Breeze still holds the payment. The Breeze row SURVIVES:

@@ -99,6 +99,7 @@ import {
   paymentInvoiceNotSyncedMessage,
   paymentInvoiceVoidMessage,
   paymentNotConnectedMessage,
+  paymentProviderPermissionMessage,
   paymentPushDisabledMessage,
   paymentPushGaveUpMessageFor,
   paymentRecordConflictRetryMessage,
@@ -229,9 +230,9 @@ export const PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE = paymentRecordFailedOrphanMes
 // lives on `record_failed_count`, never in that text.
 
 /**
- * Stamped by the sync worker when a payment job finds no connected connection
- * to run against (`notePaymentJobSkipped`). The worker has no connection there
- * to label it with, so it keeps this text.
+ * The QuickBooks text of the not-connected skip stamp. The sync worker now
+ * stamps `paymentNotConnectedMessage(label)` with the mapping row's own provider
+ * (`notePaymentJobSkipped`); for a QuickBooks row that is this exact string.
  * @deprecated QuickBooks text; use `paymentNotConnectedMessage(label)` where a provider is known.
  */
 export const PAYMENT_NOT_CONNECTED_MESSAGE = paymentNotConnectedMessage('QuickBooks');
@@ -359,7 +360,12 @@ function paymentPushRefusal(
   op: 'create' | 'delete',
 ): { code: AccountingPaymentPushErrorCode; message: string } | null {
   switch (refusalCodeOf(err)) {
-    case 'insufficient_scope': return { code: 'provider_permission', message: providerPermissionMessage(label) };
+    // Create: the owed push is cleared, so the text adds the re-push step. Delete:
+    // the row stays owed (parked), so reconnecting is the whole fix.
+    case 'insufficient_scope': return {
+      code: 'provider_permission',
+      message: op === 'create' ? paymentProviderPermissionMessage(label) : providerPermissionMessage(label),
+    };
     case 'remote_locked': return op === 'delete' ? { code: 'remote_locked', message: paymentRemoteLockedMessage(label) } : null;
     case 'remote_missing': return op === 'create' ? { code: 'remote_missing', message: paymentRemoteMissingMessage(label) } : null;
     case 'amount_exceeds_due': return op === 'create' ? { code: 'amount_exceeds_due', message: paymentAmountExceedsDueMessage(label) } : null;
@@ -2330,6 +2336,18 @@ export async function deletePaymentInAccounting(
     const refusal = paymentPushRefusal(err, accountingProviderDisplayName(prep.conn.provider), 'delete');
     if (refusal) {
       logProviderFault('deletePayment', mappingId, err);
+      if (refusal.code === 'provider_permission') {
+        // PARKED, never cleared: a `delete` row is NEVER dropped (see
+        // `markPaymentMappingError`), and a missing grant is fixed by
+        // reconnecting — after which the sweep must still retry this delete, and
+        // `readOwedPaymentDeletes` (#7291) must still count it as owed. So `pending_op` stays 'delete', the
+        // lease is released, no attempt is counted and there is no Sentry event:
+        // it is an operator-resolvable refusal, not an incident.
+        await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, refusal.message, {
+          clearPendingOp: false, countAttempt: 'never',
+        });
+        throw new AccountingPaymentPushError(refusal.code, 409, refusal.message);
+      }
       // Terminal, and the remote id is KEPT (refinement 16): the bookkeeper
       // resolves it in the provider (Xero: unreconcile, then delete there), and
       // the pull then observes the deletion. CONDITIONAL: only while the row

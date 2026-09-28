@@ -2709,7 +2709,7 @@ describe('Xero W05: preflight park, provider refusals, labels', () => {
     ['amount_exceeds_due', 'validation', 'amount_exceeds_due',
       'Xero refused the payment because it is more than the amount still due on the invoice there — check for a payment or credit already recorded in Xero, then push the invoice to Xero again'],
     ['insufficient_scope', 'validation', 'provider_permission',
-      'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission'],
+      'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission, then push the invoice to Xero again'],
   ])('create refusal %s → terminal %s, pending_op cleared, persisted, no Sentry', async (providerCode, kind, code, message) => {
     createPaymentMock.mockRejectedValueOnce(xeroRefusal(providerCode, kind));
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code, status: 409, message });
@@ -2755,6 +2755,27 @@ describe('Xero W05: preflight park, provider refusals, labels', () => {
       message: 'Xero will not delete this payment because it is reconciled to a bank transaction — unreconcile it in Xero and delete it there',
     });
     expect(mapping()).toMatchObject({ pendingOp: null, remoteEntityId: 'xp-1/xi-1', syncStatus: 'error' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('delete refusal insufficient_scope PARKS: 409 provider_permission, the owed delete KEPT, no attempt, no Sentry', async () => {
+    // A delete row is NEVER dropped (coordinator invariant): a missing grant is
+    // fixed by reconnecting, after which the sweep must still find this delete.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete',
+      syncStatus: 'pending', syncAttempts: 3,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'Xero payment delete', httpStatus: 403, providerCode: 'insufficient_scope',
+    }));
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'provider_permission', status: 409,
+      message: 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission',
+    });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', remoteEntityId: 'xp-1/xi-1', syncStatus: 'error', syncAttempts: 3, claimedAt: null,
+      lastError: 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission',
+    });
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 

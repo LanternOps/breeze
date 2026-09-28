@@ -261,7 +261,7 @@ export class XeroProvider implements AccountingProvider {
     return left.length === right.length && timingSafeEqual(left, right);
   }
 
-  // --- payment push (Xero W05b; paymentPush capability flips in W05c) ---
+  // --- payment push (Xero W05b; capability gate: see the file header) ---
   /** Refinement 17: a missing bank account parks the payment before any token refresh or call. */
   paymentPushPreflight(conn: AccountingConnection): string | null {
     return xeroPaymentPreflight(conn);

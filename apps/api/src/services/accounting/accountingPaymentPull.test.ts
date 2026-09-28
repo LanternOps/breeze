@@ -1692,6 +1692,41 @@ describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () =
     }));
   });
 
+  it('DROPS a nothing-owed mapping whose Breeze payment is already gone (refused reconciled delete, Xero W05 refinement 16)', async () => {
+    // The Breeze void deleted the payment, the provider refused the delete as
+    // reconciled, and the refusal stamp cleared `pending_op` while KEEPING the
+    // remote id: the bookkeeper was handed the delete. Their deletion is what
+    // satisfies the void, so the mapping must go — marking it re-ownable would
+    // strand it forever, because the fan-out iterates `invoice_payments` and
+    // that row no longer exists.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: null, syncStatus: 'error', claimedAt: null,
+    })];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.removed_remotely',
+      details: expect.objectContaining({ deleteSatisfied: true, invoicePaymentId: BREEZE_PAY }),
+    }));
+  });
+
+  it('SKIPS a nothing-owed mapping whose Breeze payment is gone while a live lease holds it', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: null, syncStatus: 'error', claimedAt: new Date(),
+    })];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped_breeze_origin']);
+    expect(currentMappings).toHaveLength(2);
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
   it('treats a push-pending row with a remote id like nothing-owed — it must not vanish', async () => {
     // Unreachable in practice (the stamp clears `pending_op`), but an
     // unexpected row must still land in a recorded, operator-visible state

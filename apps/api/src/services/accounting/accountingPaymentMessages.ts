@@ -9,6 +9,8 @@
  * No provider-id literal lives here (neutral-core guard).
  */
 
+import { providerPermissionMessage } from './accountingProviderError';
+
 /** The reconcile worker's connection-level run error when a change window could not be fully enumerated. */
 export function reconcileWindowTruncatedMessage(label: string): string {
   return `${label} truncated the last change window and the backfill did not complete; payments may be missing`;
@@ -118,6 +120,16 @@ export function paymentRemoteAmbiguousMessage(label: string): string {
 /** Create refused with `remote_deleted`: the payment Breeze sent was deleted remotely. */
 export function paymentRemoteDeletedMessage(label: string): string {
   return `This payment was deleted in ${label} after Breeze sent it — push the invoice to ${label} again to send it again`;
+}
+
+/**
+ * Create refused with `insufficient_scope`. The owed push is cleared on a
+ * create refusal, so reconnecting alone never sends the payment — the text adds
+ * the re-push step. A DELETE refusal keeps the plain `providerPermissionMessage`:
+ * that row stays owed and the sweep retries it after the reconnect.
+ */
+export function paymentProviderPermissionMessage(label: string): string {
+  return `${providerPermissionMessage(label)}, then push the invoice to ${label} again`;
 }
 
 /** Delete refused with `remote_locked`: the remote payment is reconciled to a bank transaction. */

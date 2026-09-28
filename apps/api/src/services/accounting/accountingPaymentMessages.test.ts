@@ -7,6 +7,7 @@ import {
   paymentInvoiceNotSyncedMessage,
   paymentInvoiceVoidMessage,
   paymentNotConnectedMessage,
+  paymentProviderPermissionMessage,
   paymentPushDisabledMessage,
   paymentPushGaveUpMessageFor,
   paymentRecordConflictRetryMessage,
@@ -88,5 +89,13 @@ describe('payment push operator text — QuickBooks byte-identical (Xero W05 ref
       'This payment was deleted in Xero after Breeze sent it — push the invoice to Xero again to send it again');
     expect(paymentRemoteLockedMessage('Xero')).toBe(
       'Xero will not delete this payment because it is reconciled to a bank transaction — unreconcile it in Xero and delete it there');
+  });
+
+  it('the create-side permission refusal adds the re-push step (Xero W05b F5)', () => {
+    // On create the owed push is cleared, so reconnecting alone never sends the
+    // payment: the text must also say to push the invoice again.
+    expect(paymentProviderPermissionMessage('Xero')).toBe(
+      'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission, '
+      + 'then push the invoice to Xero again');
   });
 });
