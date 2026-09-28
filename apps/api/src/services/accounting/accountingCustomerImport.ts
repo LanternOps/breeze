@@ -31,23 +31,35 @@ import type {
   OrgImportSummary,
 } from '../orgImport';
 import { siteAddressFrom } from './addressMapping';
+import {
+  isAccountingProviderError, providerPermissionMessage, providerRateLimitedTryAgainMessage,
+  rateLimitRetryAfterMs, rateLimitSourceOf, refusalCodeOf,
+} from './accountingProviderError';
+import { shouldDeferBackgroundWork } from './accountingRateLimit';
 import type { AccountingProviderId, RemoteCustomer } from './types';
 
 export type AccountingImportErrorCode =
-  | 'not_connected' | 'reauth_required' | 'provider_error' | 'capability_unavailable';
-type AccountingImportErrorStatus = 400 | 404 | 409 | 502;
+  | 'not_connected' | 'reauth_required' | 'provider_error' | 'capability_unavailable'
+  // Xero W03: a provider/limiter throttle (Retry-After), the daily budget reserved for
+  // pushes, and a grant that lacks the scope.
+  | 'rate_limited' | 'daily_budget_low' | 'provider_permission';
+type AccountingImportErrorStatus = 400 | 404 | 409 | 429 | 502;
 
 // Typed failures the route translates straight to an HTTP status. Narrowing
 // `code`/`status` to literals lets the route drop its `as`-cast and makes the
 // contract enforced rather than asserted.
 export class AccountingImportError extends Error {
+  /** Set on `rate_limited` only. */
+  readonly retryAfterMs?: number;
   constructor(
     message: string,
     readonly code: AccountingImportErrorCode,
     readonly status: AccountingImportErrorStatus,
+    opts: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = 'AccountingImportError';
+    this.retryAfterMs = opts.retryAfterMs;
   }
 }
 
@@ -101,6 +113,15 @@ async function fetchCustomers(
   if (conn.status === 'reauth_required') {
     throw new AccountingImportError(`${label} needs to be reconnected`, 'reauth_required', 409);
   }
+  // Import paging is background-class work (spec "Rate limiting"): below 20% of the
+  // provider's daily budget it waits, so invoice and payment pushes keep the budget.
+  // Providers without a daily budget (QuickBooks) never defer.
+  if (await shouldDeferBackgroundWork(provider, getAccountingProvider(provider).limits.rate, conn.id)) {
+    throw new AccountingImportError(
+      `${label}'s daily API allowance for this organisation is nearly used up — customer import is paused so invoice and payment sync keep working. Try again later.`,
+      'daily_budget_low', 429,
+    );
+  }
   // getValidAccessToken can flip a live-looking connection to reauth_required and
   // throw when the refresh token is dead — surface that as a typed 409 the web can
   // turn into a "Reconnect <provider>" CTA, instead of an opaque 500.
@@ -115,15 +136,29 @@ async function fetchCustomers(
     if (err instanceof ReauthRequiredError) {
       throw new AccountingImportError(`${label} needs to be reconnected`, 'reauth_required', 409);
     }
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null) {
+      throw new AccountingImportError(
+        providerRateLimitedTryAgainMessage(label, rateLimitSourceOf(err) ?? undefined), 'rate_limited', 429, { retryAfterMs },
+      );
+    }
     throw err;
   }
   try {
     const customers = await getAccountingProvider(provider).listRemoteCustomers({ ...conn, accessToken });
     return { conn, customers };
   } catch (err) {
-    // Upstream API failures (401/403/429/5xx, unparseable body) are upstream,
-    // not a Breeze bug — map to a typed 502 so the route doesn't 500 +
-    // Sentry-spam.
+    const retryAfterMs = rateLimitRetryAfterMs(err);
+    if (retryAfterMs !== null && isAccountingProviderError(err)) {
+      throw new AccountingImportError(
+        providerRateLimitedTryAgainMessage(label, rateLimitSourceOf(err) ?? undefined), 'rate_limited', 429, { retryAfterMs },
+      );
+    }
+    if (refusalCodeOf(err) === 'insufficient_scope') {
+      throw new AccountingImportError(providerPermissionMessage(label), 'provider_permission', 409);
+    }
+    // Upstream API failures (401/403/5xx, unparseable body) are upstream, not a
+    // Breeze bug — map to a typed 502 so the route doesn't 500 + Sentry-spam.
     captureException(err instanceof Error ? err : new Error(String(err)));
     throw new AccountingImportError(`${label} returned an error while listing customers`, 'provider_error', 502);
   }
@@ -185,10 +220,10 @@ const BULK_IMPORT = 'Settings → Organizations → Bulk import';
  * silently got a duplicate beside it.
  *
  * The advice must fit the actual situation. Telling a tech to "confirm the
- * match" when the matched org is ALREADY linked to another QuickBooks customer
+ * match" when the matched org is ALREADY linked to another customer in the provider
  * is actively harmful: the link unique index is `(partner_id, system,
  * external_id)`, so confirming adds a SECOND link row and quietly collapses two
- * QuickBooks customers onto one Breeze tenant.
+ * customers onto one Breeze tenant.
  */
 function refusalMessage(customer: RemoteCustomer, row: AnnotatedRow | undefined, label: string): string {
   const matched = row?.matchedOrganizationName ?? customer.displayName;
@@ -302,7 +337,7 @@ export async function importAccountingCustomers(
   if (commitRows.length === 0) return summary;
 
   const result = await commitOrgImport(commitRows, partnerId, actor, 'skip');
-  mergeSummary(result, commitCustomers, summary);
+  mergeSummary(result, commitCustomers, summary, conn.provider);
   return summary;
 }
 
@@ -315,6 +350,7 @@ function mergeSummary(
   result: OrgImportSummary,
   commitCustomers: RemoteCustomer[],
   summary: AccountingImportSummary,
+  provider: AccountingProviderId,
 ): void {
   for (const row of result.imported) {
     const customer = commitCustomers[row.index];
@@ -374,7 +410,7 @@ function mergeSummary(
       // seam carries it on a non-enumerable `cause`, so Sentry keeps the stack,
       // the cause chain and the pg SQLSTATE that `.message` alone throws away.
       captureException(
-        row.cause instanceof Error ? row.cause : new Error(`[qb-import] ${row.error}`),
+        row.cause instanceof Error ? row.cause : new Error(`[accounting-import:${provider}] ${row.error}`),
       );
     }
     summary.errors.push({

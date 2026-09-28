@@ -20,8 +20,15 @@ export function setRetryAfter(c: Context, err: unknown): number | null {
 }
 
 export function handleImportError(c: Context, err: unknown): Response {
-  // AccountingImportError.status is a narrowed literal union (400|404|409|502), so no cast.
-  if (err instanceof AccountingImportError) return c.json({ error: err.message, code: err.code }, err.status);
+  // AccountingImportError.status is a narrowed literal union (400|404|409|429|502), so no cast.
+  if (err instanceof AccountingImportError) {
+    // `rate_limited` carries retryAfterMs directly; `setRetryAfter` reads it via
+    // `rateLimitRetryAfterMs`, which recognises any `code: 'rate_limited'` error
+    // (not just AccountingProviderError) — daily_budget_low has no retryAfterMs
+    // and correctly gets no header.
+    setRetryAfter(c, err);
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
   throw err;
 }
 

@@ -55,3 +55,17 @@ describe('handleImportError', () => {
     expect(await res.json()).toEqual({ rethrown: 'boom' });
   });
 });
+
+describe('handleImportError — throttle and budget (Xero W03 Task 6)', () => {
+  it('answers 429 with Retry-After in whole seconds', async () => {
+    const res = await appThrowing(new AccountingImportError('slow down', 'rate_limited', 429, { retryAfterMs: 1500 }), handleImportError).request('/');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('2');
+    expect(await res.json()).toEqual({ error: 'slow down', code: 'rate_limited' });
+  });
+  it('answers daily_budget_low with no Retry-After', async () => {
+    const res = await appThrowing(new AccountingImportError('later', 'daily_budget_low', 429), handleImportError).request('/');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBeNull();
+  });
+});

@@ -5,7 +5,17 @@ const { listAnnotatedMock, importMock, writeRouteAuditMock, AccountingImportErro
   const listAnnotatedMock = vi.fn();
   const importMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
-  class AccountingImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
+  class AccountingImportError extends Error {
+    code: string;
+    status: number;
+    retryAfterMs?: number;
+    constructor(m: string, c: string, s: number, opts?: { retryAfterMs?: number }) {
+      super(m);
+      this.code = c;
+      this.status = s;
+      this.retryAfterMs = opts?.retryAfterMs;
+    }
+  }
   // The import route creates orgs + default sites and is gated on both write
   // permissions. The list route is read-only, but both routes still require
   // full-partner org access because they enter the partner-wide import seam.
@@ -145,6 +155,14 @@ describe('GET /accounting/:provider/customers', () => {
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ code: 'provider_error' });
+  });
+
+  it('maps AccountingImportError(rate_limited) to 429 with Retry-After (Xero W03)', async () => {
+    listAnnotatedMock.mockRejectedValue(new AccountingImportError('slow', 'rate_limited', 429, { retryAfterMs: 2000 }));
+    const res = await app().request('/accounting/quickbooks/customers');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('2');
+    expect(await res.json()).toEqual({ error: 'slow', code: 'rate_limited' });
   });
 
   it('denies a partner-scoped caller targeting a different partnerId (403)', async () => {
