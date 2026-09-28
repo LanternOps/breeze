@@ -15,6 +15,10 @@ describe('getVersionMismatch (#7024)', () => {
     expect(getVersionMismatch({ APP_VERSION: '0.116.0', BREEZE_VERSION: ' v0.116.0 ' })).toBeNull();
   });
 
+  it('ignores build metadata: 0.116.0+build.7 is the 0.116.0 release', () => {
+    expect(getVersionMismatch({ APP_VERSION: '0.116.0+build.7', BREEZE_VERSION: '0.116.0' })).toBeNull();
+  });
+
   it('treats a prerelease as distinct from its release', () => {
     expect(getVersionMismatch({ APP_VERSION: '0.116.0-rc.1', BREEZE_VERSION: '0.116.0' })).toEqual({
       running: '0.116.0-rc.1',

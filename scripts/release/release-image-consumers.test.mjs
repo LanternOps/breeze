@@ -157,13 +157,18 @@ function upgradeWorkDir(fixture, envLines) {
     `BREEZE_PORTAL_IMAGE_REF=${zeroRef('portal')}`,
     `BREEZE_BINARIES_IMAGE_REF=${zeroRef('binaries')}`,
     'POSTGRES_PASSWORD=keep-me',
+    QUOTED_SECRET_LINE,
     ...envLines,
     '',
   ].join('\n'), { mode: 0o600 });
   return workDir;
 }
 
-function runUpgrade(fixture, workDir, args) {
+// A quoted value with every character the dotenv writer escapes; the upgrade
+// rewrites five keys and must carry this line through byte-for-byte.
+const QUOTED_SECRET_LINE = `SMTP_PASSWORD='p@ss "word" #1 $HOME \\n'`;
+
+function runUpgrade(fixture, workDir, args, extraEnv = {}) {
   const openssl = process.platform === 'darwin' ? '/opt/homebrew/opt/openssl@3/bin/openssl' : 'openssl';
   return spawnSync('bash', [join(repoRoot, 'scripts/guided-setup.sh'), '--work-dir', workDir, ...args], {
     cwd: workDir,
@@ -173,8 +178,27 @@ function runUpgrade(fixture, workDir, args) {
       BREEZE_OPENSSL_BIN: openssl,
       BREEZE_SETUP_RELEASE_DOWNLOAD_BASE: `file://${fixture.directory}`,
       BREEZE_SETUP_GITHUB_REPO: 'LanternOps/breeze',
+      ...extraEnv,
     },
   });
+}
+
+// A fake `docker` on PATH: logs every call, reports breeze-api healthy, and on
+// `compose … pull` records the BREEZE_VERSION .env holds at that moment.
+function fakeDocker(workDir, { failPull = false } = {}) {
+  const bin = join(workDir, 'fake-bin');
+  mkdirSync(bin);
+  const log = join(workDir, 'docker.log');
+  executable(join(bin, 'docker'), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${log}"
+if [[ "$1" == inspect ]]; then echo healthy; exit 0; fi
+if [[ "$1" == compose && " $* " == *" pull "* ]]; then
+  grep '^BREEZE_VERSION=' "${join(workDir, '.env')}" >> "${log}"
+  ${failPull ? 'exit 1' : 'exit 0'}
+fi
+exit 0
+`);
+  return { PATH: `${bin}:${process.env.PATH}`, log };
 }
 
 function envValue(workDir, key) {
@@ -198,6 +222,10 @@ test('guided --upgrade rewrites BREEZE_VERSION and all four digests together fro
     assert.equal(envValue(workDir, `BREEZE_${name.toUpperCase()}_IMAGE_REF`), `${image.repository}@${image.digest}`);
   }
   assert.equal(envValue(workDir, 'POSTGRES_PASSWORD'), 'keep-me', 'unrelated settings survive the rewrite');
+  assert.ok(
+    readFileSync(join(workDir, '.env'), 'utf8').split('\n').includes(QUOTED_SECRET_LINE),
+    'a quoted secret with special characters survives byte-for-byte',
+  );
 
   const backups = readdirSync(workDir).filter((name) => name.startsWith('.env.bak.'));
   assert.equal(backups.length, 1, 'the previous .env is backed up before it is replaced');
@@ -229,6 +257,47 @@ test('guided --upgrade leaves .env untouched when the signed inventory fails ver
   assert.match(result.stderr, /verification failed/u);
   assert.equal(readFileSync(join(workDir, '.env'), 'utf8'), before, 'BREEZE_VERSION and digests must not move');
   assert.deepEqual(readdirSync(workDir).filter((name) => name.startsWith('.env.')), [], 'no backup or staged copy is left behind');
+});
+
+test('guided --upgrade with no version resolves the latest GitHub release', () => {
+  const fixture = signedFixture();
+  const api = join(fixture.directory, 'github-api');
+  mkdirSync(join(api, 'repos/LanternOps/breeze/releases'), { recursive: true });
+  writeFileSync(join(api, 'repos/LanternOps/breeze/releases/latest'), '{\n  "tag_name": "v1.2.3",\n  "name": "v1.2.3"\n}\n');
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '-y', '--no-up'], { BREEZE_SETUP_GITHUB_API: `file://${api}` });
+  assert.equal(result.status, 0, `latest lookup failed:\n${result.stdout}\n${result.stderr}`);
+  assert.equal(envValue(workDir, 'BREEZE_VERSION'), '1.2.3');
+  assert.match(result.stdout, /Target release:\s+1\.2\.3/u);
+});
+
+test('guided --upgrade pulls and restarts only after .env pins the verified release', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDocker(workDir);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+  const calls = readFileSync(docker.log, 'utf8').split('\n');
+  const pull = calls.findIndex((line) => /^compose .* pull$/u.test(line));
+  const up = calls.findIndex((line) => /^compose .* up -d$/u.test(line));
+  assert.ok(pull !== -1 && up > pull, `expected compose pull then up -d, got:\n${calls.join('\n')}`);
+  assert.equal(calls[pull + 1], 'BREEZE_VERSION=1.2.3', 'images are pulled after .env was rewritten');
+  assert.match(calls[pull], new RegExp(`--env-file ${join(workDir, '.env').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')} pull$`, 'u'));
+  assert.ok(calls.some((line) => line.startsWith('inspect ')), 'waits for API health');
+  assert.match(result.stdout, /Breeze upgraded to 1\.2\.3/u);
+});
+
+test('guided --upgrade fails loudly when the pull fails, naming the pinned release', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDocker(workDir, { failPull: true });
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /docker compose pull failed; .* now pins 1\.2\.3/u);
+  assert.doesNotMatch(readFileSync(docker.log, 'utf8'), /up -d/u, 'never starts after a failed pull');
 });
 
 test('guided --upgrade refuses a downgrade unless --allow-downgrade is passed', () => {

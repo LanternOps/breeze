@@ -20,7 +20,9 @@ export interface VersionMismatch {
 
 type VersionEnv = Partial<Record<'APP_VERSION' | 'BREEZE_VERSION', string | undefined>>;
 
-const bare = (raw: string | undefined): string => (raw ?? '').trim().replace(/^v/, '');
+// Build metadata (`+…`) never identifies a different release (semver §10); a
+// prerelease (`-rc.1`) does, so it is kept.
+const bare = (raw: string | undefined): string => (raw ?? '').trim().replace(/^v/, '').replace(/\+.*$/, '');
 
 /**
  * Non-null only when BOTH sides are release versions and they differ. A dev

@@ -4584,7 +4584,12 @@ stage_upgraded_env() {
   ENV_FILE="${real_env}"
 
   backup_file "${ENV_FILE}"
-  mv "${UPGRADE_STAGED_ENV}" "${ENV_FILE}" || fail "Failed to replace ${ENV_FILE}; the upgraded copy is at ${UPGRADE_STAGED_ENV}."
+  local staged="${UPGRADE_STAGED_ENV}"
+  if ! mv "${staged}" "${ENV_FILE}"; then
+    # Keep the verified copy for the operator: on_exit deletes UPGRADE_STAGED_ENV.
+    UPGRADE_STAGED_ENV=""
+    fail "Failed to replace ${ENV_FILE}; it is unchanged. The verified upgraded copy is kept at ${staged}."
+  fi
   UPGRADE_STAGED_ENV=""
   chmod 600 "${ENV_FILE}" || fail "Failed to set secure permissions on ${ENV_FILE}."
 }
