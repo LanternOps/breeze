@@ -85,4 +85,28 @@ describe('AccountingSettingsStep', () => {
     rerender(<AccountingSettingsStep provider="xero" values={{ ...empty }} onSaved={vi.fn()} onUnauthorized={vi.fn()} />);
     expect((screen.getByTestId('xero-setting-defaultTaxCodeRef') as HTMLSelectElement).value).toBe('OUTPUT2');
   });
+
+  // Fix round 1: the MFA-required 403 must render the same persistent hint
+  // the panel's own PATCH handlers show, not runAction's generic toast.
+  it('shows the MFA-required hint on a 403 MFA save failure and does not call onSaved', async () => {
+    m.fetchWithAuth.mockImplementation((_url: string, init?: RequestInit) => init?.method === 'PATCH'
+      ? ok({ error: 'MFA required' }, 403)
+      : ok({ data: options }));
+    const onSaved = vi.fn();
+    render(<AccountingSettingsStep provider="xero" values={empty} onSaved={onSaved} onUnauthorized={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('xero-settings-save'));
+    const hint = await screen.findByTestId('xero-settings-mfa');
+    expect(hint.getAttribute('role')).toBe('alert');
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1 (minor): a saved ref absent from the fetched options list must
+  // stay visible/selected rather than silently reading as blank.
+  it('keeps a saved ref visible even when absent from the fetched options', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: options }));
+    render(<AccountingSettingsStep provider="xero" values={{ ...empty, defaultPaymentAccountRef: 'gone-1' }} onSaved={vi.fn()} onUnauthorized={vi.fn()} />);
+    const select = await screen.findByTestId('xero-setting-defaultPaymentAccountRef') as HTMLSelectElement;
+    expect(select.value).toBe('gone-1');
+    expect(Array.from(select.options).some((o) => o.value === 'gone-1')).toBe(true);
+  });
 });

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, ActionError, handleActionError } from "../../lib/runAction";
-import { ACCOUNTING_PROVIDER_NAMES, accountingPath, type AccountingProviderId } from "../../lib/accountingProviders";
+import { ACCOUNTING_PROVIDER_NAMES, accountingPath, isMfaError, type AccountingProviderId } from "../../lib/accountingProviders";
 
 export type SettingsValues = {
   defaultIncomeAccountRef: string | null;
@@ -38,6 +38,7 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
   const [draft, setDraft] = useState<SettingsValues>(values);
   const [saving, setSaving] = useState(false);
   const [loadNonce, setLoadNonce] = useState(0);
+  const [mfaRequired, setMfaRequired] = useState(false);
 
   // Depend on the four primitive refs, not the `values` object itself — the
   // panel passes an inline object literal on every render, and an object-keyed
@@ -66,6 +67,7 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
 
   const handleSave = useCallback(async () => {
     setSaving(true);
+    setMfaRequired(false);
     try {
       const updated = await runAction<SettingsValues>({
         request: () => fetchWithAuth(accountingPath(provider, "/settings"), {
@@ -82,7 +84,11 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
         defaultPaymentAccountRef: updated.defaultPaymentAccountRef ?? null,
       });
     } catch (err) {
-      if (!(err instanceof ActionError)) handleActionError(err, t("accountingConnection.settingsStep.saveFailed", { provider: providerName }));
+      // PATCH /:provider/settings is MFA-gated: mirror the panel's own PATCH
+      // handlers (push mode, payment sync toggles) and show the persistent
+      // localized hint instead of runAction's generic toast.
+      if (isMfaError(err)) setMfaRequired(true);
+      else if (!(err instanceof ActionError)) handleActionError(err, t("accountingConnection.settingsStep.saveFailed", { provider: providerName }));
     } finally {
       setSaving(false);
     }
@@ -128,23 +134,37 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
             )}
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
-            {FIELDS.map(({ field, labelKey, source }) => (
-              <label key={field} className="space-y-1 text-sm">
-                <span className="text-muted-foreground">{t(/* i18n-dynamic */ `accountingConnection.settingsStep.${labelKey}`)}</span>
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-2"
-                  value={draft[field] ?? ""}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, [field]: e.target.value || null }))}
-                  data-testid={`${provider}-setting-${field}`}
-                >
-                  <option value="">{t("accountingConnection.settingsStep.notSet")}</option>
-                  {options[source].map((o) => (
-                    <option key={o.ref} value={o.ref}>{o.detail ? `${o.label} (${o.detail})` : o.label}</option>
-                  ))}
-                </select>
-              </label>
-            ))}
+            {FIELDS.map(({ field, labelKey, source }) => {
+              const current = draft[field];
+              // A previously-saved ref can be absent from the freshly-fetched
+              // options (renamed/archived in the provider, or a stale draft) —
+              // without this, <select> falls back to no matching <option> and
+              // silently renders blank, which reads as "not set" when it isn't.
+              const currentMissing = current !== null && !options[source].some((o) => o.ref === current);
+              return (
+                <label key={field} className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{t(/* i18n-dynamic */ `accountingConnection.settingsStep.${labelKey}`)}</span>
+                  <select
+                    className="h-9 w-full rounded-md border bg-background px-2"
+                    value={current ?? ""}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, [field]: e.target.value || null }))}
+                    data-testid={`${provider}-setting-${field}`}
+                  >
+                    <option value="">{t("accountingConnection.settingsStep.notSet")}</option>
+                    {currentMissing && <option value={current as string}>{current}</option>}
+                    {options[source].map((o) => (
+                      <option key={o.ref} value={o.ref}>{o.detail ? `${o.label} (${o.detail})` : o.label}</option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })}
           </div>
+          {mfaRequired && (
+            <p role="alert" className="text-sm text-amber-700" data-testid={`${provider}-settings-mfa`}>
+              {t("accountingConnection.mfaRequiredHint", { provider: providerName })}
+            </p>
+          )}
           <button
             type="button"
             onClick={() => void handleSave()}

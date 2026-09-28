@@ -28,6 +28,7 @@ import {
   ALL_CAPABILITIES,
   accountingPath,
   connectErrorKey,
+  isMfaError,
   type AccountingCapability,
   type AccountingProviderId,
 } from "../../lib/accountingProviders";
@@ -96,14 +97,6 @@ interface OwedOperations {
     invoiceId: string | null;
     invoiceNumber: string | null;
   }>;
-}
-
-function isMfaError(err: unknown): boolean {
-  return (
-    err instanceof ActionError &&
-    err.status === 403 &&
-    /mfa required/i.test(err.message)
-  );
 }
 
 interface Props {

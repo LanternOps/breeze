@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchWithAuth } from '../stores/auth';
+import { ActionError } from './runAction';
 
 /**
  * The accounting providers the web knows how to drive (Xero W01). Mirrors
@@ -61,6 +62,20 @@ const GENERIC_CONNECT_ERROR_KEY = 'accountingConnection.providerConnectionFailed
  *  back to the existing generic "connection failed" key. */
 export function connectErrorKey(code: string | null): string {
   return (code && CONNECT_ERROR_KEYS[code]) || GENERIC_CONNECT_ERROR_KEY;
+}
+
+/** Whether a runAction failure is the MFA-required 403 the accounting
+ *  `/settings` PATCH routes answer with when the caller hasn't stepped up.
+ *  Shared between `AccountingConnectionPanel` (push mode, payment sync
+ *  toggles, settings refresh) and `AccountingSettingsStep` (Xero W02 Task 12)
+ *  so both surface the same persistent `mfaRequiredHint` copy instead of
+ *  runAction's generic toast. */
+export function isMfaError(err: unknown): boolean {
+  return (
+    err instanceof ActionError &&
+    err.status === 403 &&
+    /mfa required/i.test(err.message)
+  );
 }
 
 /** `/accounting/<provider><suffix>` — the provider-scoped API path. */
