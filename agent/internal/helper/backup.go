@@ -195,7 +195,7 @@ func loadKeptBackupRecord(backupPath string) (helperBackup, error) {
 func (m *Manager) keepBackupLocked(b helperBackup) {
 	m.keptBackup = b
 	if err := saveKeptBackupRecord(b); err != nil {
-		log.Warn("failed to record kept helper backup, it is protected only until the agent restarts",
+		log.Error("failed to record kept helper backup, it is protected only until the agent restarts",
 			"backup", b.path, "error", err.Error())
 	}
 }
@@ -211,23 +211,57 @@ func (m *Manager) releaseKeptBackupLocked() {
 }
 
 // keptBackupLocked returns the kept backup, reading its record from disk when
-// the agent restarted since it was kept. An unreadable record is discarded:
-// without it the backup cannot be verified, and the update falls back to
-// taking a new one. Must be called with m.mu held.
+// the agent restarted since it was kept. A record that exists but cannot be
+// read still says the backup was kept, so the backup is adopted again from its
+// current bytes rather than overwritten. Must be called with m.mu held.
 func (m *Manager) keptBackupLocked() (helperBackup, bool) {
 	if m.keptBackup.path != "" {
 		return m.keptBackup, true
 	}
 	b, err := loadKeptBackupRecord(m.backupPath())
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Warn("discarding unreadable kept helper backup record", "backup", m.backupPath(), "error", err.Error())
-			m.releaseKeptBackupLocked()
-		}
+	if err == nil {
+		m.keptBackup = b
+		return b, true
+	}
+	if errors.Is(err, os.ErrNotExist) {
 		return helperBackup{}, false
 	}
-	m.keptBackup = b
-	return b, true
+	adopted, adoptErr := m.recordExistingBackupLocked()
+	if adoptErr != nil {
+		log.Error("kept helper backup record is unreadable and the backup cannot be re-recorded, a new backup will replace it",
+			"backup", m.backupPath(), "recordError", err.Error(), "error", adoptErr.Error())
+		m.releaseKeptBackupLocked()
+		return helperBackup{}, false
+	}
+	log.Warn("kept helper backup record was unreadable, re-recorded the backup from its current contents",
+		"backup", adopted.path, "backupVersion", adopted.version, "recordError", err.Error())
+	m.keepBackupLocked(adopted)
+	return adopted, true
+}
+
+// recordExistingBackupLocked hashes the backup file as it is now and reads the
+// build it holds, for a kept backup whose record was lost. Must be called with
+// m.mu held.
+func (m *Manager) recordExistingBackupLocked() (helperBackup, error) {
+	path := m.backupPath()
+	f, err := os.Open(path)
+	if err != nil {
+		return helperBackup{}, err
+	}
+	defer func() { _ = f.Close() }() // read-only handle
+	hash := sha256.New()
+	n, err := io.Copy(hash, f)
+	if err != nil {
+		return helperBackup{}, err
+	}
+	b := helperBackup{path: path, size: n}
+	copy(b.sha256[:], hash.Sum(nil))
+	if m.binaryVersionFunc != nil {
+		if v, verr := m.binaryVersionFunc(path); verr == nil {
+			b.version = v
+		}
+	}
+	return b, nil
 }
 
 // backupPath is where the pre-update copy of the helper binary is kept.

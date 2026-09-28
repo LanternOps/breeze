@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -239,5 +240,57 @@ func TestKeptBackupRecordRoundTrip(t *testing.T) {
 	}
 	if err := got.verify(); err != nil {
 		t.Fatalf("loaded record does not verify: %v", err)
+	}
+}
+
+// A record that exists but cannot be parsed still says a rollback kept the
+// backup. The backup must not be overwritten because its record is damaged:
+// it is adopted again from its current bytes.
+func TestCorruptKeptRecordStillProtectsBackup(t *testing.T) {
+	h := newRollbackHarness(t, "1")
+	h.failOnceKeepingBackup(t, "broken-1")
+
+	h.restartAgent(t)
+	if err := os.WriteFile(keptBackupRecordPath(h.backup), []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.holdExe()
+	installWrites("broken-2")
+	h.mgr.CheckUpdate("0.114.0")
+	h.attempt()
+	if got := h.backupContent(t); got != "0.108.0" {
+		t.Fatalf("backup = %q, want the kept 0.108.0 despite its damaged record", got)
+	}
+
+	h.releaseExe()
+	h.attempt()
+	if got := h.binaryContent(t); got != "0.108.0" {
+		t.Fatalf("binary = %q, want the good 0.108.0 restored", got)
+	}
+}
+
+// A kept backup that cannot be read is not overwritten either: it may still be
+// the good copy.
+func TestUnreadableKeptBackupIsNotOverwritten(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions enforced for the test user")
+	}
+	h := newRollbackHarness(t, "1")
+	h.failOnceKeepingBackup(t, "broken-1")
+	if !backupExists(keptBackupRecordPath(h.backup)) {
+		t.Fatal("no kept-backup record written after the failed rollback")
+	}
+
+	if err := os.Chmod(h.backup, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(h.backup, 0755) })
+	installWrites("broken-2")
+	h.attempt()
+	if err := os.Chmod(h.backup, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.backupContent(t); got != "0.108.0" {
+		t.Fatalf("backup = %q, want the unreadable kept 0.108.0 left alone", got)
 	}
 }

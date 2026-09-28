@@ -987,6 +987,10 @@ func (m *Manager) applyPendingUpdate() {
 		return
 	}
 
+	// A kept backup (#7357) is deliberately not released here: a build that
+	// installed but would not start, with a rollback that could not replace
+	// it, is at the target version too. Releasing would expose the only good
+	// copy to the next update's backup.
 	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion || helperVersionsMatch(installed, m.pendingHelperVersion) {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
