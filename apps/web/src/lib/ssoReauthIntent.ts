@@ -2,8 +2,9 @@
  * #4055 — which card started the IdP re-verification round-trip.
  *
  * A passwordless (SSO-provisioned) account can start the same
- * `POST /sso/reauth/start` trip from two places on the profile page: the TOTP
- * setup card and the "Add a passkey" card. Both leave the origin entirely
+ * `POST /sso/reauth/start` trip from several places on the profile page: the
+ * TOTP setup card and the "Add a passkey" card, and (#4045) the recovery-code,
+ * disable-MFA and delete-passkey actions. All of them leave the origin entirely
  * (`window.location.assign(<IdP url>)`), so every scrap of React state is gone
  * by the time the SSO callback redirects back to
  * `/settings/profile#ssoReauthGrant=<id>` — and that return URL is minted
@@ -20,12 +21,25 @@
  * "which card do I go back to" preference has no business on it.
  */
 
-export type SsoReauthIntent = 'totp' | 'passkey';
+/**
+ * `totp` / `passkey`: the two ENROLLMENT cards (#4055) — the grant that comes
+ * back is `enroll_first_factor`.
+ * `recovery_codes` / `disable_mfa` / `delete_passkey` (#4045): the three
+ * factor-MANAGEMENT actions of an account that already holds a factor — the
+ * grant that comes back is `sso_reauth_manage_factor` and stands in for the
+ * password on that one action.
+ */
+export type SsoReauthIntent = 'totp' | 'passkey' | 'recovery_codes' | 'disable_mfa' | 'delete_passkey';
+
+/** The #4045 factor-management subset of {@link SsoReauthIntent}. */
+export type SsoReauthManageIntent = Extract<SsoReauthIntent, 'recovery_codes' | 'disable_mfa' | 'delete_passkey'>;
+
+const INTENTS: readonly SsoReauthIntent[] = ['totp', 'passkey', 'recovery_codes', 'disable_mfa', 'delete_passkey'];
 
 export const SSO_REAUTH_INTENT_KEY = 'breeze.ssoReauth.intent';
 
 function isIntent(value: string | null): value is SsoReauthIntent {
-  return value === 'totp' || value === 'passkey';
+  return value !== null && (INTENTS as readonly string[]).includes(value);
 }
 
 /** Record the originating card immediately before navigating to the IdP. */

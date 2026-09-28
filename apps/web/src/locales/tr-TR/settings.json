@@ -3828,7 +3828,9 @@
     "verifyYourIdentity": "Kimliğinizi doğrulayın",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
-    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın."
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın.",
+    "ssoReauthManageHint": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Bu değişikliği onaylamak için sağlayıcınızla doğrulayın.",
+    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -3945,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın.",
     "passkeyRegistrationServerError": "Geçiş anahtarı kaydı başarısız oldu. Lütfen tekrar deneyin.",
     "deletePasskeyVerifyHeading": "Bir geçiş anahtarını silmek için doğrulayın",
-    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez."
+    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez.",
+    "ssoReauthManageProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Bu değişikliği onaylamak için yeniden doğrulayın.",
+    "verifyWithIdpToDeletePasskey": "Bu hesabın parolası yok. Bir geçiş anahtarını kaldırmadan önce kimlik sağlayıcınızla doğrulayın.",
+    "deletePasskeySsoReauth": "Bir geçiş anahtarını kaldırmak için kimliği doğrulayın",
+    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin."
   },
   "roleManager": {
     "roles": "Roller",

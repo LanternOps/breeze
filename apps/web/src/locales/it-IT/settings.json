@@ -3823,7 +3823,9 @@
     "verifyYourIdentity": "Verifica la tua identità",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
-    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione."
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione.",
+    "ssoReauthManageHint": "Questo account accede tramite un provider di identità e non ha una password. Verifica con il tuo provider per confermare questa modifica.",
+    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -3940,7 +3942,11 @@
     "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo.",
     "passkeyRegistrationServerError": "Registrazione della passkey non riuscita. Riprova.",
     "deletePasskeyVerifyHeading": "Verifica per eliminare una passkey",
-    "deletePasskeyVerifyHint": "Inserisci qui un codice MFA attuale prima di rimuovere una delle passkey sopra. Questo codice non ha alcun effetto sull'aggiunta di una nuova passkey."
+    "deletePasskeyVerifyHint": "Inserisci qui un codice MFA attuale prima di rimuovere una delle passkey sopra. Questo codice non ha alcun effetto sull'aggiunta di una nuova passkey.",
+    "ssoReauthManageProofExpired": "La verifica con il provider di identità è scaduta. Verifica di nuovo per confermare questa modifica.",
+    "verifyWithIdpToDeletePasskey": "Questo account non ha una password. Verifica con il tuo provider di identità prima di rimuovere una passkey.",
+    "deletePasskeySsoReauth": "Verifica l'identità per rimuovere una passkey",
+    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere."
   },
   "roleManager": {
     "roles": "Ruoli",
