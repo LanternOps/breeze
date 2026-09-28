@@ -510,7 +510,10 @@ export default function RemoteAccessTab({
               <label className="text-sm font-medium">
                 {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.consentUnavailable")}
               </label>
-              <p className="text-xs text-muted-foreground">
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="remote-access-consent-unavailable-help"
+              >
                 {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.consentUnavailableHelp")}
               </p>
               <select
@@ -531,6 +534,12 @@ export default function RemoteAccessTab({
                   {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.unavailableBlock")}
                 </option>
               </select>
+              <p
+                className="mt-2 text-xs text-muted-foreground"
+                data-testid="remote-access-consent-vnc-note"
+              >
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.consentVncNote")}
+              </p>
             </div>
           )}
           <ToggleRow

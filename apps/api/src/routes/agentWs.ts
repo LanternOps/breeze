@@ -3272,13 +3272,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // Kill the viewer token so a lingering token can't resurrect
                     // a denied session via /viewer/offer.
                     await revokeViewerSession(sessionId);
-                    // A genuine user denial or a consent timeout is a "denied"
-                    // decision; any other reason (no user present, helper absent,
-                    // malformed reply) is a bypass/unavailable path, audited
-                    // distinctly.
-                    const action = updated.promptMode === 'consent'
-                      ? classifyConsentDenyAction(reason)
-                      : 'session_consent_bypassed';
+                    // The start was refused, so never `session_consent_bypassed`: an
+                    // explicit user denial, an unanswered prompt, and a prompt
+                    // that could not be shown/answered are audited distinctly.
+                    const action = classifyConsentDenyAction(reason);
                     await logSessionAudit(
                       action,
                       authenticatedAgent.deviceId,

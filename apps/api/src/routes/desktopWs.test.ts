@@ -157,6 +157,7 @@ import { isViewerJtiRevoked, isViewerSessionRevoked } from '../services/viewerTo
 import { sendCommandToAgent } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
 import { createDesktopWsRoutes } from './desktopWs';
+import { RemoteSessionPromptPolicyError } from './remote/consentGate';
 
 // -------------------------------------------------------------------
 // Helpers
@@ -512,6 +513,7 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
     { mode: 'notify', behavior: 'proceed', bound: null },
   ] as const)('binds consentUnavailableBehavior=$bound for a $mode/$behavior prompt', async ({ mode, behavior, bound }) => {
     primeHappyPath();
+    mockViewerSelect({ session: ACTIVE_SESSION, device: { ...DEVICE, consentPromptProtocolVersion: 1 }, user: USER });
     const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
     vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
       mode,
@@ -532,6 +534,49 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
       desktopPromptMode: mode,
       desktopConsentUnavailableBehavior: bound,
     }));
+  });
+
+  it.each([0, 2, undefined])('refuses a consent-mode start before dispatch when the agent reports consent prompt protocol %s', async (version) => {
+    primeHappyPath();
+    mockViewerSelect({ session: ACTIVE_SESSION, device: { ...DEVICE, consentPromptProtocolVersion: version }, user: USER });
+    const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+    const { prepareRevocationLeaseForStart } = await import('../services/remoteRevocationLease');
+    vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
+      mode: 'consent',
+      technicianName: null,
+      technicianEmail: null,
+      orgName: null,
+      consentUnavailableBehavior: 'block',
+      consentTimeoutMs: 30000,
+      notifyOnEnd: true,
+      showIndicator: true,
+    } as never);
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('CONSENT_UPGRADE_REQUIRED');
+    expect(body.error).toMatch(/update the agent/i);
+    // Refused before the lease, the start intent and any dispatch.
+    expect(prepareRevocationLeaseForStart).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses the start when the prompt policy cannot be resolved', async () => {
+    primeHappyPath();
+    const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+    vi.mocked(buildRemoteSessionPromptPayload).mockRejectedValueOnce(
+      new RemoteSessionPromptPolicyError(DEVICE_ID, 'statement timeout'),
+    );
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('REMOTE_PROMPT_POLICY_UNAVAILABLE');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('on valid + active + allowed: submits offer and sends start_desktop with the policy payload', async () => {

@@ -13,6 +13,7 @@ import {
   users,
 } from '../db/schema';
 import { checkRemoteAccess } from './remoteAccessPolicy';
+import { checkVncConsentGate } from '../routes/remote/vncConsentGate';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { evaluateCapabilityContinuationForState } from './partnerTrust';
 import {
@@ -101,7 +102,9 @@ export type RemoteWsAuthorizationResult =
         | 'partner_trust_denied'
         | 'rate_limited'
         | 'authorization_unavailable'
-        | 'credential_revoked';
+        | 'credential_revoked'
+        | 'consent_required'
+        | 'prompt_policy_unavailable';
     };
 
 export type RemoteWsLiveAuthorizationResult =
@@ -380,6 +383,21 @@ async function resolveRemoteWsLiveAuthority(
       : await checkRemoteAccess(joined.device.id, capability);
     if (!policy.allowed) return { denied: 'policy_denied' as const };
 
+    // VNC has no end-user consent prompt, so a VNC tunnel is refused on a
+    // device whose prompt mode is `consent`. Checked here, in the same system
+    // transaction, so admission, every ticket/code mint and each live
+    // revalidation of an open relay see a switch to consent.
+    if (consumed.sessionType === 'tunnel' && joined.session.type === 'vnc') {
+      const consentGate = await checkVncConsentGate(joined.device.id);
+      if (!consentGate.ok) {
+        return {
+          denied: consentGate.status === 409
+            ? 'consent_required' as const
+            : 'prompt_policy_unavailable' as const,
+        };
+      }
+    }
+
     // Desktop/terminal continuation re-proves partner trust. Tunnel lifecycle
     // is a separate transport boundary and remains with its existing route
     // admission gates until its own live-continuation work is adopted.
@@ -412,7 +430,7 @@ export async function authorizeLiveRemoteSessionAccess(
     );
     if ('denied' in live && live.denied !== undefined) {
       const status = live.denied === 'session_missing' ? 404
-        : live.denied === 'device_offline' ? 503 : 403;
+        : live.denied === 'device_offline' || live.denied === 'prompt_policy_unavailable' ? 503 : 403;
       return { ok: false, status, reason: live.denied };
     }
     return { ok: true, user: live.user, session: live.session, device: live.device };
@@ -432,7 +450,8 @@ export async function revalidateRemoteWsAuthority(
       statementTimeoutMs,
     );
     if ('denied' in live && live.denied !== undefined) {
-      const status = live.denied === 'session_missing' ? 404 : live.denied === 'device_offline' ? 503 : 403;
+      const status = live.denied === 'session_missing' ? 404
+        : live.denied === 'device_offline' || live.denied === 'prompt_policy_unavailable' ? 503 : 403;
       return { ok: false, status, reason: live.denied };
     }
     return { ok: true };
@@ -462,7 +481,7 @@ export async function authorizeRemoteSessionContinuation(
     if ('denied' in live && live.denied !== undefined) {
       const status = live.denied === 'session_missing'
         ? 404
-        : live.denied === 'device_offline'
+        : live.denied === 'device_offline' || live.denied === 'prompt_policy_unavailable'
           ? 503
           : 403;
       return { ok: false, status, reason: live.denied };

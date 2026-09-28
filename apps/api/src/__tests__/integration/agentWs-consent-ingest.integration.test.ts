@@ -13,7 +13,10 @@
  * org-scoped withDbAccessContext), covering what the unit-mocked agentWs.test.ts
  * and the deny-route integration test cannot:
  *   1. consent_denied reason=user      → status='denied', audit session_consent_denied
- *   2. consent_denied reason=no_user   → status='denied', audit session_consent_bypassed
+ *   2. consent_denied reason=no_user|helper_absent → status='denied', audit
+ *      session_consent_blocked_unavailable; reason=timeout → audit
+ *      session_consent_blocked_unanswered (a refused start is never
+ *      audited as session_consent_bypassed)
  *   3. device-ownership guard: a different agent's deviceId → NO write (stays connecting)
  *   4. status guard: an already-active session is NOT flipped to denied
  *   5. grant path: answer + consentReason=user → status='active', audit session_consent_granted
@@ -202,24 +205,34 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     });
   });
 
-  runDb('consent_denied reason=no_user → status=denied + audit session_consent_bypassed', async () => {
-    const env = await setupTestEnvironment({ scope: 'organization' });
-    const dev = await insertDevice(env.organization.id, env.site.id);
-    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+  for (const [reason, action] of [
+    ['no_user', 'session_consent_blocked_unavailable'],
+    ['helper_absent', 'session_consent_blocked_unavailable'],
+    ['timeout', 'session_consent_blocked_unanswered'],
+  ] as const) {
+    runDb(`consent_denied reason=${reason} → status=denied + audit ${action}, not session_consent_bypassed`, async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const dev = await insertDevice(env.organization.id, env.site.id);
+      const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
 
-    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
-      event: 'consent_denied',
-      sessionId,
-      reason: 'no_user',
+      await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+        event: 'consent_denied',
+        sessionId,
+        reason,
+      });
+
+      const row = await readSessionStatus(sessionId);
+      expect(row.status).toBe('denied');
+      const actions = await auditActionsFor(sessionId);
+      expect(actions).toContain(action);
+      expect(actions).not.toContain('session_consent_bypassed');
+      expect(actions).not.toContain('session_consent_denied');
+      expect(await consentAuditFor(sessionId, action)).toMatchObject({
+        actorType: 'agent',
+        details: expect.objectContaining({ reason, promptMode: 'consent' }),
+      });
     });
-
-    const row = await readSessionStatus(sessionId);
-    expect(row.status).toBe('denied');
-    expect(row.errorMessage).toBe('The connection could not be approved on the remote device.');
-    const actions = await auditActionsFor(sessionId);
-    expect(actions).toContain('session_consent_bypassed');
-    expect(actions).not.toContain('session_consent_denied');
-  });
+  }
 
   // Device-ownership guard: a session owned by device A cannot be denied by
   // device B's agent (same org, so RLS lets the row be seen — the deviceId

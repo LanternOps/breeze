@@ -56,7 +56,10 @@ vi.mock('../db', () => ({
   db: mockDb,
   // remoteDesktopStartIntent.ts (real impl, not mocked here) throws unless
   // this reports an open db access context.
-  hasDbAccessContext: vi.fn(() => true)
+  hasDbAccessContext: vi.fn(() => true),
+  // resolveRemoteSessionPromptConfig reads in the request's own context via a
+  // savepoint when one is active.
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -96,6 +99,12 @@ vi.mock('../services/remoteAccessPolicy', () => ({
     policyName: null,
     policyId: null,
   }),
+}));
+
+// Prompt-policy resolution (lazily imported by remote/helpers): the device
+// resolves with no remote_access policy, so the notify defaults apply.
+vi.mock('../services/configurationPolicy', () => ({
+  resolveEffectiveConfig: vi.fn(async () => ({ deviceId: 'device', features: {} })),
 }));
 
 vi.mock('../services/remoteRevocationLease', () => ({
@@ -463,15 +472,17 @@ describe('remote routes', () => {
         mockSelectInnerJoinChain([sessionResult])
       );
 
-      // device hardware gpu lookup — select().from().where().limit() -> []
-      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([]));
+      // (The device-hardware GPU lookup consumes no slot: `deviceHardware` is
+      // absent from this file's schema mock, so it throws before db.select and
+      // the route treats it as non-fatal.)
 
       // buildRemoteSessionPromptPayload (real impl, not mocked in this file)
       // makes its own unrelated db.select for the technician identity lookup
-      // once resolveRemoteSessionPromptConfig fails closed to its
-      // non-'off' defaults. Any shape here is fine — production wraps this
-      // read in a try/catch and proceeds without the identity details — but
-      // it still consumes one slot in this shared FIFO mock queue.
+      // once resolveRemoteSessionPromptConfig returns the notify defaults (the
+      // device resolves with no remote_access policy — see the
+      // configurationPolicy mock). Any shape here is fine — production wraps
+      // this read in a try/catch and proceeds without the identity details —
+      // but it still consumes one slot in this shared FIFO mock queue.
       vi.mocked(db.select).mockReturnValueOnce(mockSelectLimitForChain([]));
 
       // commitDesktopStartIntent: row-locked read
