@@ -257,6 +257,7 @@ jobs:
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
           bash scripts/check-guided-setup-signed-image-floor.sh
+          bash scripts/check-guided-setup-upgrade.sh
 
       # docker/Caddyfile.prod is shared by hosted production and every
       # self-hosted install, so the CADDY_LOCAL_CERTS opt-in must be a strict

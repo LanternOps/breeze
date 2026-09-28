@@ -103,7 +103,9 @@ done < "$verify_dir/images.tsv"
 [[ "$(cut -f2 "$verify_dir/images.tsv" | sort -u | wc -l | tr -d ' ')" -eq "${#expected_names[@]}" ]] \
   || { echo "signed release image repositories are duplicated" >&2; exit 1; }
 
-for requested in "${required[@]}"; do
+# ${arr[@]+...}: an empty array is "unbound" under set -u on bash < 4.4 (macOS
+# /bin/bash 3.2), which is the guided-setup path (it never passes --require).
+for requested in ${required[@]+"${required[@]}"}; do
   [[ "$requested" =~ ^([a-z0-9][a-z0-9-]*)=([a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?/[a-z0-9][a-z0-9._/-]*)@(sha256:[0-9a-f]{64})$ ]] \
     || { echo "invalid required image tuple" >&2; exit 1; }
   name="${BASH_REMATCH[1]}"
