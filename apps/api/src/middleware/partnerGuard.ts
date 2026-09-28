@@ -5,14 +5,18 @@ import { partners } from '../db/schema';
 import { verifyToken } from '../services/jwt';
 import { shouldActivatePendingPartner, activatePartnerRow } from '../services/partnerActivation';
 
+const SIGNED_WEBHOOK_PATHS: ReadonlySet<string> = new Set([
+  '/api/v1/webhooks/xero',
+  '/api/v1/webhooks/quickbooks',
+]);
+
 /**
  * Paths the global partner-status guard skips (mounted in index.ts). They must
  * stay reachable while the partner is not `active`: sign-in and MFA enrollment
  * (/auth/*), public config, the caller's own profile, the caller's own partner
  * status (read by the account-inactive screen), agent traffic, the
- * self-gated synthetic router, and the exact-path Xero webhook (Xero W05:
- * signature-authenticated, no partner acted for; #7296 tracks the same
- * exemption for QuickBooks). Adding a path here lets an inactive tenant use
+ * self-gated synthetic router, and the exact-path Xero and QuickBooks
+ * webhooks (signature-authenticated, no partner acted for). Adding a path here lets an inactive tenant use
  * it — keep the list minimal.
  */
 export function isPartnerGuardExemptPath(path: string): boolean {
@@ -22,11 +26,11 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return true;
   if (path.startsWith('/api/v1/agents/')) return true;
   if (path.startsWith('/api/v1/internal/synthetic/')) return true;   // synthetic test router — self-gated (token + canary latch)
-  // Xero W05: signature-authenticated, unauthenticated webhook. partnerGuard must
-  // not verify a bearer token, read `partners` or activate a partner on this
-  // path BEFORE the route has checked the Xero HMAC (quorum finding 10). Exact
-  // match only; no partner is ever acted for here.
-  if (path === '/api/v1/webhooks/xero') return true;
+  // Signature-authenticated, unauthenticated webhooks (Xero W05 quorum finding
+  // 10; QuickBooks #7296). partnerGuard must not verify a bearer token, read
+  // `partners` or activate a partner on these paths BEFORE the route has
+  // checked its HMAC. Exact match only; no partner is ever acted for here.
+  if (SIGNED_WEBHOOK_PATHS.has(path)) return true;
   return false;
 }
 

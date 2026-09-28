@@ -954,8 +954,9 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
 // Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
-// verifier token. partnerGuard passes through (no Authorization header); the
-// route reads the raw body itself via c.req.text(), so no body-consuming
+// verifier token. partnerGuard skips this exact path (isPartnerGuardExemptPath),
+// so even a request carrying a bearer token does no partner read before the
+// HMAC check (#7296); the route reads the raw body itself via c.req.text(), so no body-consuming
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
