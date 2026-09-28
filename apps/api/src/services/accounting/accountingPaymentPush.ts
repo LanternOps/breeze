@@ -353,6 +353,10 @@ function sanitizePaymentSyncErrorMessage(err: unknown, label: string): string {
  * terminal 409 with an explained message. Only codes a provider sets on
  * purpose (ACCOUNTING_REFUSAL_CODES via refusalCodeOf) qualify — QuickBooks
  * sets none on a payment, so its errors keep the retryable 502 path.
+ * Per operation: `remote_locked` is delete-only; `remote_missing`,
+ * `amount_exceeds_due`, `duplicate_key` and `remote_deleted` are create-only;
+ * `insufficient_scope` maps on both, with op-specific text (a create must be
+ * re-pushed; a delete is parked by the caller). Anything else returns null.
  */
 function paymentPushRefusal(
   err: unknown,
@@ -1197,9 +1201,10 @@ async function markPaymentMappingErrorInOwnContext(
  * payment, or a void may have turned the owed push into an owed delete. An
  * unconditional `pending_op = NULL` would then erase that newer obligation, and
  * a Xero payment Breeze has reversed would stay in the books. When the row has
- * moved on, nothing is written: the job still ends with the refusal, and the
- * newer state belongs to its own worker. Own short context, so the stamp
- * commits before the throw.
+ * moved on, only this job's own lease is released (neither a void nor a pull
+ * touches `claimed_at`): the job still ends with the refusal, and the newer
+ * state belongs to its own worker. Own short context, so the stamp commits
+ * before the throw.
  *
  * The delete arm matches `pending_op = 'delete'` only — the same predicate
  * `owedPaymentDeletesOfConnection` reads as "a delete is owed" — and never
@@ -1231,6 +1236,21 @@ async function markPaymentRefusedIfStillOwed(
       ))
       .returning({ id: accountingEntityMappings.id }));
     landed = (rows as unknown[]).length > 0;
+    if (!landed) {
+      // The row moved on (a void flipped it to delete, a pull adopted it), and
+      // neither touches `claimed_at` — the lease is still THIS job's. Release
+      // it, as every other failure path does, or the job that now owns the row
+      // waits out the 10-minute lease on `sync_in_progress`. Nothing else is
+      // written: the newer obligation's state belongs to its own worker.
+      await runInDbContext(() => db
+        .update(accountingEntityMappings)
+        .set({ claimedAt: null })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingId),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id }));
+    }
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,

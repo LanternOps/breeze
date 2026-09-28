@@ -2737,6 +2737,37 @@ describe('Xero W05: preflight park, provider refusals, labels', () => {
     expect(mapping()).toMatchObject({ pendingOp: 'delete', remoteEntityId: 'xp-1/xi-1', syncStatus: 'pending' });
   });
 
+  it('a late create refusal that stamps nothing still RELEASES its own lease (a concurrent void keeps the lease untouched)', async () => {
+    createPaymentMock.mockImplementationOnce(async () => {
+      // A Breeze void during the provider call: `requestPaymentDelete` flips the
+      // row to delete and leaves `claimed_at` (this job's lease) as it was.
+      const leased = mapping()!.claimedAt;
+      expect(leased).not.toBeNull();
+      Object.assign(mapping()!, { pendingOp: 'delete', syncStatus: 'pending', lastError: null });
+      throw xeroRefusal('amount_exceeds_due');
+    });
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'amount_exceeds_due' });
+    // The owed delete survives untouched, and the delete job is not blocked for
+    // the 10-minute lease by a claim nobody holds any more.
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', syncStatus: 'pending', lastError: null, claimedAt: null });
+  });
+
+  it('a late delete refusal on a mapping removed during the call writes nothing and still throws the refusal', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete', syncStatus: 'pending',
+    })];
+    deletePaymentMock.mockImplementationOnce(async () => {
+      // A disconnect / tenant erasure removed the mapping while Xero answered.
+      currentMappings = currentMappings.filter((m) => m.id !== MAPPING);
+      throw new AccountingProviderError({
+        kind: 'validation', provider: 'xero', operation: 'Xero payment delete', httpStatus: 400, providerCode: 'remote_locked',
+      });
+    });
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'remote_locked', status: 409 });
+    expect(mapping()).toBeNull(); // not resurrected by the stamp or the lease release
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
   it('duplicate_key → remote_ambiguous, terminal, and it DOES reach Sentry (should never happen)', async () => {
     createPaymentMock.mockRejectedValueOnce(xeroRefusal('duplicate_key'));
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'remote_ambiguous', status: 409 });
