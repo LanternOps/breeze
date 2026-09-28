@@ -15,6 +15,8 @@ const isCI = !!process.env.CI;
 
 export default defineConfig({
   testDir: './tests',
+  // Manual reference-host gate with its own config (playwright.topology-performance.config.ts).
+  testIgnore: /topology-performance\.spec\.ts$/,
   globalSetup: './global-setup.ts',
   fullyParallel: true,
   forbidOnly: isCI,
