@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { usePermissions } from '../../lib/permissions';
 import {
   severityConfig,
   statusConfig,
@@ -85,6 +86,11 @@ export default function AlertDetails({
   submitting = false
 }: AlertDetailsProps) {
   const { t } = useTranslation('alerts');
+  const { can } = usePermissions();
+  // UX gate only — mirrors requirePermission on the /alerts/:id/* routes.
+  const canAck = can('alerts', 'acknowledge');
+  const canWrite = can('alerts', 'write');
+  const canCreateTicket = can('tickets', 'write');
   const [resolutionNote, setResolutionNote] = useState('');
   const [showResolveForm, setShowResolveForm] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -437,6 +443,7 @@ export default function AlertDetails({
           >
             {t('alertDetails.close')}
           </button>
+          {canCreateTicket && (
           <button
             type="button"
             onClick={() => {
@@ -456,7 +463,8 @@ export default function AlertDetails({
             <Ticket className="mr-1.5 inline-block h-4 w-4" />
             {t('alertDetails.createTicket')}
           </button>
-          {alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
+          )}
+          {canWrite && alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
             <button
               type="button"
               onClick={() => onSuppress?.(alert)}
@@ -467,7 +475,7 @@ export default function AlertDetails({
               {t('alertDetails.suppress')}
             </button>
           )}
-          {alert.status !== 'dismissed' && (
+          {canWrite && alert.status !== 'dismissed' && (
             <button
               type="button"
               onClick={() => onDismiss?.(alert)}
@@ -478,7 +486,7 @@ export default function AlertDetails({
               {t('alertDetails.dismiss')}
             </button>
           )}
-          {alert.status === 'active' && (
+          {canAck && alert.status === 'active' && (
             <button
               type="button"
               onClick={() => onAcknowledge?.(alert)}
@@ -499,7 +507,7 @@ export default function AlertDetails({
               )}
             </button>
           )}
-          {(alert.status === 'active' || alert.status === 'acknowledged') && !showResolveForm && (
+          {canWrite && (alert.status === 'active' || alert.status === 'acknowledged') && !showResolveForm && (
             <button
               type="button"
               onClick={() => setShowResolveForm(true)}

@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { usePermissions } from '../../lib/permissions';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
@@ -85,6 +86,8 @@ const BULK_APPROVE_BATCH_SIZE = 200;
 
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
+  const { can } = usePermissions();
+  const canScan = can('devices', 'execute'); // UX gate; POST /patches/scan requires devices.execute
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
@@ -772,7 +775,7 @@ export default function PatchesPage() {
           <p className="text-muted-foreground">{t('patchesPage.description')}</p>
         </div>
         <div className="flex items-center gap-3">
-          {(activeTab === 'compliance' || activeTab === 'patches') && (
+          {canScan && (activeTab === 'compliance' || activeTab === 'patches') && (
             <button
               type="button"
               onClick={handleScan}

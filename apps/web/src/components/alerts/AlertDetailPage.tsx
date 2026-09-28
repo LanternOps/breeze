@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { usePermissions } from '../../lib/permissions';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, User, Bell, Ticket } from 'lucide-react';
@@ -99,6 +100,7 @@ const statusIcons: Record<AlertStatus, typeof Bell> = {
 
 export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const { t } = useTranslation('alerts');
+  const { can } = usePermissions();
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [alert, setAlert] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(true);
@@ -345,7 +347,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 partner's system of record. Hidden until that ships — unlike the
                 org record's Tickets tab, which stays visible under external
                 because it lists those shadow rows. */}
-            {serviceManagementMode === 'native' && (
+            {serviceManagementMode === 'native' && can('tickets', 'write') && (
               <button
                 type="button"
                 onClick={() => setTicketDialogOpen(true)}
@@ -356,7 +358,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 {t('alertDetailPage.createTicket')}
               </button>
             )}
-            {alert.status === 'active' && (
+            {can('alerts', 'acknowledge') && alert.status === 'active' && (
               <button
                 type="button"
                 onClick={handleAcknowledge}
@@ -381,7 +383,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
               />
             )}
-            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+            {can('alerts', 'write') && (alert.status === 'active' || alert.status === 'acknowledged') && (
               <button
                 type="button"
                 onClick={handleResolve}
