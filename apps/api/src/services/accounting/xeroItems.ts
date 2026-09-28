@@ -38,7 +38,7 @@ export function xeroItemSuffix(catalogItemId: string): string {
 }
 
 function slugOf(source: string): string {
-  return source.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  return source.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, PREFIX_MAX).replace(/-+$/, '');
 }
 
