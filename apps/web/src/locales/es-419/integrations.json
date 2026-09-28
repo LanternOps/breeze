@@ -1132,7 +1132,23 @@
       "confirm": "Desconectar"
     },
     "reconnectKeepsOrganisation": "Reconectar conserva su organización actual de {{provider}}. Cualquier otra organización que marque en la pantalla de {{provider}} se liberará.",
-    "pendingTenant": "Elegir una organización"
+    "pendingTenant": "Elegir una organización",
+    "settingsStep": {
+      "title": "Configuración de {{provider}}",
+      "organisation": "Organización",
+      "demoBadge": "Empresa de demostración",
+      "incomeAccount": "Cuenta de ingresos predeterminada",
+      "taxRate": "Tasa de impuesto para líneas gravables",
+      "exemptTaxRate": "Tasa de impuesto para líneas exentas",
+      "paymentAccount": "Cuenta bancaria para pagos",
+      "notSet": "No establecido",
+      "save": "Guardar configuración",
+      "saved": "Configuración de {{provider}} guardada",
+      "saveFailed": "No se pudo guardar la configuración de {{provider}}.",
+      "loadFailed": "No se pudo cargar la configuración de {{provider}}.",
+      "retry": "Intentar de nuevo",
+      "pickDefaults": "Elija los valores predeterminados que Breeze usa con {{provider}}. Si cambió de organización, elíjalos de nuevo — las selecciones de la organización anterior se borraron."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Asignación de clientes y artículos",

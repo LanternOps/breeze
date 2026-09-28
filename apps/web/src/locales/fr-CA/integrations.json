@@ -1132,7 +1132,23 @@
       "confirm": "Déconnecter"
     },
     "reconnectKeepsOrganisation": "La reconnexion conserve votre organisation {{provider}} actuelle. Toute autre organisation cochée sur l'écran {{provider}} est libérée.",
-    "pendingTenant": "Choisir une organisation"
+    "pendingTenant": "Choisir une organisation",
+    "settingsStep": {
+      "title": "Paramètres {{provider}}",
+      "organisation": "Organisation",
+      "demoBadge": "Entreprise de démonstration",
+      "incomeAccount": "Compte de revenus par défaut",
+      "taxRate": "Taux de taxe pour les lignes taxables",
+      "exemptTaxRate": "Taux de taxe pour les lignes non taxables",
+      "paymentAccount": "Compte bancaire pour les paiements",
+      "notSet": "Non défini",
+      "save": "Enregistrer les paramètres",
+      "saved": "Paramètres {{provider}} enregistrés",
+      "saveFailed": "Impossible d'enregistrer les paramètres {{provider}}.",
+      "loadFailed": "Impossible de charger les paramètres de {{provider}}.",
+      "retry": "Réessayer",
+      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les de nouveau — les choix de l'ancienne organisation ont été effacés."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Association des clients et des articles",

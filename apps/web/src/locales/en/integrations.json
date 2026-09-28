@@ -1132,7 +1132,23 @@
       "confirm": "Disconnect"
     },
     "reconnectKeepsOrganisation": "Reconnecting keeps your current {{provider}} organisation. Any other organisation you tick on the {{provider}} screen is released.",
-    "pendingTenant": "Choose an organisation"
+    "pendingTenant": "Choose an organisation",
+    "settingsStep": {
+      "title": "{{provider}} settings",
+      "organisation": "Organisation",
+      "demoBadge": "Demo company",
+      "incomeAccount": "Default revenue account",
+      "taxRate": "Tax rate for taxable lines",
+      "exemptTaxRate": "Tax rate for non-taxable lines",
+      "paymentAccount": "Bank account for payments",
+      "notSet": "Not set",
+      "save": "Save settings",
+      "saved": "{{provider}} settings saved",
+      "saveFailed": "Couldn't save {{provider}} settings.",
+      "loadFailed": "Couldn't load settings from {{provider}}.",
+      "retry": "Try again",
+      "pickDefaults": "Choose the defaults Breeze uses with {{provider}}. If you switched organisation, pick them again — the old organisation's choices were cleared."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Customer and item mapping",

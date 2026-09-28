@@ -338,6 +338,10 @@ const TARGET_GLOBS = [
   // the partner believing an organisation was connected (or the pending grant
   // cancelled) when the API never confirmed either.
   'src/components/integrations/AccountingTenantPicker.tsx',
+  // Xero settings step (Xero W02 Task 12): the four default-account/tax/bank
+  // picker PATCH is a one-page Save — a silent failure here would leave the
+  // operator believing new defaults are live when the server never saved them.
+  'src/components/integrations/AccountingSettingsStep.tsx',
   // Partner trust action links approve or suspend an entire partner. Keep the
   // TOTP-confirmed mutation inside runAction so this high-impact result cannot
   // fail without operator feedback.
@@ -835,7 +839,8 @@ describe('no silent mutations in targeted set', () => {
     // unlisted AccountingCustomerImport.tsx: 193 → 194.
     // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
     // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 195 → 196.
-    expect(absoluteFiles.length).toBe(196);
+    // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 196 → 197.
+    expect(absoluteFiles.length).toBe(197);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

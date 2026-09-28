@@ -970,4 +970,25 @@ describe("Xero W02 panel behaviour", () => {
     await screen.findByTestId("xero-disconnect");
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/xero/owed-operations");
   });
+
+  // Task 12: the settings step is gated on the FEATURE, never the provider id.
+  it("renders the settings step for Xero when features.settingsOptions is true", async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === "/accounting/xero") return jsonResponse(xeroStatus({ features: { tenantSelection: true, settingsOptions: true } }));
+      if (url === "/accounting/xero/settings/options") {
+        return jsonResponse({ data: { organisation: { name: "Acme", isDemoCompany: false }, incomeAccounts: [], taxRates: [], bankAccounts: [] } });
+      }
+      return jsonResponse({}, 404);
+    });
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(await screen.findByTestId("xero-settings-step")).toBeTruthy();
+  });
+
+  it("QuickBooks with no features field never renders or fetches the settings step", async () => {
+    mockStatus("/accounting/quickbooks", connected);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await screen.findByTestId("quickbooks-pushmode");
+    expect(screen.queryByTestId("quickbooks-settings-step")).toBeNull();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/quickbooks/settings/options");
+  });
 });

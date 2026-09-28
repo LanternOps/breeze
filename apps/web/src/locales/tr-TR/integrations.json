@@ -1132,7 +1132,23 @@
       "confirm": "Bağlantıyı kes"
     },
     "reconnectKeepsOrganisation": "Yeniden bağlanmak mevcut {{provider}} kuruluşunuzu korur. {{provider}} ekranında işaretlediğiniz başka bir kuruluş serbest bırakılır.",
-    "pendingTenant": "Bir kuruluş seçin"
+    "pendingTenant": "Bir kuruluş seçin",
+    "settingsStep": {
+      "title": "{{provider}} ayarları",
+      "organisation": "Kuruluş",
+      "demoBadge": "Demo şirket",
+      "incomeAccount": "Varsayılan gelir hesabı",
+      "taxRate": "Vergiye tabi satırlar için vergi oranı",
+      "exemptTaxRate": "Vergiden muaf satırlar için vergi oranı",
+      "paymentAccount": "Ödemeler için banka hesabı",
+      "notSet": "Ayarlanmadı",
+      "save": "Ayarları kaydet",
+      "saved": "{{provider}} ayarları kaydedildi",
+      "saveFailed": "{{provider}} ayarları kaydedilemedi.",
+      "loadFailed": "{{provider}} tarafından ayarlar yüklenemedi.",
+      "retry": "Tekrar dene",
+      "pickDefaults": "Breeze uygulamasının {{provider}} ile kullandığı varsayılanları seçin. Kuruluş değiştirdiyseniz bunları yeniden seçin — önceki kuruluşun seçimleri temizlendi."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Müşteri ve ürün eşleme",

@@ -1132,7 +1132,23 @@
       "confirm": "Disconnetti"
     },
     "reconnectKeepsOrganisation": "La riconnessione mantiene la tua organizzazione {{provider}} attuale. Qualsiasi altra organizzazione che selezioni nella schermata di {{provider}} viene rilasciata.",
-    "pendingTenant": "Scegli un'organizzazione"
+    "pendingTenant": "Scegli un'organizzazione",
+    "settingsStep": {
+      "title": "Impostazioni {{provider}}",
+      "organisation": "Organizzazione",
+      "demoBadge": "Azienda demo",
+      "incomeAccount": "Conto ricavi predefinito",
+      "taxRate": "Aliquota fiscale per le righe imponibili",
+      "exemptTaxRate": "Aliquota fiscale per le righe esenti",
+      "paymentAccount": "Conto bancario per i pagamenti",
+      "notSet": "Non impostato",
+      "save": "Salva impostazioni",
+      "saved": "Impostazioni {{provider}} salvate",
+      "saveFailed": "Impossibile salvare le impostazioni di {{provider}}.",
+      "loadFailed": "Impossibile caricare le impostazioni da {{provider}}.",
+      "retry": "Riprova",
+      "pickDefaults": "Scegli i valori predefiniti che Breeze usa con {{provider}}. Se hai cambiato organizzazione, sceglili di nuovo — le scelte dell'organizzazione precedente sono state cancellate."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Mappatura di clienti e articoli",

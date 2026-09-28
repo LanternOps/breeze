@@ -18,6 +18,7 @@ import AccountingCustomerImport from "./AccountingCustomerImport";
 import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 import AccountingConnectButton from "./AccountingConnectButton";
 import AccountingTenantPicker from "./AccountingTenantPicker";
+import AccountingSettingsStep from "./AccountingSettingsStep";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import {
@@ -684,6 +685,20 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
         isLoading={disconnecting}
         confirmTestId={`${provider}-disconnect-confirm`}
       />
+
+      {isConnected && status?.features?.settingsOptions && (
+        <AccountingSettingsStep
+          provider={provider}
+          values={{
+            defaultIncomeAccountRef: status.defaultIncomeAccountRef ?? null,
+            defaultTaxCodeRef: status.defaultTaxCodeRef ?? null,
+            defaultExemptTaxCodeRef: status.defaultExemptTaxCodeRef ?? null,
+            defaultPaymentAccountRef: status.defaultPaymentAccountRef ?? null,
+          }}
+          onSaved={(v) => setStatus((prev) => (prev ? { ...prev, ...v } : prev))}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
 
       {isConnected && status && (
         <div className="space-y-5 rounded-lg border bg-card p-5">

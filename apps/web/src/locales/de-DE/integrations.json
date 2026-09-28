@@ -1132,7 +1132,23 @@
       "confirm": "Trennen"
     },
     "reconnectKeepsOrganisation": "Beim erneuten Verbinden bleibt Ihre aktuelle {{provider}}-Organisation erhalten. Jede andere Organisation, die Sie auf dem {{provider}}-Bildschirm ankreuzen, wird freigegeben.",
-    "pendingTenant": "Organisation auswählen"
+    "pendingTenant": "Organisation auswählen",
+    "settingsStep": {
+      "title": "{{provider}}-Einstellungen",
+      "organisation": "Organisation",
+      "demoBadge": "Demo-Unternehmen",
+      "incomeAccount": "Standard-Erlöskonto",
+      "taxRate": "Steuersatz für steuerpflichtige Positionen",
+      "exemptTaxRate": "Steuersatz für steuerfreie Positionen",
+      "paymentAccount": "Bankkonto für Zahlungen",
+      "notSet": "Nicht festgelegt",
+      "save": "Einstellungen speichern",
+      "saved": "{{provider}}-Einstellungen gespeichert",
+      "saveFailed": "{{provider}}-Einstellungen konnten nicht gespeichert werden.",
+      "loadFailed": "Einstellungen von {{provider}} konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Kunden- und Artikelzuordnung",
