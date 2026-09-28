@@ -920,7 +920,15 @@ describe('accountingConnectionService', () => {
 
       await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
 
-      expect(captured.insertValues.pushPaymentsSince).toBeInstanceOf(Date);
+      // #7293: stamped from the DATABASE clock (`now()`), the same clock that
+      // stamps `invoice_payments.created_at` it is compared against. A Node
+      // `new Date()` here let an API clock running even a few ms ahead of
+      // Postgres drop the first payment recorded after connecting.
+      const since = captured.insertValues.pushPaymentsSince;
+      expect(since).not.toBeInstanceOf(Date);
+      const compiled = new PgDialect().sqlToQuery(since as SQL);
+      expect(compiled.sql.trim().toLowerCase()).toBe('now()');
+      expect(compiled.params).toEqual([]);
       expect('pushPaymentsSince' in captured.updateSet).toBe(false);
     }, 20_000);
 
