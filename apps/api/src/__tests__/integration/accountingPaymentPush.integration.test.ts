@@ -1124,7 +1124,7 @@ describe('QuickBooks payment push — real Postgres', () => {
 
     // The badge and the refusal are the same fact: QuickBooks OWNS its row.
     await expect(withSystemDbAccessContext(() => voidPayment(pulled.invoicePaymentId!, fx.actor)))
-      .rejects.toMatchObject({ status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT' });
+      .rejects.toMatchObject({ status: 409, code: 'PROVIDER_OWNED_PAYMENT' });
     expect(await loadPayments(invoiceId)).toHaveLength(2);
 
     // ...while the Breeze-origin one is still hand-voidable, and the void
