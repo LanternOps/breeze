@@ -20,7 +20,7 @@
  *     src/__tests__/integration/backupStorageWriteSessions.integration.test.ts
  */
 import './setup';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runOutsideDbContext, withDbAccessContext } from '../../db';
@@ -28,6 +28,7 @@ import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanit
 import { backupWriteCredentialPayload } from '../../services/backupCommandCredentials';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
+import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
 import {
   completeWriteSessionMultipart,
@@ -248,6 +249,50 @@ describe('write-scoped storage sessions', () => {
     expect([409, 410]).toContain(after.status);
     const live = await withDbAccessContext(orgContext(t.orgId), () => ensureWriteSessionLive(session));
     expect(live.ok).toBe(false);
+  });
+});
+
+describe('verifying the attestation of a brokered snapshot', () => {
+  runDb('stays pending while the snapshot is sealing, and is verified once it is published', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    const session = await authed(t, minted.envelope);
+    const manifestKey = `snapshots/${minted.snapshotId}/manifest.json`;
+    // An upload URL still usable keeps the published snapshot sealing.
+    await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [{ method: 'PUT', key: manifestKey, size: 8 }], fakeDeps()));
+    const snapshotDbId = await insertSnapshotRow(t, minted.snapshotId);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('sealing');
+
+    const manifest = Buffer.from('{"files":[]}');
+    const statement = `{"v":1,"snapshotId":"${minted.snapshotId}"}`;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_attestations (org_id, snapshot_db_id, job_id, device_id, provider_snapshot_id, storage_identity,
+        key_layout, verification_mode, accepted_via, result_received_at, format_version, statement, statement_sha256,
+        manifest_key, manifest_sha256, manifest_size, status)
+      VALUES (${t.orgId}, ${snapshotDbId}, ${t.jobId}, ${t.deviceId}, ${minted.snapshotId}, ${WRITE_IDENTITY},
+        'legacy_flat', 'server_fetched', 'agent_result', now(), 1, ${statement},
+        ${createHash('sha256').update(statement).digest('hex')}, ${manifestKey},
+        ${createHash('sha256').update(manifest).digest('hex')}, ${manifest.byteLength}, 'pending')
+    `);
+    const fetchObject = vi.fn(async () => new Uint8Array(manifest));
+    const deps = { ...defaultVerifyDeps, fetchObject };
+
+    const whileSealing = await verifySnapshotAttestation(snapshotDbId, deps);
+    expect(whileSealing).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
+    expect(fetchObject).not.toHaveBeenCalled();
+    const pending = await getTestDb().execute(sql`SELECT status FROM backup_snapshot_attestations WHERE snapshot_db_id = ${snapshotDbId}`);
+    expect(pending[0]).toMatchObject({ status: 'pending' });
+
+    await getTestDb().execute(sql`
+      UPDATE backup_storage_sessions SET url_horizon_at = now() - interval '1 minute' WHERE reservation_snapshot_id = ${minted.snapshotId}
+    `);
+    await getTestDb().execute(sql`
+      UPDATE backup_snapshot_id_reservations SET sealed_until = now() - interval '1 second' WHERE snapshot_id = ${minted.snapshotId}
+    `);
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: { abortMultipart: async () => undefined, listMultipart: async () => [] } });
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
+    await expect(verifySnapshotAttestation(snapshotDbId, deps)).resolves.toEqual({ outcome: 'verified' });
   });
 });
 

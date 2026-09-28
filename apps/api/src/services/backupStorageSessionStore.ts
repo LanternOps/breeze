@@ -9,7 +9,6 @@ import { and, eq, inArray, isNull, max, sql, count } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   backupSnapshotFiles,
-  backupSnapshotIdReservations,
   backupSnapshotOrigins,
   backupSnapshots,
   backupStorageSessions,
@@ -18,6 +17,7 @@ import {
 } from '../db/schema';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
+import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
 
 // Built lazily: some unit suites mock '../db/schema' with a partial table set,
@@ -221,12 +221,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
   },
 
   async isSnapshotSealing(snapshotId) {
-    const [row] = await db
-      .select({ state: backupSnapshotIdReservations.state })
-      .from(backupSnapshotIdReservations)
-      .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
-      .limit(1);
-    return row?.state === 'sealing';
+    return isSnapshotWriteInFlight(snapshotId);
   },
 
   async extendLease(sessionId, expiresAt) {

@@ -22,9 +22,9 @@
  * completes sealing and abandonment.
  */
 import { randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { backupJobs, backupSnapshotIdReservations, backupStorageSessions } from '../db/schema';
+import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
 
@@ -297,4 +297,39 @@ export async function tombstoneRetiredReservations(snapshotIds: string[]): Promi
      WHERE r.snapshot_id IN (${idList(snapshotIds)}) AND r.state = 'retired'
     RETURNING r.snapshot_id`);
   return (deleted as unknown as unknown[]).length;
+}
+
+/**
+ * True while a brokered write of this snapshot id may still change its bytes:
+ * the reservation is sealing (an issued upload URL may still be usable), or a
+ * multipart completion or a delete through one of its sessions is in flight.
+ * Readers of the snapshot's bytes — restores, attestation verification — wait
+ * until it is false. Runs in the caller's DB context.
+ */
+export async function isSnapshotWriteInFlight(snapshotId: string): Promise<boolean> {
+  const [reservation] = await db
+    .select({ state: backupSnapshotIdReservations.state })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
+  if (!reservation) return false;
+  if (reservation.state === 'sealing') return true;
+  const [deleting] = await db
+    .select({ id: backupStorageSessions.id })
+    .from(backupStorageSessions)
+    .where(and(
+      eq(backupStorageSessions.reservationSnapshotId, snapshotId),
+      isNotNull(backupStorageSessions.deletingSince),
+    ))
+    .limit(1);
+  if (deleting) return true;
+  const [completing] = await db
+    .select({ id: backupStorageSessionUploads.id })
+    .from(backupStorageSessionUploads)
+    .where(and(
+      eq(backupStorageSessionUploads.reservationSnapshotId, snapshotId),
+      eq(backupStorageSessionUploads.state, 'completing'),
+    ))
+    .limit(1);
+  return !!completing;
 }

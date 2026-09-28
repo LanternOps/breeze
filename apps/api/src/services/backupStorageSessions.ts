@@ -211,8 +211,8 @@ export interface BrokeredReadStore {
   /** Raise expires_at to at least `expiresAt`; returns the stored value, or null when revoked/absent. */
   extendLease(sessionId: string, expiresAt: Date): Promise<Date | null>;
   /**
-   * True while a brokered write of this snapshot id is still sealing: an
-   * upload URL issued for it may still be usable, so its bytes are not final.
+   * True while a brokered write of this snapshot id may still change its
+   * bytes (sealing, or a completion or delete in flight), so they are not final.
    */
   isSnapshotSealing?(snapshotId: string): Promise<boolean>;
 }

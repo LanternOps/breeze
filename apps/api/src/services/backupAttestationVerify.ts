@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
@@ -74,6 +75,12 @@ export type AttestationVerifyDeps = {
     attestation: AttestationUnderVerification;
     snapshot: SnapshotUnderVerification | null;
     provider: { type: string; config: Record<string, unknown> } | null;
+    /**
+     * A brokered write of the snapshot may still change its bytes (its id
+     * reservation is sealing, or a completion or delete is in flight): the
+     * row is retried later, never decided. Absent = false.
+     */
+    writeInFlight?: boolean;
   } | null>;
   fetchObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
   /**
@@ -159,6 +166,9 @@ export async function verifySnapshotAttestation(
   ) {
     return finish('mismatch', 'binding_changed');
   }
+
+  // Bytes that may still change are never read, let alone decided on.
+  if (loaded.writeInFlight) return retry('snapshot_sealing');
 
   // The destination must still resolve to the attested storage identity; an
   // edited or missing configuration cannot be read on the snapshot's behalf.
@@ -258,7 +268,9 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           provider = { type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
         }
       }
+      const writeInFlight = snapshot ? await isSnapshotWriteInFlight(snapshot.snapshotId) : false;
       return {
+        writeInFlight,
         attestation: {
           id: row.id,
           snapshotDbId: row.snapshotDbId,

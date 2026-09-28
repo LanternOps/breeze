@@ -46,6 +46,8 @@ export const CAPABILITY_PROBE_PREFIX = 'breeze-capability-probe/';
 /** Upper bound for one server-side storage request (a completion may take longer). */
 export const STORAGE_CALL_TIMEOUT_MS = 30_000;
 export const MULTIPART_COMPLETE_TIMEOUT_MS = 15 * 60 * 1000;
+/** Keys per DeleteObjects call (the S3 maximum). */
+export const DELETE_OBJECTS_BATCH_KEYS = 1000;
 
 function bounded(ms: number = STORAGE_CALL_TIMEOUT_MS): { abortSignal: AbortSignal } {
   return { abortSignal: AbortSignal.timeout(ms) };
@@ -277,8 +279,8 @@ export async function deleteKeys(
   const { bucket, client: s3 } = client(cfg);
   const deleted: string[] = [];
   const failed: Array<{ key: string; code: string }> = [];
-  for (let i = 0; i < keys.length; i += 1000) {
-    const batch = keys.slice(i, i + 1000);
+  for (let i = 0; i < keys.length; i += DELETE_OBJECTS_BATCH_KEYS) {
+    const batch = keys.slice(i, i + DELETE_OBJECTS_BATCH_KEYS);
     const res = await s3.send(new DeleteObjectsCommand({
       Bucket: bucket,
       Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: false },

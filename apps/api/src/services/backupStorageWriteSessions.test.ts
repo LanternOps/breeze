@@ -133,3 +133,17 @@ describe('buildWriteEnvelope', () => {
     expect(STORAGE_WRITE_PART_SIZE_BYTES).toBe(64 * 1024 * 1024);
   });
 });
+
+describe('delete settle window', () => {
+  it('outlasts the longest a single delete call can run against storage', async () => {
+    const { STORAGE_WRITE_DELETE_MAX_KEYS, STORAGE_DELETE_SETTLE_MS } = await import('./backupStorageWriteSessions');
+    const { DELETE_OBJECTS_BATCH_KEYS, STORAGE_CALL_TIMEOUT_MS } = await import('./backupStoragePresign');
+    // One delete request may send ceil(max keys / batch) storage calls, each
+    // bounded by the per-call timeout. The cleanup job may only clear an
+    // in-flight delete marker once every such call must have ended; raising
+    // the key cap or the timeout without revisiting the window fails here.
+    const worstCaseMs = Math.ceil(STORAGE_WRITE_DELETE_MAX_KEYS / DELETE_OBJECTS_BATCH_KEYS) * STORAGE_CALL_TIMEOUT_MS;
+    expect(DELETE_OBJECTS_BATCH_KEYS).toBeGreaterThan(0);
+    expect(worstCaseMs * 2).toBeLessThanOrEqual(STORAGE_DELETE_SETTLE_MS);
+  });
+});
