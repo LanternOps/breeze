@@ -1088,9 +1088,10 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           >
             {t("deviceInfoTab.updateStuck", {
               target: info.updateAttemptTargetVersion,
-              since: info.updateAttemptStartedAt
-                ? formatDateTime(info.updateAttemptStartedAt)
-                : "—",
+              // #7214 (paper cut #22): use the same shared date style as the
+              // Last Seen / Enrolled rows below, instead of the locale-default
+              // format (which can include seconds and a different order).
+              since: formatDate(info.updateAttemptStartedAt),
               attempts: info.updateAttemptCount ?? 1,
             })}
           </div>

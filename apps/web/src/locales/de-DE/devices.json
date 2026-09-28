@@ -1111,6 +1111,8 @@
     "memoryModules": "Speichermodule",
     "memoryNotReported": "Noch nicht gemeldet – Agent-Update erforderlich",
     "noMemoryModulesReported": "Keine Speichermodule gemeldet.",
+    "memoryModulesOnPackage": "Der Speicher ist im Gehäuse verlötet (On-Package) — es gibt keine austauschbaren Steckplätze zu melden.",
+    "memoryMaxCapacity": "Maximal unterstützte Kapazität: {{capacity}}",
     "slot": "Steckplatz",
     "capacity": "Kapazität",
     "memoryType": "Typ",

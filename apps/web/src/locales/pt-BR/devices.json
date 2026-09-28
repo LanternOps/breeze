@@ -1111,6 +1111,8 @@
     "memoryModules": "Módulos de memória",
     "memoryNotReported": "Ainda não informado — requer atualização do agente",
     "noMemoryModulesReported": "Nenhum módulo de memória informado.",
+    "memoryModulesOnPackage": "A memória é integrada ao chip (soldada) — não há slots removíveis para informar.",
+    "memoryMaxCapacity": "Capacidade máxima suportada: {{capacity}}",
     "slot": "Soquete",
     "capacity": "Capacidade",
     "memoryType": "Tipo",

@@ -1111,6 +1111,8 @@
     "memoryModules": "Moduli di memoria",
     "memoryNotReported": "Non ancora segnalato — è necessario aggiornare l'agente",
     "noMemoryModulesReported": "Nessun modulo di memoria segnalato.",
+    "memoryModulesOnPackage": "La memoria è integrata nel package (saldata) — non ci sono slot rimovibili da segnalare.",
+    "memoryMaxCapacity": "Capacità massima supportata: {{capacity}}",
     "slot": "Alloggiamento",
     "capacity": "Capacità",
     "memoryType": "Tipo",

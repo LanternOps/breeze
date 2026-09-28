@@ -1111,6 +1111,8 @@
     "memoryModules": "Bellek Modülleri",
     "memoryNotReported": "Henüz bildirilmedi — aracı güncellemesi gerekli",
     "noMemoryModulesReported": "Bellek modülü bildirilmedi.",
+    "memoryModulesOnPackage": "Bellek pakete lehimlenmiş (on-package) — bildirilecek çıkarılabilir yuva yok.",
+    "memoryMaxCapacity": "Desteklenen maksimum kapasite: {{capacity}}",
     "slot": "Yuva",
     "capacity": "Kapasite",
     "memoryType": "Tür",

@@ -1886,6 +1886,43 @@ export default function DeviceList({
                 className="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
               />
             )}
+            {/* #7214 (paper cut #23): the agent-health badges below duplicate
+                the ones in the Agent Version / Helper Version columns, which
+                are opt-in and hidden by default — most users never saw them.
+                Status is default-visible, so mirror the same three badges
+                here as compact pills, matching the agent-silent/logs-silent
+                pattern above. */}
+            {device.updateOfferWithheldReason && (
+              <span
+                data-testid={`device-${device.id}-status-update-withheld`}
+                title={t("deviceList.updateWithheldTooltip")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.updateWithheld")}
+              </span>
+            )}
+            {isAgentUpdateStuck({
+              targetVersion: device.updateAttemptTargetVersion,
+              startedAt: device.updateAttemptStartedAt,
+              lastAttemptAt: device.updateAttemptLastAt,
+            }) && (
+              <span
+                data-testid={`device-${device.id}-status-update-stuck`}
+                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.updateStuck")}
+              </span>
+            )}
+            {device.helperInstallIssue && (
+              <span
+                data-testid={`device-${device.id}-status-helper-install-issue`}
+                title={helperInstallIssueTooltip(device.helperInstallIssue)}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.helperNotInstalled")}
+              </span>
+            )}
           </div>
         </td>
       ),
