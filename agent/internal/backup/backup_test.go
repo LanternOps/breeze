@@ -531,7 +531,7 @@ func stubCollectSystemState(t *testing.T, fn func() (*systemstate.SystemStateMan
 	t.Helper()
 	orig := collectSystemState
 	t.Cleanup(func() { collectSystemState = orig })
-	collectSystemState = fn
+	collectSystemState = func(systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) { return fn() }
 }
 
 func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {

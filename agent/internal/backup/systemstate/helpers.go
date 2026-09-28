@@ -366,9 +366,15 @@ var runRegSave = func(hive, outPath string) ([]byte, error) {
 type registrySaveError struct {
 	FailedHives []string
 	Err         error // the first hive's error, representative of the failure
+	// Source names where the hives were read from when it was not reg.exe
+	// (e.g. "the VSS shadow copy"); empty for the reg save path.
+	Source string
 }
 
 func (e *registrySaveError) Error() string {
+	if e.Source != "" {
+		return fmt.Sprintf("registry hive copy from %s failed for hive(s) %v: %s", e.Source, e.FailedHives, e.Err)
+	}
 	return fmt.Sprintf("reg save failed for hive(s) %v: %s", e.FailedHives, e.Err)
 }
 

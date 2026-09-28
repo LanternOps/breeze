@@ -38,3 +38,10 @@ func uidGidFromInfo(info os.FileInfo) (uid, gid int) {
 	}
 	return int(stat.Uid), int(stat.Gid)
 }
+
+// openHiveSource opens a registry hive file for copying. Off Windows there
+// are no hives to capture; this exists so the portable copy logic runs
+// against a fake shadow tree in tests.
+func openHiveSource(path string) (*os.File, error) {
+	return os.Open(path)
+}

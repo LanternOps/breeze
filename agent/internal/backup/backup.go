@@ -64,11 +64,11 @@ var ErrPublishLeaseExpired = errors.New("backup publish lease expired before man
 // resume attempt, so publishing is refused.
 var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before manifest could be published")
 
-// collectSystemState is a seam over systemstate.CollectSystemState so tests can
+// collectSystemState is a seam over systemstate.CollectSystemStateWithOptions so tests can
 // exercise the failure and partial-collection paths deterministically — the
 // real collector shells out to OS tools and succeeds on any CI host, which
 // would otherwise leave the system-state fail-loud/warning branches uncovered.
-var collectSystemState = systemstate.CollectSystemState
+var collectSystemState = systemstate.CollectSystemStateWithOptions
 
 // collectLayout is the seam over layout.Collect (disk layout for bare-metal
 // rebuilds, spec §5.2). Same rationale as collectSystemState above.
@@ -703,7 +703,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
-		manifest, stagingDir, ssErr := collectSystemState()
+		// The shadow copy (when this run has one) was taken above, so hand
+		// its roots to the collector: on Windows the registry hive files are
+		// then copied out of the shadow copy instead of `reg.exe save`, which
+		// Microsoft Defender blocks for SAM/SECURITY as
+		// Trojan:Win32/Commando.A!ml (#5397).
+		ssOpts := systemstate.CollectOptions{AcquireBackupPrivilege: acquireBackupReadPrivilege}
+		if vssSession != nil {
+			ssOpts.ShadowPaths = vssSession.ShadowPaths
+		}
+		manifest, stagingDir, ssErr := collectSystemState(ssOpts)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())

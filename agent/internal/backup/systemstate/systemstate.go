@@ -17,12 +17,19 @@ const manifestSchemaVersion = 1
 // the staging directory contents to the backup archive and cleaning up
 // the staging directory when finished.
 func CollectSystemState() (manifest *SystemStateManifest, stagingDir string, err error) {
+	return CollectSystemStateWithOptions(CollectOptions{})
+}
+
+// CollectSystemStateWithOptions is CollectSystemState with per-run context —
+// notably the run's VSS shadow copies, from which the Windows collector copies
+// the registry hive files instead of spawning reg.exe (see CollectOptions).
+func CollectSystemStateWithOptions(opts CollectOptions) (manifest *SystemStateManifest, stagingDir string, err error) {
 	stagingDir, err = os.MkdirTemp("", "breeze-systemstate-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("systemstate: failed to create staging dir: %w", err)
 	}
 
-	collector := NewCollector()
+	collector := newCollector(opts)
 	manifest, err = collector.CollectState(stagingDir)
 	if manifest != nil {
 		manifest.SchemaVersion = manifestSchemaVersion
