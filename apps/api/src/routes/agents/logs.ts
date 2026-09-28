@@ -18,6 +18,7 @@ import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
 import { recordAgentIngestSubmission } from '../metrics';
+import { captureException } from '../../services/sentry';
 
 export const logsRoutes = new Hono();
 
@@ -258,7 +259,17 @@ logsRoutes.post(
           ),
         ));
     } catch (err) {
+      // Deliberately does not fail the request — the logs themselves already
+      // landed. But an invisible failure here is worse than the neighboring
+      // insert-failure path: the whole point of last_log_at is to be a
+      // trustworthy stand-in for "logs are flowing", so a silently-stuck
+      // column would make a healthy device read as log-silent with no signal
+      // that the column, not the device, is the thing that's broken.
       console.error(`[AgentLogs] Failed to update last_log_at for device ${device.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), c, {
+        route: 'agents.logs.lastLogAtUpdate',
+        deviceId: device.id,
+      });
     }
   }
 

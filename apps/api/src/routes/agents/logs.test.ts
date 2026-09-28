@@ -44,6 +44,10 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 // Default: no Redis client, so the ingest quota check fails open (allowed)
 // and existing tests are unaffected. Quota-specific tests below override
 // `checkAndConsumeIngestQuota` directly.
@@ -60,6 +64,7 @@ vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
 
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { logsRoutes } from './logs';
 
@@ -113,6 +118,27 @@ function mockUpdateSuccess() {
   const set = vi.fn().mockReturnValue({ where });
   vi.mocked(db.update).mockReturnValue({ set } as any);
   return { set, where };
+}
+
+/**
+ * Flattens a drizzle condition to its static text. drizzle-orm's `and`/`or`/
+ * `isNull`/`lt`/`eq` are NOT mocked in this file, so the `where` mock above
+ * captures the REAL SQL fragment the route built — this lets the throttle
+ * tests assert on the actual predicate (column + threshold), not just that
+ * `where` was called some number of times. Mirrors the identical helper in
+ * enrollmentKeys_get_rotate_delete.test.ts / jobs/enrollmentKeyCleanup.test.ts.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (q instanceof Date) return q.toISOString();
+  const obj = q as { queryChunks?: unknown[]; value?: unknown; getSQL?: () => unknown };
+  if (Array.isArray(obj.queryChunks)) return obj.queryChunks.map(sqlText).join(' ');
+  if (Array.isArray(obj.value)) return (obj.value as unknown[]).map(sqlText).join('');
+  if (obj.value instanceof Date) return obj.value.toISOString();
+  if (typeof obj.value === 'string' || typeof obj.value === 'number') return String(obj.value);
+  if (typeof obj.getSQL === 'function') return sqlText(obj.getSQL());
+  return '';
 }
 
 function makeLogEntry(overrides: Partial<Record<string, unknown>> = {}) {
@@ -593,6 +619,39 @@ describe('agent logs routes', () => {
       expect(db.update).toHaveBeenCalledWith(expect.anything());
       expect(set).toHaveBeenCalledWith({ lastLogAt: expect.any(Date) });
       expect(where).toHaveBeenCalledTimes(1);
+
+      // Race-safety claim: this must be a single conditional UPDATE (scoped
+      // to this device, gated on the throttle), never a read-then-write. If
+      // the `isNull`/`lt`/`eq(id, ...)` branches were dropped, this would
+      // still pass a "where was called once" assertion, so assert the actual
+      // predicate text.
+      const condition = sqlText(where.mock.calls[0]?.[0]);
+      expect(condition).toContain('id');
+      expect(condition).toContain('last_log_at');
+    });
+
+    it('embeds the throttle threshold as exactly receivedAt minus 5 minutes', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
+      try {
+        mockDeviceLookup(true);
+        mockInsertSuccess();
+        const { set, where } = mockUpdateSuccess();
+
+        await app.request(`/agents/${AGENT_ID}/logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ logs: [makeLogEntry()] }),
+        });
+
+        expect(set).toHaveBeenCalledWith({ lastLogAt: new Date('2026-05-01T12:00:00.000Z') });
+        const condition = sqlText(where.mock.calls[0]?.[0]);
+        // The throttle window is 5 minutes: a device whose last_log_at is
+        // exactly 5 minutes old (or older) is due for a fresh write.
+        expect(condition).toContain(new Date('2026-05-01T11:55:00.000Z').toISOString());
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('does not stamp last_log_at when nothing was inserted', async () => {
@@ -610,7 +669,7 @@ describe('agent logs routes', () => {
       expect(set).not.toHaveBeenCalled();
     });
 
-    it('swallows a last_log_at update failure without failing the request', async () => {
+    it('swallows a last_log_at update failure without failing the request, but reports it', async () => {
       mockDeviceLookup(true);
       const values = mockInsertSuccess();
       vi.mocked(db.update).mockReturnValue({
@@ -627,6 +686,14 @@ describe('agent logs routes', () => {
 
       expect(res.status).toBe(201);
       expect(values).toHaveBeenCalled();
+      // A silently-stuck last_log_at would defeat the whole point of this
+      // column (a trustworthy "logs are flowing" signal), so the failure
+      // must be visible somewhere even though the request itself succeeds.
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.anything(),
+        expect.objectContaining({ route: 'agents.logs.lastLogAtUpdate', deviceId: DEVICE_ID }),
+      );
     });
   });
 });
