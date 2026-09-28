@@ -14,6 +14,9 @@ export type ConversionFailure =
   | { kind: 'template_not_found' }
   | { kind: 'already_managed' }
   | { kind: 'not_convertible' }
+  // #7206: a built-in system anchor rule (systemManagedRules.ts). It keeps
+  // alerting on its own; there is nothing to convert.
+  | { kind: 'system_managed' }
   | { kind: 'partner_wide_denied'; message: string };
 
 export interface ConversionSuccess {
@@ -79,6 +82,12 @@ export async function convertRuleToMonitor(ruleId: string, auth: AuthContext, ex
     .where(eq(alertTemplates.id, rule.templateId))
     .limit(1);
   if (!template) return { ok: false, failure: { kind: 'template_not_found' } };
+  // Before the ownership check: a built-in template is ownerless, so that check
+  // would deny it to every non-system caller and report a misleading
+  // template_not_found (#7206). The caller can already see the rule, and RLS
+  // admits built-in templates to everyone, so naming the refusal leaks nothing.
+  // Conversion itself refuses these as unconvertible:built_in (convert.ts).
+  if (template.isBuiltIn) return { ok: false, failure: { kind: 'system_managed' } };
 
   const canSeeTemplate = template.orgId
     ? auth.canAccessOrg(template.orgId)

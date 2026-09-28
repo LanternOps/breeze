@@ -368,6 +368,7 @@
     "convert": "Convert to monitor",
     "converted": "Converted",
     "notConvertible": "This rule's conditions cannot be expressed as a single monitor.",
+    "systemManaged": "System-managed rule. Breeze raises this alert itself, so there is nothing to convert.",
     "errors": {
       "fetch": "Failed to load alert rules",
       "convert": "Failed to convert rule"

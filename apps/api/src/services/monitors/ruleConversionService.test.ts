@@ -167,6 +167,41 @@ describe('convertRuleToMonitor (#5289)', () => {
 
     expect(result).toEqual({ ok: false, failure: { kind: 'template_not_found' } });
   });
+
+  // #7206: "Reboot pending too long" / "Patch job failure" are per-org rules on
+  // an ownerless built-in template (patchAlerts.ts ensurePatchAlertRule). The
+  // patch workers raise those alerts directly, so there is nothing to convert.
+  // The ownerless-template visibility check used to turn that refusal into a
+  // misleading "Alert template not found" for every non-system caller.
+  it('system_managed (not template_not_found) for an org rule on an ownerless built-in template', async () => {
+    resultsQueue.push([ruleRow({ name: 'Reboot pending too long', targetType: 'org', targetId: ORG })]);
+    resultsQueue.push([templateRow({ orgId: null, partnerId: null, isBuiltIn: true })]);
+
+    const result = await convertRuleToMonitor('rule-1', auth());
+
+    expect(result).toEqual({ ok: false, failure: { kind: 'system_managed' } });
+    expect(previewGroup).not.toHaveBeenCalled();
+    expect(convertGroup).not.toHaveBeenCalled();
+  });
+
+  it('system_managed for a system-scope caller too — built-in templates are never converted', async () => {
+    resultsQueue.push([ruleRow({ targetType: 'org', targetId: ORG })]);
+    resultsQueue.push([templateRow({ orgId: null, partnerId: null, isBuiltIn: true })]);
+
+    const result = await convertRuleToMonitor('rule-1', auth({ scope: 'system' }));
+
+    expect(result).toEqual({ ok: false, failure: { kind: 'system_managed' } });
+    expect(previewGroup).not.toHaveBeenCalled();
+  });
+
+  it('keeps template_not_found for an ownerless NON-built-in template the caller cannot see', async () => {
+    resultsQueue.push([ruleRow()]);
+    resultsQueue.push([templateRow({ orgId: null, partnerId: null, isBuiltIn: false })]);
+
+    const result = await convertRuleToMonitor('rule-1', auth());
+
+    expect(result).toEqual({ ok: false, failure: { kind: 'template_not_found' } });
+  });
 });
 
 

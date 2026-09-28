@@ -368,6 +368,7 @@
     "convert": "Convertir en moniteur",
     "converted": "Convertie",
     "notConvertible": "Les conditions de cette règle ne peuvent pas être exprimées comme un seul moniteur.",
+    "systemManaged": "Règle gérée par le système. Breeze déclenche cette alerte lui-même, il n'y a donc rien à convertir.",
     "errors": {
       "fetch": "Impossible de charger les règles d’alerte",
       "convert": "Impossible de convertir la règle"

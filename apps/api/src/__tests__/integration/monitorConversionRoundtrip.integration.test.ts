@@ -2,8 +2,8 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyAlertRules, monitorDefinitions, monitorConversions, devices } from '../../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { alertRules, alertTemplates, configurationPolicies, configPolicyAssignments, configPolicyFeatureLinks, configPolicyAlertRules, monitorDefinitions, monitorConversions, devices } from '../../db/schema';
 import { adminAuthForPartner } from '../../routes/admin/monitorConversion';
 import { createSystemAuthContext } from '../../services/featureConfigResolver';
 import { previewPolicyConversion, convertPolicy } from '../../services/monitors/conversion';
@@ -191,4 +191,44 @@ it('counts only active-policy rows in the partner backlog', async () => {
   const pending = await withDbAccessContext(f.context, () =>
     countPendingConversions({ orgId: f.orgId, partnerId: f.partnerId, includePartnerWide: false }));
   expect(pending).toMatchObject({ policies: 1, rows: 1, pendingPolicies: [{ id: f.policyId, name: 'Legacy parent' }] });
+});
+
+/**
+ * #7206: built-in system anchor rules ("Reboot pending too long", "Patch job
+ * failure": per-org alert_rules on an ownerless is_built_in template, created
+ * by patchAlerts.ts) are raised directly by the patch workers. Conversion
+ * refuses them (unconvertible:built_in) and the retirement sweep skips them,
+ * so they must not count as standalone rules awaiting conversion. Runs the
+ * shared NOT EXISTS predicate (systemManagedRules.ts) against real Postgres
+ * under the caller's RLS context, the same predicate GET /alerts/rules uses
+ * for ?needsConversion=true.
+ */
+it('does not count built-in system anchor rules as standalone rules awaiting conversion', async () => {
+  const { ensureRebootPendingRule, ensurePatchJobFailureRule } = await import('../../services/patchAlerts');
+  const f = await inheritedScopeFixture();
+  await withSystemDbAccessContext(async () => {
+    await ensureRebootPendingRule(f.orgId);
+    await ensurePatchJobFailureRule(f.orgId);
+  });
+  await withDbAccessContext(f.context, async () => {
+    const [template] = await db.insert(alertTemplates).values({
+      orgId: f.orgId, partnerId: null, name: 'Org CPU', severity: 'high',
+      conditions: { type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 90 },
+      titleTemplate: 'CPU', messageTemplate: 'CPU high',
+    }).returning();
+    await db.insert(alertRules).values({
+      orgId: f.orgId, templateId: template!.id, name: 'Org CPU rule', targetType: 'org', targetId: f.orgId,
+    });
+  });
+
+  const { countPendingConversions } = await import('../../services/monitors/conversion');
+  const pending = await withDbAccessContext(f.context, () =>
+    countPendingConversions({ orgId: f.orgId, partnerId: f.partnerId, includePartnerWide: false }));
+  expect(pending.standaloneRules).toBe(1);
+
+  // Control: the anchor rules exist and are visible to the org caller, so the
+  // count above is the predicate's doing, not an RLS blind spot.
+  const visible = await withDbAccessContext(f.context, () =>
+    db.select({ id: alertRules.id }).from(alertRules).where(eq(alertRules.orgId, f.orgId)));
+  expect(visible).toHaveLength(3);
 });

@@ -797,6 +797,11 @@ monitorDefinitionRoutes.post(
             return c.json({ error: 'RULE_ALREADY_MANAGED' }, 409);
           case 'not_convertible':
             return c.json({ error: 'RULE_NOT_CONVERTIBLE' }, 409);
+          case 'system_managed':
+            return c.json({
+              error: 'System-managed rule — it keeps alerting on its own and needs no conversion',
+              code: 'RULE_SYSTEM_MANAGED',
+            }, 409);
           case 'partner_wide_denied':
             return c.json({ error: result.failure.message }, 403);
         }

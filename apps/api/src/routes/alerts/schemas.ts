@@ -10,7 +10,10 @@ export const listAlertRulesSchema = z.object({
   orgId: z.string().guid().optional(),
   isActive: z.enum(['true', 'false']).optional(),
   enabled: z.enum(['true', 'false']).optional(),
-  includeRetired: z.enum(['true', 'false']).optional()
+  includeRetired: z.enum(['true', 'false']).optional(),
+  // #7206: the Monitors "Needs conversion" list. Excludes monitor-managed rules
+  // and built-in system anchor rules (see services/monitors/systemManagedRules.ts).
+  needsConversion: z.enum(['true', 'false']).optional()
 });
 
 export const bulkAlertActionSchema = z.object({

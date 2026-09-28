@@ -22,6 +22,8 @@ type LegacyRule = {
   isActive: boolean;
   managedByMonitorId: string | null;
   convertedToMonitorId: string | null;
+  /** #7206: built-in system anchor rule; raised by Breeze itself, never converted. */
+  systemManaged?: boolean;
 };
 
 export default function LegacyRulesTable({ onConverted }: { onConverted?: () => void }) {
@@ -37,11 +39,13 @@ export default function LegacyRulesTable({ onConverted }: { onConverted?: () => 
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/alerts/rules?limit=200');
+      // #7206: the API excludes monitor-managed and built-in system anchor rules
+      // (so its count agrees with this list); the client filter below mirrors it.
+      const response = await fetchWithAuth('/alerts/rules?limit=200&needsConversion=true');
       if (!response.ok) throw new Error(stableT('monitoring:legacy.errors.fetch'));
       const data = await response.json();
       const all: LegacyRule[] = Array.isArray(data?.data) ? data.data : [];
-      setRows(all.filter((rule) => rule.managedByMonitorId == null));
+      setRows(all.filter((rule) => rule.managedByMonitorId == null && rule.systemManaged !== true));
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('monitoring:legacy.errors.fetch'));
     } finally {
@@ -66,7 +70,11 @@ export default function LegacyRulesTable({ onConverted }: { onConverted?: () => 
         errorFallback: t('monitoring:legacy.errors.convert'),
         successMessage: t('monitoring:legacy.converted'),
         onUnauthorized: UNAUTHORIZED,
-        friendly: (code) => code === 'RULE_NOT_CONVERTIBLE' ? t('monitoring:legacy.notConvertible') : undefined,
+        friendly: (code) => {
+          if (code === 'RULE_NOT_CONVERTIBLE') return t('monitoring:legacy.notConvertible');
+          if (code === 'RULE_SYSTEM_MANAGED') return t('monitoring:legacy.systemManaged');
+          return undefined;
+        },
       });
       onConverted?.();
       const monitorId = data?.data?.monitorId;
