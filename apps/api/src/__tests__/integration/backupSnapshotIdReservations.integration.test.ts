@@ -212,14 +212,14 @@ describe('backup snapshot id reservations', () => {
       { deviceId: b.deviceId },
       { deviceId: a.deviceId, configId: b.configId },
     ]) {
-      const code = await expectSqlState(() => reserveAs(a.orgId, { snapshotId: sid('forge'), ...values }));
+      const code = await expectSqlState(() => reserveAs(a.orgId, { snapshotId: sid('guard'), ...values }));
       expect(code).toBe('42501');
     }
     // As the superuser too (the guard does not depend on RLS visibility).
     const code = await expectSqlState(() =>
       getTestDb().execute(sql`
         INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, source, state, current_job_id)
-        VALUES (${sid('forge-su')}, ${a.orgId}, 'server_minted', 'reserved', ${b.jobId})
+        VALUES (${sid('guard-su')}, ${a.orgId}, 'server_minted', 'reserved', ${b.jobId})
       `),
     );
     expect(code).toBe('42501');
@@ -319,13 +319,13 @@ describe('write-scoped storage sessions: schema', () => {
     expect(await expectSqlState(() => insertWriteSession(a, idB))).toBe('42501');
     // An upload row must name a write session of its own device and org.
     const sessionA = await insertWriteSession(a, idA);
-    const forgedUpload = await expectSqlState(() =>
+    const crossOrgUpload = await expectSqlState(() =>
       getTestDb().execute(sql`
         INSERT INTO backup_storage_session_uploads (org_id, device_id, session_id, reservation_snapshot_id, reservation_generation, object_key)
         VALUES (${b.orgId}, ${b.deviceId}, ${sessionA}, ${idA}, 1, ${`snapshots/${idA}/files/x`})
       `),
     );
-    expect(forgedUpload).toBe('42501');
+    expect(crossOrgUpload).toBe('42501');
   });
 
   runDb('a finished job revokes its own write sessions only', async () => {

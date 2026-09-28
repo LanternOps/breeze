@@ -24,6 +24,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runOutsideDbContext, withDbAccessContext } from '../../db';
+import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanitor';
 import { backupWriteCredentialPayload } from '../../services/backupCommandCredentials';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
@@ -117,6 +118,11 @@ async function asAgent<T>(t: { orgId: string }, session: StorageSessionRow, fn: 
   });
 }
 
+/** The agent route's per-phase runner: a short org context per database phase. */
+function runFor(t: { orgId: string }) {
+  return <T,>(fn: () => Promise<T>) => withDbAccessContext(orgContext(t.orgId), fn);
+}
+
 async function sessionRow(id: string) {
   const rows = await getTestDb().execute(sql`SELECT * FROM backup_storage_sessions WHERE id = ${id}`);
   return rows[0] as Record<string, unknown>;
@@ -139,9 +145,16 @@ describe('write-scoped storage sessions', () => {
     const job = await getTestDb().execute(sql`SELECT snapshot_id FROM backup_jobs WHERE id = ${t.jobId}`);
     expect(job[0]).toMatchObject({ snapshot_id: first.snapshotId });
 
+    const firstSession = await authed(t, first.envelope);
     const again = await mint(t);
     expect(again.mode === 'brokered' && again.snapshotId).toBe(first.snapshotId);
     expect(again.mode === 'brokered' && (await sessionRow(again.sessionId)).generation).toBe(2);
+    // The redelivered session is the only writer: the earlier one is revoked
+    // and the reservation moved to a new write generation.
+    expect((await sessionRow(first.sessionId)).revoked_reason).toBe('superseded_by_redelivery');
+    expect((await reservationRow(first.snapshotId))?.write_generation).toBe(2);
+    const stale = await withDbAccessContext(orgContext(t.orgId), () => ensureWriteSessionLive(firstSession));
+    expect(stale.ok).toBe(false);
   });
 
   runDb('does not mint for a helper that has not reported brokered writes', async () => {
@@ -177,13 +190,13 @@ describe('write-scoped storage sessions', () => {
     expect((await sessionRow(session.id)).url_horizon_at).not.toBeNull();
   });
 
-  runDb('a multipart completion and the snapshot publication serialize on the reservation', async () => {
+  runDb('a completion in flight keeps a published snapshot sealing until it settles; none starts after publication', async () => {
     const t = await seedWriteTenant();
     const minted = await mint(t);
     if (minted.mode !== 'brokered') throw new Error('expected brokered');
     const session = await authed(t, minted.envelope);
     const key = `snapshots/${minted.snapshotId}/files/big.bin`;
-    const created = await asAgent(t, session, () => createWriteSessionMultipart(session, key, fakeDeps()));
+    const created = await createWriteSessionMultipart(session, key, runFor(t), fakeDeps());
     expect(created.status).toBe(200);
     const uploadId = (created as { body: { uploadId: string } }).body.uploadId;
 
@@ -191,28 +204,21 @@ describe('write-scoped storage sessions', () => {
     const gate = new Promise<void>((r) => { release = r; });
     let entered!: () => void;
     const storageEntered = new Promise<void>((r) => { entered = r; });
-    const completing = asAgent(t, session, () =>
-      completeWriteSessionMultipart(session, key, uploadId, [{ partNumber: 1, etag: '"e"' }], fakeDeps({
-        completeMultipart: async () => { entered(); await gate; },
-      })),
-    );
+    const completing = completeWriteSessionMultipart(session, key, uploadId, [{ partNumber: 1, etag: '"e"' }], runFor(t), fakeDeps({
+      completeMultipart: async () => { entered(); await gate; },
+    }));
     await storageEntered;
-    let published = false;
-    const publishing = insertSnapshotRow(t, minted.snapshotId).then(() => { published = true; });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(published).toBe(false); // blocked on the reservation row lock
+    // No transaction is held across the storage call: publication proceeds,
+    // but cannot publish while the completion is in flight.
+    await insertSnapshotRow(t, minted.snapshotId);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('sealing');
     release();
     await expect(completing).resolves.toMatchObject({ status: 200 });
-    await publishing;
-    expect(published).toBe(true);
-    expect(['sealing', 'published']).toContain((await reservationRow(minted.snapshotId))?.state);
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: { abortMultipart: async () => undefined, listMultipart: async () => [] } });
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
 
-    // After publication a completion is refused, never applied.
-    const after = await withDbAccessContext(orgContext(t.orgId), () =>
-      completeWriteSessionMultipart(session, key, uploadId, [{ partNumber: 1, etag: '"e"' }], fakeDeps()),
-    );
-    // The seal revoked the session (410); a session revoked some other way
-    // still meets the reservation lock (409). Either way nothing is applied.
+    // After publication a completion never starts.
+    const after = await completeWriteSessionMultipart(session, key, uploadId, [{ partNumber: 1, etag: '"e"' }], runFor(t), fakeDeps());
     expect([409, 410]).toContain(after.status);
     const live = await withDbAccessContext(orgContext(t.orgId), () => ensureWriteSessionLive(session));
     expect(live.ok).toBe(false);
@@ -248,7 +254,7 @@ describe('resuming a journaled snapshot id', () => {
   }
 
   const resume = (t: { orgId: string }, session: StorageSessionRow, j: string) =>
-    withDbAccessContext(orgContext(t.orgId), () => resumeWriteSession(session, j, fakeDeps()));
+    resumeWriteSession(session, j, runFor(t), fakeDeps());
 
   runDb('exactly one of two concurrent resumes wins; the loser is refused', async () => {
     const t = await seedWriteTenant();
@@ -292,6 +298,51 @@ describe('resuming a journaled snapshot id', () => {
     expect(row.resumed_at).not.toBeNull();
     const second = await resume(t, { ...s2, resumedAt: row.resumed_at as Date, reservationSnapshotId: j, reservationGeneration: 2 }, await journaledId(t));
     expect(second).toMatchObject({ status: 409, code: 'not_resumable' });
+  });
+
+  runDb('refuses to resume an id recorded for an older helper\'s job', async () => {
+    const t = await seedWriteTenant();
+    const j = await journaledId(t);
+    await getTestDb().execute(sql`UPDATE backup_snapshot_id_reservations SET source = 'legacy_job' WHERE snapshot_id = ${j}`);
+    const { session } = await freshSession(t);
+    expect(await resume(t, session, j)).toMatchObject({ status: 409, code: 'not_resumable' });
+  });
+
+  runDb('aborts the previous writer\'s open uploads before ownership moves', async () => {
+    const t = await seedWriteTenant();
+    const j = await journaledId(t);
+    const prevSession = ((await getTestDb().execute(sql`
+      SELECT id FROM backup_storage_sessions WHERE reservation_snapshot_id = ${j}
+    `)) as unknown as Array<{ id: string }>)[0]!.id;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_storage_session_uploads (org_id, device_id, session_id, reservation_snapshot_id, reservation_generation, object_key, upload_id, state)
+      VALUES (${t.orgId}, ${t.deviceId}, ${prevSession}, ${j}, 1, ${`snapshots/${j}/files/big.bin`}, 'u-prev', 'open')
+    `);
+    const aborted: string[] = [];
+    const { session } = await freshSession(t);
+    const result = await resumeWriteSession(session, j, runFor(t), fakeDeps({
+      abortMultipart: async (_cfg, _key, uploadId) => { aborted.push(uploadId); },
+    }));
+    expect(result).toMatchObject({ status: 200, body: { mode: 'write' } });
+    expect(aborted).toEqual(['u-prev']);
+    const states = await getTestDb().execute(sql`SELECT state FROM backup_storage_session_uploads WHERE upload_id = 'u-prev'`);
+    expect(states[0]).toMatchObject({ state: 'aborted' });
+
+    // A failed abort refuses the resume and moves nothing.
+    const j2 = await journaledId(t);
+    const prev2 = ((await getTestDb().execute(sql`
+      SELECT id FROM backup_storage_sessions WHERE reservation_snapshot_id = ${j2}
+    `)) as unknown as Array<{ id: string }>)[0]!.id;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_storage_session_uploads (org_id, device_id, session_id, reservation_snapshot_id, reservation_generation, object_key, upload_id, state)
+      VALUES (${t.orgId}, ${t.deviceId}, ${prev2}, ${j2}, 1, ${`snapshots/${j2}/files/big.bin`}, 'u-prev-2', 'open')
+    `);
+    const other = await freshSession(t);
+    const refused = await resumeWriteSession(other.session, j2, runFor(t), fakeDeps({
+      abortMultipart: async () => { throw new Error('storage unavailable'); },
+    }));
+    expect(refused).toMatchObject({ status: 409, code: 'previous_writer_active' });
+    expect((await reservationRow(j2))?.write_generation).toBe(1);
   });
 
   runDb('a published id resumes read-only', async () => {

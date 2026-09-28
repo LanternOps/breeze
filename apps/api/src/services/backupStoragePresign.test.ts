@@ -1,10 +1,23 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const holder = vi.hoisted(() => ({ client: null as unknown as S3Client, send: vi.fn() }));
+const holder = vi.hoisted(() => ({ client: null as unknown as S3Client, send: vi.fn(), overrides: [] as unknown[] }));
 
+// Builds a real client with whatever client options the module asks for, so
+// the presigned URLs below are exactly what the SDK would produce.
 vi.mock('./backupSnapshotStorage', () => ({
-  buildS3StorageClient: () => ({ bucket: 'tenant-bucket', client: holder.client }),
+  buildS3StorageClient: (_cfg: unknown, overrides: Record<string, unknown> = {}) => {
+    holder.overrides.push(overrides);
+    const client = new S3Client({
+      region: 'us-east-1',
+      endpoint: 'https://storage.example',
+      forcePathStyle: true,
+      credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG' },
+      ...overrides,
+    });
+    (client as unknown as { send: unknown }).send = holder.send;
+    return { bucket: 'tenant-bucket', client };
+  },
 }));
 
 import {
@@ -38,15 +51,13 @@ function httpError(status: number, name: string): Error {
 }
 
 beforeEach(() => {
-  holder.send = vi.fn();
-  holder.client = new S3Client({
-    region: 'us-east-1',
-    endpoint: 'https://storage.example',
-    forcePathStyle: true,
-    credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG' },
-  });
-  (holder.client as unknown as { send: unknown }).send = holder.send;
+  holder.send.mockReset();
+  holder.overrides = [];
 });
+
+function checksumParams(url: string): string[] {
+  return [...new URL(url).searchParams.keys()].filter((k) => /checksum/i.test(k));
+}
 
 describe('presignPutObject', () => {
   it('signs the size and the create-only condition when requested, and returns exactly the headers to send', async () => {
@@ -84,6 +95,16 @@ describe('presignPutObject', () => {
       .rejects.toThrow(/size/);
     await expect(presignPutObject(CFG, KEY, -1, { mode: 'disabled' }, { expiresInSeconds: 60, ifNoneMatch: false }))
       .rejects.toThrow(/size/);
+  });
+});
+
+describe('presigned write URLs carry no precomputed body checksum', () => {
+  it('PUT and UploadPart URLs sign no checksum of an empty body', async () => {
+    const put = await presignPutObject(CFG, KEY, 1234, { mode: 'disabled' }, { expiresInSeconds: 60, ifNoneMatch: true });
+    const part = await presignUploadPart(CFG, KEY, 'upload-1', 1, MIN_PART_BYTES, 60);
+    expect(checksumParams(put.url)).toEqual([]);
+    expect(checksumParams(part.url)).toEqual([]);
+    expect(Object.keys(put.headers).filter((h) => /checksum/i.test(h))).toEqual([]);
   });
 });
 

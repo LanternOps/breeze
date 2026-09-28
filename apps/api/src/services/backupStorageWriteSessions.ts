@@ -364,14 +364,37 @@ export async function mintBackupWriteSession(
   // transaction usable and writes nothing.
   const minted = await db.transaction(async () => {
     const existing = await findReservedForJob(input.jobId);
-    const snapshotId = existing?.snapshotId ?? await reserveNewSnapshotId({
-      orgId: input.orgId,
-      deviceId: input.deviceId,
-      configId: input.configId,
-      storageIdentity: identity,
-      jobId: input.jobId,
-    }, { now, random: deps.random });
-    const generationOfReservation = existing?.writeGeneration ?? 1;
+    let snapshotId: string;
+    let generationOfReservation: number;
+    if (existing) {
+      // A redelivery of the same job: the new session writes the same id, and
+      // becomes its only writer — every earlier session of the job is revoked
+      // and the reservation moves to a new write generation, so an earlier
+      // session's calls and its multipart uploads are refused from now on
+      // (the cleanup job aborts those uploads).
+      await db.update(backupStorageSessions)
+        .set({ revokedAt: now, revokedReason: 'superseded_by_redelivery' })
+        .where(and(
+          eq(backupStorageSessions.jobId, input.jobId),
+          eq(backupStorageSessions.scope, 'snapshot_write'),
+          isNull(backupStorageSessions.revokedAt),
+        ));
+      const [bumped] = await db.update(backupSnapshotIdReservations)
+        .set({ writeGeneration: sql`${backupSnapshotIdReservations.writeGeneration} + 1`, updatedAt: now })
+        .where(eq(backupSnapshotIdReservations.snapshotId, existing.snapshotId))
+        .returning({ writeGeneration: backupSnapshotIdReservations.writeGeneration });
+      snapshotId = existing.snapshotId;
+      generationOfReservation = bumped?.writeGeneration ?? existing.writeGeneration + 1;
+    } else {
+      snapshotId = await reserveNewSnapshotId({
+        orgId: input.orgId,
+        deviceId: input.deviceId,
+        configId: input.configId,
+        storageIdentity: identity,
+        jobId: input.jobId,
+      }, { now, random: deps.random });
+      generationOfReservation = 1;
+    }
     const [g] = await db
       .select({ g: max(backupStorageSessions.generation) })
       .from(backupStorageSessions)
@@ -645,13 +668,22 @@ export async function resolveWriteSessionObjects(
   return { status: 200, body: { objects, denied } };
 }
 
-// ── Multipart lifecycle ─────────────────────────────────────────────────────
+// ── Multipart lifecycle, list, delete, resume ───────────────────────────────
+//
+// These operations call storage over the network. None of them holds a
+// database transaction across that call: each does its checks in one short
+// phase in the agent's organization context (`run`), commits, calls storage
+// with no DB context held, and records the outcome in a second short phase.
+// A multipart completion is recorded as `completing` before the storage call,
+// so publication of the snapshot while it is in flight leaves the snapshot
+// sealing (not restorable) until the cleanup job has settled it.
+
+/** Runs one short DB phase in the calling agent's organization context. */
+export type OrgRunner = <T>(fn: () => Promise<T>) => Promise<T>;
 
 /**
- * Locks the reservation for this call and requires it to still be writable
- * by this session (reserved, same generation, same job). Held until the
- * agent request's transaction ends, so a completion and the publication of
- * the snapshot (which locks the same row) are serialized.
+ * Locks the reservation for the rest of the phase and requires it to still be
+ * writable by this session (reserved, same generation, same job).
  */
 async function lockWritableReservation(session: StorageSessionRow): Promise<SnapshotIdReservation | null> {
   const reservation = await loadReservation(session.reservationSnapshotId!, { forUpdate: true });
@@ -667,50 +699,68 @@ async function lockWritableReservation(session: StorageSessionRow): Promise<Snap
   return reservation;
 }
 
+function logStorageFailure(what: string, sessionId: string, err: unknown): void {
+  console.warn(`[backupStorageWriteSessions] ${what}`, {
+    sessionId,
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export async function createWriteSessionMultipart(
   session: StorageSessionRow,
   key: string,
+  run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { uploadId: string } } | WriteFailure> {
   const keyDecision = authorizeWriteKey(key, session.reservationSnapshotId ?? '');
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
   if (session.readOnly) return { status: 403, code: 'read_only' };
-  const destination = await sessionDestination(session);
-  if (!destination) return { status: 410, code: 'storage_changed' };
-  const failure = await consume(session, 0, deps.now());
-  if (failure) return failure;
-  const reservation = await lockWritableReservation(session);
-  if (!reservation) return { status: 409, code: 'reservation_sealed' };
 
-  // The row exists BEFORE the upload does, so a crash after the storage call
-  // still leaves the cleanup job something to find (it also lists the
-  // prefix's multipart uploads directly).
-  const [row] = await db
-    .insert(backupStorageSessionUploads)
-    .values({
-      orgId: session.orgId,
-      deviceId: session.deviceId,
-      sessionId: session.id,
-      reservationSnapshotId: reservation.snapshotId,
-      reservationGeneration: reservation.writeGeneration,
-      objectKey: key,
-      state: 'creating',
-    })
-    .returning({ id: backupStorageSessionUploads.id });
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+    const destination = await sessionDestination(session);
+    if (!destination) return { status: 410, code: 'storage_changed' };
+    const failure = await consume(session, 0, deps.now());
+    if (failure) return failure;
+    const reservation = await lockWritableReservation(session);
+    if (!reservation) return { status: 409, code: 'reservation_sealed' };
+    // The row exists BEFORE the upload does, so a crash after the storage
+    // call still leaves the cleanup job something to find (it also lists the
+    // prefix's multipart uploads directly once the snapshot is finished).
+    const [row] = await db
+      .insert(backupStorageSessionUploads)
+      .values({
+        orgId: session.orgId,
+        deviceId: session.deviceId,
+        sessionId: session.id,
+        reservationSnapshotId: reservation.snapshotId,
+        reservationGeneration: reservation.writeGeneration,
+        objectKey: key,
+        state: 'creating',
+      })
+      .returning({ id: backupStorageSessionUploads.id });
+    return { destination, rowId: row!.id };
+  });
+  if ('status' in prepared) return prepared;
+
   let uploadId: string;
   try {
-    uploadId = await deps.storage.createMultipart(destination.providerConfig, key, destination.sse);
+    uploadId = await deps.storage.createMultipart(prepared.destination.providerConfig, key, prepared.destination.sse);
   } catch (err) {
-    await db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
-      .where(eq(backupStorageSessionUploads.id, row!.id));
-    console.warn('[backupStorageWriteSessions] multipart create failed', {
-      sessionId: session.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    logStorageFailure('multipart create failed', session.id, err);
+    await run(() => db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
+      .where(and(eq(backupStorageSessionUploads.id, prepared.rowId), eq(backupStorageSessionUploads.state, 'creating'))));
     return { status: 502, code: 'storage_error' };
   }
-  await db.update(backupStorageSessionUploads).set({ uploadId, state: 'open', updatedAt: new Date() })
-    .where(eq(backupStorageSessionUploads.id, row!.id));
+  const opened = await run(() => db.update(backupStorageSessionUploads)
+    .set({ uploadId, state: 'open', updatedAt: new Date() })
+    .where(and(eq(backupStorageSessionUploads.id, prepared.rowId), eq(backupStorageSessionUploads.state, 'creating')))
+    .returning({ id: backupStorageSessionUploads.id }));
+  if (opened.length === 0) {
+    // The cleanup job settled the row meanwhile: the upload must not stay open.
+    await deps.storage.abortMultipart(prepared.destination.providerConfig, key, uploadId).catch((err) =>
+      logStorageFailure('abort of an unrecorded multipart upload failed; cleanup will retry', session.id, err));
+    return { status: 409, code: 'reservation_sealed' };
+  }
   return { status: 200, body: { uploadId } };
 }
 
@@ -735,140 +785,160 @@ export async function completeWriteSessionMultipart(
   key: string,
   uploadId: string,
   parts: Array<{ partNumber: number; etag: string }>,
+  run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: Record<string, never> } | WriteFailure> {
   const keyDecision = authorizeWriteKey(key, session.reservationSnapshotId ?? '');
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
   if (session.readOnly) return { status: 403, code: 'read_only' };
-  const destination = await sessionDestination(session);
-  if (!destination) return { status: 410, code: 'storage_changed' };
-  const failure = await consume(session, 0, deps.now());
-  if (failure) return failure;
-  const reservation = await lockWritableReservation(session);
-  if (!reservation) return { status: 409, code: 'reservation_sealed' };
-  const [upload] = await db
-    .select({ id: backupStorageSessionUploads.id })
-    .from(backupStorageSessionUploads)
-    .where(and(
-      eq(backupStorageSessionUploads.objectKey, key),
-      eq(backupStorageSessionUploads.uploadId, uploadId),
-      eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
-      eq(backupStorageSessionUploads.reservationGeneration, reservation.writeGeneration),
-      eq(backupStorageSessionUploads.state, 'open'),
-    ))
-    .limit(1);
-  if (!upload) return { status: 403, code: 'unknown_upload' };
 
-  await db.update(backupStorageSessionUploads).set({ state: 'completing', updatedAt: new Date() })
-    .where(eq(backupStorageSessionUploads.id, upload.id));
+  // Phase 1, serialized with publication on the reservation row: only a
+  // still-writable reservation may start a completion, and the completion is
+  // recorded before storage is called.
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+    const destination = await sessionDestination(session);
+    if (!destination) return { status: 410, code: 'storage_changed' };
+    const failure = await consume(session, 0, deps.now());
+    if (failure) return failure;
+    const reservation = await lockWritableReservation(session);
+    if (!reservation) return { status: 409, code: 'reservation_sealed' };
+    const [upload] = await db
+      .update(backupStorageSessionUploads)
+      .set({ state: 'completing', updatedAt: new Date() })
+      .where(and(
+        eq(backupStorageSessionUploads.objectKey, key),
+        eq(backupStorageSessionUploads.uploadId, uploadId),
+        eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
+        eq(backupStorageSessionUploads.reservationGeneration, reservation.writeGeneration),
+        eq(backupStorageSessionUploads.state, 'open'),
+      ))
+      .returning({ id: backupStorageSessionUploads.id });
+    if (!upload) return { status: 403, code: 'unknown_upload' };
+    return { destination, rowId: upload.id };
+  });
+  if ('status' in prepared) return prepared;
+
+  let outcome: { status: 200; body: Record<string, never> } | WriteFailure = { status: 200, body: {} };
   try {
-    await deps.storage.completeMultipart(destination.providerConfig, key, uploadId, parts, {
+    await deps.storage.completeMultipart(prepared.destination.providerConfig, key, uploadId, parts, {
       ifNoneMatch: session.conditionalWrites === true,
     });
   } catch (err) {
-    await db.update(backupStorageSessionUploads).set({ state: 'open', updatedAt: new Date() })
-      .where(eq(backupStorageSessionUploads.id, upload.id));
-    if (err instanceof ObjectExistsError) return { status: 412, code: 'object_exists' };
-    console.warn('[backupStorageWriteSessions] multipart complete failed', {
-      sessionId: session.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { status: 502, code: 'storage_error' };
+    if (err instanceof ObjectExistsError) outcome = { status: 412, code: 'object_exists' };
+    else {
+      logStorageFailure('multipart complete failed', session.id, err);
+      outcome = { status: 502, code: 'storage_error' };
+    }
   }
-  await db.update(backupStorageSessionUploads).set({ state: 'completed', updatedAt: new Date() })
-    .where(eq(backupStorageSessionUploads.id, upload.id));
-  return { status: 200, body: {} };
+  await run(() => db.update(backupStorageSessionUploads)
+    .set({ state: outcome.status === 200 ? 'completed' : 'open', updatedAt: new Date() })
+    .where(and(eq(backupStorageSessionUploads.id, prepared.rowId), eq(backupStorageSessionUploads.state, 'completing'))));
+  return outcome;
 }
 
 export async function abortWriteSessionMultipart(
   session: StorageSessionRow,
   key: string,
   uploadId: string,
+  run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: Record<string, never> } | WriteFailure> {
   const keyDecision = authorizeWriteKey(key, session.reservationSnapshotId ?? '');
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
-  const destination = await sessionDestination(session);
-  if (!destination) return { status: 410, code: 'storage_changed' };
-  const failure = await consume(session, 0, deps.now());
-  if (failure) return failure;
-  const [upload] = await db
-    .select({ id: backupStorageSessionUploads.id })
-    .from(backupStorageSessionUploads)
-    .where(and(
-      eq(backupStorageSessionUploads.objectKey, key),
-      eq(backupStorageSessionUploads.uploadId, uploadId),
-      eq(backupStorageSessionUploads.reservationSnapshotId, session.reservationSnapshotId!),
-      inArray(backupStorageSessionUploads.state, ['creating', 'open']),
-    ))
-    .limit(1);
-  if (!upload) return { status: 403, code: 'unknown_upload' };
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+    const destination = await sessionDestination(session);
+    if (!destination) return { status: 410, code: 'storage_changed' };
+    const failure = await consume(session, 0, deps.now());
+    if (failure) return failure;
+    const [upload] = await db
+      .select({ id: backupStorageSessionUploads.id })
+      .from(backupStorageSessionUploads)
+      .where(and(
+        eq(backupStorageSessionUploads.objectKey, key),
+        eq(backupStorageSessionUploads.uploadId, uploadId),
+        eq(backupStorageSessionUploads.reservationSnapshotId, session.reservationSnapshotId!),
+        inArray(backupStorageSessionUploads.state, ['creating', 'open']),
+      ))
+      .limit(1);
+    if (!upload) return { status: 403, code: 'unknown_upload' };
+    return { destination, rowId: upload.id };
+  });
+  if ('status' in prepared) return prepared;
   try {
-    await deps.storage.abortMultipart(destination.providerConfig, key, uploadId);
+    await deps.storage.abortMultipart(prepared.destination.providerConfig, key, uploadId);
   } catch (err) {
-    console.warn('[backupStorageWriteSessions] multipart abort failed; cleanup will retry', {
-      sessionId: session.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    logStorageFailure('multipart abort failed; cleanup will retry', session.id, err);
     return { status: 502, code: 'storage_error' };
   }
-  await db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
-    .where(eq(backupStorageSessionUploads.id, upload.id));
+  await run(() => db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
+    .where(and(eq(backupStorageSessionUploads.id, prepared.rowId), inArray(backupStorageSessionUploads.state, ['creating', 'open']))));
   return { status: 200, body: {} };
 }
-
-// ── List / delete ───────────────────────────────────────────────────────────
 
 export async function listWriteSessionPrefix(
   session: StorageSessionRow,
   prefix: string,
   continuationToken: string | null,
+  run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { keys: string[]; nextToken: string | null } } | WriteFailure> {
   if (!isAllowedWriteListPrefix(prefix, session.reservationSnapshotId ?? '')) return { status: 403, code: 'outside_reservation' };
-  const destination = await sessionDestination(session);
-  if (!destination) return { status: 410, code: 'storage_changed' };
-  const failure = await consume(session, 0, deps.now());
-  if (failure) return failure;
-  const out = await deps.storage.listKeys(destination.providerConfig, prefix, {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination }> => {
+    const destination = await sessionDestination(session);
+    if (!destination) return { status: 410, code: 'storage_changed' };
+    const failure = await consume(session, 0, deps.now());
+    return failure ?? { destination };
+  });
+  if ('status' in prepared) return prepared;
+  const out = await deps.storage.listKeys(prepared.destination.providerConfig, prefix, {
     maxKeys: STORAGE_WRITE_LIST_MAX_KEYS,
     continuationToken,
   });
   return { status: 200, body: out };
 }
 
+/**
+ * Deletes keys under the reserved prefix. The one storage call made while a
+ * phase is open: the reservation row stays locked across the (single,
+ * time-bounded) batch delete so a deletion can never land after the snapshot
+ * was published. After sealing, only the helper's upload lease may go.
+ */
 export async function deleteWriteSessionKeys(
   session: StorageSessionRow,
-  reservation: SnapshotIdReservation,
   keys: string[],
+  run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { deleted: string[]; denied: Array<{ key: string; code: string }>; failed: Array<{ key: string; code: string }> } } | WriteFailure> {
   if (session.readOnly) return { status: 403, code: 'read_only' };
-  const destination = await sessionDestination(session);
-  if (!destination) return { status: 410, code: 'storage_changed' };
-  const failure = await consume(session, 0, deps.now());
-  if (failure) return failure;
-  const unique = [...new Set(keys)];
-  const completing = new Set(
-    (await db
-      .select({ objectKey: backupStorageSessionUploads.objectKey })
-      .from(backupStorageSessionUploads)
-      .where(and(
-        eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
-        eq(backupStorageSessionUploads.state, 'completing'),
-      ))).map((r) => r.objectKey),
-  );
-  const allowed: string[] = [];
-  const denied: Array<{ key: string; code: string }> = [];
-  for (const key of unique) {
-    const decision = writeDeleteDecision(key, reservation.snapshotId, reservation.state, completing);
-    if (decision === 'ok') allowed.push(key);
-    else denied.push({ key, code: decision });
-  }
-  const result = allowed.length > 0
-    ? await deps.storage.deleteKeys(destination.providerConfig, allowed)
-    : { deleted: [], failed: [] };
-  return { status: 200, body: { deleted: result.deleted, denied, failed: result.failed } };
+  return run(async () => {
+    const destination = await sessionDestination(session);
+    if (!destination) return { status: 410, code: 'storage_changed' } as WriteFailure;
+    const failure = await consume(session, 0, deps.now());
+    if (failure) return failure;
+    const reservation = await loadReservation(session.reservationSnapshotId!, { forUpdate: true });
+    if (!reservation) return { status: 410, code: 'reservation_changed' } as WriteFailure;
+    const unique = [...new Set(keys)];
+    const completing = new Set(
+      (await db
+        .select({ objectKey: backupStorageSessionUploads.objectKey })
+        .from(backupStorageSessionUploads)
+        .where(and(
+          eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
+          eq(backupStorageSessionUploads.state, 'completing'),
+        ))).map((r) => r.objectKey),
+    );
+    const allowed: string[] = [];
+    const denied: Array<{ key: string; code: string }> = [];
+    for (const key of unique) {
+      const decision = writeDeleteDecision(key, reservation.snapshotId, reservation.state, completing);
+      if (decision === 'ok') allowed.push(key);
+      else denied.push({ key, code: decision });
+    }
+    const result = allowed.length > 0
+      ? await deps.storage.deleteKeys(destination.providerConfig, allowed)
+      : { deleted: [], failed: [] };
+    return { status: 200 as const, body: { deleted: result.deleted, denied, failed: result.failed } };
+  });
 }
 
 // ── Resume ──────────────────────────────────────────────────────────────────
@@ -879,38 +949,32 @@ export type ResumeResult =
   | { status: 409; code: 'not_resumable' | 'previous_writer_active' }
   | WriteFailure;
 
+type ResumePhase =
+  | ResumeResult
+  | { abort: Array<{ id: string; objectKey: string; uploadId: string | null }>; destination: ResolvedDestination };
+
 /**
- * Lets a helper continue a snapshot id named by its local journal instead of
- * the id this session was issued. Allowed once per session, before the
- * session has issued any upload URL or multipart upload, and only for an id
- * reserved to the SAME device in the same organization:
- *   - published (or sealing): the session becomes read-only on that prefix,
- *     so the helper can read the published manifest and report it;
- *   - reserved: only once the previous writer is fenced — its job has ended,
- *     every session of that reservation is revoked, every upload URL issued
- *     for it has expired, and its open multipart uploads are aborted (done
- *     here; if an abort fails the call is refused and may be retried). The
- *     reservation's write generation then moves to this session's job.
- * The id this session was issued is abandoned when the resume succeeds.
- * Every other case is `not_resumable` and the helper starts fresh under the
- * issued id.
+ * One short phase of a resume, under the session row lock and then the
+ * target reservation row lock (two resumes of one id serialize there). Either
+ * decides, or returns the earlier uploads that must be aborted before
+ * ownership may move.
  */
-export async function resumeWriteSession(
+async function resumePhase(
   session: StorageSessionRow,
-  journalSnapshotId: unknown,
-  deps: WriteSessionDeps = defaultWriteSessionDeps,
-): Promise<ResumeResult> {
-  if (typeof journalSnapshotId !== 'string'
-    || parseBackupObjectKey(`snapshots/${journalSnapshotId}/manifest.json`)?.snapshotId !== journalSnapshotId) {
-    return { status: 400, code: 'invalid_snapshot_id' };
+  journalSnapshotId: string,
+  now: Date,
+  firstPass: boolean,
+): Promise<ResumePhase> {
+  if (firstPass) {
+    const failure = await consume(session, 0, now);
+    if (failure) return failure;
   }
-  const now = deps.now();
-  const failure = await consume(session, 0, now);
-  if (failure) return failure;
-  if (journalSnapshotId === session.reservationSnapshotId) {
-    return { status: 200, body: { snapshotId: journalSnapshotId, mode: session.readOnly ? 'read_only_completion' : 'write' } };
-  }
-  if (session.resumedAt || session.readOnly || session.urlHorizonAt) return { status: 409, code: 'not_resumable' };
+  const [fresh] = await db
+    .select({ resumedAt: backupStorageSessions.resumedAt, urlHorizonAt: backupStorageSessions.urlHorizonAt })
+    .from(backupStorageSessions)
+    .where(eq(backupStorageSessions.id, session.id))
+    .for('update');
+  if (!fresh || fresh.resumedAt || fresh.urlHorizonAt) return { status: 409, code: 'not_resumable' };
   const [anyUpload] = await db
     .select({ id: backupStorageSessionUploads.id })
     .from(backupStorageSessionUploads)
@@ -918,18 +982,11 @@ export async function resumeWriteSession(
     .limit(1);
   if (anyUpload) return { status: 409, code: 'not_resumable' };
 
-  // Lock this session's row, then the target reservation: two resumes by
-  // sessions of one device serialize on the reservation.
-  const [fresh] = await db
-    .select({ resumedAt: backupStorageSessions.resumedAt, urlHorizonAt: backupStorageSessions.urlHorizonAt })
-    .from(backupStorageSessions)
-    .where(eq(backupStorageSessions.id, session.id))
-    .for('update');
-  if (!fresh || fresh.resumedAt || fresh.urlHorizonAt) return { status: 409, code: 'not_resumable' };
-
   const target = await loadReservation(journalSnapshotId, { forUpdate: true });
   if (
     !target
+    // Only an id the server issued is ever written through a session.
+    || target.source !== 'server_minted'
     || target.orgId !== session.orgId
     || target.deviceId !== session.deviceId
     || (target.storageIdentity !== null && target.storageIdentity !== session.storageIdentity)
@@ -970,21 +1027,24 @@ export async function resumeWriteSession(
       .limit(1);
     if (previous && LIVE_JOB_STATUSES.includes(previous.status)) return { status: 409, code: 'previous_writer_active' };
   }
-  // Every other session of that reservation: revoked, and every URL expired.
-  const others = await db
-    .select({ id: backupStorageSessions.id, revokedAt: backupStorageSessions.revokedAt, urlHorizonAt: backupStorageSessions.urlHorizonAt })
+  // Revoke every other session of that reservation FIRST (the UPDATE waits
+  // for any call still holding one of their rows), THEN read the latest URL
+  // expiry they issued: a URL issued by a call that committed meanwhile is
+  // therefore always seen.
+  await db.update(backupStorageSessions)
+    .set({ revokedAt: now, revokedReason: 'superseded_by_resume' })
+    .where(and(
+      eq(backupStorageSessions.reservationSnapshotId, target.snapshotId),
+      ne(backupStorageSessions.id, session.id),
+      isNull(backupStorageSessions.revokedAt),
+    ));
+  const [horizon] = await db
+    .select({ h: max(backupStorageSessions.urlHorizonAt) })
     .from(backupStorageSessions)
     .where(and(eq(backupStorageSessions.reservationSnapshotId, target.snapshotId), ne(backupStorageSessions.id, session.id)));
-  if (others.some((o) => o.urlHorizonAt && o.urlHorizonAt.getTime() >= now.getTime())) {
+  if (horizon?.h && new Date(horizon.h as unknown as string).getTime() >= now.getTime()) {
     return { status: 409, code: 'previous_writer_active' };
   }
-  const unrevoked = others.filter((o) => !o.revokedAt).map((o) => o.id);
-  if (unrevoked.length > 0) {
-    await db.update(backupStorageSessions)
-      .set({ revokedAt: now, revokedReason: 'superseded_by_resume' })
-      .where(inArray(backupStorageSessions.id, unrevoked));
-  }
-  // Earlier uploads of that reservation are aborted before ownership moves.
   const open = await db
     .select({ id: backupStorageSessionUploads.id, objectKey: backupStorageSessionUploads.objectKey, uploadId: backupStorageSessionUploads.uploadId })
     .from(backupStorageSessionUploads)
@@ -995,17 +1055,7 @@ export async function resumeWriteSession(
   if (open.length > 0) {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
-    for (const u of open) {
-      if (u.uploadId) {
-        try {
-          await deps.storage.abortMultipart(destination.providerConfig, u.objectKey, u.uploadId);
-        } catch {
-          return { status: 409, code: 'previous_writer_active' };
-        }
-      }
-      await db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: now })
-        .where(eq(backupStorageSessionUploads.id, u.id));
-    }
+    return { abort: open, destination };
   }
 
   const nextGeneration = target.writeGeneration + 1;
@@ -1020,6 +1070,62 @@ export async function resumeWriteSession(
   await abandonIssued();
   await db.update(backupJobs).set({ snapshotId: target.snapshotId, updatedAt: now }).where(eq(backupJobs.id, session.jobId!));
   return { status: 200, body: { snapshotId: target.snapshotId, mode: 'write' } };
+}
+
+/**
+ * Lets a helper continue a snapshot id named by its local journal instead of
+ * the id this session was issued. Allowed once per session, before the
+ * session has issued any upload URL or multipart upload, and only for a
+ * server-issued id reserved to the SAME device in the same organization:
+ *   - published (or sealing): the session becomes read-only on that prefix,
+ *     so the helper can read the published manifest and report it;
+ *   - reserved: only once the previous writer is fenced — its job has ended,
+ *     every other session of that reservation is revoked, every upload URL
+ *     issued for it has expired, and its open multipart uploads are aborted
+ *     (here, with no DB context held; if an abort fails the call is refused
+ *     and may be retried). The reservation's write generation then moves to
+ *     this session's job.
+ * The id this session was issued is abandoned when the resume succeeds.
+ * Every other case is `not_resumable` and the helper starts fresh under the
+ * issued id.
+ */
+export async function resumeWriteSession(
+  session: StorageSessionRow,
+  journalSnapshotId: unknown,
+  run: OrgRunner,
+  deps: WriteSessionDeps = defaultWriteSessionDeps,
+): Promise<ResumeResult> {
+  if (typeof journalSnapshotId !== 'string'
+    || parseBackupObjectKey(`snapshots/${journalSnapshotId}/manifest.json`)?.snapshotId !== journalSnapshotId) {
+    return { status: 400, code: 'invalid_snapshot_id' };
+  }
+  if (journalSnapshotId === session.reservationSnapshotId) {
+    return { status: 200, body: { snapshotId: journalSnapshotId, mode: session.readOnly ? 'read_only_completion' : 'write' } };
+  }
+  if (session.resumedAt || session.readOnly || session.urlHorizonAt) return { status: 409, code: 'not_resumable' };
+
+  const now = deps.now();
+  let phase = await run(() => resumePhase(session, journalSnapshotId, now, true));
+  if (!('abort' in phase)) return phase;
+  for (const u of phase.abort) {
+    if (u.uploadId) {
+      try {
+        await deps.storage.abortMultipart(phase.destination.providerConfig, u.objectKey, u.uploadId);
+      } catch (err) {
+        logStorageFailure('abort of an earlier writer\'s upload failed; resume refused for now', session.id, err);
+        return { status: 409, code: 'previous_writer_active' };
+      }
+    }
+  }
+  const abortedIds = phase.abort.map((u) => u.id);
+  phase = await run(async () => {
+    await db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: now })
+      .where(inArray(backupStorageSessionUploads.id, abortedIds));
+    return resumePhase(session, journalSnapshotId, now, false);
+  });
+  // An upload opened between the two phases means a writer is still active.
+  if ('abort' in phase) return { status: 409, code: 'previous_writer_active' };
+  return phase;
 }
 
 // Exposed for the cleanup job.

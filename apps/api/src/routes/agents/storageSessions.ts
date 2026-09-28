@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { withDbAccessContext } from '../../db';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import {
   recordStorageSessionCall,
@@ -13,7 +14,9 @@ import {
   authenticateStorageSession,
   renewStorageSession,
   resolveStorageSessionObjects,
+  type StorageSessionRow,
 } from '../../services/backupStorageSessions';
+import type { SnapshotIdReservation } from '../../services/backupSnapshotIdReservations';
 import {
   STORAGE_WRITE_DELETE_MAX_KEYS,
   abortWriteSessionMultipart,
@@ -25,6 +28,7 @@ import {
   resolveWriteSessionObjects,
   resumeWriteSession,
   validateCompletedParts,
+  type OrgRunner,
   type WriteFailure,
   type WriteResolveRequest,
 } from '../../services/backupStorageWriteSessions';
@@ -52,7 +56,26 @@ import {
  */
 export const agentStorageSessionRoutes = new Hono();
 
-type AgentIdentity = { deviceId: string; orgId: string };
+type AgentIdentity = { deviceId: string; orgId: string; partnerId?: string | null };
+
+/**
+ * These routes self-manage their DB context (middleware/agentAuth.ts): each
+ * database phase runs in its own short organization-scoped context for the
+ * authenticated device, and storage calls run with none held.
+ */
+function orgRunner(c: Context): OrgRunner {
+  const agent = c.get('agent' as never) as AgentIdentity;
+  return <T,>(fn: () => Promise<T>) => withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: agent.orgId,
+      accessibleOrgIds: [agent.orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: agent.partnerId ?? null,
+    },
+    fn,
+  );
+}
 
 function noStore(c: Context): void {
   c.header('Cache-Control', 'no-store');
@@ -181,55 +204,72 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
       }
     }
 
-    const auth = await authenticate(c);
-    if (!auth.ok) return c.json({ error: auth.error }, auth.status);
-    const session = auth.session;
-    meter.scope = session.scope;
+    const run = orgRunner(c);
+    const isNetworkWriteOp = !!writeOp;
 
-    const isWriteSession = session.scope === 'snapshot_write';
-    if ((writeOp || writeResolve) && !isWriteSession) return c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403);
-    if (op === 'objects:resolve' && !writeResolve && isWriteSession) {
-      return c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403);
-    }
+    // Phase 1 (one short context): authenticate the session and, for a write
+    // session, re-check its job and reservation. Resolve and renew make no
+    // storage call, so they finish inside this same phase.
+    type Pre =
+      | { done: Response }
+      | { session: StorageSessionRow; reservation: SnapshotIdReservation };
+    const pre: Pre = await run(async (): Promise<Pre> => {
+      const auth = await authenticate(c);
+      if (!auth.ok) return { done: c.json({ error: auth.error }, auth.status) };
+      const session = auth.session;
+      meter.scope = session.scope;
 
-    if (!isWriteSession) {
+      const isWriteSession = session.scope === 'snapshot_write';
+      if ((writeOp || writeResolve) && !isWriteSession) {
+        return { done: c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403) };
+      }
+      if (op === 'objects:resolve' && !writeResolve && isWriteSession) {
+        return { done: c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403) };
+      }
+
+      if (!isWriteSession) {
+        if (op === 'renew') {
+          const renewed = await renewStorageSession(session);
+          if (renewed.status !== 200) return { done: c.json({ error: renewed.error }, renewed.status) };
+          return { done: c.json(renewed.body, 200) };
+        }
+        const result = await resolveStorageSessionObjects(session, keys!);
+        if (result.status === 429) {
+          c.header('Retry-After', String(result.retryAfterSeconds));
+          return { done: c.json({ error: 'Storage session budget exceeded' }, 429) };
+        }
+        if (result.status !== 200) return { done: c.json({ error: result.error }, result.status) };
+        countObjects(meter, result.body.objects);
+        return { done: c.json(result.body, 200) };
+      }
+
+      const live = await ensureWriteSessionLive(session);
+      if (!live.ok) return { done: c.json({ error: live.error }, live.status) };
       if (op === 'renew') {
         const renewed = await renewStorageSession(session);
-        if (renewed.status !== 200) return c.json({ error: renewed.error }, renewed.status);
-        return c.json(renewed.body, 200);
+        if (renewed.status !== 200) return { done: c.json({ error: renewed.error }, renewed.status) };
+        return { done: c.json(renewed.body, 200) };
       }
-      const result = await resolveStorageSessionObjects(session, keys!);
-      if (result.status === 429) {
-        c.header('Retry-After', String(result.retryAfterSeconds));
-        return c.json({ error: 'Storage session budget exceeded' }, 429);
+      if (op === 'objects:resolve') {
+        const requests = parseWriteRequests(body);
+        if (!requests) {
+          return { done: c.json({ error: `Body must be {"requests": [1..${STORAGE_SESSION_MAX_BATCH} write requests]}` }, 400) };
+        }
+        const result = await resolveWriteSessionObjects(session, live.reservation, requests);
+        if (result.status !== 200) return { done: failure(c, result) };
+        countObjects(meter, result.body.objects);
+        return { done: c.json(result.body, 200) };
       }
-      if (result.status !== 200) return c.json({ error: result.error }, result.status);
-      countObjects(meter, result.body.objects);
-      return c.json(result.body, 200);
-    }
+      return { session, reservation: live.reservation };
+    });
+    if ('done' in pre) return pre.done;
+    if (!isNetworkWriteOp) return c.json({ error: 'Not found' }, 404);
 
-    // ── Write scope: the job and the reservation are re-checked on every call.
-    const live = await ensureWriteSessionLive(session);
-    if (!live.ok) return c.json({ error: live.error }, live.status);
+    // Write operations that reach storage: each manages its own short phases.
+    const { session } = pre;
     const b = isRecord(body) ? body : {};
-
-    if (op === 'renew') {
-      const renewed = await renewStorageSession(session);
-      if (renewed.status !== 200) return c.json({ error: renewed.error }, renewed.status);
-      return c.json(renewed.body, 200);
-    }
-    if (op === 'objects:resolve') {
-      const requests = parseWriteRequests(body);
-      if (!requests) {
-        return c.json({ error: `Body must be {"requests": [1..${STORAGE_SESSION_MAX_BATCH} write requests]}` }, 400);
-      }
-      const result = await resolveWriteSessionObjects(session, live.reservation, requests);
-      if (result.status !== 200) return failure(c, result);
-      countObjects(meter, result.body.objects);
-      return c.json(result.body, 200);
-    }
     if (op === 'snapshot:resume') {
-      const result = await resumeWriteSession(session, b.snapshotId);
+      const result = await resumeWriteSession(session, b.snapshotId, run);
       if (result.status !== 200) return failure(c, result as WriteFailure);
       return c.json(result.body, 200);
     }
@@ -238,7 +278,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
       if (typeof b.prefix !== 'string' || (token !== undefined && token !== null && typeof token !== 'string')) {
         return c.json({ error: 'Body must be {"prefix": string, "continuationToken"?: string}' }, 400);
       }
-      const result = await listWriteSessionPrefix(session, b.prefix, (token as string | null | undefined) ?? null);
+      const result = await listWriteSessionPrefix(session, b.prefix, (token as string | null | undefined) ?? null, run);
       if (result.status !== 200) return failure(c, result);
       return c.json(result.body, 200);
     }
@@ -248,7 +288,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
         || !list.every((k) => typeof k === 'string')) {
         return c.json({ error: `Body must be {"keys": [1..${STORAGE_WRITE_DELETE_MAX_KEYS} strings]}` }, 400);
       }
-      const result = await deleteWriteSessionKeys(session, live.reservation, list as string[]);
+      const result = await deleteWriteSessionKeys(session, list as string[], run);
       if (result.status !== 200) return failure(c, result);
       return c.json(result.body, 200);
     }
@@ -256,7 +296,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
     // Multipart lifecycle.
     if (typeof b.key !== 'string') return c.json({ error: 'key is required' }, 400);
     if (op === 'multipart:create') {
-      const result = await createWriteSessionMultipart(session, b.key);
+      const result = await createWriteSessionMultipart(session, b.key, run);
       if (result.status !== 200) return failure(c, result);
       return c.json(result.body, 200);
     }
@@ -264,13 +304,13 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
       return c.json({ error: 'uploadId is required' }, 400);
     }
     if (op === 'multipart:abort') {
-      const result = await abortWriteSessionMultipart(session, b.key, b.uploadId);
+      const result = await abortWriteSessionMultipart(session, b.key, b.uploadId, run);
       if (result.status !== 200) return failure(c, result);
       return c.json(result.body, 200);
     }
     const parts = validateCompletedParts(b.parts);
     if (!parts) return c.json({ error: 'parts must be 1..10000 distinct {partNumber, etag}' }, 400);
-    const result = await completeWriteSessionMultipart(session, b.key, b.uploadId, parts);
+    const result = await completeWriteSessionMultipart(session, b.key, b.uploadId, parts, run);
     if (result.status !== 200) return failure(c, result);
     return c.json(result.body, 200);
   });
@@ -283,19 +323,22 @@ agentStorageSessionRoutes.get('/:id/storage-sessions/:sessionId/object', require
     if (typeof key !== 'string' || key.length === 0) {
       return c.json({ error: 'key is required' }, 400);
     }
-    const auth = await authenticate(c);
-    if (!auth.ok) return c.json({ error: auth.error }, auth.status);
-    meter.scope = auth.session.scope;
+    return orgRunner(c)(async () => {
+      const auth = await authenticate(c);
+      if (!auth.ok) return c.json({ error: auth.error }, auth.status);
+      meter.scope = auth.session.scope;
+      if (auth.session.scope !== 'snapshot_read') return c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403);
 
-    const result = await resolveStorageSessionObjects(auth.session, [key]);
-    if (result.status === 429) {
-      c.header('Retry-After', String(result.retryAfterSeconds));
-      return c.json({ error: 'Storage session budget exceeded' }, 429);
-    }
-    if (result.status !== 200) return c.json({ error: result.error }, result.status);
-    const object = result.body.objects.find((o) => o.key === key);
-    if (!object) return c.json({ error: 'Object is not part of this storage session' }, 403);
-    countObjects(meter, [object]);
-    return c.redirect(object.url, 302);
+      const result = await resolveStorageSessionObjects(auth.session, [key]);
+      if (result.status === 429) {
+        c.header('Retry-After', String(result.retryAfterSeconds));
+        return c.json({ error: 'Storage session budget exceeded' }, 429);
+      }
+      if (result.status !== 200) return c.json({ error: result.error }, result.status);
+      const object = result.body.objects.find((o) => o.key === key);
+      if (!object) return c.json({ error: 'Object is not part of this storage session' }, 403);
+      countObjects(meter, [object]);
+      return c.redirect(object.url, 302);
+    });
   });
 });

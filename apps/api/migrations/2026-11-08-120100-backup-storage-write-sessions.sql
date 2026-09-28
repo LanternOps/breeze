@@ -32,9 +32,10 @@
 --    in 2026-11-08-120000) now seals a reserved id when its snapshot row is
 --    inserted: every write session of the reservation is revoked, and the
 --    reservation becomes 'published' at once when no unconditional upload URL
---    can still be used, otherwise 'sealing' until sealed_until (the latest
---    such URL expiry plus clock skew), after which the cleanup job publishes
---    it.
+--    can still be used and no multipart completion is in flight, otherwise
+--    'sealing' until sealed_until (the latest such URL expiry plus clock
+--    skew) has passed and the cleanup job has settled every in-flight
+--    completion, after which it publishes it.
 --
 -- DDL only: no rows written, so no breeze.scope election. Idempotent.
 
@@ -178,6 +179,17 @@ BEGIN
         USING ERRCODE = 'insufficient_privilege';
     END IF;
   END IF;
+  -- A new upload belongs to the reservation and write generation its session
+  -- currently holds.
+  IF TG_OP = 'INSERT' AND NOT EXISTS (
+    SELECT 1 FROM public.backup_storage_sessions s
+     WHERE s.id = NEW.session_id
+       AND s.reservation_snapshot_id = NEW.reservation_snapshot_id
+       AND s.reservation_generation = NEW.reservation_generation
+  ) THEN
+    RAISE EXCEPTION 'upload is not for the reservation its session holds'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -222,6 +234,7 @@ DECLARE
   r public.backup_snapshot_id_reservations%ROWTYPE;
   _horizon timestamptz;
   _sealed timestamptz;
+  _completing boolean;
 BEGIN
   IF TG_OP = 'UPDATE' AND NEW.snapshot_id IS NOT DISTINCT FROM OLD.snapshot_id THEN
     RETURN NULL;
@@ -246,10 +259,17 @@ BEGIN
        WHERE s.reservation_snapshot_id = NEW.snapshot_id
          AND s.conditional_writes = false;
       _sealed := CASE WHEN _horizon IS NULL THEN now() ELSE GREATEST(_horizon + interval '60 seconds', now()) END;
+      -- A multipart completion still in flight may yet create or replace an
+      -- object: the snapshot stays sealing until the cleanup job has settled
+      -- every such upload.
+      SELECT EXISTS (
+        SELECT 1 FROM public.backup_storage_session_uploads u
+         WHERE u.reservation_snapshot_id = NEW.snapshot_id AND u.state = 'completing'
+      ) INTO _completing;
       UPDATE public.backup_snapshot_id_reservations
          SET published_snapshot_db_id = NEW.id,
              sealed_until = _sealed,
-             state = CASE WHEN _sealed <= now() THEN 'published' ELSE 'sealing' END,
+             state = CASE WHEN _sealed <= now() AND NOT _completing THEN 'published' ELSE 'sealing' END,
              updated_at = now()
        WHERE snapshot_id = NEW.snapshot_id;
     ELSE

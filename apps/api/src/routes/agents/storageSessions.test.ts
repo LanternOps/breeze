@@ -35,6 +35,16 @@ vi.mock('../../services/backupStorageWriteSessions', async (importOriginal) => {
   };
 });
 
+const contexts = vi.hoisted(() => ({ opened: [] as unknown[] }));
+// The routes self-manage their DB context: one short org-scoped context per
+// database phase, none held across a storage call.
+vi.mock('../../db', () => ({
+  withDbAccessContext: vi.fn(async (ctx: unknown, fn: () => Promise<unknown>) => {
+    contexts.opened.push(ctx);
+    return fn();
+  }),
+}));
+
 vi.mock('../../services/backupMetrics', () => ({
   recordStorageSessionCall: callMetric,
   recordStorageSessionObjects: objectsMetric,
@@ -79,6 +89,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 
 beforeEach(() => {
   vi.clearAllMocks();
+  contexts.opened.length = 0;
   authenticateMock.mockResolvedValue({ ok: true, session: SESSION_ROW });
   resolveMock.mockResolvedValue({
     status: 200,
@@ -98,6 +109,9 @@ describe('storage session resolve endpoint', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(authenticateMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, token: TOKEN, agent: { deviceId: DEVICE, orgId: ORG } });
+    expect(contexts.opened).toEqual([
+      expect.objectContaining({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [] }),
+    ]);
     expect(resolveMock).toHaveBeenCalledWith(SESSION_ROW, keys);
     expect(await res.json()).toMatchObject({ objects: [{ key: 'snapshots/s/manifest.json' }], denied: [] });
   });
@@ -328,19 +342,19 @@ describe('write-scoped storage session endpoints', () => {
     write.complete.mockResolvedValue({ status: 412, code: 'object_exists' });
     const ok = await post(`${base}/multipart:complete`, { key: 'k', uploadId: 'u', parts: [{ partNumber: 1, etag: 'a' }] });
     expect(ok.status).toBe(412);
-    expect(write.complete).toHaveBeenCalledWith(WRITE_ROW, 'k', 'u', [{ partNumber: 1, etag: 'a' }]);
+    expect(write.complete).toHaveBeenCalledWith(WRITE_ROW, 'k', 'u', [{ partNumber: 1, etag: 'a' }], expect.any(Function));
     expect(callMetric).toHaveBeenCalledWith('snapshot_write', 'multipart_complete', 412);
   });
 
   it('passes resume, abort and delete through', async () => {
     write.resume.mockResolvedValue({ status: 200, body: { snapshotId: 'j', mode: 'write' } });
     expect((await post(`${base}/snapshot:resume`, { snapshotId: 'j' })).status).toBe(200);
-    expect(write.resume).toHaveBeenCalledWith(WRITE_ROW, 'j');
+    expect(write.resume).toHaveBeenCalledWith(WRITE_ROW, 'j', expect.any(Function));
     write.abort.mockResolvedValue({ status: 200, body: {} });
     expect((await post(`${base}/multipart:abort`, { key: 'k', uploadId: 'u' })).status).toBe(200);
     write.del.mockResolvedValue({ status: 200, body: { deleted: ['k'], denied: [], failed: [] } });
     expect((await post(`${base}/objects:delete`, { keys: ['k'] })).status).toBe(200);
-    expect(write.del).toHaveBeenCalledWith(WRITE_ROW, RESERVATION, ['k']);
+    expect(write.del).toHaveBeenCalledWith(WRITE_ROW, ['k'], expect.any(Function));
     expect((await post(`${base}/objects:delete`, { keys: [] })).status).toBe(400);
   });
 });

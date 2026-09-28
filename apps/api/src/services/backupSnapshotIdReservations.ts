@@ -152,8 +152,9 @@ export async function loadReservation(
 
 /**
  * For storage reconcile (system scope): which of these ids are reserved to
- * another organization, and which are still being written or sealed by a
- * live backup job (never adoptable — the job's own result publishes them).
+ * another organization, and which server-issued ids are still being written
+ * or sealed by a live backup job (never adoptable — the job's own result
+ * publishes them).
  */
 export async function loadSnapshotIdClaims(
   snapshotIds: string[],
@@ -167,6 +168,7 @@ export async function loadSnapshotIdClaims(
       snapshotId: backupSnapshotIdReservations.snapshotId,
       orgId: backupSnapshotIdReservations.orgId,
       state: backupSnapshotIdReservations.state,
+      source: backupSnapshotIdReservations.source,
       jobStatus: backupJobs.status,
     })
     .from(backupSnapshotIdReservations)
@@ -174,7 +176,10 @@ export async function loadSnapshotIdClaims(
     .where(inArray(backupSnapshotIdReservations.snapshotId, snapshotIds));
   for (const row of rows) {
     if (row.orgId !== orgId) foreign.add(row.snapshotId);
-    if ((row.state === 'reserved' || row.state === 'sealing')
+    // Only a server-issued id is written through a session; an id recorded
+    // for an older helper's job keeps today's adoption rules.
+    if (row.source === 'server_minted'
+      && (row.state === 'reserved' || row.state === 'sealing')
       && (row.jobStatus === 'pending' || row.jobStatus === 'running')) {
       live.add(row.snapshotId);
     }
@@ -186,10 +191,14 @@ export async function loadSnapshotIdClaims(
 
 /**
  * What storage reclaim must leave alone this run, across EVERY organization
- * (the id is the owner key, not the destination): ids still reserved or
- * sealing, and ids abandoned more recently than `abandonedGraceMs`. Also the
- * abandoned ids old enough to reclaim, with the storage identity they were
- * issued for.
+ * (the id is the owner key, not the destination): server-issued ids still
+ * reserved or sealing, and ones abandoned more recently than
+ * `abandonedGraceMs`. Also the abandoned ids old enough to reclaim, with the
+ * storage identity they were issued for.
+ *
+ * Only server-issued reservations change reclaim: an id recorded for an
+ * older helper's in-flight job keeps today's rules (the manifest-less window
+ * already outlasts that helper's own resume window).
  */
 export async function loadReservationGcState(
   nowMs: number,
@@ -203,7 +212,10 @@ export async function loadReservationGcState(
       updatedAt: backupSnapshotIdReservations.updatedAt,
     })
     .from(backupSnapshotIdReservations)
-    .where(inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']));
+    .where(and(
+      eq(backupSnapshotIdReservations.source, 'server_minted'),
+      inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']),
+    ));
   const protectedIds = new Set<string>();
   const reclaimable: Array<{ snapshotId: string; storageIdentity: string }> = [];
   for (const row of rows) {

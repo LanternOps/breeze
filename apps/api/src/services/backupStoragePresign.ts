@@ -43,6 +43,13 @@ export const MAX_PARTS = 10_000;
 /** Hard ceiling for every presigned write URL. */
 export const MAX_WRITE_URL_TTL_SECONDS = 300;
 export const CAPABILITY_PROBE_PREFIX = 'breeze-capability-probe/';
+/** Upper bound for one server-side storage request (a completion may take longer). */
+export const STORAGE_CALL_TIMEOUT_MS = 30_000;
+export const MULTIPART_COMPLETE_TIMEOUT_MS = 15 * 60 * 1000;
+
+function bounded(ms: number = STORAGE_CALL_TIMEOUT_MS): { abortSignal: AbortSignal } {
+  return { abortSignal: AbortSignal.timeout(ms) };
+}
 
 /** A create-only write found the object already present (HTTP 412). */
 export class ObjectExistsError extends Error {
@@ -103,13 +110,23 @@ function client(cfg: StorageProviderConfig) {
   return buildS3StorageClient(cfg);
 }
 
+/**
+ * The client used for presigning device uploads. The SDK otherwise computes a
+ * body checksum while signing — of the EMPTY body a presign request carries —
+ * and signs it into the URL, so the store would refuse every real upload.
+ * The device sends the body; only the size is signed.
+ */
+function presignClient(cfg: StorageProviderConfig) {
+  return buildS3StorageClient(cfg, { requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED' });
+}
+
 async function presign(
   cfg: StorageProviderConfig,
   command: PutObjectCommand | UploadPartCommand,
   headers: Record<string, string>,
   expiresInSeconds: number,
 ): Promise<PresignedWrite> {
-  const { client: s3 } = client(cfg);
+  const { client: s3 } = presignClient(cfg);
   const expiresIn = ttlSeconds(expiresInSeconds);
   const names = new Set(Object.keys(headers));
   const url = await (getSignedUrl as (...args: unknown[]) => Promise<string>)(s3, command, {
@@ -168,7 +185,7 @@ export async function presignUploadPart(
 
 export async function createMultipartUpload(cfg: StorageProviderConfig, key: string, sse: WriteSse): Promise<string> {
   const { bucket, client: s3 } = client(cfg);
-  const out = await s3.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ...sseInput(sse) }));
+  const out = await s3.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ...sseInput(sse) }), bounded());
   if (!out.UploadId) throw new Error('storage did not return a multipart upload id');
   return out.UploadId;
 }
@@ -189,7 +206,7 @@ export async function completeMultipartUpload(
       UploadId: uploadId,
       MultipartUpload: { Parts: ordered.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })) },
       ...(opts.ifNoneMatch ? { IfNoneMatch: '*' } : {}),
-    }));
+    }), bounded(MULTIPART_COMPLETE_TIMEOUT_MS));
   } catch (err) {
     if (isPreconditionFailed(err)) throw new ObjectExistsError(key);
     throw err;
@@ -200,7 +217,7 @@ export async function completeMultipartUpload(
 export async function abortMultipartUpload(cfg: StorageProviderConfig, key: string, uploadId: string): Promise<void> {
   const { bucket, client: s3 } = client(cfg);
   try {
-    await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }));
+    await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), bounded());
   } catch (err) {
     if (errorName(err) === 'NoSuchUpload' || httpStatusOf(err) === 404) return;
     throw err;
@@ -222,7 +239,7 @@ export async function listMultipartUploads(
       Prefix: prefix,
       ...(keyMarker ? { KeyMarker: keyMarker } : {}),
       ...(uploadIdMarker ? { UploadIdMarker: uploadIdMarker } : {}),
-    }));
+    }), bounded());
     for (const u of res.Uploads ?? []) {
       if (u.Key && u.UploadId && u.Key.startsWith(prefix)) out.push({ key: u.Key, uploadId: u.UploadId });
     }
@@ -246,7 +263,7 @@ export async function listKeysUnderPrefix(
     Prefix: prefix,
     MaxKeys: Math.max(1, Math.min(1000, Math.floor(opts.maxKeys))),
     ...(opts.continuationToken ? { ContinuationToken: opts.continuationToken } : {}),
-  }));
+  }), bounded());
   const keys = (res.Contents ?? [])
     .map((o) => o.Key)
     .filter((k): k is string => typeof k === 'string' && k.startsWith(prefix));
@@ -265,7 +282,7 @@ export async function deleteKeys(
     const res = await s3.send(new DeleteObjectsCommand({
       Bucket: bucket,
       Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: false },
-    }));
+    }), bounded());
     for (const d of res.Deleted ?? []) if (d.Key) deleted.push(d.Key);
     for (const e of res.Errors ?? []) if (e.Key) failed.push({ key: e.Key, code: e.Code ?? 'unknown' });
   }
