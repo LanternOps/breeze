@@ -180,6 +180,16 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			time.Since(start).Milliseconds())
 	}
 
+	// #7047: a Mac at the login window cannot take remote input, so a session
+	// there would be video-only while looking usable. Refused after the fence
+	// (which stays the first check) and before any other side effect — no
+	// target, lease, consent prompt or capture.
+	if err := h.loginWindowDesktopStartRefusal(); err != nil {
+		log.Warn("refusing start_desktop at the macOS login window",
+			"sessionId", sessionID, "commandId", cmd.ID)
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Parse optional ICE servers from payload
 	var iceServers []desktop.ICEServerConfig
 	if raw, ok := cmd.Payload["iceServers"].([]interface{}); ok {
