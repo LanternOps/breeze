@@ -306,7 +306,7 @@ const EXPECTED_NAMES = [
   'backupProviderSyncWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'sensitiveDataWorker', 'securityScanWorker', 'peripheralJobs',
+  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'sensitiveDataWorker', 'securityScanWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',

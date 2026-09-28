@@ -11,7 +11,7 @@
  * not part of the comparison — a device that moved organizations keeps its
  * snapshots and their attestations.
  *
- * No DB context is held across a storage fetch (the fetches run between two
+ * No DB context is held while objects are read from storage (reads run between two
  * short system-scoped contexts), the same rule as backupSnapshotFileIndex.ts.
  */
 import { createHash } from 'node:crypto';

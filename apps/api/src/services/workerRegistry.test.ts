@@ -67,7 +67,7 @@ const EXPECTED_WORKER_NAMES = [
   'backupProviderSyncWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'sensitiveDataWorker',
+  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'sensitiveDataWorker',
   // YARA/IOC scanning W01 (#6263) — dispatches security.scan agent commands.
   'securityScanWorker',
   'peripheralJobs',

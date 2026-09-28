@@ -3181,7 +3181,10 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       'org-123',
       'device-123',
       expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
-      expect.anything()
+      expect.anything(),
+      // The expectation was consumed before enqueueing, so the consumer may
+      // record a snapshot attestation for this result.
+      { dispatchExpectationVerified: true }
     );
   });
 

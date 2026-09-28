@@ -386,6 +386,19 @@ describe('server-side verification', () => {
     expect((await snapshotRow(f))!.integrityStatus).toBe('pending');
   });
 
+  runDb('a run that fell back to full from its dispatched base records and verifies (base kept, parent null)', async () => {
+    const f = await seed();
+    const base = `snapshot-base-${uid()}`;
+    await withSystemDbAccessContext(() => db.update(backupJobs).set({ baseSnapshotId: base }).where(eq(backupJobs.id, f.jobId)));
+    const manifest = manifestBytes(f.snapshotId);
+    await agentResult(f, { statement: statementFor(f, manifest, { dispatched: base, parent: null }) }, { referencedFiles: 0 });
+    const snap = await snapshotRow(f);
+    const [row] = await attestationRows(snap!.id);
+    expect(row).toMatchObject({ status: 'pending', dispatchedBaseProviderSnapshotId: base, parentProviderSnapshotId: null });
+    const result = await verifySnapshotAttestation(snap!.id, storage({ [`snapshots/${f.snapshotId}/manifest.json`]: manifest }));
+    expect(result).toEqual({ outcome: 'verified' });
+  });
+
   runDb('a full-run statement over a manifest that references another snapshot fails', async () => {
     const f = await seed();
     const manifest = manifestBytes(f.snapshotId, [`snapshots/${f.snapshotId}/files/a`, 'snapshots/snapshot-older/files/b']);
