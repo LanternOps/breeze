@@ -282,10 +282,15 @@ describe('brokered read delivery', () => {
       maxBatch: 100,
     });
     expect(Object.keys(session).sort()).toEqual(
-      ['baseUrl', 'capabilities', 'deadline', 'expiresAt', 'maxBatch', 'sessionId', 'token', 'version'],
+      ['baseUrl', 'capabilities', 'deadline', 'deadlineIn', 'expiresAt', 'expiresIn', 'maxBatch', 'sessionId', 'token', 'version'],
     );
     expect(session.token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
     expect(session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(typeof session.expiresIn).toBe('number');
+    expect(session.expiresIn as number).toBeGreaterThanOrEqual(0);
+    expect(typeof session.deadlineIn).toBe('number');
+    expect(session.deadlineIn as number).toBeGreaterThanOrEqual(0);
+    expect(session.expiresIn as number).toBeLessThanOrEqual(session.deadlineIn as number);
     expect(Date.parse(session.expiresAt as string)).toBeLessThanOrEqual(Date.parse(session.deadline as string));
 
     const stored = [...state.sessions.values()];
@@ -682,6 +687,8 @@ describe('storage session renewal', () => {
     if (result.status === 200) {
       expect(Date.parse(result.body.expiresAt)).toBeLessThanOrEqual(row.deadline.getTime());
       expect(Date.parse(result.body.expiresAt)).toBeGreaterThan(nearDeadline.getTime());
+      expect(result.body.expiresIn).toBeGreaterThan(0);
+      expect(result.body.expiresIn).toBe(Math.floor((Date.parse(result.body.expiresAt) - nearDeadline.getTime()) / 1000));
     }
   });
 
@@ -690,6 +697,16 @@ describe('storage session renewal', () => {
     const { row } = await mintSession(state);
     const deps = makeDeps(state, { now: () => new Date(row.deadline.getTime() + 1) });
     expect(await renewStorageSession(row, deps)).toMatchObject({ status: 410 });
+  });
+
+  it('never reports a negative expiresIn even at the instant of the deadline', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    row.expiresAt = row.deadline;
+    const deps = makeDeps(state, { now: () => new Date(row.deadline.getTime() - 1) });
+    const result = await renewStorageSession(row, deps);
+    expect(result.status).toBe(200);
+    if (result.status === 200) expect(result.body.expiresIn).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -1034,7 +1051,9 @@ describe('helper wire compatibility', () => {
     if (result.status === 200) {
       expect(result.body.expiresAt).toMatch(RFC3339);
       expect(Date.parse(result.body.expiresAt)).toBeGreaterThan(NOW.getTime());
-      expect(Object.keys(result.body)).toEqual(['expiresAt']);
+      expect(typeof result.body.expiresIn).toBe('number');
+      expect(result.body.expiresIn).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(result.body).sort()).toEqual(['expiresAt', 'expiresIn']);
     }
   });
 });

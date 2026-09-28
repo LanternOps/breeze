@@ -126,6 +126,7 @@ describe('buildWriteEnvelope', () => {
       snapshotId: ID,
       conditionalWrites: true,
       storageIdentity: 's3|https://storage.example|us-east-1|bucket-a',
+      now: new Date('2026-11-08T12:00:00Z'),
     });
     expect(envelope).toEqual({
       version: 1,
@@ -134,7 +135,9 @@ describe('buildWriteEnvelope', () => {
       token: 'T'.repeat(43),
       baseUrl: 'https://api.breeze.example',
       expiresAt: '2026-11-08T12:15:00Z',
+      expiresIn: 900,
       deadline: '2026-11-09T12:00:00Z',
+      deadlineIn: 86400,
       snapshotId: ID,
       capabilities: ['resolve_batch', 'renew', 'put', 'multipart', 'list', 'delete', 'resume'],
       maxBatch: 100,
@@ -144,6 +147,22 @@ describe('buildWriteEnvelope', () => {
     });
     expect(STORAGE_WRITE_CAPABILITIES).toContain('resume');
     expect(STORAGE_WRITE_PART_SIZE_BYTES).toBe(64 * 1024 * 1024);
+  });
+
+  it('never reports negative seconds remaining once now has passed the target', () => {
+    const envelope = buildWriteEnvelope({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'T'.repeat(43),
+      baseUrl: 'https://api.breeze.example',
+      expiresAt: new Date('2026-11-08T12:00:00Z'),
+      deadline: new Date('2026-11-08T12:00:00Z'),
+      snapshotId: ID,
+      conditionalWrites: true,
+      storageIdentity: 's3|https://storage.example|us-east-1|bucket-a',
+      now: new Date('2026-11-08T12:05:00Z'),
+    });
+    expect(envelope.expiresIn).toBe(0);
+    expect(envelope.deadlineIn).toBe(0);
   });
 });
 
