@@ -38,6 +38,16 @@ export type StepUpOperation =
   | 'register_approver_device'
   | 'agent_rollback'
   | 'enroll_first_factor'
+  // #4045: the SSO re-auth callback's OTHER output. A passwordless account
+  // that already holds a factor proves "user at the keyboard" through a fresh,
+  // forced IdP round-trip instead of the password it does not have. It
+  // replaces ONLY the password leg of recovery-code rotation, passkey deletion
+  // and MFA disable — each of which still demands its own existing-factor
+  // proof (an operation-bound step-up grant, or a live MFA code). Minted only
+  // by GET /sso/callback (reauth mode) for an MFA-protected account, and
+  // compiler-excluded from the client-requestable STEP_UP_OPERATIONS in
+  // routes/auth/schemas.ts exactly like `enroll_first_factor`.
+  | 'sso_reauth_manage_factor'
   // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
   // resourceDigest to the exact { deviceIds, reason, durationHours } the
   // technician was shown, so a grant can never be replayed against a

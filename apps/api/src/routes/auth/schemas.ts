@@ -146,6 +146,10 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // only after a forced IdP round-trip proves identity for a PASSWORDLESS
 // account; letting a client request one here would turn a re-authentication
 // proof into a checkbox for anyone who can already satisfy step-up.
+// #4045: `sso_reauth_manage_factor`, the callback's other output, is excluded
+// for the same reason — it stands in for the PASSWORD leg of factor
+// management, so minting it from a factor proof would collapse two proofs
+// into one.
 //
 // A plain `satisfies readonly StepUpOperation[]` would NOT have stopped that —
 // it only constrains membership, so appending 'enroll_first_factor' still
@@ -165,7 +169,7 @@ const STEP_UP_OPERATIONS = [
   'topology_arm',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
-  'enroll_first_factor' | 'approval_decide'
+  'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
 >[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)

@@ -229,6 +229,23 @@ export const INVALID_CREDENTIALS_CODE = 'invalid_credentials';
  * discloses nothing they don't already know from having reached this point.
  */
 export const ENROLLMENT_GRANT_EXPIRED_CODE = 'enrollment_grant_expired';
+/**
+ * #4045: a passwordless account offered NO proof to a factor-management route
+ * (recovery-code rotation, passkey deletion, MFA disable). The body carries
+ * `reauthUrl`, the one action that resolves it. Disclosure is the same as
+ * `enrollment_proof_required`: the caller is authenticated AS this account and
+ * `/users/me` already reports `hasPassword`.
+ */
+export const SSO_REAUTH_REQUIRED_CODE = 'sso_reauth_required';
+/**
+ * #4045: the `sso_reauth_manage_factor` grant failed to validate or consume in
+ * {@link resolveFactorManagementStepUp} / {@link consumeFactorManagementReauthGrant}
+ * — expired, already spent, minted in another session, or invalidated by a
+ * factor/epoch change since. Same reasoning as
+ * {@link ENROLLMENT_GRANT_EXPIRED_CODE}: the caller has already committed to the
+ * SSO road, so naming the failure discloses nothing.
+ */
+export const SSO_REAUTH_GRANT_EXPIRED_CODE = 'sso_reauth_grant_expired';
 
 /** The status a rejected body-supplied proof answers with. */
 export type ProofRejectionStatus = 400 | 401;
@@ -685,6 +702,181 @@ export async function resolveEnrollmentStepUp(
     );
   }
 
+  return null;
+}
+
+// ============================================
+// Factor-management step-up (#4045)
+// ============================================
+
+/**
+ * Which "user at the keyboard" proof a factor-management request presented.
+ * Only {@link resolveFactorManagementStepUp} produces one, so the terminal
+ * {@link consumeFactorManagementReauthGrant} can never be told "the password
+ * was proven" by anything other than a gate that actually verified it.
+ */
+export type FactorManagementProof =
+  | { road: 'password' }
+  | { road: 'sso'; grantId: string };
+
+const SSO_REAUTH_URL = '/sso/reauth/start';
+const SSO_REAUTH_GRANT_EXPIRED_MESSAGE =
+  'Your identity verification has expired. Please verify with your identity provider again.';
+
+function ssoReauthGrantExpired(c: Context, rejectionStatus: ProofRejectionStatus): Response {
+  return rejectProof(c, SSO_REAUTH_GRANT_EXPIRED_MESSAGE, SSO_REAUTH_GRANT_EXPIRED_CODE, rejectionStatus, {
+    reauthUrl: SSO_REAUTH_URL,
+  });
+}
+
+/**
+ * The `sso_reauth_manage_factor` bind tuple for this caller, reconstructed
+ * against the LIVE epochs. Must match the mint site in `routes/sso.ts` (reauth
+ * branch) MEMBER FOR MEMBER — bindsMatch fails closed on any difference.
+ */
+async function manageFactorGrantBind(auth: AuthContext) {
+  const epochs = await getUserEpochs(auth.user.id);
+  const sid = auth.token?.sid;
+  if (!epochs || !sid) return null;
+  return {
+    userId: auth.user.id,
+    operation: 'sso_reauth_manage_factor' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid,
+  };
+}
+
+/**
+ * The GATE of a factor-management request: recovery-code rotation
+ * (`POST /mfa/recovery-codes`), passkey deletion (`DELETE /passkeys/:id`) and
+ * MFA disable (`POST /mfa/disable`). Decides the "user at the keyboard" proof
+ * that sits ALONGSIDE each route's own existing-factor proof — it never
+ * replaces that proof.
+ *
+ * Two roads, never both, the same shape as {@link resolveEnrollmentStepUp}:
+ *   - password — evaluated FIRST and byte-for-byte the historical path
+ *     ({@link requireCurrentPasswordStepUp}, same key prefix, same limiter).
+ *   - SSO re-auth grant — ONLY for an account with `password_hash IS NULL`
+ *     that already holds a factor, and ONLY a grant minted for
+ *     `sso_reauth_manage_factor`. An `enroll_first_factor` grant never
+ *     satisfies this (bindsMatch compares the operation), and this grant never
+ *     satisfies enrollment. The SSO road is refused outright for an account
+ *     that has a password: two roads of differing strength to one door is how
+ *     a step-up gets bypassed.
+ *
+ * The SSO road is charged the SAME per-user limiter as the password road
+ * (`${keyPrefix}:${userId}`, 5 per 5 min). That budget is load-bearing:
+ * `/mfa/disable` verifies a TOTP/SMS code AFTER this gate, the code verifier
+ * has no guess budget of its own, and a validated (not yet consumed) grant
+ * survives a wrong code — without the charge the SSO road would be an
+ * unthrottled code oracle.
+ *
+ * Non-consuming: returns the proof for {@link consumeFactorManagementReauthGrant}
+ * to spend at the terminal write, so a mistyped code does not burn the grant.
+ *
+ * Rejections stay opaque (`invalid_credentials`) wherever they would otherwise
+ * reveal whether the account has a password or a factor, with two deliberate
+ * exceptions that only a passwordless caller can reach and that disclose
+ * nothing `/users/me` does not: `sso_reauth_required` (no proof offered) and
+ * `sso_reauth_grant_expired` (the grant it offered is dead). Both carry
+ * `reauthUrl` so the client can offer the one action that fixes them.
+ */
+export async function resolveFactorManagementStepUp(
+  c: Context,
+  auth: AuthContext,
+  input: { currentPassword?: string; ssoReauthGrantId?: string },
+  opts: { keyPrefix: string; rejectionStatus?: ProofRejectionStatus },
+): Promise<{ error: Response } | { proof: FactorManagementProof }> {
+  const rejectionStatus = opts.rejectionStatus ?? 401;
+
+  if (input.currentPassword) {
+    const passwordError = await requireCurrentPasswordStepUp(
+      c, auth.user.id, input.currentPassword, opts.keyPrefix, { rejectionStatus },
+    );
+    return passwordError ? { error: passwordError } : { proof: { road: 'password' } };
+  }
+
+  // Same system-context idiom as resolveEnrollmentStepUp: a contextless read
+  // under forced RLS matches zero rows rather than erroring.
+  const [user] = await runWithSystemDbAccess(() =>
+    db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1)
+  );
+  if (!user || user.passwordHash != null) {
+    return { error: rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus) };
+  }
+
+  if (!input.ssoReauthGrantId) {
+    const message = 'This account has no password. Verify with your identity provider to confirm this change.';
+    return {
+      error: rejectProof(c, message, SSO_REAUTH_REQUIRED_CODE, rejectionStatus, { reauthUrl: SSO_REAUTH_URL }),
+    };
+  }
+
+  // Managing a factor presupposes holding one. Checked BEFORE the grant is
+  // touched; the grant is only ever minted for a protected account anyway.
+  if (!(await userIsMfaProtected(auth.user.id))) {
+    return { error: rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus) };
+  }
+
+  const redis = getRedis();
+  if (!redis) {
+    return { error: c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503) };
+  }
+  const rateCheck = await rateLimiter(redis, `${opts.keyPrefix}:${auth.user.id}`, 5, 5 * 60);
+  if (!rateCheck.allowed) {
+    return {
+      error: c.json({
+        error: STEP_UP_THROTTLED_MESSAGE,
+        message: STEP_UP_THROTTLED_MESSAGE,
+        retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000),
+      }, 429),
+    };
+  }
+
+  const bind = await manageFactorGrantBind(auth);
+  if (!bind) {
+    return { error: c.json({ error: 'Service temporarily unavailable' }, 503) };
+  }
+  if (!(await validateStepUpGrant(input.ssoReauthGrantId, bind))) {
+    return { error: ssoReauthGrantExpired(c, rejectionStatus) };
+  }
+
+  return { proof: { road: 'sso', grantId: input.ssoReauthGrantId } };
+}
+
+/**
+ * The TERMINAL half of {@link resolveFactorManagementStepUp}: spend the SSO
+ * grant exactly once, immediately before the factor write, re-checking the
+ * binding against the LIVE epochs (a factor change since the gate kills it).
+ * The password road has nothing to spend — the gate that produced the proof
+ * already verified it in this same request.
+ *
+ * Returns a Response to short-circuit the caller, or null to proceed.
+ */
+export async function consumeFactorManagementReauthGrant(
+  c: Context,
+  auth: AuthContext,
+  proof: FactorManagementProof,
+  opts: { rejectionStatus?: ProofRejectionStatus },
+): Promise<Response | null> {
+  if (proof.road === 'password') return null;
+  const rejectionStatus = opts.rejectionStatus ?? 401;
+
+  if (!(await userIsMfaProtected(auth.user.id))) {
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
+  }
+  const bind = await manageFactorGrantBind(auth);
+  if (!bind) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  if (!(await consumeStepUpGrant(proof.grantId, bind))) {
+    return ssoReauthGrantExpired(c, rejectionStatus);
+  }
   return null;
 }
 

@@ -2031,6 +2031,117 @@ describe('passkey MFA auth routes', () => {
     }));
   });
 
+  // #4045: DELETE /passkeys/:id was password-only on its "user at the
+  // keyboard" leg, so a passwordless SSO account could register a passkey
+  // (#4041) but never remove one. It now also takes a fresh IdP re-auth grant
+  // minted for `sso_reauth_manage_factor` — NEVER the `enroll_first_factor`
+  // grant — and the existing-factor `delete_passkey` grant stays mandatory.
+  describe('#4045 SSO re-auth road on passkey deletion', () => {
+    const SSO_GRANT = '11111111-1111-4111-8111-111111111111';
+    const FACTOR_GRANT = '10000000-0000-4000-8000-000000000009';
+    const opOf = (call: unknown[]) => (call[1] as { operation: string }).operation;
+    const callsFor = (fn: typeof validateStepUpGrant, op: string) =>
+      vi.mocked(fn).mock.calls.filter((call) => opOf(call) === op);
+    const del = (body: Record<string, unknown>) => app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify(body),
+    });
+
+    it('deletes with an SSO re-auth grant PLUS the delete_passkey factor grant, spending each once', async () => {
+      dbState.selectQueue.push(
+        [{ passwordHash: null }], // resolveFactorManagementStepUp road probe
+        [{ mfaEnabled: true, passkeyCount: 2 }], // its userIsMfaProtected
+        [{ mfaEnabled: true, passkeyCount: 2 }], // enforceExistingFactorStepUp (validate)
+        [{ id: 'credential-1', userId: 'user-123' }],
+        [{ passkeyCount: 2, hasTotp: true, hasSms: false, currentMfaMethod: 'totp' }],
+        [{ mfaEnabled: true, passkeyCount: 2 }], // enforceExistingFactorStepUp (consume)
+        [{ mfaEnabled: true, passkeyCount: 2 }], // consumeFactorManagementReauthGrant
+        [{ passkeyCount: 2, hasTotp: true, hasSms: false, currentMfaMethod: 'totp' }],
+      );
+
+      const res = await del({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(200);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(callsFor(validateStepUpGrant, 'sso_reauth_manage_factor')).toEqual([
+        [SSO_GRANT, expect.objectContaining({ userId: 'user-123', sid: 'session-123' })],
+      ]);
+      expect(callsFor(consumeStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(1);
+      expect(callsFor(consumeStepUpGrant, 'delete_passkey')).toHaveLength(1);
+      expect(callsFor(validateStepUpGrant, 'enroll_first_factor')).toHaveLength(0);
+    });
+
+    it('answers a passwordless caller with no proof with an actionable sso_reauth_required', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]);
+
+      const res = await del({ stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'sso_reauth_required', reauthUrl: '/sso/reauth/start' });
+      expect(beginAuthIssuance).not.toHaveBeenCalled();
+    });
+
+    it('still demands the delete_passkey factor grant — the SSO grant never stands in for it', async () => {
+      dbState.selectQueue.push(
+        [{ passwordHash: null }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+      );
+
+      const res = await del({ ssoReauthGrantId: SSO_GRANT });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(beginAuthIssuance).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stale/reused/foreign SSO grant with sso_reauth_grant_expired', async () => {
+      dbState.selectQueue.push(
+        [{ passwordHash: null }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+      );
+      vi.mocked(validateStepUpGrant).mockResolvedValue(false);
+
+      const res = await del({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired', reauthUrl: '/sso/reauth/start' });
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(dbState.updateSets).toHaveLength(0);
+    });
+
+    it('refuses an SSO grant from an account that HAS a password (opaque, grant untouched)', async () => {
+      dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+
+      const res = await del({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'invalid_credentials' });
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when the SSO grant was spent between gate and write (reuse race)', async () => {
+      dbState.selectQueue.push(
+        [{ passwordHash: null }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+        [{ id: 'credential-1', userId: 'user-123' }],
+        [{ passkeyCount: 2, hasTotp: true, hasSms: false, currentMfaMethod: 'totp' }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+        [{ mfaEnabled: true, passkeyCount: 2 }],
+      );
+      vi.mocked(consumeStepUpGrant).mockImplementation(async (_id, bind) => bind.operation !== 'sso_reauth_manage_factor');
+
+      const res = await del({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
+      expect(dbState.updateSets).toHaveLength(0);
+    });
+  });
+
   // #5038: adding a passkey to an ALREADY-PROTECTED account and deleting a
   // passkey both used to run through invalidateMfaAssuranceAfterFactorChange,
   // which bumps mfa_epoch and revokes every refresh family WITHOUT re-issuing

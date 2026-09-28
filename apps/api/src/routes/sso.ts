@@ -79,6 +79,7 @@ import {
   auditUserLoginFailure,
   userHasUsablePasskey,
   userRequiresSetup,
+  userIsMfaProtected,
   installAuthorizedUserSessionCookies,
   type PendingMfaRecord,
 } from './auth/helpers';
@@ -2924,8 +2925,9 @@ ssoRoutes.get('/callback', async (c) => {
 
     // #4018 reauth mode: an already-authenticated, PASSWORDLESS user proving
     // identity through a fresh IdP round-trip so they can enroll a first MFA
-    // factor. Mints NO tokens, creates NO users, links NO identities — its only
-    // output is a single-use step-up grant.
+    // factor or (#4045) manage one they already hold. Mints NO tokens, creates
+    // NO users, links NO identities — its only output is a single-use step-up
+    // grant.
     if (session.reauthUserId) {
       const reauthUserId = session.reauthUserId;
 
@@ -2989,6 +2991,19 @@ ssoRoutes.get('/callback', async (c) => {
           return { ok: false as const, error: 'password_set' as const };
         }
 
+        // #4045: the grant's PURPOSE follows the account's factor state, via
+        // the SAME predicate both redemption sites use (resolveEnrollmentStepUp
+        // refuses a protected account; resolveFactorManagementStepUp refuses an
+        // unprotected one), so the three can never drift apart. An account with
+        // no factor can only enroll one; an account holding one gets a grant
+        // that stands in for the PASSWORD leg of factor management and nothing
+        // else. Deciding here rather than at /reauth/start is safe because the
+        // grant is bound to the INITIATING epochs: a factor added or removed in
+        // between bumps mfa_epoch and kills the grant whichever purpose it got.
+        const operation = (await userIsMfaProtected(reauthUserId))
+          ? 'sso_reauth_manage_factor' as const
+          : 'enroll_first_factor' as const;
+
         // Taken from the binding result, NOT re-read off the session row with
         // `!`. validateSessionBinding is where the null check lives (it rejects
         // `link_binding_missing` -> the public `session_invalid`), so consuming
@@ -3002,6 +3017,7 @@ ssoRoutes.get('/callback', async (c) => {
           authEpoch: binding.initiating.authEpoch,
           mfaEpoch: binding.initiating.mfaEpoch,
           sid: binding.initiating.sid,
+          operation,
         };
       });
 
@@ -3028,7 +3044,7 @@ ssoRoutes.get('/callback', async (c) => {
 
       const grantId = await mintStepUpGrant({
         userId: reauthUserId,
-        operation: 'enroll_first_factor',
+        operation: outcome.operation,
         authEpoch: outcome.authEpoch,
         mfaEpoch: outcome.mfaEpoch,
         sid: outcome.sid,

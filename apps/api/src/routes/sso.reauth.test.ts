@@ -508,6 +508,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
   //   2. users                  (validateSessionBinding: the bound user)
   //   3. organizationUsers      (validateSessionBinding: org-axis membership)
   //   4. userSsoIdentities      (reauth branch: (provider, sub) ownership)
+  //   5. users + user_passkeys  (#4045: userIsMfaProtected picks the purpose)
   // Every test funnels through here so that ordering lives in one place.
   const primeReauthCallback = (opts: {
     // A TRUE epoch. It is deliberately not a Date: the row's created_at is
@@ -526,6 +527,9 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     // undefined = the identity belongs to the reauth user; [] = no identity.
     identityRows?: Array<{ userId: string }>;
     provider?: Record<string, unknown>;
+    // #4045: the userIsMfaProtected probe that picks the grant's purpose.
+    // undefined = no factor (enroll_first_factor).
+    protection?: { mfaEnabled: boolean; passkeyCount: number };
   } = {}) => {
     const {
       sessionCreatedAtMs = Date.now(),
@@ -534,6 +538,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
       membership = [{ userId: USER_ID }],
       identityRows = [{ userId: USER_ID }],
       provider = ACTIVE_OIDC_PROVIDER,
+      protection = { mfaEnabled: false, passkeyCount: 0 },
     } = opts;
     const idClaims = opts.idClaims ?? {
       sub: EXTERNAL_ID,
@@ -580,7 +585,8 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
       .mockReturnValueOnce(sel([provider]))
       .mockReturnValueOnce(sel(reauthUser ? [reauthUser] : []))
       .mockReturnValueOnce(sel(membership))
-      .mockReturnValueOnce(sel(identityRows));
+      .mockReturnValueOnce(sel(identityRows))
+      .mockReturnValueOnce(sel([protection]));
 
     return { session, idClaims };
   };
@@ -924,24 +930,48 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
-  // Pins the CURRENT mint-site contract, deliberately without changing it.
-  // Neither /sso/reauth/start nor this callback consults userIsMfaProtected, so
-  // a passwordless account that already holds TOTP still gets a live grant; only
-  // resolveEnrollmentStepUp refuses to spend it. That is safe today because
-  // there is exactly one redemption site. A SECOND redemption site added later
-  // would inherit a grant that should never have existed — this test is here so
-  // that change has to be deliberate.
-  it('mints even for an already-protected account: the refusal lives at redemption, not here', async () => {
-    primeReauthCallback({
-      reauthUser: { ...ACTIVE_REAUTH_USER, mfaEnabled: true },
-    });
+  // #4045: the mint site now picks the grant's PURPOSE from the account's
+  // factor state (via the same userIsMfaProtected predicate both redemption
+  // sites use). An unprotected account gets enroll_first_factor — the only
+  // thing it can do is enroll. A protected account gets sso_reauth_manage_factor
+  // — it may stand in for the PASSWORD leg of recovery-code rotation, passkey
+  // deletion and MFA disable, and can never enroll. The grant stays bound to the
+  // INITIATING epochs, so a factor added between /reauth/start and here makes
+  // it dead on arrival whichever purpose was chosen.
+  it('mints sso_reauth_manage_factor (never enroll_first_factor) for a TOTP-protected account', async () => {
+    primeReauthCallback({ protection: { mfaEnabled: true, passkeyCount: 0 } });
 
     const res = await doCallback();
+
+    expect(mintStepUpGrant).toHaveBeenCalledTimes(1);
+    expect(mintStepUpGrant).toHaveBeenCalledWith({
+      userId: USER_ID,
+      operation: 'sso_reauth_manage_factor',
+      authEpoch: 3,
+      mfaEpoch: 1,
+      sid: SID,
+    });
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
+  });
+
+  it('mints sso_reauth_manage_factor for a passkey-only account', async () => {
+    primeReauthCallback({ protection: { mfaEnabled: false, passkeyCount: 2 } });
+
+    await doCallback();
+
+    expect(mintStepUpGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID, operation: 'sso_reauth_manage_factor' })
+    );
+  });
+
+  it('still mints enroll_first_factor for an account with no factor', async () => {
+    primeReauthCallback({ protection: { mfaEnabled: false, passkeyCount: 0 } });
+
+    await doCallback();
 
     expect(mintStepUpGrant).toHaveBeenCalledWith(
       expect.objectContaining({ userId: USER_ID, operation: 'enroll_first_factor' })
     );
-    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
   });
 
   it('never mints login tokens, creates users, or links identities in reauth mode', async () => {
