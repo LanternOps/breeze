@@ -15,6 +15,7 @@ import {
   decideWriteBrokering,
   helperStorageIdentity,
   isAllowedWriteListPrefix,
+  urlExpiresIn,
   writeDeleteDecision,
   type ResumeTargetView,
 } from './backupStorageWriteSessions';
@@ -272,5 +273,14 @@ describe('decideResumeTarget', () => {
     // Reclaim never runs below the helper journal age (7 days); keep a full day of margin.
     expect(SNAPSHOT_TAKEOVER_MAX_AGE_MS + 24 * 60 * 60 * 1000).toBeLessThan(7 * 24 * 60 * 60 * 1000);
     expect(SNAPSHOT_TAKEOVER_MAX_AGE_MS).toBeLessThan(BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT);
+  });
+});
+
+describe('urlExpiresIn', () => {
+  it('is the whole seconds a URL has left on the server clock, never negative', () => {
+    const now = new Date('2026-11-08T12:00:00.250Z');
+    expect(urlExpiresIn(new Date('2026-11-08T12:05:00.250Z'), now)).toBe(300);
+    expect(urlExpiresIn(new Date('2026-11-08T12:05:00.000Z'), now)).toBe(299);
+    expect(urlExpiresIn(new Date('2026-11-08T11:59:00Z'), now)).toBe(0);
   });
 });

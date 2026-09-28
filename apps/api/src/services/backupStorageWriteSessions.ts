@@ -79,8 +79,11 @@ import {
   httpsEndpoint,
   originOf,
   rfc3339,
+  urlExpiresIn,
   type StorageSessionRow,
 } from './backupStorageSessions';
+
+export { urlExpiresIn };
 import { CommandTypes } from './commandTypes';
 
 // ── Contract constants ──────────────────────────────────────────────────────
@@ -685,6 +688,8 @@ export type WriteResolvedObject = {
   url: string;
   headers: Record<string, string>;
   expiresAt: string;
+  /** Whole seconds the URL has left, on the server clock when the answer is built. */
+  expiresIn: number;
   uploadId?: string;
   partNumber?: number;
 };
@@ -767,6 +772,7 @@ export async function resolveWriteSessionObjects(
   if (ttl < 1) return { status: 410, code: 'session_expired' };
 
   const objects: WriteResolvedObject[] = [];
+  const expiries: Date[] = [];
   const denied: WriteDenied[] = [];
   let horizon: Date | null = null;
   for (const { request, code } of decisions) {
@@ -781,7 +787,9 @@ export async function resolveWriteSessionObjects(
     }
     if (request.method === 'GET') {
       const url = await deps.storage.presignGet(destination.providerConfig, request.key, ttl);
-      objects.push({ key: request.key, method: 'GET', url, headers: {}, expiresAt: rfc3339(new Date(now.getTime() + ttl * 1000)) });
+      const getExpiry = new Date(now.getTime() + ttl * 1000);
+      expiries.push(getExpiry);
+      objects.push({ key: request.key, method: 'GET', url, headers: {}, expiresAt: rfc3339(getExpiry), expiresIn: 0 });
       continue;
     }
     const signed = request.method === 'PUT'
@@ -792,18 +800,23 @@ export async function resolveWriteSessionObjects(
       : await deps.storage.presignPart(destination.providerConfig, request.key, request.uploadId, request.partNumber, request.size, ttl);
     const expiry = new Date(now.getTime() + ttl * 1000);
     if (!horizon || expiry > horizon) horizon = expiry;
+    expiries.push(expiry);
     objects.push({
       key: request.key,
       method: request.method,
       url: signed.url,
       headers: signed.headers,
       expiresAt: rfc3339(expiry),
+      expiresIn: 0,
       ...(request.method === 'UPLOAD_PART' ? { uploadId: request.uploadId, partNumber: request.partNumber } : {}),
     });
   }
   // Recorded before the URLs leave the server: publication and resume use
   // it to know when every issued upload URL has expired.
   if (horizon) await advanceHorizon(session.id, horizon);
+  // Remaining lifetime as of the answer, after every URL has been signed.
+  const answeredAt = deps.now();
+  objects.forEach((o, i) => { o.expiresIn = urlExpiresIn(expiries[i]!, answeredAt); });
   return { status: 200, body: { objects, denied } };
 }
 

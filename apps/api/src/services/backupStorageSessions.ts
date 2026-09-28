@@ -688,7 +688,18 @@ export type ResolvedObject = {
   url: string;
   headers: Record<string, string>;
   expiresAt: string;
+  /** Whole seconds the URL has left, on the server clock when the answer is built. */
+  expiresIn: number;
 };
+
+/**
+ * Whole seconds a presigned URL has left at `now` (server clock), never
+ * negative. Sent as `expiresIn` beside every URL's absolute `expiresAt`, so a
+ * helper whose clock is skewed can time its cutoff from local receipt.
+ */
+export function urlExpiresIn(expiresAt: Date, now: Date): number {
+  return Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
+}
 
 export type ResolveResult =
   | { status: 200; body: { objects: ResolvedObject[]; denied: string[] } }
@@ -787,14 +798,18 @@ export async function resolveStorageSessionObjects(
 
   const objects: ResolvedObject[] = [];
   const denied: string[] = [];
+  const expiry = new Date(now.getTime() + ttl * 1000);
   for (const key of keys) {
     if (!granted.has(key)) {
       denied.push(key);
       continue;
     }
     const url = await deps.presignGet({ providerConfig: destination.providerConfig, key, expiresInSeconds: ttl });
-    objects.push({ key, method: 'GET', url, headers: {}, expiresAt: rfc3339(new Date(now.getTime() + ttl * 1000)) });
+    objects.push({ key, method: 'GET', url, headers: {}, expiresAt: rfc3339(expiry), expiresIn: 0 });
   }
+  // Remaining lifetime as of the answer, after every URL has been signed.
+  const answeredAt = deps.now();
+  for (const o of objects) o.expiresIn = urlExpiresIn(expiry, answeredAt);
   return { status: 200, body: { objects, denied } };
 }
 

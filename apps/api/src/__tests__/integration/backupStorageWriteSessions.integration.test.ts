@@ -167,6 +167,13 @@ describe('write-scoped storage sessions', () => {
     const key = `snapshots/${first.snapshotId}/files/a.bin`;
     const issued = await asAgent(t, s1, (r) => resolveWriteSessionObjects(s1, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
     expect(issued.status).toBe(200);
+    if (issued.status === 200) {
+      // Remaining lifetime on the server clock, alongside the absolute expiry.
+      const o = issued.body.objects[0]!;
+      expect(o.expiresIn).toBeGreaterThan(290);
+      expect(o.expiresIn).toBeLessThanOrEqual(300);
+      expect(Math.abs(Date.parse(o.expiresAt) - Date.now() - o.expiresIn * 1000)).toBeLessThan(5_000);
+    }
 
     const second = await mint(t);
     if (second.mode !== 'brokered') throw new Error('expected brokered');

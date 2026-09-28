@@ -593,6 +593,8 @@ describe('storage session object resolution', () => {
       expect(lower).not.toContain('x-breeze-storage-session');
       expect(Date.parse(o.expiresAt) - NOW.getTime()).toBeLessThanOrEqual(STORAGE_OBJECT_URL_TTL_SECONDS * 1000);
       expect(o.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+      // Remaining lifetime on the server clock, for a helper whose clock is skewed.
+      expect(o.expiresIn).toBe(deps.presignGet.mock.calls[0]![0].expiresInSeconds);
     }
     expect(deps.presignGet).toHaveBeenCalledTimes(3);
     for (const call of deps.presignGet.mock.calls) {
