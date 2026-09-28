@@ -9,6 +9,7 @@ import { and, eq, inArray, lt, or } from 'drizzle-orm';
 import { accountingConnections } from '../../db/schema';
 import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { captureException } from '../sentry';
 import {
   AccountingTenantHeldError, mapConnection, PENDING_TENANT_STATUS, REALM_FINGERPRINT_UNIQUE_INDEX,
   type AccountingConnection, type DbExecutor,
@@ -37,6 +38,8 @@ function decryptOrNull(
   try {
     return decryptSecret(value);
   } catch (err) {
+    // Never include the ciphertext, only ids (review D).
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelectionStore' });
     console.warn('[accountingTenantSelectionStore] could not decrypt a pending connection token; treating it as absent', {
       ...where, error: err instanceof Error ? err.message : 'unknown',
     });

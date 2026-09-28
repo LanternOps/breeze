@@ -449,6 +449,24 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('error=exchange_failed');
     expect(mocks.upsertConnection).not.toHaveBeenCalled();
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('callback redirects to error=exchange_failed WITHOUT a Sentry capture when the code exchange is throttled', async () => {
+    mocks.exchangeCode.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'quickbooks', operation: 'exchangeCode', retryAfterMs: 5_000,
+    }));
+    const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
+
+    const res = await app.request(
+      `/accounting/quickbooks/callback?code=bad&realmId=realm-1&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=exchange_failed');
+    expect(mocks.upsertConnection).not.toHaveBeenCalled();
+    expect(mocks.captureException).not.toHaveBeenCalled();
   });
 
   it('callback captures the realm home currency and persists it against the row it just wrote', async () => {
@@ -1598,7 +1616,7 @@ describe('accounting routes', () => {
       });
     });
 
-    it('the audit names the status actually deleted: a pending row claimed meanwhile is audited as connected (review I)', async () => {
+    it('the audit names the re-read status, not the first read\'s: a pending row claimed meanwhile is audited as connected (review I)', async () => {
       mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
       mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
       mocks.releaseProviderConnection.mockResolvedValue('released');
@@ -1621,7 +1639,7 @@ describe('accounting routes', () => {
       });
     });
 
-    it('a token that cannot be decrypted still disconnects (release skipped)', async () => {
+    it('a token that cannot be decrypted still disconnects (release skipped), and the failure is Sentry-captured', async () => {
       mocks.getConnection.mockRejectedValue(new Error('decrypt failed'));
       const res = await disconnect();
       expect(res.status).toBe(200);
@@ -1630,6 +1648,7 @@ describe('accounting routes', () => {
       expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
         details: { providerRelease: 'skipped' },
       });
+      expect(mocks.captureException).toHaveBeenCalledTimes(1);
     });
 
     it('PATCH settings writes and returns the two new refs (F18)', async () => {

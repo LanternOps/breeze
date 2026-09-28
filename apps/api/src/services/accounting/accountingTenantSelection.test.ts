@@ -34,6 +34,7 @@ import {
   AccountingTenantSelectionError, discardPendingTenantSelection, loadPendingGrant, reapStalePendingTenants, releaseUnchosenTenants,
 } from './accountingTenantSelection';
 import { AccountingProviderError } from './accountingProviderError';
+import { captureException } from '../sentry';
 
 const runner = async <T>(fn: () => Promise<T>) => fn();
 const tenant = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: 'evt-1' });
@@ -120,6 +121,20 @@ describe('releaseUnchosenTenants (spec W02: only same-authEvent links no row hol
     await expect(releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'cancel' }))
       .resolves.toEqual({ removed: 1, kept: 0, failed: 1, skipped: 0, stopped: null });
   });
+
+  it('a genuine (non-throttle) DELETE failure is Sentry-captured', async () => {
+    m.selection.removeTenantConnection.mockRejectedValueOnce(new Error('503'));
+    await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'cancel' });
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throttled DELETE failure stays warn-only (no Sentry capture)', async () => {
+    m.selection.removeTenantConnection.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'xero', operation: 'Xero connection delete', retryAfterMs: 30_000,
+    }));
+    await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B'), tenant('C')], keepConnectionRef: null, context: 'cancel' });
+    expect(captureException).not.toHaveBeenCalled();
+  });
 });
 
 describe('loadPendingGrant', () => {
@@ -187,6 +202,22 @@ describe('discardPendingTenantSelection (cancel + reaper)', () => {
     m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.listGrantTenants.mockRejectedValue(new Error('xero down'));
     await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true });
+  });
+
+  it('a genuine (non-throttle) remote cleanup failure is Sentry-captured', async () => {
+    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.selection.listGrantTenants.mockRejectedValue(new Error('xero down'));
+    await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner });
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throttled remote cleanup failure stays warn-only (no Sentry capture)', async () => {
+    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.selection.listGrantTenants.mockRejectedValue(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'xero', operation: 'listGrantTenants', retryAfterMs: 30_000,
+    }));
+    await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner });
+    expect(captureException).not.toHaveBeenCalled();
   });
 });
 

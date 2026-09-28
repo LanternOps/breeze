@@ -45,6 +45,7 @@ import {
 import { captureException } from '../../services/sentry';
 import { ACCOUNTING_PROVIDER_IDS } from '../../services/accounting/types';
 import { discardPendingTenantSelection } from '../../services/accounting/accountingTenantSelection';
+import { rateLimitRetryAfterMs } from '../../services/accounting/accountingProviderError';
 import { releaseProviderConnection } from '../../services/accounting/accountingProviderRelease';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import { listProvidersHandler, providerGateResponse } from './providerGate';
@@ -462,8 +463,14 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     tokens = await runOutsideDbContext(() => providerClient.exchangeCode(code, query.realmId ?? ''));
   } catch (err) {
     // Never log query.code / realmId / token bodies — only partner + provider.
-    captureException(err instanceof Error ? err : new Error(String(err)), c);
-    console.error(`[accounting] ${providerClient.displayName} code exchange failed`, { partnerId: state.partnerId, provider });
+    // A provider/local throttle is not an incident (matches connectFinalize's
+    // F7 guard) — warn only; anything else still goes to Sentry.
+    if (rateLimitRetryAfterMs(err) === null) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.error(`[accounting] ${providerClient.displayName} code exchange failed`, { partnerId: state.partnerId, provider });
+    } else {
+      console.warn(`[accounting] ${providerClient.displayName} code exchange throttled`, { partnerId: state.partnerId, provider });
+    }
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
     return c.redirect(connectRedirectPath(provider, { kind: 'error', error: 'exchange_failed' }));
   }
@@ -508,7 +515,8 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const runInDb: DbContextRunner = (fn) => withAuthDbAccessContext(auth, fn);
   const ref = await runInDb(() => getPartnerConnectionRef(db, partner.partnerId));
   if (!ref || ref.provider !== provider) return c.json({ error: 'Accounting connection not found' }, 404);
-  // `status` is the status of the row actually removed (review I), not the first read's.
+  // `status` is the latest pre-delete read (the decrypting re-read when one ran,
+  // otherwise the first read) (review I), not the first read's.
   const audit = (resourceId: string, status: string, details: Record<string, unknown>) => writeRouteAudit(c, {
     orgId: null, action: 'accounting.connection.disconnected', resourceType: 'accounting_connection', resourceId,
     details: { provider, status, ...details },
@@ -532,6 +540,7 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
     try {
       full = await runInDb(() => getConnection(db, partner.partnerId, provider));
     } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c, { service: 'accounting' });
       console.warn('[accounting] disconnect could not read the connection; skipping the provider-side release', {
         partnerId: partner.partnerId, provider, error: err instanceof Error ? err.message : String(err),
       });

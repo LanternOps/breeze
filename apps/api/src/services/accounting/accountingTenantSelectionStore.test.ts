@@ -10,12 +10,14 @@ vi.mock('../secretCrypto', () => ({
   encryptSecret: (v: string) => `enc:${v}`,
   hmacFingerprint: (v: string) => `fp:${v}`,
 }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import { claimPendingTenant, deletePendingTenantRow } from './accountingTenantSelectionStore';
+import { captureException } from '../sentry';
 
 const CIPHER = 'v3:CIPHERTEXT-MUST-NOT-BE-LOGGED';
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
 
 describe('undecryptable token ciphertext is reported, never silent, never logged (review D)', () => {
   it('claim: a refresh token that cannot be decrypted → grant_superseded, with a warning naming the row and provider', async () => {
@@ -37,6 +39,7 @@ describe('undecryptable token ciphertext is reported, never silent, never logged
       expect.objectContaining({ connectionId: 'row-1', provider: 'xero', field: 'refresh_token' }),
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain('CIPHERTEXT');
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('discard: undecryptable tokens → null tokens (no remote cleanup), with a warning per field', async () => {
@@ -54,5 +57,6 @@ describe('undecryptable token ciphertext is reported, never silent, never logged
       expect(call[1]).toMatchObject({ connectionId: 'row-2', provider: 'xero' });
     }
     expect(JSON.stringify(warn.mock.calls)).not.toContain('CIPHERTEXT');
+    expect(captureException).toHaveBeenCalledTimes(2);
   });
 });

@@ -126,11 +126,13 @@ export async function releaseUnchosenTenants(input: {
         provider: input.provider, context: input.context, error: err instanceof Error ? err.message : String(err),
       });
       // A throttle applies to every remaining DELETE too (review B): stop here.
+      // It is not an incident (warn-only); a genuine failure IS one.
       if (rateLimitRetryAfterMs(err) !== null) {
         result.skipped = candidates.length - index - 1;
         result.stopped = 'rate_limited';
         break;
       }
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
     }
   }
   console.info('[accountingTenantSelection] unchosen links released', { provider: input.provider, context: input.context, ...result });
@@ -170,6 +172,11 @@ export async function discardPendingTenantSelection(input: {
     console.warn('[accountingTenantSelection] remote cleanup after discard failed (best-effort)', {
       provider: input.provider, reason: input.reason, error: err instanceof Error ? err.message : String(err),
     });
+    // A throttle is not an incident (matches the per-link guard above); a
+    // genuine failure IS one.
+    if (rateLimitRetryAfterMs(err) === null) {
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
+    }
   }
   return { discarded: true };
 }
