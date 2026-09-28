@@ -39,6 +39,12 @@ type ProtocolInfo struct {
 	// BackupReadProtocolVersion is the brokered storage-read protocol the
 	// helper implements (0 = none).
 	BackupReadProtocolVersion int `json:"backupReadProtocolVersion"`
+	// BackupIntegrityProtocolVersion is the snapshot integrity protocol the
+	// helper implements (0 = none).
+	BackupIntegrityProtocolVersion int `json:"backupIntegrityProtocolVersion"`
+	// BackupWriteProtocolVersion is the brokered storage-write protocol the
+	// helper implements (0 = none).
+	BackupWriteProtocolVersion int `json:"backupWriteProtocolVersion"`
 }
 
 // BackupCommandRequest is sent from the agent to the backup helper.
