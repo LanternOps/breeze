@@ -3,7 +3,7 @@ title: Bare-metal recovery from Breeze boot media — design
 status: draft for review
 date: 2026-09-10
 owner: Todd
-supersedes: docs/superpowers/plans/backup/2026-09-10-bmr-windows-offline-hive-decision.md (Option B remains the contract for the reinstall-then-recover mode; boot-media mode applies Windows state offline, see §6.4)
+supersedes: docs/superpowers/plans/backup/2026-09-10-bmr-windows-offline-hive-decision.md (Option B remains the contract for the reinstall-then-recover mode; boot-media mode applies Windows state offline, see §6.1)
 tracking_issue: LanternOps/breeze#5493
 related: feature #5439 (Linux system state), campaign doc docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md, issues #5470 #5479 #5460
 ---
@@ -84,6 +84,45 @@ Phases (idempotent, resumable, logged by name):
 
 Targets: `disk` (block device on the booted media) and `vhdx` (attached and partitioned on a Windows host, or a loop-mounted image on Linux for tests).
 
+### 6.1 Windows offline state apply
+
+Registry hives are the authoritative source when present in the VSS file
+tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` plus
+each `.LOG1`/`.LOG2`, and every `Users\*\NTUSER.DAT`). If any one of
+SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, all four are
+replaced together from the independently captured system-state artifacts
+(`system-state/registry/<HIVE>`) and their `.LOG1`/`.LOG2` files are
+deleted — mixing a tree hive with an artifact hive from a different capture
+point would split LSA secrets from the machine password. If an artifact is
+missing too, the restore fails naming the hive.
+
+Every hive is mounted at a run-scoped key (`HKLM\BRZ_<runid>_<HIVE>`),
+never the live `HKLM`. Edits target `ControlSet00<Select\Default>`; when
+`Select\Current` differs from `Select\Default`, the same edits are applied
+to both. `MountedDevices` is always rewritten regardless of whether the
+disk layout changed: `\DosDevices\C:` is set to the restored root
+partition's GUID (`DMIO:ID:` + the 16-byte mixed-endian GUID exactly as
+`IOCTL_DISK_GET_PARTITION_INFO_EX` returns it), and every other
+`\DosDevices\<letter>:` value whose GUID is not on the rebuilt disk is
+deleted; `\??\Volume{…}` values are left untouched.
+
+`bcdboot <root>\Windows /s <ESP letter>: /f UEFI /v` regenerates the EFI
+system partition. It always runs the rebuild host's own `bcdboot.exe`, by
+absolute path from the host's Windows directory. Nothing from the restored
+tree is ever executed, and there is no fallback: a host without bcdboot
+fails the phase. The guest's boot files are still copied from
+`<root>\Windows`. For a VHDX target on a live host, `/p` is added so
+bcdboot keeps the existing order of the host's UEFI firmware boot entries
+(order only — it does not stop bcdboot creating or updating a Windows Boot
+Manager entry). The captured BCD store (`system-state/boot/bcd_export`) is
+never imported.
+
+A BitLocker-protected source restores in plaintext. The phase writes a
+post-restore-actions intent file rather than re-encrypting immediately —
+re-encryption executes from the restored agent at first boot with a NEW
+recovery password once W07 ships the executor; the escrowed key is never
+carried on recovery media.
+
 ## 7. Boot media and console
 
 ### 7.1 Linux media (Breeze-built)
@@ -163,3 +202,12 @@ the full wire contract, data model and refusal matrix.
 ## 12. Out of scope (first release)
 
 Block-level imaging; LVM, LUKS, RAID, BIOS/MBR, multi-disk targets (refused, not silently attempted); macOS bare-metal; dissimilar-boot-mode conversion; unattended fleet recovery (reserved flag only); hard links, extended attributes/capabilities and Windows ACLs in the file backup (§5.4); crossing filesystem boundaries under `/` beyond the preset's excluded trees (a one-filesystem walk option is a follow-up).
+
+- **D-BL** — BitLocker re-encryption is recorded as intent in this wave, not
+  executed; the executor ships with W07 because it needs a booted disk
+  target to test against, and disk targets aren't shippable until WinPE
+  media exists.
+- **D-ACL** — NTFS security descriptors are captured and restored in this
+  wave, ahead of where the original spec sequenced them, because a rebuilt
+  `C:\Windows\System32\config` without them is a HiveNightmare-class
+  vulnerability (CVE-2021-36934) the day it boots.

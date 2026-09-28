@@ -217,10 +217,17 @@ The badge governs only the `rebuild` path below. A snapshot marked *not* restora
 
 ## Rebuilding a Linux disk from scratch (`breeze-backup rebuild`)
 
-`breeze-backup rebuild` is the from-scratch counterpart to `bmr-recover`: instead of restoring onto an OS you installed, it takes a **blank disk (or a raw image file)**, provisions the partitions recorded in the snapshot's layout manifest, restores a whole-machine snapshot into them, applies the system state offline, installs GRUB and validates the result. It ships in the same `breeze-backup` binary as the recovery bundle.
+`breeze-backup rebuild` is the from-scratch counterpart to `bmr-recover`: instead of restoring onto an OS you installed, it takes a **blank disk (or a raw image file)**, provisions the partitions recorded in the snapshot's layout manifest, restores a whole-machine snapshot into them, applies the system state offline, installs a bootloader and validates the result. It ships in the same `breeze-backup` binary as the recovery bundle, and — as of this release — runs on Windows rebuild hosts too: a Windows snapshot rebuilds on a Windows host, a Linux snapshot on a Linux host. The steps below (partition provisioning, offline restore, bootloader install) apply to both; where a step is platform-specific, that's called out.
 
 <Aside type="note" title="Scope">
-  Linux hosts and Linux snapshots only, run from a booted Linux environment; the snapshot must be marked **Bare-metal restorable** and the target must be UEFI/GPT. The [recovery media](#recover-from-breeze-recovery-media) runs it for you; the command below is for scripted or unusual recoveries and does not appear in the device's command history. [Restore as VM](#restore-as-vm) and [DR bare-metal rebuild steps](/backup/disaster-recovery/#bare-metal-rebuild-step) also run this engine, targeting a VHDX image instead of a disk.
+  Run from a booted host matching the snapshot's platform — a Linux snapshot
+  rebuilds on Linux, a Windows snapshot on Windows (Breeze checks this and
+  refuses the pair otherwise); the snapshot must be marked **Bare-metal
+  restorable** and the target must be UEFI/GPT. The [recovery media](#recover-from-breeze-recovery-media)
+  runs it for you; the command below is for scripted or unusual recoveries
+  and does not appear in the device's command history. [Restore as VM](#restore-as-vm)
+  and [DR bare-metal rebuild steps](/backup/disaster-recovery/#bare-metal-rebuild-step)
+  also run this engine, targeting a VHDX image instead of a disk.
 </Aside>
 
 ```
@@ -235,7 +242,7 @@ breeze-backup rebuild \
 | Flag | Purpose |
 |---|---|
 | `--snapshot` | The `system_image` snapshot to rebuild from (must carry a layout manifest). |
-| `--target` | `disk:/dev/…` for a real block device, or `image:/path.img` for a raw image file (created sparse; `--image-size` is required when the file does not exist yet). A mounted disk, or the one backing the running system, is refused. |
+| `--target` | `disk:/dev/…` for a real block device, `image:/path.img` for a raw image file (created sparse; `--image-size` is required when the file does not exist yet), or `vhdx:<path>` for a VHDX disk image. A mounted disk, or the one backing the running system, is refused. On a **live Windows host**, only `vhdx:` is supported — `disk:` needs a WinPE-booted environment, which doesn't ship until the Windows recovery media (W07). |
 | `--provider-config` | JSON file with the backup destination credentials, as used by the recovery bundle. |
 | `--identity` | `original` (default) keeps the machine ID, hostname and agent enrollment and writes a recovery marker; `new` clears the machine ID, appends `-restored` to the hostname and strips the agent's device identity so it re-enrolls as a new device. |
 | `--dry-run` | Run the preflight only — fetch and verify the layout, plan the partitions, check the target — and print the plan without writing anything. |
@@ -245,13 +252,13 @@ breeze-backup rebuild \
 
 The rebuild runs seven phases in order — **preflight → provision → restore → boot → identity → encryption → validate**:
 
-1. **Preflight** downloads `layout.json`, refuses a snapshot that is not restorable or not Linux, checks the target is safe and large enough, plans the partitions, and downloads and checksum-verifies the snapshot and system-state manifests. Nothing is written. A `system_image` snapshot whose `system-state/manifest.json` is missing (or lists no artifacts) is **refused** here — the rebuild never proceeds files-only when system state was expected.
+1. **Preflight** downloads `layout.json`, refuses a snapshot that is not restorable or whose platform doesn't match the rebuild host's, checks the target is safe and large enough, plans the partitions, and downloads and checksum-verifies the snapshot and system-state manifests. Nothing is written. A `system_image` snapshot whose `system-state/manifest.json` is missing (or lists no artifacts) is **refused** here — the rebuild never proceeds files-only when system state was expected.
 2. **Provision** wipes the target, recreates the GPT partitions with their original type codes, GUIDs, names and filesystem UUIDs/labels, and formats them.
-3. **Restore** mounts the new partitions, restores the file snapshot into them, then applies the system state **offline** into that tree. Unlike a live `bmr-recover`, `/etc` is restored **without** the identity/network excludes (`fstab`, `machine-id`, `hostname` and network configuration do land, because the rebuilt disk is the original machine), services are enabled with `systemctl --root`, crontabs are written straight into the spool, and firewall rules are written to `/etc/iptables/rules.v4` (or `/etc/breeze/recovery/iptables.rules` with a warning if `iptables-persistent` is absent). Package reinstall is skipped offline.
-4. **Boot** installs GRUB for UEFI (Debian/Ubuntu via `grub-install` + `update-grub`, RHEL-family via `grub2-mkconfig` + `efibootmgr`), regenerates the initramfs, and always writes the removable-media fallback loader (`EFI/BOOT/BOOTX64.EFI` / `BOOTAA64.EFI`). Other distribution families are not supported.
+3. **Restore** mounts the new partitions, restores the file snapshot into them, then applies the system state **offline** into that tree. On Linux, unlike a live `bmr-recover`, `/etc` is restored **without** the identity/network excludes (`fstab`, `machine-id`, `hostname` and network configuration do land, because the rebuilt disk is the original machine), services are enabled with `systemctl --root`, crontabs are written straight into the spool, and firewall rules are written to `/etc/iptables/rules.v4` (or `/etc/breeze/recovery/iptables.rules` with a warning if `iptables-persistent` is absent); package reinstall is skipped offline. On Windows, registry hives, the certificate store, firewall policy and driver packages are applied offline into the mounted tree — see [Windows fidelity](#windows-fidelity) below for exactly what that covers.
+4. **Boot** installs GRUB for UEFI on Linux (Debian/Ubuntu via `grub-install` + `update-grub`, RHEL-family via `grub2-mkconfig` + `efibootmgr`), regenerates the initramfs, and always writes the removable-media fallback loader (`EFI/BOOT/BOOTX64.EFI` / `BOOTAA64.EFI`); other Linux distribution families are not supported. On Windows, `bcdboot` regenerates the EFI system partition and DISM stages any operator-supplied driver packages — both run as the **rebuild host's own** `System32` binaries, resolved by absolute path, never anything from the restored tree.
 5. **Identity** applies the `--identity` choice.
-6. **Encryption** is a no-op in this release — encrypted layouts are refused at preflight.
-7. **Validate** spot-checks a sample of restored files against their checksums, confirms the bootloader and `grub.cfg` exist, cross-checks `fstab` UUIDs against the new partitions, then syncs and unmounts. When system state was expected, it also fails with `system state not applied` if the restore phase did not apply it.
+6. **Encryption** is a no-op in this release — encrypted layouts are refused at preflight, and a BitLocker-protected Windows source restores in plaintext with a recorded re-encryption intent (see [Windows fidelity](#windows-fidelity)).
+7. **Validate** spot-checks a sample of restored files against their checksums, confirms the bootloader (`grub.cfg` on Linux, the BCD store on Windows) exists, cross-checks filesystem UUIDs/volume identifiers against the new partitions, then syncs and unmounts. When system state was expected, it also fails with `system state not applied` if the restore phase did not apply it.
 
 The result JSON carries `stateManifestFound` and `stateApplied` alongside `status`; a rebuild is never `completed` unless `stateApplied` is `true` whenever system state was expected.
 
@@ -261,22 +268,61 @@ Progress is checkpointed to `<state-dir>/rebuild-<snapshot>-<target>.json` after
 
 ## Restore as VM
 
-The **VM Restore Wizard**'s **Rebuild engine (Linux)** option runs the same [rebuild engine](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) described above, but writes the result straight to a **VHDX** disk image instead of a physical disk — a Hyper-V-ready virtual disk built from a Linux whole-machine snapshot. It's offered alongside **Full Restore** and **Instant Boot** whenever the selected snapshot carries a layout manifest (the same **Bare-metal restorable** Linux snapshots the recovery media uses).
+The **VM Restore Wizard**'s **Rebuild engine** option runs the same [rebuild engine](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild)
+described above, but writes the result straight to a **VHDX** disk image
+instead of a physical disk on a platform-matched rebuild host, then boots it
+as a Hyper-V VM when the target is Windows — a Linux target still writes the
+VHDX for you to attach yourself. It's offered alongside **Full Restore** and
+**Instant Boot** whenever the selected snapshot carries a layout manifest
+(the same **Bare-metal restorable** snapshots the recovery media uses).
 
 <Steps>
 1. Open the restore workflow for the device and choose **Restore as VM**.
 2. Select the backup snapshot to restore.
-3. On the **Restore mode** step, choose **Rebuild engine (Linux)**.
-4. Pick a **rebuild host** — an online Linux device running the Breeze helper with `qemu-utils` installed and enough free disk space for the image. Preflight refuses the run if either requirement isn't met.
-5. Enter an absolute **output path** on the rebuild host ending in `.vhdx`.
-6. Click **Start Rebuild**. The VHDX appears at that path on the rebuild host once the rebuild completes; attach it to a Hyper-V VM the same way you would any other virtual disk.
+3. On the **Restore mode** step, choose **Rebuild engine**.
+4. Pick a **rebuild host** running the same platform as the snapshot — an
+   online device running the Breeze helper (Linux: `qemu-utils` installed;
+   Windows: the Hyper-V role) with enough free disk space for the image.
+   Preflight refuses the run if either requirement isn't met.
+5. Enter an absolute **output path** on the rebuild host ending in `.vhdx`
+   (a POSIX path on Linux, a drive-letter path on Windows).
+6. On a Windows rebuild host, optionally name a Hyper-V VM and virtual
+   switch — Breeze creates the VM from the finished VHDX automatically, with
+   no network adapter unless you name a switch. If VM creation fails, the
+   VHDX itself is kept and the failure is reported rather than hidden.
+7. Click **Start Rebuild**.
 </Steps>
 
-The rebuilt image always gets a **new machine identity** — a new machine ID, a `-restored` hostname, and no agent enrollment — since it's building a standalone copy, not reclaiming the original device.
+The rebuilt image always gets a **new machine identity** — a new machine ID,
+a `-restored` hostname, and no agent enrollment — since it's building a
+standalone copy, not reclaiming the original device.
 
-<Aside type="note">
-  Breeze does not yet create the Hyper-V VM from the VHDX automatically — attach the image to a VM yourself once the rebuild finishes.
-</Aside>
+---
+
+## Windows fidelity
+
+What a Windows whole-machine rebuild preserves, and what it doesn't yet:
+
+**Preserved:**
+- NTFS security descriptors (owner, group, DACL) for every file and
+  directory, so a rebuilt `C:\Windows\System32\config` keeps its original
+  ACLs rather than inheriting Authenticated-Users-Modify from a fresh
+  volume — this closes the class of issue behind CVE-2021-36934.
+- Partition GUIDs, the EFI boot configuration, and (best-effort) boot-start
+  storage driver settings for the disk controller the target machine
+  actually has.
+- The machine's SID is never regenerated.
+
+**Not yet restored:**
+- Hard links, alternate data streams, and EFS-encrypted file contents.
+- Windows Recovery Environment (WinRE) partition contents — the partition
+  is recreated and formatted but left empty; `reagentc` is not run.
+- A BitLocker-protected source volume restores in **plaintext**. Breeze
+  records the intent to re-encrypt on first boot; the executor for that
+  intent ships with the Windows recovery media (W07).
+- A domain controller's system state is refused outright — recovering a DC
+  this way risks a broken AD replication topology; use your normal DC
+  recovery procedure instead.
 
 ---
 
