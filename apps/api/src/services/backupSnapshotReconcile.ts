@@ -5,6 +5,7 @@ import { backupConfigs, backupJobs, backupSnapshots, backupSnapshotRetirements }
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
 import { applyBackupCommandResultToJob, LATE_RESULT_FENCE_REASON_PATTERN } from './backupResultPersistence';
+import { loadSnapshotIdClaims } from './backupSnapshotIdReservations';
 import { captureException, captureMessage } from './sentry';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -172,6 +173,8 @@ export type ReconcileSkipReason =
   /** D18 §3.4: the manifest is older than half the orphan window — leave it
    *  for the sweep instead of racing it. */
   | 'orphan-too-old-for-adoption'
+  /** The id is reserved to a backup that is still writing (brokered write). */
+  | 'reserved-for-active-backup'
   /** D18 §3.1/§3.4: the manifest declares a baseSnapshotId with no live,
    *  unretired backup_snapshots row — its references may already dangle. */
   | 'base-missing'
@@ -243,6 +246,12 @@ type SnapshotClaims = {
    * Any foreign claim refuses the snapshot outright.
    */
   foreignClaimed: Set<string>;
+  /**
+   * Snapshot ids whose reservation (backup_snapshot_id_reservations) is still
+   * being written or sealed by a live backup job. Their objects may still
+   * change, so they are never adopted; the job's own result publishes them.
+   */
+  liveReserved: Set<string>;
 };
 
 type AdoptableJob = {
@@ -414,6 +423,7 @@ async function loadClaimsAndSharing(params: {
       const restorable = new Map<string, string>();
       const jobs = new Map<string, ClaimingJob>();
       const foreignClaimed = new Set<string>();
+      const liveReserved = new Set<string>();
 
       // Rank for the dedupe below: a claim on THIS destination beats one on a
       // sibling config (a customer who deleted and recreated a config against
@@ -440,6 +450,13 @@ async function loadClaimsAndSharing(params: {
         for (const row of snapshotRows) {
           restorable.set(row.snapshotId, row.orgId);
         }
+
+        // The id's owner, whatever destination or endpoint spelling it was
+        // reserved under. Another organization's reservation refuses the id;
+        // one still being written by a live job is left to that job.
+        const reservationClaims = await loadSnapshotIdClaims(batch, orgId);
+        for (const id of reservationClaims.foreign) foreignClaimed.add(id);
+        for (const id of reservationClaims.live) liveReserved.add(id);
 
         // NOT filtered by config or org: seeing ANOTHER tenant's claim is the
         // entire point (a filtered query would make their snapshot look
@@ -499,7 +516,7 @@ async function loadClaimsAndSharing(params: {
         );
       });
 
-      return { claims: { restorable, jobs, foreignClaimed }, sharedDestination };
+      return { claims: { restorable, jobs, foreignClaimed, liveReserved }, sharedDestination };
     })
   );
 }
@@ -833,6 +850,11 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     }
     if (writtenAt && now.getTime() - writtenAt.getTime() > RECONCILE_ORPHAN_HALF_WINDOW_MS) {
       skip('orphan-too-old-for-adoption');
+      continue;
+    }
+
+    if (claims.liveReserved.has(snapshotId)) {
+      skip('reserved-for-active-backup');
       continue;
     }
 

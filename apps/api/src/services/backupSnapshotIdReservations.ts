@@ -24,7 +24,7 @@
 import { randomBytes } from 'node:crypto';
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { backupSnapshotIdReservations, backupStorageSessions } from '../db/schema';
+import { backupJobs, backupSnapshotIdReservations, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
 
@@ -148,4 +148,36 @@ export async function loadReservation(
     .limit(1);
   const [row] = opts.forUpdate ? await query.for('update') : await query;
   return row ?? null;
+}
+
+/**
+ * For storage reconcile (system scope): which of these ids are reserved to
+ * another organization, and which are still being written or sealed by a
+ * live backup job (never adoptable — the job's own result publishes them).
+ */
+export async function loadSnapshotIdClaims(
+  snapshotIds: string[],
+  orgId: string,
+): Promise<{ foreign: Set<string>; live: Set<string> }> {
+  const foreign = new Set<string>();
+  const live = new Set<string>();
+  if (snapshotIds.length === 0) return { foreign, live };
+  const rows = await db
+    .select({
+      snapshotId: backupSnapshotIdReservations.snapshotId,
+      orgId: backupSnapshotIdReservations.orgId,
+      state: backupSnapshotIdReservations.state,
+      jobStatus: backupJobs.status,
+    })
+    .from(backupSnapshotIdReservations)
+    .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshotIdReservations.currentJobId))
+    .where(inArray(backupSnapshotIdReservations.snapshotId, snapshotIds));
+  for (const row of rows) {
+    if (row.orgId !== orgId) foreign.add(row.snapshotId);
+    if ((row.state === 'reserved' || row.state === 'sealing')
+      && (row.jobStatus === 'pending' || row.jobStatus === 'running')) {
+      live.add(row.snapshotId);
+    }
+  }
+  return { foreign, live };
 }
