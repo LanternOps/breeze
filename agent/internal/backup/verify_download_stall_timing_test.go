@@ -56,7 +56,7 @@ func (p *chunkedStallProvider) DownloadContext(ctx context.Context, _, localPath
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(p.interval):
+			case <-downloadClock.NewTimer(p.interval).C():
 			}
 		}
 		sink := io.Discard
@@ -142,6 +142,15 @@ func TestDownloadWithStallTimeout_DetectionTimeAfterLastByte(t *testing.T) {
 // A transfer that is still delivering must never be cut off: a growth-only
 // provider whatever its file timestamps say, and a reporting provider that
 // trickles chunks more than a window apart in total.
+//
+// The clock is faked (#7255): the provider's chunk pacing and the watchdog's
+// no-progress window used to both run on real wall time, and a loaded -race
+// CI runner could deschedule either goroutine long enough to close the gap
+// between them and trip a false stall (a queue run failed both subtests with
+// "no data received for 300ms" — PR #7196's extra real-time slack was not
+// enough). With a fake clock the test asserts the ordering it actually cares
+// about — chunks keep landing inside every window — deterministically,
+// whatever the real scheduler does to either goroutine meanwhile.
 func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 	const window = 300 * time.Millisecond
 	for _, tc := range []struct {
@@ -154,10 +163,11 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer setDownloadTimeoutFloorForTest(window)()
-			// Chunks land a third of a window apart: ~1.2 s in total, four
-			// windows. At window*8/10 the gap left 60 ms of slack, and a
-			// loaded -race CI runner descheduled the writer past it (a queue
-			// run failed both cases with "no data received for 300ms").
+			fc := newFakeStallClock(t)
+			defer setDownloadClockForTest(fc)()
+
+			// Chunks land a third of a window apart: twelve chunks span four
+			// windows.
 			p := &chunkedStallProvider{
 				chunks:         12,
 				interval:       window / 3,
@@ -167,10 +177,17 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 			}
 			dest := filepath.Join(t.TempDir(), "manifest.json")
 
+			driveDone := make(chan struct{})
+			go func() {
+				defer close(driveDone)
+				driveChunkedTransfer(t, fc, window/3, 11)
+			}()
+
 			var err error
 			runWithWatchdog(t, 10*time.Second, func() {
 				err = downloadWithStallTimeout(context.Background(), p, "remote/manifest.json", dest)
 			})
+			<-driveDone
 			if err != nil {
 				t.Fatalf("an actively delivering transfer failed: %v", err)
 			}

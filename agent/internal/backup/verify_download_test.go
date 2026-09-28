@@ -212,7 +212,7 @@ func (p *scriptedDownloadProvider) trickleManifest(ctx context.Context, localPat
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("read body: %w", ctx.Err())
-			case <-time.After(p.manifestChunkDelay):
+			case <-downloadClock.NewTimer(p.manifestChunkDelay).C():
 			}
 		}
 		end := min(off+chunk, len(p.manifest))
@@ -674,17 +674,34 @@ func TestManifestDownloadError_OnlyMissingObjectIsNotFound(t *testing.T) {
 	}
 }
 
+// The clock is faked (#7255): the manifest's chunk pacing and the download
+// watchdog's no-progress window used to both run on real wall time, 50ms
+// apart against a 150ms window. A loaded CI runner descheduling either side
+// could close that gap enough to trip a false stall (queue run 36360377325
+// failed this way in 0.30s). A fake clock makes the test assert that a
+// manifest delivered in-window never stalls, deterministically.
 func TestTestRestore_SlowButProgressingManifestSucceeds(t *testing.T) {
-	defer setDownloadTimeoutFloorForTest(150 * time.Millisecond)()
+	const window = 150 * time.Millisecond
+	defer setDownloadTimeoutFloorForTest(window)()
+	fc := newFakeStallClock(t)
+	defer setDownloadClockForTest(fc)()
+
 	p := newScriptedDownloadProvider(t, "restore-slow-manifest", 3)
 	p.manifestChunks = 12
 	p.manifestChunkDelay = 50 * time.Millisecond
+
+	driveDone := make(chan struct{})
+	go func() {
+		defer close(driveDone)
+		driveChunkedTransfer(t, fc, p.manifestChunkDelay, p.manifestChunks-1)
+	}()
 
 	var result *TestRestoreResult
 	var err error
 	runWithWatchdog(t, 10*time.Second, func() {
 		result, err = TestRestoreWithOptions(context.Background(), p, "restore-slow-manifest", t.TempDir(), VerifyOptions{})
 	})
+	<-driveDone
 	if err != nil {
 		t.Fatal(err)
 	}
