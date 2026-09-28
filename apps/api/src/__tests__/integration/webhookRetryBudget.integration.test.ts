@@ -30,12 +30,10 @@ function orgContext(orgId: string): DbAccessContext {
 class Rollback extends Error {}
 
 describe('webhook retry migration and tenant boundary', () => {
-  // The migration under test UPDATEs notification_channels.config. Since #6379
-  // that column is a write-only legacy mirror (config is read from
-  // notification_channel_configs) and the contract step will drop it, so the
-  // replay runs inside a transaction that is always rolled back and reads the
-  // column with raw SQL. The rollback also undoes the sync trigger's child-table
-  // writes.
+  // The migration under test UPDATEs notification_channels.config. That column
+  // moved to notification_channel_configs (#6379) and was dropped by the
+  // contract step (#7028), so the replay re-adds it inside a transaction that is
+  // always rolled back and reads it with raw SQL.
   runDb('normalizes legacy outliers idempotently', async () => {
     const fixture = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
@@ -60,6 +58,7 @@ describe('webhook retry migration and tenant boundary', () => {
     let checked = false;
     try {
       await adminSql.begin(async (tx) => {
+        await tx.unsafe('ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS config jsonb');
         for (const [name, config] of Object.entries(legacy)) {
           await tx.unsafe('UPDATE notification_channels SET config = $1::text::jsonb WHERE id = $2', [
             JSON.stringify(config), fixture.get(name)!,

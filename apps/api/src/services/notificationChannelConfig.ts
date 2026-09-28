@@ -13,28 +13,14 @@
  * (notificationDispatcher, automationRuntime) run under system scope and always
  * get the value.
  *
- * EXPAND/CONTRACT: the legacy `notification_channels.config` column still
- * exists for one release so an image rollback keeps delivering. It is WRITE-ONLY
- * from this image: writeNotificationChannelConfig mirrors every config write into
- * it through `legacyNotificationChannelConfigColumn`, a deliberately
- * module-private Drizzle view of that one column. It is not on the
- * `notificationChannels` schema object, so no `select()`/`returning()` on the
- * channel table can ever read it back (notificationChannelLegacyConfig.test.ts
- * guards that). Removed by the contract step (follow-up to #6379).
+ * The legacy `notification_channels.config` column (kept for one release as a
+ * write-only rollback mirror by the expand step) was dropped by the contract
+ * step, 2026-11-06-100100-drop-notification-channels-config.sql (#7028).
  */
 import { and, eq, getTableColumns, inArray, type SQL } from 'drizzle-orm';
-import { jsonb, pgTable, uuid, type PgColumn } from 'drizzle-orm/pg-core';
+import { type PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { notificationChannelConfigs, notificationChannels } from '../db/schema';
-
-/**
- * WRITE-ONLY view of the legacy `notification_channels.config` column (expand
- * step of #6379). Never export it, never select from it.
- */
-const legacyNotificationChannelConfigColumn = pgTable('notification_channels', {
-  id: uuid('id').primaryKey(),
-  config: jsonb('config'),
-});
 
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -108,11 +94,6 @@ export async function loadNotificationChannelConfigs(
  * value (encryptNotificationChannelConfig) and run this in the same transaction
  * as the channel insert/update. RLS WITH CHECK refuses (42501) a caller that
  * does not own the parent channel.
- *
- * Also mirrors the value into the legacy `notification_channels.config` column
- * so the previous image, which reads only that column, still delivers after a
- * rollback. The child upsert runs first so a non-owner fails with 42501 before
- * anything else is attempted.
  */
 export async function writeNotificationChannelConfig(
   channelId: string,
@@ -126,8 +107,4 @@ export async function writeNotificationChannelConfig(
       target: notificationChannelConfigs.channelId,
       set: { config },
     });
-  await executor
-    .update(legacyNotificationChannelConfigColumn)
-    .set({ config })
-    .where(eq(legacyNotificationChannelConfigColumn.id, channelId));
 }
