@@ -22,7 +22,7 @@
  * completes sealing and abandonment.
  */
 import { randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -180,4 +180,94 @@ export async function loadSnapshotIdClaims(
     }
   }
   return { foreign, live };
+}
+
+// ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────
+
+/**
+ * What storage reclaim must leave alone this run, across EVERY organization
+ * (the id is the owner key, not the destination): ids still reserved or
+ * sealing, and ids abandoned more recently than `abandonedGraceMs`. Also the
+ * abandoned ids old enough to reclaim, with the storage identity they were
+ * issued for.
+ */
+export async function loadReservationGcState(
+  nowMs: number,
+  abandonedGraceMs: number,
+): Promise<{ protectedIds: Set<string>; reclaimable: Array<{ snapshotId: string; storageIdentity: string }> }> {
+  const rows = await db
+    .select({
+      snapshotId: backupSnapshotIdReservations.snapshotId,
+      state: backupSnapshotIdReservations.state,
+      storageIdentity: backupSnapshotIdReservations.storageIdentity,
+      updatedAt: backupSnapshotIdReservations.updatedAt,
+    })
+    .from(backupSnapshotIdReservations)
+    .where(inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']));
+  const protectedIds = new Set<string>();
+  const reclaimable: Array<{ snapshotId: string; storageIdentity: string }> = [];
+  for (const row of rows) {
+    if (row.state !== 'abandoned' || nowMs - row.updatedAt.getTime() < abandonedGraceMs) {
+      protectedIds.add(row.snapshotId);
+    } else if (row.storageIdentity) {
+      reclaimable.push({ snapshotId: row.snapshotId, storageIdentity: row.storageIdentity });
+    }
+  }
+  return { protectedIds, reclaimable };
+}
+
+/**
+ * Deletes abandoned reservations whose prefix storage reclaim has emptied,
+ * re-checking at delete time that each is still abandoned with no live
+ * session and no open upload. Each id is tombstoned `abandoned_reclaimed`
+ * first (the delete trigger would otherwise record a generic reason).
+ */
+function idList(snapshotIds: string[]) {
+  return sql.join(snapshotIds.map((id) => sql`${id}`), sql`, `);
+}
+
+export async function reclaimAbandonedReservations(snapshotIds: string[]): Promise<number> {
+  if (snapshotIds.length === 0) return 0;
+  const eligible = sql`
+    r.snapshot_id IN (${idList(snapshotIds)})
+    AND r.state = 'abandoned'
+    AND NOT EXISTS (
+      SELECT 1 FROM backup_storage_sessions s
+       WHERE s.reservation_snapshot_id = r.snapshot_id AND s.revoked_at IS NULL AND s.expires_at > now())
+    AND NOT EXISTS (
+      SELECT 1 FROM backup_storage_session_uploads u
+       WHERE u.reservation_snapshot_id = r.snapshot_id AND u.state IN ('creating', 'open', 'completing'))`;
+  await db.execute(sql`
+    INSERT INTO backup_snapshot_id_tombstones (snapshot_id, reason)
+    SELECT r.snapshot_id, 'abandoned_reclaimed' FROM backup_snapshot_id_reservations r WHERE ${eligible}
+    ON CONFLICT (snapshot_id) DO NOTHING`);
+  const deleted = await db.execute(sql`
+    DELETE FROM backup_snapshot_id_reservations r WHERE ${eligible} RETURNING r.snapshot_id`);
+  return (deleted as unknown as unknown[]).length;
+}
+
+/** A snapshot row was retired and no row with its id remains: the id is retired. */
+export async function markReservationRetired(snapshotId: string, orgId: string): Promise<void> {
+  await db.execute(sql`
+    UPDATE backup_snapshot_id_reservations r
+       SET state = 'retired', updated_at = now()
+     WHERE r.snapshot_id = ${snapshotId}
+       AND r.org_id = ${orgId}
+       AND r.state IN ('published', 'sealing')
+       AND NOT EXISTS (SELECT 1 FROM backup_snapshots s WHERE s.snapshot_id = ${snapshotId})`);
+}
+
+/** Retired ids whose prefix storage reclaim confirmed gone: tombstoned, then deleted. */
+export async function tombstoneRetiredReservations(snapshotIds: string[]): Promise<number> {
+  if (snapshotIds.length === 0) return 0;
+  await db.execute(sql`
+    INSERT INTO backup_snapshot_id_tombstones (snapshot_id, reason)
+    SELECT r.snapshot_id, 'retired' FROM backup_snapshot_id_reservations r
+     WHERE r.snapshot_id IN (${idList(snapshotIds)}) AND r.state = 'retired'
+    ON CONFLICT (snapshot_id) DO NOTHING`);
+  const deleted = await db.execute(sql`
+    DELETE FROM backup_snapshot_id_reservations r
+     WHERE r.snapshot_id IN (${idList(snapshotIds)}) AND r.state = 'retired'
+    RETURNING r.snapshot_id`);
+  return (deleted as unknown as unknown[]).length;
 }
