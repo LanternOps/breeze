@@ -247,5 +247,5 @@ func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 	id := unseen[0]
 	cfg.PinnedManifestPubKeys = []string{id + ":" + incoming[id]}
 
-	return saveToLocked(cfg, cfgPath)
+	return saveToLocked(cfg, cfgPath, credentialsFromDisk)
 }

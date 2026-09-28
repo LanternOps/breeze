@@ -720,16 +720,125 @@ func Save(cfg *Config) error {
 	return SaveTo(cfg, "")
 }
 
+// SaveTo writes cfg to agent.yaml and its non-credential secrets to
+// secrets.yaml.
+//
+// Issue #2773 — SaveTo does NOT write credential state from cfg. The agent,
+// watchdog and helper tokens and the staged pending_* set are owned by
+// StagePendingCredentials / PromotePendingCredentials / ClearPendingCredentials,
+// which update secrets.yaml directly and never touch the caller's *Config, so
+// cfg is a snapshot that can be arbitrarily stale relative to them: Load copies
+// pending_* into the struct once at startup and nothing refreshes it, and the
+// mTLS renewal paths capture the bearer token before taking any lock. Letting
+// that snapshot win wrote credentials the server no longer accepts over the
+// ones it does. So whatever is on disk is preserved verbatim; cfg only fills a
+// credential the disk does not have yet (the first save of a fresh install).
+// Enrollment, the one caller whose in-memory credentials ARE authoritative,
+// uses SaveEnrollment.
 func SaveTo(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
-	return saveToLocked(cfg, cfgFile)
+	return saveToLocked(cfg, cfgFile, credentialsFromDisk)
+}
+
+// SaveEnrollment is SaveTo for a freshly enrolled identity: cfg's agent,
+// watchdog and helper tokens replace whatever is on disk, and any staged
+// pending_* set is dropped — it belonged to the previous identity and can
+// never be promoted against the new one.
+func SaveEnrollment(cfg *Config, cfgFile string) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	return saveToLocked(cfg, cfgFile, credentialsFromConfig)
+}
+
+// credentialSource selects who is authoritative for credential keys in a
+// saveToLocked call. See SaveTo and SaveEnrollment.
+type credentialSource int
+
+const (
+	credentialsFromDisk credentialSource = iota
+	credentialsFromConfig
+)
+
+// resolveCredentialsForSave decides the credential values a saveToLocked call
+// writes. Callers must hold persistMu, which is what makes this read and the
+// rewrite that follows atomic against the credential writers.
+func resolveCredentialsForSave(cfg *Config, cfgPath string, source credentialSource) (PersistedCredentials, error) {
+	onDisk, readErr := readPersistedCredentialsAt(cfgPath)
+	if readErr != nil {
+		if !errors.Is(readErr, os.ErrNotExist) {
+			if source == credentialsFromDisk {
+				// Fail closed. The file exists but could not be parsed, and the
+				// write that follows replaces it wholesale: proceeding would drop
+				// every credential cfg lacks — including a staged set the server
+				// may already have promoted, i.e. the agent's only copy of its
+				// current credential.
+				return PersistedCredentials{}, fmt.Errorf("reading existing credentials before rewriting the secrets file: %w", readErr)
+			}
+			log.Warn("could not read existing credentials while saving an enrollment; replacing them",
+				"error", readErr.Error())
+		}
+		onDisk = &PersistedCredentials{}
+	}
+
+	pick := func(primary, fallback string) string {
+		if primary != "" {
+			return primary
+		}
+		return fallback
+	}
+	if source == credentialsFromConfig {
+		return PersistedCredentials{
+			AuthToken:         pick(cfg.AuthToken, onDisk.AuthToken),
+			WatchdogAuthToken: pick(cfg.WatchdogAuthToken, onDisk.WatchdogAuthToken),
+			HelperAuthToken:   pick(cfg.HelperAuthToken, onDisk.HelperAuthToken),
+		}, nil
+	}
+	return PersistedCredentials{
+		AuthToken:         pick(onDisk.AuthToken, cfg.AuthToken),
+		WatchdogAuthToken: pick(onDisk.WatchdogAuthToken, cfg.WatchdogAuthToken),
+		HelperAuthToken:   pick(onDisk.HelperAuthToken, cfg.HelperAuthToken),
+		// Never from cfg: its Pending* fields are the startup snapshot, so they
+		// either resurrect a set that was since cleared or replace a newer one.
+		PendingAuthToken:         onDisk.PendingAuthToken,
+		PendingWatchdogAuthToken: onDisk.PendingWatchdogAuthToken,
+		PendingHelperAuthToken:   onDisk.PendingHelperAuthToken,
+	}, nil
 }
 
 // saveToLocked is SaveTo's body; callers must hold persistMu. Paired with
 // loadLocked so a read-modify-write of the config file is atomic against every
 // other viper user.
-func saveToLocked(cfg *Config, cfgFile string) error {
+func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
+	var cfgPath string
+	if cfgFile != "" {
+		cfgPath = cfgFile
+		dir := filepath.Dir(cfgPath)
+		if dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			if err := enforceConfigDirPermissions(dir); err != nil {
+				return err
+			}
+		}
+	} else {
+		cfgPath = filepath.Join(configDir(), "agent.yaml")
+		if err := os.MkdirAll(configDir(), 0755); err != nil {
+			return err
+		}
+		if err := enforceConfigDirPermissions(configDir()); err != nil {
+			return err
+		}
+	}
+
+	// Resolved BEFORE anything is written, so an unreadable secrets file aborts
+	// the save without touching agent.yaml either.
+	creds, err := resolveCredentialsForSave(cfg, cfgPath, source)
+	if err != nil {
+		return err
+	}
+
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
@@ -755,30 +864,8 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 	// Windows only: the helper-scoped token still goes into agent.yaml (see
 	// secretKeyAllowedInAgentYAML). On Unix it is written below to its own
 	// group-scoped file instead, via writeHelperTokenFile.
-	if runtime.GOOS == "windows" && cfg.HelperAuthToken != "" {
-		viper.Set("helper_auth_token", cfg.HelperAuthToken)
-	}
-
-	var cfgPath string
-	if cfgFile != "" {
-		cfgPath = cfgFile
-		dir := filepath.Dir(cfgPath)
-		if dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return err
-			}
-			if err := enforceConfigDirPermissions(dir); err != nil {
-				return err
-			}
-		}
-	} else {
-		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0755); err != nil {
-			return err
-		}
-		if err := enforceConfigDirPermissions(configDir()); err != nil {
-			return err
-		}
+	if runtime.GOOS == "windows" && creds.HelperAuthToken != "" {
+		viper.Set("helper_auth_token", creds.HelperAuthToken)
 	}
 
 	// Serialize via viper (same encoder as WriteConfigAs), strip secrets, then
@@ -815,66 +902,27 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 	sv := viper.New()
 
 	// Issue #2621 — SaveTo rebuilds the secrets file from scratch, so every
-	// credential it does not re-write is DROPPED. Two ways that bites:
-	//
-	//   - Staged rotation credentials on disk are invisible to an unrelated
-	//     caller (the mTLS renewal path calls config.Save mid-flight), so a cert
-	//     renewal during a rotation would delete the staged set the server may
-	//     already have promoted.
-	//   - The in-memory config clears tokens for security (AuthToken is zeroed
-	//     after startup) and applyRotatedCredentials updates the credential file
-	//     directly rather than the struct, so cfg's watchdog/helper tokens can be
-	//     stale or empty relative to disk.
-	//
-	// So for every credential: prefer a non-empty in-memory value, otherwise
-	// preserve exactly what is on disk. Never write an empty token over a real
-	// one. A read failure is logged rather than swallowed — silently proceeding
-	// would delete credentials this fallback exists to protect.
-	credsOnDisk, readErr := readPersistedCredentialsAt(cfgPath)
-	// A missing secrets file is the normal first-save/enrollment case, not a
-	// problem — there is simply nothing to preserve. Anything else means the file
-	// exists but could not be parsed, and we are about to overwrite it, so say so.
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		log.Warn("could not read existing credentials while saving config; on-disk credential preservation is degraded",
-			"error", readErr.Error())
-	}
-	setCredential := func(key, fromCfg string, fromDisk func(*PersistedCredentials) string) {
-		if fromCfg != "" {
-			sv.Set(key, fromCfg)
-			return
-		}
-		if credsOnDisk != nil {
-			if v := fromDisk(credsOnDisk); v != "" {
-				sv.Set(key, v)
-			}
+	// credential it does not re-write is DROPPED. creds (resolved above under
+	// persistMu — see resolveCredentialsForSave for who wins) carries each one
+	// forward. An empty value is not written; it never blanks a real token.
+	setCredential := func(key, value string) {
+		if value != "" {
+			sv.Set(key, value)
 		}
 	}
-	setCredential(secretKeyAuthToken, cfg.AuthToken,
-		func(p *PersistedCredentials) string { return p.AuthToken })
-	setCredential(secretKeyWatchdogAuthToken, cfg.WatchdogAuthToken,
-		func(p *PersistedCredentials) string { return p.WatchdogAuthToken })
-	setCredential(secretKeyHelperAuthToken, cfg.HelperAuthToken,
-		func(p *PersistedCredentials) string { return p.HelperAuthToken })
+	setCredential(secretKeyAuthToken, creds.AuthToken)
+	setCredential(secretKeyWatchdogAuthToken, creds.WatchdogAuthToken)
+	setCredential(secretKeyHelperAuthToken, creds.HelperAuthToken)
 
 	// Unix only (no-op on Windows): also persist the helper token to its own
-	// group-scoped file, using the same "prefer in-memory, else preserve
-	// what's on disk" resolution as setCredential above so a save triggered
-	// while cfg.HelperAuthToken happens to be blank (e.g. it was zeroed after
-	// startup, per applyRotatedCredentials) never wipes out a real token.
-	helperToken := cfg.HelperAuthToken
-	if helperToken == "" && credsOnDisk != nil {
-		helperToken = credsOnDisk.HelperAuthToken
-	}
-	if err := writeHelperTokenFileFor(cfgPath, helperToken); err != nil {
+	// group-scoped file, from the same resolved value so the copies agree.
+	if err := writeHelperTokenFileFor(cfgPath, creds.HelperAuthToken); err != nil {
 		return fmt.Errorf("writing helper token file: %w", err)
 	}
 
-	setCredential(secretKeyPendingAuthToken, cfg.PendingAuthToken,
-		func(p *PersistedCredentials) string { return p.PendingAuthToken })
-	setCredential(secretKeyPendingWatchdogAuthToken, cfg.PendingWatchdogAuthToken,
-		func(p *PersistedCredentials) string { return p.PendingWatchdogAuthToken })
-	setCredential(secretKeyPendingHelperAuthToken, cfg.PendingHelperAuthToken,
-		func(p *PersistedCredentials) string { return p.PendingHelperAuthToken })
+	setCredential(secretKeyPendingAuthToken, creds.PendingAuthToken)
+	setCredential(secretKeyPendingWatchdogAuthToken, creds.PendingWatchdogAuthToken)
+	setCredential(secretKeyPendingHelperAuthToken, creds.PendingHelperAuthToken)
 
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)

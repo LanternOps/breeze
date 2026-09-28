@@ -241,6 +241,14 @@ vi.mock('../../services/agentRollbackResult', () => ({
   ingestRollbackObservation: ingestRollbackObservationMock,
 }));
 
+const { promotePendingAgentCredentialsMock } = vi.hoisted(() => ({
+  promotePendingAgentCredentialsMock: vi.fn(),
+}));
+vi.mock('../../services/agentTokenPromotion', () => ({
+  promotePendingAgentCredentials: promotePendingAgentCredentialsMock,
+  PREVIOUS_TOKEN_GRACE_MS: 5 * 60 * 1000,
+}));
+
 vi.mock('../../middleware/agentAuth', () => ({
   isAgentTokenRotationDue: vi.fn(() => false),
   // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
@@ -6492,6 +6500,107 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.rotateToken).toBe(true);
+  });
+});
+
+// #2773 — the heartbeat's IMPLICIT promotion must promote the hash the caller
+// authenticated with (agent.authTokenHash), never the handler's own re-read of
+// `pendingTokenHash`. The pure decision is covered in
+// heartbeatTokenRotation.test.ts; this pins the route wiring.
+describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)', () => {
+  function buildPendingPresentedApp(): Hono {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: 'device-1',
+        agentId: 'agent-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+        siteId: 'site-1',
+        role: 'agent',
+        authTokenHash: 'presented-hash',
+      });
+      c.set('agentPendingTokenPresented', true);
+      await next();
+    });
+    app.route('/agents', heartbeatRoutes);
+    return app;
+  }
+
+  function stubDeviceRow(pendingTokenHash: string) {
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'current-hash',
+          watchdogTokenHash: 'watchdog-hash',
+          helperTokenHash: 'helper-hash',
+          pendingTokenHash,
+          pendingWatchdogTokenHash: 'pending-watchdog-hash',
+          pendingHelperTokenHash: 'pending-helper-hash',
+          pendingTokenExpiresAt: new Date(Date.now() + 30 * 60 * 1000),
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveManifestKeyDelegationsMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    promotePendingAgentCredentialsMock.mockReset();
+    promotePendingAgentCredentialsMock.mockResolvedValue(true);
+  });
+
+  it('promotes the presented hash when it is still the staged hash', async () => {
+    stubDeviceRow('presented-hash');
+
+    const resp = await buildPendingPresentedApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(promotePendingAgentCredentialsMock).toHaveBeenCalledTimes(1);
+    expect(promotePendingAgentCredentialsMock.mock.calls[0]![0]).toMatchObject({
+      deviceId: 'device-1',
+      pendingTokenHash: 'presented-hash',
+      expectedAgentTokenHash: 'current-hash',
+    });
+  });
+
+  it('does not promote a set re-staged after the caller authenticated', async () => {
+    // agentAuth matched the presented token against ITS read of the row; this
+    // handler's re-read shows a different staged hash. Promoting that one would
+    // make current a credential the endpoint never presented.
+    stubDeviceRow('restaged-hash');
+
+    const resp = await buildPendingPresentedApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(promotePendingAgentCredentialsMock).not.toHaveBeenCalled();
   });
 });
 
