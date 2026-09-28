@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS backup_snapshot_id_reservations (
   write_generation         integer NOT NULL DEFAULT 1,
   sealed_until             timestamptz NULL,
   published_snapshot_db_id uuid NULL REFERENCES backup_snapshots (id) ON DELETE SET NULL,
+  uploads_swept_at         timestamptz NULL,
   created_at               timestamptz NOT NULL DEFAULT now(),
   updated_at               timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT backup_snapshot_id_reservations_source_chk

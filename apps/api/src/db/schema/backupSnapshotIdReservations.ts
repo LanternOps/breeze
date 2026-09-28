@@ -30,6 +30,8 @@ export const backupSnapshotIdReservations = pgTable(
     writeGeneration: integer('write_generation').notNull().default(1),
     sealedUntil: timestamp('sealed_until', { withTimezone: true }),
     publishedSnapshotDbId: uuid('published_snapshot_db_id').references(() => backupSnapshots.id, { onDelete: 'set null' }),
+    /** When the cleanup job last aborted every stray multipart upload under the prefix. */
+    uploadsSweptAt: timestamp('uploads_swept_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

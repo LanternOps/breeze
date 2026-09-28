@@ -291,6 +291,13 @@ const backupStorageSessionMintsTotal = new Counter({
   registers: [register]
 });
 
+const backupWriteJanitorTotal = new Counter({
+  name: 'breeze_backup_write_janitor_total',
+  help: 'Brokered backup write cleanup actions by action (abort_upload, sweep_prefix, publish, abandon) and outcome (ok, failed)',
+  labelNames: ['action', 'outcome'] as const,
+  registers: [register]
+});
+
 const backupCapabilityRegressionsTotal = new Counter({
   name: 'breeze_backup_capability_regressed_total',
   help: 'Backup helper protocol drops below the stored device value, by capability (read, integrity, write)',
@@ -931,6 +938,12 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordBackupWriteJanitorMetric(action: string, outcome: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteJanitorTotal.labels(normalizeMetricLabel(action, 'unknown'), normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
+}
+
 function recordBackupCapabilityRegressedMetric(capability: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1124,6 +1137,7 @@ function bindMetricsRecorders(): void {
     onStorageSessionMint: recordStorageSessionMintMetric,
     onWriteDispatch: recordBackupWriteDispatchMetric,
     onAttestation: recordBackupAttestationMetric,
+    onWriteJanitor: recordBackupWriteJanitorMetric,
   });
 
   setAnomalyMetricsRecorder({

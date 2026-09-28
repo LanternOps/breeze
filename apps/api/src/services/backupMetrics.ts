@@ -16,6 +16,7 @@ type BackupMetricsRecorder = {
   onStorageSessionMint: (scope: string, outcome: string, reason: string, count?: number) => void;
   onWriteDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
   onAttestation: (outcome: string, count?: number) => void;
+  onWriteJanitor: (action: string, outcome: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -34,6 +35,7 @@ let recorder: BackupMetricsRecorder = {
   onStorageSessionMint: noop,
   onWriteDispatch: noop,
   onAttestation: noop,
+  onWriteJanitor: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -51,6 +53,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onStorageSessionMint: next?.onStorageSessionMint ?? noop,
     onWriteDispatch: next?.onWriteDispatch ?? noop,
     onAttestation: next?.onAttestation ?? noop,
+    onWriteJanitor: next?.onWriteJanitor ?? noop,
   };
 }
 
@@ -214,4 +217,18 @@ export type BackupAttestationMetricOutcome =
 
 export function recordBackupAttestation(outcome: BackupAttestationMetricOutcome, count = 1): void {
   recorder.onAttestation(outcome, count);
+}
+
+/**
+ * One action of the brokered-write cleanup job (jobs/backupWriteSessionJanitor.ts):
+ * `abort_upload` (a recorded multipart upload aborted), `sweep_prefix` (every
+ * stray multipart upload under a finished snapshot prefix aborted), `publish`
+ * (a sealing snapshot published once every issued upload URL expired) or
+ * `abandon` (a reservation whose job ended without publishing). Outcome is
+ * `ok` or `failed` (left for the next run).
+ */
+export type BackupWriteJanitorAction = 'abort_upload' | 'sweep_prefix' | 'publish' | 'abandon';
+
+export function recordBackupWriteJanitor(action: BackupWriteJanitorAction, outcome: 'ok' | 'failed', count = 1): void {
+  recorder.onWriteJanitor(action, outcome, count);
 }
