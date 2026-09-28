@@ -196,6 +196,11 @@ type Manager struct {
 	// two separate isOurProcess()+stopByPID() opens.
 	stopIfOursFunc func(pid int, binaryPath string) (bool, error)
 
+	// keptBackup is the pre-update backup a failed rollback kept because it
+	// is the only good copy of the helper (#7357); the zero value means none.
+	// Mirrored on disk by keptBackupRecordPath. Guarded by mu.
+	keptBackup helperBackup
+
 	// downloadFunc fetches and INTEGRITY-VERIFIES the helper package for the
 	// given version, returning the path to a verified temp file. In production
 	// this is the updater-backed verified downloader (defaultHelperDownloader)
@@ -1049,23 +1054,10 @@ func (m *Manager) applyPendingUpdate() {
 	// retry recovers from it: installMSI forces a file reinstall when the
 	// product is registered at the target (#6868).
 	//
-	// A failed backup does not stop the update, as before; the rollback then
-	// finds no recorded copy and leaves the binary alone rather than restore a
-	// partial or stale file (#7113).
-	backup, err := writeHelperBackup(m.binaryPath, m.binaryPath+".backup")
-	if err != nil {
-		log.Warn("failed to backup helper binary, a failed update cannot be rolled back", "error", err.Error())
-	}
-	// The pre-update version lets a rollback that cannot replace the exe tell
-	// "nothing to restore" (msiexec rolled its own change back) from "the good
-	// copy is only in the backup" (#6869). "" when unknown.
-	preVersion, err := m.readBinaryVersion()
-	if err != nil {
-		if !errors.Is(err, errBinaryVersionUnsupported) {
-			log.Warn("failed to read pre-update helper version", "path", m.binaryPath, "error", err.Error())
-		}
-		preVersion = ""
-	}
+	// After a rollback that kept the backup, the backup is the only good copy
+	// and this attempt restores it on failure instead of backing up the
+	// current (broken) binary (#7357).
+	backup := m.backupForUpdateLocked()
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.recordInstallFailureLocked(m.pendingHelperVersion)
@@ -1073,7 +1065,7 @@ func (m *Manager) applyPendingUpdate() {
 		key, value := updater.SafeDownloadErrorFields(err)
 		log.Error("failed to install helper update", key, value,
 			"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
-		m.rollbackBinaryLocked(backup, preVersion)
+		m.rollbackBinaryLocked(backup)
 		m.restartSessionsLocked(stopped)
 		return
 	}
@@ -1098,7 +1090,7 @@ func (m *Manager) applyPendingUpdate() {
 				}
 				started.pid = 0
 			}
-			m.rollbackBinaryLocked(backup, preVersion)
+			m.rollbackBinaryLocked(backup)
 			// The install already told the broker about the new build, and
 			// the rollback just put the previous one back. Refresh again
 			// before respawning it, or the broker rejects it (#7043).
@@ -1112,7 +1104,9 @@ func (m *Manager) applyPendingUpdate() {
 	log.Info("helper updated successfully", "requestedVersion", m.pendingHelperVersion)
 	m.pendingHelperVersion = ""
 	m.clearInstallFailuresLocked()
-	_ = os.Remove(m.binaryPath + ".backup")
+	// The new build installed and started: it supersedes any kept copy.
+	_ = os.Remove(m.backupPath())
+	m.releaseKeptBackupLocked()
 }
 
 // abortUpdateBeforeInstallLocked gives up on this update attempt before the
