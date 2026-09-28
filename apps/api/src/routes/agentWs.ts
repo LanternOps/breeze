@@ -1993,8 +1993,11 @@ type CommandResultIngestOutcome = 'handled' | 'processing_failed';
  * server but could not be recorded. Same shape as buildAgentMessageRejection's
  * frame (`type`/`code`/`message`/`messageType`/`commandId`), which is what the
  * agent's `logServerErrorFrame` (agent/internal/websocket/client.go) parses, so
- * the failure is attributable to the job in the agent's own log. The agent does
- * not resend on it today; the row is left reopenable for when it does.
+ * the failure is attributable to the job in the agent's own log. Agents with
+ * #7365 resend the result a bounded number of times on this frame (the row is
+ * reopenable, and a duplicate after a successful record is a 0-row CAS no-op);
+ * older agents only log it. agent/internal/websocket/result_resend_test.go pins
+ * this frame's shape from the agent side.
  */
 export function buildResultProcessingFailedFrame(commandId: string) {
   return {
