@@ -196,24 +196,6 @@ vi.mock('../db/schema', () => ({
     status: 'status', reportedAt: 'reportedAt', resolvedAt: 'resolvedAt', details: 'details',
     createdAt: 'createdAt', updatedAt: 'updatedAt',
   },
-  // orgs.ts's real (unmocked) import chain reaches
-  // tenantOffboarding -> jobs/tenantErasure -> services/fixMemory/store,
-  // which reads fixMemory.rebuildPendingOrgIds at module load to build a
-  // static sql fragment. A plain sentinel is safe — the mocked db never
-  // executes it.
-  fixMemory: {
-    id: 'id',
-    orgId: 'org_id',
-    partnerId: 'partner_id',
-    signatureVersion: 'signature_version',
-    signatureKey: 'signature_key',
-    osType: 'os_type',
-    fixIdentity: 'fix_identity',
-    status: 'status',
-    scriptId: 'script_id',
-    staleSince: 'stale_since',
-    rebuildPendingOrgIds: 'rebuild_pending_org_ids'
-  },
 }));
 
 // External services pulled in by these route files

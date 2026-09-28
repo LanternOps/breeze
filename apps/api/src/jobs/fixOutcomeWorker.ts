@@ -66,7 +66,14 @@ export async function runFixOutcomeSweep(now: Date = new Date()): Promise<FixOut
     try { await inSystemDbContext(() => recomputeForOutcome(id, now), 'fixOutcomeSweep.recount'); recounted += 1; } catch (err) { report('recount', id, err); }
   }
 
-  const drifted = await inSystemDbContext(() => markOwnerDriftStale(now), 'fixOutcomeSweep.drift');
+  // Best-effort: a drift-scan failure must not skip the rebuild pass below,
+  // which is the retry path for failed erasure rebuilds.
+  let drifted = 0;
+  try {
+    drifted = await inSystemDbContext(() => markOwnerDriftStale(now), 'fixOutcomeSweep.drift');
+  } catch (err) {
+    report('owner-drift scan', 'all', err);
+  }
 
   let rebuilt = 0;
   const partners = await inSystemDbContext(() => stalePartnerIds(MAX_REBUILDS_PER_RUN), 'fixOutcomeSweep.staleSelect');

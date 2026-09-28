@@ -88,6 +88,19 @@ CREATE INDEX IF NOT EXISTS fix_outcomes_identity_idx
   ON fix_outcomes (partner_id, signature_key, os_type, fix_identity) WHERE counted_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS fix_outcomes_recount_idx
   ON fix_outcomes (recount_requested_at) WHERE recount_requested_at IS NOT NULL;
+-- Every remaining single-column FK: its parent's DELETE (ON DELETE SET NULL)
+-- must find referencing rows by index, not by scanning fix_outcomes. Partial,
+-- because most attempts leave these NULL.
+CREATE INDEX IF NOT EXISTS fix_outcomes_anomaly_episode_idx
+  ON fix_outcomes (anomaly_episode_id) WHERE anomaly_episode_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fix_outcomes_script_idx
+  ON fix_outcomes (script_id) WHERE script_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fix_outcomes_script_version_idx
+  ON fix_outcomes (script_version_id) WHERE script_version_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fix_outcomes_playbook_idx
+  ON fix_outcomes (playbook_id) WHERE playbook_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fix_outcomes_voted_by_idx
+  ON fix_outcomes (voted_by) WHERE voted_by IS NOT NULL;
 
 ALTER TABLE fix_outcomes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fix_outcomes FORCE ROW LEVEL SECURITY;

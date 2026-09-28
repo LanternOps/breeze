@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
-  updateReturning, selectRows, executeRows, calls, updates, insertMock, executeMock, sigMock, dbAccessContextMock,
+  updateReturning, selectRows, selectWheres, executeRows, calls, updates, insertMock, executeMock, sigMock, dbAccessContextMock,
 } = vi.hoisted(() => {
   const calls: string[] = [];
   const executeRows: unknown[][] = [];
   return {
     updateReturning: [] as unknown[][],
     selectRows: [] as unknown[][],
+    selectWheres: [] as unknown[],
     executeRows,
     calls,
     updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
@@ -34,7 +35,8 @@ vi.mock('../../db', () => {
   const select = vi.fn(() => {
     calls.push('select');
     const chain: Record<string, unknown> = {};
-    for (const m of ['from', 'leftJoin', 'where', 'orderBy', 'limit', 'for']) chain[m] = () => chain;
+    for (const m of ['from', 'leftJoin', 'orderBy', 'limit', 'for']) chain[m] = () => chain;
+    chain.where = (w: unknown) => { selectWheres.push(w); return chain; };
     chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(selectRows.shift() ?? []).then(res, rej);
     return chain;
   });
@@ -65,7 +67,7 @@ function flatten(node: unknown, out = { text: '', params: [] as unknown[] }, see
 }
 
 beforeEach(() => {
-  updateReturning.length = 0; selectRows.length = 0; executeRows.length = 0; calls.length = 0; updates.length = 0;
+  updateReturning.length = 0; selectRows.length = 0; selectWheres.length = 0; executeRows.length = 0; calls.length = 0; updates.length = 0;
   insertMock.mockReset(); executeMock.mockClear(); sigMock.sourceRefFor.mockReset(); sigMock.signatureForSource.mockReset();
   dbAccessContextMock.mockReset().mockReturnValue({ scope: 'system' });
 });
@@ -344,6 +346,19 @@ describe('markOwnerDriftStale — identity locks before the UPDATE', () => {
     expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(
       identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' }),
     );
+  });
+
+  it('never flags a retired row, and a NULL-producing ownership test counts as drift (M3)', async () => {
+    selectRows.push([]);
+    await markOwnerDriftStale();
+    const where = flatten(selectWheres[0]);
+    const text = where.text.replace(/\s+/g, ' ').toLowerCase();
+    // status <> 'retired' — a retired row would otherwise be re-flagged and rebuilt every sweep.
+    expect(text).toContain('<>');
+    expect(where.params).toContain('retired');
+    // NOT COALESCE((expected-owner test), false): NULL (e.g. a NULL partner_id) is drift, not "fine".
+    expect(text).toMatch(/not coalesce\(\(/);
+    expect(text).toMatch(/\), false\)\)/);
   });
 
   it('does nothing — no locks, no update — when nothing has drifted', async () => {

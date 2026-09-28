@@ -62,6 +62,16 @@ describe('fix memory schema contract', () => {
     expect(TABLES_SQL).toMatch(/breeze_device_child_orgid_tables[\s\S]*NOT IN\s*\(\s*[\s\S]*?'fix_outcomes'[\s\S]*?\)/);
   });
 
+  it('every single-column FK on fix_outcomes has an index led by that column (M4: ON DELETE SET NULL scans)', () => {
+    const table = TABLES_SQL.slice(TABLES_SQL.indexOf('CREATE TABLE IF NOT EXISTS fix_outcomes'), TABLES_SQL.indexOf('CREATE TABLE IF NOT EXISTS fix_memory'));
+    const block = table.slice(0, table.indexOf(');\n'));
+    const fkColumns = [...block.matchAll(/^\s+(\w+)\s+uuid\s+REFERENCES\s/gm)].map((m) => m[1]!);
+    expect(fkColumns).toEqual(expect.arrayContaining(['anomaly_episode_id', 'script_id', 'script_version_id', 'playbook_id', 'voted_by']));
+    const leading = new Set([...table.matchAll(/ON fix_outcomes \((\w+)/g)].map((m) => m[1]!));
+    const unindexed = fkColumns.filter((c) => !leading.has(c));
+    expect(unindexed).toEqual([]);
+  });
+
   it('Drizzle exposes every migration column', () => {
     for (const key of [
       'id', 'orgId', 'partnerId', 'deviceId', 'suggestionId', 'sourceType', 'sourceId', 'alertId',

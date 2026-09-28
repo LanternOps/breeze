@@ -73,6 +73,9 @@ export function decidePending(i: { script: ScriptReading | null; deadlineAt: Dat
 export function readingFromAlert(a: AlertRecoveryReading | null): RecoveryReading {
   if (!a) return { kind: 'source_missing' };
   if (a.status === 'dismissed') return { kind: 'cleared_other', reason: 'alert_dismissed' };
+  // Suppressed = silenced by a person or rule, not observed to persist: no
+  // evidence either way about the fix, so never 'still_active' (→ failed at 24h).
+  if (a.status === 'suppressed') return { kind: 'cleared_other', reason: 'alert_suppressed' };
   if (a.status !== 'resolved') return { kind: 'still_active' };
   if (a.resolvedBy) return { kind: 'cleared_other', reason: 'human_resolved' };
   if (a.resolutionReason === 'condition_cleared' && a.resolvedAt) return { kind: 'recovered', at: a.resolvedAt };
@@ -292,13 +295,13 @@ async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence
  * The one cheap re-read before a hold is allowed to become "verified":
  * has the source re-opened, or did the event we based the hold on never
  * actually commit (eventBus publishers may publish before their commit)?
- * A reading of 'recovered' or 'cleared_other' still means resolved/closed;
- * anything else (still_active, unknown, source_missing, no_observable_condition)
- * fails closed rather than confirming.
+ * Only 'recovered' (the objective clear the hold was based on) confirms.
+ * Anything else — including 'cleared_other' (now human-resolved, dismissed,
+ * suppressed, expired) — fails closed rather than confirming.
  */
 async function sourceStillResolved(row: FixOutcomeRow): Promise<boolean> {
   const reading = await readRecovery(row);
-  return reading.kind === 'recovered' || reading.kind === 'cleared_other';
+  return reading.kind === 'recovered';
 }
 
 async function decide(

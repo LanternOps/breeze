@@ -46,4 +46,16 @@ describe('runFixOutcomeSweep', () => {
     expect(h.rebuild).toHaveBeenCalledWith({ partnerId: 'p-1' }, expect.any(Date));
     expect(h.recompute).toHaveBeenCalledWith('o-9', expect.any(Date));
   });
+
+  it('a failing owner-drift scan is reported and does not skip the rebuild pass (M6)', async () => {
+    h.ids = [];
+    const driftErr = new Error('drift scan failed');
+    h.drift.mockRejectedValueOnce(driftErr);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stats = await runFixOutcomeSweep();
+    err.mockRestore();
+    expect(h.rebuild).toHaveBeenCalledWith({ partnerId: 'p-1' }, expect.any(Date));
+    expect(stats).toMatchObject({ drifted: 0, rebuilt: 1 });
+    expect(h.captureException).toHaveBeenCalledWith(driftErr);
+  });
 });

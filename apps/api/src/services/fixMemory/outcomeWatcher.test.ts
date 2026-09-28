@@ -85,7 +85,8 @@ describe('readingFromAlert (Review Focus 2)', () => {
     [{ status: 'resolved', ...base, resolutionReason: 'expired' }, { kind: 'cleared_other', reason: 'resolved_expired' }],
     [{ status: 'resolved', ...base, resolutionReason: null }, { kind: 'cleared_other', reason: 'resolved_unspecified' }],
     [{ status: 'dismissed', ...base }, { kind: 'cleared_other', reason: 'alert_dismissed' }],
-    [{ status: 'suppressed', ...base }, { kind: 'still_active' }],
+    // M2: a suppressed alert was silenced, not observed to persist — never a failed attempt.
+    [{ status: 'suppressed', ...base }, { kind: 'cleared_other', reason: 'alert_suppressed' }],
     [{ status: 'active', ...base }, { kind: 'still_active' }],
     [null, { kind: 'source_missing' }],
   ] as const)('%o → %o', (reading, expected) => {
@@ -294,6 +295,17 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
     vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolutionReason: null });
 
     const result = await advanceOutcome('o-3', { now: at(30) });
+
+    expect(result).toBe('inconclusive');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'source_not_resolved' });
+  });
+
+  it('a source that is now closed some OTHER way (human resolve, dismiss) no longer confirms the hold (M1)', async () => {
+    rows.push([holdingRow('o-5', 'a-5')], [{ orgId: 'org-1' }], []);
+    vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(20), resolvedBy: 'user-1', resolutionReason: 'manual' });
+
+    const result = await advanceOutcome('o-5', { now: at(30) });
 
     expect(result).toBe('inconclusive');
     expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'source_not_resolved' });

@@ -246,8 +246,16 @@ export async function fillOutcomeSignature(row: FixOutcomeRow, now: Date): Promi
   return current ?? row;
 }
 
-/** stale_since may only be lifted from a row with no outstanding org-erasure rebuild request. */
-const NO_PENDING_ERASURE_REQUEST = sql`cardinality(${fixMemory.rebuildPendingOrgIds}) = 0`;
+/**
+ * stale_since may only be lifted from a row with no outstanding org-erasure
+ * rebuild request. A function, not a module constant: building it at import
+ * would touch the fixMemory schema object whenever anything imports this
+ * module (e.g. route tests that mock ../db/schema reach it through
+ * tenantOffboarding -> jobs/tenantErasure).
+ */
+function noPendingErasureRequest(): SQL {
+  return sql`cardinality(${fixMemory.rebuildPendingOrgIds}) = 0`;
+}
 
 /**
  * Pending erasure orgs on this identity's partner row whose organizations row is
@@ -310,7 +318,7 @@ export async function recomputeIdentity(identity: IdentityKey, now: Date, opts: 
     // that raced the cascade, or ran while it was still deleting, keeps it stale
     // and the sweeper retries (stalePartnerIds).
     await db.update(fixMemory).set({ staleSince: null, updatedAt: now })
-      .where(and(identityScope, isNotNull(fixMemory.staleSince), NO_PENDING_ERASURE_REQUEST));
+      .where(and(identityScope, isNotNull(fixMemory.staleSince), noPendingErasureRequest()));
   }
 }
 
@@ -503,8 +511,9 @@ export async function clearOrgErasureRequest(orgId: string, now: Date = new Date
  * this call touched is left `stale_since`-set, so `stalePartnerIds` surfaces
  * this partner and jobs/fixOutcomeWorker.ts's sweeper retries it. The only
  * residual risk is a process crash strictly between the cascade's commit and
- * THIS call's own commit — a window measured in one DB round trip, not the
- * whole cascade's duration.
+ * THIS call's own commit: this function's own transaction (a SELECT, one
+ * advisory lock per identity — which may wait behind a concurrent rebuild —
+ * and one UPDATE). Short next to the cascade, but not a single round trip.
  *
  * If the partner row itself no longer exists (a partner-erasure path), this
  * simply finds no rows and no-ops.
@@ -554,9 +563,14 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
   const predicate = and(
     isNull(fixMemory.staleSince),
     isNotNull(fixMemory.scriptId),
-    sql`EXISTS (SELECT 1 FROM scripts s WHERE s.id = fix_memory.script_id AND NOT (
+    // A retired row stays retired (upsertGroup, deleteOrphans skip it), so a
+    // rebuild never clears its drift: flagging it would rebuild every sweep.
+    ne(fixMemory.status, 'retired'),
+    // NOT COALESCE(..., false): if any term is NULL (e.g. a NULL partner_id),
+    // the expected-owner test is unknown, which is drift — never "fine".
+    sql`EXISTS (SELECT 1 FROM scripts s WHERE s.id = fix_memory.script_id AND NOT COALESCE((
           (fix_memory.org_id IS NULL AND (s.is_system OR (s.org_id IS NULL AND s.partner_id = fix_memory.partner_id)))
-          OR (fix_memory.org_id IS NOT NULL AND NOT s.is_system AND s.org_id IS NOT DISTINCT FROM fix_memory.org_id)))`,
+          OR (fix_memory.org_id IS NOT NULL AND NOT s.is_system AND s.org_id IS NOT DISTINCT FROM fix_memory.org_id)), false))`,
   )!;
   const targets = await db.select({
     id: fixMemory.id,
