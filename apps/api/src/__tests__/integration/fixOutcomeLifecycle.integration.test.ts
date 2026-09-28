@@ -38,6 +38,11 @@ function gate() {
  * Observed, not timed: a fixed sleep cannot tell "blocked on a lock" from "still in its
  * context prologue", and a writer that is merely slow to reach its read would let a
  * lock-removal control pass (it did, once, for the rebuild case).
+ * Only a CLIENT backend that some other backend actually blocks counts, so an
+ * autovacuum/background wait or a transient self-resolving wait is never reported.
+ * `timeoutMs` (15 s) is a give-up bound, not a wait: polling returns as soon as the
+ * writer blocks or settles. It sits under the 30 s integration testTimeout so a writer
+ * that does neither fails with this message instead of an anonymous test timeout.
  */
 async function blockedOn(p: Promise<unknown>, timeoutMs = 15_000): Promise<string | null> {
   let settled = false;
@@ -46,13 +51,26 @@ async function blockedOn(p: Promise<unknown>, timeoutMs = 15_000): Promise<strin
   while (!settled && Date.now() < deadline) {
     const waiting = await getTestDb().execute<{ wait_event: string }>(sql`
       SELECT wait_event FROM pg_stat_activity
-      WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
+      WHERE datname = current_database() AND backend_type = 'client backend'
+        AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+        AND cardinality(pg_blocking_pids(pid)) > 0`);
     const [first] = [...waiting];
     if (first) return first.wait_event;
     await new Promise((r) => setTimeout(r, 20));
   }
   if (!settled) throw new Error('blockedOn: the writer neither blocked nor settled');
   return null;
+}
+
+/**
+ * Wait for `g` to open, but fail fast if `tx` settles first: a transaction that threw
+ * before reaching its gate would otherwise leave the test hanging on a gate nobody opens.
+ */
+async function reachedOrSettled(g: ReturnType<typeof gate>, tx: Promise<unknown>): Promise<void> {
+  await Promise.race([
+    g.wait(),
+    tx.then(() => { throw new Error('the gated transaction finished without reaching its gate'); }),
+  ]);
 }
 
 const outcomeRow = async (id: string) => (await sys(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.id, id))))[0]!;
@@ -165,9 +183,10 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     await reportTelemetry(w.o1, w.d1, resolvedAt, new Date(resolvedAt.getTime() + 24 * H));
     const end = new Date(resolvedAt.getTime() + 24 * H + 60_000);
     // Two writers (sweeper + event handler) holding the same pre-transition snapshot, each in its
-    // own transaction. The loser blocks on the row lock, then re-evaluates the CAS on the committed
-    // row. The aggregate alone cannot tell one winner from two (a replay reads one outcome row
-    // either way), so the win count is the discriminating assertion.
+    // own transaction. They may or may not overlap in time: if they do, the loser blocks on the row
+    // lock and re-evaluates the CAS on the committed row; if not, the second simply finds the row
+    // already counted. Either way exactly one wins. The aggregate alone cannot tell one winner from
+    // two (a replay reads one outcome row either way), so the win count is the discriminating assertion.
     const wins = await Promise.all([
       sys(() => transitionOutcome(holding, { to: 'verified', reason: 'held_with_fresh_telemetry' }, end)),
       sys(() => transitionOutcome(holding, { to: 'verified', reason: 'held_with_fresh_telemetry' }, end)),
@@ -287,7 +306,7 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     for (let i = 0; i < 3; i += 1) await verify(w, w.o1, w.d1, orgScript, new Date(base + i * 30 * H), 'org_script');
     expect(await sys(() => db.select().from(fixMemory).where(eq(fixMemory.orgId, w.o1)))).toHaveLength(1);
     await sys(() => db.update(scripts).set({ orgId: null }).where(eq(scripts.id, orgScript.scriptId)));
-    expect(await sys(() => markOwnerDriftStale())).toBeGreaterThanOrEqual(1);
+    expect(await sys(() => markOwnerDriftStale())).toBe(1); // exactly this test's one drifted row
     await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
     expect(await sys(() => db.select().from(fixMemory).where(eq(fixMemory.orgId, w.o1)))).toEqual([]);
     const partnerRows = await sys(() => db.select().from(fixMemory).where(and(eq(fixMemory.partnerId, w.partnerId), isNull(fixMemory.orgId))));
@@ -343,14 +362,21 @@ describe('fix outcome lifecycle (real Postgres)', () => {
       reached.open();
       await release.wait();
     });
-    await reached.wait();
-    // T2: a rebuild of the same partner must wait on the identity lock BEFORE it reads contributions:
-    // an advisory wait, not a row-lock wait at its upsert (which it reaches only after a stale read).
-    const t2 = sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
-    expect(await blockedOn(t2)).toBe('advisory');
-    release.open();
-    await t1;
-    await t2;
+    let t2: Promise<unknown> | undefined;
+    try {
+      await reachedOrSettled(reached, t1);
+      // T2: a rebuild of the same partner must wait on the identity lock BEFORE it reads contributions:
+      // an advisory wait, not a row-lock wait at its upsert (which it reaches only after a stale read).
+      t2 = sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+      expect(await blockedOn(t2)).toBe('advisory');
+      release.open();
+      await t1;
+      await t2;
+    } finally {
+      // Never leak an open transaction (and its locks) into the next test.
+      release.open();
+      await Promise.allSettled([t1, t2]);
+    }
     // Under a separate rebuild lock, T2 would have read 1 attempt and overwritten T1's 2 after T1 committed.
     const [row] = await partnerMemory(w.partnerId);
     expect(row).toMatchObject({ attempts: 2, verifiedCount: 2 });
@@ -375,12 +401,20 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     const t1 = sys(() => recomputeForOutcome(a.outcomeId, new Date(), {
       afterRecompute: async () => { reached.open(); await release.wait(); },
     }));
-    await reached.wait();
-    const t2 = sys(() => recordOutcomeVote({ suggestionId: suggestion!.id, orgId: w.o1, vote: 'down', userId: voter.id }));
-    expect(await blockedOn(t2)).not.toBeNull(); // blocked on the recount's FOR UPDATE row lock
-    release.open();
-    await t1;
-    await t2;
+    let t2: Promise<unknown> | undefined;
+    try {
+      await reachedOrSettled(reached, t1);
+      t2 = sys(() => recordOutcomeVote({ suggestionId: suggestion!.id, orgId: w.o1, vote: 'down', userId: voter.id }));
+      // Blocked on the recount's FOR UPDATE row lock: a row-lock wait shows as 'transactionid'
+      // (waiting on the holder's xid) or 'tuple' (queued behind another waiter), never 'advisory'.
+      expect(['transactionid', 'tuple']).toContain(await blockedOn(t2));
+      release.open();
+      await t1;
+      await t2;
+    } finally {
+      release.open();
+      await Promise.allSettled([t1, t2]);
+    }
     expect((await outcomeRow(a.outcomeId)).recountRequestedAt).not.toBeNull(); // the 👎 re-requested after the clear
     await sys(() => recomputeForOutcome(a.outcomeId));
     const [row] = await partnerMemory(w.partnerId);
@@ -450,7 +484,7 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     const forB = await memoryFor(w, w.o2, last.alertId); // memoryFor runs under SYSTEM scope: RLS cannot help here
     expect(forB.proven).toEqual([]);
     expect(forB.similar).toEqual([]);
-    expect(await sys(() => markOwnerDriftStale())).toBeGreaterThanOrEqual(1);
+    expect(await sys(() => markOwnerDriftStale())).toBe(1); // exactly this test's one drifted row
     await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
     const rows = await sys(() => db.select().from(fixMemory).where(eq(fixMemory.scriptId, w.partnerScript.scriptId)));
     expect(rows).toHaveLength(1);
@@ -465,7 +499,7 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     await sys(() => db.update(scripts).set({ orgId: w.o2 }).where(eq(scripts.id, orgScript.scriptId)));
     const byScript = () => sys(() => db.select().from(fixMemory).where(eq(fixMemory.scriptId, orgScript.scriptId)));
     expect((await byScript())[0]).toMatchObject({ orgId: w.o1, staleSince: null });
-    expect(await sys(() => markOwnerDriftStale())).toBeGreaterThanOrEqual(1);
+    expect(await sys(() => markOwnerDriftStale())).toBe(1); // exactly this test's one drifted row
     expect((await byScript())[0]!.staleSince).not.toBeNull(); // an org_id change is drift, not just org<->partner
     await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
     expect(await byScript()).toEqual([]); // org A's attempts no longer belong to any owner org B could see

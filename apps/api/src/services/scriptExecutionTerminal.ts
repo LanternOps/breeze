@@ -79,7 +79,9 @@ export async function finalizeScriptExecutionTerminal(params: {
   }
 
   // AI Suggested Fixes W1 (D-a): only the CAS winner advances the attempt, on
-  // the caller's own executor so a reaper transaction stays one transaction.
+  // the caller's own executor when it passes one (cancel propagation, incl. the
+  // heartbeat claim), so that transaction stays one transaction. The reaper
+  // passes none.
   // The hook opens a SAVEPOINT on that executor and swallows its own failure, so
   // a fix-outcome error can never abort the cancel / reap it rides on.
   await advanceOutcomesForTerminalExecution(

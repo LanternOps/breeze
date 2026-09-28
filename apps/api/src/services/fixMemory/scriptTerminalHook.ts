@@ -69,8 +69,11 @@ export async function advanceOutcomesForTerminalExecution(
   // rolls back before we swallow the error keeps the caller's transaction usable.
   try {
     if (executor) {
-      // Caller's open transaction (reaper, commandCancelPropagation.ts:90-97 via
-      // finalizeScriptExecutionTerminal). Drizzle's nested `transaction` on a tx
+      // Caller's open transaction: cancel propagation
+      // (commandCancelPropagation.ts, incl. the heartbeat claim's
+      // claim-time-ineligibility cancel in commandClaimEligibility.ts) via
+      // finalizeScriptExecutionTerminal. The reaper passes no executor; it takes
+      // the ambient-db branch below. Drizzle's nested `transaction` on a tx
       // handle, or on the ambient db inside a context, is a SAVEPOINT: the same
       // mechanism as withDbTransaction (db/index.ts). Never write on `executor` directly.
       return await executor.transaction((savepoint) => write(savepoint as unknown as OutcomeWriter));

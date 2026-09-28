@@ -81,7 +81,7 @@ describe('advanceOutcomesForTerminalExecution', () => {
     return { tx, savepoint };
   }
 
-  it('uses a caller-supplied executor (the reaper’s / cancel propagation’s transaction), inside a savepoint on it', async () => {
+  it('uses a caller-supplied executor (cancel propagation’s transaction), inside a savepoint on it', async () => {
     const { tx, savepoint } = callerTx(async () => [{ id: 'o-9' }]);
     await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'cancelled' }, tx as never)).resolves.toBe(1);
     expect(tx.transaction).toHaveBeenCalledTimes(1);

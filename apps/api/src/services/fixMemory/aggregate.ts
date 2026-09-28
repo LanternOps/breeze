@@ -29,9 +29,11 @@ export interface AggregateSnapshot {
 }
 
 /**
- * The counted result of one attempt. A 👎 turns any terminal non-cancelled
- * attempt into a failure (spec: "A 👎 counts as a failure"); a 👍 never
- * upgrades anything. inconclusive/cancelled never count on their own.
+ * The counted result of one attempt. A 👎 overrides only 'verified' and
+ * 'inconclusive', turning either into a failure (spec: "A 👎 counts as a
+ * failure"). 'failed' is already a failure, and 'recurred' ignores the vote
+ * entirely: it stays 'recurred' (which demotes harder than a failure). A 👍
+ * never upgrades anything. cancelled and non-terminal states never count.
  */
 export function effectiveResult(state: FixOutcomeState, vote: FixVote | null): FixCountedResult | null {
   switch (state) {

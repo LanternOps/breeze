@@ -136,8 +136,10 @@ export async function enqueueTenantErasure(
  * and/or step 3 touched is left `stale_since`-set, so `stalePartnerIds`
  * surfaces this partner and jobs/fixOutcomeWorker.ts's sweeper retries it.
  * The only residual risk is a process crash strictly between the cascade's
- * commit and step 3's own commit — one DB round trip, not the whole cascade's
- * duration.
+ * commit and step 3's own commit: one short system transaction (a SELECT of
+ * the partner's rows, one advisory lock per identity, one UPDATE), which can
+ * also wait behind a concurrent rebuild's identity locks. That is far shorter
+ * than the cascade, but it is several statements, not one round trip.
  *
  * Exported so the real-Postgres merge and erasure proofs run exactly this.
  * `hooks.rebuild` is a test seam only.

@@ -31,6 +31,12 @@ describe('replayAggregate + isProven', () => {
     expect(proven(s)).toBe(true);
   });
 
+  it('a rolling success rate of exactly 0.8 is proven (the rule is >= 0.8, not > 0.8) (M11)', () => {
+    const s = replayAggregate(seq('failed', 'verified', 'verified', 'verified', 'verified'));
+    expect(s).toMatchObject({ verifiedCount: 4, failedCount: 1, rollingSuccessRate: 0.8, status: 'active' });
+    expect(proven(s)).toBe(true);
+  });
+
   it('a 👍 alone never proves anything', () => {
     expect(proven(replayAggregate(seq(['verified', 'up'], ['verified', 'up'])))).toBe(false);
   });
