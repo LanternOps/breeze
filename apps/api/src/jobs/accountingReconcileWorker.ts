@@ -602,7 +602,7 @@ export async function processReconcileConnectionJob(
  */
 export async function processReconcileSweep(): Promise<{
   enqueued: number; failed: number; deferred: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
-  pendingTenantsReaped: number;
+  pendingTenantsReaped: number; pendingTenantsKept: number;
 }> {
   return runOutsideDbContext(async () => {
     // Each pass's DB read is its OWN try/catch: a failure reading the
@@ -722,7 +722,7 @@ export async function processReconcileSweep(): Promise<{
       );
     }
 
-    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped };
+    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped, pendingTenantsKept };
   });
 }
 

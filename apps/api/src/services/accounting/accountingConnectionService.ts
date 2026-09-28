@@ -851,20 +851,23 @@ export async function readOwedPaymentDeletes(dbc: DbExecutor, where: SQL | undef
 export async function collectOwedPaymentDeletes(
   dbc: DbExecutor,
   where: SQL | undefined,
-  context: Record<string, unknown>,
+  context: { provider?: AccountingProviderId } & Record<string, unknown>,
 ): Promise<OwedPaymentDeletes> {
   const owed = await readOwedPaymentDeletes(dbc, where);
   if (owed.count === 0) return owed;
   const { remoteEntityIds } = owed;
+  // Named for the provider when the caller knows it: the Xero pending-tenant
+  // path reaches here too (#7289), and "QuickBooks" would misdirect on-call.
+  const label = context.provider ? accountingProviderDisplayName(context.provider) : 'accounting';
 
   console.warn(
-    '[accountingConnectionService] discarding owed QuickBooks payment delete(s) — '
+    `[accountingConnectionService] discarding owed ${label} payment delete(s) — `
     + 'Breeze created these Payments and will no longer remove them',
     { ...context, count: owed.count, remoteEntityIds },
   );
   captureException(
     new Error(
-      `accountingConnectionService: discarded ${owed.count} owed QuickBooks payment delete(s) — `
+      `accountingConnectionService: discarded ${owed.count} owed ${label} payment delete(s) — `
       + 'the Payments Breeze created stay in the customer books and need manual reconciliation',
     ),
     undefined,

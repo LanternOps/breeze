@@ -156,11 +156,11 @@ describe('#7289 re-parked pending row with mappings (real DB)', () => {
 
     // Counted BEFORE the delete — afterwards there is nothing left to count.
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('owed QuickBooks payment delete'),
+      expect.stringContaining('owed Xero payment delete'),
       expect.objectContaining({ connectionId: connected.id, reason: 'pending_tenant_cancel', count: 2 }),
     );
     expect(captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('discarded 2 owed') }),
+      expect.objectContaining({ message: expect.stringContaining('discarded 2 owed Xero payment delete') }),
       undefined,
       expect.objectContaining({ accounting_connection_id: connected.id }),
     );
@@ -207,7 +207,7 @@ describe('#7289 re-parked pending row with mappings (real DB)', () => {
     );
     // No owed delete was discarded, so nothing reports one.
     expect(warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('owed QuickBooks payment delete'),
+      expect.stringContaining('owed Xero payment delete'),
       expect.objectContaining({ connectionId: owingRow.connected.id }),
     );
 

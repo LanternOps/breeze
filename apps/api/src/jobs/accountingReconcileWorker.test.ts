@@ -344,7 +344,7 @@ beforeEach(() => {
   // (ruling F14): every test that cares about the reaper or the connection
   // list overrides these explicitly.
   listReconcilableConnectionsMock.mockResolvedValue([]);
-  reapStalePendingTenantsMock.mockResolvedValue({ stale: 0, reaped: 0 });
+  reapStalePendingTenantsMock.mockResolvedValue({ stale: 0, reaped: 0, kept: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -953,7 +953,7 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
@@ -974,7 +974,7 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0 });
   });
 
   it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
@@ -1003,12 +1003,25 @@ describe('processReconcileSweep', () => {
 
 describe('pending_tenant reaper (Xero W02)', () => {
   it('reaps stale pending rows on every sweep and reports the count', async () => {
-    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 2, reaped: 2 });
+    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 2, reaped: 2, kept: 0 });
 
     const out = await processReconcileSweep();
 
     expect(reapStalePendingTenantsMock).toHaveBeenCalledTimes(1);
     expect(out.pendingTenantsReaped).toBe(2);
+  });
+
+  it('#7289: reports stale rows KEPT because they still owe payment deletes (returned and logged)', async () => {
+    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 3, reaped: 1, kept: 2 });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const out = await processReconcileSweep();
+
+    expect(out.pendingTenantsReaped).toBe(1);
+    expect(out.pendingTenantsKept).toBe(2);
+    const sweepLine = log.mock.calls.find((call) => call[0] === '[AccountingReconcileWorker] sweep complete');
+    expect(sweepLine).toContain('pendingTenantsKept=2');
+    log.mockRestore();
   });
 
   it('a reap failure never fails the sweep or blocks the other passes', async () => {
@@ -1343,7 +1356,7 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       await expect(processReconcileSweep()).resolves.toEqual({
-        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0,
+        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0,
       });
       expect(logSpy.mock.calls.some((c) => c.some((a) => String(a).includes('deferred=1')))).toBe(true);
     } finally {

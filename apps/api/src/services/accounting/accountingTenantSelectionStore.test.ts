@@ -118,7 +118,7 @@ describe('owed payment deletes on a re-parked pending row (#7289)', () => {
     });
     expect(order).toEqual(['lock:update', 'read-owed', 'delete']);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('owed QuickBooks payment delete'),
+      expect.stringContaining('owed Xero payment delete'),
       expect.objectContaining({ connectionId: 'row-3', partnerId: 'p1', provider: 'xero', reason: 'pending_tenant_cancel', count: 2 }),
     );
     expect(captureException).toHaveBeenCalledTimes(1);
