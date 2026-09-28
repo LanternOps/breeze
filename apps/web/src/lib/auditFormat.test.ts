@@ -94,6 +94,12 @@ describe('formatAuditAction', () => {
     );
   });
 
+  it('labels a refused screen capture or input control on a consent-required device', () => {
+    expect(formatAuditAction('screen_access_consent_blocked')).toBe(
+      'Screen access blocked: device requires user consent',
+    );
+  });
+
   it('returns an empty string for a missing action', () => {
     expect(formatAuditAction(null)).toBe('');
     expect(formatAuditAction(undefined)).toBe('');

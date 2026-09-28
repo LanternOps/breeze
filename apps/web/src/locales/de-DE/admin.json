@@ -643,6 +643,7 @@
       "session_consent_blocked_unanswered": "Remotesitzung blockiert: Zustimmungsabfrage nicht beantwortet",
       "session_consent_blocked_unavailable": "Remotesitzung blockiert: Zustimmungsabfrage nicht verfügbar",
       "session_consent_bypassed": "Remotesitzung ohne Antwort auf die Zustimmungsabfrage gestartet",
+      "screen_access_consent_blocked": "Bildschirmzugriff blockiert: Gerät erfordert die Zustimmung des Benutzers",
       "device.wake_on_lan": "Wake-on-LAN gesendet",
       "device.create": "Gerät hinzugefügt",
       "device.update": "Gerät aktualisiert",
