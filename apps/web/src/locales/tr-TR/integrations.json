@@ -1098,7 +1098,39 @@
     "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
     "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
     "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı — şimdi eşitlemek için Ödeme eşitleme veya Ödeme gönderimi seçeneğini açın.",
-    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
+    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı.",
+    "tenantPicker": {
+      "title": "{{provider}} kuruluşunuzu seçin",
+      "description": "Birden fazla kuruluşu yetkilendirdiniz. Breeze tam olarak birine bağlanır; diğerleri bu bağlantıdan kaldırılır.",
+      "loadFailed": "{{provider}} tarafından kuruluşlarınız yüklenemedi.",
+      "expired": "Bu {{provider}} oturum açma işleminin süresi doldu. İptal edin ve tekrar bağlanın.",
+      "connect": "Kuruluşu bağla",
+      "cancel": "Bağlantıyı iptal et",
+      "selectFailed": "O kuruluş bağlanamadı.",
+      "cancelFailed": "Bağlantı iptal edilemedi.",
+      "connected": "{{provider}} kuruluşu bağlandı",
+      "cancelled": "{{provider}} bağlantısı iptal edildi",
+      "chooseFirst": "Önce bir kuruluş seçin",
+      "grantSuperseded": "Daha yeni bir {{provider}} oturum açma işlemi bunun yerini aldı. Kuruluşu tekrar seçin.",
+      "deadline": "{{time}} zamanından önce bir kuruluş seçin.",
+      "tenantHeld": "Bu {{provider}} kuruluşu başka bir Breeze hesabına bağlı. Başka bir kuruluş seçin veya bağlantıyı iptal edin.",
+      "retry": "Tekrar dene"
+    },
+    "connectErrors": {
+      "tenantHeld": "Bu {{provider}} kuruluşu başka bir Breeze hesabına bağlı.",
+      "authEventMissing": "{{provider}} hangi kuruluşları yetkilendirdiğinizi onaylamadı. Lütfen tekrar bağlanın.",
+      "noOrganisation": "Hiçbir {{provider}} kuruluşu yetkilendirilmedi. {{provider}} onay ekranında bir kuruluş seçin.",
+      "tenantLookupFailed": "{{provider}} kuruluşlarınız okunamadı. Lütfen tekrar deneyin.",
+      "consentDenied": "{{provider}} oturum açma işlemini iptal ettiniz. Hiçbir şey bağlanmadı.",
+      "selectTenant": "Hangi {{provider}} kuruluşunun bağlanacağını seçin."
+    },
+    "disconnectConfirm": {
+      "title": "{{provider}} bağlantısı kesilsin mi?",
+      "message": "Breeze, {{provider}} ile senkronizasyonu durduracak ve {{provider}} tarafındaki bağlantıyı kaldıracak. İstediğiniz zaman tekrar bağlanabilirsiniz.",
+      "confirm": "Bağlantıyı kes"
+    },
+    "reconnectKeepsOrganisation": "Yeniden bağlanmak mevcut {{provider}} kuruluşunuzu korur. {{provider}} ekranında işaretlediğiniz başka bir kuruluş serbest bırakılır.",
+    "pendingTenant": "Bir kuruluş seçin"
   },
   "accountingMapping": {
     "mappingTitle": "Müşteri ve ürün eşleme",

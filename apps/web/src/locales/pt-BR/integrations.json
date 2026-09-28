@@ -1098,7 +1098,39 @@
     "syncNowQueued": "Sincronização de pagamentos na fila.",
     "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
     "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão: ative Sincronização de pagamentos ou Envio de pagamentos para sincronizar agora.",
-    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
+    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos.",
+    "tenantPicker": {
+      "title": "Escolha sua organização do {{provider}}",
+      "description": "Você autorizou mais de uma organização. O Breeze se conecta a exatamente uma; as demais são removidas desta conexão.",
+      "loadFailed": "Não foi possível carregar suas organizações do {{provider}}.",
+      "expired": "Este login no {{provider}} expirou. Cancele e conecte-se novamente.",
+      "connect": "Conectar organização",
+      "cancel": "Cancelar conexão",
+      "selectFailed": "Não foi possível conectar essa organização.",
+      "cancelFailed": "Não foi possível cancelar a conexão.",
+      "connected": "Organização do {{provider}} conectada",
+      "cancelled": "Conexão com o {{provider}} cancelada",
+      "chooseFirst": "Escolha uma organização primeiro",
+      "grantSuperseded": "Um login mais recente no {{provider}} substituiu este. Escolha a organização novamente.",
+      "deadline": "Escolha uma organização antes de {{time}}.",
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze. Escolha outra organização ou cancele a conexão.",
+      "retry": "Tentar novamente"
+    },
+    "connectErrors": {
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze.",
+      "authEventMissing": "O {{provider}} não confirmou quais organizações você autorizou. Conecte-se novamente.",
+      "noOrganisation": "Nenhuma organização do {{provider}} foi autorizada. Escolha uma organização na tela de consentimento do {{provider}}.",
+      "tenantLookupFailed": "Não foi possível ler suas organizações do {{provider}}. Tente novamente.",
+      "consentDenied": "Você cancelou o login no {{provider}}. Nada foi conectado.",
+      "selectTenant": "Escolha qual organização do {{provider}} conectar."
+    },
+    "disconnectConfirm": {
+      "title": "Desconectar do {{provider}}?",
+      "message": "O Breeze vai parar de sincronizar com o {{provider}} e remover a conexão no {{provider}}. Você pode se reconectar a qualquer momento.",
+      "confirm": "Desconectar"
+    },
+    "reconnectKeepsOrganisation": "Reconectar mantém sua organização atual do {{provider}}. Qualquer outra organização marcada na tela do {{provider}} é liberada.",
+    "pendingTenant": "Escolher uma organização"
   },
   "accountingMapping": {
     "mappingTitle": "Mapeamento de clientes e itens",

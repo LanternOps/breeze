@@ -27,6 +27,42 @@ export function isAccountingProviderId(v: string): v is AccountingProviderId {
   return (ACCOUNTING_PROVIDER_IDS as readonly string[]).includes(v);
 }
 
+/** Per-provider UI treatment. Xero follows its app-certification rules
+ *  (branded connect, confirmed disconnect); QuickBooks keeps the pre-W02
+ *  unbranded, unconfirmed behaviour byte-for-byte. */
+export interface AccountingProviderUi { brandedConnect: boolean; confirmDisconnect: boolean }
+export const ACCOUNTING_PROVIDER_UI: Record<AccountingProviderId, AccountingProviderUi> = {
+  quickbooks: { brandedConnect: false, confirmDisconnect: false },
+  xero: { brandedConnect: true, confirmDisconnect: true },
+};
+
+/** Status responses from an API older than Xero W02 carry no `capabilities`
+ *  field: treat every control as available rather than hiding them all. */
+export const ALL_CAPABILITIES: Record<AccountingCapability, boolean> = {
+  connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+};
+
+// R1: QuickBooks copy stays byte-identical. `provider_conflict` and the
+// unknown/null fallback both resolve to the two EXISTING keys the panel used
+// pre-W02 (`providerConflict`, `providerConnectionFailedPleaseTryAgain`) —
+// never a new duplicate `connectErrors.generic` / `connectErrors.providerConflict`.
+const CONNECT_ERROR_KEYS: Record<string, string> = {
+  tenant_held: 'accountingConnection.connectErrors.tenantHeld',
+  provider_conflict: 'accountingConnection.providerConflict',
+  auth_event_missing: 'accountingConnection.connectErrors.authEventMissing',
+  no_organisation: 'accountingConnection.connectErrors.noOrganisation',
+  tenant_lookup_failed: 'accountingConnection.connectErrors.tenantLookupFailed',
+  consent_denied: 'accountingConnection.connectErrors.consentDenied',
+};
+const GENERIC_CONNECT_ERROR_KEY = 'accountingConnection.providerConnectionFailedPleaseTryAgain';
+
+/** Maps an OAuth-return `error=` code to a full (namespace-relative) i18n key.
+ *  Unknown codes (incl. `exchange_failed`, `persist_failed`) and `null` fall
+ *  back to the existing generic "connection failed" key. */
+export function connectErrorKey(code: string | null): string {
+  return (code && CONNECT_ERROR_KEYS[code]) || GENERIC_CONNECT_ERROR_KEY;
+}
+
 /** `/accounting/<provider><suffix>` — the provider-scoped API path. */
 export function accountingPath(provider: AccountingProviderId, suffix = ''): string {
   return `/accounting/${provider}${suffix}`;
