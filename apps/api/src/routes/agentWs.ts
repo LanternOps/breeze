@@ -2031,9 +2031,11 @@ async function runWithAgentOrgDbAccess<T>(
  * frame instead of an ack. The terminal audit and the automation-ledger
  * terminal run only after that transaction committed.
  *
- * @returns 'processing_failed' only when the result reached a live command but
- *   could not be recorded; 'handled' for everything else (recorded, duplicate,
- *   orphaned, ignored — and unexpected errors, which are logged + captured).
+ * @returns 'processing_failed' when the result could not be recorded — a
+ *   persistence failure (row parked reopenable) or an unexpected error before
+ *   the finalize transaction settled (logged + captured, row untouched);
+ *   'handled' for everything else (recorded, duplicate, orphaned, ignored, or
+ *   an error in a post-commit follow-up).
  */
 async function processCommandResult(
   agentId: string,
@@ -2047,6 +2049,10 @@ async function processCommandResult(
   partnerId: string,
   credentialAlreadyReauthorized = false,
 ): Promise<CommandResultIngestOutcome> {
+  // #3530: set once the finalize transaction has committed (or found the
+  // result already recorded). An unexpected error BEFORE that point means
+  // nothing was recorded, so the function-level catch nacks rather than acks.
+  let resultSettled = false;
   try {
     // #2434 chokepoint — FIRST statement, so "any agent result that enters this
     // function is redacted" is a true invariant for every exit path below
@@ -2451,6 +2457,8 @@ async function processCommandResult(
       return 'processing_failed';
     }
 
+    resultSettled = true;
+
     if (finalized === 'stale') {
       await recordSupplementalCleanup();
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
@@ -2556,7 +2564,9 @@ async function processCommandResult(
   } catch (error) {
     console.error(`[AgentWs] Failed to process command result for ${agentId}:`, error);
     captureException(error);
-    return 'handled';
+    // After the result was recorded, a failing follow-up (automation ledger,
+    // audit) must not tell the agent the result was lost.
+    return resultSettled ? 'handled' : 'processing_failed';
   }
 }
 

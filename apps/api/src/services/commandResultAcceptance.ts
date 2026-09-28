@@ -97,6 +97,22 @@ export const BACKUP_QUEUE_ACK_RESULT_STATUS = 'queue_ack';
 export const RESULT_PROCESSING_FAILED_RESULT_STATUS = 'result_processing_failed';
 
 /**
+ * Types a {@link RESULT_PROCESSING_FAILED_RESULT_STATUS} row is parked for but
+ * NOT reopened for — their command row must never be rewritten once terminal:
+ * - `network_diagnostic`: the same lapsed-plan-authority reason as
+ *   {@link TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES}.
+ * - PAM v2 actuation: late evidence for a terminal PAM command enters only the
+ *   frozen PAM result transaction (routes/agents/commands.ts), never the
+ *   command-row CAS. Reopening would route a resubmission around it.
+ * The row still parks as `failed` (honest history); it just stays final.
+ */
+export const RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES = [
+  ...TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES,
+  'pam_apply_v2',
+  'pam_cleanup_v2',
+] as const;
+
+/**
  * Drizzle predicate for "this row may still accept an agent result".
  *
  * Use it in BOTH the ingest lookup and the terminal compare-and-set. Applying
@@ -127,6 +143,7 @@ export function commandAcceptsAgentResultCondition(): SQL {
     ),
     and(
       eq(deviceCommands.status, 'failed'),
+      notInArray(deviceCommands.type, [...RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES]),
       sql`${deviceCommands.result}->>'status' = ${RESULT_PROCESSING_FAILED_RESULT_STATUS}`,
       sql`${deviceCommands.result}->>'processingFailedAt' IS NOT NULL`,
     ),
@@ -171,7 +188,8 @@ export function commandAcceptsAgentResult(
     status === 'failed' &&
     resultStatus === RESULT_PROCESSING_FAILED_RESULT_STATUS &&
     // See the SQL twin: only markCommandResultProcessingFailed sets this key.
-    resultRecord?.processingFailedAt != null
+    resultRecord?.processingFailedAt != null &&
+    !(RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES as readonly string[]).includes(type ?? '')
   ) {
     return true;
   }

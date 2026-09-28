@@ -22,7 +22,7 @@ import {
 } from './systemCleanup';
 
 import { eq, ne, and, inArray, isNull, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction } from '../db';
 import {
   deviceCommands,
   deviceFilesystemCleanupRuns,
@@ -464,13 +464,19 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
     // regression class documented at length below (#3162, #3607).
     let customFieldResult: ScriptCustomFieldWriteSummary | null = null;
     try {
-      customFieldResult = await applyScriptCustomFieldWrites({
+      // #3530: a SAVEPOINT, because both transports now run this handler in
+      // the transaction that also holds the command's terminal CAS. Without
+      // it a Postgres error in the write-back would be caught here but leave
+      // that transaction aborted — the stdout write below would then fail
+      // too and the whole result would be parked, the exact loss this catch
+      // exists to prevent. Same pattern as evaluateScriptExitCodeAlert.
+      customFieldResult = await withDbTransaction(() => applyScriptCustomFieldWrites({
         deviceId: resolvedDeviceId,
         agentId,
         commandId: command.id,
         stdout,
         resultEnvelope: result.result,
-      });
+      }));
       if (customFieldResult && customFieldResult.rejected.length > 0) {
         console.warn('[AgentWs] script custom-field write-back rejected entries', {
           commandId: command.id,

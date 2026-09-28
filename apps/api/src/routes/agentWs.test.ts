@@ -4751,20 +4751,106 @@ describe('#3530: terminal CAS commits with the per-type persistence, or not at a
 
     const commandWrites: Array<{ set: Record<string, any>; stack: string[] }> = [];
     let casRows: unknown[] = [{ id: COMMAND_ID }];
+    let parkError: Error | null = null;
     vi.mocked(db.update).mockImplementation(((table: unknown) => ({
       set: vi.fn((set: Record<string, any>) => {
         if (table === deviceCommands) commandWrites.push({ set, stack: [...stack] });
-        const returning = vi.fn().mockResolvedValue(table === deviceCommands ? casRows : []);
+        const isPark = table === deviceCommands && set.result?.status === RESULT_PROCESSING_FAILED_RESULT_STATUS;
+        const returning = isPark && parkError
+          ? vi.fn().mockRejectedValue(parkError)
+          : vi.fn().mockResolvedValue(table === deviceCommands ? casRows : []);
         return { where: vi.fn().mockReturnValue({ returning }), returning };
       }),
     })) as any);
 
-    const send = () => handlers.onMessage({
-      data: JSON.stringify({ type: 'command_result', commandId: COMMAND_ID, status: 'completed', exitCode: 0, stdout: '{}' }),
+    const send = (stdout = '{}') => handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: COMMAND_ID, status: 'completed', exitCode: 0, stdout }),
     } as any, ws as any);
+    const frames = () => ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
 
-    return { ws, stack, commandWrites, send, setCasRows: (rows: unknown[]) => { casRows = rows; } };
+    return {
+      ws, stack, commandWrites, send, frames,
+      setCasRows: (rows: unknown[]) => { casRows = rows; },
+      failPark: (err: Error) => { parkError = err; },
+    };
   }
+
+  it('a failing park write is captured with its own tag and the agent is still nacked', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const h = await harness('cis_benchmark');
+    const parkErr = new Error('pool exhausted');
+    h.failPark(parkErr);
+    const spy = vi.spyOn(commandResultHandlers, 'cis_benchmark').mockRejectedValue(new Error('persist failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await h.send();
+      expect(captureException).toHaveBeenCalledWith(parkErr, undefined, expect.objectContaining({
+        command_result_phase: 'ws_result_processing_failed_mark',
+        commandId: COMMAND_ID,
+      }));
+      expect(h.frames()).toContainEqual(expect.objectContaining({ code: 'RESULT_PROCESSING_FAILED' }));
+      expect(h.frames().find((f: any) => f.type === 'ack')).toBeUndefined();
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a validation-rejected result whose family handler fails is parked too, not left failed-and-final', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    // backup_verify is a critical family: a '{}' stdout fails validation, the
+    // result is normalized to failed, and the family handler still runs to
+    // close the backup_verifications row — inside the same transaction.
+    const h = await harness('backup_verify');
+    let handlerStack: string[] | null = null;
+    const spy = vi.spyOn(commandResultHandlers, 'backup_verify').mockImplementation(async () => {
+      handlerStack = [...h.stack];
+      throw new Error('backup_verifications write failed');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await h.send();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(handlerStack).toEqual(['org:agentWs.commandResult.finalize']);
+      expect(h.commandWrites).toHaveLength(2);
+      expect(h.commandWrites[0]!.stack).toEqual(['org:agentWs.commandResult.finalize']);
+      expect(h.commandWrites[1]!.set.result).toMatchObject({ status: RESULT_PROCESSING_FAILED_RESULT_STATUS });
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      expect(h.frames()).toContainEqual(expect.objectContaining({ code: 'RESULT_PROCESSING_FAILED' }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('an unexpected error before the result settled is nacked, not acked', async () => {
+    const h = await harness('cis_benchmark');
+    vi.mocked(db.select).mockImplementation((() => {
+      throw new Error('device_commands lookup failed');
+    }) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await h.send();
+    expect(h.commandWrites).toHaveLength(0);
+    expect(h.frames()).toContainEqual(expect.objectContaining({ code: 'RESULT_PROCESSING_FAILED' }));
+    expect(h.frames().find((f: any) => f.type === 'ack')).toBeUndefined();
+  });
+
+  it('a failing post-commit follow-up does not tell the agent a recorded result was lost', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const h = await harness('cis_benchmark');
+    const spy = vi.spyOn(commandResultHandlers, 'cis_benchmark').mockResolvedValue(undefined);
+    applyCommandAutomationTerminalMock.mockRejectedValueOnce(new Error('ledger lock timeout'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await h.send();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(h.commandWrites).toHaveLength(1);
+      expect(h.ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+      expect(h.frames().find((f: any) => f.code === 'RESULT_PROCESSING_FAILED')).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   it('persistence failure: CAS and persistence share one transaction, row parked reopenable, no audit, error frame', async () => {
     const { commandResultHandlers } = await import('../services/commandResultHandlers');

@@ -30,7 +30,16 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    savepointDepth.value += 1;
+    try {
+      return await fn();
+    } finally {
+      savepointDepth.value -= 1;
+    }
+  },
 }));
+const savepointDepth = vi.hoisted(() => ({ value: 0 }));
 
 import { commandResultHandlers } from './commandResultHandlers';
 
@@ -78,6 +87,21 @@ describe('handleScriptResult custom-field write-back', () => {
     applyMock.mockResolvedValue(null);
     await call('plain output');
     expect(setCalls[0]?.customFieldResult).toBeNull();
+  });
+
+  // #3530: the handler now shares a transaction with the command's terminal
+  // CAS, so the write-back must sit in its OWN savepoint — a caught Postgres
+  // error on a bare statement would leave that transaction aborted and park
+  // the whole result, stdout included.
+  it('runs the write-back inside its own savepoint', async () => {
+    let depthDuringWriteBack = -1;
+    applyMock.mockImplementation(async () => {
+      depthDuringWriteBack = savepointDepth.value;
+      return null;
+    });
+    await call('plain output');
+    expect(depthDuringWriteBack).toBe(1);
+    expect(setCalls[0]?.stdout).toBe('plain output');
   });
 
   it('still persists stdout when the write-back throws', async () => {
