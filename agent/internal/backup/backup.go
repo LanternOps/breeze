@@ -1648,6 +1648,48 @@ func isWithinAnyDir(path string, dirs []string) bool {
 	return false
 }
 
+// shadowDevicePrefix is the Win32 form every VSS shadow-copy device root takes
+// (vss.CreateShadowCopy returns VSS_SNAPSHOT_PROP.SnapshotDeviceObject
+// verbatim, e.g. `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy26`).
+const shadowDevicePrefix = `\\?\GLOBALROOT\Device\`
+
+// shadowDeviceRoot reports whether p names a shadow-copy DEVICE ROOT — the
+// device object itself, with or without trailing separators, and nothing
+// below it — and returns it with every trailing separator removed. A path
+// UNDER the device (`...ShadowCopy26\Windows`) is not a root. Pure string
+// logic, no filepath calls, so it behaves identically on every GOOS.
+func shadowDeviceRoot(p string) (string, bool) {
+	t := strings.TrimRight(p, `\/`)
+	if len(t) <= len(shadowDevicePrefix) || !strings.EqualFold(t[:len(shadowDevicePrefix)], shadowDevicePrefix) {
+		return "", false
+	}
+	if strings.ContainsAny(t[len(shadowDevicePrefix):], `\/`) {
+		return "", false
+	}
+	return t, true
+}
+
+// cleanBackupRoot is filepath.Clean for a configured (or VSS-rewritten)
+// backup root, except that a shadow-copy device root keeps exactly one
+// trailing separator.
+//
+// A whole-machine Windows run backs up `C:\` under VSS, which
+// rewritePathsForVSS turns into `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\`.
+// filepath.Clean strips that trailing separator (Windows treats
+// `\\?\GLOBALROOT` as the volume and the device name as an ordinary
+// component), and the bare device name is a device object, not a directory:
+// os.Stat on it fails with "Incorrect function", so every whole-machine VSS
+// backup failed before walking a single file. With the separator it names
+// the shadow volume's root directory, which stats, walks and reads like any
+// other directory. Only the ROOT needs this — every path below it is a normal
+// directory path, and filepath.Join/Clean on those is correct.
+func cleanBackupRoot(root string) string {
+	if dev, ok := shadowDeviceRoot(root); ok {
+		return dev + `\`
+	}
+	return filepath.Clean(root)
+}
+
 // journalDirs, when non-empty, are every path form that identifies this
 // run's own checkpoint-journal directory: the literal directory (see
 // resolveJournalDir) and, on a VSS run, its shadow-copy-rewritten form —
@@ -1678,7 +1720,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			errs = append(errs, fmt.Errorf("backup path at index %d is empty", idx))
 			continue
 		}
-		cleanRoot := filepath.Clean(root)
+		cleanRoot := cleanBackupRoot(root)
 		info, err := os.Stat(cleanRoot)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to stat backup path %s: %w", cleanRoot, err))
