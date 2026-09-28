@@ -92,7 +92,7 @@
     "js-yaml": "^5.2.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
-    "nanoid": "^6.0.0",
+    "nanoid": "^6.0.1",
     "node-stream-zip": "^1.16.0",
     "nodemailer": "^10.0.10",
     "oidc-provider": "^9",
