@@ -964,6 +964,34 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     );
   });
 
+  // PR #7371 review: userIsMfaProtected THROWS on a missing row (it refuses to
+  // report "unprotected" when it could not look). Unhandled, that reached the
+  // callback's generic catch, which redirects to /login with the raw
+  // error.message — an internal diagnostic carrying the user's UUID — and
+  // dropped an already-signed-in user off the profile page.
+  it('fails closed on the profile page, without leaking the probe error, when the protection probe throws', async () => {
+    primeReauthCallback();
+    // Replace the queued protection row with "no row", so the probe throws.
+    vi.mocked(db.select).mockReset()
+      .mockReturnValueOnce(sel([ACTIVE_OIDC_PROVIDER]))
+      .mockReturnValueOnce(sel([ACTIVE_REAUTH_USER]))
+      .mockReturnValueOnce(sel([{ userId: USER_ID }]))
+      .mockReturnValueOnce(sel([{ userId: USER_ID }]))
+      .mockReturnValue(sel([]));
+
+    const res = await doCallback();
+
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=reauth_unavailable');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sso.reauth.rejected',
+        details: expect.objectContaining({ reason: 'protection_probe_failed' }),
+      })
+    );
+  });
+
   it('still mints enroll_first_factor for an account with no factor', async () => {
     primeReauthCallback({ protection: { mfaEnabled: false, passkeyCount: 0 } });
 

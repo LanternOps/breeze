@@ -4632,6 +4632,8 @@ describe('auth routes', () => {
         expect(res.status).toBe(400);
         expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
         expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+        // The issuance admitted before the consume must be released, not leaked.
+        expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
       });
 
       it('refuses an SSO grant from an account that HAS a password (opaque, grant untouched)', async () => {
@@ -4723,6 +4725,26 @@ describe('auth routes', () => {
         expect(res.status).toBe(400);
         expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
         expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+        expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+      });
+
+      it('a password account sending BOTH proofs takes the password road and never looks at the grant', async () => {
+        mockPasswordlessTotpUser({ passwordHash: '$argon2id$hash' });
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', {
+          code: '123456',
+          currentPassword: 'OldStrongPass123',
+          ssoReauthGrantId: SSO_GRANT,
+        });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).toHaveBeenCalledTimes(1);
+        expect(validateStepUpGrant).not.toHaveBeenCalled();
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
       });
 
       it('keeps the password road unchanged for a password account', async () => {

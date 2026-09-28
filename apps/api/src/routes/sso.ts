@@ -3000,7 +3000,20 @@ ssoRoutes.get('/callback', async (c) => {
         // else. Deciding here rather than at /reauth/start is safe because the
         // grant is bound to the INITIATING epochs: a factor added or removed in
         // between bumps mfa_epoch and kills the grant whichever purpose it got.
-        const operation = (await userIsMfaProtected(reauthUserId))
+        //
+        // userIsMfaProtected THROWS rather than guess when it cannot read the
+        // row. Contained here: left to the callback's generic catch it would
+        // put its internal message (with the user id) into a /login URL and
+        // drop an already-signed-in user off the profile page. Fail closed
+        // like a mint failure — no grant, profile-page error, audited.
+        let accountIsProtected: boolean;
+        try {
+          accountIsProtected = await userIsMfaProtected(reauthUserId);
+        } catch (err) {
+          console.error(`[sso] reauth protection probe failed for user ${reauthUserId}:`, err);
+          return { ok: false as const, error: 'reauth_unavailable' as const, auditReason: 'protection_probe_failed' };
+        }
+        const operation = accountIsProtected
           ? 'sso_reauth_manage_factor' as const
           : 'enroll_first_factor' as const;
 

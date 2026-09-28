@@ -2139,6 +2139,7 @@ describe('passkey MFA auth routes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
       expect(dbState.updateSets).toHaveLength(0);
+      expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
   });
 
