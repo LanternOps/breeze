@@ -20,8 +20,8 @@
  *     every key equal to the role's control key under the snapshot;
  *   - `parentSnapshotId` is null (a full run, including one that fell back
  *     from a dispatched base) or equal to `dispatchedBaseSnapshotId`;
- *   - string fields are printable ASCII without `"` or `\`, so every JSON
- *     encoder produces the same bytes for them.
+ *   - string fields are printable ASCII without `"`, `\`, `<`, `>` or `&`,
+ *     so every JSON encoder produces the same bytes for them.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, inArray, ne } from 'drizzle-orm';
@@ -84,8 +84,10 @@ export type ParseAttestationResult =
   | { ok: false; reason: ParseAttestationFailure };
 
 const SNAPSHOT_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${BACKUP_SNAPSHOT_ID_MAX_LENGTH - 1}}$`);
-// Printable ASCII except '"' and '\': identical bytes from every JSON encoder.
-const PLAIN_ASCII_PATTERN = /^[\x20\x21\x23-\x5b\x5d-\x7e]{1,256}$/;
+// Printable ASCII except '"', '\', '<', '>' and '&': no JSON encoder escapes
+// any of the rest, so every implementation produces identical bytes (Go's
+// default encoder escapes the last three).
+const PLAIN_ASCII_PATTERN = /^[\x20\x21\x23-\x25\x27-\x3b\x3d\x3f-\x5b\x5d-\x7e]{1,256}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 const snapshotIdSchema = z.string().regex(SNAPSHOT_ID_PATTERN);
@@ -507,6 +509,21 @@ export async function recordSnapshotAttestation(
 }
 
 // ── Entry points for backupResultPersistence.ts ─────────────────────────────
+
+/**
+ * The job an existing attestation for this snapshot row was recorded for, or
+ * null when the snapshot has none. Persistence refuses to rewrite a snapshot
+ * row on behalf of any other job, so the row and its attestation keep
+ * describing the same run.
+ */
+export async function attestedJobIdForSnapshot(snapshotDbId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ jobId: backupSnapshotAttestations.jobId })
+    .from(backupSnapshotAttestations)
+    .where(eq(backupSnapshotAttestations.snapshotDbId, snapshotDbId))
+    .limit(1);
+  return row?.jobId ?? null;
+}
 
 /** The parts of a parsed backup result the attestation step reads. */
 export type AttestationResultFields = {

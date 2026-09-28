@@ -18,8 +18,8 @@ import {
 
 type Vector = { name: string; statement: string; valid: boolean; sha256?: string; reason?: string; note: string };
 
-// Shared with the helper (agent/internal/backup/attestation_test.go pins the
-// same file): edit the fixture, not either implementation.
+// Shared with the backup helper: the helper-side change will pin the same
+// fixture, so edit the fixture rather than either implementation.
 const vectors: Vector[] = JSON.parse(
   readFileSync(
     path.resolve(__dirname, '../../../../agent/internal/backup/testdata/attestation-vectors.json'),

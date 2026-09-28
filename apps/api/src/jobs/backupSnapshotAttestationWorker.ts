@@ -1,24 +1,27 @@
 // BullMQ worker that runs verifySnapshotAttestation
 // (services/backupAttestationVerify.ts) out of band. Enqueued when an agent
 // result records a server-fetched attestation (services/backupAttestation.ts);
-// a periodic sweep re-enqueues rows still `pending` after
-// STALE_PENDING_AFTER_MS, which covers a lost enqueue, exhausted retries and
-// storage that was unreachable for a while. jobId is snapshot-scoped so
+// a periodic sweep re-enqueues rows still `pending` once they are due: a row
+// never attempted is due STALE_PENDING_AFTER_MS after creation (a lost
+// enqueue); a row whose storage could not be read is due at its
+// next_attempt_at, which the verifier backs off exponentially. Rows that
+// used up MAX_VERIFY_ATTEMPTS stay pending but are not swept again. jobId is snapshot-scoped so
 // concurrent enqueues collapse into one job. Pattern mirrors
 // jobs/backupSnapshotFileIndexWorker.ts.
 import { Job, Queue, Worker } from 'bullmq';
-import { and, asc, eq, lt } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { getBullMQConnection } from '../services/redis';
-import { verifySnapshotAttestation } from '../services/backupAttestationVerify';
+import { MAX_VERIFY_ATTEMPTS, verifySnapshotAttestation } from '../services/backupAttestationVerify';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
 
 const QUEUE_NAME = 'backup-snapshot-attestation';
+// One attempt per job: retries after a storage failure are scheduled in the
+// row itself (next_attempt_at) and picked up by the sweep.
 const VERIFY_JOB_OPTIONS = {
-  attempts: 5,
-  backoff: { type: 'exponential' as const, delay: 60_000 },
+  attempts: 1,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 200 },
 };
@@ -62,9 +65,14 @@ export async function enqueueSnapshotAttestationVerification(snapshotDbId: strin
   return job.id!;
 }
 
-/** Snapshot ids of server-fetched attestations still pending after `olderThanMs`. */
+/**
+ * Snapshot ids of server-fetched attestations due for another verification
+ * attempt, earliest due first: never attempted and older than `olderThanMs`,
+ * or past their scheduled retry. Parked rows are excluded.
+ */
 export async function findStalePendingAttestations(now: Date, olderThanMs = STALE_PENDING_AFTER_MS): Promise<string[]> {
   const cutoff = new Date(now.getTime() - olderThanMs);
+  const dueAt = sql`coalesce(${backupSnapshotAttestations.nextAttemptAt}, ${backupSnapshotAttestations.createdAt})`;
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -74,10 +82,14 @@ export async function findStalePendingAttestations(now: Date, olderThanMs = STAL
           and(
             eq(backupSnapshotAttestations.status, 'pending'),
             eq(backupSnapshotAttestations.verificationMode, 'server_fetched'),
-            lt(backupSnapshotAttestations.createdAt, cutoff),
+            lt(backupSnapshotAttestations.attemptCount, MAX_VERIFY_ATTEMPTS),
+            or(
+              and(isNull(backupSnapshotAttestations.nextAttemptAt), lt(backupSnapshotAttestations.createdAt, cutoff)),
+              lte(backupSnapshotAttestations.nextAttemptAt, now),
+            ),
           ),
         )
-        .orderBy(asc(backupSnapshotAttestations.createdAt))
+        .orderBy(asc(dueAt), asc(backupSnapshotAttestations.createdAt))
         .limit(SWEEP_BATCH),
     ),
   );
@@ -105,10 +117,11 @@ async function processAttestationJob(job: Job<AttestationJobData>): Promise<{ st
   }
   const result = await verifySnapshotAttestation(job.data.snapshotDbId);
   if (result.outcome === 'retry') {
-    // Storage or configuration not usable right now: the row stays pending.
-    // Throwing lets BullMQ back off and retry; the sweep picks it up after the
-    // attempts run out.
-    throw new Error(`snapshot attestation verification deferred: ${result.reason ?? 'unavailable'}`);
+    // Storage or configuration not usable right now: the row stays pending
+    // and carries its own next attempt time, which the sweep honours.
+    console.warn(
+      `[BackupSnapshotAttestationWorker] Verification of snapshot ${job.data.snapshotDbId} deferred: ${result.reason ?? 'unavailable'}`,
+    );
   }
   if (result.outcome === 'mismatch') {
     console.warn(

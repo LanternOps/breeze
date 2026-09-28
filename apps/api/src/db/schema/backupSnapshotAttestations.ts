@@ -16,8 +16,9 @@ import { backupJobs, backupSnapshots } from './backup';
  * moves the row from `pending` to `verified` or `mismatch` exactly once.
  * Device-local destinations are recorded as `producer_only`.
  *
- * Every column except `org_id`, `status`, `verify_error` and `verified_at` is
- * immutable (trigger); `status` only moves `pending -> verified | mismatch`.
+ * Every column except `org_id`, `status`, `verify_error`, `verified_at`,
+ * `attempt_count` and `next_attempt_at` is immutable (trigger); `status` only
+ * moves `pending -> verified | mismatch`.
  * `signature_alg`/`signature` are reserved for device-side signing and are
  * NULL in statement format 1.
  *
@@ -59,6 +60,10 @@ export const backupSnapshotAttestations = pgTable(
     status: text('status').notNull().default('pending'),
     verifyError: text('verify_error'),
     verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    // Verification retry schedule while storage cannot be read (the row stays
+    // pending); see jobs/backupSnapshotAttestationWorker.ts.
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
@@ -67,7 +72,7 @@ export const backupSnapshotAttestations = pgTable(
     deviceIdx: index('backup_snapshot_attestations_device_idx').on(table.deviceId),
     jobIdx: index('backup_snapshot_attestations_job_idx').on(table.jobId),
     pendingIdx: index('backup_snapshot_attestations_pending_idx')
-      .on(table.createdAt)
+      .on(table.nextAttemptAt, table.createdAt)
       .where(sql`status = 'pending'`),
   }),
 );

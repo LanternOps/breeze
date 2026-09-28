@@ -15,7 +15,7 @@
  * short system-scoped contexts), the same rule as backupSnapshotFileIndex.ts.
  */
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
@@ -23,6 +23,7 @@ import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import { classifyBackupObjectKey } from './backupObjectKey';
 import {
   fetchBackupObjectBytes,
+  isBackupObjectNotFound,
   isBackupObjectTooLarge,
   MANIFEST_FETCH_MAX_BYTES,
 } from './backupSnapshotStorage';
@@ -33,6 +34,16 @@ import { asRecord, resolveSnapshotProviderConfig } from './recoveryBootstrap';
 /** Largest layout / system-state manifest the verifier will fetch. */
 export const ATTESTED_SIDECAR_MAX_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Retries after storage could not be read: the next attempt waits
+ * RETRY_BASE_MS * 2^attempts, capped at RETRY_MAX_DELAY_MS. After
+ * MAX_VERIFY_ATTEMPTS the row is parked — still `pending` (a storage failure
+ * never decides it), but no longer retried by the sweep.
+ */
+export const MAX_VERIFY_ATTEMPTS = 20;
+const RETRY_BASE_MS = 15 * 60_000;
+const RETRY_MAX_DELAY_MS = 24 * 60 * 60_000;
+
 export type AttestationVerifyOutcome = 'verified' | 'mismatch' | 'retry' | 'skipped';
 
 export type AttestationUnderVerification = {
@@ -41,6 +52,7 @@ export type AttestationUnderVerification = {
   status: string;
   verificationMode: string;
   deviceId: string;
+  jobId: string;
   providerSnapshotId: string;
   storageIdentity: string;
   keyLayout: string;
@@ -50,6 +62,7 @@ export type AttestationUnderVerification = {
 
 export type SnapshotUnderVerification = {
   deviceId: string;
+  jobId: string;
   snapshotId: string;
   storageIdentity: string | null;
   keyLayout: string;
@@ -63,8 +76,15 @@ export type AttestationVerifyDeps = {
     provider: { type: string; config: Record<string, unknown> } | null;
   } | null>;
   fetchObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
-  /** Moves a still-pending row to its terminal status; false when it was no longer pending. */
-  finish: (args: { attestationId: string; snapshotDbId: string; status: 'verified' | 'mismatch'; verifyError: string | null }) => Promise<boolean>;
+  /**
+   * Moves a still-pending row to its terminal status, re-checking the
+   * snapshot binding at write time: a `verified` whose binding no longer
+   * holds is written as `mismatch` / `binding_changed`. Returns the status
+   * written, or null when the row was no longer pending.
+   */
+  finish: (args: { attestationId: string; snapshotDbId: string; status: 'verified' | 'mismatch'; verifyError: string | null }) => Promise<'verified' | 'mismatch' | null>;
+  /** Schedules another attempt for a still-pending row after a storage failure. */
+  defer: (args: { attestationId: string; reason: string }) => Promise<{ attemptCount: number; parked: boolean } | null>;
 };
 
 export type AttestationVerifyResult = { outcome: AttestationVerifyOutcome; reason?: string };
@@ -110,18 +130,29 @@ export async function verifySnapshotAttestation(
   if (!snapshot) return { outcome: 'skipped', reason: 'snapshot_gone' };
 
   const finish = async (status: 'verified' | 'mismatch', verifyError: string | null): Promise<AttestationVerifyResult> => {
-    const moved = await deps.finish({ attestationId: attestation.id, snapshotDbId, status, verifyError });
-    if (!moved) return { outcome: 'skipped', reason: 'already_decided' };
-    recordBackupAttestation(status);
-    return verifyError ? { outcome: status, reason: verifyError } : { outcome: status };
+    const written = await deps.finish({ attestationId: attestation.id, snapshotDbId, status, verifyError });
+    if (!written) return { outcome: 'skipped', reason: 'already_decided' };
+    recordBackupAttestation(written);
+    // The write-time re-check may have turned a match into binding_changed.
+    const error = written === status ? verifyError : 'binding_changed';
+    return error ? { outcome: written, reason: error } : { outcome: written };
   };
-  const retry = (reason: string): AttestationVerifyResult => {
+  const retry = async (reason: string): Promise<AttestationVerifyResult> => {
     recordBackupAttestation('verify_unavailable');
+    const scheduled = await deps.defer({ attestationId: attestation.id, reason });
+    if (scheduled?.parked) {
+      recordBackupAttestation('verify_parked');
+      console.warn(
+        `[BackupAttestationVerify] Snapshot ${snapshotDbId} stays pending after ${scheduled.attemptCount} attempts ` +
+          `(${reason}); it is no longer retried automatically.`,
+      );
+    }
     return { outcome: 'retry', reason };
   };
 
   if (
-    snapshot.deviceId !== attestation.deviceId
+    snapshot.jobId !== attestation.jobId
+    || snapshot.deviceId !== attestation.deviceId
     || snapshot.snapshotId !== attestation.providerSnapshotId
     || snapshot.storageIdentity !== attestation.storageIdentity
     || snapshot.keyLayout !== attestation.keyLayout
@@ -156,6 +187,9 @@ export async function verifySnapshotAttestation(
       });
     } catch (err) {
       if (isBackupObjectTooLarge(err)) return finish('mismatch', `${object.role}_size_mismatch`);
+      // A missing object is reported on its own but, like any storage
+      // failure, never decides the row.
+      if (isBackupObjectNotFound(err)) return retry(`object_missing:${object.role}`);
       return retry(`fetch_failed:${object.role}`);
     }
     if (bytes.byteLength !== object.size) return finish('mismatch', `${object.role}_size_mismatch`);
@@ -207,6 +241,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       const [snapshot] = await db
         .select({
           deviceId: backupSnapshots.deviceId,
+          jobId: backupSnapshots.jobId,
           snapshotId: backupSnapshots.snapshotId,
           storageIdentity: backupSnapshots.storageIdentity,
           keyLayout: backupSnapshots.keyLayout,
@@ -230,6 +265,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           status: row.status,
           verificationMode: row.verificationMode,
           deviceId: row.deviceId,
+          jobId: row.jobId,
           providerSnapshotId: row.providerSnapshotId,
           storageIdentity: row.storageIdentity,
           keyLayout: row.keyLayout,
@@ -243,16 +279,69 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
   fetchObject: (args) => fetchBackupObjectBytes(args),
   finish: ({ attestationId, snapshotDbId, status, verifyError }) =>
     systemContext(async () => {
+      // Re-read the binding under a row lock, so a snapshot row rewritten
+      // between the read phase and this write cannot end up attested.
+      const [snapshot] = await db
+        .select({
+          jobId: backupSnapshots.jobId,
+          deviceId: backupSnapshots.deviceId,
+          snapshotId: backupSnapshots.snapshotId,
+          storageIdentity: backupSnapshots.storageIdentity,
+          keyLayout: backupSnapshots.keyLayout,
+        })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.id, snapshotDbId))
+        .for('update');
+      const [row] = await db
+        .select({
+          jobId: backupSnapshotAttestations.jobId,
+          deviceId: backupSnapshotAttestations.deviceId,
+          providerSnapshotId: backupSnapshotAttestations.providerSnapshotId,
+          storageIdentity: backupSnapshotAttestations.storageIdentity,
+          keyLayout: backupSnapshotAttestations.keyLayout,
+        })
+        .from(backupSnapshotAttestations)
+        .where(and(eq(backupSnapshotAttestations.id, attestationId), eq(backupSnapshotAttestations.status, 'pending')))
+        .for('update');
+      if (!snapshot || !row) return null;
+      const bound =
+        snapshot.jobId === row.jobId
+        && snapshot.deviceId === row.deviceId
+        && snapshot.snapshotId === row.providerSnapshotId
+        && snapshot.storageIdentity === row.storageIdentity
+        && snapshot.keyLayout === row.keyLayout;
+      const written: 'verified' | 'mismatch' = status === 'verified' && !bound ? 'mismatch' : status;
       const moved = await db
         .update(backupSnapshotAttestations)
-        .set({ status, verifyError, verifiedAt: new Date() })
+        .set({
+          status: written,
+          verifyError: written === status ? verifyError : 'binding_changed',
+          verifiedAt: new Date(),
+        })
         .where(and(eq(backupSnapshotAttestations.id, attestationId), eq(backupSnapshotAttestations.status, 'pending')))
         .returning({ id: backupSnapshotAttestations.id });
-      if (moved.length === 0) return false;
+      if (moved.length === 0) return null;
       await db
         .update(backupSnapshots)
-        .set({ integrityStatus: status === 'verified' ? 'attested' : 'attestation_failed' })
+        .set({ integrityStatus: written === 'verified' ? 'attested' : 'attestation_failed' })
         .where(eq(backupSnapshots.id, snapshotDbId));
-      return true;
+      return written;
+    }),
+  defer: ({ attestationId, reason }) =>
+    systemContext(async () => {
+      const [row] = await db
+        .update(backupSnapshotAttestations)
+        .set({
+          attemptCount: sql`${backupSnapshotAttestations.attemptCount} + 1`,
+          nextAttemptAt: sql`now() + least(
+            ${RETRY_BASE_MS}::bigint * power(2, least(${backupSnapshotAttestations.attemptCount}, 30))::bigint,
+            ${RETRY_MAX_DELAY_MS}::bigint
+          ) * interval '1 millisecond'`,
+          verifyError: reason,
+        })
+        .where(and(eq(backupSnapshotAttestations.id, attestationId), eq(backupSnapshotAttestations.status, 'pending')))
+        .returning({ attemptCount: backupSnapshotAttestations.attemptCount });
+      if (!row) return null;
+      return { attemptCount: row.attemptCount, parked: row.attemptCount >= MAX_VERIFY_ATTEMPTS };
     }),
 };

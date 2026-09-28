@@ -162,9 +162,11 @@ vi.mock('../jobs/backupSnapshotFileIndexWorker', () => ({
 
 const attestAgentResultSnapshotMock = vi.hoisted(() => vi.fn());
 const attestLateAgentResultMock = vi.hoisted(() => vi.fn());
+const attestedJobIdForSnapshotMock = vi.hoisted(() => vi.fn());
 vi.mock('./backupAttestation', () => ({
   attestAgentResultSnapshot: (...args: unknown[]) => attestAgentResultSnapshotMock(...(args as [])),
   attestLateAgentResult: (...args: unknown[]) => attestLateAgentResultMock(...(args as [])),
+  attestedJobIdForSnapshot: (...args: unknown[]) => attestedJobIdForSnapshotMock(...(args as [])),
 }));
 
 const resolveBackupProtectionForDeviceMock = vi.fn();
@@ -2631,6 +2633,7 @@ describe('snapshot attestation hand-off', () => {
     __resetBackupPredicateMissDiagnosticGuardForTests();
     findForeignSnapshotClaimMock.mockResolvedValue(null);
     attestLateAgentResultMock.mockResolvedValue(null);
+    attestedJobIdForSnapshotMock.mockResolvedValue(null);
     vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
     vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
     vi.mocked(computeExpiresAt).mockReturnValue(null);
@@ -2732,6 +2735,34 @@ describe('snapshot attestation hand-off', () => {
       result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
       dispatchExpectationVerified: true,
     });
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to rewrite a snapshot row whose attestation belongs to another job', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    attestedJobIdForSnapshotMock.mockResolvedValue('job-earlier');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', source: 'reconcile',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 9 } as any,
+    });
+    expect(attestedJobIdForSnapshotMock).toHaveBeenCalledWith('snapshot-db-1');
+    expect(result).toEqual({ applied: true, snapshotDbId: null, providerSnapshotId: 'provider-snap-1' });
+    // Only the job UPDATE ran; the snapshot row was not rewritten.
+    expect(vi.mocked(db.update)).toHaveBeenCalledTimes(1);
+    expect(attestAgentResultSnapshotMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates a snapshot row whose attestation belongs to the same job', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    attestedJobIdForSnapshotMock.mockResolvedValue('job-1');
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(result.snapshotDbId).toBe('snapshot-db-1');
     expect(attestAgentResultSnapshotMock).toHaveBeenCalledTimes(1);
   });
 

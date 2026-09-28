@@ -34,6 +34,7 @@ function attestation(overrides: Partial<AttestationUnderVerification> = {}): Att
     status: 'pending',
     verificationMode: 'server_fetched',
     deviceId: 'device-1',
+    jobId: 'job-1',
     providerSnapshotId: SID,
     storageIdentity: IDENTITY,
     keyLayout: 'legacy_flat',
@@ -48,7 +49,7 @@ function attestation(overrides: Partial<AttestationUnderVerification> = {}): Att
 
 function deps(opts: {
   attestation?: AttestationUnderVerification;
-  snapshot?: Partial<{ deviceId: string; snapshotId: string; storageIdentity: string | null; keyLayout: string }> | null;
+  snapshot?: Partial<{ deviceId: string; jobId: string; snapshotId: string; storageIdentity: string | null; keyLayout: string }> | null;
   provider?: { type: string; config: Record<string, unknown> } | null;
   objects?: Record<string, Uint8Array>;
   fetchError?: Error;
@@ -57,7 +58,8 @@ function deps(opts: {
     [`snapshots/${SID}/manifest.json`]: manifest,
     [`snapshots/${SID}/layout.json`]: layout,
   };
-  const finish = vi.fn(async () => true);
+  const finish = vi.fn(async ({ status }: { status: 'verified' | 'mismatch' }) => status as 'verified' | 'mismatch' | null);
+  const defer = vi.fn(async () => ({ attemptCount: 1, parked: false }));
   const fetchObject = vi.fn(async ({ key, maxBytes }: { key: string; maxBytes: number }) => {
     if (opts.fetchError) throw opts.fetchError;
     const bytes = objects[key];
@@ -69,14 +71,15 @@ function deps(opts: {
     load: vi.fn(async () => ({
       attestation: opts.attestation ?? attestation(),
       snapshot: opts.snapshot === null ? null : {
-        deviceId: 'device-1', snapshotId: SID, storageIdentity: IDENTITY, keyLayout: 'legacy_flat', ...opts.snapshot,
+        deviceId: 'device-1', jobId: 'job-1', snapshotId: SID, storageIdentity: IDENTITY, keyLayout: 'legacy_flat', ...opts.snapshot,
       },
       provider: opts.provider === undefined ? { type: 's3', config: S3_CONFIG } : opts.provider,
     })),
     fetchObject,
     finish,
+    defer,
   };
-  return { d, finish, fetchObject };
+  return { d, finish, fetchObject, defer };
 }
 
 describe('verifySnapshotAttestation', () => {
@@ -129,18 +132,48 @@ describe('verifySnapshotAttestation', () => {
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
   });
 
-  it('leaves the row pending when storage cannot be read', async () => {
-    const { d, finish } = deps({ fetchError: new Error('connect ETIMEDOUT') });
+  it('leaves the row pending when storage cannot be read, and schedules a later attempt', async () => {
+    const { d, finish, defer } = deps({ fetchError: new Error('connect ETIMEDOUT') });
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'fetch_failed:layout' });
     expect(finish).not.toHaveBeenCalled();
+    expect(defer).toHaveBeenCalledWith({ attestationId: 'att-1', reason: 'fetch_failed:layout' });
     expect(recordBackupAttestationMock).toHaveBeenCalledWith('verify_unavailable');
   });
 
+  it('reports a missing object with its own reason, still without deciding the row', async () => {
+    const notFound = Object.assign(new Error('The specified key does not exist.'), { name: 'NoSuchKey' });
+    const { d, finish, defer } = deps({ fetchError: notFound });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'object_missing:layout' });
+    expect(finish).not.toHaveBeenCalled();
+    expect(defer).toHaveBeenCalledWith({ attestationId: 'att-1', reason: 'object_missing:layout' });
+  });
+
+  it('counts a retry that has used up its attempts as parked', async () => {
+    const { d, defer } = deps({ fetchError: new Error('connect ETIMEDOUT') });
+    defer.mockResolvedValueOnce({ attemptCount: 20, parked: true });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'fetch_failed:layout' });
+    expect(recordBackupAttestationMock).toHaveBeenCalledWith('verify_parked');
+  });
+
+  it('fails with binding_changed when the snapshot row names another job', async () => {
+    const { d, fetchObject } = deps({ snapshot: { jobId: 'job-2' } });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
+    expect(fetchObject).not.toHaveBeenCalled();
+  });
+
+  it('reports what the write-time binding re-check actually recorded', async () => {
+    const { d, finish } = deps();
+    finish.mockResolvedValueOnce('mismatch');
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
+    expect(recordBackupAttestationMock).toHaveBeenCalledWith('mismatch');
+  });
+
   it('leaves the row pending when the destination no longer resolves to the attested identity', async () => {
-    const { d, finish, fetchObject } = deps({ provider: { type: 's3', config: { bucket: 'other', endpoint: 'https://s3.example.test' } } });
+    const { d, finish, fetchObject, defer } = deps({ provider: { type: 's3', config: { bucket: 'other', endpoint: 'https://s3.example.test' } } });
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'storage_identity_changed' });
     expect(fetchObject).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
+    expect(defer).toHaveBeenCalledWith({ attestationId: 'att-1', reason: 'storage_identity_changed' });
   });
 
   it('leaves the row pending when the destination configuration is gone', async () => {
@@ -173,7 +206,7 @@ describe('verifySnapshotAttestation', () => {
 
   it('reports a lost race to a concurrent verifier as skipped, without counting it', async () => {
     const { d, finish } = deps();
-    finish.mockResolvedValueOnce(false);
+    finish.mockResolvedValueOnce(null);
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'skipped', reason: 'already_decided' });
     expect(recordBackupAttestationMock).not.toHaveBeenCalled();
   });

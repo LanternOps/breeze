@@ -161,6 +161,13 @@
     "note": "string fields are printable ASCII"
   },
   {
+    "name": "agent id with an html-significant character",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"agent<1>&x\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "strings exclude characters a default JSON encoder escapes"
+  },
+  {
     "name": "not json",
     "statement": "{\"v\":1,",
     "valid": false,

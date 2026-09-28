@@ -26,11 +26,13 @@ import { createOrganization, createPartner } from './db-utils';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
-async function seed(integrity: number) {
+async function seed(integrity: number, provider: 'local' | 's3' = 'local') {
   const unique = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   const org = await createOrganization({ partnerId: (await createPartner()).id });
-  const providerConfig = { path: `/tmp/attested-base-${unique}` };
-  const identity = normalizeStorageIdentity('local', providerConfig);
+  const providerConfig: Record<string, unknown> = provider === 'local'
+    ? { path: `/tmp/attested-base-${unique}` }
+    : { bucket: `ab-${unique}`, region: 'us-east-1', endpoint: 'https://s3.example.test' };
+  const identity = normalizeStorageIdentity(provider, providerConfig);
   return withSystemDbAccessContext(async () => {
     const [site] = await db.insert(sites).values({ orgId: org.id, name: `AB ${unique}` }).returning({ id: sites.id });
     const [device] = await db.insert(devices).values({
@@ -38,11 +40,11 @@ async function seed(integrity: number) {
       architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online', backupIntegrityProtocolVersion: integrity,
     }).returning({ id: devices.id });
     const [config] = await db.insert(backupConfigs).values({
-      orgId: org.id, name: `AB ${unique}`, type: 'file', provider: 'local', providerConfig,
+      orgId: org.id, name: `AB ${unique}`, type: 'file', provider, providerConfig,
     }).returning({ id: backupConfigs.id });
 
     /** A completed snapshot `minutesAgo` old, optionally with an attestation in `status`. */
-    const snapshot = async (name: string, minutesAgo: number, status?: 'verified' | 'mismatch' | 'pending') => {
+    const snapshot = async (name: string, minutesAgo: number, status?: 'verified' | 'mismatch' | 'pending' | 'producer_only') => {
       const [job] = await db.insert(backupJobs).values({
         orgId: org.id, configId: config!.id, deviceId: device!.id, status: 'completed', startedAt: new Date(), completedAt: new Date(),
       }).returning({ id: backupJobs.id });
@@ -55,29 +57,43 @@ async function seed(integrity: number) {
         const statement = `{"v":1,"snapshotId":"${snapshotId}"}`;
         const [row] = await db.insert(backupSnapshotAttestations).values({
           orgId: org.id, snapshotDbId: snap!.id, jobId: job!.id, deviceId: device!.id, providerSnapshotId: snapshotId,
-          storageIdentity: identity, keyLayout: 'legacy_flat', verificationMode: 'server_fetched', acceptedVia: 'agent_result',
+          storageIdentity: identity, keyLayout: 'legacy_flat',
+          verificationMode: status === 'producer_only' ? 'producer_only' : 'server_fetched',
+          status: status === 'producer_only' ? 'producer_only' : 'pending',
+          acceptedVia: 'agent_result',
           resultReceivedAt: new Date(), formatVersion: 1, statement, statementSha256: sha(statement),
           manifestKey: `snapshots/${snapshotId}/manifest.json`, manifestSha256: sha(`manifest ${snapshotId}`), manifestSize: 321,
         }).returning({ id: backupSnapshotAttestations.id });
-        if (status !== 'pending') {
+        if (status === 'verified' || status === 'mismatch') {
           await db.update(backupSnapshotAttestations).set({ status, verifiedAt: new Date() }).where(eq(backupSnapshotAttestations.id, row!.id));
         }
       }
       return snapshotId;
     };
 
+    /** Re-points a snapshot row at a new job, leaving its attestation on the old one. */
+    const reassignJob = async (snapshotId: string) => {
+      const [job] = await db.insert(backupJobs).values({
+        orgId: org.id, configId: config!.id, deviceId: device!.id, status: 'completed', startedAt: new Date(), completedAt: new Date(),
+      }).returning({ id: backupJobs.id });
+      await db.update(backupSnapshots).set({ jobId: job!.id }).where(eq(backupSnapshots.snapshotId, snapshotId));
+    };
+
     const [dispatchJob] = await db.insert(backupJobs).values({
       orgId: org.id, configId: config!.id, deviceId: device!.id, status: 'pending',
       backupMode: 'file', modeTargets: { paths: ['C:\\Data'] },
     }).returning({ id: backupJobs.id });
-    return { orgId: org.id, deviceId: device!.id, configId: config!.id, providerConfig, dispatchJobId: dispatchJob!.id, snapshot };
+    return {
+      orgId: org.id, deviceId: device!.id, configId: config!.id, provider, providerConfig,
+      dispatchJobId: dispatchJob!.id, snapshot, reassignJob,
+    };
   });
 }
 
 function stamp(f: Awaited<ReturnType<typeof seed>>) {
   return withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
     deviceId: f.deviceId, configId: f.configId, jobId: f.dispatchJobId,
-    mode: 'file', provider: 'local', providerConfig: f.providerConfig,
+    mode: 'file', provider: f.provider, providerConfig: f.providerConfig,
   }));
 }
 
@@ -147,4 +163,31 @@ runDb('the backup_run payload carries the base attestation for a capable helper 
   const legacyPayload = await dispatchPayload(older);
   expect(legacyPayload.baseSnapshotId).toBe(legacyBase);
   expect(legacyPayload).not.toHaveProperty('baseAttestation');
+});
+
+runDb('a verified attestation recorded for another job than the snapshot row names is not a base', async () => {
+  const f = await seed(1);
+  const older = await withSystemDbAccessContext(() => f.snapshot('older', 120, 'verified'));
+  const reused = await withSystemDbAccessContext(() => f.snapshot('reused', 10, 'verified'));
+  await withSystemDbAccessContext(() => f.reassignJob(reused));
+  const outcome = await stamp(f);
+  expect(outcome.baseSnapshotId).toBe(older);
+});
+
+runDb('a device-local destination accepts the same device\u2019s producer_only snapshot as a base', async () => {
+  const f = await seed(1, 'local');
+  const base = await withSystemDbAccessContext(() => f.snapshot('local-base', 10, 'producer_only'));
+  const outcome = await stamp(f);
+  expect(outcome.baseSnapshotId).toBe(base);
+  expect(outcome.baseAttestation).toEqual({
+    manifestKey: `snapshots/${base}/manifest.json`, manifestSha256: sha(`manifest ${base}`), manifestSize: 321,
+  });
+});
+
+runDb('a producer_only snapshot is never a base on a destination the server reads', async () => {
+  const f = await seed(1, 's3');
+  await withSystemDbAccessContext(() => f.snapshot('not-local', 10, 'producer_only'));
+  const outcome = await stamp(f);
+  expect(outcome.baseSnapshotId).toBe('');
+  expect(outcome.baseAttestation).toBeNull();
 });

@@ -14,9 +14,12 @@
 --      producer_only   the destination is on the device's own disk, which the
 --                      API cannot read; the row is terminal on insert.
 --
---    Every column except org_id, status, verify_error and verified_at is
---    immutable (trigger); verify_error/verified_at freeze once the row leaves
---    'pending'. org_id may change (device move restamp, org merge repoint).
+--    Every column except org_id, status, verify_error, verified_at,
+--    attempt_count and next_attempt_at is immutable (trigger); those four
+--    freeze once the row leaves 'pending'. attempt_count/next_attempt_at
+--    schedule verification retries when storage cannot be read: the row stays
+--    'pending' (a storage failure never decides it), and after a bounded
+--    number of attempts it is no longer retried automatically. org_id may change (device move restamp, org merge repoint).
 --    Rows are never created by storage reconciliation. A BEFORE INSERT guard
 --    requires the snapshot, job and device to belong to the row's org and the
 --    snapshot row to name the same job, device and snapshot id; it runs as the
@@ -29,8 +32,9 @@
 --
 -- 2. backup_snapshots.integrity_status
 --    Projection of the attestation for display and reports; restore decisions
---    read backup_snapshot_attestations. Existing rows are 'unattested_legacy'
---    through the column default and are never backfilled.
+--    read backup_snapshot_attestations. 'unattested_legacy' (the default) =
+--    produced by a helper that does not report attestations: every existing
+--    row, and new rows from older helpers. Never backfilled.
 --
 -- 3. backup_snapshots.result_provenance
 --    How the row came to exist, written once at row creation: 'agent_result'
@@ -71,6 +75,8 @@ CREATE TABLE IF NOT EXISTS backup_snapshot_attestations (
   status                               text NOT NULL DEFAULT 'pending',
   verify_error                         text NULL,
   verified_at                          timestamptz NULL,
+  attempt_count                        integer NOT NULL DEFAULT 0,
+  next_attempt_at                      timestamptz NULL,
   created_at                           timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT backup_snapshot_attestations_status_chk
     CHECK (status IN ('pending', 'verified', 'mismatch', 'producer_only')),
@@ -101,6 +107,7 @@ CREATE TABLE IF NOT EXISTS backup_snapshot_attestations (
     (layout_sha256 IS NULL) = (layout_size IS NULL)
     AND (system_state_manifest_sha256 IS NULL) = (system_state_manifest_size IS NULL)
   ),
+  CONSTRAINT backup_snapshot_attestations_attempt_chk CHECK (attempt_count >= 0),
   CONSTRAINT backup_snapshot_attestations_signature_chk CHECK (
     (signature_alg IS NULL) = (signature IS NULL)
   )
@@ -115,7 +122,7 @@ CREATE INDEX IF NOT EXISTS backup_snapshot_attestations_device_idx
 CREATE INDEX IF NOT EXISTS backup_snapshot_attestations_job_idx
   ON backup_snapshot_attestations (job_id);
 CREATE INDEX IF NOT EXISTS backup_snapshot_attestations_pending_idx
-  ON backup_snapshot_attestations (created_at)
+  ON backup_snapshot_attestations (next_attempt_at, created_at)
   WHERE status = 'pending';
 
 -- Parent binding at insert time. Invoker rights (no SECURITY DEFINER): under
@@ -192,7 +199,9 @@ BEGIN
   END IF;
   IF OLD.status <> 'pending'
      AND (NEW.verify_error IS DISTINCT FROM OLD.verify_error
-          OR NEW.verified_at IS DISTINCT FROM OLD.verified_at) THEN
+          OR NEW.verified_at IS DISTINCT FROM OLD.verified_at
+          OR NEW.attempt_count IS DISTINCT FROM OLD.attempt_count
+          OR NEW.next_attempt_at IS DISTINCT FROM OLD.next_attempt_at) THEN
     RAISE EXCEPTION 'backup_snapshot_attestations: verification outcome of a % row is immutable', OLD.status;
   END IF;
   IF NEW.status IS DISTINCT FROM OLD.status

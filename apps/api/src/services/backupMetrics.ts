@@ -191,8 +191,11 @@ export function recordBackupWriteDispatch(
  * `duplicate_same`, `conflict`, `binding_mismatch`, `invalid`,
  * `missing_from_capable` (a capable helper reported no attestation),
  * `not_offered` (an older helper), `missing_expectation` (the result was not
- * bound to a consumed dispatch expectation). At verification: `verified`,
- * `mismatch`, `verify_unavailable` (storage not reachable; retried).
+ * bound to a consumed dispatch expectation), `job_reuse_refused` (a result
+ * from another job for a snapshot that already carries an attestation). At
+ * verification: `verified`, `mismatch`, `verify_unavailable` (storage not
+ * readable; retried later), `verify_parked` (still pending after the last
+ * automatic attempt).
  */
 export type BackupAttestationMetricOutcome =
   | 'recorded'
@@ -203,9 +206,11 @@ export type BackupAttestationMetricOutcome =
   | 'missing_from_capable'
   | 'not_offered'
   | 'missing_expectation'
+  | 'job_reuse_refused'
   | 'verified'
   | 'mismatch'
-  | 'verify_unavailable';
+  | 'verify_unavailable'
+  | 'verify_parked';
 
 export function recordBackupAttestation(outcome: BackupAttestationMetricOutcome, count = 1): void {
   recorder.onAttestation(outcome, count);

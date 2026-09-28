@@ -192,6 +192,10 @@ describe('backup_snapshot_attestations tenancy and integrity contract', () => {
       db.update(backupSnapshotAttestations).set({ verifyError: 'later' }).where(eq(backupSnapshotAttestations.id, id)),
     ));
     expect(note.message).toContain('immutable');
+    const retry = await pgError(withSystemDbAccessContext(() =>
+      db.update(backupSnapshotAttestations).set({ attemptCount: 3, nextAttemptAt: new Date() }).where(eq(backupSnapshotAttestations.id, id)),
+    ));
+    expect(retry.message).toContain('immutable');
   });
 
   runDb('producer_only rows are terminal and cannot be pending', async () => {

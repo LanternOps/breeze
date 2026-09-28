@@ -28,7 +28,8 @@ import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { attestAgentResultSnapshot, attestLateAgentResult } from './backupAttestation';
+import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
+import { recordBackupAttestation } from './backupMetrics';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -1566,6 +1567,24 @@ export async function applyBackupCommandResultToJob(params: {
     console.warn(msg);
     captureException(new Error(msg));
     return { applied: true, snapshotDbId: null, providerSnapshotId };
+  }
+
+  // A snapshot row that carries an attestation describes the run that
+  // attestation was recorded for. Rewriting it for another job (its job,
+  // lineage, size, manifests and file index) would leave that attestation and
+  // its projection describing a row that is no longer the attested run, so
+  // refuse, like the sibling-device claim above.
+  if (existingSnapshot) {
+    const attestedJobId = await attestedJobIdForSnapshot(existingSnapshot.id);
+    if (attestedJobId && attestedJobId !== jobId) {
+      recordBackupAttestation('job_reuse_refused');
+      const msg =
+        `[BackupPersistence] Refused to update backup_snapshots row ${existingSnapshot.id} for snapshot ` +
+        `${providerSnapshotId} from job ${jobId} (device ${deviceId}) — its attestation was recorded for job ${attestedJobId}.`;
+      console.warn(msg);
+      captureException(new Error(msg));
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
+    }
   }
 
   // Provenance and the integrity projection are written once, when the row is

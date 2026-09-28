@@ -23,9 +23,9 @@ describe('backupSnapshotAttestationWorker', () => {
     expect(attestationJobId('abc')).toBe('attest-abc');
   });
 
-  it('throws on a deferred verification so BullMQ retries it (the row stays pending)', async () => {
+  it('completes a deferred verification: the row stays pending and the sweep retries it when due', async () => {
     verifyMock.mockResolvedValue({ outcome: 'retry', reason: 'fetch_failed:manifest' });
-    await expect(__testOnly.processAttestationJob(job('s1'))).rejects.toThrow('fetch_failed:manifest');
+    await expect(__testOnly.processAttestationJob(job('s1'))).resolves.toEqual({ status: 'retry' });
   });
 
   it.each(['verified', 'mismatch', 'skipped'] as const)('completes on %s', async (outcome) => {

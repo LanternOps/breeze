@@ -405,7 +405,7 @@ export const backupSnapshots = pgTable(
     // Snapshot attestation projection for display and reports (see
     // schema/backupSnapshotAttestations.ts). Restore decisions read the
     // attestation row, never this column. 'unattested_legacy' = produced
-    // before attestations existed; never backfilled.
+    // by a helper that does not report attestations; never backfilled.
     integrityStatus: text('integrity_status').notNull().default('unattested_legacy'),
     // How the row came to exist: 'agent_result' (an authenticated result for a
     // dispatched job), 'reconcile' (adopted from storage) or

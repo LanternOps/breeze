@@ -307,7 +307,7 @@ const backupWriteDispatchesTotal = new Counter({
 
 const backupAttestationsTotal = new Counter({
   name: 'breeze_backup_attestation_total',
-  help: 'Snapshot attestation outcomes, at recording (recorded, duplicate_same, conflict, binding_mismatch, invalid, missing_from_capable, not_offered, missing_expectation) and at server verification (verified, mismatch, verify_unavailable)',
+  help: 'Snapshot attestation outcomes, at recording (recorded, duplicate_same, conflict, binding_mismatch, invalid, missing_from_capable, not_offered, missing_expectation, job_reuse_refused) and at server verification (verified, mismatch, verify_unavailable, verify_parked)',
   labelNames: ['outcome'] as const,
   registers: [register]
 });

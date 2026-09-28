@@ -445,3 +445,115 @@ describe('server-side verification', () => {
     expect(result).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
   });
 });
+
+describe('job reuse and verification retries', () => {
+  function storage(objects: Record<string, Uint8Array>, error?: Error) {
+    return {
+      ...defaultVerifyDeps,
+      fetchObject: vi.fn(async ({ key }: { key: string }) => {
+        if (error) throw error;
+        const bytes = objects[key];
+        if (!bytes) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+        return bytes;
+      }),
+    };
+  }
+
+  runDb('a result from another job never rewrites an attested snapshot row', async () => {
+    const f = await seed();
+    const manifest = manifestBytes(f.snapshotId);
+    const statement = statementFor(f, manifest);
+    await agentResult(f, { statement }, { filesBackedUp: 3 });
+    const before = await snapshotRow(f);
+
+    const [jobB] = await withSystemDbAccessContext(() =>
+      db.insert(backupJobs).values({
+        orgId: f.orgId, configId: f.configId, deviceId: f.deviceId, status: 'running', storageIdentity: f.storageIdentity,
+        startedAt: new Date(),
+      }).returning({ id: backupJobs.id }),
+    );
+    const reuse = { ...f, jobId: jobB!.id };
+    const result = await agentResult(reuse, { statement: statementFor(reuse, manifest) }, { filesBackedUp: 99 });
+    expect(result.snapshotDbId).toBeNull();
+
+    const [after] = await withSystemDbAccessContext(() => db.select().from(backupSnapshots).where(eq(backupSnapshots.id, before!.id)));
+    expect(after).toMatchObject({ jobId: f.jobId, fileCount: before!.fileCount, integrityStatus: 'pending' });
+    const rows = await attestationRows(before!.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ jobId: f.jobId, statement });
+  });
+
+  runDb('a snapshot row rewritten between reading and writing the verdict is not attested', async () => {
+    const f = await seed();
+    const manifest = manifestBytes(f.snapshotId);
+    await agentResult(f, { statement: statementFor(f, manifest) });
+    const snap = await snapshotRow(f);
+    const [jobB] = await withSystemDbAccessContext(() =>
+      db.insert(backupJobs).values({ orgId: f.orgId, configId: f.configId, deviceId: f.deviceId, status: 'completed' }).returning({ id: backupJobs.id }),
+    );
+    const deps = storage({ [`snapshots/${f.snapshotId}/manifest.json`]: manifest });
+    const racing = {
+      ...deps,
+      load: async (id: string) => {
+        const loaded = await defaultVerifyDeps.load(id);
+        // Another writer re-points the row after the read phase.
+        await withSystemDbAccessContext(() => db.update(backupSnapshots).set({ jobId: jobB!.id }).where(eq(backupSnapshots.id, id)));
+        return loaded;
+      },
+    };
+    expect(await verifySnapshotAttestation(snap!.id, racing)).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
+    expect((await attestationRows(snap!.id))[0]).toMatchObject({ status: 'mismatch', verifyError: 'binding_changed' });
+    expect((await snapshotRow({ ...f, jobId: jobB!.id }))!.integrityStatus).toBe('attestation_failed');
+  });
+
+  runDb('storage failures stay pending, back off, and are swept earliest-due first until parked', async () => {
+    const { findStalePendingAttestations } = await vi.importActual<typeof import('../../jobs/backupSnapshotAttestationWorker')>(
+      '../../jobs/backupSnapshotAttestationWorker',
+    );
+    const { MAX_VERIFY_ATTEMPTS } = await import('../../services/backupAttestationVerify');
+
+    const a = await seed();
+    await agentResult(a, { statement: statementFor(a, manifestBytes(a.snapshotId)) });
+    const snapA = await snapshotRow(a);
+
+    const t0 = Date.now();
+    expect(await verifySnapshotAttestation(snapA!.id, storage({}, new Error('connect ETIMEDOUT'))))
+      .toEqual({ outcome: 'retry', reason: 'fetch_failed:manifest' });
+    let [row] = await attestationRows(snapA!.id);
+    expect(row).toMatchObject({ status: 'pending', attemptCount: 1, verifyError: 'fetch_failed:manifest' });
+    const firstDelay = row!.nextAttemptAt!.getTime() - t0;
+    expect(firstDelay).toBeGreaterThan(14 * 60_000);
+    expect(firstDelay).toBeLessThan(16 * 60_000);
+
+    expect(await verifySnapshotAttestation(snapA!.id, storage({})))
+      .toEqual({ outcome: 'retry', reason: 'object_missing:manifest' });
+    [row] = await attestationRows(snapA!.id);
+    expect(row).toMatchObject({ status: 'pending', attemptCount: 2, verifyError: 'object_missing:manifest' });
+    expect(row!.nextAttemptAt!.getTime() - t0).toBeGreaterThan(29 * 60_000);
+
+    // Not due yet; due once its time passes.
+    const now = new Date();
+    expect(await findStalePendingAttestations(now)).not.toContain(snapA!.id);
+    const later = new Date(row!.nextAttemptAt!.getTime() + 1000);
+    expect(await findStalePendingAttestations(later)).toContain(snapA!.id);
+
+    // An earlier-due row sorts ahead of it; a parked row is never swept.
+    const b = await seed();
+    await agentResult(b, { statement: statementFor(b, manifestBytes(b.snapshotId)) });
+    const snapB = await snapshotRow(b);
+    const c = await seed();
+    await agentResult(c, { statement: statementFor(c, manifestBytes(c.snapshotId)) });
+    const snapC = await snapshotRow(c);
+    await withSystemDbAccessContext(async () => {
+      await db.update(backupSnapshotAttestations)
+        .set({ attemptCount: 1, nextAttemptAt: new Date(row!.nextAttemptAt!.getTime() - 60_000) })
+        .where(eq(backupSnapshotAttestations.snapshotDbId, snapB!.id));
+      await db.update(backupSnapshotAttestations)
+        .set({ attemptCount: MAX_VERIFY_ATTEMPTS, nextAttemptAt: new Date(0) })
+        .where(eq(backupSnapshotAttestations.snapshotDbId, snapC!.id));
+    });
+    const due = (await findStalePendingAttestations(later)).filter((id) => [snapA!.id, snapB!.id, snapC!.id].includes(id));
+    expect(due).toEqual([snapB!.id, snapA!.id]);
+    expect((await attestationRows(snapC!.id))[0]!.status).toBe('pending');
+  });
+});

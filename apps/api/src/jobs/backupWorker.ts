@@ -1043,15 +1043,17 @@ async function stampDispatchPinAndIdentity(params: {
     // retirement lands AFTER this select but before the FOR SHARE lock.
     // A helper that verifies its incremental base (snapshot integrity
     // protocol >= 1) is only ever handed a base whose attestation the server
-    // verified, plus that base manifest's attested digest to check the
-    // downloaded bytes against. No verified candidate means a full run.
-    // Older helpers keep the unrestricted selection.
+    // verified (or, on a device-local destination, the same device's own
+    // producer_only attestation), plus that base manifest's attested digest
+    // to check the downloaded bytes against. No such candidate means a full
+    // run. Older helpers keep the unrestricted selection.
     const [deviceRow] = await tx
       .select({ integrityVersion: devices.backupIntegrityProtocolVersion })
       .from(devices)
       .where(eq(devices.id, params.deviceId))
       .limit(1);
     const requireAttestedBase = (deviceRow?.integrityVersion ?? 0) >= 1;
+    const baseStatusIsLocal = storageIdentity.startsWith('local::');
 
     const eligible = and(
       eq(backupSnapshots.deviceId, params.deviceId),
@@ -1107,7 +1109,15 @@ async function stampDispatchPinAndIdentity(params: {
           backupSnapshotAttestations,
           and(
             eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id),
-            eq(backupSnapshotAttestations.status, 'verified'),
+            // Server-verified, or — on a device-local destination the server
+            // cannot read — the same device's own producer_only statement
+            // (the device, config and identity filters below bind it to this
+            // device and destination).
+            baseStatusIsLocal
+              ? inArray(backupSnapshotAttestations.status, ['verified', 'producer_only'])
+              : eq(backupSnapshotAttestations.status, 'verified'),
+            // The attestation describes the run the snapshot row names.
+            eq(backupSnapshotAttestations.jobId, backupSnapshots.jobId),
             eq(backupSnapshotAttestations.deviceId, params.deviceId),
             eq(backupSnapshotAttestations.storageIdentity, storageIdentity),
             eq(backupSnapshotAttestations.providerSnapshotId, backupSnapshots.snapshotId),
