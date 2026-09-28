@@ -367,6 +367,7 @@
     "convert": "Converter em monitor",
     "converted": "Convertida",
     "notConvertible": "As condições desta regra não podem ser expressas como um único monitor.",
+    "systemManaged": "Regra gerenciada pelo sistema. O Breeze gera este alerta por conta própria, então não há nada para converter.",
     "errors": {
       "fetch": "Falha ao carregar as regras de alerta",
       "convert": "Falha ao converter a regra"

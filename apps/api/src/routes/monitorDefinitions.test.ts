@@ -954,3 +954,32 @@ it('mounts the literal conversion resource before monitor ids', async () => {
   expect(await response.json()).toEqual({ data: { policies: 0, rows: 0 } });
   expect(getMonitorDefinitionMock).not.toHaveBeenCalled();
 });
+
+// #7206: a built-in system anchor rule ("Reboot pending too long", "Patch job
+// failure") is refused with a specific, readable outcome — never the old
+// misleading "Alert template not found" 404.
+describe('POST /monitor-definitions/convert-from-rule/:ruleId', () => {
+  it('maps system_managed to 409 RULE_SYSTEM_MANAGED with a readable message', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    vi.mocked(convertRuleToMonitor).mockResolvedValueOnce({ ok: false, failure: { kind: 'system_managed' } });
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'System-managed rule — it keeps alerting on its own and needs no conversion',
+      code: 'RULE_SYSTEM_MANAGED',
+    });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('still maps template_not_found to 404', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    vi.mocked(convertRuleToMonitor).mockResolvedValueOnce({ ok: false, failure: { kind: 'template_not_found' } });
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Alert template not found' });
+  });
+});

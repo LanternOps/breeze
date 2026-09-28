@@ -367,6 +367,7 @@
     "convert": "In Monitor umwandeln",
     "converted": "Umgewandelt",
     "notConvertible": "Die Bedingungen dieser Regel können nicht als einzelner Monitor ausgedrückt werden.",
+    "systemManaged": "Systemverwaltete Regel. Breeze löst diesen Alarm selbst aus, daher gibt es nichts zu konvertieren.",
     "errors": {
       "fetch": "Alarmregeln konnten nicht geladen werden",
       "convert": "Regel konnte nicht umgewandelt werden"

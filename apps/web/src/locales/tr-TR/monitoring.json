@@ -367,6 +367,7 @@
     "convert": "Monitöre dönüştür",
     "converted": "Dönüştürüldü",
     "notConvertible": "Bu kuralın koşulları tek bir monitör olarak ifade edilemez.",
+    "systemManaged": "Sistem tarafından yönetilen kural. Breeze bu uyarıyı kendisi oluşturur, bu nedenle dönüştürülecek bir şey yoktur.",
     "errors": {
       "fetch": "Uyarı kuralları yüklenemedi",
       "convert": "Kural dönüştürülemedi"
