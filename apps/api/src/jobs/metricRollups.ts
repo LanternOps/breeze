@@ -75,8 +75,9 @@ const DAY_ROLLUP_CATCH_UP_MS = 3 * HOUR_MS;
  * `metricRollupsWorker` the top `db_context_held_too_long` offender. It now
  * runs on one run per hour (the one whose window ends at hh:15); the other
  * eleven skip it. The day bucket for the current day therefore lags by up to
- * an hour — fine for a daily granularity, and every reader of 86400-second
- * buckets is a multi-day trend or forecast.
+ * an hour. Readers of 86400-second buckets (capacity forecasts, 24h/7d/30d
+ * trends, the device `1d` interval) chart whole days, where an hour of lag on
+ * the still-open current day is tolerable.
  *
  * Correctness: a run over [T-15m, T) rewrites the hourly rollups of the hours
  * it overlaps, and the day holding each of those hours must be re-derived by a
@@ -87,8 +88,13 @@ const DAY_ROLLUP_CATCH_UP_MS = 3 * HOUR_MS;
  * `metricRollups.test.ts`.
  */
 export function scheduledDayRollups(window: { from: Date; to: Date }): 'skip' | { from: Date } {
-  if (window.to.getTime() % HOUR_MS !== DAY_ROLLUP_RUN_OFFSET_MS) {
-    return 'skip';
+  const isDayRun = window.to.getTime() % HOUR_MS === DAY_ROLLUP_RUN_OFFSET_MS;
+  if (!isDayRun) {
+    // The catch-up above assumes a skip run rewrites at most the default
+    // lookback. A hand-queued scan with a longer `lookbackMinutes` rewrites
+    // hours the next day run would not reach, so it folds its own days.
+    const windowMs = window.to.getTime() - window.from.getTime();
+    return windowMs > DEFAULT_LOOKBACK_MINUTES * 60 * 1000 ? { from: window.from } : 'skip';
   }
   return { from: new Date(window.from.getTime() - DAY_ROLLUP_CATCH_UP_MS) };
 }

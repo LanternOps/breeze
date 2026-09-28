@@ -343,6 +343,16 @@ describe('metric rollups day-level schedule (#4276)', () => {
     });
   });
 
+  // The catch-up proof assumes a skip run rewrites at most the default 15
+  // minutes. A hand-queued scan with a longer lookback rewrites hours the next
+  // day run's 3h catch-up does not reach, so it must fold its own days itself.
+  it('never skips the day passes for a window longer than the default lookback', () => {
+    expect(scheduledDayRollups({
+      from: new Date('2026-06-18T17:20:00.000Z'),
+      to: new Date('2026-06-19T05:20:00.000Z'),
+    })).toEqual({ from: new Date('2026-06-18T17:20:00.000Z') });
+  });
+
   it('hands the day window to the service as a Date, and passes skip through', async () => {
     await initializeMetricRollupsWorker();
     const base = {
