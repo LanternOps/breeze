@@ -622,7 +622,9 @@ async function mint(
     token,
     baseUrl,
     expiresAt: rfc3339(expiresAt),
+    expiresIn: urlExpiresIn(expiresAt, now),
     deadline: rfc3339(deadline),
+    deadlineIn: urlExpiresIn(deadline, now),
     capabilities: [...STORAGE_SESSION_CAPABILITIES],
     maxBatch: STORAGE_SESSION_MAX_BATCH,
   };
@@ -814,7 +816,7 @@ export async function resolveStorageSessionObjects(
 }
 
 export type RenewResult =
-  | { status: 200; body: { expiresAt: string } }
+  | { status: 200; body: { expiresAt: string; expiresIn: number } }
   | { status: 410; error: string };
 
 /** Extends the lease by STORAGE_SESSION_LEASE_MS, never past the deadline. */
@@ -831,5 +833,5 @@ export async function renewStorageSession(
   const stored = await deps.store.extendLease(session.id, target);
   if (!stored || stored.getTime() <= now.getTime()) return { status: 410, error: 'Storage session has been revoked' };
   const clamped = new Date(Math.min(stored.getTime(), session.deadline.getTime()));
-  return { status: 200, body: { expiresAt: rfc3339(clamped) } };
+  return { status: 200, body: { expiresAt: rfc3339(clamped), expiresIn: urlExpiresIn(clamped, now) } };
 }

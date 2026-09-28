@@ -224,6 +224,13 @@ export function buildWriteEnvelope(input: {
   snapshotId: string;
   conditionalWrites: boolean;
   storageIdentity: string;
+  /**
+   * The server clock at which the envelope is being handed to the helper —
+   * pass the same `now` used to mint `expiresAt`/`deadline` so `expiresIn`/
+   * `deadlineIn` reflect the instant the payload is actually sent, not an
+   * earlier one.
+   */
+  now: Date;
 }): Record<string, unknown> {
   return {
     version: STORAGE_SESSION_PROTOCOL_VERSION,
@@ -232,7 +239,9 @@ export function buildWriteEnvelope(input: {
     token: input.token,
     baseUrl: input.baseUrl,
     expiresAt: rfc3339(input.expiresAt),
+    expiresIn: urlExpiresIn(input.expiresAt, input.now),
     deadline: rfc3339(input.deadline),
+    deadlineIn: urlExpiresIn(input.deadline, input.now),
     snapshotId: input.snapshotId,
     capabilities: [...STORAGE_WRITE_CAPABILITIES],
     maxBatch: STORAGE_SESSION_MAX_BATCH,
@@ -537,6 +546,7 @@ export async function mintBackupWriteSession(
       snapshotId: minted.snapshotId,
       conditionalWrites,
       storageIdentity: helperStorageIdentity(input.provider, input.providerConfig),
+      now,
     }),
   };
 }
