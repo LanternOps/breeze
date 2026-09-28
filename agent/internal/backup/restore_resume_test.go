@@ -486,3 +486,31 @@ func TestResumeTracker_NullCompletedFilesInLegacySnapshot(t *testing.T) {
 		t.Error("a not completed")
 	}
 }
+
+// If the journal cannot be created, progress lives only in memory until the
+// run ends: resume decisions stay correct in-process and close() still
+// writes a complete snapshot.
+func TestResumeTracker_JournalUnavailableStillCompactsOnClose(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty directory where the journal belongs: replay fails, the
+	// compaction cannot remove it, and opening it for append fails.
+	if err := os.MkdirAll(filepath.Join(dir, resumeJournalFile, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := openResumeTracker(dir, "snap")
+	tr.markCompleted("a", 1)
+	tr.markCompleted("b", 2)
+	if !tr.journalDisabled {
+		t.Fatal("journal unexpectedly opened; the test no longer exercises the degraded path")
+	}
+	if !tr.completed("a") || !tr.completed("b") {
+		t.Errorf("in-memory state lost records: %v", tr.state.CompletedFiles)
+	}
+	tr.close()
+
+	st, err := LoadResumeState(dir)
+	if err != nil || st == nil || !st.CompletedFiles["a"] || !st.CompletedFiles["b"] || st.BytesRestored != 3 {
+		t.Fatalf("snapshot after close = %+v (err %v), want a,b / 3", st, err)
+	}
+}

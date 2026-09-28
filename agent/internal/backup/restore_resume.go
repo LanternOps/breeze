@@ -139,6 +139,7 @@ type resumeTracker struct {
 	journalDisabled bool // opening the journal failed; warned once
 	needNewline     bool // the journal may end mid-line (torn tail, failed write)
 	writeFailures   int
+	syncFailures    int
 	unsynced        int
 	lastSync        time.Time
 
@@ -258,7 +259,12 @@ func (t *resumeTracker) syncJournal() {
 		return
 	}
 	if err := t.journal.Sync(); err != nil {
-		slog.Warn("failed to sync resume journal", "error", err.Error())
+		t.syncFailures++
+		// Same cadence as warnWrite: a failing disk would otherwise log
+		// every 5 s for the rest of a multi-hour restore.
+		if t.syncFailures == 1 || t.syncFailures%1000 == 0 {
+			slog.Warn("failed to sync resume journal", "error", err.Error(), "failures", t.syncFailures)
+		}
 	}
 	t.unsynced = 0
 	t.lastSync = time.Now()
