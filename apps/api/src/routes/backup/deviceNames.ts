@@ -24,7 +24,7 @@ export async function attachDeviceNames<T extends { deviceId: string }>(
       if (name) names.set(d.id, name);
     }
   } catch (err) {
-    console.error('[backup] device name lookup failed', err);
+    console.error('[backup] device name lookup failed', { orgId, deviceCount: rows.length }, err);
   }
   return rows.map((r) => ({ ...r, deviceName: names.get(r.deviceId) ?? null }));
 }

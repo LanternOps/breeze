@@ -331,7 +331,13 @@ jobsRoutes.post(
     const failure = enqueueFailure;
     await withAuthDbAccessContext(auth, async () => {
       for (const stranded of createdJobs.slice(failure.strandedFrom)) {
-        await markBackupJobDispatchFailed(stranded.id, failure.error);
+        // One failed write must not leave the remaining jobs `pending`, or
+        // mask the enqueue error the caller is about to receive.
+        try {
+          await markBackupJobDispatchFailed(stranded.id, failure.error);
+        } catch (markErr) {
+          console.error('[BackupJobs] Failed to mark job dispatch-failed:', { jobId: stranded.id }, markErr);
+        }
       }
     });
   }
@@ -592,7 +598,11 @@ jobsRoutes.post(
     if (enqueueFailures.length > 0) {
       await withAuthDbAccessContext(auth, async () => {
         for (const { jobId, error } of enqueueFailures) {
-          await markBackupJobDispatchFailed(jobId, error);
+          try {
+            await markBackupJobDispatchFailed(jobId, error);
+          } catch (markErr) {
+            console.error('[BackupJobs] Failed to mark job dispatch-failed:', { jobId }, markErr);
+          }
         }
       });
     }
