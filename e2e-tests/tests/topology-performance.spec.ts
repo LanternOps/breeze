@@ -179,6 +179,17 @@ async function measureCalibration(context: BrowserContext) {
   } finally { await page.close(); }
 }
 
+const usedLayoutWorker = (sample: Sample) => sample.workerUrls.some((url) => /\/_astro\/layout\.worker-/.test(url));
+
+// Integrity breaches for one projection. The projection test asserts the same
+// conditions, but the artifact is the evidence copied off-host, so its verdict
+// must fail on them too rather than on budgets alone.
+function integrityBreaches(part: Part): number {
+  const badOpens = [part.cold, ...part.samples]
+    .filter((sample) => sample.cspViolations.length > 0 || sample.pageErrors.length > 0 || !usedLayoutWorker(sample)).length;
+  return badOpens + part.topologyWrites.length;
+}
+
 test.describe('topology explorer browser performance (§9)', () => {
   test.beforeAll(() => {
     if (!REFERENCE) return;
@@ -212,7 +223,7 @@ test.describe('topology explorer browser performance (§9)', () => {
         for (const sample of [cold, ...samples]) {
           expect(sample.cspViolations).toEqual([]);
           expect(sample.pageErrors).toEqual([]);
-          expect(sample.workerUrls.some((url) => /\/_astro\/layout\.worker-/.test(url))).toBe(true);
+          expect(usedLayoutWorker(sample)).toBe(true);
         }
         expect(server.writes).toEqual([]);
       } finally {
@@ -254,6 +265,8 @@ test.describe('topology explorer browser performance (§9)', () => {
     verdicts.push({ check: 'layout fallback rate (INDEX rollback line: <=1%)', budget: allowedFallbacks, actual: fallbacks, pass: fallbacks <= allowedFallbacks });
     for (const part of parts) {
       verdicts.push({ check: `${part.projection} main-thread CPU throttle in effect (calibration ratio >= 0.75x rate)`, budget: PROFILE.cpuRate * 0.75, actual: part.calibration.mainRatio, pass: part.calibration.mainRatio >= PROFILE.cpuRate * 0.75 });
+      const breaches = integrityBreaches(part);
+      verdicts.push({ check: `${part.projection} harness integrity (opens with CSP violations, page errors or no production layout worker, plus topology writes)`, budget: 0, actual: breaches, pass: breaches === 0 });
     }
 
     const cpus = os.cpus();

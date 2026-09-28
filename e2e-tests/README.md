@@ -220,7 +220,7 @@ in a session that has no in-app work left, and carry it to the next context with
 
 What it measures, per projection: a cold open (reported separately) plus 30 independent opens of the discovery topology tab at 1440×900, 4× CPU throttle, 100 ms RTT and 10 Mbps. For each open it records time-to-interactive after the graph response, worker layout time, and whether the layout fell back (ELK failure, the controller's 3 s timeout, or a worker crash). The spec header defines every timing point.
 
-Budgets, enforced only when `TOPOLOGY_PERF_REFERENCE=1`: V200/V500 interactive p95 ≤ 2 s, V200 layout p95 ≤ 1 s, V1000 layout p95 ≤ 3 s, every projection interactive p95 ≤ 4 s (INDEX rollback line), and layout fallbacks ≤ 1% of measured layouts. Without the flag the run records and prints the same report but does not fail on budgets. A laptop run is never gate evidence.
+Budgets, enforced only when `TOPOLOGY_PERF_REFERENCE=1`: V200/V500 interactive p95 ≤ 2 s, V200 layout p95 ≤ 1 s, V1000 layout p95 ≤ 3 s, every projection interactive p95 ≤ 4 s (INDEX rollback line), and layout fallbacks ≤ 1% of measured layouts. Without the flag the run records and prints the same report but does not fail on budgets. A laptop run is never gate evidence. Known failure: until #7285 (ELK layout exceeds the 3 s worker timeout on V500/V1000) is fixed, a reference run is expected to fail the fallback-rate line — a laptop run fell back on 30 of 30 V500 and V1000 opens.
 
 Reference host (§9: Linux x86-64, Intel Core i7-12700 with 8 performance cores, 16 GiB, SSD, no competing jobs):
 
