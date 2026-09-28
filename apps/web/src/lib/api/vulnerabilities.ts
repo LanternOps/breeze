@@ -302,12 +302,13 @@ interface ChunkedSpec<T> {
  *    `remediateVulnerabilities` queues each install before the awaited event
  *    publication, so a throw there leaves commands queued that no response ever
  *    reported. A lost HTTP response is ambiguous the same way.
- * 2. Retrying the same selection is not guaranteed safe for remediation. The
- *    server reuses an install of the same (device, patch) that is still pending
- *    or sent (#7071), but once that command has completed or failed a re-send
- *    queues a fresh one. Accept/mitigate are state-writes and tolerate a retry;
- *    the copy therefore still tells the operator to reload first rather than
- *    inviting a blind retry.
+ * 2. What a retry does. For remediation the server attaches a re-sent finding
+ *    to an install of the same (device, patch) that is still pending or sent,
+ *    under a per-device lock so overlapping requests collapse too, and lists
+ *    it in `alreadyQueued` (#7071, #3750). A command that has already FAILED is
+ *    not reused — re-queueing it is the point of a retry — and a completed
+ *    install drops out once the agent's post-install rescan clears the pending
+ *    patch. Accept/mitigate are state-writes and tolerate a retry.
  */
 async function runChunked<T>(ids: string[], spec: ChunkedSpec<T>): Promise<T> {
   const batches = chunkIds(ids);
@@ -329,8 +330,13 @@ async function runChunked<T>(ids: string[], spec: ChunkedSpec<T>): Promise<T> {
 
 // ---- Mutations (all wrapped in runAction so every outcome surfaces a toast) ----
 
-const remediateSummary = (d: RemediateResult): string =>
-  bulkSummary(`remediation${d.scheduled === 1 ? '' : 's'} scheduled`, d.scheduled, d.skipped);
+const remediateSummary = (d: RemediateResult): string => {
+  // A replayed/retried selection collapses onto installs still queued (#3750);
+  // say how many, so "N scheduled" is not read as N new installs.
+  const verb = `remediation${d.scheduled === 1 ? '' : 's'} scheduled`
+    + (d.alreadyQueued.length > 0 ? ` (${d.alreadyQueued.length} already queued)` : '');
+  return bulkSummary(verb, d.scheduled, d.skipped);
+};
 
 export async function remediateVuln(deviceVulnerabilityIds: string[]): Promise<RemediateResult> {
   return runChunked<RemediateResult>(deviceVulnerabilityIds, {
@@ -345,16 +351,20 @@ export async function remediateVuln(deviceVulnerabilityIds: string[]): Promise<R
         errorFallback: 'Failed to schedule remediation',
         ...(toast ? { successMessage: remediateSummary } : {}),
         parseSuccess: (data) => {
-          const d = data as { scheduled?: number; skipped?: SkippedItem[] };
-          return { scheduled: d.scheduled ?? 0, skipped: d.skipped ?? [] };
+          const d = data as { scheduled?: number; alreadyQueued?: string[]; skipped?: SkippedItem[] };
+          return { scheduled: d.scheduled ?? 0, alreadyQueued: d.alreadyQueued ?? [], skipped: d.skipped ?? [] };
         },
       }),
-    empty: { scheduled: 0, skipped: [] },
-    merge: (a, b) => ({ scheduled: a.scheduled + b.scheduled, skipped: [...a.skipped, ...b.skipped] }),
+    empty: { scheduled: 0, alreadyQueued: [], skipped: [] },
+    merge: (a, b) => ({
+      scheduled: a.scheduled + b.scheduled,
+      alreadyQueued: [...a.alreadyQueued, ...b.alreadyQueued],
+      skipped: [...a.skipped, ...b.skipped],
+    }),
     summary: remediateSummary,
     partial: (d, done, total) =>
       `Stopped after ${done} of ${total} findings. At least ${d.scheduled} scheduled — some in the failed batch may also have `
-      + `been scheduled. Reload before retrying: re-sending findings that already succeeded queues duplicate installs.`,
+      + `been scheduled. Retrying the selection will not queue a second install for any that are already queued.`,
   });
 }
 

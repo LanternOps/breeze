@@ -134,7 +134,7 @@ describe('CveDrawer', () => {
   });
 
   it('remediate opens a confirmation and only fires on confirm', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
     render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
     fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
     expect(api.remediateVuln).not.toHaveBeenCalled();
