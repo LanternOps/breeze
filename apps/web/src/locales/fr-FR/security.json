@@ -957,6 +957,25 @@
       "submitting": "Soumettre...",
       "approveElevation": "Approuver l’élévation",
       "denyRequest": "Refuser la demande"
+    },
+    "reauth": {
+      "title": "Demande critique : confirmez que c’est bien vous",
+      "why": "L’approbation d’une élévation de niveau critique nécessite une nouvelle authentification en plus de votre appareil d’approbateur. Elle est vérifiée une seule fois et n’est jamais stockée.",
+      "unavailable": "Votre compte se connecte sans mot de passe et n’a pas d’application d’authentification, il ne peut donc pas se réauthentifier pour les approbations critiques. Les clés d’accès ne sont pas encore acceptées pour cette étape. Configurez une application d’authentification dans Profil → Sécurité, ou demandez à un approbateur disposant d’un mot de passe.",
+      "codeLabel": "Code de l’application d’authentification",
+      "passwordLabel": "Mot de passe du compte",
+      "codeHelp": "Le code à 6 chiffres de l’application d’authentification avec laquelle vous vous connectez. Les clés d’accès et les codes SMS ne sont pas encore acceptés pour cette étape.",
+      "passwordHelp": "Le mot de passe que vous utilisez pour vous connecter à Breeze.",
+      "useCode": "Utiliser plutôt un code de l’application d’authentification",
+      "usePassword": "Utiliser plutôt mon mot de passe",
+      "errors": {
+        "codeRequired": "Saisissez le code de votre application d’authentification pour approuver cette demande critique.",
+        "passwordRequired": "Saisissez le mot de passe de votre compte pour approuver cette demande critique.",
+        "invalid": "Ce mot de passe ou ce code n’a pas été accepté. Vérifiez-le et réessayez.",
+        "required": "Il s’agit d’une demande critique. Ressaisissez votre mot de passe (ou le code d’authentification) et approuvez à nouveau.",
+        "assertionFailed": "La vérification de votre appareil d’approbateur n’a pas été acceptée. Réessayez.",
+        "stepUpRequired": "Votre organisation exige un appareil d’approbateur enregistré (Windows Hello ou Touch ID) pour approuver cette demande. Enregistrez-en un dans Profil → Sécurité."
+      }
     }
   },
   "pamPamRevokeModal": {
