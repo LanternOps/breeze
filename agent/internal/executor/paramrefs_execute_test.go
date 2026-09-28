@@ -251,6 +251,11 @@ func TestExecutePowerShellParameterValuesSurviveIntact(t *testing.T) {
 	}
 }
 
+// pythonColdStartTimeout gives python3 room for a cold process start on a
+// loaded Windows CI runner (issue #7384, sibling of #6599). Only the budget
+// this test asks the executor for is widened; production defaults are untouched.
+const pythonColdStartTimeout = 60
+
 func TestExecutePythonParameterValuesSurviveIntact(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
@@ -259,6 +264,12 @@ func TestExecutePythonParameterValuesSurviveIntact(t *testing.T) {
 	// otherwise, so a non-ASCII value round-trips as mojibake (café → cafΘ).
 	// The executor's env lands in os.Environ() for the child, so pin UTF-8 here.
 	t.Setenv("PYTHONIOENCODING", "utf-8")
+	// Warm python3 once before the table below (issue #7384): a cold first
+	// start can alone exceed the default 20s per-run budget. Its result is
+	// discarded; a genuinely hung interpreter still fails at the extended
+	// timeout, and pass-through assertions are unchanged.
+	runOneTimeout(t, ScriptTypePython, `print("warmup")`, nil, pythonColdStartTimeout)
+
 	tests := []struct {
 		name   string
 		script string
@@ -298,7 +309,7 @@ func TestExecutePythonParameterValuesSurviveIntact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := runOne(t, ScriptTypePython, tt.script, tt.params)
+			result := runOneTimeout(t, ScriptTypePython, tt.script, tt.params, pythonColdStartTimeout)
 			if got := trimEOL(result.Stdout); got != tt.want {
 				t.Fatalf("stdout %q, want %q", got, tt.want)
 			}
