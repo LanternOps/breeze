@@ -19,6 +19,7 @@ type BackupMetricsRecorder = {
   onWriteJanitor: (action: string, outcome: string, count?: number) => void;
   onUnexpectedLegacyWrite: (commandType: string, reason: string, count?: number) => void;
   onConditionalWriteProbe: (outcome: string, reason: string, count?: number) => void;
+  onSnapshotPublishRefused: (reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -40,6 +41,7 @@ let recorder: BackupMetricsRecorder = {
   onWriteJanitor: noop,
   onUnexpectedLegacyWrite: noop,
   onConditionalWriteProbe: noop,
+  onSnapshotPublishRefused: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -60,6 +62,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onWriteJanitor: next?.onWriteJanitor ?? noop,
     onUnexpectedLegacyWrite: next?.onUnexpectedLegacyWrite ?? noop,
     onConditionalWriteProbe: next?.onConditionalWriteProbe ?? noop,
+    onSnapshotPublishRefused: next?.onSnapshotPublishRefused ?? noop,
   };
 }
 
@@ -202,6 +205,16 @@ export function recordBackupWriteDispatch(
   if (mode === 'legacy_credential' && !EXPECTED_LEGACY_WRITE_REASONS.has(reason)) {
     recorder.onUnexpectedLegacyWrite(commandType, reason, count);
   }
+}
+
+/**
+ * A backup result whose snapshot row the database refused because its id is
+ * owned elsewhere: `not_current_job` (a server-issued id another backup job
+ * of the organization now holds) or `foreign_claim` (the id belongs to
+ * another backup, possibly another organization's).
+ */
+export function recordSnapshotPublishRefused(reason: 'not_current_job' | 'foreign_claim', count = 1): void {
+  recorder.onSnapshotPublishRefused(reason, count);
 }
 
 /** One destination probe for create-only write support, by outcome and reason. */

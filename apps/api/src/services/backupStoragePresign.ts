@@ -185,11 +185,24 @@ export async function presignUploadPart(
   return presign(cfg, command, { 'content-length': String(size) }, expiresInSeconds);
 }
 
-export async function createMultipartUpload(cfg: StorageProviderConfig, key: string, sse: WriteSse): Promise<string> {
+/** Server-side encryption as storage reported it for a new object or upload (null: not reported). */
+export type ConfirmedSse = { algorithm: string | null; kmsKeyId: string | null };
+
+export async function createMultipartUpload(
+  cfg: StorageProviderConfig,
+  key: string,
+  sse: WriteSse,
+): Promise<{ uploadId: string; encryption: ConfirmedSse }> {
   const { bucket, client: s3 } = client(cfg);
   const out = await s3.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ...sseInput(sse) }), bounded());
   if (!out.UploadId) throw new Error('storage did not return a multipart upload id');
-  return out.UploadId;
+  return {
+    uploadId: out.UploadId,
+    encryption: {
+      algorithm: typeof out.ServerSideEncryption === 'string' && out.ServerSideEncryption ? out.ServerSideEncryption : null,
+      kmsKeyId: typeof out.SSEKMSKeyId === 'string' && out.SSEKMSKeyId ? out.SSEKMSKeyId : null,
+    },
+  };
 }
 
 export async function completeMultipartUpload(

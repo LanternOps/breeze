@@ -29,8 +29,12 @@ import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
-import { recordBackupAttestation } from './backupMetrics';
-import { SNAPSHOT_ID_RESERVATION_CONSTRAINT, allowedSnapshotIdsForJob } from './backupSnapshotIdReservations';
+import { recordBackupAttestation, recordSnapshotPublishRefused } from './backupMetrics';
+import {
+  SNAPSHOT_ID_RESERVATION_CONSTRAINT,
+  allowedSnapshotIdsForJob,
+  isReservedToAnotherJob,
+} from './backupSnapshotIdReservations';
 import { createAuditLog } from './auditService';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
@@ -1666,6 +1670,19 @@ export async function applyBackupCommandResultToJob(params: {
           // transaction (#2417/#6671 pool-double-hold shape) just to learn a
           // detail this response never needs to surface.
           refusedForeignClaim = true;
+          // A server-issued id this organization's reservation now names
+          // another job for (it took the unfinished id over): an expected
+          // refusal, reported as such. Visible in this session's own context
+          // (same organization), so no escalation is needed to tell.
+          if (await isReservedToAnotherJob(providerSnapshotId, jobId)) {
+            recordSnapshotPublishRefused('not_current_job');
+            console.warn(
+              `[BackupPersistence] Refused to create a backup_snapshots row for snapshot ${providerSnapshotId} ` +
+              `on job ${jobId} (device ${deviceId}) — the snapshot id is held by another backup job.`
+            );
+            return [];
+          }
+          recordSnapshotPublishRefused('foreign_claim');
           const msg =
             `[BackupPersistence] Refused to create a backup_snapshots row for snapshot ${providerSnapshotId} ` +
             `on job ${jobId} (device ${deviceId}) — already claimed by another organization's destination.`;

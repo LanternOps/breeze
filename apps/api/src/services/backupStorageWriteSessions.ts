@@ -61,6 +61,7 @@ import {
   listMultipartUploads,
   presignPutObject,
   presignUploadPart,
+  type ConfirmedSse,
   type PresignedWrite,
   type StorageProviderConfig,
   type WriteSse,
@@ -256,14 +257,58 @@ export function helperStorageIdentity(provider: string, providerConfig: Record<s
   return `${provider}|${configString(providerConfig, 'endpoint')}|${configString(providerConfig, 'region')}|${configString(providerConfig, 'bucket')}`;
 }
 
-/** Server-side encryption as reported to the helper by multipart:create. */
-export type AppliedEncryption = { algorithm: 'AES256' } | { algorithm: 'aws:kms'; kmsKeyId: string };
+type EncryptionSpec = { algorithm: 'AES256' } | { algorithm: 'aws:kms'; kmsKeyId: string };
 
-/** The encryption a multipart upload was created with (null: none requested). */
-export function appliedEncryptionOf(sse: WriteSse): AppliedEncryption | null {
+/**
+ * Server-side encryption as reported to the helper by multipart:create
+ * (`appliedEncryption`): what STORAGE confirmed in its answer (`algorithm`,
+ * and `kmsKeyId` when it named a key — AWS names the key ARN), what the
+ * server requested (`requested`, null when none), and whether the two match
+ * (`matches`). Null only when nothing was requested and storage confirmed
+ * nothing. A request that storage did not confirm is reported explicitly as
+ * `{ algorithm: null, requested, matches: false }` — a backend that ignored
+ * the encryption headers.
+ */
+export type AppliedEncryption = {
+  algorithm: string | null;
+  kmsKeyId?: string;
+  requested: EncryptionSpec | null;
+  matches: boolean;
+};
+
+function requestedSpec(sse: WriteSse): EncryptionSpec | null {
   if (sse.mode === 's3-sse-s3') return { algorithm: 'AES256' };
   if (sse.mode === 's3-sse-kms') return { algorithm: 'aws:kms', kmsKeyId: sse.keyId };
   return null;
+}
+
+/**
+ * Whether the key storage confirmed is the key requested. A key ARN must be
+ * the same ARN; a bare key id must be the id the confirmed ARN ends with; an
+ * alias (`alias/…` or an alias ARN) cannot be resolved here, so the
+ * algorithm alone decides; a confirmation that names no key is accepted.
+ */
+function kmsKeyMatches(requested: string, confirmed: string | null): boolean {
+  if (!confirmed) return true;
+  if (requested.startsWith('alias/') || /^arn:[^:]+:kms:[^:]*:[^:]*:alias\//.test(requested)) return true;
+  if (requested.startsWith('arn:')) return requested === confirmed;
+  return confirmed === requested || confirmed.endsWith(`:key/${requested}`);
+}
+
+/** The encryption a multipart upload was created with, as storage confirmed it (see AppliedEncryption). */
+export function appliedEncryptionOf(sse: WriteSse, confirmed: ConfirmedSse): AppliedEncryption | null {
+  const requested = requestedSpec(sse);
+  if (!requested && !confirmed.algorithm) return null;
+  let matches: boolean;
+  if (!requested) matches = true;
+  else if (confirmed.algorithm !== requested.algorithm) matches = false;
+  else matches = requested.algorithm === 'aws:kms' ? kmsKeyMatches(requested.kmsKeyId, confirmed.kmsKeyId) : true;
+  return {
+    algorithm: confirmed.algorithm,
+    ...(confirmed.kmsKeyId ? { kmsKeyId: confirmed.kmsKeyId } : {}),
+    requested,
+    matches,
+  };
 }
 
 function sseFromPlan(plan: unknown): WriteSse {
@@ -281,7 +326,7 @@ export interface WriteStorage {
   presignPut(cfg: StorageProviderConfig, key: string, size: number, sse: WriteSse, opts: { expiresInSeconds: number; ifNoneMatch: boolean }): Promise<PresignedWrite>;
   presignPart(cfg: StorageProviderConfig, key: string, uploadId: string, partNumber: number, size: number, expiresInSeconds: number): Promise<PresignedWrite>;
   presignGet(cfg: StorageProviderConfig, key: string, expiresInSeconds: number): Promise<string>;
-  createMultipart(cfg: StorageProviderConfig, key: string, sse: WriteSse): Promise<string>;
+  createMultipart(cfg: StorageProviderConfig, key: string, sse: WriteSse): Promise<{ uploadId: string; encryption: ConfirmedSse }>;
   completeMultipart(cfg: StorageProviderConfig, key: string, uploadId: string, parts: Array<{ partNumber: number; etag: string }>, opts: { ifNoneMatch: boolean }): Promise<void>;
   abortMultipart(cfg: StorageProviderConfig, key: string, uploadId: string): Promise<void>;
   listMultipart(cfg: StorageProviderConfig, prefix: string): Promise<Array<{ key: string; uploadId: string }>>;
@@ -602,6 +647,23 @@ async function otherWriterHorizon(session: StorageSessionRow, reservationSnapsho
   return h && h.getTime() >= now.getTime() ? h : null;
 }
 
+/**
+ * When a delete through ANOTHER session of the same reservation can no longer
+ * be running (its marker plus STORAGE_DELETE_SETTLE_MS), if that is still in
+ * the future.
+ */
+async function otherWriterDeleteSettles(session: StorageSessionRow, reservationSnapshotId: string, now: Date): Promise<Date | null> {
+  const [row] = await db
+    .select({ d: max(backupStorageSessions.deletingSince) })
+    .from(backupStorageSessions)
+    .where(and(
+      eq(backupStorageSessions.reservationSnapshotId, reservationSnapshotId),
+      ne(backupStorageSessions.id, session.id),
+    ));
+  const settles = row?.d ? new Date(new Date(row.d as unknown as string).getTime() + STORAGE_DELETE_SETTLE_MS) : null;
+  return settles && settles.getTime() > now.getTime() ? settles : null;
+}
+
 function previousWriterActive(horizon: Date, now: Date): WriteFailure {
   return {
     status: 409,
@@ -823,8 +885,9 @@ export async function createWriteSessionMultipart(
   if ('status' in prepared) return prepared;
 
   let uploadId: string;
+  let confirmed: ConfirmedSse;
   try {
-    uploadId = await deps.storage.createMultipart(prepared.destination.providerConfig, key, prepared.destination.sse);
+    ({ uploadId, encryption: confirmed } = await deps.storage.createMultipart(prepared.destination.providerConfig, key, prepared.destination.sse));
   } catch (err) {
     logStorageFailure('multipart create failed', session.id, err);
     await run(() => db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
@@ -841,9 +904,9 @@ export async function createWriteSessionMultipart(
       logStorageFailure('abort of an unrecorded multipart upload failed; cleanup will retry', session.id, err));
     return { status: 409, code: 'reservation_sealed' };
   }
-  // The encryption the upload was created with, so the helper can refuse to
-  // send parts to an upload that does not carry the encryption it expects.
-  return { status: 200, body: { uploadId, appliedEncryption: appliedEncryptionOf(prepared.destination.sse) } };
+  // The encryption storage confirmed for the upload, so the helper can refuse
+  // to send parts to an upload that does not carry the encryption it expects.
+  return { status: 200, body: { uploadId, appliedEncryption: appliedEncryptionOf(prepared.destination.sse, confirmed) } };
 }
 
 export function validateCompletedParts(parts: unknown): Array<{ partNumber: number; etag: string }> | null {
@@ -1229,6 +1292,11 @@ async function resumePhase(
     ));
   const horizon = await otherWriterHorizon(session, reservation.snapshotId, now);
   if (horizon) return previousWriterActive(horizon, now);
+  // A delete through another session may still be running against storage
+  // (and could remove a key this session writes again) until its marker is
+  // cleared, or until it is older than the time such a call can take.
+  const deleting = await otherWriterDeleteSettles(session, reservation.snapshotId, now);
+  if (deleting) return previousWriterActive(deleting, now);
   const open = await db
     .select({ id: backupStorageSessionUploads.id, objectKey: backupStorageSessionUploads.objectKey, uploadId: backupStorageSessionUploads.uploadId })
     .from(backupStorageSessionUploads)

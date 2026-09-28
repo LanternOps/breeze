@@ -31,6 +31,7 @@ import { withDbAccessContext } from '../../db';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanitor';
 import { reconcileOrphanedBackupSnapshots } from '../../services/backupSnapshotReconcile';
+import { setBackupMetricsRecorder } from '../../services/backupMetrics';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { SNAPSHOT_TAKEOVER_MAX_AGE_MS } from '../../services/backupSnapshotIdReservations';
 import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
@@ -74,7 +75,7 @@ function fakeDeps(overrides: Partial<WriteSessionDeps['storage']> = {}): WriteSe
         expiresAt: new Date(Date.now() + ttl * 1000),
       }),
       presignGet: async (_cfg, key) => `https://storage.example/${key}?get`,
-      createMultipart: async () => `upload-${randomUUID()}`,
+      createMultipart: async () => ({ uploadId: `upload-${randomUUID()}`, encryption: { algorithm: null, kmsKeyId: null } }),
       completeMultipart: async () => undefined,
       abortMultipart: async () => undefined,
       listMultipart: async () => [],
@@ -360,7 +361,7 @@ describe('write session contract additions', () => {
     );
   });
 
-  runDb('multipart:create reports the encryption the upload was created with', async () => {
+  runDb('multipart:create reports the encryption storage confirmed, and a request storage ignored', async () => {
     const plain = await seedWriteTenant();
     const p = await mintFor(plain, plain.jobId);
     const created = await createWriteSessionMultipart(p.session, `snapshots/${p.snapshotId}/files/a.bin`, runFor(plain), fakeDeps());
@@ -371,14 +372,73 @@ describe('write session contract additions', () => {
     await dbExec(sql`UPDATE backup_configs SET encryption = true WHERE id = ${encrypted.configId}`);
     const e = await mintFor(encrypted, encrypted.jobId, kms);
     let requested: unknown = null;
-    const withSse = await createWriteSessionMultipart(e.session, `snapshots/${e.snapshotId}/files/a.bin`, runFor(encrypted), fakeDeps({
-      createMultipart: async (_cfg, _key, sse) => { requested = sse; return 'upload-sse'; },
+    const confirmedKms = await createWriteSessionMultipart(e.session, `snapshots/${e.snapshotId}/files/a.bin`, runFor(encrypted), fakeDeps({
+      createMultipart: async (_cfg, _key, sse) => {
+        requested = sse;
+        return { uploadId: 'upload-sse', encryption: { algorithm: 'aws:kms', kmsKeyId: kms.kmsKeyId } };
+      },
     }));
-    expect(withSse).toMatchObject({
+    expect(confirmedKms).toMatchObject({
       status: 200,
-      body: { uploadId: 'upload-sse', appliedEncryption: { algorithm: 'aws:kms', kmsKeyId: kms.kmsKeyId } },
+      body: {
+        uploadId: 'upload-sse',
+        appliedEncryption: {
+          algorithm: 'aws:kms', kmsKeyId: kms.kmsKeyId, requested: { algorithm: 'aws:kms', kmsKeyId: kms.kmsKeyId }, matches: true,
+        },
+      },
     });
     expect(requested).toEqual({ mode: 's3-sse-kms', keyId: kms.kmsKeyId });
+
+    // A backend that ignores the encryption headers confirms nothing.
+    const ignored = await createWriteSessionMultipart(e.session, `snapshots/${e.snapshotId}/files/b.bin`, runFor(encrypted), fakeDeps({
+      createMultipart: async () => ({ uploadId: 'upload-plain', encryption: { algorithm: null, kmsKeyId: null } }),
+    }));
+    expect(ignored).toMatchObject({
+      status: 200,
+      body: { appliedEncryption: { algorithm: null, requested: { algorithm: 'aws:kms' }, matches: false } },
+    });
+  });
+});
+
+describe('in-flight deletes and refused publication', () => {
+  runDb('a takeover waits while a delete through an earlier session may still be running', async () => {
+    const t = await seedWriteTenant();
+    const { x, sessionA, jobA } = await unfinishedId(t, { abandon: false });
+    await dbExec(sql`UPDATE backup_storage_sessions SET deleting_since = now() - interval '1 minute' WHERE id = ${sessionA}`);
+    const b = await laterJob(t);
+    const waiting = await resume(t, b.session, x);
+    expect(waiting).toMatchObject({ status: 409, code: 'previous_writer_active' });
+    const retry = (waiting as { retryAfterSeconds?: number }).retryAfterSeconds ?? 0;
+    expect(retry).toBeGreaterThan(3 * 60);
+    expect(retry).toBeLessThanOrEqual(4 * 60 + 2);
+    expect(await reservationRow(x)).toMatchObject({ current_job_id: jobA, write_generation: 1 });
+
+    // A marker older than the settle window was left by a call that ended.
+    await dbExec(sql`UPDATE backup_storage_sessions SET deleting_since = now() - interval '6 minutes' WHERE id = ${sessionA}`);
+    const c = await laterJob(t);
+    expect(await resume(t, c.session, x)).toMatchObject({ status: 200, body: { mode: 'write', takeover: true } });
+  });
+
+  runDb('a refused insert for an id another job holds is reported as such, not as another organization\'s claim', async () => {
+    const t = await seedWriteTenant();
+    const { x } = await unfinishedId(t);
+    const b = await laterJob(t);
+    expect((await resume(t, b.session, x)).status).toBe(200);
+    // A job with no write session (an older helper) reports the id.
+    const other = await seedBackupJob(t.orgId, t.configId, t.deviceId, 'running');
+    const refused: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setBackupMetricsRecorder({ onSnapshotPublishRefused: (reason: string) => { refused.push(reason); } });
+    try {
+      expect((await report(t, other, x)).snapshotDbId).toBeNull();
+      expect(refused).toEqual(['not_current_job']);
+      const messages = warn.mock.calls.map((c) => String(c[0]));
+      expect(messages.some((m) => m.includes('held by another backup job'))).toBe(true);
+      expect(messages.some((m) => m.includes("another organization's destination"))).toBe(false);
+    } finally {
+      setBackupMetricsRecorder(null);
+      warn.mockRestore();
+    }
   });
 });
 

@@ -173,10 +173,31 @@ describe('helperStorageIdentity', () => {
 });
 
 describe('appliedEncryptionOf', () => {
-  it('reports the encryption a multipart upload was created with', () => {
-    expect(appliedEncryptionOf({ mode: 'disabled' })).toBeNull();
-    expect(appliedEncryptionOf({ mode: 's3-sse-s3' })).toEqual({ algorithm: 'AES256' });
-    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'arn:aws:kms:k' })).toEqual({ algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:k' });
+  const ARN = 'arn:aws:kms:us-east-1:000000000000:key/1111-2222';
+  const none = { algorithm: null, kmsKeyId: null };
+  it('is null when nothing was requested and storage confirmed nothing', () => {
+    expect(appliedEncryptionOf({ mode: 'disabled' }, none)).toBeNull();
+  });
+  it('reports what storage confirmed, what was requested, and whether they match', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, { algorithm: 'AES256', kmsKeyId: null }))
+      .toEqual({ algorithm: 'AES256', requested: { algorithm: 'AES256' }, matches: true });
+    expect(appliedEncryptionOf({ mode: 'disabled' }, { algorithm: 'AES256', kmsKeyId: null }))
+      .toEqual({ algorithm: 'AES256', requested: null, matches: true });
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'aws:kms', kmsKeyId: ARN }))
+      .toEqual({ algorithm: 'aws:kms', kmsKeyId: ARN, requested: { algorithm: 'aws:kms', kmsKeyId: ARN }, matches: true });
+  });
+  it('accepts a key id or alias request confirmed as the key ARN', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111-2222' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'alias/backups' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'arn:aws:kms:us-east-1:000000000000:alias/backups' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111-2222' }, { algorithm: 'aws:kms', kmsKeyId: null })?.matches).toBe(true);
+  });
+  it('reports an explicit mismatch when storage confirms nothing, another algorithm or another key', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, none))
+      .toEqual({ algorithm: null, requested: { algorithm: 'AES256' }, matches: false });
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'AES256', kmsKeyId: null })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: ARN }, { algorithm: 'aws:kms', kmsKeyId: `${ARN}-other` })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(false);
   });
 });
 

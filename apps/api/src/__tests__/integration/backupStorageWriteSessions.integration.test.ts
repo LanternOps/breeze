@@ -74,7 +74,7 @@ function fakeDeps(overrides: Partial<WriteSessionDeps['storage']> = {}): WriteSe
         expiresAt: new Date(Date.now() + ttl * 1000),
       }),
       presignGet: async (_cfg, key) => `https://storage.example/${key}?get`,
-      createMultipart: async () => `upload-${randomUUID()}`,
+      createMultipart: async () => ({ uploadId: `upload-${randomUUID()}`, encryption: { algorithm: null, kmsKeyId: null } }),
       completeMultipart: async () => undefined,
       abortMultipart: async () => undefined,
       listMultipart: async () => [],

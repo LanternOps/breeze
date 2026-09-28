@@ -177,6 +177,21 @@ export async function allowedSnapshotIdsForJob(jobId: string): Promise<string[] 
   return live.map((r) => r.snapshotId);
 }
 
+/**
+ * True when this server-issued id is reserved, in the caller's organization,
+ * to a backup job other than `jobId` (another job took it over). Runs in the
+ * caller's DB context: a reservation of another organization is invisible
+ * and reads as false.
+ */
+export async function isReservedToAnotherJob(snapshotId: string, jobId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ source: backupSnapshotIdReservations.source, currentJobId: backupSnapshotIdReservations.currentJobId })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
+  return !!row && row.source === 'server_minted' && row.currentJobId !== jobId;
+}
+
 /** Loads one reservation, optionally locking it for the rest of the caller's transaction. */
 export async function loadReservation(
   snapshotId: string,

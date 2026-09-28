@@ -50,7 +50,10 @@ import {
  *                               (snapshotId: the id the helper's journal names; the server decides whether
  *                               this session may continue it, including an earlier job's unfinished id —
  *                               see resumeWriteSession; 409 not_resumable | previous_writer_active + Retry-After)
- *   POST …/multipart:create     {"key"}  → {"uploadId", "appliedEncryption": {"algorithm", "kmsKeyId"?} | null}
+ *   POST …/multipart:create     {"key"}  → {"uploadId", "appliedEncryption"}
+ *                               appliedEncryption: null (none requested, none confirmed) or
+ *                               {"algorithm": <confirmed by storage> | null, "kmsKeyId"?: <confirmed key>,
+ *                                "requested": {"algorithm", "kmsKeyId"?} | null, "matches": boolean}
  *   POST …/multipart:complete   {"key", "uploadId", "parts": [{"partNumber", "etag"}]}
  *   POST …/multipart:abort      {"key", "uploadId"}
  *   POST …/objects:list         {"prefix", "continuationToken"?}
