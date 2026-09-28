@@ -2,6 +2,7 @@ package bmr
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -313,5 +314,67 @@ func TestSelectOfflineHives_UnreadableArtifactLogLeavesTreeUntouched(t *testing.
 	}
 	if strings.Join(names, ",") != "SAM,SOFTWARE,SYSTEM,SYSTEM.LOG1" {
 		t.Fatalf("config dir = %v, want the untouched tree", names)
+	}
+}
+
+// Review item 2: the swap must install every artifact log first, then the
+// primaries of hives the tree still had, and the tree-MISSING primaries
+// strictly last. A failure anywhere earlier then leaves a tree-missing hive
+// still missing, so a retry re-runs the whole fallback instead of accepting a
+// dirty artifact primary that never got its logs.
+func TestSelectOfflineHives_FailedLogRenameLeavesTreeMissingHiveAbsent(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM", "SECURITY") // SYSTEM missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM.LOG1"), []byte("artifact-SYSTEM.LOG1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var renamed []string
+	renameHive = func(from, to string) error {
+		if filepath.Base(to) == "SYSTEM.LOG1" {
+			return errors.New("injected rename failure")
+		}
+		renamed = append(renamed, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SYSTEM.LOG1") {
+		t.Fatalf("err = %v, want the injected SYSTEM.LOG1 rename failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !os.IsNotExist(err) {
+		t.Fatalf("config\\SYSTEM exists after a failed swap (renamed before the failure: %v); a retry would accept a dirty primary without its logs", renamed)
+	}
+	entries, _ := os.ReadDir(cfg)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".brz-fallback-tmp") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+// The full order, observed through the seam: logs, then tree-present
+// primaries, then tree-missing primaries.
+func TestSelectOfflineHives_RenameOrder(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM") // SYSTEM and SECURITY missing
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	for _, l := range []string{"SYSTEM.LOG1", "SAM.LOG2"} {
+		_ = os.WriteFile(filepath.Join(staging, "registry", l), []byte("artifact-"+l), 0o600)
+	}
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var order []string
+	renameHive = func(from, to string) error {
+		order = append(order, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+	if _, err := selectOfflineHives(root, staging); err != nil {
+		t.Fatalf("selectOfflineHives: %v", err)
+	}
+	want := "SYSTEM.LOG1,SAM.LOG2,SOFTWARE,SAM,SYSTEM,SECURITY"
+	if got := strings.Join(order, ","); got != want {
+		t.Errorf("rename order = %s, want %s", got, want)
 	}
 }

@@ -118,13 +118,46 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 			}
 		}
 	}
-	for _, name := range staged {
-		if err := os.Rename(tmp(name), filepath.Join(cfg, name)); err != nil {
+	for _, name := range renameOrder(staged, treeMissing) {
+		if err := renameHive(tmp(name), filepath.Join(cfg, name)); err != nil {
 			removeTemps()
 			return "", fmt.Errorf("replace %s from the system-state artifact: %w", name, err)
 		}
 	}
 	return "registry hives restored from the system-state artifacts, not the file tree", nil
+}
+
+// renameHive is os.Rename, a seam so tests can fail one rename of the swap.
+var renameHive = os.Rename
+
+// renameOrder orders the fallback swap so an interrupted swap is always
+// retried: every artifact log first, then the primaries of hives the tree
+// still had, and the primaries the tree was MISSING strictly last. Until the
+// last rename lands, at least one tree-missing hive is still absent, so a
+// retry of selectOfflineHives sees an incomplete tree and redoes the whole
+// fallback — it can never accept an artifact primary (from a VSS copy, lagging
+// its logs) that was installed without them.
+func renameOrder(staged, treeMissing []string) []string {
+	missing := make(map[string]bool, len(treeMissing))
+	for _, h := range treeMissing {
+		missing[h] = true
+	}
+	isPrimary := make(map[string]bool, len(offlineRequiredHives))
+	for _, h := range offlineRequiredHives {
+		isPrimary[h] = true
+	}
+	var logs, present, absent []string
+	for _, name := range staged {
+		switch {
+		case !isPrimary[name]:
+			logs = append(logs, name)
+		case missing[name]:
+			absent = append(absent, name)
+		default:
+			present = append(present, name)
+		}
+	}
+	return append(append(logs, present...), absent...)
 }
 
 // hiveFilePresent fails closed: only a confirmed-absent file
