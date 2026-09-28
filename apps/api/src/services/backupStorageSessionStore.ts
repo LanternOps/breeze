@@ -9,6 +9,7 @@ import { and, eq, inArray, isNull, max, sql, count } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   backupSnapshotFiles,
+  backupSnapshotIdReservations,
   backupSnapshotOrigins,
   backupSnapshots,
   backupStorageSessions,
@@ -217,6 +218,15 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
       .set({ ...decision.next, lastUsedAt: now })
       .where(eq(backupStorageSessions.id, sessionId));
     return decision;
+  },
+
+  async isSnapshotSealing(snapshotId) {
+    const [row] = await db
+      .select({ state: backupSnapshotIdReservations.state })
+      .from(backupSnapshotIdReservations)
+      .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+      .limit(1);
+    return row?.state === 'sealing';
   },
 
   async extendLease(sessionId, expiresAt) {

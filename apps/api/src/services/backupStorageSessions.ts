@@ -210,6 +210,11 @@ export interface BrokeredReadStore {
   ): Promise<StorageSessionBudgetDecision | null>;
   /** Raise expires_at to at least `expiresAt`; returns the stored value, or null when revoked/absent. */
   extendLease(sessionId: string, expiresAt: Date): Promise<Date | null>;
+  /**
+   * True while a brokered write of this snapshot id is still sealing: an
+   * upload URL issued for it may still be usable, so its bytes are not final.
+   */
+  isSnapshotSealing?(snapshotId: string): Promise<boolean>;
 }
 
 export interface BrokeredReadDeps {
@@ -393,6 +398,7 @@ const REFUSAL_MESSAGES: Record<string, string> = {
 };
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
+const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
 
 function refusalMessage(reason: string): string {
   return REFUSAL_MESSAGES[reason] ?? 'This backup cannot be read securely.';
@@ -423,10 +429,12 @@ export async function deliverBrokeredReadCommand(
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
     return decision.payload;
   }
-  if (decision.reason === 'index_unavailable') {
+  if (decision.reason === 'index_unavailable' || decision.reason === 'snapshot_sealing') {
     deps.recordMint('snapshot_read', 'deferred', decision.reason);
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
-    throw new CommandDeliveryDeferredError(DEFERRAL_MESSAGE);
+    throw new CommandDeliveryDeferredError(
+      decision.reason === 'snapshot_sealing' ? SEALING_DEFERRAL_MESSAGE : DEFERRAL_MESSAGE,
+    );
   }
   if (REF_TYPES.has(ctx.type)) {
     deps.recordMint('snapshot_read', 'refused', decision.reason);
@@ -521,6 +529,10 @@ async function mint(
   // The snapshot id is agent-reported and every authorized key is built from
   // it: it must be a single segment of the object-key grammar.
   if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'unbrokered', reason: 'invalid_snapshot_key' };
+  // Not final yet: an upload URL issued for this snapshot may still be usable.
+  if (store.isSnapshotSealing && (await store.isSnapshotSealing(snapshot.snapshotId))) {
+    return { mode: 'unbrokered', reason: 'snapshot_sealing' };
+  }
 
   const destination = await store.resolveConfig(snapshot.configId, orgId);
   if (!destination) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };

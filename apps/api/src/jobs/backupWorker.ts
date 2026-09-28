@@ -47,6 +47,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { recordBackupWriteDispatch } from '../services/backupMetrics';
+import { brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
 import { captureException } from '../services/sentry';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -834,6 +835,8 @@ interface PreparedBackupTarget {
   commandJobId: string;
   command: AgentCommand;
   commandType: string;
+  /** How the storage destination travels with this target (write-dispatch telemetry). */
+  writeDelivery?: { mode: 'brokered' | 'legacy' | 'local'; reason: string };
 }
 
 type BackupDispatchPrepare =
@@ -1420,32 +1423,48 @@ async function prepareBackupDispatchTargets(
       providerConfig: destination.providerConfig,
     });
 
+    const legacyPayload: Record<string, unknown> = {
+      jobId: commandJobId,
+      configId: data.configId,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
+      storageEncryption: destination.storageEncryption,
+      ...target.payload,
+      // Payload fields stay file/system_image-only (spec §3.1) even though
+      // storage_identity is now stamped for every target above. Spread
+      // LAST (review fix) so the server-owned dedupe-base pin/lease can
+      // never be silently shadowed by a same-named key in target.payload
+      // (resolveBackupTargets's file/system_image branches don't produce
+      // one today, but nothing enforces that going forward).
+      ...(target.commandType === 'backup_run'
+        ? {
+            baseSnapshotId: dispatchPin.baseSnapshotId,
+            publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
+            // Only for a verified base pinned for a capable helper, which
+            // checks the downloaded base manifest against it.
+            ...(dispatchPin.baseAttestation ? { baseAttestation: dispatchPin.baseAttestation } : {}),
+          }
+        : {}),
+    };
+    // A helper that reports brokered writes gets a write-scoped storage
+    // session (server-issued snapshot id, base manifest from the dispatch pin
+    // only) instead of the destination; any other target is sent as before.
+    const delivery = await brokerWorkerBackupPayload({
+      orgId: data.orgId,
+      jobId: commandJobId,
+      deviceId: data.deviceId,
+      configId: data.configId,
+      commandType: target.commandType,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
+      payload: legacyPayload,
+      baseSnapshotId: target.commandType === 'backup_run' ? dispatchPin.baseSnapshotId : null,
+    });
+
     const command: AgentCommand = {
       id: commandJobId,
       type: target.commandType,
-      payload: {
-        jobId: commandJobId,
-        configId: data.configId,
-        provider: destination.provider,
-        providerConfig: destination.providerConfig,
-        storageEncryption: destination.storageEncryption,
-        ...target.payload,
-        // Payload fields stay file/system_image-only (spec §3.1) even though
-        // storage_identity is now stamped for every target above. Spread
-        // LAST (review fix) so the server-owned dedupe-base pin/lease can
-        // never be silently shadowed by a same-named key in target.payload
-        // (resolveBackupTargets's file/system_image branches don't produce
-        // one today, but nothing enforces that going forward).
-        ...(target.commandType === 'backup_run'
-          ? {
-              baseSnapshotId: dispatchPin.baseSnapshotId,
-              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
-              // Only for a verified base pinned for a capable helper, which
-              // checks the downloaded base manifest against it.
-              ...(dispatchPin.baseAttestation ? { baseAttestation: dispatchPin.baseAttestation } : {}),
-            }
-          : {}),
-      },
+      payload: delivery.payload,
     };
 
     // Record the server-side dispatch expectation BEFORE sending so the WS
@@ -1458,7 +1477,12 @@ async function prepareBackupDispatchTargets(
     // fail-closed on arrival (dropped), not trusted.
     await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
 
-    prepared.push({ commandJobId, command, commandType: target.commandType });
+    prepared.push({
+      commandJobId,
+      command,
+      commandType: target.commandType,
+      writeDelivery: { mode: delivery.mode, reason: delivery.reason },
+    });
   }
 
   return { status: 'ok', prepared, preFailedTargets, backupMode, targetCount: targets.length };
@@ -1644,12 +1668,15 @@ async function processDispatchBackup(
       if (outcome.status === 'sent') {
         sendState.set(target.commandJobId, 'sent');
         sentCount++;
-        // The command carried its storage destination inline; a local one
-        // is a path, not a credential.
-        if (target.command.payload?.provider === 'local') {
+        // A brokered target carried a write session; otherwise the command
+        // carried its storage destination inline (a local one is a path,
+        // not a credential).
+        if (target.writeDelivery?.mode === 'brokered') {
+          recordBackupWriteDispatch(target.commandType, 'brokered', 'ok');
+        } else if (target.command.payload?.provider === 'local') {
           recordBackupWriteDispatch(target.commandType, 'local', 'no_credential');
         } else {
-          recordBackupWriteDispatch(target.commandType, 'legacy_credential', 'inline_provider_config');
+          recordBackupWriteDispatch(target.commandType, 'legacy_credential', target.writeDelivery?.reason ?? 'inline_provider_config');
         }
         continue;
       }

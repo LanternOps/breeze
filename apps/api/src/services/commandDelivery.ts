@@ -1,7 +1,5 @@
-import {
-  BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES,
-  materializeBackupStorageCredentials,
-} from './backupCommandCredentials';
+import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
+import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
@@ -102,8 +100,12 @@ registerDeliveryRefresher('software_install', async (payload) => {
 for (const type of BROKERED_READ_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBrokeredReadCommand);
 }
+// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V): a helper that
+// reports brokered writes gets a write-scoped storage session; any other
+// delivery resolves the destination reference as before
+// (services/backupStorageWriteDelivery.ts).
 for (const type of BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES) {
-  registerDeliveryRefresher(type, materializeBackupStorageCredentials);
+  registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
 
 /**

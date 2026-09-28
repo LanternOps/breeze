@@ -22,8 +22,10 @@
 import './setup';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { describe, expect, it, vi } from 'vitest';
-import { withDbAccessContext } from '../../db';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { runOutsideDbContext, withDbAccessContext } from '../../db';
+import { backupWriteCredentialPayload } from '../../services/backupCommandCredentials';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
 import {
@@ -349,5 +351,55 @@ describe('publishing a brokered snapshot', () => {
     expect(outcome.snapshotDbId).not.toBeNull();
     expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
     expect((await sessionRow(minted.sessionId)).revoked_at).not.toBeNull();
+  });
+});
+
+describe('delivering a queued database backup', () => {
+  const previous = process.env.PUBLIC_API_URL;
+  beforeAll(() => { process.env.PUBLIC_API_URL = 'https://api.breeze.example'; });
+  afterAll(() => {
+    if (previous === undefined) delete process.env.PUBLIC_API_URL;
+    else process.env.PUBLIC_API_URL = previous;
+  });
+
+  async function deliver(t: WriteTenant, reported: number) {
+    const commandId = randomUUID();
+    const payload = {
+      jobId: t.jobId,
+      configId: t.configId,
+      ...backupWriteCredentialPayload(t.configId, t.orgId, { provider: 's3', storageEncryption: { required: false, mode: 'disabled' } }),
+      instance: 'MSSQLSERVER',
+      database: 'db1',
+    };
+    await getTestDb().execute(sql`
+      INSERT INTO device_commands (id, device_id, type, status, payload, executed_at)
+      VALUES (${commandId}, ${t.deviceId}, 'mssql_backup', 'sent', ${JSON.stringify(payload)}::jsonb, now())
+    `);
+    const [out] = await runOutsideDbContext(() =>
+      withDbAccessContext(orgContext(t.orgId), () =>
+        prepareClaimedCommandsForDelivery(
+          [{ id: commandId, type: 'mssql_backup', deviceId: t.deviceId, payload, executedAt: new Date() }],
+          { reportedBackupWriteProtocolVersion: reported },
+        ),
+      ),
+    );
+    return (out as unknown as { payload: Record<string, unknown> }).payload;
+  }
+
+  runDb('a helper reporting brokered writes gets a write session and no storage destination', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'pending' });
+    const payload = await deliver(t, 1);
+    expect(payload).not.toHaveProperty('providerConfig');
+    expect(payload).not.toHaveProperty('providerConfigRef');
+    expect(payload.storageSession).toMatchObject({ scope: 'snapshot_write', baseUrl: 'https://api.breeze.example' });
+    const id = (payload.storageSession as { snapshotId: string }).snapshotId;
+    expect(await reservationRow(id)).toMatchObject({ org_id: t.orgId, current_job_id: t.jobId, state: 'reserved' });
+  });
+
+  runDb('any other helper is delivered exactly as before', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'pending', writeProtocol: 0 });
+    const payload = await deliver(t, 0);
+    expect(payload.providerConfig).toMatchObject({ bucket: WRITE_DESTINATION.bucket });
+    expect(payload).not.toHaveProperty('storageSession');
   });
 });
