@@ -305,6 +305,13 @@ const backupWriteDispatchesTotal = new Counter({
   registers: [register]
 });
 
+const backupAttestationsTotal = new Counter({
+  name: 'breeze_backup_attestation_total',
+  help: 'Snapshot attestation outcomes, at recording (recorded, duplicate_same, conflict, binding_mismatch, invalid, missing_from_capable, not_offered, missing_expectation) and at server verification (verified, mismatch, verify_unavailable)',
+  labelNames: ['outcome'] as const,
+  registers: [register]
+});
+
 const backupVerificationSkipsTotal = new Counter({
   name: 'breeze_backup_verification_skips_total',
   help: 'Scheduled backup verification skips by verification type and reason',
@@ -918,6 +925,12 @@ function recordBackupWriteDispatchMetric(commandType: string, mode: string, reas
     .inc(safeCount);
 }
 
+function recordBackupAttestationMetric(outcome: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
+}
+
 function recordBackupCapabilityRegressedMetric(capability: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1110,6 +1123,7 @@ function bindMetricsRecorders(): void {
     onStorageSessionObjects: recordStorageSessionObjectsMetric,
     onStorageSessionMint: recordStorageSessionMintMetric,
     onWriteDispatch: recordBackupWriteDispatchMetric,
+    onAttestation: recordBackupAttestationMetric,
   });
 
   setAnomalyMetricsRecorder({

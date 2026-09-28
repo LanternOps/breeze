@@ -33,6 +33,7 @@ import { applyBackupCommandResultToJob } from '../../services/backupResultPersis
 import { recordSnapshotAttestation, type RecordSnapshotAttestationInput } from '../../services/backupAttestation';
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
+import { setBackupMetricsRecorder } from '../../services/backupMetrics';
 import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -158,6 +159,8 @@ describe('recording from agent results', () => {
   });
 
   runDb('an identical re-send is a no-op; a different statement never replaces the first', async () => {
+    const outcomes: string[] = [];
+    setBackupMetricsRecorder({ onAttestation: (outcome) => outcomes.push(outcome) });
     const f = await seed();
     const manifest = manifestBytes(f.snapshotId);
     const statement = statementFor(f, manifest);
@@ -179,6 +182,8 @@ describe('recording from agent results', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.statement).toBe(statement);
     expect((await snapshotRow(f))!.integrityStatus).toBe('pending');
+    expect(outcomes).toEqual(['recorded', 'duplicate_same', 'conflict']);
+    setBackupMetricsRecorder(null);
   });
 
   runDb('a device-local destination is producer_only at once and never queued', async () => {

@@ -1678,6 +1678,22 @@ describe('backup storage-session and helper-capability metrics', () => {
     ]));
   });
 
+  it('counts snapshot attestation outcomes by outcome only', async () => {
+    const { recordBackupAttestation } = await import('../services/backupMetrics');
+    recordBackupAttestation('recorded');
+    recordBackupAttestation('recorded');
+    recordBackupAttestation('missing_from_capable');
+    recordBackupAttestation('mismatch');
+
+    const series = await seriesOf('breeze_backup_attestation_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { outcome: 'recorded' }, value: 2 },
+      { labels: { outcome: 'missing_from_capable' }, value: 1 },
+      { labels: { outcome: 'mismatch' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels)).toEqual(['outcome']);
+  });
+
   it('counts backup helper capability regressions by capability only', async () => {
     const { recordBackupCapabilityRegressed } = await import('../services/backupMetrics');
     recordBackupCapabilityRegressed('integrity');
