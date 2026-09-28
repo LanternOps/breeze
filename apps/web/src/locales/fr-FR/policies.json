@@ -712,7 +712,7 @@
         "timezone2": "Fuseau horaire",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Masquer les alertes",
-        "muteAlertNotificationsDuringWindow": "Mettez en sourdine les notifications d’alerte pendant la fenêtre.",
+        "muteAlertNotificationsDuringWindow": "Pendant la fenêtre, aucune nouvelle alerte n’est créée.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suspendre l’application des correctifs",
         "delayPatchInstallationsDuringWindow": "Retardez l’installation des correctifs pendant la fenêtre.",

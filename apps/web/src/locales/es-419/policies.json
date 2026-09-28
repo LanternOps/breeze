@@ -712,7 +712,7 @@
         "timezone2": "zona horaria",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Suprimir alertas",
-        "muteAlertNotificationsDuringWindow": "Silenciar las notificaciones de alerta durante la ventana.",
+        "muteAlertNotificationsDuringWindow": "No se crean alertas nuevas durante la ventana.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suprimir parches",
         "delayPatchInstallationsDuringWindow": "Retrasar la aplicación de parches durante la ventana.",

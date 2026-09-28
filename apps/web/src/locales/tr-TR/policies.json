@@ -712,7 +712,7 @@
         "timezone2": "saat dilimi",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Uyarıları bastır",
-        "muteAlertNotificationsDuringWindow": "Pencere sırasında uyarı bildirimlerini sessize alın.",
+        "muteAlertNotificationsDuringWindow": "Pencere sırasında yeni uyarı oluşturulmaz.",
         "suppressAlerts2": "Uyarıları bastır",
         "suppressPatching": "Yamalamayı engelle",
         "delayPatchInstallationsDuringWindow": "Pencere sırasında yama kurulumlarını geciktirin.",

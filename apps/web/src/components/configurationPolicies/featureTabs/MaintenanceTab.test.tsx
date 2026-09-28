@@ -17,6 +17,27 @@ vi.mock('./useFeatureLink', () => ({
   }),
 }));
 
+describe('MaintenanceTab — suppression toggles (#7212)', () => {
+  const renderTab = () => render(
+    <MaintenanceTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+  );
+
+  it('describes Suppress alerts as preventing alert creation, not muting notifications', () => {
+    renderTab();
+    expect(screen.queryByText(/mute alert notifications/i)).toBeNull();
+    expect(screen.getByText(/no new alerts are created during the window/i)).toBeTruthy();
+  });
+
+  it('exposes each suppression toggle as a labelled switch with on/off state', () => {
+    renderTab();
+    const alerts = screen.getByRole('switch', { name: /suppress alerts/i });
+    expect(alerts.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('switch', { name: /suppress patching/i }).getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(alerts);
+    expect(alerts.getAttribute('aria-checked')).toBe('false');
+  });
+});
+
 describe('MaintenanceTab — rebootIfPending', () => {
   beforeEach(() => {
     vi.clearAllMocks();

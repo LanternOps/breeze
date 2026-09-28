@@ -34,6 +34,8 @@ describe('conversionApi (W05c1 contract)', () => {
     expect(conversionPaths.partnerConvertAll()).toBe('/monitor-definitions/conversion/partner/convert-all');
     expect(conversionPaths.ledger({ orgId: 'o/1', policyId: 'p1', cursor: 'c1', limit: 25 }))
       .toBe('/monitor-definitions/conversion/ledger?orgId=o%2F1&policyId=p1&cursor=c1&limit=25');
+    expect(conversionPaths.ledger({ orgId: 'o1', sourceTable: 'network_monitors' }))
+      .toBe('/monitor-definitions/conversion/ledger?orgId=o1&sourceTable=network_monitors');
   });
 
   it('stops polling on preview_failed and allows a fresh retry', async () => {

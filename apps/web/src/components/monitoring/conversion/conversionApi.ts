@@ -56,7 +56,7 @@ export const conversionPaths = {
   revert: (conversionId: string) => `${CONVERSION_BASE}/${encodeURIComponent(conversionId)}/revert`,
   retire: () => `${CONVERSION_BASE}/retire`,
   partnerPreview: () => `${CONVERSION_BASE}/partner/preview`,
-  ledger: (filters: { orgId?: string; policyId?: string; cursor?: string; limit?: number } = {}) => {
+  ledger: (filters: { orgId?: string; policyId?: string; sourceTable?: ConversionSourceTable; cursor?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) if (value != null) query.set(key, String(value));
     return `${CONVERSION_BASE}/ledger?${query}`;
@@ -145,7 +145,7 @@ export async function fetchPolicyPreview(policyId: string, options: PreviewOptio
  * The API wraps every conversion response in `{ data }`; going through
  * readJson/unwrap is what keeps `items` from arriving undefined.
  */
-export async function fetchLedgerPage(filters: { orgId?: string; policyId?: string; cursor?: string; limit?: number }): Promise<LedgerPage> {
+export async function fetchLedgerPage(filters: { orgId?: string; policyId?: string; sourceTable?: ConversionSourceTable; cursor?: string; limit?: number }): Promise<LedgerPage> {
   return readJson<LedgerPage>(await fetchWithAuth(conversionPaths.ledger(filters)), 'Failed to load the conversion history');
 }
 

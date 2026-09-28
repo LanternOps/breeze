@@ -259,7 +259,9 @@ export function buildCompiledNetworkMonitor(
   return {
     orgId: def.orgId,
     partnerId: def.partnerId,
-    name: `[monitor] ${def.name}`,
+    // #7212: the network check is user-facing (Results list, device check
+    // list), so it keeps the name the operator gave it — no "[monitor] " prefix.
+    name: def.name,
     monitorType: c.checkType,
     target: c.target,
     assetId: c.assetId ?? null,
@@ -476,6 +478,9 @@ export async function verifyCompiled(
       for (const key of Object.keys(expectedCheck) as Array<keyof typeof expectedCheck>) {
         const expected = canonical(expectedCheck[key]);
         const actual = canonical((check as Record<string, unknown>)[key as string]);
+        // Rows compiled before #7212 carry a "[monitor] " prefix; they are not
+        // drift, and get the plain name on their next recompile.
+        if (key === 'name' && check.name === `[monitor] ${def.name}`) continue;
         if (expected !== actual) diff.push(`network_monitors.${String(key)}: ${actual} !== ${expected}`);
       }
     }

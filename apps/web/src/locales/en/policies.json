@@ -712,7 +712,7 @@
         "timezone2": "timezone",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Suppress alerts",
-        "muteAlertNotificationsDuringWindow": "Mute alert notifications during window.",
+        "muteAlertNotificationsDuringWindow": "No new alerts are created during the window.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suppress patching",
         "delayPatchInstallationsDuringWindow": "Delay patch installations during window.",

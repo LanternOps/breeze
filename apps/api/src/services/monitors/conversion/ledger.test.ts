@@ -133,6 +133,16 @@ it.each([true, false])('retains the live-target gate for an available runtime (%
   expect((await listConversionLedger({ limit: 1 }, auth)).items[0]!.revertable).toBe(!live);
 });
 
+it('scopes the ledger to one source table when asked (#7212)', async () => {
+  await listConversionLedger({ sourceTable: 'network_monitors' }, auth);
+  const predicate = new PgDialect().sqlToQuery(m.predicates[0]);
+  expect(predicate.sql).toContain('"source_table" =');
+  expect(predicate.params).toContain('network_monitors');
+  m.predicates = [];
+  await listConversionLedger({}, auth);
+  expect(new PgDialect().sqlToQuery(m.predicates[0]).sql).not.toContain('"source_table"');
+});
+
 it('disables Undo for a source released by monitor deletion', async () => {
   m.rows = [[{ ...entry, sourceTable: 'network_monitors', sourceState: { name: 'Gateway', sourceReleased: true } }], []];
   expect((await listConversionLedger({}, auth)).items[0]).toMatchObject({ sourceName: 'Gateway', revertable: false });

@@ -712,7 +712,7 @@
         "timezone2": "Zeitzone",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Warnungen unterdrücken",
-        "muteAlertNotificationsDuringWindow": "Warnmeldungen während des Fensters stummschalten.",
+        "muteAlertNotificationsDuringWindow": "Während des Fensters werden keine neuen Warnungen erstellt.",
         "suppressAlerts2": "unterdrückenAlerts",
         "suppressPatching": "Unterdrücken Sie das Patchen",
         "delayPatchInstallationsDuringWindow": "Patch-Installationen während des Fensters verzögern.",

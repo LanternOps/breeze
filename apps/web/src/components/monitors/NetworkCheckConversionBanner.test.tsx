@@ -32,6 +32,12 @@ it('reviews both outcomes and converts only representable checks', async () => {
   await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
 });
 
+it('scopes the conversion history to network checks (#7212)', async () => {
+  request.mockImplementation(async url => json(String(url).includes('/ledger?') ? { items: [], nextCursor: null } : preview()));
+  render(<NetworkCheckConversionBanner orgId="org-1" onConverted={vi.fn()} />);
+  await waitFor(() => expect(request.mock.calls.some(([url]) => String(url).includes('/ledger?') && String(url).includes('sourceTable=network_monitors'))).toBe(true));
+});
+
 it('uses the singular for exactly one pending network check', async () => {
   request.mockImplementation(async (url) => {
     if (String(url).includes('/ledger?')) return json({ items: [], nextCursor: null });
