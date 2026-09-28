@@ -17,7 +17,7 @@ import { readXeroItemRefs, type XeroItemRef } from './xeroItems';
 import type { AccountingConnection } from './accountingConnectionService';
 import type {
   AccountingInvoiceLineMapping, AccountingInvoiceLinePayload, AccountingInvoicePayload, AccountingInvoicePreflightRefusal,
-  InvoicePushResult,
+  InvoicePushResult, InvoiceVoidResult,
 } from './types';
 
 export const XERO_INVOICE_REFERENCE_PREFIX = 'breeze:';
@@ -432,4 +432,38 @@ export async function findPushedXeroInvoice(ctx: XeroCallContext, invoiceId: str
   if (!live) return null;
   const remoteVersion = parseXeroDate(live.UpdatedDateUTC);
   return { id: live.InvoiceID as string, ...(remoteVersion ? { remoteVersion } : {}) };
+}
+
+/**
+ * Void one Xero invoice (refinement 8). Reads first: absent or already
+ * VOIDED/DELETED is success (the desired end state holds); money applied is
+ * `payment_linked` (the core's void-with-payments flow, #5180); DRAFT and
+ * SUBMITTED are DELETED (Xero cannot void them); AUTHORISED is VOIDED.
+ */
+export async function voidXeroInvoice(ctx: XeroCallContext, remoteInvoiceId: string): Promise<InvoiceVoidResult> {
+  const operation = 'Xero invoice void';
+  const existing = await readXeroInvoice(ctx, remoteInvoiceId);
+  if (!existing) return { remoteVersion: null };
+  const status = existing.Status ?? '';
+  if (GONE_STATUSES.has(status)) return { remoteVersion: parseXeroDate(existing.UpdatedDateUTC) };
+  if (status === 'PAID' || moneyApplied(existing)) {
+    throw new AccountingProviderError({
+      kind: 'payment_linked', provider: 'xero', operation, message: `${operation} refused: a payment or credit is applied in Xero`,
+    });
+  }
+  if (!LIVE_STATUSES.has(status)) {
+    throw new AccountingProviderError({ kind: 'transient', provider: 'xero', operation, message: `${operation} found an unknown invoice status` });
+  }
+  const target = status === 'AUTHORISED' ? 'VOIDED' : 'DELETED';
+  const res = requireXeroBody(
+    await xeroApiWrite<InvoicesBody | null>(
+      ctx, 'POST', `Invoices/${encodeURIComponent(remoteInvoiceId)}${WRITE_QUERY}`, { Invoices: [{ InvoiceID: remoteInvoiceId, Status: target }] }, operation,
+    ),
+    operation,
+  );
+  const updated = xeroArray<XeroInvoice>(res.Invoices)[0];
+  if (updated?.HasErrors) {
+    throw validation(operation, `${operation} was rejected by Xero`, updated.ValidationErrors?.find((v) => v?.Message)?.Message);
+  }
+  return { remoteVersion: parseXeroDate(updated?.UpdatedDateUTC) };
 }

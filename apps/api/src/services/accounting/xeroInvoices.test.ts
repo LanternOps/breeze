@@ -12,7 +12,7 @@ vi.mock('./accountingRateLimit', async (orig) => ({
 import { AccountingProviderError } from './accountingProviderError';
 import {
   buildXeroInvoice, findPushedXeroInvoice, findXeroInvoicesByReference, pushXeroInvoice, toXeroPushResult,
-  xeroInvoiceIdempotencyKey, xeroInvoicePreflight, xeroInvoiceReference, xeroLineAmounts,
+  voidXeroInvoice, xeroInvoiceIdempotencyKey, xeroInvoicePreflight, xeroInvoiceReference, xeroLineAmounts,
 } from './xeroInvoices';
 import type { AccountingInvoiceLinePayload, AccountingInvoicePayload } from './types';
 
@@ -542,5 +542,77 @@ describe('pushXeroInvoice — bounded outcomes (Review Focus 1 and 2)', () => {
       .mockResolvedValueOnce(json({ Invoices: [remote({ InvoiceNumber: 'INV-0042' })] }));
     await expect(pushXeroInvoice(ctx, SETTINGS, invoice(), [])).resolves.toMatchObject({ id: 'xi-1', docNumber: 'INV-0042' });
     expect(methods(fetchMock)).toEqual(['GET', 'PUT', 'GET', 'PUT', 'GET', 'POST']);
+  });
+});
+
+describe('voidXeroInvoice (refinement 8)', () => {
+  const VOID_URL = 'https://api.xero.com/api.xro/2.0/Invoices/xi-1?unitdp=4&summarizeErrors=true';
+
+  it.each<[string, string]>([['AUTHORISED', 'VOIDED'], ['DRAFT', 'DELETED'], ['SUBMITTED', 'DELETED']])(
+    '%s → POST Status %s, returning the new version',
+    async (Status, target) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(json({ Invoices: [remote({ Status })] }))
+        .mockResolvedValueOnce(json({ Invoices: [remote({ Status: target, UpdatedDateUTC: '/Date(1790000100000+0000)/' })] }));
+      await expect(voidXeroInvoice(ctx, 'xi-1')).resolves.toEqual({ remoteVersion: new Date(1790000100000).toISOString() });
+      const post = callsOf(fetchMock)[1]!;
+      expect(post).toMatchObject({ url: VOID_URL, method: 'POST' });
+      expect(bodyOf(post.init)).toEqual({ Invoices: [{ InvoiceID: 'xi-1', Status: target }] });
+      expect(post.init.headers).not.toHaveProperty('Idempotency-Key');
+    },
+  );
+
+  it.each(['VOIDED', 'DELETED'])('already %s → success, no write', async (Status) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Invoices: [remote({ Status })] }));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).resolves.toEqual({ remoteVersion: new Date(1790000000000).toISOString() });
+    expect(callsOf(fetchMock)).toHaveLength(1);
+  });
+
+  it('absent in Xero (404) → success with no version, no write', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('', { status: 404 }));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).resolves.toEqual({ remoteVersion: null });
+    expect(callsOf(fetchMock)).toHaveLength(1);
+  });
+
+  it.each([{ Status: 'PAID', AmountPaid: 120 }, { AmountPaid: 10 }, { AmountCredited: 5 }])(
+    'money applied (%o) → payment_linked, no write (Review Focus 5)',
+    async (over) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Invoices: [remote(over)] }));
+      await expect(voidXeroInvoice(ctx, 'xi-1')).rejects.toMatchObject({ kind: 'payment_linked', provider: 'xero' });
+      expect(callsOf(fetchMock)).toHaveLength(1);
+    },
+  );
+
+  it('a payment applied between the read and the void → payment_linked from Xero\'s 400', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [remote()] }))
+      .mockResolvedValueOnce(failing400('The status VOIDED cannot be applied to the invoice because it has payments or credit notes allocated to it.'));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).rejects.toMatchObject({ kind: 'payment_linked' });
+  });
+
+  it('an unknown status is transient (never guessed)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Invoices: [remote({ Status: 'SOMETHING_NEW' })] }));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).rejects.toMatchObject({ kind: 'transient' });
+  });
+});
+
+describe('voidXeroInvoice — bounded outcomes', () => {
+  it('a timed-out void is transient; the retry reads VOIDED and succeeds without a second write', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [remote()] }))
+      .mockRejectedValueOnce(timeout())
+      .mockResolvedValueOnce(json({ Invoices: [remote({ Status: 'VOIDED', UpdatedDateUTC: '/Date(1790000100000+0000)/' })] }));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).rejects.toMatchObject({ kind: 'transient' });
+    await expect(voidXeroInvoice(ctx, 'xi-1')).resolves.toEqual({ remoteVersion: new Date(1790000100000).toISOString() });
+    expect(callsOf(fetchMock).map((c) => c.method)).toEqual(['GET', 'POST', 'GET']);
+  });
+
+  it('an element with HasErrors on the void response is a validation failure carrying its message', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [remote()] }))
+      .mockResolvedValueOnce(json({ Invoices: [{ InvoiceID: 'xi-1', HasErrors: true, ValidationErrors: [{ Message: 'Invoice not of valid status for modification' }] }] }));
+    await expect(voidXeroInvoice(ctx, 'xi-1')).rejects.toMatchObject({
+      kind: 'validation', provider: 'xero', providerMessage: 'Invoice not of valid status for modification',
+    });
   });
 });

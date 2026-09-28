@@ -2,10 +2,11 @@
  * Xero AccountingProvider (spec Phase E). W02 ships CONNECT: OAuth, tokens,
  * tenant selection, organisation settings, pickers and targeted disconnect.
  * W03 implements contacts and items; the `mapping`/`customerImport`
- * capabilities flip in W03b. Every other method refuses with
- * capability_unavailable until its wave flips the capability (W04 invoicePush,
- * W05 paymentPull/paymentPush). The capability gates in routes, producers and
- * workers keep them unreachable; the refusal is the backstop.
+ * capabilities flip in W03b. W04 ships invoice push and void (capability
+ * flipped in W04b). Every other method refuses with capability_unavailable
+ * until its wave flips the capability (W05 paymentPull/paymentPush). The
+ * capability gates in routes, producers and workers keep them unreachable; the
+ * refusal is the backstop.
  */
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
 import { AccountingProviderError } from './accountingProviderError';
@@ -15,10 +16,11 @@ import {
 } from './xeroHttp';
 import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
 import { getXeroItem, listXeroItems, upsertXeroItem } from './xeroItems';
+import { findPushedXeroInvoice, pushXeroInvoice, voidXeroInvoice, xeroInvoicePreflight } from './xeroInvoices';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
   AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
-  AccountingInvoicePayload, AccountingItemPayload, AccountingPaymentPayload, AccountingProvider,
+  AccountingInvoicePayload, AccountingInvoicePreflightRefusal, AccountingItemPayload, AccountingPaymentPayload, AccountingProvider,
   AccountingVoidInvoicePayload, ChangeSet, ConnectionTokens, InvoicePushResult, InvoiceVoidResult,
   PaymentDeleteResult, ProviderSettingsOption, ProviderSettingsOptions, ProviderTenantSelection, RateLimitSpec,
   RealmSettings, RemoteCustomer, RemoteIncomeAccount, RemoteItem, RemoteRef,
@@ -220,17 +222,36 @@ export class XeroProvider implements AccountingProvider {
     });
   }
 
-  // --- later waves (capability false; unreachable behind the gates) ---
+  // --- invoices (Xero W04; invoicePush capability flipped in W04b) ---
+  invoicePushPreflight(
+    conn: AccountingConnection,
+    invoice: Pick<AccountingInvoicePayload, 'currencyCode' | 'taxTotal' | 'lines'>,
+  ): AccountingInvoicePreflightRefusal | null {
+    return xeroInvoicePreflight(conn, invoice);
+  }
+
   async pushInvoice(
-    _conn: AccountingConnection,
-    _invoice: AccountingInvoicePayload,
-    _lineMappings: readonly AccountingInvoiceLineMapping[],
-  ): Promise<InvoicePushResult> { return notYet('invoice push', 'W04'); }
+    conn: AccountingConnection,
+    invoice: AccountingInvoicePayload,
+    lineMappings: readonly AccountingInvoiceLineMapping[],
+  ): Promise<InvoicePushResult> {
+    return pushXeroInvoice(callContext(conn), conn, invoice, lineMappings);
+  }
+
   async voidInvoice(
-    _conn: AccountingConnection,
+    conn: AccountingConnection,
     _invoice: AccountingVoidInvoicePayload,
-    _mapping: AccountingEntityMapping,
-  ): Promise<InvoiceVoidResult> { return notYet('invoice void', 'W04'); }
+    mapping: AccountingEntityMapping,
+  ): Promise<InvoiceVoidResult> {
+    return voidXeroInvoice(callContext(conn), mapping.remoteEntityId);
+  }
+
+  /** Refinement 22: lets a Breeze void reach a create whose response was lost. */
+  async findRemoteInvoice(conn: AccountingConnection, invoiceId: string): Promise<{ id: string; remoteVersion?: string } | null> {
+    return findPushedXeroInvoice(callContext(conn), invoiceId);
+  }
+
+  // --- later waves (capability false; unreachable behind the gates) ---
   async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
   async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
   async reconcileChanges(_conn: AccountingConnection, _since: Date | null): Promise<ChangeSet> { return notYet('payment pull', 'W05'); }
