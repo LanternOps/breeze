@@ -1115,7 +1115,10 @@ coreRoutes.get(
         updateAttemptLastAt: devices.updateAttemptLastAt,
         // #6925 — agent-reported Breeze Assist install problem; drives the
         // "Assist enabled but not installed" list badge (#7023).
-        helperInstallIssue: devices.helperInstallIssue
+        helperInstallIssue: devices.helperInstallIssue,
+        // #7067 — latest agent-logs ingest time; drives the "logs silent"
+        // list badge.
+        lastLogAt: devices.lastLogAt
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -1326,6 +1329,7 @@ coreRoutes.get(
         updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
         updateAttemptLastAt: d.updateAttemptLastAt ?? null,
         helperInstallIssue: d.helperInstallIssue ?? null,
+        lastLogAt: d.lastLogAt ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,

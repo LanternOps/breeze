@@ -110,6 +110,15 @@ export const devices = pgTable('devices', {
   maintenanceReason: varchar('maintenance_reason', { length: 500 }),
   maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
+  // #7067 — latest agent-logs ingest time for this device. Written by the
+  // logs ingest route (agents/logs.ts), throttled to a conditional UPDATE so
+  // a batch that moved the value < 5 min doesn't cost a write on the hot
+  // ingest path. NULL = never shipped a log (or predates this column).
+  // Combined with `status`, this is what lets the server tell "a heartbeating
+  // device that is quiet by design" from "a heartbeating device whose log
+  // shipping is mute" without depending on the (possibly broken) log channel
+  // itself — see isDeviceLogSilent in @breeze/shared.
+  lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
   // a recovery. recoveredFromSnapshotId is a soft reference to

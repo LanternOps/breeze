@@ -27,7 +27,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'isVirtual', 'virtualizationPlatform', 'osVersion', 'osBuild', 'architecture',
   'agentVersion', 'helperLifecycleMode', 'status', 'isEphemeral',
   'maintenanceStartedAt', 'maintenanceUntil', 'maintenanceReason', 'maintenanceStartedBy',
-  'lastSeenAt', 'enrolledAt', 'enrolledBy', 'linkGroupId', 'linkGroupRole',
+  'lastSeenAt', 'lastLogAt', 'enrolledAt', 'enrolledBy', 'linkGroupId', 'linkGroupRole',
   'tags', 'customFields', 'managementPosture', 'tccPermissions', 'desktopAccess',
   'lastUser', 'uptimeSeconds', 'isHeadless', 'pendingReboot',
   'rebootScheduledAt', 'rebootDeadline', 'rebootSource', 'rebootDeferralsUsed',

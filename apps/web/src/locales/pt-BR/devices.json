@@ -1121,6 +1121,8 @@
     "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
+    "logsSilent": "Este dispositivo está online, mas não envia logs desde {{since}}. O envio de logs pode estar desativado, falhando ou não chegando ao servidor — verifique a configuração de envio de logs do agente no dispositivo.",
+    "logsSilentNeverShipped": "Este dispositivo está online, mas nunca enviou um log. O envio de logs pode estar desativado, falhando ou não chegando ao servidor — verifique a configuração de envio de logs do agente no dispositivo.",
     "updateStuck": "A atualização do agente para {{target}} parece travada: {{attempts}} tentativas desde {{since}} e o dispositivo continua na versão antiga. O atualizador tenta novamente a cada heartbeat; verifique os logs do agente, ou o próprio dispositivo se ele não enviar nenhum.",
     "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
     "helperInstallIssue": {
@@ -1469,6 +1471,8 @@
       "manual": "Manual"
     },
     "updateWithheld": "Atualizações retidas",
+    "logsSilent": "Logs silenciosos",
+    "logsSilentTooltip": "Este dispositivo está online, mas não envia logs há mais de 6 horas. O envio de logs pode estar desativado, falhando ou não chegando ao servidor.",
     "updateStuck": "Atualização travada",
     "updateStuckTooltip": "Este dispositivo está há mais de uma hora tentando atualizar o agente para {{target}} sem concluir.",
     "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",

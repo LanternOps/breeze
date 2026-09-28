@@ -193,6 +193,50 @@ describe('DeviceInfoTab — stuck agent update (#4073)', () => {
   });
 });
 
+describe('DeviceInfoTab — logs silent (#7067)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('shows the logs-silent notice for an online device quiet past the threshold', async () => {
+    load({ lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
+  });
+
+  it('shows the never-shipped variant when the device has no last_log_at but has been enrolled long enough', async () => {
+    load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
+  });
+
+  it('shows no notice for an online device with recent logs', async () => {
+    load({ lastLogAt: new Date(Date.now() - 60_000).toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('logs-silent')).toBeNull();
+  });
+
+  it('shows no notice for an offline device with a stale last_log_at', async () => {
+    load({ status: 'offline', lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('logs-silent')).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — hardware summary display', () => {
   beforeEach(() => {
     vi.clearAllMocks();
