@@ -24,9 +24,24 @@ export async function loadPendingTenantRow(dbc: DbExecutor, partnerId: string, p
   return row ? mapConnection(row) : null;
 }
 
-function decryptOrNull(value: string | null): string | null {
+/**
+ * Fail-safe (a claim → grant_superseded, a discard → no remote cleanup), but
+ * never silent (review D): a key or ciphertext problem would otherwise show the
+ * user a repeating 409 with nothing in the logs. Logs ids only, never the value.
+ */
+function decryptOrNull(
+  value: string | null,
+  where: { connectionId: string; provider: AccountingProviderId; field: 'access_token' | 'refresh_token' },
+): string | null {
   if (!value) return null;
-  try { return decryptSecret(value); } catch { return null; }
+  try {
+    return decryptSecret(value);
+  } catch (err) {
+    console.warn('[accountingTenantSelectionStore] could not decrypt a pending connection token; treating it as absent', {
+      ...where, error: err instanceof Error ? err.message : 'unknown',
+    });
+    return null;
+  }
 }
 
 /**
@@ -68,7 +83,9 @@ export async function claimPendingTenant(dbc: DbExecutor, input: {
     eq(accountingConnections.partnerId, input.partnerId),
   )).limit(1).for('update');
   if (!locked || locked.status !== PENDING_TENANT_STATUS) return { kind: 'not_pending' };
-  const currentRefresh = decryptOrNull(locked.refreshTokenEncrypted);
+  const currentRefresh = decryptOrNull(locked.refreshTokenEncrypted, {
+    connectionId: input.connectionId, provider: input.provider, field: 'refresh_token',
+  });
   if (!currentRefresh || pendingGrantFingerprint(currentRefresh) !== input.grantFingerprint) {
     return { kind: 'grant_superseded' };
   }
@@ -123,8 +140,8 @@ export async function deletePendingTenantRow(dbc: DbExecutor, input: {
   if (!row) return null;
   return {
     id: row.id,
-    accessToken: decryptOrNull(row.accessTokenEncrypted),
-    refreshToken: decryptOrNull(row.refreshTokenEncrypted),
+    accessToken: decryptOrNull(row.accessTokenEncrypted, { connectionId: row.id, provider: input.provider, field: 'access_token' }),
+    refreshToken: decryptOrNull(row.refreshTokenEncrypted, { connectionId: row.id, provider: input.provider, field: 'refresh_token' }),
     accessTokenExpiresAt: row.accessTokenExpiresAt ?? null,
   };
 }

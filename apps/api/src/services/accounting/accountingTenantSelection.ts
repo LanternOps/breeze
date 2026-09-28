@@ -11,6 +11,7 @@
  */
 import { db, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../sentry';
+import { rateLimitRetryAfterMs } from './accountingProviderError';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { findAccountingProvider, getAccountingProvider } from './providerRegistry';
 import {
@@ -75,43 +76,65 @@ export async function loadPendingGrant(partnerId: string, provider: AccountingPr
   return { row, selection, accessToken: row.accessToken, authEventId, tenants, grantFingerprint };
 }
 
+/**
+ * removed: DELETEd. kept: a row holds the tenant or link. failed: the DELETE
+ * threw. skipped: never examined, because the loop stopped (`stopped` says why):
+ * a held-check failure (fail closed) or a provider throttle (the remaining
+ * DELETEs would only hit the same limit). skipped links stay at the provider.
+ */
+export interface ReleaseUnchosenResult {
+  removed: number; kept: number; failed: number; skipped: number;
+  stopped: 'held_check_failed' | 'rate_limited' | null;
+}
+
 export async function releaseUnchosenTenants(input: {
   provider: AccountingProviderId; accessToken: string; tenants: readonly ProviderTenant[];
   keepConnectionRef: string | null; context: 'callback' | 'select' | 'cancel' | 'reaped';
-}): Promise<{ removed: number; kept: number; failed: number }> {
+}): Promise<ReleaseUnchosenResult> {
   assertNoAmbientDbContext('releaseUnchosenTenants');
   const selection = findAccountingProvider(input.provider)?.tenantSelection;
   const candidates = input.tenants.filter((t) => t.connectionRef !== input.keepConnectionRef);
-  if (!selection || candidates.length === 0) return { removed: 0, kept: 0, failed: 0 };
+  const result: ReleaseUnchosenResult = { removed: 0, kept: 0, failed: 0, skipped: 0, stopped: null };
+  if (!selection || candidates.length === 0) return result;
 
-  let held: { heldTenantIds: Set<string>; heldConnectionRefs: Set<string> };
-  try {
-    held = await withSystemDbAccessContext(
-      () => listHeldTenantKeys(db, input.provider, candidates),
-      'accountingTenantSelection.heldCheck',
-    );
-  } catch (err) {
-    // Fail CLOSED: without the held check we cannot prove a link is ours to remove.
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
-    console.warn('[accountingTenantSelection] held check failed; removing no links', { provider: input.provider, context: input.context });
-    return { removed: 0, kept: candidates.length, failed: 0 };
-  }
-
-  let removed = 0; let kept = 0; let failed = 0;
-  for (const t of candidates) {
-    if (held.heldTenantIds.has(t.tenantId) || held.heldConnectionRefs.has(t.connectionRef)) { kept++; continue; }
+  for (const [index, t] of candidates.entries()) {
+    // The held check runs PER LINK, immediately before its DELETE (review A): a
+    // claim that commits while earlier DELETEs are in flight is still seen. Each
+    // check is its own closed system context; none is held across the DELETE.
+    // What remains is the window between this check and this one DELETE.
+    let held: { heldTenantIds: Set<string>; heldConnectionRefs: Set<string> };
+    try {
+      held = await withSystemDbAccessContext(
+        () => listHeldTenantKeys(db, input.provider, [t]),
+        'accountingTenantSelection.heldCheck',
+      );
+    } catch (err) {
+      // Fail CLOSED: without the held check we cannot prove a link is ours to remove.
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
+      console.warn('[accountingTenantSelection] held check failed; removing no further links', { provider: input.provider, context: input.context });
+      result.skipped = candidates.length - index;
+      result.stopped = 'held_check_failed';
+      break;
+    }
+    if (held.heldTenantIds.has(t.tenantId) || held.heldConnectionRefs.has(t.connectionRef)) { result.kept++; continue; }
     try {
       await selection.removeTenantConnection(input.accessToken, t.connectionRef);
-      removed++;
+      result.removed++;
     } catch (err) {
-      failed++;
+      result.failed++;
       console.warn('[accountingTenantSelection] unchosen link removal failed (best-effort)', {
         provider: input.provider, context: input.context, error: err instanceof Error ? err.message : String(err),
       });
+      // A throttle applies to every remaining DELETE too (review B): stop here.
+      if (rateLimitRetryAfterMs(err) !== null) {
+        result.skipped = candidates.length - index - 1;
+        result.stopped = 'rate_limited';
+        break;
+      }
     }
   }
-  console.info('[accountingTenantSelection] unchosen links released', { provider: input.provider, context: input.context, removed, kept, failed });
-  return { removed, kept, failed };
+  console.info('[accountingTenantSelection] unchosen links released', { provider: input.provider, context: input.context, ...result });
+  return result;
 }
 
 export async function discardPendingTenantSelection(input: {

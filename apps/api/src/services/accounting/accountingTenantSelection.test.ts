@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   store: {
@@ -33,6 +33,7 @@ vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 import {
   AccountingTenantSelectionError, discardPendingTenantSelection, loadPendingGrant, reapStalePendingTenants, releaseUnchosenTenants,
 } from './accountingTenantSelection';
+import { AccountingProviderError } from './accountingProviderError';
 
 const runner = async <T>(fn: () => Promise<T>) => fn();
 const tenant = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: 'evt-1' });
@@ -49,18 +50,24 @@ beforeEach(() => {
   m.selection.removeTenantConnection.mockResolvedValue(undefined);
 });
 
+// "/connections only read filtered by the flow's auth event": this module has no
+// reconnect path, so the unfiltered list must never be read from it (review N).
+afterEach(() => {
+  expect(m.selection.listAllTenants).not.toHaveBeenCalled();
+});
+
 describe('releaseUnchosenTenants (spec W02: only same-authEvent links no row holds)', () => {
   it('removes every unchosen link, keeps the chosen one', async () => {
     const out = await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B'), tenant('C')], keepConnectionRef: 'conn-A', context: 'callback' });
     expect(m.selection.removeTenantConnection.mock.calls.map((c) => c[1])).toEqual(['conn-B', 'conn-C']);
-    expect(out).toEqual({ removed: 2, kept: 0, failed: 0 });
+    expect(out).toEqual({ removed: 2, kept: 0, failed: 0, skipped: 0, stopped: null });
   });
 
   it('keeps a tenant another partner holds — Review Focus 2 — and checks in SYSTEM scope', async () => {
     m.store.listHeldTenantKeys.mockResolvedValue({ heldTenantIds: new Set(['ten-B']), heldConnectionRefs: new Set() });
     const out = await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'callback' });
     expect(m.selection.removeTenantConnection.mock.calls.map((c) => c[1])).toEqual(['conn-A']);
-    expect(out).toEqual({ removed: 1, kept: 1, failed: 0 });
+    expect(out).toEqual({ removed: 1, kept: 1, failed: 0, skipped: 0, stopped: null });
     expect(m.systemCtxCalls).toContain('accountingTenantSelection.heldCheck');
   });
 
@@ -70,17 +77,48 @@ describe('releaseUnchosenTenants (spec W02: only same-authEvent links no row hol
     expect(m.selection.removeTenantConnection).not.toHaveBeenCalled();
   });
 
-  it('removes NOTHING when the held check itself fails (fail closed)', async () => {
+  it('removes NOTHING when the held check itself fails (fail closed), and says so distinctly from "held" (review C)', async () => {
     m.store.listHeldTenantKeys.mockRejectedValue(new Error('db down'));
     const out = await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'cancel' });
     expect(m.selection.removeTenantConnection).not.toHaveBeenCalled();
-    expect(out).toEqual({ removed: 0, kept: 2, failed: 0 });
+    // `kept` counts only links a row HOLDS; links never examined are `skipped`, with the reason.
+    expect(out).toEqual({ removed: 0, kept: 0, failed: 0, skipped: 2, stopped: 'held_check_failed' });
+  });
+
+  it('re-checks "held" for each link immediately before its DELETE (review A: a claim that commits mid-loop is seen)', async () => {
+    const order: string[] = [];
+    let claimCommitted = false;
+    m.store.listHeldTenantKeys.mockImplementation(async (_db: unknown, _p: unknown, ts: Array<{ tenantId: string }>) => {
+      order.push(`held:${ts.map((x) => x.tenantId).join(',')}`);
+      // Another partner's claim of ten-B commits after the loop has started.
+      return claimCommitted
+        ? { heldTenantIds: new Set(['ten-B']), heldConnectionRefs: new Set() }
+        : { heldTenantIds: new Set(), heldConnectionRefs: new Set() };
+    });
+    m.selection.removeTenantConnection.mockImplementation(async (_at: string, ref: string) => {
+      order.push(`delete:${ref}`);
+      claimCommitted = true;
+    });
+    const out = await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'select' });
+    expect(order).toEqual(['held:ten-A', 'delete:conn-A', 'held:ten-B']);
+    expect(out).toEqual({ removed: 1, kept: 1, failed: 0, skipped: 0, stopped: null });
+    // Every check is its own closed system context: none is held across a DELETE.
+    expect(m.systemCtxCalls).toEqual(['accountingTenantSelection.heldCheck', 'accountingTenantSelection.heldCheck']);
+  });
+
+  it('stops issuing DELETEs after a throttle; the rest are reported as not released (review B)', async () => {
+    m.selection.removeTenantConnection.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'xero', operation: 'Xero connection delete', message: '429', retryAfterMs: 30_000,
+    }));
+    const out = await releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B'), tenant('C')], keepConnectionRef: null, context: 'cancel' });
+    expect(m.selection.removeTenantConnection).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ removed: 0, kept: 0, failed: 1, skipped: 2, stopped: 'rate_limited' });
   });
 
   it('a failed DELETE is counted and never thrown', async () => {
     m.selection.removeTenantConnection.mockRejectedValueOnce(new Error('503'));
     await expect(releaseUnchosenTenants({ provider: 'xero', accessToken: 'at', tenants: [tenant('A'), tenant('B')], keepConnectionRef: null, context: 'cancel' }))
-      .resolves.toEqual({ removed: 1, kept: 0, failed: 1 });
+      .resolves.toEqual({ removed: 1, kept: 0, failed: 1, skipped: 0, stopped: null });
   });
 });
 
@@ -135,6 +173,16 @@ describe('discardPendingTenantSelection (cancel + reaper)', () => {
     expect(m.selection.listGrantTenants).not.toHaveBeenCalled();
   });
 
+  it('an original token with no auth-event claim: row discarded, nothing listed or deleted (never an unfiltered read) (review N)', async () => {
+    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.selection.authEventIdOf.mockReturnValue(null);
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true });
+    expect(m.selection.listGrantTenants).not.toHaveBeenCalled();
+    expect(m.selection.listAllTenants).not.toHaveBeenCalled();
+    expect(m.selection.removeTenantConnection).not.toHaveBeenCalled();
+    expect(m.refresh).not.toHaveBeenCalled();
+  });
+
   it('a remote failure never undoes the discard', async () => {
     m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.listGrantTenants.mockRejectedValue(new Error('xero down'));
@@ -154,5 +202,9 @@ describe('reapStalePendingTenants', () => {
     await expect(reapStalePendingTenants(now)).resolves.toEqual({ stale: 2, reaped: 1 });
     expect(m.store.listStalePendingTenantConnections).toHaveBeenCalledWith(expect.anything(), new Date('2026-10-01T11:00:00Z'));
     expect(m.store.deletePendingTenantRow).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ connectionId: 'r2', olderThan: new Date('2026-10-01T11:00:00Z') }));
+    // One system context for the listing, then one per reaped row (review M).
+    expect(m.systemCtxCalls).toEqual([
+      'accountingTenantSelection.reap.list', 'accountingTenantSelection.reap', 'accountingTenantSelection.reap',
+    ]);
   });
 });
