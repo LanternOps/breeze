@@ -85,7 +85,8 @@
     "gateway_basic": "Bildirilen ağ geçidi",
     "dns_basic": "Yapılandırılmış DNS",
     "internet_basic": "İnternet yolu",
-    "target_connectivity": "Yapılandırılmış hedef"
+    "target_connectivity": "Yapılandırılmış hedef",
+    "trace_route": "Yönlendirilmiş yol izleme"
   },
   "healthStatus": {
     "healthy": "Sağlıklı",
@@ -142,7 +143,7 @@
     "off": {
       "title": "Ağ topolojisi kapalı",
       "body": "Breeze, agent ve SNMP verilerinden bu sitenin ağının canlı bir haritasını oluşturabilir.",
-      "partnerNextStep": "Bir partner yöneticisi bunu Ayarlar \u2192 Modüller altından açabilir.",
+      "partnerNextStep": "Bir partner yöneticisi bunu Ayarlar → Modüller altından açabilir.",
       "orgNextStep": "Etkinleştirmesi için MSP'nize başvurun.",
       "openModules": "Modül ayarlarını aç"
     },
@@ -274,5 +275,253 @@
     "hiddenReason": "Neden",
     "hiddenLoadFailed": "Gizlenen bağlantılar yüklenemedi",
     "unknownConnection": "Bağlantı {{id}}"
+  },
+  "operations": {
+    "heading": "İşlemler",
+    "toggle": "İşlemler",
+    "cancel": "İptal",
+    "loadFailed": "İşlem verileri yüklenemedi",
+    "coverage": {
+      "complete": "Tam kapsam",
+      "partial": "Kısmi kapsam",
+      "none": "Kapsam yok"
+    },
+    "stepUp": {
+      "heading": "Kimliğinizi doğrulayın",
+      "intro": "Yinelenen ölçümü açmak, bu değişiklik için yeni bir ikinci faktör doğrulaması gerektirir.",
+      "code": "Kimlik doğrulayıcı kodu",
+      "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
+      "noFactor": "Yinelenen ölçümü açmadan önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+      "confirm": "Onayla ve aç",
+      "failed": "Doğrulama başarısız oldu",
+      "unavailable": "Doğrulama başlatılamadı"
+    },
+    "history": {
+      "heading": "{{port}} geçmişi",
+      "metric": "Metrik",
+      "range": "Aralık",
+      "metrics": {
+        "throughput": "Verim",
+        "utilization": "Kullanım",
+        "errors": "Hatalar ve düşürmeler"
+      },
+      "ranges": {
+        "1h": "Son saat",
+        "24h": "Son 24 saat",
+        "7d": "Son 7 gün"
+      },
+      "series": {
+        "in_bps": "Alınan",
+        "out_bps": "Gönderilen",
+        "in_utilization_pct": "Alım kullanımı",
+        "out_utilization_pct": "Gönderim kullanımı",
+        "in_errors_per_second": "Alım hataları",
+        "out_errors_per_second": "Gönderim hataları",
+        "in_discards_per_second": "Alım düşürmeleri",
+        "out_discards_per_second": "Gönderim düşürmeleri"
+      },
+      "units": {
+        "bits_per_second": "Saniyede bit",
+        "percent": "Kapasite yüzdesi",
+        "per_second": "Saniyede"
+      },
+      "source": {
+        "snmp": "SNMP ile ölçüldü",
+        "unifi": "UniFi tarafından bildirildi"
+      },
+      "currentGeneration": "Geçerli arayüz nesli",
+      "previousGeneration": "Önceki arayüz nesli",
+      "sourceStopped": "Kaynak durduruldu",
+      "generationBreak": "Bu bağlantı noktası bu aralıkta kimliğini {{count}} kez değiştirdi. Her nesil ayrı gösterilir ve asla birleştirilmez.",
+      "resolution": "{{seconds}} sn'lik {{resolution}} aralık",
+      "chartSummary": "{{series}}: {{min}} ile {{max}} arası",
+      "noMeasurements": "Bu aralıkta ölçüm yok",
+      "gap": "{{from}} - {{to}} arası ölçülmedi ({{reason}})",
+      "moreGaps": "{{count}} boşluk daha",
+      "table": "Veri tablosunu göster",
+      "time": "Zaman",
+      "seriesColumn": "Seri",
+      "value": "Değer",
+      "direction": "Yön {{port}} temel alınarak belirtilir."
+    },
+    "link": {
+      "heading": "Bağlantı sağlığı",
+      "freshUntil": "{{time}} tarihine kadar güncel",
+      "notApplicable": "Bağlantı noktası ölçümü bu bağlantıyı tanımlamaz",
+      "endpoint": {
+        "source": "Kaynak bağlantı noktası",
+        "target": "Hedef bağlantı noktası"
+      },
+      "portNotIdentified": "Bağlantı noktası tanımlanamadı",
+      "adminOper": "Yönetim {{admin}} · bağlantı {{oper}}",
+      "capacity": "Kapasite {{capacity}}",
+      "observed": "Son ölçüm {{time}}",
+      "retired": "Bu bağlantı noktası nesli kullanımdan kaldırıldı",
+      "openHistory": "Geçmişi göster",
+      "rates": "Son hızlar"
+    },
+    "policy": {
+      "heading": "Yinelenen izleme",
+      "inspectorHeading": "Bu öğe için izleme",
+      "none": "Bu siteyi henüz kapsayan bir izleme politikası yok.",
+      "noneForSubject": "Bu öğeyi hedefleyen bir izleme politikası yok.",
+      "status": {
+        "enabled": "Etkin",
+        "blocked": "Engellendi: {{reason}}",
+        "requested": "Etkinleştirme istendi, henüz etkin değil",
+        "off": "Etkin değil"
+      },
+      "preview": "Önizleme",
+      "hidePreview": "Önizlemeyi gizle",
+      "enable": "İzlemeyi etkinleştir",
+      "disable": "Kapat",
+      "enabled": "İzleme etkinleştirildi",
+      "blocked": "İzleme etkinleştirilmedi: {{reason}}",
+      "enableFailed": "İzleme etkinleştirilemedi",
+      "disabled": "İzleme kapatıldı",
+      "disableFailed": "İzleme kapatılamadı",
+      "conflict": "Bu politika siz açtığınızdan beri değişti. Yeniden yükleyip tekrar inceleyin.",
+      "reload": "Yeniden yükle",
+      "recipe": "Kontrol",
+      "subject": "Konu",
+      "subjects": {
+        "reported_gateway": "Bildirilen ağ geçidi",
+        "configured_dns": "Yapılandırılmış DNS",
+        "configured_target": "Yapılandırılmış hedefler"
+      },
+      "targets": "Hedefler",
+      "noTargets": "Gözlemlenen ağ geçidi veya çözümleyiciler",
+      "families": "Adres aileleri",
+      "originMode": "Şuradan ölçüldü",
+      "origins": {
+        "original_reporter": "Bunu bildiren cihaz",
+        "eligible_collector": "Bu sitede uygun bir toplayıcı"
+      },
+      "contexts": "Etkinleştirdiğinizde en fazla iki yönlendirme bağlamı seçilir; daha fazlası için açık bir seçim gerekir.",
+      "interval": "Her {{minutes}} dakikada bir",
+      "thresholds": "{{failure}} başarısızlıktan sonra uyar, {{recovery}} başarıdan sonra temizle",
+      "alertsOff": "Bu politika için uyarılar kapalı",
+      "volume": "Bağlam başına günde yaklaşık {{runs}} kontrol",
+      "reuse": "Etkinleştirildikten sonra eşdeğer mevcut bir izleyici bağlanabilir; iki kez sorgulamak yerine yeniden kullanılır.",
+      "next": "Sonraki kontrol {{time}}",
+      "last": "Son kontrol {{time}}",
+      "streak": "{{context}} ({{family}}): art arda {{failures}} başarısızlık, {{successes}} başarı",
+      "activeAlert": "Açık uyarı",
+      "readOnly": "İzlemeyi görüntüleyebilirsiniz ancak değiştiremezsiniz.",
+      "intentRequired": "İzlemeyi etkinleştirmeden önce bu ilkeyi site yapılandırmasında açın."
+    },
+    "telemetry": {
+      "heading": "Bağlantı noktası ölçümü",
+      "intro": "Bu cihazın seçili bağlantı noktalarını SNMP üzerinden sorgula. Siz açana kadar hiçbir şey ölçülmez.",
+      "ports": "Bağlantı noktaları",
+      "noPorts": "Bağlantı noktası tanımlanamadı: bu cihazın kurallı bağlantı noktaları henüz bilinmiyor.",
+      "portTo": "{{peer}}'e giden bağlantı noktası",
+      "collector": "Toplayıcı",
+      "chooseCollector": "Bir toplayıcı seçin",
+      "noCollector": "Bu sitede bu cihazı sorgulayabilecek bir aracı yok.",
+      "credential": "SNMP kimlik bilgileri",
+      "chooseCredential": "Bir keşif profili seçin",
+      "noCredential": "Bu sitede SNMP kimlik bilgisine sahip etkin bir keşif profili yok.",
+      "interval": "Aralık",
+      "ttl": "Şu süre sonra sona erer",
+      "days": "{{count}} gün",
+      "preview": "Önizleme",
+      "volume": "Günde yaklaşık {{samples}} örnek",
+      "mapping": "{{profile}} kullanılarak {{collector}} üzerinden {{count}} bağlantı noktası sorgulanacak",
+      "enable": "Ölçümü aç",
+      "enabled": "Bağlantı noktası ölçümü açıldı",
+      "blocked": "Bağlantı noktası ölçümü engellendi: {{reason}}",
+      "enableFailed": "Bağlantı noktası ölçümü açılamadı",
+      "revoke": "Kapat",
+      "revoked": "Bağlantı noktası ölçümü kapatıldı",
+      "revokeFailed": "Bağlantı noktası ölçümü kapatılamadı",
+      "armState": {
+        "armed": "Ölçülüyor",
+        "revoked": "Kapalı",
+        "blocked": "Engellendi"
+      },
+      "armSummary": "Her {{interval}} sn'de {{count}} bağlantı noktası · sona erme {{expires}}",
+      "unavailable": "Bağlantı noktası ölçümü bu site için kullanılamıyor."
+    },
+    "trace": {
+      "maxHops": "Maksimum sıçrama",
+      "probes": "Sıçrama başına sonda",
+      "heading": "Gözlemlenen yönlendirilmiş yol",
+      "explanation": "Tek bir kökenden tek bir anda gözlemlenen yönlendirilmiş yol. Bu bir topoloji bağlantısı değildir.",
+      "reached": "Hedefe ulaşıldı",
+      "notReached": "Hedefe ulaşılamadı",
+      "hop": "Sıçrama {{ttl}}",
+      "unknownHop": "Bilinmiyor (yanıt yok)",
+      "unreachable": "{{address}} tarafından ulaşılamaz bildirildi",
+      "unsupported": "Köken tarafından desteklenmiyor",
+      "alternatives": "Birden fazla yanıtlayıcı",
+      "omitted": "{{count}} sıçrama atlandı",
+      "truncated": "Sonuç kısaltıldı",
+      "routeChanged": "İzleme sırasında rota değişti"
+    },
+    "impact": {
+      "heading": "Olası etki",
+      "load": "Olası etkiyi göster",
+      "reload": "Etkiyi yenile",
+      "measured": "Ölçülen başarısızlıklar",
+      "noMeasured": "Son {{minutes}} dakikada güncel, ölçülen bir başarısızlık yok.",
+      "hypothetical": "Burada başarısız olarak ölçülen hiçbir şey yok; bu bir varsayımsal (what-if) analizdir.",
+      "potential": "Olası etkilenen",
+      "noPotential": "Buna bağlı olduğu bilinen hiçbir şey yok.",
+      "hops": "{{count}} sıçrama uzakta",
+      "basis": {
+        "dependency_path": "Bilinen bir bağlantı üzerinden buna bağımlı",
+        "group_membership": "Etkilenen bir grubun üyesi (yalnızca olası)"
+      },
+      "pathReason": {
+        "alternative_path_unverified": "Başka bir yol var; trafik taşıyıp taşımadığı doğrulanmadı",
+        "no_known_alternative_path": "Bilinen başka bir yol yok",
+        "group_member_possible": "Grup üyeliği bir kablo bağımlılığını kanıtlamaz"
+      },
+      "alternatives": "{{count}} alternatif yol, kullanılabilirlik doğrulanmadı",
+      "routed": "Gözlemlenen yönlendirilmiş yol: {{responding}} yanıt veren sıçrama, {{gaps}} sessiz sıçrama",
+      "cause": {
+        "possible": "Olası neden, {{count}} ölçülen başarısızlıkla doğrulandı",
+        "not_suggested": "Önerilen bir neden yok"
+      },
+      "partial": "Kısmi analiz: {{reasons}}",
+      "omittedCount": "Gösterilmeyen {{count}} olası etkilenen öğe daha",
+      "changed": "Bu görünüm yüklendiğinden beri harita değişti. Geçerli haritayı analiz etmek için yenileyin.",
+      "assumptions": "Varsayımlar: {{items}}",
+      "noAlerts": "Bu yalnızca bir açıklamadır. Hiçbir zaman bir uyarıyı değiştirmez, susturmaz veya kapatmaz."
+    },
+    "changes": {
+      "heading": "Son değişiklikler",
+      "window": "Pencere",
+      "windows": {
+        "1h": "Son saat",
+        "24h": "Son 24 saat"
+      },
+      "load": "Son değişiklikleri göster",
+      "empty": "Bu pencerede değişiklik yok.",
+      "more": "Daha fazla yükle",
+      "expired": "Ayrıntının süresi doldu",
+      "kinds": {
+        "relationship_observed": "Bağlantı gözlemlendi",
+        "relationship_withdrawn": "Bağlantı geri çekildi",
+        "relationship_asserted": "Bağlantı elle eklendi",
+        "relationship_removed": "Bağlantı kaldırıldı",
+        "source_epoch_changed": "Kaynak yeniden başlatıldı",
+        "source_revoked": "Kaynak durduruldu",
+        "collection_gap": "Toplama boşluğu",
+        "measurement_result": "Ölçüm sonucu",
+        "configuration_change": "Yapılandırma değişti"
+      },
+      "categories": {
+        "attachment": "İlişkilendirme",
+        "physical_link": "Fiziksel bağlantı",
+        "route": "Rota",
+        "membership": "Üyelik",
+        "source": "Kaynak",
+        "collection": "Toplama",
+        "measurement": "Ölçüm",
+        "configuration": "Yapılandırma"
+      }
+    }
   }
 }

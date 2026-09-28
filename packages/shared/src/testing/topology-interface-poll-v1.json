@@ -1,0 +1,3183 @@
+{
+ "version": 1,
+ "description": "topology_interface_poll command payload v1 (M3 Task 3). Server-built by the telemetry-arm dispatcher; the agent collects IF-MIB state/counters for exactly `interfaces` from `target` and answers with an if_metrics envelope echoing producerEpoch/configurationRevision/sequence/expectedIntervalSeconds and the command id. `binding` is server-only (scope + authority the result adapter re-derives from the STORED command); the agent ignores it. The three snmp* secret fields are top-level strings so sensitiveCommandPayload field encryption and terminal erasure apply; `erased` shows a terminal row (secrets stripped) that the result adapter must still parse. `valid`, `validV2c` and `erased` parse in TS and Go; every `invalid` command is rejected by both.",
+ "valid": {
+  "version": 1,
+  "family": "if_metrics",
+  "binding": {
+   "orgId": "55555555-5555-4555-8555-555555555555",
+   "siteId": "66666666-6666-4666-8666-666666666666",
+   "authorityKey": "snmp:192.0.2.10",
+   "armId": "77777777-7777-4777-8777-777777777777"
+  },
+  "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": "42",
+  "expectedIntervalSeconds": 60,
+  "deadlineMs": 45000,
+  "target": {
+   "address": "192.0.2.10",
+   "port": 161
+  },
+  "snmp": {
+   "version": "v3",
+   "timeoutMs": 2000,
+   "retries": 1,
+   "username": "breeze-ro",
+   "authProtocol": "sha256",
+   "privProtocol": "aes"
+  },
+  "snmpCommunity": null,
+  "snmpAuthPassphrase": "auth-secret",
+  "snmpPrivPassphrase": "priv-secret",
+  "interfaces": [
+   {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "ifIndex": 7,
+    "expectedName": "Gi0/7",
+    "expectedPhysAddress": "00:11:22:33:44:07"
+   },
+   {
+    "interfaceId": "22222222-2222-4222-8222-222222222222",
+    "interfaceEpoch": "gen:3",
+    "ifIndex": 8,
+    "expectedName": null,
+    "expectedPhysAddress": null
+   }
+  ]
+ },
+ "validV2c": {
+  "version": 1,
+  "family": "if_metrics",
+  "binding": {
+   "orgId": "55555555-5555-4555-8555-555555555555",
+   "siteId": "66666666-6666-4666-8666-666666666666",
+   "authorityKey": "snmp:192.0.2.10",
+   "armId": "77777777-7777-4777-8777-777777777777"
+  },
+  "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": "42",
+  "expectedIntervalSeconds": 60,
+  "deadlineMs": 45000,
+  "target": {
+   "address": "192.0.2.10",
+   "port": 161
+  },
+  "snmp": {
+   "version": "v2c",
+   "timeoutMs": 2000,
+   "retries": 1,
+   "username": null,
+   "authProtocol": null,
+   "privProtocol": null
+  },
+  "snmpCommunity": "public-ro",
+  "snmpAuthPassphrase": null,
+  "snmpPrivPassphrase": null,
+  "interfaces": [
+   {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "ifIndex": 7,
+    "expectedName": "Gi0/7",
+    "expectedPhysAddress": "00:11:22:33:44:07"
+   },
+   {
+    "interfaceId": "22222222-2222-4222-8222-222222222222",
+    "interfaceEpoch": "gen:3",
+    "ifIndex": 8,
+    "expectedName": null,
+    "expectedPhysAddress": null
+   }
+  ]
+ },
+ "erased": {
+  "version": 1,
+  "family": "if_metrics",
+  "binding": {
+   "orgId": "55555555-5555-4555-8555-555555555555",
+   "siteId": "66666666-6666-4666-8666-666666666666",
+   "authorityKey": "snmp:192.0.2.10",
+   "armId": "77777777-7777-4777-8777-777777777777"
+  },
+  "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": "42",
+  "expectedIntervalSeconds": 60,
+  "deadlineMs": 45000,
+  "target": {
+   "address": "192.0.2.10",
+   "port": 161
+  },
+  "snmp": {
+   "version": "v3",
+   "timeoutMs": 2000,
+   "retries": 1,
+   "username": "breeze-ro",
+   "authProtocol": "sha256",
+   "privProtocol": "aes"
+  },
+  "interfaces": [
+   {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "ifIndex": 7,
+    "expectedName": "Gi0/7",
+    "expectedPhysAddress": "00:11:22:33:44:07"
+   },
+   {
+    "interfaceId": "22222222-2222-4222-8222-222222222222",
+    "interfaceEpoch": "gen:3",
+    "ifIndex": 8,
+    "expectedName": null,
+    "expectedPhysAddress": null
+   }
+  ]
+ },
+ "invalid": [
+  {
+   "name": "wrong version",
+   "command": {
+    "version": 2,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "wrong family",
+   "command": {
+    "version": 1,
+    "family": "adjacency",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown top-level field",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ],
+    "oids": [
+     "1.3.6.1"
+    ]
+   }
+  },
+  {
+   "name": "missing binding",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "binding org not a uuid",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "org-a",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "sequence is a JSON number",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": 42,
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "sequence overflows uint64",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "18446744073709551616",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "interval below range",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 29,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "interval above range",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 301,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "deadline beyond the interval",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 61000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "deadline below one second",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 999,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "target is a hostname",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "switch.example.com",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "target port zero",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 0
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown snmp version",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v4",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "snmp timeout too long",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 10001,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "snmp retries too many",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 4,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown auth protocol",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "rot13",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "v3 without username",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": null,
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "no interfaces",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": []
+   }
+  },
+  {
+   "name": "interface ifIndex zero",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 0,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "interface id not a uuid",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "if-7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "interface unknown field",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07",
+      "ifDescr": "x"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate interface id",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "duplicate ifIndex",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "00:11:22:33:44:07"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 7,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "malformed expected MAC",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": "Gi0/7",
+      "expectedPhysAddress": "0011.2233.4407"
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  },
+  {
+   "name": "more than 256 interfaces",
+   "command": {
+    "version": 1,
+    "family": "if_metrics",
+    "binding": {
+     "orgId": "55555555-5555-4555-8555-555555555555",
+     "siteId": "66666666-6666-4666-8666-666666666666",
+     "authorityKey": "snmp:192.0.2.10",
+     "armId": "77777777-7777-4777-8777-777777777777"
+    },
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sequence": "42",
+    "expectedIntervalSeconds": 60,
+    "deadlineMs": 45000,
+    "target": {
+     "address": "192.0.2.10",
+     "port": 161
+    },
+    "snmp": {
+     "version": "v3",
+     "timeoutMs": 2000,
+     "retries": 1,
+     "username": "breeze-ro",
+     "authProtocol": "sha256",
+     "privProtocol": "aes"
+    },
+    "snmpCommunity": null,
+    "snmpAuthPassphrase": "auth-secret",
+    "snmpPrivPassphrase": "priv-secret",
+    "interfaces": [
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000000",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 1,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000001",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 2,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000002",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 3,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000003",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 4,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000004",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 5,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000005",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 6,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000006",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 7,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000007",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 8,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000008",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 9,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000009",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 10,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 11,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 12,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 13,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 14,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 15,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000000f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 16,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000010",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 17,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000011",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 18,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000012",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 19,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000013",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 20,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000014",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 21,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000015",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 22,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000016",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 23,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000017",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 24,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000018",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 25,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000019",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 26,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 27,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 28,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 29,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 30,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 31,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000001f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 32,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000020",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 33,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000021",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 34,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000022",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 35,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000023",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 36,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000024",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 37,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000025",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 38,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000026",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 39,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000027",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 40,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000028",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 41,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000029",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 42,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 43,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 44,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 45,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 46,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 47,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000002f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 48,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000030",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 49,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000031",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 50,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000032",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 51,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000033",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 52,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000034",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 53,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000035",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 54,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000036",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 55,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000037",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 56,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000038",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 57,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000039",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 58,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 59,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 60,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 61,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 62,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 63,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000003f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 64,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000040",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 65,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000041",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 66,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000042",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 67,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000043",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 68,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000044",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 69,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000045",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 70,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000046",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 71,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000047",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 72,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000048",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 73,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000049",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 74,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 75,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 76,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 77,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 78,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 79,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000004f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 80,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000050",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 81,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000051",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 82,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000052",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 83,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000053",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 84,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000054",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 85,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000055",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 86,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000056",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 87,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000057",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 88,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000058",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 89,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000059",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 90,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 91,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 92,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 93,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 94,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 95,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000005f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 96,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000060",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 97,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000061",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 98,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000062",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 99,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000063",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 100,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000064",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 101,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000065",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 102,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000066",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 103,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000067",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 104,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000068",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 105,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000069",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 106,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 107,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 108,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 109,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 110,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 111,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000006f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 112,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000070",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 113,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000071",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 114,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000072",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 115,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000073",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 116,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000074",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 117,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000075",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 118,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000076",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 119,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000077",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 120,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000078",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 121,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000079",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 122,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 123,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 124,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 125,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 126,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 127,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000007f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 128,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000080",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 129,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000081",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 130,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000082",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 131,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000083",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 132,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000084",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 133,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000085",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 134,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000086",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 135,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000087",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 136,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000088",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 137,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000089",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 138,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 139,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 140,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 141,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 142,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 143,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000008f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 144,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000090",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 145,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000091",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 146,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000092",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 147,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000093",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 148,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000094",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 149,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000095",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 150,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000096",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 151,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000097",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 152,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000098",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 153,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000099",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 154,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009a",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 155,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009b",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 156,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009c",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 157,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009d",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 158,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009e",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 159,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-00000000009f",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 160,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 161,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 162,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 163,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 164,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 165,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 166,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 167,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 168,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 169,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000a9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 170,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000aa",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 171,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ab",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 172,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ac",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 173,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ad",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 174,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ae",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 175,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000af",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 176,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 177,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 178,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 179,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 180,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 181,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 182,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 183,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 184,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 185,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000b9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 186,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ba",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 187,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000bb",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 188,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000bc",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 189,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000bd",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 190,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000be",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 191,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000bf",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 192,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 193,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 194,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 195,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 196,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 197,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 198,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 199,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 200,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 201,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000c9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 202,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ca",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 203,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000cb",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 204,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000cc",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 205,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000cd",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 206,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ce",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 207,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000cf",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 208,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 209,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 210,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 211,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 212,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 213,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 214,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 215,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 216,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 217,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000d9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 218,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000da",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 219,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000db",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 220,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000dc",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 221,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000dd",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 222,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000de",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 223,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000df",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 224,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 225,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 226,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 227,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 228,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 229,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 230,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 231,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 232,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 233,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000e9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 234,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ea",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 235,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000eb",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 236,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ec",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 237,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ed",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 238,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ee",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 239,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ef",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 240,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f0",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 241,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f1",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 242,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f2",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 243,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f3",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 244,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f4",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 245,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f5",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 246,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f6",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 247,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f7",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 248,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f8",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 249,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000f9",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 250,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000fa",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 251,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000fb",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 252,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000fc",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 253,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000fd",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 254,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000fe",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 255,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-0000000000ff",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 256,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     },
+     {
+      "interfaceId": "44444444-4444-4444-8444-000000000100",
+      "interfaceEpoch": "gen:1",
+      "ifIndex": 257,
+      "expectedName": null,
+      "expectedPhysAddress": null
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -51,19 +51,29 @@ const tables = {
   targets: topologyProbeTargets,
   policies: topologyMonitoringPolicies,
 };
-function dto(
+/**
+ * Wire view of a stored target/policy. Policies are an explicit allowlist: M3
+ * added bigint runtime counters (`alertStateRevision`) that `c.json` cannot
+ * serialize, plus the frozen arming authority, routing contexts and alert
+ * streak state, none of which a configuration read may echo. Arm status is
+ * served by GET /monitoring.
+ */
+export function topologyConfigurationObjectView(
   row:
     | typeof topologyProbeTargets.$inferSelect
     | typeof topologyMonitoringPolicies.$inferSelect,
 ) {
+  if (!('authorityGeneration' in row)) return { ...row, revision: row.revision.toString() };
   return {
-    ...row,
-    revision: row.revision.toString(),
-    ...('authorityGeneration' in row
-      ? { authorityGeneration: row.authorityGeneration.toString() }
-      : {}),
+    id: row.id, orgId: row.orgId, siteId: row.siteId, partnerVersionId: row.partnerVersionId, orgVersionId: row.orgVersionId,
+    configurationDigest: row.configurationDigest, key: row.key, revision: row.revision.toString(), enabled: row.enabled,
+    definition: row.definition, subjectNodeId: row.subjectNodeId, subjectRelationshipId: row.subjectRelationshipId,
+    authorityGeneration: row.authorityGeneration.toString(), authorityDigest: row.authorityDigest, activationIntent: row.activationIntent,
+    blockedReason: row.blockedReason, armedAt: row.armedAt, lastScheduledAt: row.lastScheduledAt, nextScheduledAt: row.nextScheduledAt,
+    deletedAt: row.deletedAt, createdAt: row.createdAt, updatedAt: row.updatedAt,
   };
 }
+const dto = topologyConfigurationObjectView;
 export async function listTopologyConfigurationObjects(
   ctx: TopologyRequestContext,
   kind: Kind,

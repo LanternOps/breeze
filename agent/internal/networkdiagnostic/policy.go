@@ -82,6 +82,10 @@ func ValidateCommand(command Command, now time.Time) error {
 	}
 	switch p.RecipeID {
 	case "gateway_basic", "dns_basic", "internet_basic", "target_connectivity":
+	case "trace_route":
+		if p.Limits.ExecutionTimeoutSeconds > int(TraceExecutionCeiling/time.Second) {
+			return errors.New("plan_limit_exceeded")
+		}
 	default:
 		return errors.New("unsupported_recipe")
 	}
@@ -165,7 +169,14 @@ func ValidateCommand(command Command, now time.Time) error {
 		} else if step.Method != "route_lookup" && step.Method != "neighbor_lookup" {
 			return errors.New("destination_required")
 		}
+		if (step.Method == "trace") != (p.RecipeID == "trace_route") && (step.Method == "trace" || (step.Method != "dns" && step.Method != "route_lookup")) {
+			return errors.New("trace_recipe_mismatch")
+		}
 		switch step.Method {
+		case "trace":
+			if step.MaxHops < 1 || step.MaxHops > TraceMaxHops || step.ProbesPerHop < 1 || step.ProbesPerHop > TraceMaxProbesPerHop || step.HopTimeoutMS < 1 || step.HopTimeoutMS > int(TraceHopTimeout/time.Millisecond) {
+				return errors.New("trace_limit_exceeded")
+			}
 		case "route_lookup", "neighbor_lookup":
 		case "icmp":
 			if step.PacketCount < 1 || step.PacketCount > 5 || step.TimeoutMS < 1 || step.TimeoutMS > 2000 || step.PayloadBytes < 0 || step.PayloadBytes > 1024 {

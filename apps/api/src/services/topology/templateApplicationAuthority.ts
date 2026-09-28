@@ -32,6 +32,25 @@ export function freezeApplicationActor(auth: AuthContext): ApplicationActor {
     mfa: auth.token.mfa,
   };
 }
+/**
+ * `freezeApplicationActor` plus the permission authority version at freeze
+ * time (M3-D3). The version is the freeze-time witness only: the GLOBAL
+ * permission version is bumped on every API boot (index.ts clearPermissionCache),
+ * so a standing grant (policy or telemetry arm) cannot fence on version
+ * equality — its boundaries re-derive permissions live through
+ * `currentApplicationAuthority` (bypassCache) instead. A missing version is
+ * unavailability, never a pass.
+ */
+export async function freezeApplicationAuthority(
+  auth: AuthContext,
+  permissionVersion: (userId: string) => Promise<string | null> = getPermissionAuthorityVersion,
+): Promise<{ actor: ApplicationActor; permissionVersion: string }> {
+  const actor = freezeApplicationActor(auth);
+  const version = await permissionVersion(actor.user.id);
+  if (version === null)
+    throw new TopologyOperationError('topology_authority_unavailable', 503);
+  return { actor, permissionVersion: version };
+}
 export async function currentApplicationAuthority(
   actor: ApplicationActor,
 ): Promise<{

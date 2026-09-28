@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   topologyConfigurationSchema,
@@ -32,6 +32,8 @@ import {
 } from './settingsResolver';
 import type { TopologySettingsLayers } from './configurationTypes';
 import { TopologyOperationError } from './operationErrors';
+import { topologyPolicyMaterialDigest } from './monitoringDigests';
+import { disarmPolicyRow } from './monitoringPolicyState';
 
 type Binding = typeof topologySiteTemplateBindings.$inferSelect;
 export type TopologyConfigurationSnapshot = {
@@ -172,13 +174,9 @@ export async function assertConfigurationEffects(
     if (ctx.auth.principal?.kind === 'ai_agent' || !hasSatisfiedMfa(ctx.auth))
       throw new TopologyOperationError('mfa_required', 403);
   }
-  for (const policy of Object.values(after.policies))
-    if (policy.kind === 'policy' && policy.enabled)
-      throw new TopologyOperationError(
-        'capability_unavailable',
-        409,
-        'Recurring monitoring is unavailable in this milestone',
-      );
+  // M3: a policy's `enabled` is activation INTENT only (the stronger branch
+  // above already demanded configure + execute + MFA for any policy edit).
+  // Nothing here arms execution; arming is the separate human-only route.
 }
 
 /** Caller supplies configuration, never revisions/authority for compiled rows. */
@@ -228,6 +226,15 @@ async function persistCompiledConfiguration(
   operationId?: string,
 ): Promise<void> {
   const now = new Date();
+  const [prior] = await db
+    .select({ effectiveSettings: topologySiteState.effectiveSettings })
+    .from(topologySiteState)
+    .where(scopedWrite(ctx.scope, topologySiteState))
+    .limit(1);
+  const priorConfiguration = (prior?.effectiveSettings as { configuration?: { outboundEnabled?: unknown } } | null)?.configuration;
+  const outboundWithdrawn = priorConfiguration?.outboundEnabled === true && resolved.settings.outboundEnabled !== true;
+  /** Targets whose executable definition changed or disappeared (M3-D7 fence set). */
+  const changedTargetIds: string[] = [];
   const versions = {
     partnerVersionId: snapshot.layers.partner?.versionId ?? null,
     orgVersionId: snapshot.layers.organization?.versionId ?? null,
@@ -313,10 +320,12 @@ async function persistCompiledConfiguration(
       })
       .returning();
     compiledTargets.set(key, { id: row!.id, revision: row!.revision });
+    if (old && changed) changedTargetIds.push(row!.id);
   }
   const removedTargets = targets.filter(
     (row) => !compiledTargets.has(row.key) && row.deletedAt === null,
   );
+  changedTargetIds.push(...removedTargets.map((row) => row.id));
   if (removedTargets.length)
     await db
       .update(topologyProbeTargets)
@@ -332,88 +341,141 @@ async function persistCompiledConfiguration(
           removedTargets.map((row) => row.id),
         ),
       );
+  // PR #7117 C3: lock every compiled policy row BEFORE reading its arm state.
+  // Arming (`lockPolicy`) and the scheduler take the same row lock, so a
+  // concurrent arm either commits first — and this read, re-evaluated after
+  // the lock wait, sees it armed and disarms it below — or waits for this
+  // compile and then fails its revision CAS. Ordered by id: a deterministic
+  // lock order. Every write below is additionally a CAS on the revision and
+  // arm state read here, so a changed definition can never land on an arm
+  // this compile did not see.
   const policies = await db
     .select()
     .from(topologyMonitoringPolicies)
-    .where(scopedWrite(ctx.scope, topologyMonitoringPolicies));
+    .where(scopedWrite(ctx.scope, topologyMonitoringPolicies))
+    .orderBy(asc(topologyMonitoringPolicies.id))
+    .for('update');
+  const unchangedSinceRead = (row: typeof policies[number]) =>
+    and(
+      eq(topologyMonitoringPolicies.id, row.id),
+      eq(topologyMonitoringPolicies.revision, row.revision),
+      eq(topologyMonitoringPolicies.enabled, row.enabled),
+    );
+  const assertWritten = (written: unknown[]) => {
+    if (written.length !== 1) throw new TopologyOperationError('revision_conflict', 409);
+  };
+  const byPolicyKey = new Map(policies.map((row) => [row.key, row]));
+  const existingPins = await db
+    .select()
+    .from(topologyPolicyTargets)
+    .where(scopedWrite(ctx.scope, topologyPolicyTargets));
+  const pinsFor = (policyId: string) =>
+    existingPins
+      .filter((pin) => pin.policyId === policyId)
+      .map((pin) => ({ id: pin.targetId, revision: pin.targetRevision.toString(), purpose: pin.purpose, position: pin.position }));
   const livePolicies = new Set<string>();
+  const disarmedPolicyIds: string[] = [];
   for (const [key, definition] of Object.entries(resolved.settings.policies)) {
     if (definition.kind === 'tombstone') continue;
     livePolicies.add(key);
-    const [policy] = await db
-      .insert(topologyMonitoringPolicies)
-      .values({
-        ...ctx.scope,
+    const pins = definition.targetKeys.map((targetKey, position) => {
+      const target = compiledTargets.get(targetKey);
+      if (!target) throw new TopologyOperationError('target_not_configured', 409);
+      return { id: target.id, revision: target.revision.toString(), purpose: 'configured_target', position };
+    });
+    const old = byPolicyKey.get(key);
+    const unchanged =
+      !!old &&
+      old.deletedAt === null &&
+      topologyPolicyMaterialDigest({ definition: old.definition, targets: pinsFor(old.id) }) ===
+        topologyPolicyMaterialDigest({ definition, targets: pins });
+    // M3-D7: an unchanged executable effect keeps its arm, authority and
+    // revision; only provenance and the activation intent follow the write.
+    if (old && unchanged) {
+      if (old.enabled && !definition.enabled) {
+        await disarmPolicyRow(ctx.scope, old, 'activation_withdrawn', { ...versions, activationIntent: false });
+        disarmedPolicyIds.push(old.id);
+      } else {
+        assertWritten(await db
+          .update(topologyMonitoringPolicies)
+          .set({
+            ...versions,
+            activationIntent: definition.enabled,
+            ...(old.enabled ? {} : { blockedReason: definition.enabled ? (old.blockedReason ?? 'not_armed') : null }),
+            updatedAt: now,
+          })
+          .where(unchangedSinceRead(old))
+          .returning({ id: topologyMonitoringPolicies.id }));
+      }
+      continue;
+    }
+    let policyId: string;
+    if (old) {
+      policyId = old.id;
+      const material = {
         ...versions,
-        key,
         definition,
-        enabled: false,
         activationIntent: definition.enabled,
-        blockedReason: 'recurring_monitoring_unavailable',
-        requesterId: ctx.auth.user.id,
-      })
-      .onConflictDoUpdate({
-        target: [
-          topologyMonitoringPolicies.orgId,
-          topologyMonitoringPolicies.siteId,
-          topologyMonitoringPolicies.key,
-        ],
-        set: {
+        deletedAt: null,
+      };
+      if (old.enabled) {
+        await disarmPolicyRow(ctx.scope, old, 'rearm_required', material);
+        disarmedPolicyIds.push(old.id);
+      } else {
+        assertWritten(await db
+          .update(topologyMonitoringPolicies)
+          .set({
+            ...material,
+            blockedReason: definition.enabled ? 'not_armed' : null,
+            authorityGeneration: sql`${topologyMonitoringPolicies.authorityGeneration}+1`,
+            revision: sql`${topologyMonitoringPolicies.revision}+1`,
+            updatedAt: now,
+          })
+          .where(unchangedSinceRead(old))
+          .returning({ id: topologyMonitoringPolicies.id }));
+      }
+    } else {
+      const [inserted] = await db
+        .insert(topologyMonitoringPolicies)
+        .values({
+          ...ctx.scope,
           ...versions,
+          key,
           definition,
           enabled: false,
-          authorityDigest: null,
-          authorityGeneration: sql`${topologyMonitoringPolicies.authorityGeneration}+1`,
-          revision: sql`${topologyMonitoringPolicies.revision}+1`,
           activationIntent: definition.enabled,
-          blockedReason: 'recurring_monitoring_unavailable',
-          deletedAt: null,
-          updatedAt: now,
-        },
-      })
-      .returning();
+          blockedReason: definition.enabled ? 'not_armed' : null,
+          requesterId: ctx.auth.user.id,
+        })
+        .returning();
+      policyId = inserted!.id;
+    }
     await db
       .delete(topologyPolicyTargets)
       .where(
         and(
           scopedWrite(ctx.scope, topologyPolicyTargets),
-          eq(topologyPolicyTargets.policyId, policy!.id),
+          eq(topologyPolicyTargets.policyId, policyId),
         ),
       );
-    for (const [position, key] of definition.targetKeys.entries()) {
-      const target = compiledTargets.get(key);
-      if (!target)
-        throw new TopologyOperationError('target_not_configured', 409);
+    for (const pin of pins) {
       await db.insert(topologyPolicyTargets).values({
         ...ctx.scope,
-        policyId: policy!.id,
-        targetId: target.id,
-        targetRevision: target.revision,
-        purpose: 'configured_target',
-        position,
+        policyId,
+        targetId: pin.id,
+        targetRevision: BigInt(pin.revision),
+        purpose: pin.purpose,
+        position: pin.position,
       });
     }
   }
   const removedPolicies = policies.filter(
     (row) => !livePolicies.has(row.key) && row.deletedAt === null,
   );
-  if (removedPolicies.length)
-    await db
-      .update(topologyMonitoringPolicies)
-      .set({
-        enabled: false,
-        authorityDigest: null,
-        authorityGeneration: sql`${topologyMonitoringPolicies.authorityGeneration}+1`,
-        revision: sql`${topologyMonitoringPolicies.revision}+1`,
-        deletedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        inArray(
-          topologyMonitoringPolicies.id,
-          removedPolicies.map((row) => row.id),
-        ),
-      );
+  for (const row of removedPolicies) {
+    await disarmPolicyRow(ctx.scope, row, 'policy_removed', { deletedAt: now });
+    disarmedPolicyIds.push(row.id);
+  }
   if (removedPolicies.length)
     await db.delete(topologyPolicyTargets).where(
       and(
@@ -424,13 +486,19 @@ async function persistCompiledConfiguration(
         ),
       ),
     );
-  // A queued plan cannot inherit changed destination/configuration authority.
-  await db.execute(
-    sql`UPDATE device_commands SET status='cancelled',completed_at=now() WHERE status IN ('pending','queued','sent') AND id IN(SELECT command_id FROM topology_diagnostic_runs WHERE org_id=${ctx.scope.orgId}::uuid AND site_id=${ctx.scope.siteId}::uuid AND state='queued')`,
-  );
-  await db.execute(
-    sql`UPDATE topology_diagnostic_runs SET state='cancelled',finished_at=now(),failure_reason='configuration_changed' WHERE org_id=${ctx.scope.orgId}::uuid AND site_id=${ctx.scope.siteId}::uuid AND state='queued'`,
-  );
+  // M3-D7: a queued plan cannot inherit changed destination/configuration
+  // authority — but only the plans that DEPEND on what changed are fenced
+  // (their pinned targets, outbound probing, a disarmed policy); every other
+  // queued run keeps its slot.
+  const affected = queuedRunsAffectedByConfiguration({ changedTargetIds, outboundWithdrawn, disarmedPolicyIds });
+  if (affected) {
+    await db.execute(
+      sql`UPDATE device_commands SET status='cancelled',completed_at=now() WHERE status IN ('pending','queued','sent') AND id IN(SELECT r.command_id FROM topology_diagnostic_runs r WHERE r.org_id=${ctx.scope.orgId}::uuid AND r.site_id=${ctx.scope.siteId}::uuid AND r.state='queued' AND (${affected}))`,
+    );
+    await db.execute(
+      sql`UPDATE topology_diagnostic_runs r SET state='cancelled',finished_at=now(),failure_reason='configuration_changed' WHERE r.org_id=${ctx.scope.orgId}::uuid AND r.site_id=${ctx.scope.siteId}::uuid AND r.state='queued' AND (${affected})`,
+    );
+  }
   const [state] = await db
     .update(topologySiteState)
     .set({
@@ -469,6 +537,22 @@ async function persistCompiledConfiguration(
       configurationDigest: resolved.digest,
     },
   });
+}
+
+/** SQL predicate over `topology_diagnostic_runs r` for queued runs a configuration write invalidates; null when nothing is affected. */
+export function queuedRunsAffectedByConfiguration(input: {
+  changedTargetIds: readonly string[];
+  outboundWithdrawn: boolean;
+  disarmedPolicyIds: readonly string[];
+}) {
+  const clauses = [];
+  const configuredTargets = sql`jsonb_array_elements(coalesce(r.plan->'destinations','[]'::jsonb)) d WHERE d->'target'->>'kind' = 'configured_target'`;
+  if (input.changedTargetIds.length)
+    clauses.push(sql`EXISTS (SELECT 1 FROM ${configuredTargets} AND d->'target'->>'targetId' IN (${sql.join(input.changedTargetIds.map((id) => sql`${id}`), sql`,`)}))`);
+  if (input.outboundWithdrawn) clauses.push(sql`EXISTS (SELECT 1 FROM ${configuredTargets})`);
+  if (input.disarmedPolicyIds.length)
+    clauses.push(sql`r.policy_id IN (${sql.join(input.disarmedPolicyIds.map((id) => sql`${id}::uuid`), sql`,`)})`);
+  return clauses.length ? sql.join(clauses, sql` OR `) : null;
 }
 
 export type ApprovedTopologySiteEffect = {

@@ -389,6 +389,10 @@ const CANONICAL_GATE_NAMES = [
   // tickets routes, alerts create-from-alert, and aiToolsTicketing.
   'ticketSiteScopeCondition',
   'deviceInSiteScope',
+  // By-id ALERT gate (topology M3-D6, PR #7117 T1): the exact-device axis as
+  // deviceInSiteScope, then the site axis on the alert's OWNING site (its
+  // topology site for a site-owned topology policy alert).
+  'alertInSiteScope',
   // Report-data alert aggregates (Wave 2 tenant/site scope). Both emit the
   // device-site predicate itself — `alertsDeviceSiteCondition` returns
   // `inArray(devices.siteId, …)` for a restricted scope, and

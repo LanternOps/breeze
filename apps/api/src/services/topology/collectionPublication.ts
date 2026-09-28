@@ -11,6 +11,7 @@ import { emptyProjection, type CollectionPublication, type CollectionEvent, type
 import { applyFdbSelection, isPhysicalProtocol, isPhysicalRelationship, loadPhysicalPublicationContext, physicalResolver, replacePresentRows, reresolvePhysicalRelationships, physicalChassisClaimsOf, pruneRowRelationships, unifiEndpointDevicesOf, type PhysicalPassState } from './physicalPublication';
 import { unboundPhysicalNode } from './physicalProjector';
 import { physicalTargetSourceKey } from './physicalIdentity';
+import { TOPOLOGY_TELEMETRY_PROTOCOL } from './interfaceMetricTypes';
 
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 const where=(scope:TopologyScope,table:{orgId:typeof topologyCollectionSources.orgId;siteId:typeof topologyCollectionSources.siteId})=>and(eq(table.orgId,scope.orgId),eq(table.siteId,scope.siteId));
@@ -30,7 +31,8 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   identityChanged?:boolean}):Promise<CollectionPublication> {
   const result:CollectionPublication={...emptyProjection(),consumedRuns:[],checkpoints:[],consumedMisses:[],supportDeletes:[],lifecycleRemaps:[],observationRemaps:[],rekeyed:[]};
   const scopedSql=sql`org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid`;
-  const sources=await tx.select().from(topologyCollectionSources).where(sql`${scopedSql} AND protocol<>'envelope'`);
+  // M3-D1: `if_metrics` telemetry sources carry measurements, never structure.
+  const sources=await tx.select().from(topologyCollectionSources).where(sql`${scopedSql} AND protocol NOT IN ('envelope', ${TOPOLOGY_TELEMETRY_PROTOCOL})`);
   if(!sources.length)return result;
   const runs=await tx.select().from(topologyCollectionRuns).where(and(sql`${scopedSql} AND (completion_scope->>'inputRevision')::bigint<=${through}`,isNull(topologyCollectionRuns.materializedAt)));
   const interfaces=await tx.select().from(topologyInterfaces).where(scopedSql);

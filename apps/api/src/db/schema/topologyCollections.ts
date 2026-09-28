@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, timestamp, numeric, integer, doublePrecision, jsonb, primaryKey, uniqueIndex, index, foreignKey, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, numeric, integer, bigint, doublePrecision, jsonb, primaryKey, uniqueIndex, index, foreignKey, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { CollectionOutcome, Lifecycle } from '@breeze/shared';
 import { sites } from './orgs';
 import { topologyNodes, topologyRelationships } from './topology';
@@ -78,12 +78,19 @@ export const topologyCollectionSources = pgTable('topology_collection_sources', 
   quotaRejectedCount: integer('quota_rejected_count').notNull().default(0),
   retryCandidate: jsonb('retry_candidate').$type<Record<string, unknown>>(),
   revokedAt: time('revoked_at'),
+  /** M3 telemetry admission window (`if_metrics` sources only): samples/bytes accepted since it started. */
+  telemetryWindowStartedAt: time('telemetry_window_started_at'),
+  telemetryWindowSamples: integer('telemetry_window_samples').notNull().default(0),
+  telemetryWindowBytes: bigint('telemetry_window_bytes', { mode: 'number' }).notNull().default(0),
+  /** Earliest raw `if_metrics` sample whose rollup buckets are not final (M3 Task 5); NULL = rolled up. */
+  telemetryRollupDirtyFrom: time('telemetry_rollup_dirty_from'),
   ...timestamps(),
 }, t => [
   primaryKey({ columns: [t.id] }),
   uniqueIndex('topology_collection_sources_scope_uniq').on(t.id, t.orgId, t.siteId),
   uniqueIndex('topology_collection_sources_identity_uniq').on(t.orgId, t.siteId, t.producerKind, t.producerId, t.protocol, t.contextKey, t.addressFamily),
   index('topology_collection_sources_producer_idx').on(t.producerId, t.revokedAt),
+  index('topology_sources_telemetry_rollup_dirty_idx').on(t.telemetryRollupDirtyFrom).where(sql`protocol = 'if_metrics' AND telemetry_rollup_dirty_from IS NOT NULL`),
   foreignKey({ name: 'topology_collection_sources_site_fk', columns: [t.siteId, t.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   uint64('topology_sources_accepted_sequence_chk', t.acceptedSequence),
   uint64('topology_sources_materialized_sequence_chk', t.materializedSequence),
@@ -95,6 +102,7 @@ export const topologyCollectionSources = pgTable('topology_collection_sources', 
   check('topology_sources_bounds_chk', sql`expected_interval_seconds BETWEEN 30 AND 86400 AND quota_rejected_count >= 0 AND digest_version = 1`),
   check('topology_sources_baseline_chk', sql`jsonb_typeof(current_baseline) = 'object' AND octet_length(current_baseline::text) <= 1048576 AND jsonb_typeof(published_baseline) = 'object' AND octet_length(published_baseline::text) <= 1048576`),
   check('topology_sources_misses_chk', sql`jsonb_typeof(pending_misses) = 'object' AND octet_length(pending_misses::text) <= 524288`),
+  check('topology_sources_telemetry_window_chk', sql`telemetry_window_samples >= 0 AND telemetry_window_bytes >= 0`),
   check('topology_sources_retry_chk', sql`retry_candidate IS NULL OR (jsonb_typeof(retry_candidate) = 'object' AND octet_length(retry_candidate::text) <= 1048576)`),
 ]);
 

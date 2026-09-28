@@ -5,6 +5,12 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
   countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
 }));
+// PR #7117 T3 — site delete removes the site's owned topology alerts first
+// (proven against real Postgres in siteDeleteTopologyAlerts.integration).
+vi.mock('../services/siteOwnedAlerts', () => ({
+  lockSiteForDelete: async () => true,
+  deleteSiteOwnedTopologyAlerts: async () => 0,
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes } from './orgs';

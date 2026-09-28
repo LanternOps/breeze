@@ -8,6 +8,8 @@ import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 // place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
 // fails the row closed if it ever is not.
 import './topology/diagnosticDispatch';
+// Side-effect import: registers the `topology_interface_poll` revalidation (M3-D2).
+import './topology/telemetryPollDelivery';
 // Side-effect import: registers the `script` delivery revalidation (rehydrates
 // the requester's live RBAC — role/org-access/site — at claim time, same
 // rationale as the diagnostic import above).

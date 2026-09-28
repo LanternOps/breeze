@@ -528,6 +528,57 @@ describe('outbound recipes', () => {
   });
 });
 
+describe('bounded routed trace (M3 Task 9)', () => {
+  const traceCaps = new Set(['network_diagnostic', 'route_lookup', 'scoped_dns', 'network_trace']);
+  const traceSnap = (overrides: Partial<DiagnosticPlanningSnapshot> = {}) =>
+    snapshot({ candidates: [candidate({ capabilities: traceCaps })], ...overrides });
+
+  it('traces a configured destination once, after pinning its resolution and route', () => {
+    const plan = compile(
+      request({ recipeId: 'trace_route', subject: { kind: 'destination', id: ids.targetHttps } }),
+      traceSnap(),
+    );
+    expect(plan.reasons).toEqual([]);
+    expect(plan.steps.map((step) => step.method)).toEqual(['dns', 'route_lookup', 'trace']);
+    expect(plan.steps[2]).toMatchObject({ maxHops: 16, probesPerHop: 1, hopTimeoutMs: 1000, required: true });
+    expect(plan.limits.executionTimeoutSeconds).toBe(60);
+    expect(Date.parse(plan.deadline) - Date.parse(plan.acceptedAt)).toBe(120_000);
+    expect(sideEffects(plan).map((step) => step.method)).toEqual(['dns']);
+    expect(topologyDiagnosticPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
+  it('honours requested hop and probe counts inside the 30 x 2 ceiling', () => {
+    const plan = compile(
+      request({ recipeId: 'trace_route', subject: { kind: 'destination', id: ids.targetHttps }, trace: { maxHops: 30, probesPerHop: 2 } }),
+      traceSnap(),
+    );
+    expect(plan.steps.find((step) => step.method === 'trace')).toMatchObject({ maxHops: 30, probesPerHop: 2, hopTimeoutMs: 1000 });
+  });
+
+  it('traces the observed gateway for a node subject and never an unobserved one', () => {
+    const plan = compile(request({ recipeId: 'trace_route' }), traceSnap());
+    expect(plan.steps.map((step) => step.method)).toEqual(['route_lookup', 'trace']);
+    expect(plan.destinations).toMatchObject([{ target: { kind: 'observed_gateway', address: '192.0.2.1' } }]);
+    const none = compile(request({ recipeId: 'trace_route' }), traceSnap({ candidates: [candidate({ capabilities: traceCaps, gatewayEvidence: [] })] }));
+    expect(none.reasons).toEqual(['gateway_not_observed']);
+    expect(none.steps).toEqual([]);
+  });
+
+  it('refuses a collector that has not advertised trace support', () => {
+    const plan = compile(request({ recipeId: 'trace_route', subject: { kind: 'destination', id: ids.targetHttps } }));
+    expect(plan.reasons).toEqual(['trace_unsupported']);
+    expect(plan.steps).toEqual([]);
+  });
+
+  it('keeps outbound traces behind the outbound switch', () => {
+    const plan = compile(
+      request({ recipeId: 'trace_route', subject: { kind: 'destination', id: ids.targetHttps } }),
+      traceSnap({ settings: { ...snapshot().settings, resolved: { settings: { outboundEnabled: false } } as never } }),
+    );
+    expect(plan.reasons).toEqual(['outbound_disabled']);
+  });
+});
+
 describe('plan identity and budgets', () => {
   it('stamps the current revisions, not the caller-supplied graph revision', () => {
     const plan = compile(request({ graphRevision: '1' }));

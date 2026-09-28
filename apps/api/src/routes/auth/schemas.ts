@@ -162,6 +162,7 @@ const STEP_UP_OPERATIONS = [
   'device_move_org',
   'ai_script_lane_grant',
   'ai_partner_script_ceiling_grant',
+  'topology_arm',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'approval_decide'
@@ -228,7 +229,13 @@ export const partnerScriptCeilingStepUpResource = z.object({
   unattendedAllowed: z.boolean(),
   widening: scriptLaneWideningResource.optional(),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource]);
+// Topology M3 arm binding — mirrors topologyArmResourceDigest exactly.
+export const topologyArmStepUpResource = z.object({
+  siteId: z.string().uuid(),
+  action: z.enum(['arm_policy', 'arm_telemetry']),
+  subjectId: z.string().uuid(),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

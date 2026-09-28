@@ -85,7 +85,8 @@
     "gateway_basic": "Reported gateway",
     "dns_basic": "Configured DNS",
     "internet_basic": "Internet path",
-    "target_connectivity": "Configured target"
+    "target_connectivity": "Configured target",
+    "trace_route": "Routed path trace"
   },
   "healthStatus": {
     "healthy": "Healthy",
@@ -274,5 +275,253 @@
     "hiddenReason": "Reason",
     "hiddenLoadFailed": "Unable to load hidden connections",
     "unknownConnection": "Connection {{id}}"
+  },
+  "operations": {
+    "heading": "Operations",
+    "toggle": "Operations",
+    "cancel": "Cancel",
+    "loadFailed": "Unable to load operational data",
+    "coverage": {
+      "complete": "Complete coverage",
+      "partial": "Partial coverage",
+      "none": "No coverage"
+    },
+    "stepUp": {
+      "heading": "Confirm it's you",
+      "intro": "Turning on recurring measurement needs a fresh second-factor check for this exact change.",
+      "code": "Authenticator code",
+      "passkey": "You will confirm with your passkey.",
+      "noFactor": "Add an authenticator app or passkey to your account before turning on recurring measurement.",
+      "confirm": "Confirm and turn on",
+      "failed": "Verification failed",
+      "unavailable": "Unable to start verification"
+    },
+    "history": {
+      "heading": "History of {{port}}",
+      "metric": "Metric",
+      "range": "Range",
+      "metrics": {
+        "throughput": "Throughput",
+        "utilization": "Utilization",
+        "errors": "Errors and discards"
+      },
+      "ranges": {
+        "1h": "Last hour",
+        "24h": "Last 24 hours",
+        "7d": "Last 7 days"
+      },
+      "series": {
+        "in_bps": "Received",
+        "out_bps": "Sent",
+        "in_utilization_pct": "Received utilization",
+        "out_utilization_pct": "Sent utilization",
+        "in_errors_per_second": "Receive errors",
+        "out_errors_per_second": "Send errors",
+        "in_discards_per_second": "Receive discards",
+        "out_discards_per_second": "Send discards"
+      },
+      "units": {
+        "bits_per_second": "Bits per second",
+        "percent": "Percent of capacity",
+        "per_second": "Per second"
+      },
+      "source": {
+        "snmp": "Measured by SNMP",
+        "unifi": "Reported by UniFi"
+      },
+      "currentGeneration": "Current interface generation",
+      "previousGeneration": "Previous interface generation",
+      "sourceStopped": "Source stopped",
+      "generationBreak": "This port changed identity {{count}} times in this range. Each generation is shown separately and is never joined.",
+      "resolution": "{{resolution}} buckets of {{seconds}} s",
+      "chartSummary": "{{series}}: from {{min}} to {{max}}",
+      "noMeasurements": "No measurements in this range",
+      "gap": "Not measured from {{from}} to {{to}} ({{reason}})",
+      "moreGaps": "{{count}} more gaps",
+      "table": "Show data table",
+      "time": "Time",
+      "seriesColumn": "Series",
+      "value": "Value",
+      "direction": "Direction is relative to {{port}}."
+    },
+    "link": {
+      "heading": "Link health",
+      "freshUntil": "Fresh until {{time}}",
+      "notApplicable": "Port measurement does not describe this connection",
+      "endpoint": {
+        "source": "Source port",
+        "target": "Target port"
+      },
+      "portNotIdentified": "Port not identified",
+      "adminOper": "Admin {{admin}} \u00b7 link {{oper}}",
+      "capacity": "Capacity {{capacity}}",
+      "observed": "Last measured {{time}}",
+      "retired": "This port generation was retired",
+      "openHistory": "Show history",
+      "rates": "Latest rates"
+    },
+    "policy": {
+      "heading": "Recurring monitoring",
+      "inspectorHeading": "Monitoring for this item",
+      "none": "No monitoring policy covers this site yet.",
+      "noneForSubject": "No monitoring policy targets this item.",
+      "status": {
+        "enabled": "Enabled",
+        "blocked": "Blocked: {{reason}}",
+        "requested": "Enable requested, not active",
+        "off": "Not enabled"
+      },
+      "preview": "Preview",
+      "hidePreview": "Hide preview",
+      "enable": "Enable monitoring",
+      "disable": "Turn off",
+      "enabled": "Monitoring enabled",
+      "blocked": "Monitoring was not enabled: {{reason}}",
+      "enableFailed": "Could not enable monitoring",
+      "disabled": "Monitoring turned off",
+      "disableFailed": "Could not turn off monitoring",
+      "conflict": "This policy changed since you opened it. Reload and review it again.",
+      "reload": "Reload",
+      "recipe": "Check",
+      "subject": "Subject",
+      "subjects": {
+        "reported_gateway": "Reported gateway",
+        "configured_dns": "Configured DNS",
+        "configured_target": "Configured targets"
+      },
+      "targets": "Destinations",
+      "noTargets": "The observed gateway or resolvers",
+      "families": "Address families",
+      "originMode": "Measured from",
+      "origins": {
+        "original_reporter": "The device that reported it",
+        "eligible_collector": "An eligible collector in this site"
+      },
+      "contexts": "Up to two routing contexts are selected when you enable it; more needs an explicit choice.",
+      "interval": "Every {{minutes}} min",
+      "thresholds": "Alert after {{failure}} failures, clear after {{recovery}} successes",
+      "alertsOff": "Alerts are off for this policy",
+      "volume": "About {{runs}} checks per day per context",
+      "reuse": "An equivalent existing monitor can be bound after enabling; it is reused rather than probed twice.",
+      "next": "Next check {{time}}",
+      "last": "Last check {{time}}",
+      "streak": "{{context}} ({{family}}): {{failures}} failures, {{successes}} successes in a row",
+      "activeAlert": "Alert open",
+      "readOnly": "You can view monitoring but not change it.",
+      "intentRequired": "Turn this policy on in the site configuration before enabling monitoring."
+    },
+    "telemetry": {
+      "heading": "Port measurement",
+      "intro": "Poll selected ports of this device over SNMP. Nothing is measured until you turn it on.",
+      "ports": "Ports",
+      "noPorts": "Port not identified: no canonical ports of this device are known yet.",
+      "portTo": "Port to {{peer}}",
+      "collector": "Collector",
+      "chooseCollector": "Choose a collector",
+      "noCollector": "No agent in this site can poll this device.",
+      "credential": "SNMP credentials",
+      "chooseCredential": "Choose a discovery profile",
+      "noCredential": "No enabled discovery profile in this site has SNMP credentials.",
+      "interval": "Interval",
+      "ttl": "Expires after",
+      "days": "{{count}} days",
+      "preview": "Preview",
+      "volume": "About {{samples}} samples per day",
+      "mapping": "Will poll {{count}} ports from {{collector}} using {{profile}}",
+      "enable": "Turn on measurement",
+      "enabled": "Port measurement turned on",
+      "blocked": "Port measurement is blocked: {{reason}}",
+      "enableFailed": "Could not turn on port measurement",
+      "revoke": "Turn off",
+      "revoked": "Port measurement turned off",
+      "revokeFailed": "Could not turn off port measurement",
+      "armState": {
+        "armed": "Measuring",
+        "revoked": "Off",
+        "blocked": "Blocked"
+      },
+      "armSummary": "{{count}} ports every {{interval}} s \u00b7 expires {{expires}}",
+      "unavailable": "Port measurement is not available for this site."
+    },
+    "trace": {
+      "maxHops": "Max hops",
+      "probes": "Probes per hop",
+      "heading": "Observed routed path",
+      "explanation": "An observed routed path from one origin at one moment. It is not a topology connection.",
+      "reached": "Destination reached",
+      "notReached": "Destination not reached",
+      "hop": "Hop {{ttl}}",
+      "unknownHop": "Unknown (no reply)",
+      "unreachable": "Unreachable reported by {{address}}",
+      "unsupported": "Not supported by the origin",
+      "alternatives": "More than one responder",
+      "omitted": "{{count}} hops omitted",
+      "truncated": "The result was truncated",
+      "routeChanged": "The route changed during the trace"
+    },
+    "impact": {
+      "heading": "Possible impact",
+      "load": "Show possible impact",
+      "reload": "Refresh impact",
+      "measured": "Measured failures",
+      "noMeasured": "No fresh measured failure in the last {{minutes}} min.",
+      "hypothetical": "Nothing is measured as failing here; this is a what-if analysis.",
+      "potential": "Possibly affected",
+      "noPotential": "Nothing is known to depend on this.",
+      "hops": "{{count}} hops away",
+      "basis": {
+        "dependency_path": "Depends on it through a known connection",
+        "group_membership": "Member of an affected group (possible only)"
+      },
+      "pathReason": {
+        "alternative_path_unverified": "Another path exists; whether it carries traffic is not verified",
+        "no_known_alternative_path": "No other path is known",
+        "group_member_possible": "Group membership does not prove a cable dependency"
+      },
+      "alternatives": "{{count}} alternative paths, availability unverified",
+      "routed": "Observed routed path: {{responding}} responding hops, {{gaps}} silent hops",
+      "cause": {
+        "possible": "Possible cause, corroborated by {{count}} measured failures",
+        "not_suggested": "No cause is suggested"
+      },
+      "partial": "Partial analysis: {{reasons}}",
+      "omittedCount": "{{count}} more possibly affected items not shown",
+      "changed": "The map changed since this view loaded. Refresh to analyze the current map.",
+      "assumptions": "Assumptions: {{items}}",
+      "noAlerts": "This is an explanation only. It never changes, silences or closes an alert."
+    },
+    "changes": {
+      "heading": "Recent changes",
+      "window": "Window",
+      "windows": {
+        "1h": "Last hour",
+        "24h": "Last 24 hours"
+      },
+      "load": "Show recent changes",
+      "empty": "No changes in this window.",
+      "more": "Load more",
+      "expired": "Detail expired",
+      "kinds": {
+        "relationship_observed": "Connection observed",
+        "relationship_withdrawn": "Connection withdrawn",
+        "relationship_asserted": "Connection added by hand",
+        "relationship_removed": "Connection removed",
+        "source_epoch_changed": "Source restarted",
+        "source_revoked": "Source stopped",
+        "collection_gap": "Collection gap",
+        "measurement_result": "Measurement result",
+        "configuration_change": "Configuration changed"
+      },
+      "categories": {
+        "attachment": "Attachment",
+        "physical_link": "Physical link",
+        "route": "Route",
+        "membership": "Membership",
+        "source": "Source",
+        "collection": "Collection",
+        "measurement": "Measurement",
+        "configuration": "Configuration"
+      }
+    }
   }
 }

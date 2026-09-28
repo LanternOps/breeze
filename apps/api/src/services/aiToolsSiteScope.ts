@@ -33,7 +33,7 @@ import { normalizeSiteAllowlist } from './siteAllowlist';
  * the allowlist through this — never through a truthiness check on
  * `auth.allowedSiteIds`, which would read a malformed value as unrestricted.
  */
-function siteAllowlistOf(auth: AuthContext): readonly string[] | undefined {
+export function siteAllowlistOf(auth: AuthContext): readonly string[] | undefined {
   return normalizeSiteAllowlist(auth.allowedSiteIds);
 }
 

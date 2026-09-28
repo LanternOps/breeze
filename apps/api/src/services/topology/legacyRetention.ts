@@ -20,6 +20,10 @@ export async function pruneDeliveredTopologyOutbox(scope: TopologyScope, now = n
         OR (o.event_kind='template.application.intent'
           AND o.payload->'outcome'->>'state' IN ('applied','conflict','failed')
           AND o.updated_at < now()-interval '30 days'))
+      -- M3-D15: recurring-monitoring events are consumed by their own typed
+      -- worker; a pending one is never pruned, an applied one ages out late.
+      AND (o.event_kind NOT LIKE 'monitoring.%'
+        OR (o.payload->>'state' = 'applied' AND o.updated_at < now()-interval '30 days'))
       AND (o.event_kind<>'relationship.delete' OR EXISTS (
         SELECT 1 FROM topology_relationships r WHERE r.org_id=o.org_id AND r.site_id=o.site_id
           AND r.legacy_source_type=o.payload->>'sourceTable' AND r.legacy_source_id=o.aggregate_id AND r.legacy_source_revision>=o.source_revision))

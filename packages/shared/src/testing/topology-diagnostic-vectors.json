@@ -78,6 +78,100 @@
       },
       "canonical": "{\"acceptedAt\":\"2026-09-15T12:00:00Z\",\"contextRevision\":\"1\",\"deadline\":\"2026-09-15T12:02:00Z\",\"destinations\":[{\"id\":\"10000000-0000-4000-8000-000000000009\",\"target\":{\"address\":\"192.0.2.1\",\"evidenceId\":\"10000000-0000-4000-8000-000000000008\",\"interfaceId\":\"10000000-0000-4000-8000-000000000005\",\"kind\":\"observed_gateway\",\"zone\":null}}],\"family\":\"ipv4\",\"graphRevision\":\"1\",\"limits\":{\"executionTimeoutSeconds\":90,\"lifetimeSeconds\":120,\"maxConcurrentSteps\":2,\"maxResolvers\":2,\"maxTargetAddresses\":4,\"queueTimeoutSeconds\":30},\"origin\":{\"agentId\":\"fixture-agent\",\"bindingId\":\"10000000-0000-4000-8000-000000000006\",\"contextKey\":\"default\",\"deviceId\":\"10000000-0000-4000-8000-000000000004\",\"interfaceEpoch\":\"1\",\"interfaceId\":\"10000000-0000-4000-8000-000000000005\",\"interfaceKey\":\"if-1\",\"nodeId\":\"10000000-0000-4000-8000-000000000003\",\"producerEpoch\":\"fixture-epoch-1\",\"sequence\":\"1\",\"siteId\":\"10000000-0000-4000-8000-000000000002\",\"sourceId\":\"10000000-0000-4000-8000-000000000007\"},\"queueDeadline\":\"2026-09-15T12:00:30Z\",\"reasons\":[],\"recipeId\":\"gateway_basic\",\"recipeVersion\":1,\"scope\":{\"orgId\":\"10000000-0000-4000-8000-000000000001\",\"siteId\":\"10000000-0000-4000-8000-000000000002\"},\"settingsRevision\":\"1\",\"steps\":[{\"destinationId\":\"10000000-0000-4000-8000-000000000009\",\"id\":\"10000000-0000-4000-8000-000000000010\",\"method\":\"icmp\",\"packetCount\":3,\"payloadBytes\":64,\"required\":true,\"timeoutMs\":2000}],\"subject\":{\"id\":\"10000000-0000-4000-8000-000000000003\",\"kind\":\"node\"},\"templateVersions\":{\"defaults\":1,\"org\":null,\"partner\":null,\"resolver\":1},\"version\":1}",
       "sha256": "dc66b16c2eec8681ebf8ab6655aa4e3729e2383aa9887c6496a17832b5bf34b6"
+    },
+    {
+      "name": "trace-route",
+      "plan": {
+        "version": 1,
+        "recipeId": "trace_route",
+        "recipeVersion": 1,
+        "scope": {
+          "orgId": "10000000-0000-4000-8000-000000000001",
+          "siteId": "10000000-0000-4000-8000-000000000002"
+        },
+        "subject": {
+          "kind": "destination",
+          "id": "10000000-0000-4000-8000-000000000010"
+        },
+        "origin": {
+          "deviceId": "10000000-0000-4000-8000-000000000004",
+          "agentId": "fixture-agent",
+          "nodeId": "10000000-0000-4000-8000-000000000003",
+          "bindingId": "10000000-0000-4000-8000-000000000006",
+          "siteId": "10000000-0000-4000-8000-000000000002",
+          "contextKey": "default",
+          "interfaceId": "10000000-0000-4000-8000-000000000005",
+          "interfaceEpoch": "1",
+          "interfaceKey": "if-1",
+          "sourceId": "10000000-0000-4000-8000-000000000007",
+          "producerEpoch": "fixture-epoch-1",
+          "sequence": "1"
+        },
+        "family": "ipv4",
+        "graphRevision": "1",
+        "settingsRevision": "1",
+        "contextRevision": "1",
+        "templateVersions": {
+          "partner": null,
+          "org": null,
+          "defaults": 1,
+          "resolver": 1
+        },
+        "destinations": [
+          {
+            "id": "10000000-0000-4000-8000-000000000011",
+            "target": {
+              "kind": "configured_target",
+              "targetId": "10000000-0000-4000-8000-000000000010",
+              "targetRevision": "3",
+              "definition": {
+                "label": "Status",
+                "enabled": true,
+                "families": [
+                  "ipv4"
+                ],
+                "provider": null,
+                "independenceLabel": null,
+                "kind": "tcp",
+                "host": "192.0.2.80",
+                "port": 443
+              }
+            }
+          }
+        ],
+        "steps": [
+          {
+            "id": "10000000-0000-4000-8000-000000000012",
+            "required": true,
+            "destinationId": "10000000-0000-4000-8000-000000000011",
+            "method": "route_lookup"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000013",
+            "required": true,
+            "destinationId": "10000000-0000-4000-8000-000000000011",
+            "method": "trace",
+            "maxHops": 16,
+            "probesPerHop": 2,
+            "hopTimeoutMs": 1000
+          }
+        ],
+        "limits": {
+          "maxConcurrentSteps": 2,
+          "maxTargetAddresses": 4,
+          "maxResolvers": 2,
+          "queueTimeoutSeconds": 30,
+          "executionTimeoutSeconds": 60,
+          "lifetimeSeconds": 120
+        },
+        "acceptedAt": "2026-09-15T12:00:00Z",
+        "queueDeadline": "2026-09-15T12:00:30Z",
+        "deadline": "2026-09-15T12:02:00Z",
+        "reasons": [],
+        "digest": "f21f810fa130cb10758f0b103321baa1b17948d0f1400aed0b64f3bb8a37ef0e"
+      },
+      "canonical": "{\"acceptedAt\":\"2026-09-15T12:00:00Z\",\"contextRevision\":\"1\",\"deadline\":\"2026-09-15T12:02:00Z\",\"destinations\":[{\"id\":\"10000000-0000-4000-8000-000000000011\",\"target\":{\"definition\":{\"enabled\":true,\"families\":[\"ipv4\"],\"host\":\"192.0.2.80\",\"independenceLabel\":null,\"kind\":\"tcp\",\"label\":\"Status\",\"port\":443,\"provider\":null},\"kind\":\"configured_target\",\"targetId\":\"10000000-0000-4000-8000-000000000010\",\"targetRevision\":\"3\"}}],\"family\":\"ipv4\",\"graphRevision\":\"1\",\"limits\":{\"executionTimeoutSeconds\":60,\"lifetimeSeconds\":120,\"maxConcurrentSteps\":2,\"maxResolvers\":2,\"maxTargetAddresses\":4,\"queueTimeoutSeconds\":30},\"origin\":{\"agentId\":\"fixture-agent\",\"bindingId\":\"10000000-0000-4000-8000-000000000006\",\"contextKey\":\"default\",\"deviceId\":\"10000000-0000-4000-8000-000000000004\",\"interfaceEpoch\":\"1\",\"interfaceId\":\"10000000-0000-4000-8000-000000000005\",\"interfaceKey\":\"if-1\",\"nodeId\":\"10000000-0000-4000-8000-000000000003\",\"producerEpoch\":\"fixture-epoch-1\",\"sequence\":\"1\",\"siteId\":\"10000000-0000-4000-8000-000000000002\",\"sourceId\":\"10000000-0000-4000-8000-000000000007\"},\"queueDeadline\":\"2026-09-15T12:00:30Z\",\"reasons\":[],\"recipeId\":\"trace_route\",\"recipeVersion\":1,\"scope\":{\"orgId\":\"10000000-0000-4000-8000-000000000001\",\"siteId\":\"10000000-0000-4000-8000-000000000002\"},\"settingsRevision\":\"1\",\"steps\":[{\"destinationId\":\"10000000-0000-4000-8000-000000000011\",\"id\":\"10000000-0000-4000-8000-000000000012\",\"method\":\"route_lookup\",\"required\":true},{\"destinationId\":\"10000000-0000-4000-8000-000000000011\",\"hopTimeoutMs\":1000,\"id\":\"10000000-0000-4000-8000-000000000013\",\"maxHops\":16,\"method\":\"trace\",\"probesPerHop\":2,\"required\":true}],\"subject\":{\"id\":\"10000000-0000-4000-8000-000000000010\",\"kind\":\"destination\"},\"templateVersions\":{\"defaults\":1,\"org\":null,\"partner\":null,\"resolver\":1},\"version\":1}",
+      "sha256": "f21f810fa130cb10758f0b103321baa1b17948d0f1400aed0b64f3bb8a37ef0e"
     }
   ]
 }

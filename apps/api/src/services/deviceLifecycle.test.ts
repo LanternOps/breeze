@@ -105,7 +105,7 @@ beforeEach(() => {
     alreadyDispatched: 0,
   });
   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
-  vi.mocked(deleteDeviceCascade).mockResolvedValue(undefined);
+  vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
 });
 
 describe('restoreRemovedDevice', () => {

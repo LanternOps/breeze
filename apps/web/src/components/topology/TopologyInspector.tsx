@@ -5,6 +5,14 @@ import { isPresentation, selectedTopologyEntity, type TopologySelection, topolog
 import { topologyApi } from './topologyApi';
 import PhysicalEvidencePanel from './PhysicalEvidencePanel';
 import RelationshipExclusionAction from './RelationshipExclusionAction';
+import LinkHealthPanel from './LinkHealthPanel';
+import InterfaceHistoryPanel from './InterfaceHistoryPanel';
+import MonitoringPolicyPanel from './MonitoringPolicyPanel';
+import InterfaceTelemetrySettings from './InterfaceTelemetrySettings';
+import ImpactPanel from './ImpactPanel';
+
+/** M3 operational capabilities of the site, from its settings (all off unless the server says available). */
+export type TopologyOperationsCapabilities = { interfaceHealth: boolean; monitoring: boolean; canConfigure: boolean };
 
 /** Passive read of one relationship's detail and first evidence page. Never mutates. */
 function useRelationshipDetail(siteId: string | undefined, relationshipId: string | undefined, refresh: number) {
@@ -32,11 +40,13 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
   siteId?: string; view?: TopologyView; onChanged?: () => void;
+  /** M3 (Task 11): with a site and capabilities, the inspector adds link health, port history, monitoring status, port measurement and impact. */
+  operations?: TopologyOperationsCapabilities; historyInterfaceId?: string; onHistory?: (interfaceId: string | undefined) => void; onSelectNode?: (nodeId: string) => void;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -74,8 +84,33 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
       {detail && view && <RelationshipExclusionAction siteId={siteId} relationshipId={entity.id} view={view} canEdit={graph.permissions.canEdit}
         exclusion={detail.exclusions.find((exclusion) => exclusion.view === view)} onChanged={() => { setRefresh((n) => n + 1); onChanged?.(); }} />}
     </>}
+    {siteId && operations && !schematic && <OperationsSections siteId={siteId} graph={graph} selection={selection} entityId={entity.id} operations={operations}
+      ports={{ source: detail?.endpoints.source.port ?? null, target: detail?.endpoints.target.port ?? null }}
+      historyInterfaceId={historyInterfaceId} onHistory={onHistory} onSelectNode={onSelectNode} />}
     {!schematic && <button data-testid="topology-diagnose" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={!canDiagnose} onClick={onDiagnose}>{t('diagnose')}</button>}
     {!schematic && !canDiagnose && <p className="text-sm text-muted-foreground">{t('diagnosticsUnavailable')}</p>}
     {onPin && !schematic && selection.kind === 'node' && <button data-testid="topology-pin" className="ml-2 rounded border px-3 py-2" aria-pressed={pinned} onClick={onPin}>{pinned ? t('unpin') : t('pin')}</button>}
   </aside>;
+}
+
+type PortRef = { interfaceId: string; name: string | null; alias?: string | null; key?: string | null } | null;
+/** M3 operational sections of the inspector. Every read is passive; every write is an explicit, human-only action inside its panel. */
+function OperationsSections({ siteId, graph, selection, entityId, operations, ports, historyInterfaceId, onHistory, onSelectNode }: {
+  siteId: string; graph: GraphResponse; selection: TopologySelection; entityId: string; operations: TopologyOperationsCapabilities;
+  ports: { source: PortRef; target: PortRef }; historyInterfaceId?: string; onHistory?: (interfaceId: string | undefined) => void; onSelectNode?: (nodeId: string) => void;
+}) {
+  const { t } = useTranslation('topology');
+  const edge = selection.kind === 'edge';
+  const portName = (port: PortRef) => port ? port.name ?? port.alias ?? port.key ?? t('operations.link.portNotIdentified') : null;
+  const historyLabel = [ports.source, ports.target].find((port) => port?.interfaceId === historyInterfaceId);
+  return <>
+    {edge && operations.interfaceHealth && <LinkHealthPanel siteId={siteId} relationshipId={entityId} refresh={graph.revisions.health}
+      labels={{ source: portName(ports.source), target: portName(ports.target) }} onOpenHistory={(interfaceId) => onHistory?.(interfaceId)} />}
+    {operations.interfaceHealth && historyInterfaceId && <InterfaceHistoryPanel key={historyInterfaceId} siteId={siteId} interfaceId={historyInterfaceId}
+      label={portName(historyLabel ?? null) ?? t('operations.link.portNotIdentified')} onClose={() => onHistory?.(undefined)} />}
+    {operations.monitoring && <MonitoringPolicyPanel siteId={siteId} canConfigure={operations.canConfigure}
+      subject={{ kind: edge ? 'relationship' : 'node', id: entityId }} />}
+    {!edge && operations.interfaceHealth && <InterfaceTelemetrySettings siteId={siteId} nodeId={entityId} graph={graph} canConfigure={operations.canConfigure} />}
+    <ImpactPanel siteId={siteId} subject={{ kind: edge ? 'relationship' : 'node', id: entityId }} graphRevision={graph.revisions.graph} onSelectNode={onSelectNode} />
+  </>;
 }

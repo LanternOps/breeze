@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, timestamp, bigint, integer, boolean, jsonb, uniqueIndex, foreignKey, check } from 'drizzle-orm/pg-core';
-import type { TopologyTargetDefinition, TopologyPolicyDefinition, TopologyDiagnosticPlan, TopologyDiagnosticStep } from '@breeze/shared';
+import { pgTable, uuid, varchar, text, timestamp, bigint, integer, boolean, jsonb, uniqueIndex, index, foreignKey, check } from 'drizzle-orm/pg-core';
+import type { TopologyTargetDefinition, TopologyPolicyDefinition, TopologyDiagnosticPlan, TopologyDiagnosticStep, TopologyPolicyRoutingContext, TopologyPolicyAlertState } from '@breeze/shared';
 import { topologyConfigTemplateVersions } from './topologyTemplates';
 import { sites } from './orgs';
 import { topologyNodes, topologyRelationships } from './topology';
@@ -55,6 +55,15 @@ export const topologyMonitoringPolicies = pgTable('topology_monitoring_policies'
   lastScheduledAt: timestamp('last_scheduled_at', { withTimezone: true }),
   nextScheduledAt: timestamp('next_scheduled_at', { withTimezone: true }),
   blockedReason: varchar('blocked_reason', { length: 64 }),
+  /** M3-D3/D4: typed frozen actor (narrowed ceilings + auth/MFA epochs); null until armed. */
+  authorityActor: jsonb('authority_actor').$type<Record<string, unknown>>(),
+  authorityPermissionVersion: varchar('authority_permission_version', { length: 256 }),
+  armedAt: timestamp('armed_at', { withTimezone: true }),
+  /** M3-D4: site-local routing contexts bound to observed source/interface generations. */
+  routingContexts: jsonb('routing_contexts').$type<TopologyPolicyRoutingContext[]>().notNull().default([]),
+  /** M3 Task 8: bounded runtime streak/alert state; `alertStateRevision` is its own CAS. */
+  alertState: jsonb('alert_state').$type<TopologyPolicyAlertState>().notNull().default({ schemaVersion: 1, entries: [] }),
+  alertStateRevision: bigint('alert_state_revision', { mode: 'bigint' }).notNull().default(0n),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -67,6 +76,11 @@ export const topologyMonitoringPolicies = pgTable('topology_monitoring_policies'
   check('topology_monitoring_policies_subject_chk', sql`num_nonnulls(subject_node_id, subject_relationship_id) <= 1`),
   check('topology_monitoring_policies_revision_chk', sql`revision >= 0 AND authority_generation >= 0`),
   check('topology_monitoring_policies_authority_chk', sql`NOT enabled OR authority_digest IS NOT NULL`),
+  check('topology_monitoring_policies_authority_actor_chk', sql`authority_actor IS NULL OR (jsonb_typeof(authority_actor) = 'object' AND octet_length(authority_actor::text) <= 16384)`),
+  check('topology_monitoring_policies_routing_contexts_chk', sql`jsonb_typeof(routing_contexts) = 'array' AND jsonb_array_length(routing_contexts) <= 256 AND octet_length(routing_contexts::text) <= 65536`),
+  check('topology_monitoring_policies_alert_state_chk', sql`jsonb_typeof(alert_state) = 'object' AND alert_state->'schemaVersion' = '1'::jsonb AND jsonb_typeof(alert_state->'entries') = 'array' AND jsonb_array_length(alert_state->'entries') <= 256 AND octet_length(alert_state::text) <= 262144`),
+  check('topology_monitoring_policies_alert_state_revision_chk', sql`alert_state_revision >= 0`),
+  check('topology_monitoring_policies_armed_chk', sql`NOT enabled OR (authority_actor IS NOT NULL AND authority_permission_version IS NOT NULL AND armed_at IS NOT NULL AND requester_id IS NOT NULL AND jsonb_array_length(routing_contexts) > 0)`),
   uniqueIndex('topology_monitoring_policies_key_uniq').on(t.orgId, t.siteId, t.key),
 ]);
 
@@ -100,7 +114,7 @@ export const topologyMonitorBindings = pgTable('topology_monitor_bindings', {
   policyId: uuid('policy_id'),
   contextKey: varchar('context_key', { length: 255 }).notNull(),
   family: varchar('family', { length: 4 }).notNull(),
-  originPolicy: jsonb('origin_policy').$type<{deviceId?: string; interfaceId?: string}>().notNull().default({}),
+  originPolicy: jsonb('origin_policy').$type<{deviceId?: string; interfaceId?: string; monitorDigest?: string; targetId?: string; targetRevision?: string; policyRevision?: string}>().notNull().default({}),
   metricRole: varchar('metric_role', { length: 64 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -124,6 +138,8 @@ export const topologyDiagnosticRuns = pgTable('topology_diagnostic_runs', {
   recipeId: varchar('recipe_id', { length: 32 }).notNull(),
   recipeVersion: integer('recipe_version').notNull(),
   requesterId: uuid('requester_id').notNull(),
+  /** M3-D13: the requester authority frozen at acceptance; required for trace_route. */
+  requesterAuthority: jsonb('requester_authority').$type<Record<string, unknown>>(),
   subjectNodeId: uuid('subject_node_id'),
   subjectRelationshipId: uuid('subject_relationship_id'),
   subjectTargetId: uuid('subject_target_id'),
@@ -146,6 +162,14 @@ export const topologyDiagnosticRuns = pgTable('topology_diagnostic_runs', {
   finishedAt: timestamp('finished_at', { withTimezone: true }),
   cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
   failureReason: varchar('failure_reason', { length: 64 }),
+  /** M3 Task 7 scheduled occurrence: all seven null (on-demand) or all present (scheduled). */
+  policyId: uuid('policy_id'),
+  policyRevision: bigint('policy_revision', { mode: 'bigint' }),
+  scheduledContextKey: text('scheduled_context_key'),
+  scheduledFamily: text('scheduled_family').$type<'ipv4' | 'ipv6'>(),
+  scheduledFor: timestamp('scheduled_for', { withTimezone: true }),
+  occurrenceKey: text('occurrence_key'),
+  continuityKey: text('continuity_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -163,7 +187,13 @@ export const topologyDiagnosticRuns = pgTable('topology_diagnostic_runs', {
   check('topology_diagnostic_runs_origin_chk', sql`jsonb_typeof(origin_snapshot) = 'object' AND octet_length(origin_snapshot::text) <= 8192`),
   check('topology_diagnostic_runs_reasons_chk', sql`jsonb_typeof(reasons) = 'array' AND jsonb_array_length(reasons) <= 64`),
   check('topology_diagnostic_runs_deadline_chk', sql`deadline >= queue_deadline AND queue_deadline > queued_at`),
+  check('topology_diagnostic_runs_requester_authority_chk', sql`requester_authority IS NULL OR (jsonb_typeof(requester_authority) = 'object' AND octet_length(requester_authority::text) <= 1024)`),
+  check('topology_diagnostic_runs_trace_authority_chk', sql`recipe_id <> 'trace_route' OR requester_authority IS NOT NULL`),
   uniqueIndex('topology_diagnostic_runs_request_uniq').on(t.orgId, t.siteId, t.requesterId, t.idempotencyKey),
+  foreignKey({ name: 'topology_diagnostic_runs_policy_fk', columns: [t.policyId, t.orgId, t.siteId], foreignColumns: [topologyMonitoringPolicies.id, topologyMonitoringPolicies.orgId, topologyMonitoringPolicies.siteId] }).onDelete('no action'),
+  check('topology_diagnostic_runs_occurrence_chk', sql`num_nonnulls(policy_id, policy_revision, scheduled_context_key, scheduled_family, scheduled_for, occurrence_key, continuity_key) IN (0, 7) AND (policy_id IS NULL OR (scheduled_family IN ('ipv4','ipv6') AND octet_length(scheduled_context_key) BETWEEN 1 AND 255 AND policy_revision >= 0 AND occurrence_key ~ '^[a-f0-9]{64}$' AND continuity_key ~ '^[a-f0-9]{64}$' AND requester_authority IS NOT NULL AND recipe_id <> 'trace_route'))`),
+  uniqueIndex('topology_diagnostic_runs_occurrence_uniq').on(t.orgId, t.siteId, t.policyId, t.scheduledContextKey, t.scheduledFamily, t.scheduledFor).where(sql`policy_id IS NOT NULL`),
+  index('topology_diagnostic_runs_policy_idx').on(t.policyId, t.scheduledFor.desc()).where(sql`policy_id IS NOT NULL`),
 ]);
 
 export const topologyDiagnosticSteps = pgTable('topology_diagnostic_steps', {

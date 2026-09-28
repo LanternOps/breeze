@@ -57,6 +57,7 @@ import { registerDRTools } from './aiToolsDR';
 // New domain modules
 import { registerDeviceTools } from './aiToolsDevice';
 import { registerNetworkTools } from './aiToolsNetwork';
+import { registerTopologyTools } from './aiToolsTopology';
 import { registerSentinelOneTools } from './aiToolsSentinelOne';
 import { registerHuntressTools } from './aiToolsHuntress';
 import { registerSecurityTools } from './aiToolsSecurity';
@@ -314,6 +315,7 @@ registerMonitoringTools(aiTools);
 registerMonitorTools(aiTools);
 registerDeviceTools(aiTools);
 registerNetworkTools(aiTools);
+registerTopologyTools(aiTools);
 registerSentinelOneTools(aiTools);
 registerHuntressTools(aiTools);
 registerSecurityTools(aiTools);

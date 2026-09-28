@@ -188,6 +188,14 @@ func executeStep(parent context.Context, command Command, step PlanStep, result 
 	if step.Method == "icmp" {
 		timeout *= time.Duration(step.PacketCount)
 	}
+	if step.Method == "trace" {
+		// Worst case is every probe using its full hop timeout; the run's own
+		// execution deadline (at most 60 s for trace_route) still caps it.
+		timeout = time.Duration(step.MaxHops*step.ProbesPerHop) * time.Duration(step.HopTimeoutMS) * time.Millisecond
+		if timeout > TraceExecutionCeiling {
+			timeout = TraceExecutionCeiling
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if step.Method == "dns" {
@@ -353,6 +361,8 @@ func executeStep(parent context.Context, command Command, step PlanStep, result 
 			return failStep(result, "unsupported", "proxy_not_configured")
 		}
 		details, e = io.HTTPS(ctx, ip, *target.Definition, route, step.Method, step.ResponseLimitBytes)
+	case "trace":
+		return executeTrace(ctx, step, result, io, ip, route)
 	default:
 		return failStep(result, "unsupported", "unsupported_method")
 	}
@@ -381,4 +391,34 @@ func probeFailure(result StepResult, err error) StepResult {
 		return failStep(result, "timeout", "probe_timeout")
 	}
 	return failStep(result, "failed_check", "probe_failed")
+}
+
+// executeTrace runs one bounded trace to the already-validated literal address
+// through the live route attribution the common prelude just checked.
+func executeTrace(ctx context.Context, step PlanStep, result StepResult, io ProbeIO, ip netip.Addr, route networkcontext.RouteSelection) StepResult {
+	tracer, ok := io.(TraceIO)
+	if !ok {
+		return failStep(result, "unsupported", "trace_unsupported")
+	}
+	transport, e := tracer.TraceTransport()
+	if e != nil || transport == nil {
+		return failStep(result, "unsupported", "trace_unsupported")
+	}
+	source, e := netip.ParseAddr(route.SourceAddress)
+	if e != nil {
+		return failStep(result, "unsupported", "unsupported_context")
+	}
+	trace := RunTrace(ctx, TracePlan{
+		Destination:  ip,
+		Source:       SourceBinding{Address: source, InterfaceKey: route.InterfaceKey, OSIndex: route.OSIndex, ContextKey: route.ContextKey},
+		MaxHops:      step.MaxHops,
+		ProbesPerHop: step.ProbesPerHop,
+		HopTimeout:   time.Duration(step.HopTimeoutMS) * time.Millisecond,
+		Quality:      result.Attribution.Quality,
+	}, transport)
+	result.Attribution.ActualMethod = ptr("trace")
+	result.Details = Details{Trace: &trace.Details}
+	result.Truncated = trace.Truncated
+	state, reason := traceStepOutcome(trace.Stop)
+	return failStep(result, state, reason)
 }

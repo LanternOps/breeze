@@ -35,7 +35,7 @@ export async function seedTopologyM1Fixture() {
  * rewritten.
  */
 export async function seedTopologyCommandFixture(
-  overrides: { acceptedAt?: Date; orphanRun?: boolean } = {},
+  overrides: { acceptedAt?: Date; orphanRun?: boolean; withTarget?: boolean } = {},
 ) {
   const { and, eq } = await import('drizzle-orm');
   const { withSystemDbAccessContext, runOutsideDbContext } = await import('../../db');
@@ -63,6 +63,15 @@ export async function seedTopologyCommandFixture(
     return binding!.id;
   });
 
+  // M3-D7: a plan that pins a configured target, so delivery can be fenced on
+  // THAT target's revision rather than on any site settings revision.
+  const targetId = crypto.randomUUID();
+  if (overrides.withTarget) {
+    await withDbAccessContext(orgContext(scope.orgId), () =>
+      db.execute(sql`INSERT INTO topology_probe_targets (id,org_id,site_id,key,label,kind,definition,enabled)
+        VALUES (${targetId}::uuid,${scope.orgId}::uuid,${scope.siteId}::uuid,'web','web','tcp',
+        ${JSON.stringify({ label: 'web', enabled: true, families: ['ipv4'], provider: null, independenceLabel: null, kind: 'tcp', host: '198.51.100.7', port: 443 })}::jsonb,true)`));
+  }
   const acceptedAt = overrides.acceptedAt ?? new Date();
   const queueDeadline = new Date(acceptedAt.getTime() + 30_000);
   const deadline = new Date(acceptedAt.getTime() + 120_000);
@@ -77,8 +86,12 @@ export async function seedTopologyCommandFixture(
     },
     family: 'ipv4' as const, graphRevision: '0', settingsRevision: '0', contextRevision: '1',
     templateVersions: { partner: null, org: null, defaults: 1, resolver: 1 },
-    destinations: [{ id: destinationId, target: { kind: 'observed_gateway' as const, address: '192.0.2.1', zone: null, interfaceId: evidenceId, evidenceId } }],
-    steps: [{ id: stepId, method: 'icmp' as const, destinationId, required: true, packetCount: 3, timeoutMs: 1000, payloadBytes: 32 }],
+    destinations: overrides.withTarget
+      ? [{ id: destinationId, target: { kind: 'configured_target' as const, targetId, targetRevision: '1', definition: { label: 'web', enabled: true, families: ['ipv4' as const], provider: null, independenceLabel: null, kind: 'tcp' as const, host: '198.51.100.7', port: 443 } } }]
+      : [{ id: destinationId, target: { kind: 'observed_gateway' as const, address: '192.0.2.1', zone: null, interfaceId: evidenceId, evidenceId } }],
+    steps: overrides.withTarget
+      ? [{ id: stepId, method: 'tcp' as const, destinationId, required: true, timeoutMs: 5000 }]
+      : [{ id: stepId, method: 'icmp' as const, destinationId, required: true, packetCount: 3, timeoutMs: 1000, payloadBytes: 32 }],
     limits: { maxConcurrentSteps: 2, maxTargetAddresses: 4, maxResolvers: 2, queueTimeoutSeconds: 30, executionTimeoutSeconds: 90, lifetimeSeconds: 120 },
     acceptedAt: acceptedAt.toISOString(), queueDeadline: queueDeadline.toISOString(),
     deadline: deadline.toISOString(), digest: '0'.repeat(64), reasons: [] as string[],
@@ -121,6 +134,16 @@ export async function seedTopologyCommandFixture(
     async changeSiteConfiguration() {
       await withDbAccessContext(orgContext(scope.orgId), () =>
         db.execute(sql`UPDATE topology_site_state SET settings_revision=settings_revision+1 WHERE site_id=${scope.siteId}::uuid`));
+    },
+    /** A material change to the pinned target (`withTarget` only). */
+    async changeTarget() {
+      await withDbAccessContext(orgContext(scope.orgId), () =>
+        db.execute(sql`UPDATE topology_probe_targets SET revision=revision+1 WHERE id=${targetId}::uuid`));
+    },
+    /** Outbound probing withdrawn in the compiled settings. */
+    async disableOutbound() {
+      await withDbAccessContext(orgContext(scope.orgId), () =>
+        db.execute(sql`UPDATE topology_site_state SET effective_settings = jsonb_set(coalesce(effective_settings,'{}'::jsonb), '{configuration}', ${JSON.stringify({ outboundEnabled: false, targets: {}, policies: {} })}::jsonb) WHERE site_id=${scope.siteId}::uuid`));
     },
     /**
      * Put a row the database fence already cancelled back to `pending`, so the

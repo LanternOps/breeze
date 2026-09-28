@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   topologyDiagnosticCommandSchema,
   type TopologyDiagnosticCommand,
@@ -13,6 +13,7 @@ import {
   topologyCollectionSources,
   topologyDiagnosticRuns,
   topologyNodeBindings,
+  topologyProbeTargets,
   topologySiteState,
 } from '../../db/schema';
 import {
@@ -26,6 +27,7 @@ import {
 import type { CommandPayload } from '../commandQueue';
 import { insertQueuedCommandInTransaction } from '../commandQueueInsert';
 import { CommandTypes } from '../commandTypes';
+import { revalidateTopologyRequesterAuthority, runRequiresRequesterRevalidation } from './diagnosticTraceAuthority';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
   type TopologyDiagnosticIntent,
@@ -141,8 +143,11 @@ export async function validateTopologyCommandAuthority(
     return deny('scope_changed');
   }
 
+  // M3-D7: fence on what THIS plan executes, not on any settings revision —
+  // an unrelated settings write must not strand every in-flight diagnostic.
+  // The plan's `settingsRevision` stays as provenance.
   const [state] = await reader
-    .select({ settingsRevision: topologySiteState.settingsRevision })
+    .select({ effectiveSettings: topologySiteState.effectiveSettings })
     .from(topologySiteState)
     .where(
       and(
@@ -151,11 +156,55 @@ export async function validateTopologyCommandAuthority(
       ),
     )
     .limit(1);
-  if (!state || state.settingsRevision.toString() !== payload.plan.settingsRevision) {
+  if (!state) return deny('scope_changed');
+  if (!(await planConfigurationCurrent(reader, run, payload.plan, state.effectiveSettings))) {
     return deny('scope_changed');
   }
 
+  // M3-D13: the REQUESTER's live authority, not only the origin's — for a
+  // routed trace and for a scheduled policy occurrence (whose requester is the
+  // arming actor, and whose policy must still be armed at the same revision).
+  // Partner trust is already evaluated by the generic claim.
+  if (runRequiresRequesterRevalidation(run)) {
+    const denial = await revalidateTopologyRequesterAuthority({ reader, run });
+    if (denial) return deny(denial === 'authority_unavailable' ? 'authority_unavailable' : 'scope_changed');
+  }
+
   return { allow: true, payload };
+}
+
+/**
+ * Every configured target the plan pins must still be the same live,
+ * enabled revision, and outbound probing must not have been withdrawn from
+ * the compiled configuration. Observed gateway/resolver destinations carry
+ * their own origin/evidence fences above.
+ */
+export async function planConfigurationCurrent(
+  reader: Reader,
+  run: { orgId: string; siteId: string },
+  plan: TopologyDiagnosticPlan,
+  effectiveSettings: unknown,
+): Promise<boolean> {
+  const pinned = plan.destinations.flatMap((destination) =>
+    destination.target.kind === 'configured_target'
+      ? [{ id: destination.target.targetId, revision: destination.target.targetRevision }]
+      : []);
+  if (!pinned.length) return true;
+  const configuration = (effectiveSettings as { configuration?: { outboundEnabled?: unknown } } | null)?.configuration;
+  if (configuration !== undefined && configuration.outboundEnabled !== true) return false;
+  const rows = await reader
+    .select({ id: topologyProbeTargets.id, revision: topologyProbeTargets.revision, enabled: topologyProbeTargets.enabled, deletedAt: topologyProbeTargets.deletedAt })
+    .from(topologyProbeTargets)
+    .where(and(
+      eq(topologyProbeTargets.orgId, run.orgId),
+      eq(topologyProbeTargets.siteId, run.siteId),
+      inArray(topologyProbeTargets.id, pinned.map((target) => target.id)),
+    ));
+  const live = new Map(rows.map((row) => [row.id, row]));
+  return pinned.every((target) => {
+    const row = live.get(target.id);
+    return !!row && row.enabled && row.deletedAt === null && row.revision.toString() === target.revision;
+  });
 }
 
 registerCommandRevalidation(
@@ -321,6 +370,16 @@ export async function dispatchTopologyDiagnosticRun(
         await settleRun(run, 'expired', 'dispatch_timeout', now);
         await setIntentState(runId, 'settled');
         return null;
+      }
+      // M3-D13: enqueue is a live-authority boundary. A revoked requester (or
+      // a disarmed policy) never gets a command minted on its behalf.
+      if (runRequiresRequesterRevalidation(run)) {
+        const denial = await revalidateTopologyRequesterAuthority({ reader: db, run, checkTrust: true, requirePartnerFlags: true });
+        if (denial) {
+          await settleRun(run, 'cancelled', `authority_${denial}`.slice(0, 64), now);
+          await setIntentState(runId, 'settled');
+          return null;
+        }
       }
 
       const commandId = randomUUID();

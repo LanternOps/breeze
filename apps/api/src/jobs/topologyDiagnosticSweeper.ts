@@ -1,14 +1,22 @@
 import { captureException } from '../services/sentry';
 import { sweepTopologyDiagnosticRuns } from '../services/topology/diagnosticSweeper';
+import { recordTopologyDiagnosticSweep } from '../services/topology/metrics';
 
 export const TOPOLOGY_DIAGNOSTIC_SWEEP_INTERVAL_MS = 5_000;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let running: Promise<unknown> | null = null;
 
+/** One sweep, publishing how many abandoned runs it expired (orphan backlog). */
+export async function runTopologyDiagnosticSweep(): Promise<number> {
+  const expired = await sweepTopologyDiagnosticRuns();
+  recordTopologyDiagnosticSweep(expired);
+  return expired;
+}
+
 function tick(): void {
   if (running) return;
-  running = sweepTopologyDiagnosticRuns()
+  running = runTopologyDiagnosticSweep()
     .catch((error) => captureException(error))
     .finally(() => {
       running = null;

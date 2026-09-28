@@ -197,6 +197,14 @@ export function topologyPhysicalExposed(flags: Pick<TopologyFlags, 'materializat
   return flags.materialization && flags.physical;
 }
 
+/**
+ * M3 Task 6: interface measurement (port health and history) is exposed only
+ * with the physical capability (interfaces are physical evidence) AND the
+ * `interfaceHealth` flag. Like `physical`, it gates EXPOSURE only.
+ */
+export function topologyInterfaceHealthExposed(flags: Pick<TopologyFlags, 'materialization' | 'physical' | 'interfaceHealth'>): boolean {
+  return topologyPhysicalExposed(flags) && flags.interfaceHealth === true;
+}
 function capability(
   available: boolean,
   reason: TopologyCapabilityReason,

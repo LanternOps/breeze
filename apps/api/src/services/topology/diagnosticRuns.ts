@@ -33,6 +33,8 @@ export {
 
 import { planTopologyDiagnostic } from './diagnosticPlanner';
 import { loadTopologyFlags } from './flags';
+import { freezeTopologyTraceRequester } from './diagnosticTraceAuthority';
+import { recordTopologyDiagnosticDispatch, type TopologyDispatchStatus, type TopologyMetricRecipe } from './metrics';
 import { TopologyOperationError } from './operationErrors';
 
 /** Fixed on-demand budgets from the operations spec (§9). */
@@ -208,7 +210,7 @@ async function readUsage(
       count(*) FILTER (WHERE ${active} AND origin_snapshot->>'deviceId' = ${deviceId}) AS active_agent,
       count(*) FILTER (WHERE ${active} AND site_id = ${ctx.scope.siteId}::uuid) AS active_site,
       count(*) FILTER (WHERE ${active}) AS active_org,
-      count(*) FILTER (WHERE ${recent} AND requester_id = ${ctx.auth.user.id}::uuid) AS starts_user,
+      count(*) FILTER (WHERE ${recent} AND requester_id = ${ctx.auth.user.id}::uuid AND policy_id IS NULL) AS starts_user,
       count(*) FILTER (WHERE ${recent} AND site_id = ${ctx.scope.siteId}::uuid) AS starts_site,
       count(*) FILTER (WHERE ${recent}) AS starts_org
     FROM topology_diagnostic_runs
@@ -232,9 +234,33 @@ function subjectColumns(subject: CreateTopologyDiagnosticRequest['subject']) {
   };
 }
 
+/**
+ * One claimed scheduled slot (M3 Task 7 / M3-D11). The occurrence key is the
+ * run's idempotency key AND the unique (policy, context, family, slot) claim,
+ * so a replica that lost the race replays instead of creating a second run.
+ */
+export type TopologyScheduledOccurrence = {
+  policyId: string;
+  policyRevision: string;
+  contextKey: string;
+  family: 'ipv4' | 'ipv6';
+  scheduledFor: Date;
+  occurrenceKey: string;
+  continuityKey: string;
+};
+
 export type CreateTopologyDiagnosticRunOptions = {
   /** Task 14 planning seam; tests and M3 scheduling supply their own. */
   repository?: DiagnosticPlanningRepository;
+  /** Present only for a scheduled policy occurrence; on-demand runs omit it. */
+  scheduledOccurrence?: TopologyScheduledOccurrence;
+  /**
+   * The requester's permission authority version, already witnessed by the
+   * caller OUTSIDE any lock-holding transaction (the scheduler takes it from
+   * the live re-derivation). When present the freeze does not read Redis —
+   * the scheduler calls this under the policy row lock (T4).
+   */
+  requesterPermissionVersion?: string;
 };
 
 /**
@@ -248,7 +274,32 @@ export async function createTopologyDiagnosticRun(
   idempotencyKey: string,
   options: CreateTopologyDiagnosticRunOptions = {},
 ): Promise<TopologyDiagnosticRun> {
+  const started = performance.now();
+  const recipe = (input as { recipeId?: unknown } | null)?.recipeId;
+  const observe = (status: TopologyDispatchStatus) =>
+    recordTopologyDiagnosticDispatch(String(recipe) as TopologyMetricRecipe, status, (performance.now() - started) / 1000);
+  try {
+    const run = await acceptTopologyDiagnosticRun(ctx, input, idempotencyKey, options);
+    observe(run.state as TopologyDispatchStatus);
+    return run;
+  } catch (error) {
+    observe(error instanceof TopologyOperationError ? 'rejected' : 'error');
+    throw error;
+  }
+}
+
+async function acceptTopologyDiagnosticRun(
+  ctx: TopologyRequestContext,
+  input: CreateTopologyDiagnosticRequest,
+  idempotencyKey: string,
+  options: CreateTopologyDiagnosticRunOptions,
+): Promise<TopologyDiagnosticRun> {
   const request = createTopologyDiagnosticSchema.parse(input);
+  const occurrence = options.scheduledOccurrence;
+  if (occurrence && (occurrence.occurrenceKey !== idempotencyKey || request.recipeId === 'trace_route'
+    || request.contextKey !== occurrence.contextKey || request.family !== occurrence.family)) {
+    throw new TopologyOperationError('occurrence_mismatch', 400, 'Scheduled occurrence does not match its request');
+  }
   if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1 || idempotencyKey.length > 255) {
     throw new TopologyOperationError('idempotency_key_required', 400, 'An Idempotency-Key is required');
   }
@@ -263,6 +314,16 @@ export async function createTopologyDiagnosticRun(
   if (plan.scope.orgId !== ctx.scope.orgId || plan.scope.siteId !== ctx.scope.siteId) {
     throw new TopologyOperationError('topology_site_not_found', 404);
   }
+
+  // M3-D13: a routed trace carries its requester authority so every later
+  // boundary (enqueue, delivery, result publication) can re-derive it live.
+  // A scheduled occurrence carries it too: its requester is the policy's
+  // arming actor, re-derived at every later boundary (generalized M3-D13).
+  const requesterAuthority = plan.recipeId === 'trace_route' || occurrence
+    ? await freezeTopologyTraceRequester(ctx, options.requesterPermissionVersion !== undefined
+      ? { permissionVersion: async () => options.requesterPermissionVersion! }
+      : {})
+    : null;
 
   const runId = randomUUID();
   const attemptId = randomUUID();
@@ -286,7 +347,10 @@ export async function createTopologyDiagnosticRun(
     );
     // Counted on this same transaction/connection, behind the same lock as the
     // insert below.
-    const refusal = exceededTopologyDiagnosticQuota(await readUsage(tx, ctx, plan.origin.deviceId));
+    // Scheduled and on-demand runs share the concurrency semaphore; the
+    // per-USER start rate is the human's budget and never counts a schedule.
+    const usage = await readUsage(tx, ctx, plan.origin.deviceId);
+    const refusal = exceededTopologyDiagnosticQuota(occurrence ? { ...usage, startsForUser: 0 } : usage);
     if (refusal) {
       throw new TopologyOperationError(
         'diagnostic_quota_exceeded',
@@ -305,6 +369,7 @@ export async function createTopologyDiagnosticRun(
         recipeId: plan.recipeId,
         recipeVersion: plan.recipeVersion,
         requesterId: ctx.auth.user.id,
+        requesterAuthority,
         ...subjectColumns(plan.subject),
         originNodeId: plan.origin.nodeId,
         originSnapshot: plan.origin,
@@ -316,6 +381,17 @@ export async function createTopologyDiagnosticRun(
         queuedAt: new Date(plan.acceptedAt),
         queueDeadline: new Date(plan.queueDeadline),
         deadline: new Date(plan.deadline),
+        ...(occurrence
+          ? {
+              policyId: occurrence.policyId,
+              policyRevision: BigInt(occurrence.policyRevision),
+              scheduledContextKey: occurrence.contextKey,
+              scheduledFamily: occurrence.family,
+              scheduledFor: occurrence.scheduledFor,
+              occurrenceKey: occurrence.occurrenceKey,
+              continuityKey: occurrence.continuityKey,
+            }
+          : {}),
       })
       .onConflictDoNothing({
         target: [

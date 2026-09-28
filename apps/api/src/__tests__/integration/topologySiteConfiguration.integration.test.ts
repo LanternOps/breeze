@@ -133,22 +133,29 @@ describe('site configuration compiler', () => {
           )
         )[0]?.n,
       ).toBe(1);
-      await expect(
-        upsertTopologyMonitoringPolicy(ctx, {
-          key: 'availability',
-          definition: { ...policy, enabled: true },
-          expectedRevision: '2',
-        }),
-      ).rejects.toMatchObject({ code: 'capability_unavailable' });
+      // M3: `enabled` is activation intent only — the compile records it and
+      // arms nothing; arming is the separate human-only route.
+      await upsertTopologyMonitoringPolicy(ctx, {
+        key: 'availability',
+        definition: { ...policy, enabled: true },
+        expectedRevision: '2',
+      });
+      expect(
+        (
+          await db.execute(
+            sql`SELECT enabled,activation_intent,authority_digest,blocked_reason FROM topology_monitoring_policies WHERE org_id=${t.orgId}::uuid`,
+          )
+        )[0],
+      ).toEqual({ enabled: false, activation_intent: true, authority_digest: null, blocked_reason: 'not_armed' });
       snapshot = await loadTopologyConfiguration(ctx);
-      expect(snapshot.settingsRevision).toBe('2');
+      expect(snapshot.settingsRevision).toBe('3');
       expect(
         (
           await db.execute(
             sql`SELECT count(*)::int n FROM topology_change_outbox WHERE org_id=${t.orgId}::uuid AND event_kind='configuration.change'`,
           )
         )[0]?.n,
-      ).toBe(2);
+      ).toBe(3);
       expect(
         (
           await db.execute(

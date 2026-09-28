@@ -8,9 +8,13 @@ import { topologyTemplateApplicationRoutes } from './templateApplications';
 import { topologyTemplateRoutes } from './templates';
 import { topologySettingsRoutes } from './settings';
 import { topologyGraphRoutes } from './graphs';
+import { topologyHistoryRoutes } from './history';
+import { topologyInvestigationRoutes } from './investigation';
 import { topologyManualRoutes } from './manual';
 import { topologyExclusionRoutes } from './exclusions';
 import { topologyLayoutRoutes } from './layouts';
+import { topologyMonitoringArmRoutes } from './monitoringArms';
+import { topologyMonitoringStatusRoutes } from './monitoringStatus';
 
 export { requireTopologySiteCapability } from './middleware';
 
@@ -27,10 +31,14 @@ export function createTopologyRoutes(): Hono {
   routes.route('/', topologyPolicyRoutes);
   routes.route('/', topologySettingsRoutes);
   routes.route('/', topologyGraphRoutes);
+  routes.route('/', topologyHistoryRoutes);
+  routes.route('/', topologyInvestigationRoutes);
   routes.route('/', topologyManualRoutes);
   routes.route('/', topologyExclusionRoutes);
   routes.route('/', topologyLayoutRoutes);
   routes.route('/', topologyDiagnosticRoutes);
+  routes.route('/', topologyMonitoringArmRoutes);
+  routes.route('/', topologyMonitoringStatusRoutes);
   return routes;
 }
 

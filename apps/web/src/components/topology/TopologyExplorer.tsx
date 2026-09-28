@@ -17,6 +17,8 @@ import TopologyList from './TopologyList';
 import TopologyInspector from './TopologyInspector';
 import TopologyDiagnosticsPanel from './TopologyDiagnosticsPanel';
 import TopologyConfiguration from './TopologyConfiguration';
+import MonitoringPolicyPanel from './MonitoringPolicyPanel';
+import RecentChangesPanel from './RecentChangesPanel';
 
 export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');
@@ -117,8 +119,12 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     } catch (cause) { if (cause instanceof ActionError && cause.status === 409) setConflict(true); handleActionError(cause, t('loadFailed'));  }
     finally { setSaving(false); }
   };
-  const select = (next: TopologySelection) => { if (navigation.search) setSearchFocus(next.id); navigate({ ...navigation, selection: next, search: '' }); setAnnouncement(t('selected')); };
-  const closeInspector = () => { navigate({ ...navigation, selection: undefined }); listToggle.current?.focus(); };
+  const select = (next: TopologySelection) => { if (navigation.search) setSearchFocus(next.id); navigate({ ...navigation, selection: next, search: '', interfaceId: undefined }); setAnnouncement(t('selected')); };
+  const closeInspector = () => { navigate({ ...navigation, selection: undefined, interfaceId: undefined }); listToggle.current?.focus(); };
+  // The site settings read carries execute/configure + MFA authority; the graph projection reports neither.
+  const canDiagnose = settings.permissions?.canDiagnose ?? !!graph?.permissions.canDiagnose;
+  const canConfigureMonitoring = settings.permissions?.canConfigureMonitoring ?? !!graph?.permissions.canConfigureMonitoring;
+  const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
   return <section data-testid="topology-explorer" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-end gap-3">
       <label className="min-w-40 flex-1 text-sm">{t('search')}<input data-testid="topology-search" className="mt-1 w-full rounded border bg-background px-3 py-2" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
@@ -126,9 +132,14 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       <button ref={listToggle} data-testid="topology-list-toggle" className="rounded border px-3 py-2" aria-pressed={list} onClick={() => setList(!list)}>{list ? t('showMap') : t('showList')}</button>
       <button data-testid="topology-refresh" className="rounded border px-3 py-2" onClick={refreshGraph}>{t('refresh')}</button>
       <button data-testid="topology-configure" className="rounded border px-3 py-2" onClick={() => setConfiguration(!configuration)}>{t('configuration')}</button>
+      <button data-testid="topology-operations-toggle" className="rounded border px-3 py-2" aria-pressed={!!navigation.operations} onClick={() => navigate({ ...navigation, operations: !navigation.operations })}>{t('operations.toggle')}</button>
     </div>
     {(focusNodeId || searchFocus) && !fullSite && <button className="text-sm text-primary underline" onClick={() => { setFullSite(true); setSearchFocus(undefined); }}>{t('fullSite')}</button>}
     {configuration && <TopologyConfiguration siteId={siteId} />}
+    {navigation.operations && <section data-testid="topology-operations" aria-label={t('operations.heading')} className="space-y-2 rounded border bg-card p-4">
+      {operations.monitoring && <MonitoringPolicyPanel siteId={siteId} canConfigure={canConfigureMonitoring} />}
+      <RecentChangesPanel siteId={siteId} />
+    </section>}
     {loading && <p role="status">{t('loading')}</p>}
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
@@ -150,7 +161,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
           hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
-        {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && graph.permissions.canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
+        {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
+          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
       {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}

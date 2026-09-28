@@ -119,6 +119,8 @@ describe('readTopologyMonitorOverlays attribution', () => {
       observedAt: RECENT,
     });
     expect(overlay?.activeAlertCount).toBe(0);
+    // M3-D10: the fresh result lapses max(3 × 60 s, 60 s) after observation, without a revision write.
+    expect(overlay?.freshUntil).toBe(new Date(Date.parse(RECENT) + 180_000).toISOString());
   });
 
   it('downgrades an offline monitor to a failed check and a degraded monitor to degraded', async () => {
@@ -273,6 +275,7 @@ describe('overlayHealthSummary', () => {
         monitorId: MONITOR, monitorName: 'Gateway ping', monitorType: 'icmp_ping', destination: '192.0.2.1',
         runId: null, resultId: RESULT, originDeviceId: DEVICE, originNodeId: ORIGIN_NODE, observedAt: RECENT,
       },
+      freshUntil: null,
     });
 
     expect(summary).toEqual({
