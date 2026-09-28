@@ -57,6 +57,14 @@ async function waitForListRefresh() {
   await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u === '/roles').length).toBeGreaterThan(1));
 }
 
+// RoleFormModal seeds name/description/forceMfa in a passive effect that runs
+// AFTER the first commit. A click that lands between commit and that effect is
+// overwritten by the seed (the flake in #7400). The description is only ever
+// populated by that effect, so waiting on it proves the seed has flushed.
+async function waitForFormSeeded() {
+  await waitFor(() => expect(screen.getByLabelText('Description')).toHaveValue('Full access'));
+}
+
 describe('RolesPage — force-MFA toggle wiring (#5317)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,7 +76,9 @@ describe('RolesPage — force-MFA toggle wiring (#5317)', () => {
     await waitFor(() => expect(screen.getByText('Partner Admin')).toBeInTheDocument());
     fireEvent.click(screen.getAllByRole('button', { name: 'Clone' })[0]);
 
-    fireEvent.change(await screen.findByPlaceholderText('e.g., Technician'), { target: { value: 'Copy' } });
+    await screen.findByPlaceholderText('e.g., Technician');
+    await waitForFormSeeded();
+    fireEvent.change(screen.getByPlaceholderText('e.g., Technician'), { target: { value: 'Copy' } });
     const toggle = screen.getByRole('checkbox', TOGGLE);
     expect(toggle).toBeChecked();
     if (flipToggle) fireEvent.click(toggle);
@@ -99,7 +109,9 @@ describe('RolesPage — force-MFA toggle wiring (#5317)', () => {
     await waitFor(() => expect(screen.getByText('Technician')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 
-    const toggle = await screen.findByRole('checkbox', TOGGLE);
+    await screen.findByRole('checkbox', TOGGLE);
+    await waitForFormSeeded();
+    const toggle = screen.getByRole('checkbox', TOGGLE);
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     const submit = await waitFor(() => {
