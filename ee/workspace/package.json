@@ -16,7 +16,7 @@
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
-    "drizzle-orm": "0.45.2",
+    "drizzle-orm": "0.45.3",
     "hono": "4.13.8",
     "mailparser": "^3.9.14",
     "re2-wasm": "^1.0.2",
