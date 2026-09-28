@@ -38,11 +38,11 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); slotMock.mockClear(); });
 
 describe('xeroProvider identity and limits', () => {
-  it('declares connect, mapping and customerImport (Xero W03)', () => {
+  it('declares connect, mapping, customerImport and invoicePush (Xero W04)', () => {
     expect(xeroProvider.provider).toBe('xero');
     expect(xeroProvider.displayName).toBe('Xero');
     expect(xeroProvider.capabilities).toEqual({
-      connect: true, mapping: true, customerImport: true, invoicePush: false, paymentPull: false, paymentPush: false,
+      connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: false, paymentPush: false,
     });
   });
 
@@ -407,9 +407,6 @@ describe('invoice push and void (Xero W04)', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('https://api.xero.com/api.xro/2.0/Invoices?where=Reference%3D%3D%22breeze%3Ainv-1%22&unitdp=4');
   });
 
-  it('still does not declare invoicePush through W04a', () => {
-    expect(xeroProvider.capabilities.invoicePush).toBe(false);
-  });
 });
 
 describe('verifyWebhook (Xero W05 refinement 2)', () => {

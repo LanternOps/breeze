@@ -85,7 +85,8 @@ export class XeroProvider implements AccountingProvider {
     // Xero W03: contacts/items mapping and contact import.
     mapping: true,
     customerImport: true,
-    invoicePush: false,
+    // Xero W04: ACCREC invoice push and void.
+    invoicePush: true,
     paymentPull: false,
     paymentPush: false,
   } as const;
