@@ -370,8 +370,10 @@ export default function CommandPalette() {
     () =>
       recentPages.map((page) => ({
         key: `recent-page:${page.path}`,
-        title: page.title,
-        description: page.path,
+        // A detail page shows its item's name, with the page kind underneath
+        // instead of an id-laden path.
+        title: page.name ?? page.title,
+        description: page.name ? page.title : page.path,
         href: page.path,
         icon: Clock,
         kind: 'recent'
@@ -506,6 +508,17 @@ export default function CommandPalette() {
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Alt/Option + 1–9 opens the numbered item. Matched on the physical key:
+      // Option+digit on a Mac produces a symbol ("¡", "™", "£") in event.key.
+      // Plain digits keep typing into the search box; Alt+digit never does,
+      // even with no item at that number.
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      if (digit && event.altKey && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        const item = selectableItems[Number(digit[1]) - 1];
+        if (item) handleSelectItem(item);
+        return;
+      }
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         setActiveIndex((prev) =>
@@ -646,7 +659,7 @@ export default function CommandPalette() {
                               )}
                             />
                             <div className="min-w-0 flex-1">
-                              <div className="truncate font-medium">{item.title}</div>
+                              <div data-testid="palette-item-title" className="truncate font-medium">{item.title}</div>
                               {item.description && (
                                 <div
                                   className={cn(
@@ -658,6 +671,20 @@ export default function CommandPalette() {
                                 </div>
                               )}
                             </div>
+                            {itemIndex >= 0 && itemIndex < 9 && (
+                              <kbd
+                                aria-hidden="true"
+                                data-testid="palette-item-number"
+                                className={cn(
+                                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold',
+                                  isActive
+                                    ? 'border-primary-foreground/40 text-primary-foreground/90'
+                                    : 'bg-muted text-muted-foreground'
+                                )}
+                              >
+                                {itemIndex + 1}
+                              </kbd>
+                            )}
                           </button>
                         );
                       })}
@@ -673,7 +700,11 @@ export default function CommandPalette() {
             </div>
 
             <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
-              <span>{t('layout.search.navigationHint')}</span>
+              <span>
+                {t('layout.search.navigationHint')}
+                {' · '}
+                {t('layout.search.numberHint', { mod: modifierLabel === 'Cmd' ? '⌥' : 'Alt+' })}
+              </span>
               <span>{t('layout.search.closeHint')}</span>
             </div>
           </div>

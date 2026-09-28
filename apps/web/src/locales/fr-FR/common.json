@@ -749,7 +749,8 @@
         "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
         "keyboardShortcuts": "Raccourcis clavier",
         "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
-      }
+      },
+      "numberHint": "{{mod}}1–9 pour ouvrir"
     },
     "notifications": {
       "title": "Notifications",
@@ -815,7 +816,17 @@
       "help": "Ouvrir le panneau d'aide",
       "showThis": "Afficher cette carte",
       "close": "Fermer une boîte de dialogue ou un menu",
-      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ.",
+      "create": "Créer",
+      "createHint": "Appuyez sur c, relâchez, puis sur la touche.",
+      "paletteNumber": "Ouvrir un résultat de recherche par son numéro",
+      "newItems": {
+        "ticket": "Nouveau ticket",
+        "quote": "Nouveau devis",
+        "invoice": "Nouvelle facture",
+        "contract": "Nouveau contrat",
+        "script": "Nouveau script"
+      }
     }
   },
   "migrationBanner": {

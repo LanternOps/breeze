@@ -749,7 +749,8 @@
         "alertRulesDescription": "Manage alerting in Configuration Policies",
         "keyboardShortcuts": "Keyboard shortcuts",
         "keyboardShortcutsDescription": "Every key and chord, on one card"
-      }
+      },
+      "numberHint": "{{mod}}1–9 to open"
     },
     "notifications": {
       "title": "Notifications",
@@ -815,7 +816,17 @@
       "help": "Open the help panel",
       "showThis": "Show this card",
       "close": "Close a dialog or menu",
-      "typingNote": "Single-key shortcuts pause while you are typing in a field."
+      "typingNote": "Single-key shortcuts pause while you are typing in a field.",
+      "create": "Create",
+      "createHint": "Press c, release, then the key.",
+      "paletteNumber": "Open a search result by its number",
+      "newItems": {
+        "ticket": "New ticket",
+        "quote": "New quote",
+        "invoice": "New invoice",
+        "contract": "New contract",
+        "script": "New script"
+      }
     }
   },
   "migrationBanner": {

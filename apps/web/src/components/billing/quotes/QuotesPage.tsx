@@ -31,6 +31,7 @@ import { StatusPill } from '../shared/StatusPill';
 import { StatCard } from '../shared/StatCard';
 import { ROW_LINK_CLASS, writeHashFilters } from '../shared/listChrome';
 import AccessDenied from '../../shared/AccessDenied';
+import { useCreateIntent } from '../../../lib/keyboard/createIntent';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -263,6 +264,10 @@ export function QuotesPage({ lockedOrgId }: QuotesPageProps = {}) {
     setCreateOpen(true);
     if (contextOrgId) void loadNewSites(contextOrgId);
   }, [loadNewSites, lockedOrgId]);
+
+  // "c then q" from anywhere lands here with a create intent. Only the
+  // standalone list answers it, not an org-record embed.
+  useCreateIntent('quote', openCreate, canWrite && !lockedOrgId);
 
   const submitCreate = useCallback(async () => {
     if (creating || !newOrgId) return;

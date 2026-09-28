@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoicesPage from './InvoicesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { requestCreate } from '../../lib/keyboard/createIntent';
 import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
@@ -56,6 +57,14 @@ describe('InvoicesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.location.hash = '';
+  });
+
+  it('opens the new-invoice dialog when it arrives with a "c then i" create intent', async () => {
+    sessionStorage.clear();
+    requestCreate('invoice');
+    wireDefault();
+    render(<InvoicesPage />);
+    expect(await screen.findByTestId('invoices-assemble-dialog')).toBeInTheDocument();
   });
 
   it('renders invoice rows with status badge and currency totals', async () => {
