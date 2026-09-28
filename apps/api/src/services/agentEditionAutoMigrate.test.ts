@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // `open`: system contexts not yet committed (#7103 — the send must see 0).
 const txState = vi.hoisted(() => ({ open: 0 }));
 vi.mock('../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), execute: vi.fn(async () => []) },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     txState.open += 1;
@@ -33,6 +33,7 @@ import { getGithubReleaseVersion } from './binarySource';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { captureException, captureMessage } from './sentry';
 import { stat } from 'node:fs/promises';
+import { devices } from '../db/schema/devices';
 import {
   maybeDispatchEditionMigration,
   EDITION_MIGRATION_SCRIPT_NAME,
@@ -67,11 +68,15 @@ const device = (o: Record<string, unknown> = {}) => ({
   ...o,
 }) as never;
 
-// db.select chain resolving to `rows` (script lookup).
-function selectResolving(rows: unknown[]) {
-  const limit = vi.fn().mockResolvedValue(rows);
-  const where = vi.fn(() => ({ limit }));
-  const from = vi.fn(() => ({ where }));
+// db.select chain. The module reads two tables: the system script lookup
+// (resolves to `rows`) and the #5016 per-org in-flight migration lookup on
+// `devices` (resolves to `inFlight`, default none).
+function selectResolving(rows: unknown[], inFlight: unknown[] = []) {
+  const from = vi.fn((table: unknown) => {
+    const limit = vi.fn().mockResolvedValue(table === devices ? inFlight : rows);
+    const where = vi.fn(() => ({ limit }));
+    return { where };
+  });
   return { from };
 }
 
@@ -277,6 +282,92 @@ describe('maybeDispatchEditionMigration', () => {
       expect(msgs[1]).toContain('2 stranded self-host device(s)');
       now.mockRestore();
       warn.mockRestore();
+    });
+  });
+
+  // #5016 — the heartbeat gate dispatched the reinstall to all six stranded
+  // PCs of one org within the same minute, and all six went silent. The gate
+  // must keep at most ONE migration in flight per org: the first device is
+  // the canary, and nothing else in that org is touched until it comes back.
+  describe('per-org canary (#5016)', () => {
+    const canaryRow = {
+      id: 'device-0',
+      hostname: 'CANARY-PC',
+      editionMigrationDispatchedAt: new Date('2026-09-06T00:57:00Z'),
+      lastSeenAt: new Date('2026-09-06T00:57:30Z'),
+    };
+    const holdWarns = (spy: ReturnType<typeof vi.spyOn>) =>
+      spy.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .filter((m: string) => m.includes('holding automatic edition migration'));
+
+    it('holds (no claim, no dispatch) while another device in the org has an unresolved migration', async () => {
+      primeHappyPath();
+      vi.mocked(db.select).mockReturnValue(selectResolving([systemScriptRow], [canaryRow]) as never);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await maybeDispatchEditionMigration(baseArgs());
+
+      expect(db.update).not.toHaveBeenCalled();
+      expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+      const msgs = holdWarns(warn);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('org org-1');
+      expect(msgs[0]).toContain('device-0');
+      expect(msgs[0]).toContain('CANARY-PC');
+      expect(msgs[0]).toContain('migration.log');
+      // A stuck canary is operator-actionable: reported once, not per beat.
+      expect(captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('device-0'),
+        expect.objectContaining({ eventCode: 'agent_edition_auto_migration_canary_unresolved' }),
+      );
+      warn.mockRestore();
+    });
+
+    it('a held device is NOT vetoed: it migrates once the canary resolves', async () => {
+      primeHappyPath();
+      vi.mocked(db.select).mockReturnValue(selectResolving([systemScriptRow], [canaryRow]) as never);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await maybeDispatchEditionMigration(baseArgs());
+      expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+
+      vi.mocked(db.select).mockReturnValue(selectResolving([systemScriptRow], []) as never);
+      await maybeDispatchEditionMigration(baseArgs());
+      expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('reports a stuck canary to Sentry once per canary, and re-warns at most hourly', async () => {
+      primeHappyPath();
+      vi.mocked(db.select).mockReturnValue(selectResolving([systemScriptRow], [canaryRow]) as never);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const now = vi.spyOn(Date, 'now');
+      const t0 = 1_900_000_000_000;
+      now.mockReturnValue(t0);
+      await maybeDispatchEditionMigration(baseArgs());
+      now.mockReturnValue(t0 + 60_000);
+      await maybeDispatchEditionMigration(baseArgs({ device: device({ id: 'device-2', hostname: 'HOST-2' }) }));
+      expect(holdWarns(warn)).toHaveLength(1);
+      now.mockReturnValue(t0 + 60 * 60_000 + 1);
+      await maybeDispatchEditionMigration(baseArgs());
+      expect(holdWarns(warn)).toHaveLength(2);
+      const sentry = vi.mocked(captureMessage).mock.calls.filter(
+        (c) => (c[1] as { eventCode?: string } | undefined)?.eventCode === 'agent_edition_auto_migration_canary_unresolved',
+      );
+      expect(sentry).toHaveLength(1);
+      now.mockRestore();
+      warn.mockRestore();
+    });
+
+    it('serialises the in-flight check and the claim per org with a transaction advisory lock', async () => {
+      const claim = primeHappyPath();
+      await maybeDispatchEditionMigration(baseArgs());
+      expect(db.execute).toHaveBeenCalledTimes(1);
+      const lockOrder = vi.mocked(db.execute).mock.invocationCallOrder[0]!;
+      const claimOrder = claim.returning.mock.invocationCallOrder[0]!;
+      expect(lockOrder).toBeLessThan(claimOrder);
+      // The lock is taken inside the system context whose commit publishes the claim.
+      expect(vi.mocked(db.execute).mock.calls[0]![0]).toBeDefined();
     });
   });
 
