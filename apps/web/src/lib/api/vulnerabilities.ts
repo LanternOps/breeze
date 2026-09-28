@@ -304,11 +304,14 @@ interface ChunkedSpec<T> {
  *    reported. A lost HTTP response is ambiguous the same way.
  * 2. What a retry does. For remediation the server attaches a re-sent finding
  *    to an install of the same (device, patch) that is still pending or sent,
- *    under a per-device lock so overlapping requests collapse too, and lists
+ *    under a per-(device, patch) lock so overlapping requests collapse too, and lists
  *    it in `alreadyQueued` (#7071, #3750). A command that has already FAILED is
- *    not reused — re-queueing it is the point of a retry — and a completed
- *    install drops out once the agent's post-install rescan clears the pending
- *    patch. Accept/mitigate are state-writes and tolerate a retry.
+ *    not reused — re-queueing it is the point of a retry. A completed install
+ *    stops producing a target once the agent's post-install patch rescan moves
+ *    that device_patches row off `pending` (every candidate query requires
+ *    `pending`); the finding itself stays open until the next correlation pass,
+ *    but a retry skips it as having no available patch rather than re-queueing.
+ *    Accept/mitigate are state-writes and tolerate a retry.
  */
 async function runChunked<T>(ids: string[], spec: ChunkedSpec<T>): Promise<T> {
   const batches = chunkIds(ids);
