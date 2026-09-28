@@ -201,6 +201,7 @@ import { enrollmentKeyRoutes, publicShortLinkRoutes } from "./enrollmentKeys";
 import { db } from "../db";
 import { createAuditLogAsync } from "../services/auditService";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
+import { rateLimiter } from "../services/rate-limit";
 
 // ============================================================
 // Helpers
@@ -362,6 +363,65 @@ describe("#7217 installer-link: no live key without a link", () => {
         }),
       }),
     );
+  });
+
+  // Add Device's create and link calls share the enroll-write bucket, so a 429
+  // on the link is the likeliest failure; the discard runs ahead of the limiter.
+  it("still discards the parent key when the link request is rate-limited", async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    } as any);
+    mockDiscardDelete();
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer-link?discardKeyOnFailure=1`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: "windows" }),
+      },
+    );
+
+    expect(res.status).toBe(429);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("never lets a failing discard replace the caller's original error", async () => {
+    process.env.PUBLIC_API_URL = "http://self-hosted.example.com:8080";
+    // An auth context whose org predicate throws: the discard must log it and
+    // the caller must still get the route's own 400, not a 500.
+    routeAuth.current = {
+      scope: "system",
+      orgId: null,
+      partnerId: null,
+      user: { id: "user-system", email: "system@example.com" },
+      canAccessOrg: () => true,
+      accessibleOrgIds: [],
+      orgCondition: () => {
+        throw new Error("predicate exploded");
+      },
+    };
+    mockParentLookup();
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer-link?discardKeyOnFailure=1`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: "windows" }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/could not discard/i),
+      expect.objectContaining({ keyId: KEY_ID }),
+    );
+    errSpy.mockRestore();
   });
 
   it("deletes the child link row it minted when issuing the download handle fails", async () => {

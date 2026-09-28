@@ -322,21 +322,23 @@ async function discardUnusedKeyAfterFailure(
   const keyId = c.req.param("id");
   if (!auth?.user?.id || !keyIdSchema.safeParse(keyId).success) return;
 
-  const conditions = [
-    eq(enrollmentKeys.id, keyId!),
-    eq(enrollmentKeys.createdBy, auth.user.id),
-    eq(enrollmentKeys.usageCount, 0),
-  ];
-  const orgScope = auth.orgCondition(enrollmentKeys.orgId);
-  if (orgScope) conditions.push(orgScope as ReturnType<typeof eq>);
-  if (auth.scope === "organization" && auth.allowedSiteIds !== undefined) {
-    if (auth.allowedSiteIds.length === 0) return;
-    conditions.push(
-      inArray(enrollmentKeys.siteId, auth.allowedSiteIds) as ReturnType<typeof eq>,
-    );
-  }
-
+  // One try around everything: this runs while the caller's original error is
+  // in flight, and a throw here must never replace it.
   try {
+    const conditions = [
+      eq(enrollmentKeys.id, keyId!),
+      eq(enrollmentKeys.createdBy, auth.user.id),
+      eq(enrollmentKeys.usageCount, 0),
+    ];
+    const orgScope = auth.orgCondition(enrollmentKeys.orgId);
+    if (orgScope) conditions.push(orgScope as ReturnType<typeof eq>);
+    if (auth.scope === "organization" && auth.allowedSiteIds !== undefined) {
+      if (auth.allowedSiteIds.length === 0) return;
+      conditions.push(
+        inArray(enrollmentKeys.siteId, auth.allowedSiteIds) as ReturnType<typeof eq>,
+      );
+    }
+
     // Bootstrap tokens issued from this key before the failure go with it
     // (installer_bootstrap_tokens.parent_enrollment_key_id ON DELETE CASCADE).
     const [deleted] = await db

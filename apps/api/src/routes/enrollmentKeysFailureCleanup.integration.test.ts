@@ -11,7 +11,7 @@
 import '../__tests__/integration/setup';
 
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -21,20 +21,21 @@ import {
   setupTestEnvironment,
   type TestEnvironment,
 } from '../__tests__/integration/db-utils';
-import { enrollmentKeys } from '../db/schema';
+import { enrollmentKeys, organizationUsers } from '../db/schema';
 import { enrollmentKeyRoutes, publicShortLinkRoutes } from './enrollmentKeys';
 import { createAccessToken, type TokenPayload } from '../services/jwt';
+import { clearPermissionCache } from '../services/permissions';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-async function mfaToken(env: TestEnvironment): Promise<string> {
+async function mfaToken(env: TestEnvironment & { scope?: string }): Promise<string> {
   const payload: Omit<TokenPayload, 'type'> = {
     sub: env.user.id,
     email: env.user.email,
     roleId: env.role.id,
-    orgId: env.organization.id,
+    orgId: env.scope === 'partner' ? null : env.organization.id,
     partnerId: env.partner.id,
-    scope: 'organization',
+    scope: env.scope === 'partner' ? 'partner' : 'organization',
     mfa: true,
     aep: 1,
     mep: 1,
@@ -50,11 +51,11 @@ function app(): Hono {
   return a;
 }
 
-async function createKey(token: string, siteId: string): Promise<string> {
+async function createKey(token: string, siteId: string, orgId?: string): Promise<string> {
   const res = await app().request('/enrollment-keys', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: `Add device installer ${randomUUID()}`, siteId }),
+    body: JSON.stringify({ name: `Add device installer ${randomUUID()}`, siteId, orgId }),
   });
   expect(res.status).toBe(201);
   return ((await res.json()) as { id: string }).id;
@@ -69,6 +70,17 @@ async function keyRow(id: string) {
 }
 
 const HTTP_ONLY_SERVER = 'http://self-hosted.example.com:8080';
+
+async function setSiteCeiling(env: TestEnvironment, siteIds: string[] | null): Promise<void> {
+  await getTestDb()
+    .update(organizationUsers)
+    .set({ siteIds })
+    .where(and(
+      eq(organizationUsers.userId, env.user.id),
+      eq(organizationUsers.orgId, env.organization.id),
+    ));
+  await clearPermissionCache(env.user.id);
+}
 
 describe('#7217 failed Add Device attempts — real PostgreSQL/Redis', () => {
   let savedPublicUrl: string | undefined;
@@ -139,6 +151,48 @@ describe('#7217 failed Add Device attempts — real PostgreSQL/Redis', () => {
     );
     expect(foreignRes.status).toBe(400);
     expect(await keyRow(foreign!.id)).toBeDefined();
+  });
+
+  runDb('honours the caller\'s site ceiling: discards inside it, never outside it', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const hidden = await createSite({ orgId: env.organization.id, name: `hidden ${randomUUID()}` });
+    const token = await mfaToken(env);
+
+    // Both keys are the caller's own and unused; minted while unrestricted.
+    await setSiteCeiling(env, null);
+    const inside = await createKey(token, env.site.id);
+    const outside = await createKey(token, hidden.id);
+
+    await setSiteCeiling(env, [env.site.id]);
+    const outsideRes = await app().request(
+      `/enrollment-keys/${outside}/installer/windows?discardKeyOnFailure=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(outsideRes.status).toBe(403);
+    expect(await keyRow(outside)).toBeDefined();
+
+    const insideRes = await app().request(
+      `/enrollment-keys/${inside}/installer/windows?discardKeyOnFailure=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(insideRes.status).toBe(400);
+    expect(await keyRow(inside)).toBeUndefined();
+  });
+
+  runDb('discards for a partner-scope caller within its orgs', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const token = await mfaToken({ ...env, scope: 'partner' });
+    const key = await createKey(token, env.site.id, env.organization.id);
+
+    const res = await app().request(
+      `/enrollment-keys/${key}/installer/windows?discardKeyOnFailure=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(res.status).toBe(400);
+    expect(await keyRow(key)).toBeUndefined();
   });
 
   runDb('refuses a Windows link it cannot serve, and discards its parent key', async () => {
