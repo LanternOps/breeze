@@ -1,0 +1,184 @@
+[
+  {
+    "name": "full run, manifest only",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": true,
+    "sha256": "e7868de55c11bcabca2569a711226c5626c041c1b401b52623cb89b4e8587a22",
+    "note": "a file run with no layout or system state"
+  },
+  {
+    "name": "full run with layout and system state",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"layout\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/layout.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":2048},{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234},{\"role\":\"system_state_manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/system-state/manifest.json\",\"sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"size\":4096}]}",
+    "valid": true,
+    "sha256": "2d6aedb9be9fd1827e731ffb9c481661fe923050cff69a1cc3eef40214771d2c",
+    "note": "objects sorted by role"
+  },
+  {
+    "name": "incremental on the dispatched base",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":\"snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5\",\"parentSnapshotId\":\"snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5\",\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": true,
+    "sha256": "977ba53dde360c18a198fe9eb651877d956f74a1fd55999e330bedc84af99b61",
+    "note": "parent equals the dispatched base"
+  },
+  {
+    "name": "fallback to full from a dispatched base",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":\"snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5\",\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": true,
+    "sha256": "06ecf68ddd903711fa2b4e11dacac54fea650c74fd2eac26c6f17be962b03f9d",
+    "note": "dispatched base kept, parent null"
+  },
+  {
+    "name": "zero-length manifest",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"size\":0}]}",
+    "valid": true,
+    "sha256": "b25e939166d3a0d753fe31f52a24f61db97115a5acbf83dee74562b6c679e5d2",
+    "note": "size 0 is allowed"
+  },
+  {
+    "name": "parent differs from the dispatched base",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":\"snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5\",\"parentSnapshotId\":\"snapshot-20261101T000000Z-aaaaaaaaaaaaaaaaaaaaaaaa\",\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "parent_not_dispatched_base",
+    "note": "the run may only reuse the base the server pinned"
+  },
+  {
+    "name": "parent without a dispatched base",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":\"snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5\",\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "parent_not_dispatched_base",
+    "note": "a full dispatch cannot report a parent"
+  },
+  {
+    "name": "extra top-level key",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}],\"extra\":1}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "unknown keys are refused"
+  },
+  {
+    "name": "reordered keys",
+    "statement": "{\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"v\":1,\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "not_canonical",
+    "note": "keys must appear in the fixed order"
+  },
+  {
+    "name": "insignificant whitespace",
+    "statement": "{\n \"v\": 1,\n \"snapshotId\": \"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\n \"jobId\": \"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\n \"agentId\": \"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\n \"dispatchedBaseSnapshotId\": null,\n \"parentSnapshotId\": null,\n \"keyLayout\": \"legacy_flat\",\n \"objects\": [\n  {\n   \"role\": \"manifest\",\n   \"key\": \"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\n   \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n   \"size\": 1234\n  }\n ]\n}",
+    "valid": false,
+    "reason": "not_canonical",
+    "note": "no whitespace between tokens"
+  },
+  {
+    "name": "reordered object keys",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"role\":\"manifest\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "not_canonical",
+    "note": "object keys must appear in the fixed order"
+  },
+  {
+    "name": "duplicate role",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234},{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"size\":99}]}",
+    "valid": false,
+    "reason": "duplicate_role",
+    "note": "one object per role"
+  },
+  {
+    "name": "unsorted roles",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234},{\"role\":\"layout\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/layout.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":2048}]}",
+    "valid": false,
+    "reason": "objects_not_sorted",
+    "note": "objects sorted by role"
+  },
+  {
+    "name": "uppercase hex digest",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "digests are lowercase hex"
+  },
+  {
+    "name": "negative size",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":-1}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "sizes are non-negative integers"
+  },
+  {
+    "name": "fractional size",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234.5}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "sizes are integers"
+  },
+  {
+    "name": "format version 2",
+    "statement": "{\"v\":2,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "unsupported_version",
+    "note": "only format 1 is accepted"
+  },
+  {
+    "name": "object key does not match its role",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261107T101500Z-0a1b2c3d4e5f60718293a4b5/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "object_key_mismatch",
+    "note": "every key is the control key of the attested snapshot"
+  },
+  {
+    "name": "device-scoped key layout",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"device_scoped\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "unsupported_key_layout",
+    "note": "only legacy_flat is produced"
+  },
+  {
+    "name": "manifest missing",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"layout\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/layout.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"size\":2048}]}",
+    "valid": false,
+    "reason": "manifest_missing",
+    "note": "the manifest is always attested"
+  },
+  {
+    "name": "empty objects",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[]}",
+    "valid": false,
+    "reason": "manifest_missing",
+    "note": "the manifest is always attested"
+  },
+  {
+    "name": "invalid snapshot id",
+    "statement": "{\"v\":1,\"snapshotId\":\"../x\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/../x/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "snapshot id follows the object-key contract"
+  },
+  {
+    "name": "non-ascii agent id",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"agent id\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "string fields are printable ASCII"
+  },
+  {
+    "name": "not json",
+    "statement": "{\"v\":1,",
+    "valid": false,
+    "reason": "not_json",
+    "note": "unparseable"
+  },
+  {
+    "name": "json array",
+    "statement": "[]",
+    "valid": false,
+    "reason": "invalid_shape",
+    "note": "the statement is an object"
+  },
+  {
+    "name": "oversized statement",
+    "statement": "{\"v\":1,\"snapshotId\":\"snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b\",\"jobId\":\"0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35\",\"agentId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"dispatchedBaseSnapshotId\":null,\"parentSnapshotId\":null,\"keyLayout\":\"legacy_flat\",\"objects\":[{\"role\":\"manifest\",\"key\":\"snapshots/snapshot-20261108T101500Z-3f9a1c7e2b4d6a8c0e1f2a3b/manifest.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1234}]}",
+    "valid": false,
+    "reason": "too_large",
+    "note": "statements are at most 16 KiB"
+  }
+]
