@@ -87,7 +87,7 @@ export const aiSessions = pgTable('ai_sessions', {
   // context), immutable (trigger), required iff type = 'topology' (CHECK), and
   // a same-scope composite FK (topology_site_id, org_id) -> sites(id, org_id)
   // DEFERRABLE INITIALLY IMMEDIATE — all declared in
-  // 2026-11-06-100000-ai-sessions-topology-site.sql.
+  // 2026-11-06-220000-ai-sessions-topology-site.sql.
   topologySiteId: uuid('topology_site_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
