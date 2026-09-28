@@ -791,7 +791,10 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     ['../jobs/accountingSyncWorker.ts', 3],
     // Xero W02: sweep pass 3 (reap stale pending_tenant rows) added a sixth
     // tag-bearing capture (`accounting_reconcile_phase: 'sweep.reapPendingTenants'`).
-    ['../jobs/accountingReconcileWorker.ts', 6],
+    // Xero W05a: sweep pass 1's owed-delete check (webhook budget deferral
+    // exemption) is isolated with its own tag-bearing capture
+    // (`accounting_reconcile_phase: 'sweep.owedDelete'`) — seventh.
+    ['../jobs/accountingReconcileWorker.ts', 7],
     // #5126: the same #4828/Phase D2 defect in the pull-back path — every
     // captureException in accountingPaymentPull.ts tagged camelCase keys
     // (action, resourceId, remotePaymentId, invoiceId) with no allowlisted

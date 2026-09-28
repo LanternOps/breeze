@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { slotMock } = vi.hoisted(() => ({
@@ -323,16 +324,34 @@ describe('methods behind later waves', () => {
   it.each([
     ['createPayment', () => xeroProvider.createPayment(conn(), {} as any)],
     ['deletePayment', () => xeroProvider.deletePayment(conn(), {} as any)],
-    ['reconcileChanges', () => xeroProvider.reconcileChanges(conn(), null)],
   ])('%s refuses with capability_unavailable and makes no HTTP call', async (_name, call) => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await expect(call()).rejects.toMatchObject({ kind: 'validation', provider: 'xero', providerCode: 'capability_unavailable' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
 
-  it('paymentMarker throws until W05; verifyWebhook fails closed until W05', () => {
-    expect(() => xeroProvider.paymentMarker.embed(null, 'm')).toThrow(/W05/);
-    expect(xeroProvider.verifyWebhook('sig', '{}', 'key')).toBe(false);
+describe('payment pull wiring (Xero W05a)', () => {
+  it('pins the reference cap and the marker grammar', () => {
+    expect(xeroProvider.limits.paymentRefMax).toBe(64);
+    const marker = 'Breeze payment 0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f';
+    expect(xeroProvider.paymentMarker.extract(xeroProvider.paymentMarker.embed('pi_1', marker)))
+      .toBe('0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f');
+  });
+
+  it("reconcileChanges reads with the connection's own tenant id and token", async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Invoices: [] }));
+    await xeroProvider.reconcileChanges(conn({ realmId: 'tenant-A', accessToken: 'tok' }), null);
+    const headers = new Headers((fetchMock.mock.calls[0]![1] as RequestInit).headers);
+    expect(headers.get('xero-tenant-id')).toBe('tenant-A');
+    expect(headers.get('authorization')).toBe('Bearer tok');
+  });
+
+  it('still declares paymentPull and paymentPush false until W05c', () => {
+    expect(xeroProvider.capabilities.paymentPull).toBe(false);
+    expect(xeroProvider.capabilities.paymentPush).toBe(false);
   });
 });
 
@@ -380,5 +399,27 @@ describe('invoice push and void (Xero W04)', () => {
 
   it('still does not declare invoicePush through W04a', () => {
     expect(xeroProvider.capabilities.invoicePush).toBe(false);
+  });
+});
+
+describe('verifyWebhook (Xero W05 refinement 2)', () => {
+  const KEY = 'test-signing-key';
+  const body = '{"events":[],"firstEventSequence":0,"lastEventSequence":0,"entropy":"ABC"}';
+  const sign = (raw: string, key = KEY) => createHmac('sha256', key).update(raw, 'utf8').digest('base64');
+
+  it('accepts base64(HMAC-SHA256(raw body, key))', () => {
+    expect(xeroProvider.verifyWebhook(sign(body), body, KEY)).toBe(true);
+  });
+  it.each([
+    ['a different key', () => sign(body, 'other')],
+    ['a different body', () => sign(`${body} `)],
+    ['a same-length wrong signature', () => sign(body).replace(/^./, (c) => (c === 'A' ? 'B' : 'A'))],
+    ['a truncated signature', () => sign(body).slice(0, 10)],
+    ['an empty signature', () => ''],
+  ])('rejects %s', (_l, sig) => {
+    expect(xeroProvider.verifyWebhook(sig(), body, KEY)).toBe(false);
+  });
+  it('rejects everything when no key is configured', () => {
+    expect(xeroProvider.verifyWebhook(sign(body, ''), body, '')).toBe(false);
   });
 });
