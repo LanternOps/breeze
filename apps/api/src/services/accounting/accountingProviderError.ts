@@ -199,3 +199,27 @@ export function providerRateLimitedRetryLaterMessage(
 export function providerRateLimitedTryAgainMessage(label: string, source: AccountingThrottleSource = 'provider'): string {
   return `${throttlePrefix(label, source)}; try again shortly`;
 }
+
+/**
+ * Structured refusals a provider may attach as `providerCode` on a `kind:
+ * 'validation'` (or, for remote_missing, `kind: 'not_found'`) error (Xero W03).
+ * The core branches on these, never on a provider's own fault numbers or text:
+ *  - duplicate_name     — the remote system refuses a second record with this name
+ *                         (Xero: unique contact names). Surfaced; never auto-retried.
+ *  - duplicate_key      — the provider's adoption key is already taken. The provider
+ *                         answers it with an adoption lookup; it should not reach core.
+ *  - remote_archived    — the record Breeze would adopt, or is mapped to, is archived.
+ *  - remote_missing     — the MAPPED remote record no longer exists (kind not_found).
+ *                         A bare not_found without this code keeps its old meaning.
+ *  - insufficient_scope — the grant does not cover this call; reconnecting (or a
+ *                         scope change) is the only fix. Surfaced; never retried.
+ */
+export const ACCOUNTING_REFUSAL_CODES = ['duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope'] as const;
+export type AccountingRefusalCode = typeof ACCOUNTING_REFUSAL_CODES[number];
+
+/** The code when `err` is a provider error of kind `validation` or `not_found` carrying one; else null. */
+export function refusalCodeOf(err: unknown): AccountingRefusalCode | null {
+  if (!isAccountingProviderError(err) || (err.kind !== 'validation' && err.kind !== 'not_found')) return null;
+  const code = err.providerCode;
+  return (ACCOUNTING_REFUSAL_CODES as readonly string[]).includes(code ?? '') ? (code as AccountingRefusalCode) : null;
+}

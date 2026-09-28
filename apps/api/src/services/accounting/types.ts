@@ -92,6 +92,8 @@ export interface RemoteCustomer extends RemoteEntity {
   remoteVersion?: string;
   /** QBO CurrencyRef.value, surfaced from listing/create responses (multi-currency §11). */
   currencyCode?: string;
+  /** True when the provider knows this contact only as a supplier (Xero: IsSupplier && !IsCustomer). Never set by QuickBooks. */
+  supplierOnly?: boolean;
 }
 
 export interface RemoteItem extends RemoteEntity {
@@ -423,6 +425,9 @@ export interface AccountingProvider {
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
   listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
   listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
+  /** One remote customer by id, or null when it does not exist. Lets a link confirm read one record instead of the whole list. */
+  getRemoteCustomer?(conn: AccountingConnection, id: string): Promise<RemoteCustomer | null>;
+  getRemoteItem?(conn: AccountingConnection, id: string): Promise<RemoteItem | null>;
   upsertCustomer(
     conn: AccountingConnection,
     customer: AccountingCustomerPayload,

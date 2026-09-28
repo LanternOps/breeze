@@ -20,6 +20,8 @@ import type {
   ProviderTenantSelection,
   RateLimitSpec,
   RealmSettings,
+  RemoteCustomer,
+  RemoteItem,
   RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
@@ -157,5 +159,17 @@ describe('tenant selection and settings options (Xero W02)', () => {
     expectTypeOf<AccountingProvider['listSettingsOptions']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<ProviderSettingsOptions>) | undefined>();
     expectTypeOf<AccountingProvider['releaseConnection']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<void>) | undefined>();
     expectTypeOf<ProviderSettingsOptions['organisation']['isDemoCompany']>().toEqualTypeOf<boolean | null>();
+  });
+});
+
+describe('single-record lookups and supplierOnly (Xero W03)', () => {
+  it('declares the optional lookups', () => {
+    expectTypeOf<AccountingProvider['getRemoteCustomer']>()
+      .toEqualTypeOf<((conn: AccountingConnection, id: string) => Promise<RemoteCustomer | null>) | undefined>();
+    expectTypeOf<AccountingProvider['getRemoteItem']>()
+      .toEqualTypeOf<((conn: AccountingConnection, id: string) => Promise<RemoteItem | null>) | undefined>();
+  });
+  it('declares supplierOnly as an optional boolean', () => {
+    expectTypeOf<RemoteCustomer['supplierOnly']>().toEqualTypeOf<boolean | undefined>();
   });
 });
