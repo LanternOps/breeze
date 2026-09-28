@@ -56,15 +56,22 @@ func seedArtifacts(t *testing.T, hives ...string) string {
 	return staging
 }
 
-func systemFake(ntds bool) *winhive.Fake {
+// systemFake: Select\Default=Current=1 and ControlSet001 with the empty
+// Services\NTDS\RID Values key a standalone Server 2022 carries. dc sets
+// ProductType LanmanNt; otherwise ServerNT (Bug C: the NTDS key alone is not
+// a DC).
+func systemFake(dc bool) *winhive.Fake {
 	f := winhive.NewFake()
 	sel, _ := f.CreateKey("Select")
 	_ = sel.SetDWORD("Default", 1)
 	_ = sel.SetDWORD("Current", 1)
-	_, _ = f.CreateKey(`ControlSet001\Services`)
-	if ntds {
-		_, _ = f.CreateKey(`ControlSet001\Services\NTDS`)
+	_, _ = f.CreateKey(`ControlSet001\Services\NTDS\RID Values`)
+	productType := "ServerNT"
+	if dc {
+		productType = "LanmanNt"
 	}
+	po, _ := f.CreateKey(`ControlSet001\Control\ProductOptions`)
+	_ = po.SetString("ProductType", productType)
 	return f
 }
 
@@ -150,7 +157,7 @@ func TestRestoreSystemStateOfflineWindows_RefusesDomainController(t *testing.T) 
 	var calls []string
 	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": systemFake(true), "SOFTWARE": winhive.NewFake()}, &calls)
 	_, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
-	if err == nil || err.Error() != `source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance` {
+	if err == nil || err.Error() != `source is a domain controller (ControlSet001\Control\ProductOptions\ProductType is LanmanNt); pass --allow-domain-controller and read the DC recovery guidance` {
 		t.Fatalf("err = %v", err)
 	}
 	if _, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", true, load); err != nil {
@@ -170,6 +177,44 @@ func TestSelectOfflineHives_TreeHiveWithoutArtifact(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "Windows", "System32", "config", "SAM")); string(b) != "tree-SAM" {
 		t.Fatalf("SAM was overwritten before every artifact was confirmed: %q", b)
+	}
+}
+
+// Bug C: a standalone server (ServerNT) with an empty Services\NTDS key is
+// not refused, and no domain-controller warning is emitted.
+func TestRestoreSystemStateOfflineWindows_StandaloneServerNotRefused(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": systemFake(false), "SOFTWARE": winhive.NewFake()}, &calls)
+	_, warnings, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
+	if err != nil {
+		t.Fatalf("standalone server refused: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "domain-controller") {
+			t.Fatalf("warnings = %v", warnings)
+		}
+	}
+}
+
+// An inconclusive SYSTEM hive (no ProductOptions, no AD DS database value)
+// is not refused but carries the inconclusive warning.
+func TestRestoreSystemStateOfflineWindows_InconclusiveDCCheckWarns(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	sys := systemFake(false)
+	_ = sys.DeleteKey(`ControlSet001\Control\ProductOptions`)
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
+	_, warnings, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range warnings {
+		found = found || strings.Contains(w, "domain-controller check inconclusive")
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want the inconclusive warning", warnings)
 	}
 }
 
@@ -213,11 +258,13 @@ func TestRestoreSystemStateOfflineWindows_BootStartInEachControlSet(t *testing.T
 	}
 }
 
-// Fix round 1: a DC whose NTDS key is only under Select\Current is refused.
-func TestRestoreSystemStateOfflineWindows_RefusesNTDSUnderCurrentOnly(t *testing.T) {
+// Fix round 1: a DC whose LanmanNt ProductType is only under Select\Current
+// is refused.
+func TestRestoreSystemStateOfflineWindows_RefusesDCUnderCurrentOnly(t *testing.T) {
 	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
 	sys := systemFakeTwoSets()
-	_, _ = sys.CreateKey(`ControlSet002\Services\NTDS`)
+	po, _ := sys.CreateKey(`ControlSet002\Control\ProductOptions`)
+	_ = po.SetString("ProductType", "LanmanNt")
 	var calls []string
 	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
 	_, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)

@@ -277,15 +277,114 @@ func TestControlSets_OpenErrorIsNotAbsence(t *testing.T) {
 	}
 }
 
-// Fix round 1: HasNTDS checks every selected control set, not only Default.
-func TestHasNTDS_ChecksCurrentSetToo(t *testing.T) {
-	f := seedSystem(t, 2, "ControlSet002")
-	_, _ = f.CreateKey(`ControlSet002\Services\NTDS`)
-	if isDC, err := HasNTDS(f); err != nil || !isDC {
-		t.Fatalf("HasNTDS = %v, %v; want true (NTDS under Select\\Current)", isDC, err)
+// Bug C (native lab run): DC detection keys off ProductOptions\ProductType,
+// not the mere presence of Services\NTDS — a standalone Server 2022 has an
+// NTDS key with no values and an empty "RID Values" subkey.
+func TestIsDomainController(t *testing.T) {
+	productType := func(cs, v string) func(*Fake) {
+		return func(f *Fake) {
+			k, _ := f.CreateKey(cs + `\Control\ProductOptions`)
+			_ = k.SetString("ProductType", v)
+		}
 	}
-	if isDC, err := HasNTDS(seedSystem(t, 2, "ControlSet002")); err != nil || isDC {
-		t.Fatalf("no NTDS: HasNTDS = %v, %v", isDC, err)
+	emptyNTDS := func(cs string) func(*Fake) {
+		return func(f *Fake) { _, _ = f.CreateKey(cs + `\Services\NTDS\RID Values`) }
+	}
+	ntdsParam := func(cs, name string) func(*Fake) {
+		return func(f *Fake) {
+			k, _ := f.CreateKey(cs + `\Services\NTDS\Parameters`)
+			_ = k.SetString(name, `C:\Windows\NTDS\ntds.dit`)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		current  uint32 // Select\Current; 2 adds ControlSet002
+		seed     []func(*Fake)
+		wantDC   bool
+		evidence string // substring of Evidence when wantDC
+		wantWarn bool
+	}{
+		{name: "standalone server with empty NTDS key", current: 1,
+			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), emptyNTDS("ControlSet001")}},
+		{name: "LanmanNt is a DC", current: 1,
+			seed:   []func(*Fake){productType("ControlSet001", "LanmanNt")},
+			wantDC: true, evidence: `ControlSet001\Control\ProductOptions\ProductType is LanmanNt`},
+		{name: "LanmanNt case-insensitive", current: 1,
+			seed:   []func(*Fake){productType("ControlSet001", "LANMANNT")},
+			wantDC: true, evidence: "LanmanNt"},
+		{name: "ServerNT is not a DC", current: 1,
+			seed: []func(*Fake){productType("ControlSet001", "ServerNT")}},
+		{name: "WinNT is not a DC", current: 1,
+			seed: []func(*Fake){productType("ControlSet001", "WinNT")}},
+		{name: "ServerNT wins over stray DSA values", current: 1,
+			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), ntdsParam("ControlSet001", "DSA Database file")}},
+		{name: "ProductOptions missing, DSA Database file present", current: 1,
+			seed:   []func(*Fake){ntdsParam("ControlSet001", "DSA Database file")},
+			wantDC: true, evidence: `ProductType is missing and ControlSet001\Services\NTDS\Parameters has "DSA Database file"`},
+		{name: "ProductOptions missing, DSA Working Directory present", current: 1,
+			seed:   []func(*Fake){ntdsParam("ControlSet001", "DSA Working Directory")},
+			wantDC: true, evidence: `"DSA Working Directory"`},
+		{name: "ProductOptions missing, empty NTDS key", current: 1,
+			seed: []func(*Fake){emptyNTDS("ControlSet001")}, wantWarn: true},
+		{name: "ProductOptions missing, no NTDS key", current: 1, wantWarn: true},
+		{name: "ProductType value missing, no DSA values", current: 1,
+			seed: []func(*Fake){func(f *Fake) { _, _ = f.CreateKey(`ControlSet001\Control\ProductOptions`) }}, wantWarn: true},
+		{name: "unrecognized ProductType falls back to DSA values", current: 1,
+			seed:   []func(*Fake){productType("ControlSet001", "Bogus"), ntdsParam("ControlSet001", "DSA Database file")},
+			wantDC: true, evidence: `unrecognized ("Bogus")`},
+		{name: "unrecognized ProductType, no DSA values warns", current: 1,
+			seed: []func(*Fake){productType("ControlSet001", "Bogus")}, wantWarn: true},
+		// Fix round 1 carried over: every selected control set is checked.
+		{name: "LanmanNt only under Select\\Current", current: 2,
+			seed:   []func(*Fake){productType("ControlSet001", "ServerNT"), productType("ControlSet002", "LanmanNt")},
+			wantDC: true, evidence: `ControlSet002\Control`},
+		{name: "ServerNT in both sets", current: 2,
+			seed: []func(*Fake){productType("ControlSet001", "ServerNT"), productType("ControlSet002", "ServerNT"), emptyNTDS("ControlSet002")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var f *Fake
+			if tc.current == 2 {
+				f = seedSystem(t, 2, "ControlSet002")
+			} else {
+				f = seedSystem(t, 1)
+			}
+			for _, s := range tc.seed {
+				s(f)
+			}
+			st, err := IsDomainController(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.IsDC != tc.wantDC {
+				t.Fatalf("IsDC = %v, want %v (status %+v)", st.IsDC, tc.wantDC, st)
+			}
+			if tc.wantDC && !strings.Contains(st.Evidence, tc.evidence) {
+				t.Fatalf("Evidence = %q, want it to contain %q", st.Evidence, tc.evidence)
+			}
+			if !tc.wantDC && st.Evidence != "" {
+				t.Fatalf("Evidence = %q on a non-DC", st.Evidence)
+			}
+			if got := len(st.Warnings) > 0; got != tc.wantWarn {
+				t.Fatalf("Warnings = %v, want warning=%v", st.Warnings, tc.wantWarn)
+			}
+			if tc.wantWarn && !strings.Contains(st.Warnings[0], "inconclusive") {
+				t.Fatalf("Warnings = %v", st.Warnings)
+			}
+		})
+	}
+}
+
+// Fail closed: a read error other than absence is an error, never "not a DC".
+func TestIsDomainController_OpenErrorIsNotAbsence(t *testing.T) {
+	for _, path := range []string{`ControlSet001\Control\ProductOptions`, `ControlSet001\Services\NTDS\Parameters`} {
+		f := seedSystem(t, 1)
+		_, _ = f.CreateKey(`ControlSet001\Services\NTDS\Parameters`)
+		k, _ := f.CreateKey(`ControlSet001\Control\ProductOptions`)
+		_ = k.SetString("ProductType", "Bogus") // force the NTDS fallback too
+		st, err := IsDomainController(openErrKey{Fake: f, path: path})
+		if err == nil || !strings.Contains(err.Error(), "access denied") || st.IsDC {
+			t.Fatalf("%s: status = %+v, err = %v; want the open error", path, st, err)
+		}
 	}
 }
 

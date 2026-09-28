@@ -178,7 +178,7 @@ type Options struct {
 	WorkRoot              string    // restore scratch; "" → platform default (Windows vhdx: only — see Run's defaulting)
 	DriverDirs            []string  // not supported yet: Run refuses any non-empty value (DriverInjectionUnsupportedReason)
 	ForceDisk             bool      // Windows disk targets: overwrite a disk holding a Windows installation (CLI only)
-	AllowDomainController bool      // Windows: allow a source whose SYSTEM hive has Services\NTDS (CLI only)
+	AllowDomainController bool      // Windows: allow a domain-controller source (winhive.IsDomainController; CLI only)
 }
 
 // Result is Run's structured outcome.

@@ -128,33 +128,36 @@ func winPreflight(ctx context.Context, r *run) error {
 	}
 
 	if !r.opts.AllowDomainController {
-		isDC, err := r.hasNTDS()
+		dc, err := r.isDomainController()
 		if err != nil {
 			return err
 		}
-		if isDC {
-			return &RefusalError{Reason: `source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance`}
+		if dc.IsDC {
+			return &RefusalError{Reason: fmt.Sprintf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)}
 		}
 	}
 	r.progress(PhasePreflight, "verified", 3, 3)
 	return nil
 }
 
-// hasNTDS checks the domain-controller signal against the STAGED
+// isDomainController checks the domain-controller signal
+// (winhive.IsDomainController) against the STAGED
 // system-state/registry/SYSTEM artifact (downloaded by preflightVerify into
 // r.stateStaging) — a fast, artifact-only early refusal. No staged SYSTEM
 // artifact (a files-only snapshot, or a snapshot where the artifact was
 // itself missing) means "cannot tell from here"; the offline state apply
 // (bmr.RestoreSystemStateOfflineWindows, win_system_state.go) applies the same
-// winhive.HasNTDS check to the FILE-TREE SYSTEM hive before any hive edit,
+// winhive.IsDomainController check to the FILE-TREE SYSTEM hive before any hive edit,
 // per the Global Constraint "Hives: file tree first".
 //
 // It fails closed: only a confirmed-absent artifact (fs.ErrNotExist) reads
 // as "no artifact"; any other Stat error, a missing staging dir, and a hive
-// that will not unload afterwards are errors, never "not a DC".
-func (r *run) hasNTDS() (isDC bool, err error) {
+// that will not unload afterwards are errors, never "not a DC". An
+// inconclusive hive (no ProductType, no AD DS database value) is surfaced as
+// a run warning.
+func (r *run) isDomainController() (dc winhive.DCStatus, err error) {
 	if r.stateStaging == "" {
-		return false, errors.New("domain-controller check: no system-state staging directory")
+		return winhive.DCStatus{}, errors.New("domain-controller check: no system-state staging directory")
 	}
 	hivePath := filepath.Join(r.stateStaging, "registry", "SYSTEM")
 	if _, err := os.Stat(hivePath); err != nil {
@@ -165,23 +168,30 @@ func (r *run) hasNTDS() (isDC bool, err error) {
 			// is so the operator knows the early preflight refusal did not
 			// run.
 			r.warn("no system-state artifact to check for a domain controller before restore; the file-tree check during restore is the only guard")
-			return false, nil
+			return winhive.DCStatus{}, nil
 		}
-		return false, fmt.Errorf("domain-controller check: %w", err)
+		return winhive.DCStatus{}, fmt.Errorf("domain-controller check: %w", err)
 	}
 	mountName := "BRZ_" + targetKey(r.opts.Target) + "_PRE"
 	// Read-only (18b row 8): this check only inspects the staged hive, it
 	// never edits it — same reasoning as validate's BCD load.
 	h, err := r.opts.WinSystem.LoadHiveReadOnly(hivePath, mountName)
 	if err != nil {
-		return false, fmt.Errorf("load SYSTEM hive for domain-controller check: %w", err)
+		return winhive.DCStatus{}, fmt.Errorf("load SYSTEM hive for domain-controller check: %w", err)
 	}
 	defer func() {
 		if cerr := h.Close(); cerr != nil {
 			err = errors.Join(err, fmt.Errorf("unload SYSTEM hive after domain-controller check: %w", cerr))
 		}
 	}()
-	return winhive.HasNTDS(h.Root())
+	dc, err = winhive.IsDomainController(h.Root())
+	if err != nil {
+		return winhive.DCStatus{}, err
+	}
+	for _, w := range dc.Warnings {
+		r.warn("%s", w)
+	}
+	return dc, nil
 }
 
 // refuseOtherVolumes refuses a snapshot holding entries from a volume other

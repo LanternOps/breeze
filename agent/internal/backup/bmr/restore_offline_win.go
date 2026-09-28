@@ -235,12 +235,13 @@ func RestoreSystemStateOfflineWindows(ctx context.Context, root, stagingDir, roo
 		}
 	}()
 	if !allowDC {
-		isDC, err := winhive.HasNTDS(system.Root())
+		dc, err := winhive.IsDomainController(system.Root())
 		if err != nil {
-			return nil, warnings, fmt.Errorf(`check Services\NTDS: %w`, err)
+			return nil, warnings, fmt.Errorf("domain-controller check: %w", err)
 		}
-		if isDC {
-			return nil, warnings, errors.New(`source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance`)
+		warnings = append(warnings, dc.Warnings...)
+		if dc.IsDC {
+			return nil, warnings, fmt.Errorf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)
 		}
 	}
 	sets, err := winhive.ControlSets(system.Root())
