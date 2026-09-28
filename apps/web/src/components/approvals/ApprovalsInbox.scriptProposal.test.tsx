@@ -6,7 +6,8 @@ import { fetchWithAuth } from '../../stores/auth';
 const intentApprovalsMock = vi.hoisted(() => ({ decide: vi.fn() }));
 const useScriptProposal = vi.hoisted(() => vi.fn());
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// registerOrgIdProvider: orgStore (read by the approver-device notice) registers itself on import.
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('@/hooks/useEventStream', () => ({
   useEventStream: () => ({ connected: true, subscribe: vi.fn(), unsubscribe: vi.fn() }),
 }));

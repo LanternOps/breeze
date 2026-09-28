@@ -141,8 +141,11 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
     vi.clearAllMocks();
   });
 
-  it('no proof → unchanged session_tap / level 1 (never blocks)', async () => {
+  it('no proof → unchanged session_tap / level 1 (non-enforcing policy: never blocks)', async () => {
     setupDbMocks(null);
+    // An explicit "not required" policy, so the result cannot depend on
+    // whether the platform default date has passed on the wall clock.
+    mockLoadPolicy.mockResolvedValueOnce({ requireEnrollment: false, enforceFrom: null, floorOverrides: {} });
     const d = await assertApprovalAssurance({
       approvalId: 'appr-1',
       userId: 'user-1',

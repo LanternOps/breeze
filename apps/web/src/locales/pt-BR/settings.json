@@ -1078,7 +1078,17 @@
       "4": "L4 — chave física + PIN"
     },
     "requireEnrollment": "Exigir um dispositivo de aprovador cadastrado (aplicar — bloquear aprovações com garantia insuficiente)",
+    "enforcement": {
+      "inherit": "Padrão da plataforma",
+      "required": "Obrigatório",
+      "notRequired": "Não obrigatório",
+      "inheritedValue": "Padrão da plataforma: um dispositivo de aprovador é exigido para aprovações de risco alto e crítico a partir de {{date}}.",
+      "inheritedSource": "Definido pela plataforma porque nenhuma opção foi salva aqui. Escolha Obrigatório ou Não obrigatório para substituí-lo.",
+      "requiredHint": "Obrigatório se aplica a todos os níveis de risco a partir da data abaixo.",
+      "notRequiredHint": "Aprovações abaixo do mínimo são permitidas e registradas como rebaixadas."
+    },
     "enforceFrom": "Aplicar a partir de (fim do período de carência)",
+    "enforceFromHint": "Deixe em branco para aplicar imediatamente.",
     "toasts": {
       "saved": "Política de segurança de aprovação salva."
     },

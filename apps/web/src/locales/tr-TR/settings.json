@@ -1078,7 +1078,17 @@
       "4": "L4 — donanım anahtarı + PIN"
     },
     "requireEnrollment": "Kayıtlı bir onay cihazı gerektir (uygulama — yetersiz güvence altına alınan onayları engelleme)",
+    "enforcement": {
+      "inherit": "Platform varsayılanı",
+      "required": "Zorunlu",
+      "notRequired": "Zorunlu değil",
+      "inheritedValue": "Platform varsayılanı: {{date}} tarihinden itibaren yüksek ve kritik riskli onaylar için bir onay cihazı gerekir.",
+      "inheritedSource": "Burada bir seçim kaydedilmediği için platform tarafından belirlenir. Geçersiz kılmak için Zorunlu veya Zorunlu değil seçeneğini belirleyin.",
+      "requiredHint": "Zorunlu, aşağıdaki tarihten itibaren her risk düzeyine uygulanır.",
+      "notRequiredHint": "Alt sınırın altındaki onaylara izin verilir ve düşürülmüş olarak kaydedilir."
+    },
     "enforceFrom": "Şu tarihten itibaren uygula (ek pencere kesmesi)",
+    "enforceFromHint": "Hemen uygulamak için boş bırakın.",
     "toasts": {
       "saved": "Onay güvenliği politikası kaydedildi."
     },

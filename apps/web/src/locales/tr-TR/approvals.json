@@ -111,5 +111,13 @@
       "unknown": "Bilinmiyor"
     }
   },
-  "proposedByAgentExecuteNotice": "Bunu onaylamak şimdi çalıştırır — gölge modunda bile bu bir deneme çalıştırması değildir."
+  "proposedByAgentExecuteNotice": "Bunu onaylamak şimdi çalıştırır — gölge modunda bile bu bir deneme çalıştırması değildir.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Onay cihazları {{date}} tarihinden itibaren gerekecek",
+    "upcomingBody": "İş ortağı hesabınız için bir onay güvenliği seçimi kaydedilmedi, bu nedenle platform varsayılanı geçerlidir: {{date}} tarihinden itibaren yüksek veya kritik riskli bir isteği onaylamak tek bir tıklama yerine kayıtlı bir onay cihazı gerektirir. Onayların gecikmemesi için bu tarihten önce bir cihaz kaydedin.",
+    "activeTitle": "Yüksek riskli onaylar bir onay cihazı gerektirir",
+    "activeBody": "{{date}} tarihinden bu yana platform varsayılanı, yüksek ve kritik riskli istekleri onaylamak için kayıtlı bir onay cihazı gerektiriyor, çünkü iş ortağı hesabınız için bir onay güvenliği seçimi kaydedilmedi. Bu onayların cihazınızı istemesinin nedeni budur.",
+    "settingsLink": "Onay güvenliğini gözden geçir",
+    "registerLink": "Bir onay cihazı kaydet"
+  }
 }

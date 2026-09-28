@@ -111,5 +111,13 @@
       "reported": "Reported",
       "unknown": "Unknown"
     }
+  },
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Approver devices will be required from {{date}}",
+    "upcomingBody": "No approval-security choice has been saved for your partner account, so the platform default applies: from {{date}}, approving a high- or critical-risk request needs a registered approver device instead of a single click. Register a device before then so approvals are not held up.",
+    "activeTitle": "High-risk approvals need an approver device",
+    "activeBody": "Since {{date}}, the platform default requires a registered approver device to approve high- and critical-risk requests, because no approval-security choice has been saved for your partner account. That is why these approvals ask for your device.",
+    "settingsLink": "Review approval security",
+    "registerLink": "Register an approver device"
   }
 }

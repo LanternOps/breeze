@@ -1078,7 +1078,17 @@
       "4": "L4 – Hardwareschlüssel + PIN"
     },
     "requireEnrollment": "Ein registriertes Genehmigergerät erfordern (erzwingen – unzureichend gesicherte Genehmigungen blockieren)",
+    "enforcement": {
+      "inherit": "Plattformstandard",
+      "required": "Erforderlich",
+      "notRequired": "Nicht erforderlich",
+      "inheritedValue": "Plattformstandard: Ab {{date}} ist für Genehmigungen mit hohem und kritischem Risiko ein Genehmigergerät erforderlich.",
+      "inheritedSource": "Von der Plattform festgelegt, da hier keine Auswahl gespeichert wurde. Wählen Sie „Erforderlich“ oder „Nicht erforderlich“, um dies zu überschreiben.",
+      "requiredHint": "„Erforderlich“ gilt ab dem unten angegebenen Datum für jede Risikostufe.",
+      "notRequiredHint": "Genehmigungen unterhalb der Mindeststufe sind erlaubt und werden als herabgestuft protokolliert."
+    },
     "enforceFrom": "Erzwingen ab (Abschaltung des Gnadenfensters)",
+    "enforceFromHint": "Leer lassen, um sofort zu erzwingen.",
     "toasts": {
       "saved": "Genehmigungssicherheitsrichtlinie gespeichert."
     },

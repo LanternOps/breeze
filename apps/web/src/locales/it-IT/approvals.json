@@ -111,5 +111,13 @@
       "unknown": "Sconosciuto"
     }
   },
-  "proposedByAgentExecuteNotice": "Approvare questo lo esegue subito — non è una simulazione, nemmeno in modalità ombra."
+  "proposedByAgentExecuteNotice": "Approvare questo lo esegue subito — non è una simulazione, nemmeno in modalità ombra.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "I dispositivi approvatore saranno richiesti dal {{date}}",
+    "upcomingBody": "Per il tuo account partner non è stata salvata alcuna scelta di sicurezza delle approvazioni, quindi si applica il predefinito della piattaforma: dal {{date}}, approvare una richiesta a rischio alto o critico richiede un dispositivo approvatore registrato invece di un semplice clic. Registra un dispositivo prima di allora per non rallentare le approvazioni.",
+    "activeTitle": "Le approvazioni ad alto rischio richiedono un dispositivo approvatore",
+    "activeBody": "Dal {{date}}, il predefinito della piattaforma richiede un dispositivo approvatore registrato per approvare richieste a rischio alto e critico, perché per il tuo account partner non è stata salvata alcuna scelta di sicurezza delle approvazioni. Per questo queste approvazioni chiedono il tuo dispositivo.",
+    "settingsLink": "Rivedi la sicurezza delle approvazioni",
+    "registerLink": "Registra un dispositivo approvatore"
+  }
 }
