@@ -443,9 +443,12 @@ const ENQUEUE_OPTS = {
 };
 
 /**
- * Enqueue an accounting push for a just-issued invoice. Fire-and-forget: a
- * Redis outage must NEVER fail the issuance that triggered it — the invoice
- * is simply not auto-synced until the next manual push/retry.
+ * Enqueue an accounting invoice push. Two producers: the automatic
+ * issue / quote-accept hooks (no `requestedBy`; gated by `pushMode`) and the
+ * operator bulk push route (`requestedBy: 'operator'`; runs in either mode).
+ * Fire-and-forget: a Redis outage must NEVER fail the issuance that triggered
+ * an automatic push — the invoice is simply not auto-synced until the next
+ * manual push/retry.
  *
  * `connectionId` (Xero W01) is REQUIRED: the job runs against that connection
  * or is dropped. `opts.requestedBy` marks an operator push (#7251) — see the
