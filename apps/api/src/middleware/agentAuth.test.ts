@@ -1837,7 +1837,7 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
 
     // Only the per-agent limiter should have been called
     expect(rateLimiter).toHaveBeenCalledTimes(1);
-    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'agent_rate:agent-1', 120, 60);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'agent_rate:agent-1', 120, 60, 1, { refundOnReject: true });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -2233,6 +2233,8 @@ describe('Task 19 — per-source-IP rate limit', () => {
       'agent_rate_ip:device-1:203.0.113.5',
       30,
       60,
+      1,
+      { refundOnReject: true },
     );
     expect(next).not.toHaveBeenCalled();
   });
@@ -2251,8 +2253,8 @@ describe('Task 19 — per-source-IP rate limit', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(rateLimiter).toHaveBeenCalledTimes(3);
-    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate_ip:device-1:203.0.113.5', 30, 60);
-    expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'agent_rate:agent-1', 120, 60);
+    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate_ip:device-1:203.0.113.5', 30, 60, 1, { refundOnReject: true });
+    expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'agent_rate:agent-1', 120, 60, 1, { refundOnReject: true });
     expect(rateLimiter).toHaveBeenNthCalledWith(3, expect.anything(), 'agent_org_rate:org-1', 600, 60);
   });
 
@@ -2269,7 +2271,7 @@ describe('Task 19 — per-source-IP rate limit', () => {
     await agentAuthMiddleware(c, next);
 
     expect(rateLimiter).toHaveBeenCalledTimes(2);
-    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate:agent-1', 120, 60);
+    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate:agent-1', 120, 60, 1, { refundOnReject: true });
     expect(createAuditLogAsync).not.toHaveBeenCalled();
   });
 });

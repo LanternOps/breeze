@@ -53,6 +53,16 @@ export const STORAGE_SESSION_CALL_BURST = STORAGE_SESSION_CALLS_PER_MINUTE;
 export const STORAGE_SESSION_RESOLVES_PER_KEY = 8;
 export const STORAGE_SESSION_REFRESH_INTERVAL_SECONDS = 120;
 export const STORAGE_SESSION_EXTRA_CALLS = 200;
+/**
+ * The session's control-plane call budget as advertised to the helper in the
+ * `storageSession` envelope (read and write), so it can pace its calls instead
+ * of discovering the limit through 429s. The same constants drive the
+ * session's token bucket and the per-session request gate
+ * (services/agentStorageSessionRateLimit.ts).
+ */
+export function storageSessionControlRate(): { perMinute: number; burst: number } {
+  return { perMinute: STORAGE_SESSION_CALLS_PER_MINUTE, burst: STORAGE_SESSION_CALL_BURST };
+}
 /** Absorbs floating-point error in the bucket arithmetic. */
 const BUDGET_EPSILON = 1e-6;
 

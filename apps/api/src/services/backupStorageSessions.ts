@@ -59,6 +59,7 @@ import {
   STORAGE_SESSION_MAX_BATCH,
   STORAGE_SESSION_OBJECT_BURST,
   storageSessionBudgets,
+  storageSessionControlRate,
   type StorageSessionBudgetDecision,
 } from './backupStorageSessionBudget';
 import { drizzleBrokeredReadStore } from './backupStorageSessionStore';
@@ -627,6 +628,7 @@ async function mint(
     deadlineIn: urlExpiresIn(deadline, now),
     capabilities: [...STORAGE_SESSION_CAPABILITIES],
     maxBatch: STORAGE_SESSION_MAX_BATCH,
+    controlRate: storageSessionControlRate(),
   };
   return { mode: 'brokered', payload: out };
 }

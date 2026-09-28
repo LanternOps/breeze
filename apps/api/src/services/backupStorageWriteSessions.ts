@@ -70,6 +70,7 @@ import {
   STORAGE_SESSION_CALL_BURST,
   STORAGE_SESSION_MAX_BATCH,
   STORAGE_SESSION_OBJECT_BURST,
+  storageSessionControlRate,
 } from './backupStorageSessionBudget';
 import { drizzleBrokeredReadStore } from './backupStorageSessionStore';
 import {
@@ -248,6 +249,7 @@ export function buildWriteEnvelope(input: {
     partSizeBytes: STORAGE_WRITE_PART_SIZE_BYTES,
     conditionalWrites: input.conditionalWrites,
     storageIdentity: input.storageIdentity,
+    controlRate: storageSessionControlRate(),
   };
 }
 

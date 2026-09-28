@@ -784,11 +784,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // the IP-change audit signal needs the real address.
     if (!isStorageSessionPath) {
       const perIpKey = `agent_rate_ip:${device.id}:${rateLimitIpKey(sourceIp)}`;
+      // refundOnReject: a refused request is taken back out of the window, so
+      // an agent that retries while throttled does not keep itself throttled
+      // and the Retry-After below is when room actually returns. Admitted
+      // volume per (agent, IP) is still capped at the limit.
       const perIpCheck = await rateLimiter(
         redis,
         perIpKey,
         AGENT_PER_IP_RATE_LIMIT,
         AGENT_PER_IP_RATE_WINDOW_SECONDS,
+        1,
+        { refundOnReject: true },
       );
       if (!perIpCheck.allowed) {
         c.header('Retry-After', String(Math.ceil((perIpCheck.resetAt.getTime() - Date.now()) / 1000)));
@@ -864,7 +870,15 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   if (!isStorageSessionPath) {
     // Rate limiting per agent
     const rateKey = `agent_rate:${agentId}`;
-    const rateCheck = await rateLimiter(redis, rateKey, AGENT_RATE_LIMIT, AGENT_RATE_WINDOW_SECONDS);
+    // refundOnReject, as for the per-IP bucket above.
+    const rateCheck = await rateLimiter(
+      redis,
+      rateKey,
+      AGENT_RATE_LIMIT,
+      AGENT_RATE_WINDOW_SECONDS,
+      1,
+      { refundOnReject: true },
+    );
 
     if (!rateCheck.allowed) {
       c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));

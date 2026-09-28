@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 // Route-level proof that brokered storage-session traffic is metered apart from
 // the agent's general buckets: the REAL agentAuthMiddleware, the REAL
@@ -67,6 +67,7 @@ vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
 import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { db } from '../db';
+import { getTrustedClientIp } from '../services/clientIp';
 import { SortedSetRedisFake } from '../__tests__/helpers/sortedSetRedisFake';
 import { agentAuthMiddleware } from './agentAuth';
 import { AGENT_STORAGE_DEVICE_RATE_LIMIT, AGENT_STORAGE_SESSION_RATE_LIMIT } from '../services/agentStorageSessionRateLimit';
@@ -175,5 +176,55 @@ describe('agentAuthMiddleware — storage-session rate accounting', () => {
       if (res.status === 429) refused += 1;
     }
     expect(refused).toBe(10);
+  });
+});
+
+describe('agentAuthMiddleware — a refused agent request does not extend its window', () => {
+  const T0 = Date.UTC(2026, 8, 28, 12, 0, 0);
+
+  beforeEach(() => {
+    redisHolder.current = new SortedSetRedisFake();
+    mockDeviceLookup();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(getTrustedClientIp).mockReturnValue('203.0.113.5');
+  });
+
+  /**
+   * Fill the bucket at T0, then keep retrying for half a window — a full
+   * bucket's worth of refused attempts — then wait out the advertised
+   * Retry-After of the last refusal: that retry must be admitted.
+   */
+  async function burstThenHonourRetryAfter(limit: number) {
+    const app = buildApp();
+    for (let i = 0; i < limit; i += 1) expect((await heartbeat(app)).status).toBe(200);
+    const perSecond = Math.ceil(limit / 30);
+    let last: Response | null = null;
+    for (let t = 1; t <= 30; t += 1) {
+      vi.setSystemTime(T0 + t * 1000);
+      for (let k = 0; k < perSecond; k += 1) {
+        last = await heartbeat(app);
+        expect(last.status).toBe(429);
+      }
+    }
+    const retryAfter = Number(last!.headers.get('Retry-After'));
+    // The bucket frees when the T0 entries leave the window, 30 s from now.
+    expect(retryAfter).toBe(30);
+    vi.setSystemTime(T0 + 30_000 + retryAfter * 1000);
+    expect((await heartbeat(app)).status).toBe(200);
+  }
+
+  it('per-(agent, source-IP) bucket: waiting the advertised Retry-After succeeds after a burst of retries', async () => {
+    await burstThenHonourRetryAfter(30);
+  });
+
+  it('per-agent bucket: waiting the advertised Retry-After succeeds after a burst of retries', async () => {
+    // No trusted source IP: only the per-agent (and org) buckets apply.
+    vi.mocked(getTrustedClientIp).mockReturnValue('unknown');
+    await burstThenHonourRetryAfter(120);
   });
 });
