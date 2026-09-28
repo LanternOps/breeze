@@ -57,6 +57,12 @@ func newRebuildCommand() *cobra.Command {
 		// SilenceErrors stays false — the error text itself must still print.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// --drivers stays a known flag so an older script gets this
+			// reason instead of "unknown flag"; driver injection is not
+			// supported yet, so any value is refused before anything runs.
+			if len(driverDirs) > 0 {
+				return errors.New(rebuild.DriverInjectionUnsupportedReason)
+			}
 			if token != "" && providerConfig != "" {
 				return fmt.Errorf("use either --token/--server or --provider-config, not both")
 			}
@@ -168,7 +174,7 @@ func newRebuildCommand() *cobra.Command {
 	cmd.Flags().StringVar(&markerFile, "marker-file", "", "JSON {recoveryId, nonce} for original identity (--provider-config mode only; --token mode gets this from the bootstrap)")
 	cmd.Flags().StringVar(&resultJSON, "result-json", "", "write the result JSON here as well as stdout")
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "engine state dir (default /var/lib/breeze/rebuild; Windows: %ProgramData%\\Breeze\\rebuild)")
-	cmd.Flags().StringArrayVar(&driverDirs, "drivers", nil, "Windows only: a directory of driver packages for DISM /Add-Driver (repeatable)")
+	cmd.Flags().StringArrayVar(&driverDirs, "drivers", nil, "not supported yet: driver injection is refused; boot the restored machine and install drivers from Windows")
 	cmd.Flags().BoolVar(&forceDisk, "force-disk", false, "Windows only: overwrite a disk target that holds a Windows installation")
 	cmd.Flags().BoolVar(&allowDomainController, "allow-domain-controller", false, "Windows only: allow rebuilding a domain controller source")
 	cmd.Flags().StringVar(&workRoot, "work-root", "", "Windows vhdx: restore scratch dir override (default %ProgramData%\\Breeze\\rebuild\\work\\<snapshotID>)")

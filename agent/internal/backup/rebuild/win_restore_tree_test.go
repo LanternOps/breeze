@@ -233,6 +233,17 @@ func TestRun_ResumeReclaimsLeakedDriveLetters(t *testing.T) {
 	if waitIdx >= unmountIdx || unmountIdx >= bootIdx {
 		t.Fatalf("cmds = %v, want the leaked letter reclaimed after WaitForVolumes and before bcdboot", cmds)
 	}
+	// Lab L2: a successful reclaim is observable in the result, one line
+	// per letter.
+	reclaimed := 0
+	for _, w := range res2.Warnings {
+		if strings.Contains(w, "reclaimed drive letter Y:") {
+			reclaimed++
+		}
+	}
+	if reclaimed != 1 {
+		t.Fatalf("warnings = %v, want exactly one line reporting the reclaimed letter Y:", res2.Warnings)
+	}
 }
 
 // Fix round 1 / MINOR 1: between WaitForVolumes observing a leaked drive

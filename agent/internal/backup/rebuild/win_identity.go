@@ -31,7 +31,7 @@ func winBreezeDir(r *run) string {
 // machine SID is not changed (Part 0 §4).
 //
 // The hives are (re)loaded through ensureWinHives — a resumed run skipped
-// the restore phase that loads them, and winBoot closes them before DISM and
+// the restore phase that loads them, and winBoot closes them before
 // bcdboot — and left loaded: validateOSState closes them (ruling C5).
 func winIdentity(_ context.Context, r *run) error {
 	if r.rootVolume == "" {

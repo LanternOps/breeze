@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/hyperv"
@@ -531,5 +532,34 @@ func TestExecBareMetalRebuild_VMOutcomeRidesTheValidatedPost(t *testing.T) {
 				t.Fatalf("validated post warnings = %v, want the VM failure first", validated.Warnings)
 			}
 		})
+	}
+}
+
+// D18: a VM-create error is agent-supplied free text of unbounded length;
+// the agent caps it at 2000 runes before it lands in vmError (the server
+// schema caps it at 10,000) and in the leading warning.
+func TestExecBareMetalRebuild_VMErrorIsTruncated(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	long := "New-VM: " + strings.Repeat("é", 5000)
+	stubCreateRebuildVM(t, errors.New(long))
+	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+	vhdx := rebuiltVHDX(t)
+	fake := &fakeRebuild{}
+	pushCompletedRun(fake, vhdx)
+
+	payload := testBareMetalRebuildPayloadWithHyperV(t, server.URL, vhdx, `{"vmName":"w06-proof"}`)
+	result := execBareMetalRebuild(context.Background(), payload, fake.fn)
+	if !result.Success {
+		t.Fatalf("result = %+v", result)
+	}
+	res := decodeHyperVResult(t, result.Stdout)
+	if n := utf8.RuneCountInString(res.VMError); n == 0 || n > 2000 || !strings.HasPrefix(res.VMError, "New-VM: éé") {
+		t.Fatalf("vmError has %d runes (prefix %q), want 1..2000 runes keeping the start of the error", n, res.VMError[:min(len(res.VMError), 20)])
+	}
+	if !utf8.ValidString(res.VMError) {
+		t.Fatal("vmError is not valid UTF-8 after truncation")
+	}
+	if len(res.Warnings) == 0 || !strings.HasSuffix(res.Warnings[0], res.VMError) || utf8.RuneCountInString(res.Warnings[0]) > 2000+len("hyperv VM creation failed: ") {
+		t.Fatalf("warnings[0] (%d runes) must carry the same bounded error", utf8.RuneCountInString(res.Warnings[0]))
 	}
 }

@@ -22,7 +22,7 @@ import (
 const (
 	testSystemRoot  = `X:\Windows`
 	testHostBcdboot = testSystemRoot + `\System32\bcdboot.exe`
-	testHostDism    = testSystemRoot + `\System32\dism.exe`
+	testHostDism    = testSystemRoot + `\System32\dism.exe` // must never appear in argv (D20)
 )
 
 // newBootRun: a fake disk whose ESP (partition 1) is a real volume, so the
@@ -210,10 +210,9 @@ func TestWinBoot_LetterReleasedByTeardown(t *testing.T) {
 	}
 }
 
-// Ruling C5: the hives are unloaded BEFORE bcdboot and DISM run.
+// Ruling C5: the hives are unloaded BEFORE bcdboot runs.
 func TestWinBoot_ClosesHivesFirst(t *testing.T) {
 	r, sys := newBootRun(t, TargetDisk)
-	r.opts.DriverDirs = []string{`X:\drv`}
 	var order []string
 	r.hives = map[string]winhive.Handle{"SYSTEM": closeHook{Fake: winhive.NewFake(), fn: func() { order = append(order, "close cmds="+strings.Join(sys.cmds, "|")) }}}
 	if err := winBoot(context.Background(), r); err != nil {
@@ -231,45 +230,33 @@ type closeHook struct {
 
 func (h closeHook) Close() error { h.fn(); return nil }
 
-// R25: no driver dirs → warning; one host-DISM call per dir; a DISM
-// failure fails the phase with its output and the dir.
-func TestWinBoot_Drivers(t *testing.T) {
-	r, _ := newBootRun(t, TargetDisk)
+// D20: driver injection is not supported yet. The boot phase never runs
+// DISM; every run gets the inbox-drivers warning, and a non-empty
+// DriverDirs that somehow reached the phase (Run refuses it first) is
+// refused before any command runs.
+func TestWinBoot_DriverInjectionNotSupported(t *testing.T) {
+	r, sys := newBootRun(t, TargetDisk)
 	if err := winBoot(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	if !hasWarning(r.warnings, "no driver packages supplied; inbox drivers only") {
+	if !hasWarning(r.warnings, inboxDriversOnlyWarning) {
 		t.Fatalf("warnings = %v", r.warnings)
 	}
-
-	r, sys := newBootRun(t, TargetDisk)
-	r.opts.DriverDirs = []string{`X:\breeze\drivers`, `X:\more`}
-	if err := winBoot(context.Background(), r); err != nil {
-		t.Fatal(err)
-	}
-	got := countCalls(sys.cmds, testHostDism)
-	if len(got) != 2 || got[0] != testHostDism+" /Image:"+r.rootDir+` /Add-Driver /Driver:X:\breeze\drivers /Recurse` ||
-		got[1] != testHostDism+" /Image:"+r.rootDir+` /Add-Driver /Driver:X:\more /Recurse` {
-		t.Fatalf("dism calls = %v", got)
-	}
-	if hasWarning(r.warnings, "no driver packages supplied; inbox drivers only") {
-		t.Fatalf("unexpected inbox-only warning: %v", r.warnings)
-	}
 	for _, c := range sys.cmds {
-		if strings.HasPrefix(c, "dism.exe") || strings.HasPrefix(c, "LookPath") || strings.HasPrefix(c, `C:\PATH\`) {
-			t.Fatalf("DISM resolved through PATH (C4): %v", sys.cmds)
+		if strings.Contains(strings.ToLower(c), "dism") {
+			t.Fatalf("the boot phase must not run DISM: %v", sys.cmds)
 		}
 	}
 
 	r, sys = newBootRun(t, TargetDisk)
 	r.opts.DriverDirs = []string{`X:\breeze\drivers`, `X:\more`}
-	sys.fail[testHostDism] = errors.New("exit status 2")
 	err := winBoot(context.Background(), r)
-	if err == nil || !strings.Contains(err.Error(), "simulated failure") || !strings.Contains(err.Error(), `X:\breeze\drivers`) {
-		t.Fatalf("err = %v, want the dism output and dir", err)
+	var ref *RefusalError
+	if !errors.As(err, &ref) || ref.Reason != DriverInjectionUnsupportedReason {
+		t.Fatalf("err = %v, want the driver-injection refusal", err)
 	}
-	if got := countCalls(sys.cmds, testHostDism); len(got) != 1 {
-		t.Fatalf("dism calls = %v", got)
+	if len(sys.cmds) != 0 || len(sys.letters) != 0 {
+		t.Fatalf("commands ran / letters assigned before the refusal: cmds=%v letters=%v", sys.cmds, sys.letters)
 	}
 }
 
@@ -329,16 +316,14 @@ func TestWinBoot_SkipBoot(t *testing.T) {
 	}
 }
 
-// Ruling C5 through the engine: a full fake run with --drivers and
-// SkipBoot:false unloads every hive before the first DISM (and bcdboot)
-// command, identity reloads them afterwards, and teardown releases the ESP
-// letter.
-func TestRun_WindowsBootClosesHivesBeforeDism(t *testing.T) {
+// Ruling C5 through the engine: a full fake run with SkipBoot:false unloads
+// every hive before bcdboot, never runs DISM (D20), identity reloads the
+// hives afterwards, and teardown releases the ESP letter.
+func TestRun_WindowsBootClosesHivesBeforeBcdboot(t *testing.T) {
 	withHostPlatformWindows(t)
 	withHostWindowsDir(t, testSystemRoot)
 	opts, sys := winFakeOptions(t, t.TempDir())
 	opts.SkipBoot = false
-	opts.DriverDirs = []string{`X:\drv`}
 	opts.WinSystem = loadWrapper{sys, func(h winhive.Handle) winhive.Handle {
 		return closeHook{Fake: h.(*winhive.Fake), fn: func() {
 			sys.mu.Lock()
@@ -365,14 +350,14 @@ func TestRun_WindowsBootClosesHivesBeforeDism(t *testing.T) {
 			checked++
 		}
 	}
-	if checked != 2 {
-		t.Fatalf("want one bcdboot and one dism, checked %d:\n%s", checked, sys.dumpForTest())
+	if checked != 1 || indexOfPrefix(sys.cmds, testHostDism) != -1 {
+		t.Fatalf("want exactly one bcdboot and no DISM, checked %d:\n%s", checked, sys.dumpForTest())
 	}
 	if loaded != 0 {
 		t.Fatalf("%d hive(s) still loaded at the end", loaded)
 	}
-	iDism := indexOfPrefix(sys.cmds, testHostDism)
-	if reload := indexOfPrefix(sys.cmds[iDism:], "LoadHive"); reload < 0 {
+	iBoot := indexOfPrefix(sys.cmds, testHostBcdboot)
+	if reload := indexOfPrefix(sys.cmds[iBoot:], "LoadHive"); reload < 0 {
 		t.Fatalf("identity did not reload the hives after boot:\n%s", sys.dumpForTest())
 	}
 	if len(sys.letters) != 0 {

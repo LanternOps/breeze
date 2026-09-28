@@ -187,11 +187,28 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 func createHyperVVM(ctx context.Context, p *bareMetalRebuildPayload, res *rebuild.Result) {
 	req := p.createVMRequest()
 	if err := createRebuildVMFn(ctx, req); err != nil {
-		slog.Warn("bare_metal_rebuild: hyperv VM creation failed", "recoveryId", p.RecoveryID, "vmName", req.VMName, "error", err.Error())
-		res.VMError = err.Error()
-		res.Warnings = append([]string{"hyperv VM creation failed: " + err.Error()}, res.Warnings...)
+		// The error text comes from an external tool and is unbounded;
+		// cap it before it is logged, reported or persisted (D18).
+		msg := truncateVMError(err.Error())
+		slog.Warn("bare_metal_rebuild: hyperv VM creation failed", "recoveryId", p.RecoveryID, "vmName", req.VMName, "error", msg)
+		res.VMError = msg
+		res.Warnings = append([]string{"hyperv VM creation failed: " + msg}, res.Warnings...)
 		return
 	}
 	slog.Info("bare_metal_rebuild: hyperv VM created", "recoveryId", p.RecoveryID, "vmName", req.VMName)
 	res.VMCreated = true
+}
+
+// maxVMErrorRunes caps Result.VMError agent-side; the server schema allows
+// 10,000 characters, this matches the engine's own reason/warning caps.
+const maxVMErrorRunes = 2000
+
+// truncateVMError keeps the first maxVMErrorRunes runes of s (whole runes,
+// so the result stays valid UTF-8), ending with "…" when it cut anything.
+func truncateVMError(s string) string {
+	r := []rune(s)
+	if len(r) <= maxVMErrorRunes {
+		return s
+	}
+	return string(r[:maxVMErrorRunes-1]) + "…"
 }

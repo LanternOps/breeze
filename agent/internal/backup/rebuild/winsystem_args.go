@@ -296,7 +296,7 @@ func withTemporaryLetter(volumeGUIDPath string, assign func(string) (string, fun
 
 // formatVolume is Format's body, kept untagged so it is testable without
 // the windows build tag. Ruling C4 applies to format.com exactly as it does
-// to bcdboot.exe/dism.exe (win_boot.go's hostSystemTool): the host's own
+// to bcdboot.exe (win_boot.go's hostSystemTool): the host's own
 // System32 binary by absolute path, never PATH, never anything from the
 // restored tree.
 func formatVolume(ctx context.Context, sys WinSystem, assign func(string) (string, func() error, error), volumeGUIDPath, filesystem, label string) error {

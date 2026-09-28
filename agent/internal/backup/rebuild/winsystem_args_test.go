@@ -291,7 +291,7 @@ func TestRetryTransient(t *testing.T) {
 
 // 18b row 5 / ruling C4: format.com is always the host's own System32
 // binary by absolute path, the same rule win_boot.go's hostSystemTool
-// already applies to bcdboot.exe/dism.exe — nothing resolves via PATH.
+// already applies to bcdboot.exe — nothing resolves via PATH.
 func TestFormatVolume_UsesHostSystem32FormatCom(t *testing.T) {
 	// Fix round 1 / MINOR 5: pin hostWindowsDir so the expected
 	// C:\Windows\System32\format.com path does not depend on the actual

@@ -249,7 +249,11 @@ func (r *run) winReattach(ctx context.Context) error {
 			}
 			if err := r.opts.WinSystem.UnmountVolume(letter); err != nil {
 				r.warn("reclaim leaked drive letter %s: %v", letter, err)
+				continue
 			}
+			// One line per reclaimed letter, so a resume that needed it is
+			// observable in the result (lab L2: it was silent).
+			r.warn("reclaimed drive letter %s left on the rebuild disk by an earlier, interrupted run", letter)
 		}
 	}
 	if r.rootDir == "" && r.state.Completed[PhaseProvision] {

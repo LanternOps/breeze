@@ -77,11 +77,11 @@ func TestFakeWinSystem_LoadHiveReturnsPreseededOrFreshFake(t *testing.T) {
 func TestFakeWinSystem_RunRecordsAndFailPrefixWorks(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeWinSystem(dir)
-	f.fail["dism.exe /Image"] = context.DeadlineExceeded
-	if _, err := f.Run(context.Background(), "dism.exe", "/Image:x", "/Add-Driver"); err == nil {
+	f.fail["tool.exe /x"] = context.DeadlineExceeded
+	if _, err := f.Run(context.Background(), "tool.exe", "/x", "/y"); err == nil {
 		t.Fatal("expected the configured failure")
 	}
-	if !f.has("dism.exe /Image") {
+	if !f.has("tool.exe /x") {
 		t.Fatalf("command not recorded: %v", f.cmds)
 	}
 }
