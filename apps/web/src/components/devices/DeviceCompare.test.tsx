@@ -34,6 +34,11 @@ describe('DeviceCompare option source', () => {
 
 describe('DeviceCompare metrics time-range select accessible name (#7156)', () => {
   beforeEach(() => {
+    // The component reads/writes `?ids=` via window.history on mount/selection
+    // change, and jsdom's window.location persists across tests in this file —
+    // reset it so a prior test's single-device selection doesn't leak in and
+    // short-circuit this test's two-device auto-select.
+    window.history.replaceState({}, '', '/');
     fetchMock.mockReset();
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
