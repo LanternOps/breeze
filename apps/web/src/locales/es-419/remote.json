@@ -455,10 +455,10 @@
     "errorMessage": "Error: {{message}}",
     "errors": {
       "closedUnexpectedly": "La conexión se cerró inesperadamente",
-      "connection": "No se pudo conectar",
+      "connection": "Error de conexión",
       "createSession": "No se pudo crear la sesión",
       "createTicket": "No se pudo crear el ticket de conexión",
-      "failed": "No falló",
+      "failed": "Conexión fallida",
       "initialize": "No se pudo inicializar",
       "invalidTicket": "Respuesta de ticket de conexión no válida",
       "webSocket": "Error de conexión de WebSocket"

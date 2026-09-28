@@ -455,10 +455,10 @@
     "errorMessage": "Hata: {{message}}",
     "errors": {
       "closedUnexpectedly": "Bağlantı beklenmedik şekilde kapandı",
-      "connection": "Bağlantı kurulamadı",
+      "connection": "Bağlantı hatası",
       "createSession": "Oturum oluşturulamadı",
       "createTicket": "Bağlantı bileti oluşturulamadı",
-      "failed": "Başarısız oldu",
+      "failed": "Bağlantı başarısız oldu",
       "initialize": "Başlatılamadı",
       "invalidTicket": "Geçersiz bağlantı bileti yanıtı",
       "webSocket": "WebSocket bağlantı hatası"

@@ -2597,10 +2597,10 @@
     },
     "fields": {
       "assetType": "Tipo",
-      "discoveryMethods": "Métodos de detección",
-      "discoveryProfile": "Perfil de detección",
+      "discoveryMethods": "Métodos de descubrimiento",
+      "discoveryProfile": "Perfil de descubrimiento",
       "displayName": "Nombre para mostrar",
-      "firstSeen": "Detectado por primera vez",
+      "firstSeen": "Visto por primera vez",
       "hostname": "Nombre de host",
       "linkedDevice": "Dispositivo vinculado",
       "manufacturer": "Fabricante",

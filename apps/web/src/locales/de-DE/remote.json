@@ -455,10 +455,10 @@
     "errorMessage": "Fehler: {{message}}",
     "errors": {
       "closedUnexpectedly": "Verbindung wurde unerwartet geschlossen",
-      "connection": "Verbindung fehlgeschlagen",
+      "connection": "Verbindungsfehler",
       "createSession": "Sitzung konnte nicht erstellt werden",
       "createTicket": "Verbindungsticket konnte nicht erstellt werden",
-      "failed": "Fehlgeschlagen, fehlgeschlagen",
+      "failed": "Verbindung fehlgeschlagen",
       "initialize": "Initialisierung fehlgeschlagen",
       "invalidTicket": "Ungültige Antwort für Verbindungsticket",
       "webSocket": "WebSocket-Verbindungsfehler"

@@ -5,34 +5,42 @@
 // exactly the humanized form of its own key leaf — the signature of that bug
 // — so the same regression can't silently reappear on new copy.
 //
-// The heuristic itself is deliberately broad (any 2+-word key leaf whose
-// value equals its own humanized form, optionally behind "Failed to ") and
-// is NOT high-precision on its own — the #2649 investigation found this
-// exact heuristic produces thousands of false positives, because plenty of
-// legitimate short labels are indistinguishable from a humanized key by
-// pattern alone (e.g. `acceptRisk` -> "Accept risk" is correct copy).
+// Detection logic (`isHumanizedKeyPlaceholder`, checking both "Sentence case"
+// and "Title Case" renderings — #2649's own example, `viewerDescription` ->
+// "Viewer Description", is Title Case) lives in
+// ../../../../scripts/i18n-humanized-key-lib.mjs, shared with the scanner and
+// recovery scripts so the heuristic can't drift between the test and the
+// tools that feed it. It is deliberately broad and NOT high-precision on its
+// own — the #2649 investigation found this exact class of heuristic produces
+// thousands of false positives, because plenty of legitimate short labels are
+// indistinguishable from a humanized key by pattern alone (e.g. `acceptRisk`
+// -> "Accept risk" is correct copy).
 //
 // So this test does NOT require the codebase to be free of heuristic hits.
 // Instead it works like the frozen-baseline pattern used elsewhere in this
 // repo (see migrationRlsScope.test.ts): BASELINE below is every hit that
-// existed when this test was added — a snapshot of already-shipped keys,
-// most of which are legitimate copy, a minority of which are still-broken
-// extraction damage from #2340 that #2649 didn't get to. 45 confirmed
-// regressions were recovered from git history and fixed in the same PR that
-// added this test (see scripts/i18n-recover-original-copy.mjs) and removed
-// from the baseline; the remainder is tracked as follow-up work, not silently
+// exists as of this test — a snapshot of already-shipped keys, most of which
+// are legitimate copy, a minority of which are still-broken extraction
+// damage from #2340 that #2649 didn't get to. 45 confirmed regressions were
+// recovered from git history and fixed in the same PR that added this test
+// (see scripts/i18n-recover-original-copy.mjs) and removed from the
+// baseline; the remainder is tracked as follow-up work (#7376), not silently
 // accepted as correct.
 //
 // NEVER add a new key to the baseline to make this test pass — that means
 // new copy was written as (or degenerated into) a humanized key placeholder,
 // which is the bug this test exists to catch. Fix the copy instead.
 // Removing an entry (because it was investigated and fixed, or because a
-// human confirmed it's legitimate copy) is always fine.
+// human confirmed it's legitimate copy) is always fine — and the second test
+// below requires every remaining baseline entry to still be a live hit, so a
+// key that gets fixed without being removed from the baseline fails loudly
+// instead of quietly losing its guard.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isHumanizedKeyPlaceholder } from '../../../../scripts/i18n-humanized-key-lib.mjs';
 
 const LOCALES_DIR = dirname(fileURLToPath(import.meta.url));
 const EN_DIR = join(LOCALES_DIR, 'en');
@@ -40,21 +48,6 @@ const BASELINE: string[] = JSON.parse(
   readFileSync(join(LOCALES_DIR, 'humanizedKeyBaseline.json'), 'utf8'),
 );
 const ALLOWLIST_KEYS = new Set<string>(BASELINE);
-
-function humanizeKeyLeaf(leaf: string): string {
-  const words = leaf
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .split(/[\s_-]+/)
-    .filter(Boolean);
-  if (words.length === 0) return '';
-  return words
-    .map((w, i) => {
-      const lower = w.toLowerCase();
-      return i === 0 ? lower[0].toUpperCase() + lower.slice(1) : lower;
-    })
-    .join(' ');
-}
 
 function flattenJson(obj: Record<string, unknown>, prefix = ''): [string, string][] {
   const out: [string, string][] = [];
@@ -76,16 +69,8 @@ function findHumanizedKeyHits(namespace: string, json: Record<string, unknown>):
     if (ALLOWLIST_KEYS.has(dottedKey)) continue;
 
     const leaf = key.split('.').pop()!;
-    const words = leaf.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[\s_-]+/).filter(Boolean);
-    if (words.length < 2) continue; // single-word leaves excluded — too noisy to judge reliably
-
-    const humanized = humanizeKeyLeaf(leaf);
-    const withoutFailedTo = value.startsWith('Failed to ') ? value.slice('Failed to '.length) : null;
-    const directMatch = value === humanized;
-    const failedToMatch = withoutFailedTo !== null && withoutFailedTo.toLowerCase() === humanized.toLowerCase();
-
-    if (directMatch || failedToMatch) {
-      hits.push(`${dottedKey}: "${value}" looks like a humanized key, not real copy (expected something other than "${humanized}")`);
+    if (isHumanizedKeyPlaceholder(leaf, value)) {
+      hits.push(`${dottedKey}: "${value}" looks like a humanized key, not real copy`);
     }
   }
   return hits;
@@ -94,10 +79,50 @@ function findHumanizedKeyHits(namespace: string, json: Record<string, unknown>):
 const enFiles = readdirSync(EN_DIR).filter((f) => f.endsWith('.json'));
 
 describe('en/*.json values are not humanized key placeholders (#2649)', () => {
-  it.each(enFiles)('%s has no humanized-key-shaped values', (file) => {
+  it('found en/*.json namespace files to check', () => {
+    // Guards against `it.each([])` silently reporting 0 assertions as a pass
+    // if the locales directory were ever emptied by a bad merge/build step.
+    expect(enFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(enFiles)('%s has no new humanized-key-shaped values', (file) => {
     const namespace = file.replace(/\.json$/, '');
     const json = JSON.parse(readFileSync(join(EN_DIR, file), 'utf8'));
     const hits = findHumanizedKeyHits(namespace, json);
     expect(hits, hits.join('\n')).toEqual([]);
+  });
+
+  it('baseline has no stale entries (every entry is still a live hit)', () => {
+    // A baseline entry that no longer matches the heuristic means the key
+    // was fixed (or edited) without being removed from the baseline — which
+    // would otherwise let it silently regress back to a placeholder with no
+    // test ever noticing (the baseline only skips known hits, it doesn't
+    // reassert them). Every entry must currently: exist, be a string, and
+    // still match the heuristic against the live en/*.json value.
+    const enByNamespace = new Map<string, Record<string, unknown>>();
+    for (const file of enFiles) {
+      enByNamespace.set(file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(EN_DIR, file), 'utf8')));
+    }
+    const stale: string[] = [];
+    for (const dottedKey of BASELINE) {
+      const [namespace, ...rest] = dottedKey.split('.');
+      const json = enByNamespace.get(namespace);
+      if (!json) {
+        stale.push(`${dottedKey}: namespace file no longer exists`);
+        continue;
+      }
+      const leafPath = rest.join('.');
+      const flat = new Map(flattenJson(json));
+      const value = flat.get(leafPath);
+      if (value === undefined) {
+        stale.push(`${dottedKey}: key no longer exists in en/${namespace}.json`);
+        continue;
+      }
+      const leaf = rest[rest.length - 1];
+      if (!isHumanizedKeyPlaceholder(leaf, value)) {
+        stale.push(`${dottedKey}: current value "${value}" no longer matches the heuristic — remove from humanizedKeyBaseline.json`);
+      }
+    }
+    expect(stale, stale.join('\n')).toEqual([]);
   });
 });

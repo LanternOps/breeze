@@ -455,10 +455,10 @@
     "errorMessage": "Erro: {{message}}",
     "errors": {
       "closedUnexpectedly": "A conexão foi encerrada inesperadamente",
-      "connection": "Falha na conexão",
+      "connection": "Erro de conexão",
       "createSession": "Falha ao criar a sessão",
       "createTicket": "Falha ao criar o tíquete de conexão",
-      "failed": "A sessão falhou",
+      "failed": "Falha na conexão",
       "initialize": "Falha ao inicializar o terminal",
       "invalidTicket": "Resposta de tíquete de conexão inválida",
       "webSocket": "Erro de conexão WebSocket"

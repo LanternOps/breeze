@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isHumanizedKeyPlaceholder } from './i18n-humanized-key-lib.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -32,21 +33,6 @@ const EXTRACTION_COMMIT = '944bb8d18';
 
 function sh(args) {
   return execFileSync('git', args, { cwd: ROOT, maxBuffer: 1024 * 1024 * 64 }).toString();
-}
-
-function humanizeKeyLeaf(leaf) {
-  const words = leaf
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .split(/[\s_-]+/)
-    .filter(Boolean);
-  if (words.length === 0) return '';
-  return words
-    .map((w, i) => {
-      const lower = w.toLowerCase();
-      return i === 0 ? lower[0].toUpperCase() + lower.slice(1) : lower;
-    })
-    .join(' ');
 }
 
 function flattenJson(obj, prefix = '') {
@@ -70,14 +56,8 @@ function scanCandidates() {
     const json = JSON.parse(readFileSync(join(EN_DIR, file), 'utf8'));
     for (const [key, value] of flattenJson(json)) {
       const leaf = key.split('.').pop();
-      const words = leaf.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[\s_-]+/).filter(Boolean);
-      if (words.length < 2) continue;
-      const humanized = humanizeKeyLeaf(leaf);
-      const withoutFailedTo = value.startsWith('Failed to ') ? value.slice('Failed to '.length) : null;
-      const directMatch = value === humanized;
-      const failedToMatch = withoutFailedTo !== null && withoutFailedTo.toLowerCase() === humanized.toLowerCase();
-      if (directMatch || failedToMatch) {
-        candidates.push({ namespace, key, leaf, value, matchKind: directMatch ? 'direct' : 'failed-to-prefix' });
+      if (isHumanizedKeyPlaceholder(leaf, value)) {
+        candidates.push({ namespace, key, leaf, value });
       }
     }
   }
@@ -124,14 +104,36 @@ function getExtractionTouchedFiles() {
   return [...new Set(out)];
 }
 
+// The i18next namespace a component file uses, from its
+// `useTranslation('namespace')` call — needed to scope the key->original map
+// per-namespace so two unrelated namespaces that happen to share a leaf path
+// (e.g. both have an `errors.loadKeys`) can't get paired to the wrong text.
+function getNamespaceForFile(file) {
+  let source;
+  try {
+    source = sh(['show', `${EXTRACTION_COMMIT}:${file}`]);
+  } catch {
+    return null;
+  }
+  const m = source.match(/useTranslation\(\s*['"`]([a-zA-Z0-9_-]+)['"`]/);
+  return m ? m[1] : null;
+}
+
 function buildKeyToOriginalMap() {
   const files = getExtractionTouchedFiles();
-  const map = new Map(); // key -> { text, file }
+  const map = new Map(); // "namespace::key" -> { text, file }
+  const skippedFiles = [];
   for (const file of files) {
+    const namespace = getNamespaceForFile(file);
+    if (!namespace) {
+      skippedFiles.push(`${file} (no useTranslation() call found)`);
+      continue;
+    }
     let diff;
     try {
       diff = sh(['diff', `${EXTRACTION_COMMIT}^`, EXTRACTION_COMMIT, '--', file]);
-    } catch {
+    } catch (err) {
+      skippedFiles.push(`${file} (git diff failed: ${err.message.split('\n')[0]})`);
       continue;
     }
     const hunks = diff.split(/^@@/m).slice(1);
@@ -161,8 +163,14 @@ function buildKeyToOriginalMap() {
               const literals = extractStringLiterals(removedBlock[j]);
               const keys = extractTKeys(addedBlock[j]);
               if (literals.length === 1 && keys.length === 1) {
-                const key = keys[0];
-                if (!map.has(key)) map.set(key, { text: literals[0], file });
+                // Scope by namespace so two unrelated namespaces with the
+                // same leaf key (e.g. both have `errors.loadKeys`) can't get
+                // paired to each other's recovered text. The t() call's key
+                // argument is exactly the JSON path within that namespace's
+                // file — same convention scanCandidates() uses to build
+                // `${namespace}.${key}`.
+                const scopedKey = `${namespace}::${keys[0]}`;
+                if (!map.has(scopedKey)) map.set(scopedKey, { text: literals[0], file });
               }
             }
           }
@@ -172,7 +180,36 @@ function buildKeyToOriginalMap() {
       }
     }
   }
+  if (skippedFiles.length > 0) {
+    console.error(`Warning: ${skippedFiles.length} extraction-touched file(s) skipped (not "unrecoverable" — genuinely not analyzed):`);
+    for (const s of skippedFiles) console.error(`  - ${s}`);
+  }
   return map;
+}
+
+// The en/<namespace>.json value for `key` exactly as the extraction commit
+// left it (i.e. right after 944bb8d18, before any later human edit). Used
+// to gate recovery: if the CURRENT value differs from this, someone already
+// touched the key since the extraction landed — deliberately or not — and
+// blindly overwriting it with the pre-extraction original would fight that
+// later edit rather than fix extraction damage. (This is exactly how 8 of
+// this tool's first 45 "confirmed" hits turned out to be false: two later
+// PRs — #2595 and #5090 — deliberately re-cased those labels after #2340,
+// and the tool had no way to tell "still broken" from "already redesigned".)
+const valueAtExtractionCache = new Map(); // namespace -> flattened Map(key -> value)
+function getValueAtExtractionCommit(namespace, key) {
+  if (!valueAtExtractionCache.has(namespace)) {
+    let flat = new Map();
+    try {
+      const raw = sh(['show', `${EXTRACTION_COMMIT}:apps/web/src/locales/en/${namespace}.json`]);
+      for (const [k, v] of flattenJson(JSON.parse(raw))) flat.set(k, v);
+    } catch {
+      // File didn't exist at that commit (added later) — leave flat empty;
+      // callers treat "no recorded value" as "can't verify, don't recover".
+    }
+    valueAtExtractionCache.set(namespace, flat);
+  }
+  return valueAtExtractionCache.get(namespace).get(key);
 }
 
 function main() {
@@ -182,33 +219,47 @@ function main() {
 
   const confirmed = [];
   const unrecoverable = [];
+  const supersededByLaterEdit = [];
 
   for (const c of candidates) {
-    // The full t()-call key as it appears in source is just the leaf path
-    // (namespace supplied by useTranslation(namespace)), i.e. everything
-    // after the namespace segment of the JSON key.
-    const withoutNamespace = c.key; // JSON key IS the leaf path already (namespace is the filename)
-    const hit = originalMap.get(withoutNamespace);
-    if (hit && hit.text && hit.text.trim() !== c.value.trim()) {
-      confirmed.push({ ...c, original: hit.text, sourceFile: hit.file });
-    } else if (!hit) {
+    const hit = originalMap.get(`${c.namespace}::${c.key}`);
+    if (!hit || !hit.text) {
       unrecoverable.push(c);
+      continue;
     }
-    // if hit.text === c.value, heuristic false positive (already correct) — drop silently
+    if (hit.text.trim() === c.value.trim()) {
+      continue; // heuristic false positive (current value already matches recovered original)
+    }
+    const valueRightAfterExtraction = getValueAtExtractionCommit(c.namespace, c.key);
+    if (valueRightAfterExtraction !== undefined && valueRightAfterExtraction !== c.value) {
+      // Someone edited this key after the extraction landed — don't recover
+      // over a later, possibly-deliberate change. Surface it separately so
+      // it's not silently dropped and not silently "fixed" either.
+      supersededByLaterEdit.push({ ...c, original: hit.text, sourceFile: hit.file, valueRightAfterExtraction });
+      continue;
+    }
+    confirmed.push({ ...c, original: hit.text, sourceFile: hit.file });
   }
 
   if (asJson) {
-    console.log(JSON.stringify({ confirmed, unrecoverable }, null, 2));
+    console.log(JSON.stringify({ confirmed, unrecoverable, supersededByLaterEdit }, null, 2));
     return;
   }
 
   console.log(`Candidates scanned: ${candidates.length}`);
   console.log(`Confirmed recoverable regressions: ${confirmed.length}`);
   console.log(`Unrecoverable (candidate but no original found in diff): ${unrecoverable.length}`);
-  console.log(`Dropped as false positives (matched original): ${candidates.length - confirmed.length - unrecoverable.length}`);
+  console.log(`Superseded by a later edit (NOT auto-recovered — needs a human look): ${supersededByLaterEdit.length}`);
+  console.log(`Dropped as false positives (matched original): ${candidates.length - confirmed.length - unrecoverable.length - supersededByLaterEdit.length}`);
   console.log('\n--- CONFIRMED ---');
   for (const c of confirmed) {
     console.log(`${c.namespace}.${c.key}\n  current: "${c.value}"\n  original: "${c.original}"  (${c.sourceFile})`);
+  }
+  if (supersededByLaterEdit.length > 0) {
+    console.log('\n--- SUPERSEDED BY LATER EDIT (review by hand) ---');
+    for (const c of supersededByLaterEdit) {
+      console.log(`${c.namespace}.${c.key}\n  current: "${c.value}"\n  pre-extraction original: "${c.original}"\n  value right after extraction: "${c.valueRightAfterExtraction}"`);
+    }
   }
 }
 

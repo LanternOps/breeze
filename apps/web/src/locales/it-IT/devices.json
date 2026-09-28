@@ -2600,7 +2600,7 @@
       "discoveryMethods": "Metodi di rilevamento",
       "discoveryProfile": "Profilo di rilevamento",
       "displayName": "Nome visualizzato",
-      "firstSeen": "Rilevato per la prima volta",
+      "firstSeen": "Prima rilevazione",
       "hostname": "Hostname",
       "linkedDevice": "Dispositivo collegato",
       "manufacturer": "Produttore",
@@ -2661,7 +2661,7 @@
     "sections": {
       "discovery": "Rilevamento",
       "identity": "Identità",
-      "monitoringStatus": "Stato di monitoraggio",
+      "monitoringStatus": "Stato monitoraggio",
       "openPorts": "Porte aperte",
       "snmpData": "Dati SNMP",
       "reachability": "Raggiungibilità",

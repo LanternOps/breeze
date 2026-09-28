@@ -2597,10 +2597,10 @@
     },
     "fields": {
       "assetType": "Typ",
-      "discoveryMethods": "Erkennungsmethoden",
-      "discoveryProfile": "Erkennungsprofil",
+      "discoveryMethods": "Entdeckungsmethoden",
+      "discoveryProfile": "Entdeckungsprofil",
       "displayName": "Anzeigename",
-      "firstSeen": "Zuerst gesehen",
+      "firstSeen": "Zum ersten Mal gesehen",
       "hostname": "Hostname",
       "linkedDevice": "Verknüpftes Gerät",
       "manufacturer": "Hersteller",

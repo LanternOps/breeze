@@ -6,43 +6,21 @@
 //
 // Usage: node scripts/i18n-humanized-key-scan.mjs [--json]
 //
-// Heuristic (kept intentionally narrow, mirroring #2649's "floor" bucket):
-//   1. Split the last path segment of the key on camelCase boundaries.
-//   2. Title-case the first word, lowercase the rest (matches the observed
-//      humanizer: "viewerDescription" -> "Viewer Description",
-//      "handlerNotConfigured" -> "Handler Not Configured").
-//   3. Flag when the EN value equals that humanized form exactly (or with a
-//      "Failed to " prefix stripped, for the errors.* namespace pattern
-//      "Failed to <humanized key>").
-//   4. Skip single-word leaves and anything on the allowlist (legitimate
-//      cases like `noReasonGiven` -> "No reason given" or a leaf that is
-//      genuinely just its own label, e.g. column headers).
+// Detection logic lives in i18n-humanized-key-lib.mjs, shared with
+// i18n-recover-original-copy.mjs and the regression test
+// (apps/web/src/locales/humanizedKeyRegression.test.ts) so the heuristic
+// can't drift between the scanner and the test that guards against it.
 //
-// This is a *candidate* list, not a verdict — see ALLOWLIST_KEYS below and
-// the regression test apps/web/src/locales/humanizedKeyRegression.test.ts.
+// This is a *candidate* list, not a verdict — see the regression test's
+// frozen baseline (apps/web/src/locales/humanizedKeyBaseline.json).
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isHumanizedKeyPlaceholder } from './i18n-humanized-key-lib.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EN_DIR = join(__dirname, '..', 'apps', 'web', 'src', 'locales', 'en');
-
-function humanizeKeyLeaf(leaf) {
-  // Split camelCase / acronym boundaries into words.
-  const words = leaf
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .split(/[\s_-]+/)
-    .filter(Boolean);
-  if (words.length === 0) return '';
-  return words
-    .map((w, i) => {
-      const lower = w.toLowerCase();
-      return i === 0 ? lower[0].toUpperCase() + lower.slice(1) : lower;
-    })
-    .join(' ');
-}
 
 function flattenJson(obj, prefix = '') {
   const out = [];
@@ -63,18 +41,8 @@ function scanFile(file) {
   const hits = [];
   for (const [key, value] of flat) {
     const leaf = key.split('.').pop();
-    const words = leaf.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[\s_-]+/).filter(Boolean);
-    if (words.length < 2) continue; // single-word leaves excluded — too noisy to judge
-
-    const humanized = humanizeKeyLeaf(leaf);
-    const withoutFailedTo = value.startsWith('Failed to ') ? value.slice('Failed to '.length) : null;
-    const humanizedLower = humanized.toLowerCase();
-
-    const directMatch = value === humanized;
-    const failedToMatch = withoutFailedTo !== null && withoutFailedTo.toLowerCase() === humanizedLower;
-
-    if (directMatch || failedToMatch) {
-      hits.push({ key, value, humanized, matchKind: directMatch ? 'direct' : 'failed-to-prefix' });
+    if (isHumanizedKeyPlaceholder(leaf, value)) {
+      hits.push({ key, value });
     }
   }
   return hits;
@@ -101,7 +69,7 @@ function main() {
   for (const [file, hits] of Object.entries(results)) {
     console.log(`\n## ${file} (${hits.length})`);
     for (const h of hits) {
-      console.log(`  ${h.key}\n    en: "${h.value}"  [${h.matchKind}]`);
+      console.log(`  ${h.key}\n    en: "${h.value}"`);
     }
   }
   console.log(`\nTotal candidates: ${total} across ${Object.keys(results).length} files`);

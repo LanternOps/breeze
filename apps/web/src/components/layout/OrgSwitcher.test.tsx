@@ -209,14 +209,14 @@ describe('OrgSwitcher (unified control)', () => {
     expect(hrefSetter).not.toHaveBeenCalled();
   });
 
-  it('renders a pinned "All Organizations" fleet row with >1 org', () => {
+  it('renders a pinned "All organizations" fleet row with >1 org', () => {
     stubLocation('/devices');
 
     render(<OrgSwitcher />);
     openDropdown();
 
     const allRow = screen.getByTestId('org-option-all');
-    expect(allRow.textContent).toContain('All Organizations');
+    expect(allRow.textContent).toContain('All organizations');
   });
 
   it('hides the fleet row with a single org (fleet view would be a no-op)', () => {
@@ -275,7 +275,7 @@ describe('OrgSwitcher (unified control)', () => {
 
     render(<OrgSwitcher />);
 
-    expect(screen.getByTestId('org-switcher-label').textContent).toBe('All Organizations');
+    expect(screen.getByTestId('org-switcher-label').textContent).toBe('All organizations');
     expect(screen.getByTestId('org-switcher-trigger').getAttribute('data-scope')).toBe('all');
   });
 
