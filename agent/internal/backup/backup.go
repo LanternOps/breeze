@@ -635,6 +635,10 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	}
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
+	// vssFailed records that this run asked for VSS and did not get it, so
+	// system-state collection does not ask the same VSS subsystem again for
+	// its own system-volume snapshot (systemstate.CollectOptions).
+	vssFailed := false
 	if provider, useVSS := m.resolveVSSProvider(); useVSS {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -653,6 +657,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			vssErr = errors.New("vss provider returned no session and no error")
 		}
 		if vssErr != nil {
+			vssFailed = true
 			log.Warn("VSS shadow copy failed, proceeding without VSS",
 				"elapsedMs", time.Since(vssStart).Milliseconds(),
 				"error", vssErr.Error(),
@@ -708,7 +713,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// then copied out of the shadow copy instead of `reg.exe save`, which
 		// Microsoft Defender blocks for SAM/SECURITY as
 		// Trojan:Win32/Commando.A!ml (#5397).
-		ssOpts := systemstate.CollectOptions{AcquireBackupPrivilege: acquireBackupReadPrivilege}
+		// Without a session covering the system volume (a system_image run
+		// with no paths never requests one) the Windows collector takes its
+		// own short-lived snapshot of that volume — unless VSS just failed
+		// here, in which case it goes straight to its reg.exe fallback.
+		ssOpts := systemstate.CollectOptions{
+			AcquireBackupPrivilege:   acquireBackupReadPrivilege,
+			SkipSystemVolumeSnapshot: vssFailed,
+		}
 		if vssSession != nil {
 			ssOpts.ShadowPaths = vssSession.ShadowPaths
 		}

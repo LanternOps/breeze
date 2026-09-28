@@ -34,8 +34,14 @@ var registryHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
 // shadowRegistryHives are the hive files copied from a shadow copy: the four
 // required HKLM hives plus DEFAULT (the .DEFAULT user profile hive, which
 // lives in the same config directory; reg save cannot address it under HKLM).
-// Every one of them is required: a missing file fails the step and is named.
+// A missing required hive fails the step and is named; see
+// bestEffortShadowHives for DEFAULT.
 var shadowRegistryHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT"}
+
+// bestEffortShadowHives are captured when present but never fail the step:
+// no restore consumer reads DEFAULT (bmr's offline fallback replaces exactly
+// SYSTEM/SOFTWARE/SAM/SECURITY), so its absence only costs completeness.
+var bestEffortShadowHives = map[string]bool{"DEFAULT": true}
 
 // hiveLogSuffixes are the transaction logs that sit next to each hive file.
 // On Windows 8.1+ the primary file is reconciled lazily, so recent changes can
@@ -58,6 +64,21 @@ type CollectOptions struct {
 	// privilege state). Best effort: SYSTEM and elevated Administrators can
 	// read the shadow copy's hive files without it.
 	AcquireBackupPrivilege func() (release func(), err error)
+
+	// SnapshotVolume, when ShadowPaths does not cover the system volume,
+	// takes a VSS shadow copy of that ONE volume for the registry step and
+	// returns its shadow map plus a release the step calls as soon as the
+	// hives are copied. The Windows collector defaults it to a real VSS
+	// snapshot (newCollector), so a system_image run with no paths — which
+	// has no run-wide VSS session — and the IPC system_state_collect command
+	// never reach `reg.exe save` unless VSS itself fails. Nil means "no
+	// snapshot": the reg.exe path.
+	SnapshotVolume func(volume string) (shadowPaths map[string]string, release func(), err error)
+
+	// SkipSystemVolumeSnapshot suppresses SnapshotVolume. The backup run sets
+	// it when its own VSS attempt just failed, so a wedged VSS subsystem is
+	// not asked (and waited on) a second time.
+	SkipSystemVolumeSnapshot bool
 }
 
 // shadowConfigDir returns the shadow copy's %SystemRoot%\System32\config
@@ -95,8 +116,22 @@ func shadowConfigDir(shadowPaths map[string]string, systemRoot string) (string, 
 // shadow copy when the run holds one of the system volume, else via reg.exe.
 // Under VSS it never falls back to reg.exe for a hive the shadow copy lacks —
 // that is precisely the call Defender blocks — the hive is named as failed.
+//
+// When the run's own VSS session does not cover the system volume (a
+// system_image run with no paths has no session at all, nor does the IPC
+// system_state_collect), it takes a shadow copy of the system volume alone
+// through opts.SnapshotVolume and releases it as soon as the hives are copied.
+// reg.exe is reached only when that snapshot cannot be taken or does not
+// cover the volume, and that fallback is logged as a warning.
 func collectRegistryHivesForRun(dir, stagingDir, systemRoot string, opts CollectOptions) ([]Artifact, error) {
 	configDir, ok := shadowConfigDir(opts.ShadowPaths, systemRoot)
+	if !ok {
+		var release func()
+		configDir, release, ok = snapshotSystemVolumeForHives(systemRoot, opts)
+		if release != nil {
+			defer release()
+		}
+	}
 	if !ok {
 		return collectRegistryHives(dir, stagingDir, registryHives)
 	}
@@ -111,6 +146,41 @@ func collectRegistryHivesForRun(dir, stagingDir, systemRoot string, opts Collect
 	}
 	slog.Info("systemstate: capturing registry hives from the VSS shadow copy", "configDir", configDir)
 	return collectRegistryHivesFromShadow(dir, stagingDir, configDir, shadowRegistryHives)
+}
+
+// snapshotSystemVolumeForHives takes the registry step's own shadow copy of
+// the system volume (see collectRegistryHivesForRun). ok is false — and the
+// caller falls back to reg.exe — when no snapshot is configured, the run said
+// to skip it, it failed, or it does not cover the system volume; every such
+// case is logged, since the fallback is exactly the call Defender blocks for
+// SAM/SECURITY. release, when non-nil, must be called once the hives are
+// copied (it is also returned when the snapshot proved unusable).
+func snapshotSystemVolumeForHives(systemRoot string, opts CollectOptions) (configDir string, release func(), ok bool) {
+	if opts.SnapshotVolume == nil {
+		return "", nil, false
+	}
+	const fallback = "falling back to `reg save`, which Microsoft Defender blocks for SAM/SECURITY as Trojan:Win32/Commando.A!ml"
+	if len(systemRoot) < 2 || systemRoot[1] != ':' {
+		slog.Warn("systemstate: cannot tell the system volume, no shadow copy for hive capture; "+fallback, "systemRoot", systemRoot)
+		return "", nil, false
+	}
+	if opts.SkipSystemVolumeSnapshot {
+		slog.Warn("systemstate: VSS already failed for this run, no shadow copy for hive capture; " + fallback)
+		return "", nil, false
+	}
+	volume := strings.ToUpper(systemRoot[:2])
+	shadows, release, err := opts.SnapshotVolume(volume)
+	if err != nil {
+		slog.Warn("systemstate: VSS shadow copy of the system volume failed; "+fallback, "volume", volume, "error", err.Error())
+		return "", nil, false
+	}
+	configDir, ok = shadowConfigDir(shadows, systemRoot)
+	if !ok {
+		slog.Warn("systemstate: VSS shadow copy does not cover the system volume; "+fallback, "volume", volume)
+		return "", release, false
+	}
+	slog.Info("systemstate: took a VSS shadow copy of the system volume for hive capture", "volume", volume)
+	return configDir, release, true
 }
 
 // collectRegistryHivesFromShadow copies each hive file, and whichever of its
@@ -130,6 +200,10 @@ func collectRegistryHivesFromShadow(dir, stagingDir, configDir string, hives []s
 	var firstErr error
 	for _, hive := range hives {
 		arts, err := copyShadowHive(dir, stagingDir, configDir, hive)
+		if err != nil && bestEffortShadowHives[hive] {
+			slog.Warn("systemstate: best-effort hive not captured from shadow copy", "hive", hive, "error", err.Error())
+			continue
+		}
 		if err != nil {
 			slog.Warn("systemstate: hive copy from shadow copy failed", "hive", hive, "error", err.Error())
 			failed = append(failed, hive)

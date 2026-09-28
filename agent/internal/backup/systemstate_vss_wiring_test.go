@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -43,7 +44,6 @@ func TestRunBackupContext_SystemStateReceivesTheRunsShadowPaths(t *testing.T) {
 	srcDir := t.TempDir()
 	createTempFile(t, srcDir, "a.txt", "alpha")
 	shadowRoot := t.TempDir()
-	shadowedSourceDir(t, shadowRoot, srcDir)
 	createTempFile(t, shadowedSourceDir(t, shadowRoot, srcDir), "a.txt", "alpha")
 
 	shadowPaths := map[string]string{filepath.VolumeName(srcDir): shadowRoot}
@@ -92,5 +92,35 @@ func TestRunBackupContext_SystemStateWithoutVSSGetsNoShadowPaths(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ShadowPaths != nil {
 		t.Fatalf("collector options = %+v, want one call with nil ShadowPaths", got)
+	}
+	// No VSS was attempted, so the collector must stay free to take its own
+	// shadow copy of the system volume for the hives (review item 1).
+	if got[0].SkipSystemVolumeSnapshot {
+		t.Error("SkipSystemVolumeSnapshot set although this run never attempted VSS")
+	}
+}
+
+// When the run's own VSS attempt failed, the collector is told not to try a
+// second snapshot: a wedged VSS subsystem would stall the run a second time
+// before the reg.exe fallback.
+func TestRunBackupContext_SystemStateSkipsOwnSnapshotWhenRunVSSFailed(t *testing.T) {
+	srcDir := t.TempDir()
+	createTempFile(t, srcDir, "a.txt", "alpha")
+
+	var got []systemstate.CollectOptions
+	stubCollectSystemStateOpts(t, &got)
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		Paths:              []string{srcDir},
+		VSSEnabled:         true,
+		VSSProvider:        &fakeVSSProvider{createErr: errors.New("VSS_E_WRITERERROR_TIMEOUT")},
+		SystemStateEnabled: true,
+	})
+	if _, err := mgr.RunBackupContext(context.Background(), nil); err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	if len(got) != 1 || !got[0].SkipSystemVolumeSnapshot {
+		t.Fatalf("collector options = %+v, want SkipSystemVolumeSnapshot after the run's VSS attempt failed", got)
 	}
 }

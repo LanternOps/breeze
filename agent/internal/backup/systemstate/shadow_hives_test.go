@@ -271,3 +271,158 @@ func TestCollectRegistryHivesForRun_PrivilegeFailureIsNotFatal(t *testing.T) {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 }
+
+// fakeSnapshot is a CollectOptions.SnapshotVolume that "snapshots" volume onto
+// root and counts calls and releases.
+type fakeSnapshot struct {
+	root            string
+	err             error
+	omitVolume      bool
+	calls, released int
+	volumes         []string
+}
+
+func (f *fakeSnapshot) snapshot(volume string) (map[string]string, func(), error) {
+	f.calls++
+	f.volumes = append(f.volumes, volume)
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	shadows := map[string]string{volume: f.root}
+	if f.omitVolume {
+		shadows = map[string]string{"Z:": f.root}
+	}
+	return shadows, func() { f.released++ }, nil
+}
+
+// Review item 1: a Windows system_image run with no paths has no run-wide VSS
+// session (defaultVSS is false without paths), and the IPC system_state_collect
+// has none either. The registry step must then take its OWN shadow copy of the
+// system volume, copy the hives from it, and release it — never reg.exe.
+func TestCollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot(t *testing.T) {
+	forbidRegSave(t)
+	root := fakeShadowRoot(t, "SYSTEM", "SYSTEM.LOG1", "SOFTWARE", "SAM", "SECURITY", "SECURITY.LOG2", "DEFAULT")
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+	snap := &fakeSnapshot{root: root}
+
+	arts, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot})
+	if err != nil {
+		t.Fatalf("collectRegistryHivesForRun: %v", err)
+	}
+	if snap.calls != 1 || !reflect.DeepEqual(snap.volumes, []string{"C:"}) {
+		t.Errorf("snapshot calls = %d volumes = %v, want exactly one snapshot of C:", snap.calls, snap.volumes)
+	}
+	if snap.released != 1 {
+		t.Errorf("own snapshot released %d times, want 1", snap.released)
+	}
+	if len(arts) != 7 {
+		t.Errorf("artifacts = %d, want 5 hives + 2 logs", len(arts))
+	}
+}
+
+// When the run's own VSS session already covers the system volume, no second
+// snapshot is taken.
+func TestCollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot(t *testing.T) {
+	forbidRegSave(t)
+	root := fakeShadowRoot(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT")
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+	snap := &fakeSnapshot{root: root}
+
+	opts := CollectOptions{ShadowPaths: map[string]string{"C:": root}, SnapshotVolume: snap.snapshot}
+	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+		t.Fatalf("collectRegistryHivesForRun: %v", err)
+	}
+	if snap.calls != 0 {
+		t.Errorf("took %d extra snapshots although the run's session covers C:", snap.calls)
+	}
+}
+
+// Only a VSS failure reaches reg.exe: the snapshot could not be created.
+func TestCollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave(t *testing.T) {
+	orig := runRegSave
+	t.Cleanup(func() { runRegSave = orig })
+	var saved []string
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		saved = append(saved, hive)
+		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
+	}
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+	snap := &fakeSnapshot{err: errors.New("VSS_E_UNEXPECTED")}
+
+	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
+		t.Fatalf("collectRegistryHivesForRun: %v", err)
+	}
+	if snap.calls != 1 {
+		t.Errorf("snapshot calls = %d, want 1", snap.calls)
+	}
+	if want := registryHives; !reflect.DeepEqual(saved, want) {
+		t.Errorf("reg save hives = %v, want %v", saved, want)
+	}
+}
+
+// A snapshot that came back without the system volume is released and the
+// step falls back to reg.exe.
+func TestCollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased(t *testing.T) {
+	orig := runRegSave
+	t.Cleanup(func() { runRegSave = orig })
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
+	}
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+	snap := &fakeSnapshot{root: t.TempDir(), omitVolume: true}
+
+	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
+		t.Fatalf("collectRegistryHivesForRun: %v", err)
+	}
+	if snap.released != 1 {
+		t.Errorf("unusable snapshot released %d times, want 1", snap.released)
+	}
+}
+
+// The backup run's own VSS attempt already failed: do not spend another
+// snapshot timeout on a VSS subsystem that just refused.
+func TestCollectRegistryHivesForRun_SkipSystemVolumeSnapshot(t *testing.T) {
+	orig := runRegSave
+	t.Cleanup(func() { runRegSave = orig })
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
+	}
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+	snap := &fakeSnapshot{root: t.TempDir()}
+
+	opts := CollectOptions{SnapshotVolume: snap.snapshot, SkipSystemVolumeSnapshot: true}
+	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+		t.Fatalf("collectRegistryHivesForRun: %v", err)
+	}
+	if snap.calls != 0 {
+		t.Errorf("snapshot calls = %d, want 0 when SkipSystemVolumeSnapshot is set", snap.calls)
+	}
+}
+
+// Review minor: DEFAULT is captured for completeness but no restore consumer
+// reads it, so a missing DEFAULT warns instead of failing the required step.
+func TestCollectRegistryHivesFromShadow_MissingDefaultIsBestEffort(t *testing.T) {
+	forbidRegSave(t)
+	root := fakeShadowRoot(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY") // no DEFAULT
+	staging := t.TempDir()
+	dir := filepath.Join(staging, "registry")
+	_ = os.MkdirAll(dir, 0o700)
+
+	arts, err := collectRegistryHivesFromShadow(dir, staging, filepath.Join(root, "Windows", "System32", "config"), shadowRegistryHives)
+	if err != nil {
+		t.Fatalf("a missing DEFAULT hive must not fail the registry step: %v", err)
+	}
+	if len(arts) != 4 {
+		t.Errorf("artifacts = %d, want the 4 required hives", len(arts))
+	}
+}

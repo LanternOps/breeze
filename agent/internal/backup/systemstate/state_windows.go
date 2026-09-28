@@ -3,6 +3,8 @@
 package systemstate
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"golang.org/x/sys/windows"
 )
 
@@ -36,8 +39,43 @@ func NewCollector() Collector {
 	return newCollector(CollectOptions{})
 }
 
+// newCollector defaults opts.SnapshotVolume to a real VSS shadow copy of one
+// volume, so a run without a run-wide VSS session (a system_image run with no
+// paths, the IPC system_state_collect) still copies the registry hives from a
+// shadow copy instead of spawning `reg.exe save` (#5397).
 func newCollector(opts CollectOptions) Collector {
+	if opts.SnapshotVolume == nil {
+		opts.SnapshotVolume = snapshotVolume
+	}
 	return &WindowsCollector{opts: opts}
+}
+
+// snapshotVolumeTimeout bounds the registry step's own snapshot. Creation is
+// normally ~1 s; a VSS subsystem that has not answered by then is wedged, and
+// the step falls back to reg.exe rather than stall the backup.
+const snapshotVolumeTimeout = 3 * time.Minute
+
+// snapshotVolume takes a VSS shadow copy of volume ("C:") through the same
+// provider the backup run uses, returning its shadow map and a release that
+// drops it (a VSS_CTX_BACKUP copy is auto-release: Windows deletes it once
+// the session lets go).
+func snapshotVolume(volume string) (map[string]string, func(), error) {
+	p := vss.NewProvider(vss.DefaultConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotVolumeTimeout)
+	defer cancel()
+	session, err := p.CreateShadowCopy(ctx, []string{volume})
+	if err != nil {
+		return nil, nil, err
+	}
+	if session == nil {
+		return nil, nil, errors.New("vss provider returned no session and no error")
+	}
+	release := func() {
+		if err := p.ReleaseShadowCopy(session); err != nil {
+			slog.Warn("systemstate: failed to release the hive-capture shadow copy", "error", err.Error())
+		}
+	}
+	return session.ShadowPaths, release, nil
 }
 
 // newWindowsManifestSkeleton builds the initial SystemStateManifest before
