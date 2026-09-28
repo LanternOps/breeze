@@ -855,7 +855,11 @@ describe('sweepUnreferencedBackupObjects', () => {
       const match = /^snapshots\/([^/]+)\/manifest\.json$/.exec(key);
       if (!match) throw notFoundError(); // system-state manifest: routine absence
       const id = match[1]!;
-      return manifestJson(Array.from({ length: FILES_PER_GROUP }, (_, f) => ({ backupPath: fileKey(id, f) })));
+      // One extra entry per manifest (f = FILES_PER_GROUP) that is never
+      // listed: the live set then differs from the listing, so #6843 gap 4's
+      // "every listed key is provably live" skip cannot fire and every group
+      // still takes the re-list path this test measures. Nothing is deleted.
+      return manifestJson(Array.from({ length: FILES_PER_GROUP + 1 }, (_, f) => ({ backupPath: fileKey(id, f) })));
     });
 
     const result = await sweepUnreferencedBackupObjects();
@@ -1561,6 +1565,195 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
     expect(result.deleted).toBe(0);
+  });
+
+  // #6843 gap 4: a rooted snapshot older than the grace window used to be
+  // re-listed on EVERY run, even when every object under it is live. The
+  // re-list is now skipped only when the root pass + mark phase PROVE the
+  // group holds no non-live key at all (listed key set == live key set for
+  // that group). Anything short of proof falls back to the re-list, so the
+  // skip can only ever mean "delete nothing", never "delete something else".
+  describe('rooted re-list skip when every listed key is provably live (#6843 gap 4)', () => {
+    const old = () => new Date(Date.now() - 30 * DAY_MS);
+
+    function relistPrefixes(): string[] {
+      return iterateBackupObjectsMock.mock.calls
+        .map((c) => (c[0] as { prefix: string }).prefix)
+        .filter((p) => p !== 'snapshots');
+    }
+
+    function manifestsByKey(byKey: Record<string, string>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        const body = byKey[input.key];
+        if (body !== undefined) return body;
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+    }
+
+    function deleteAll() {
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+    }
+
+    function deletedKeys(): string[] {
+      return deleteBackupObjectKeysMock.mock.calls.flatMap((c) => (c[0] as { keys: string[] }).keys);
+    }
+
+    it('skips the re-list for an aged rooted snapshot whose every listed key is live (layout.json absent)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/b' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/b', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('skips the re-list when layout.json, system-state manifest and artifacts are all present and live', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]),
+        'snapshots/R/system-state/manifest.json': JSON.stringify({ artifacts: [{ path: 'registry/SYSTEM' }] }),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/layout.json', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+        { key: 'snapshots/R/system-state/manifest.json', lastModified: old() },
+        { key: 'snapshots/R/system-state/registry/SYSTEM', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(result.deleted).toBe(0);
+    });
+
+    it('skips a group whose keys are live only because ANOTHER rooted manifest references them', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }, { snapshotId: 'S' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([]),
+        'snapshots/S/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/shared' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/shared', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+        { key: 'snapshots/S/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(result.deleted).toBe(0);
+    });
+
+    it('still re-lists and deletes an aged non-live key, and never deletes a live one', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/junk', lastModified: old() },
+        { key: 'snapshots/R/layout.json', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deletedKeys()).toEqual(['snapshots/R/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('same key COUNT but different keys (a missing live file + an extra junk key) still re-lists and deletes the junk', async () => {
+      // live_R = {manifest.json, files/a, files/missing} (layout.json absent, so not counted)
+      // listed = {manifest.json, files/a, files/junk}: equal counts, different sets.
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/missing' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/junk', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deletedKeys()).toEqual(['snapshots/R/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('a manifest that references a file missing from storage falls back to the re-list (no proof, no skip) and deletes nothing', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/missing' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('an aged non-live BARE key beside a fully-live rooted prefix is still reclaimed', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R', lastModified: old() },
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deletedKeys()).toEqual(['snapshots/R']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('deferred mode (every listed manifest is a root) skips a fully-live group too, and still sweeps its non-live sibling', async () => {
+      pushRunLevel([destination]);
+      // An unresolved NULL-identity row defers the identity to the pre-D18 algorithm.
+      pushIdentity({ nullRows: [{ id: 'row-null', snapshotId: 'NEVER-WRITTEN' }] });
+      manifestsByKey({
+        'snapshots/L/manifest.json': manifestJson([{ backupPath: 'snapshots/L/files/a' }]),
+        'snapshots/M/manifest.json': manifestJson([]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/L/files/a', lastModified: old() },
+        { key: 'snapshots/L/manifest.json', lastModified: old() },
+        { key: 'snapshots/M/files/junk', lastModified: old() },
+        { key: 'snapshots/M/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/M']);
+      expect(deletedKeys()).toEqual(['snapshots/M/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
   });
 
   describe('manifest-less prefix protection', () => {
