@@ -59,3 +59,19 @@ func TestHresultSucceeded(t *testing.T) {
 		}
 	}
 }
+
+// Only a weaker-than-per-monitor Windows mode misplaces input; "n/a" is the
+// non-Windows value and must not warn.
+func TestDPIModeMisplacesInput(t *testing.T) {
+	for mode, want := range map[string]bool{
+		dpiModePerMonitorV2: false,
+		dpiModePerMonitor:   false,
+		dpiModeSystem:       true,
+		dpiModeUnaware:      true,
+		"n/a":               false,
+	} {
+		if got := dpiModeMisplacesInput(mode); got != want {
+			t.Errorf("dpiModeMisplacesInput(%q) = %v, want %v", mode, got, want)
+		}
+	}
+}

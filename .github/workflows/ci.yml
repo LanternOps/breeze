@@ -1713,7 +1713,18 @@ jobs:
           if echo "$uh" | grep -q 'requireAdministrator'; then echo "::error::breeze-user-helper is requireAdministrator (#949)"; exit 1; fi
           echo "$ag" | grep -q 'requireAdministrator' || { echo "::error::breeze-agent lost its requireAdministrator manifest"; exit 1; }
           if echo "$ag" | grep -q 'asInvoker'; then echo "::error::breeze-agent became asInvoker — lost requireAdministrator (#949)"; exit 1; fi
-          echo "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator"
+          # Both binaries host the remote-desktop capture/input path (the agent
+          # is the fallback when breeze-user-helper.exe is missing). A manifest
+          # fixes the process DPI mode before any code runs, so go-winres'
+          # default <dpiAware>true</dpiAware> (system) overrides the
+          # per-monitor-v2 elevation in internal/remote/desktop/dpi_windows.go
+          # and clicks land off-target on mixed-scale monitors.
+          for exe in /tmp/breeze-user-helper.exe /tmp/breeze-agent.exe; do
+            dpi=$(grep -a -o '<dpiAwareness[^<]*</dpiAwareness>' "$exe" | head -1 || true)
+            echo "$(basename "$exe") dpiAwareness: ${dpi:-<none>}"
+            echo "$dpi" | grep -qi 'permonitorv2' || { echo "::error::$(basename "$exe") manifest is not per-monitor-v2 DPI aware — remote-desktop clicks misalign on mixed-scale monitors"; exit 1; }
+          done
+          echo "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator, both per-monitor-v2"
 
   test-agent:
     name: Test Agent

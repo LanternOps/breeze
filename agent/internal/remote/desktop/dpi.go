@@ -50,3 +50,12 @@ func chooseDPIAwareness(perMonitorV2, perMonitor, system func() bool) string {
 // narrowed to int32 first: on amd64 0x80070005 (E_ACCESSDENIED, "awareness
 // already set") is a positive int64 and would otherwise read as success.
 func hresultSucceeded(hr uintptr) bool { return int32(uint32(hr)) >= 0 }
+
+// dpiModeMisplacesInput reports whether the process runs in a Windows DPI mode
+// weaker than per-monitor, where input and cursor coordinates are virtualized
+// on mixed-scale monitors. A manifest (e.g. go-winres' default
+// <dpiAware>true</dpiAware>) pins the mode before init runs, so this can be
+// true even though chooseDPIAwareness asked for per-monitor-v2.
+func dpiModeMisplacesInput(mode string) bool {
+	return mode == dpiModeSystem || mode == dpiModeUnaware
+}
