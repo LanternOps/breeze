@@ -110,6 +110,35 @@ export default function M365TenantSection({
   const onReadState = useCallback((summary: M365ConsentStepSummary) => setRead(summary), []);
   const onActionsState = useCallback((summary: M365ConsentStepSummary) => setActions(summary), []);
 
+  // The last `ready` summary per step, pinned to the org it was loaded for. A
+  // step reports {loading, connection: null} on every reload (Retest, Sync,
+  // Disconnect), so identity and the precedence note read from these instead
+  // of from the live summaries, or they would flash "nothing connected" on
+  // each reload. A new ready summary replaces them (including one with no
+  // connection); an org change discards them.
+  const [readyByStep, setReadyByStep] = useState<{
+    orgId: string | null;
+    read: M365ConsentStepSummary | null;
+    actions: M365ConsentStepSummary | null;
+  }>({ orgId, read: null, actions: null });
+  useEffect(() => {
+    setReadyByStep((current) => {
+      const base = current.orgId === orgId ? current : { orgId, read: null, actions: null };
+      const nextRead = read?.loadState === "ready" ? read : base.read;
+      const nextActions = actions?.loadState === "ready" ? actions : base.actions;
+      return base === current && nextRead === current.read && nextActions === current.actions
+        ? current
+        : { orgId, read: nextRead, actions: nextActions };
+    });
+  }, [actions, orgId, read]);
+  const stored = readyByStep.orgId === orgId ? readyByStep : { read: null, actions: null };
+  // The live summary wins whenever it is ready (the store catches up a render
+  // later); the stored one only stands in while a step is reloading.
+  const lastReady = {
+    read: read?.loadState === "ready" ? read : stored.read,
+    actions: actions?.loadState === "ready" ? actions : stored.actions,
+  };
+
   const legacyConnected = legacyStatus === "connected";
   // Once a legacy connection has been shown expanded, keep it open through a
   // disconnect so its outcome stays on screen instead of folding away.
@@ -145,17 +174,25 @@ export default function M365TenantSection({
   useEffect(() => {
     if (reportedLayout !== "pending") setSettledLayout(reportedLayout);
   }, [reportedLayout]);
+  // A consent callback (a return from Microsoft) only happens where the consent
+  // path exists, and its result banner is an alert: it must never mount inside
+  // the hidden placeholder state, so a callback resolves the layout at once.
   const layout: Layout = reportedLayout === "pending"
-    ? settledLayout ?? "pending"
+    ? settledLayout ?? (hasCallback ? "consent-available" : "pending")
     : reportedLayout;
 
   const panelVisible = layout === "consent-available";
   const legacyFirst = layout !== "consent-available";
-  const legacyCollapsible = layout === "consent-available" && !legacyConnected;
+  // Fold legacy away only when it is known to hold nothing. A load error (or a
+  // load still in flight) may be hiding a connection that takes precedence
+  // over consent, so it stays expanded where its state is visible.
+  const legacyCollapsible = layout === "consent-available"
+    && (legacyStatus === "disconnected" || legacyStatus === "not-enabled");
+  const consentConnected = Boolean(lastReady.read?.connection || lastReady.actions?.connection);
 
   // Identity comes from whichever consent connection has verified a tenant,
   // Read first. Only fields the envelopes already carry: no domain is shown.
-  const identity = [read?.connection, actions?.connection].find(
+  const identity = [lastReady.read?.connection, lastReady.actions?.connection].find(
     (connection) => connection?.tenantId,
   ) ?? null;
   const tenantName = identity ? identity.displayName || identity.tenantId : null;
@@ -187,7 +224,7 @@ export default function M365TenantSection({
         <M365Integration
           onStatusChange={setLegacyStatus}
           legacyBadge={legacyConnected}
-          showPrecedenceNote={legacyConnected && layout === "consent-available"}
+          showPrecedenceNote={legacyConnected && consentConnected}
         />
       </div>
     </section>
@@ -271,7 +308,9 @@ export default function M365TenantSection({
               callbackRefreshKey={actionsCallbackRefreshKey}
               onStateChange={onActionsState}
               hideTenantIdentity
-              readConnected={isUsableConsentConnection(read?.connection)}
+              readConnected={
+                read?.loadState === "ready" ? isUsableConsentConnection(read.connection) : undefined
+              }
               consentTarget={consentTarget}
             />
           </div>

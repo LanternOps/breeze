@@ -156,7 +156,7 @@ function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Res
 
 type Scenario = {
   consent: boolean;
-  legacy: "none" | "connected";
+  legacy: "none" | "connected" | "error";
   read?: unknown;
   actions?: unknown;
 };
@@ -166,6 +166,7 @@ function mockScenario({ consent, legacy, read = null, actions = null }: Scenario
     const path = url.split("?")[0];
     if (path === "/m365/connection") {
       if (init?.method === "DELETE") return makeResponse({ connected: false });
+      if (legacy === "error") return makeResponse({ error: "Boom" }, false, 500);
       return makeResponse(
         legacy === "connected"
           ? {
@@ -327,9 +328,43 @@ describe("M365TenantSection — availability ordering", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(screen.queryByTestId("m365-tenant-loading")).not.toBeInTheDocument();
     expect(screen.getByTestId("m365-tenant-panel")).toBeVisible();
+    // The last known tenant identity survives the reload, and Actions does not
+    // flash the "needs Read access" warning while Read is merely reloading.
+    expect(screen.getByRole("heading", { level: 2, name: "Northwind Traders" })).toBeInTheDocument();
+    expect(within(screen.getByTestId("m365-tenant-identity")).getByText(TENANT_ID)).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-read-note")).not.toBeInTheDocument();
 
     releaseReload();
     expect(await screen.findByRole("button", { name: "Retest" })).toBeVisible();
+  });
+
+  it("keeps a legacy load error expanded and visible instead of folding it under Advanced", async () => {
+    mockScenario({ consent: true, legacy: "error" });
+    await renderSettled();
+    expect(screen.queryByTestId("m365-legacy-disclosure")).not.toBeInTheDocument();
+    expect(screen.getByText(/Failed to load connection \(500\): Boom/)).toBeVisible();
+    expect(screen.getByRole("button", { name: /Save & verify/i })).toBeVisible();
+  });
+
+  it("omits the precedence note when no consent connection exists, even with consent available", async () => {
+    mockScenario({ consent: true, legacy: "connected" });
+    await renderSettled();
+    expect(screen.getByTestId("m365-legacy-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-legacy-precedence-note")).not.toBeInTheDocument();
+  });
+
+  it("shows a consent callback result in a visible panel while the connections are still loading", async () => {
+    // Legacy never answers, so the section would otherwise sit on its placeholder.
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      const path = url.split("?")[0];
+      if (path === "/m365/connection") return new Promise<Response>(() => {});
+      if (path === "/m365/connections") return makeResponse(readEnvelope(true, readConnection()));
+      return makeResponse(actionsEnvelope(true, null));
+    });
+    render(<M365TenantSection readCallbackResult="active" readCallbackRefreshKey={1} />);
+    const alert = await screen.findByText("Microsoft consent completed. The refreshed connection status is shown below.");
+    expect(alert).toBeVisible();
+    expect(screen.getByTestId("m365-tenant-panel")).toBeVisible();
   });
 
   it("consolidates the no-organization state into one line instead of two card messages", async () => {
@@ -401,6 +436,19 @@ describe("M365TenantSection — tenant panel", () => {
     mockScenario({ consent: true, legacy: "none", read: readConnection({ displayName: null }) });
     await renderSettled();
     expect(screen.getByRole("heading", { level: 2, name: TENANT_ID })).toBeInTheDocument();
+  });
+
+  it("does not claim Read is missing when the Read envelope failed to load", async () => {
+    mockScenario({ consent: true, legacy: "none" });
+    const settled = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) =>
+      url.split("?")[0] === "/m365/connections"
+        ? makeResponse({ error: "down" }, false, 500)
+        : settled(url, init),
+    );
+    await renderSettled();
+    expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-read-note")).not.toBeInTheDocument();
   });
 
   it("drops the Read-first note once both steps are connected", async () => {

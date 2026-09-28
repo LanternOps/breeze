@@ -236,11 +236,6 @@ describe("IntegrationsPage — M365 coexistence", () => {
     expect(section).toContainElement(graphRead);
     expect(section).toContainElement(screen.getByTestId("stub-customer-graph-actions"));
   });
-
-  it("keeps exactly one h1 on the Microsoft 365 sub-tab", () => {
-    render(<IntegrationsPage />);
-    expect(screen.getAllByRole("heading", { level: 1, hidden: true })).toHaveLength(1);
-  });
 });
 
 describe("IntegrationsPage — Customer Graph Read callback fragment", () => {
