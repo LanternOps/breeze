@@ -256,7 +256,11 @@ import {
 // event-dispatch/relay consumers, which have their own role gating distinct
 // from the registry's placement filter.
 import { getWebhookWorker } from './workers/webhookDelivery';
-import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
+import {
+  startRegisteredWorkers,
+  startRedisIndependentWorkers,
+  buildWorkerShutdownTasks,
+} from './services/workerRegistry';
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
@@ -1249,6 +1253,16 @@ async function initializeWorkers(): Promise<void> {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
+    // #7105: the few entries that need only Postgres (the stale command
+    // reaper) keep running on their Redis-less fallback. Readiness is
+    // unchanged — this process still consumes no queues.
+    await startRedisIndependentWorkers(breezeRole(), {
+      onResult: (name, ok, error) => {
+        if (ok) return;
+        console.error(`[CRITICAL] Failed to start ${name} without Redis:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      },
+    });
     return;
   }
 

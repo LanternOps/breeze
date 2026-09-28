@@ -54,12 +54,24 @@ export type WorkerPlacement = 'global' | 'socket-owner';
 export interface WorkerModule {
   init: () => Promise<void> | void;
   shutdown?: () => Promise<void>;
+  /**
+   * Redis-less degraded mode (#7105). Called INSTEAD of `init` when the
+   * process booted without Redis and skipped every BullMQ worker. Required
+   * when the registration sets `runsWithoutRedis`.
+   */
+  startWithoutRedis?: () => Promise<void> | void;
 }
 
 export interface WorkerRegistration {
   name: string;
   placement: WorkerPlacement;
   load: () => Promise<WorkerModule>;
+  /**
+   * #7105: this entry does work that must not stop just because Redis was
+   * down at boot, and its module exports `startWithoutRedis`. Only these
+   * entries are loaded by `startRedisIndependentWorkers`.
+   */
+  runsWithoutRedis?: true;
 }
 
 export interface StartWorkersHooks {
@@ -1106,9 +1118,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     name: 'staleCommandReaper',
     placement: 'socket-owner',
+    // #7105: the reaper needs only Postgres, and without it silent commands
+    // and backup jobs never terminalise — keep it running when Redis is down.
+    runsWithoutRedis: true,
     load: async () => {
       const m = await import('../jobs/staleCommandReaper');
-      return { init: m.initializeStaleCommandReaper, shutdown: m.shutdownStaleCommandReaper };
+      return {
+        init: m.initializeStaleCommandReaper,
+        shutdown: m.shutdownStaleCommandReaper,
+        startWithoutRedis: m.startStaleCommandReaperWithoutRedis,
+      };
     },
   },
   {
@@ -1673,6 +1692,45 @@ export async function startRegisteredWorkers(
   await runEntries(selectWorkers(role), hooks);
 }
 
+async function runRedisIndependentEntries(
+  entries: readonly WorkerRegistration[],
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await Promise.allSettled(
+    entries
+      .filter((entry) => entry.runsWithoutRedis)
+      .map(async (entry) => {
+        try {
+          const mod = await entry.load();
+          // Registered before the start call, for the same reason as runEntries.
+          if (mod.shutdown) {
+            loadedShutdowns.set(entry.name, mod.shutdown);
+          }
+          if (!mod.startWithoutRedis) {
+            throw new Error(`${entry.name} is flagged runsWithoutRedis but exports no startWithoutRedis`);
+          }
+          await mod.startWithoutRedis();
+          hooks.onResult(entry.name, true);
+        } catch (error) {
+          hooks.onResult(entry.name, false, error);
+        }
+      }),
+  );
+}
+
+/**
+ * #7105 — the Redis-down-at-boot path. `index.ts` skips `startRegisteredWorkers`
+ * entirely when Redis is unavailable; this starts the `runsWithoutRedis`
+ * subset (selected for `role`) through their `startWithoutRedis` fallbacks
+ * instead, and registers their shutdowns so SIGTERM still stops them.
+ */
+export async function startRedisIndependentWorkers(
+  role: BreezeRole,
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await runRedisIndependentEntries(selectWorkers(role), hooks);
+}
+
 /**
  * Returns the shutdown functions for every entry selected for `role` whose
  * module was actually loaded (by a prior `startRegisteredWorkers` call —
@@ -1708,6 +1766,15 @@ export async function _startWorkersForTest(
   hooks: StartWorkersHooks,
 ): Promise<void> {
   await runEntries(filterByRole(entries, role), hooks);
+}
+
+/** @internal test seam */
+export async function _startRedisIndependentWorkersForTest(
+  entries: readonly WorkerRegistration[],
+  role: BreezeRole,
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await runRedisIndependentEntries(filterByRole(entries, role), hooks);
 }
 
 /** @internal test seam */

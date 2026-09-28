@@ -341,6 +341,159 @@ describe('stale command reaper', () => {
     expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
   });
 
+  // #7105 item 3 — a timed-out backup command used to fail only its
+  // device_commands row; the backup_jobs row it owns stayed `running` until
+  // the backup reaper's 24 h absolute cap. mssql_backup / hyperv_backup rows
+  // (routes: payload.jobId; AI tools: payload.backupJobId) are the live case.
+  describe('backup command timeout → backup_jobs (#7105)', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const JOB_ID = '6f1c2b1e-5b0a-4c55-9d7e-2a8f3c1b9e40';
+
+    // Walks a drizzle condition tree for a string — the mocked table columns
+    // are plain strings, so a dropped `eq(backupJobs.deviceId, …)` disappears
+    // from the tree.
+    function conditionMentions(root: unknown, needle: string): boolean {
+      const seen = new WeakSet<object>();
+      const walk = (value: unknown): boolean => {
+        if (typeof value === 'string') return value === needle;
+        if (!value || typeof value !== 'object') return false;
+        if (seen.has(value as object)) return false;
+        seen.add(value as object);
+        return Object.values(value as Record<string, unknown>).some(walk);
+      };
+      return walk(root);
+    }
+
+    const backupWhere = vi.fn();
+
+    function wireUpdates(backupReturning: unknown[] = [{ id: JOB_ID }]) {
+      backupWhere.mockImplementation(() => ({ returning: vi.fn().mockResolvedValue(backupReturning) }));
+      const backupSet = vi.fn(() => ({ where: backupWhere }));
+      updateMock.mockImplementation((table: unknown) => {
+        if (table === deviceCommandsTable) {
+          return { set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'cmd' }]) })) })) };
+        }
+        if (table === deploymentResultsTable) return { set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) };
+        if (table === restoreJobsTable) return { set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })) };
+        if (table === backupJobsTable) return { set: backupSet };
+        throw new Error(`Unexpected table update: ${String(table)}`);
+      });
+      return backupSet;
+    }
+
+    it.each([
+      ['mssql_backup (route payload.jobId)', 'mssql_backup', { jobId: JOB_ID }, 3 * 60 * 60 * 1000],
+      ['hyperv_backup (AI tool payload.backupJobId)', 'hyperv_backup', { backupJobId: JOB_ID }, 3 * 60 * 60 * 1000],
+      ['backup_run (24 h tier)', 'backup_run', { jobId: JOB_ID }, DAY + 60_000],
+    ])('fails the owning backup job when a %s command times out', async (_label, type, payload, ageMs) => {
+      const executedAt = new Date(Date.now() - ageMs);
+      selectMock
+        .mockReturnValueOnce(selectChain([{
+          id: 'cmd', type, status: 'sent', payload, deviceId: 'device-1',
+          createdAt: executedAt, executedAt, deliverBy: null,
+        }]))
+        .mockReturnValueOnce(selectChain([{ errorLog: 'queued on agent' }]));
+      const backupSet = wireUpdates();
+
+      expect(await reapStaleDeviceCommands()).toBe(1);
+
+      // Both the lookup and the write are fenced on the COMMAND's device, so a
+      // payload naming another device's job can touch nothing.
+      const lookupChain = selectMock.mock.results[1]!.value as { where: ReturnType<typeof vi.fn> };
+      const lookupWhere = lookupChain.where.mock.calls[0]?.[0];
+      expect(conditionMentions(lookupWhere, 'backup_jobs.device_id')).toBe(true);
+      expect(conditionMentions(lookupWhere, 'device-1')).toBe(true);
+      const updateWhere = backupWhere.mock.calls[0]?.[0];
+      expect(conditionMentions(updateWhere, 'backup_jobs.device_id')).toBe(true);
+      expect(conditionMentions(updateWhere, 'device-1')).toBe(true);
+
+      expect(backupSet).toHaveBeenCalledTimes(1);
+      const set = (backupSet.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(set.status).toBe('failed');
+      // Marker-stamped so a late genuine completion can still flip the row
+      // failed→completed (STALE_BACKUP_REAP_MARKER / FIX 7), and appended to
+      // the existing log rather than replacing it.
+      expect(set.errorLog).toMatch(/^queued on agent\n\[stale-backup-reaper\] Backup command timed out: /);
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('contains a backup_jobs failure so the rest of the propagation (DR reconcile) still runs', async () => {
+      const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      selectMock
+        .mockReturnValueOnce(selectChain([{
+          id: 'cmd', type: 'mssql_backup', status: 'sent', payload: { jobId: JOB_ID }, deviceId: 'device-1',
+          createdAt: executedAt, executedAt, deliverBy: null,
+        }]))
+        .mockImplementationOnce(() => { throw new Error('connection reset'); });
+      wireUpdates();
+      const { captureException } = await import('../services/sentry');
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        expect(await reapStaleDeviceCommands()).toBe(1);
+        expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'connection reset' }));
+        // Contained INSIDE propagation, not by the caller's catch: the caller's
+        // catch logs "Failed to propagate stale command", which must not fire.
+        expect(errorSpy.mock.calls.some((c) => String(c[0]).includes('Failed to propagate stale command'))).toBe(false);
+        expect(errorSpy.mock.calls.some((c) => String(c[0]).includes('Failed to fail backup job'))).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('leaves backup_jobs alone for a non-backup command that happens to carry a jobId', async () => {
+      const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      selectMock.mockReturnValueOnce(selectChain([{
+        id: 'cmd', type: 'software_install', status: 'sent', payload: { jobId: JOB_ID }, deviceId: 'device-1',
+        createdAt: executedAt, executedAt, deliverBy: null,
+      }]));
+      const backupSet = wireUpdates();
+
+      expect(await reapStaleDeviceCommands()).toBe(1);
+      expect(backupSet).not.toHaveBeenCalled();
+    });
+
+    it('does not touch a backup job that is no longer in flight (or belongs to another device)', async () => {
+      const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      selectMock
+        .mockReturnValueOnce(selectChain([{
+          id: 'cmd', type: 'mssql_backup', status: 'sent', payload: { jobId: JOB_ID }, deviceId: 'device-1',
+          createdAt: executedAt, executedAt, deliverBy: null,
+        }]))
+        // The lookup is fenced on (id, device_id, status in pending/running).
+        .mockReturnValueOnce(selectChain([]));
+      const backupSet = wireUpdates();
+
+      expect(await reapStaleDeviceCommands()).toBe(1);
+      expect(backupSet).not.toHaveBeenCalled();
+    });
+
+    it('skips a job id that is not a uuid instead of aborting the lookup (22P02)', async () => {
+      const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      selectMock.mockReturnValueOnce(selectChain([{
+        id: 'cmd', type: 'mssql_backup', status: 'sent', payload: { jobId: 'not-a-uuid' }, deviceId: 'device-1',
+        createdAt: executedAt, executedAt, deliverBy: null,
+      }]));
+      const backupSet = wireUpdates();
+
+      expect(await reapStaleDeviceCommands()).toBe(1);
+      expect(selectMock).toHaveBeenCalledTimes(1);
+      expect(backupSet).not.toHaveBeenCalled();
+    });
+
+    it('does not time out a backup_run command 3 hours in (the 24 h tier, not the 30 min default)', async () => {
+      const executedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      selectMock.mockReturnValueOnce(selectChain([{
+        id: 'cmd', type: 'backup_run', status: 'sent', payload: { jobId: JOB_ID }, deviceId: 'device-1',
+        createdAt: executedAt, executedAt, deliverBy: null,
+      }]));
+      wireUpdates();
+
+      expect(await reapStaleDeviceCommands()).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+  });
+
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
   // while (and only while) its tenant is `offboarding`. Pin that the SELECT's
   // WHERE carries the offboarding-scoped exemption so a refactor can't
