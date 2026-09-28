@@ -146,6 +146,24 @@ promoted member keeps its `promoted` status regardless of what the episode does 
 | `EPISODE_RECURRENCE_DAYS` | 7 | window before an episode's first bucket for `recurrence_count` |
 | `EPISODE_SNOOZE_DAYS` | 7 | how long a user dismiss silences the episode key on that device |
 | `EPISODE_ASSEMBLY_LOOKBACK_HOURS` | 24 | how far back the assembly scan looks for unassigned `metric_anomalies` rows |
+| `EPISODE_MIN_BUCKETS` | 2 | distinct buckets a new episode needs (persistence gate). A shorter island stays unassigned while another bucket could still join it, then its rows close `cleared` with no episode and no incident. Buckets that join an existing episode are never gated |
+
+### Detection gates (2026-09-26 tuning)
+
+Tuned against 25 h of US prod data (≈60 devices): 245 episodes, 72% of them a single 5-minute
+bucket, mostly Defender, Windows Update, indexers and backup agents that the device runs on a
+schedule. Two gates, together about −87% episodes:
+
+- **Persistence**: `EPISODE_MIN_BUCKETS` above.
+- **Novelty**: upward detectors (spike, network_egress, process_runaway, including the
+  process-sample series) require the bucket to exceed the highest bucket of its own 24 h baseline
+  (`baseline_max`, open-episode buckets excluded). A level the device already reached yesterday is
+  routine. Growth and drop detectors are not novelty-gated.
+
+Also: `process_count` needs `+25%` and `+50` processes over baseline (was `+20`); growth scores
+are `4 × growth / gate` (the z-score detectors' scale) instead of raw MB/GB/points, so promoted
+growth alerts no longer all map to `critical`; `ram_used_mb`/`disk_used_gb` share the `ram`/`disk`
+episode family with `ram_percent`/`disk_percent`.
 
 ### Close reasons
 

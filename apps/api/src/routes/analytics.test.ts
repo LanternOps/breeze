@@ -20,6 +20,7 @@ vi.mock('drizzle-orm', () => {
     values,
     as: (alias: string) => ({ strings, values, alias })
   });
+  sql.raw = (raw: string) => ({ strings: [raw], values: [] });
 
   return {
     and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
