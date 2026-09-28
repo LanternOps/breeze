@@ -172,6 +172,12 @@ export function classifyXeroValidation(text: string): AccountingRefusalCode | un
     if (/^The contact name .+ is already assigned to another contact/is.test(message)) return 'duplicate_name';
     if (/^The contact number .+ is already assigned to another contact/is.test(message)) return 'duplicate_key';
     if (/^(Price List Item|Item code) .+ already exists/is.test(message)) return 'duplicate_key';
+    // Xero W05 (refinement 16). The first two texts are reported by Xero integrators
+    // (the docs state the rules, not the words); the reconciled-delete text is
+    // undocumented. Lab X55/X56 record the real messages; adjust here if they differ.
+    if (/^Payment amount exceeds the amount outstanding/i.test(message)) return 'amount_exceeds_due';
+    if (/can only be made against Authori[sz]ed documents/i.test(message)) return 'remote_missing';
+    if (/\b(has been|is) reconciled\b|\breconciled (payment|transaction)/i.test(message)) return 'remote_locked';
   }
   return undefined;
 }
