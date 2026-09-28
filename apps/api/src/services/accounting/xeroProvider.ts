@@ -81,7 +81,13 @@ export class XeroProvider implements AccountingProvider {
   readonly provider = 'xero' as const;
   readonly displayName = 'Xero';
   readonly capabilities = {
-    connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false,
+    connect: true,
+    // Xero W03: contacts/items mapping and contact import.
+    mapping: true,
+    customerImport: true,
+    invoicePush: false,
+    paymentPull: false,
+    paymentPush: false,
   } as const;
   // Refinement 14: the raw human reference the core may pass; the marker goes first.
   readonly limits = { paymentRefMax: XERO_PAYMENT_REF_MAX, rate: XERO_RATE_LIMIT };

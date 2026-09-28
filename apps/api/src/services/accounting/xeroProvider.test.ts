@@ -38,10 +38,12 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); slotMock.mockClear(); });
 
 describe('xeroProvider identity and limits', () => {
-  it('declares only the connect capability', () => {
+  it('declares connect, mapping and customerImport (Xero W03)', () => {
     expect(xeroProvider.provider).toBe('xero');
     expect(xeroProvider.displayName).toBe('Xero');
-    expect(xeroProvider.capabilities).toEqual({ connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false });
+    expect(xeroProvider.capabilities).toEqual({
+      connect: true, mapping: true, customerImport: true, invoicePush: false, paymentPull: false, paymentPush: false,
+    });
   });
 
   it('rate spec: 60/min + 5 concurrent per tenant, 10k/min app-wide, tier-aware daily budget', () => {
@@ -271,9 +273,6 @@ describe('contacts (Xero W03)', () => {
   });
   it('declares getRemoteCustomer', () => {
     expect(typeof xeroProvider.getRemoteCustomer).toBe('function');
-  });
-  it('still declares only the connect capability through W03a', () => {
-    expect(xeroProvider.capabilities).toMatchObject({ connect: true, mapping: false, customerImport: false });
   });
 });
 

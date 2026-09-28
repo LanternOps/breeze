@@ -23,18 +23,16 @@ describe('providerRegistry', () => {
     expect(getAccountingProvider('quickbooks').displayName).toBe('QuickBooks');
   });
 
-  it('registers Xero with only the connect capability (W02)', async () => {
+  it('registers Xero with connect, mapping and customerImport (Xero W03)', async () => {
     const {
       findAccountingProvider, getAccountingProvider, providerSupports, accountingProviderDisplayName, listRegisteredAccountingProviders,
     } = await import('./providerRegistry');
     expect(findAccountingProvider('xero')?.displayName).toBe('Xero');
     expect(getAccountingProvider('xero').capabilities).toEqual({
-      connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false,
+      connect: true, mapping: true, customerImport: true, invoicePush: false, paymentPull: false, paymentPush: false,
     });
-    expect(providerSupports('xero', 'connect')).toBe(true);
-    for (const cap of ['mapping', 'customerImport', 'invoicePush', 'paymentPull', 'paymentPush'] as const) {
-      expect(providerSupports('xero', cap)).toBe(false);
-    }
+    const ACCOUNTING_CAPABILITIES = ['connect', 'mapping', 'customerImport', 'invoicePush', 'paymentPull', 'paymentPush'] as const;
+    expect(ACCOUNTING_CAPABILITIES.filter((cap) => providerSupports('xero', cap))).toEqual(['connect', 'mapping', 'customerImport']);
     expect(providerSupports('quickbooks', 'invoicePush')).toBe(true);
     expect(accountingProviderDisplayName('xero')).toBe('Xero');
     expect(accountingProviderDisplayName('quickbooks')).toBe('QuickBooks');
