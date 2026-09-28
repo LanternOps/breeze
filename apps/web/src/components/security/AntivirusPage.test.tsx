@@ -1,3 +1,4 @@
+import '@/lib/i18n';
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,5 +50,18 @@ describe('AntivirusPage', () => {
     const heading = await screen.findByText('Provider Distribution');
     const card = heading.closest('div')!;
     expect(card.className).toContain('min-w-0');
+  });
+});
+
+describe('AntivirusPage filter selects accessible name (#7156)', () => {
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockResolvedValue(response({ data: [] }));
+  });
+
+  it('gives the status and OS filter selects a real accessible name', async () => {
+    render(<AntivirusPage />);
+    expect(await screen.findByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Operating system' })).toBeInTheDocument();
   });
 });

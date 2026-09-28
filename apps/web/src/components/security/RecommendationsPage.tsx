@@ -14,6 +14,7 @@ import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import AccessDenied from "../shared/AccessDenied";
+import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type Recommendation = {
@@ -254,10 +255,11 @@ export default function RecommendationsPage() {
       )}
 
       <div className="flex flex-wrap gap-2">
-        <select
+        <FilterSelect
+          label={t("securityRecommendationsPage.priorityFilterLabel")}
           value={priorityFilter}
           onChange={(e) => setPriorityFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">
             {t("securityRecommendationsPage.allPriorities")}
@@ -270,11 +272,12 @@ export default function RecommendationsPage() {
             {t("securityRecommendationsPage.medium")}
           </option>
           <option value="low">{t("securityRecommendationsPage.low")}</option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityRecommendationsPage.categoryFilterLabel")}
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">
             {t("securityRecommendationsPage.allCategories")}
@@ -300,11 +303,12 @@ export default function RecommendationsPage() {
           <option value="vulnerability_management">
             {t("securityRecommendationsPage.vulnMgmt")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityRecommendationsPage.statusFilterLabel")}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">
             {t("securityRecommendationsPage.allStatuses")}
@@ -316,7 +320,7 @@ export default function RecommendationsPage() {
           <option value="dismissed">
             {t("securityRecommendationsPage.dismissed")}
           </option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

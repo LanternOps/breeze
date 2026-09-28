@@ -142,7 +142,9 @@
     "weakPasswords": "Weak Passwords",
     "windows": "Windows",
     "withIssues": "With Issues",
-    "yes": "Yes"
+    "yes": "Yes",
+    "issueFilterLabel": "Issue filter",
+    "osFilterLabel": "Operating system"
   },
   "securityAntivirusPage": {
     "active": "Active",
@@ -172,7 +174,9 @@
     "totalDevices": "Total Devices",
     "unknown": "Unknown",
     "unprotected": "Unprotected",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agent/Definitions",
@@ -247,7 +251,10 @@
     "unencrypted": "Unencrypted",
     "volume": "Volume",
     "windows": "Windows",
-    "yes": "Yes"
+    "yes": "Yes",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system",
+    "escrowFilterLabel": "Key escrow"
   },
   "securityFirewallPage": {
     "active": "Active",
@@ -276,7 +283,9 @@
     "searchDevices": "Search devices...",
     "status": "Status",
     "totalDevices": "Total Devices",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system"
   },
   "securityHuntressIncidentList": {
     "actions": "Actions",
@@ -336,7 +345,9 @@
     "searchDevices": "Search devices...",
     "status": "Status",
     "totalDevices": "Total Devices",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Compliance",
+    "osFilterLabel": "Operating system"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Admin Accounts",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Prioritized remediation guidance",
     "securityRecommendations": "Security Recommendations",
     "total": "Total",
-    "vulnMgmt": "Vuln. Mgmt"
+    "vulnMgmt": "Vuln. Mgmt",
+    "priorityFilterLabel": "Priority",
+    "categoryFilterLabel": "Category",
+    "statusFilterLabel": "Status"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
@@ -770,7 +784,10 @@
     "threat": "Threat",
     "total": "Total",
     "trojan": "Trojan",
-    "vulnerabilities": "Vulnerabilities"
+    "vulnerabilities": "Vulnerabilities",
+    "severityFilterLabel": "Severity",
+    "statusFilterLabel": "Status",
+    "categoryFilterLabel": "Category"
   },
   "pamPamAuditTab": {
     "errors": {

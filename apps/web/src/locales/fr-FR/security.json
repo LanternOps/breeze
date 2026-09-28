@@ -142,7 +142,9 @@
     "weakPasswords": "Mots de passe faibles",
     "windows": "Windows",
     "withIssues": "Avec des numéros",
-    "yes": "Oui"
+    "yes": "Oui",
+    "issueFilterLabel": "Filtre de problèmes",
+    "osFilterLabel": "Système d'exploitation"
   },
   "securityAntivirusPage": {
     "active": "Actif",
@@ -172,7 +174,9 @@
     "totalDevices": "Nombre total d’appareils",
     "unknown": "Inconnu",
     "unprotected": "Non protégé",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "État de protection",
+    "osFilterLabel": "Système d'exploitation"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agent/Définitions",
@@ -247,7 +251,10 @@
     "unencrypted": "Non chiffré",
     "volume": "Volume",
     "windows": "Windows",
-    "yes": "Oui"
+    "yes": "Oui",
+    "statusFilterLabel": "État du chiffrement",
+    "osFilterLabel": "Système d'exploitation",
+    "escrowFilterLabel": "Séquestre de clé"
   },
   "securityFirewallPage": {
     "active": "Actif",
@@ -276,7 +283,9 @@
     "searchDevices": "Rechercher des appareils...",
     "status": "Statut",
     "totalDevices": "Nombre total d’appareils",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "État du pare-feu",
+    "osFilterLabel": "Système d'exploitation"
   },
   "securityHuntressIncidentList": {
     "actions": "Actions",
@@ -336,7 +345,9 @@
     "searchDevices": "Rechercher des appareils...",
     "status": "Statut",
     "totalDevices": "Nombre total d’appareils",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Conformité",
+    "osFilterLabel": "Système d'exploitation"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Comptes administratifs",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Directives prioritaires pour la remédiation",
     "securityRecommendations": "Recommandations de sécurité",
     "total": "Total",
-    "vulnMgmt": "Vuln. Direction"
+    "vulnMgmt": "Vuln. Direction",
+    "priorityFilterLabel": "Priorité",
+    "categoryFilterLabel": "Catégorie",
+    "statusFilterLabel": "État de la recommandation"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Un nouveau mot de passe de récupération BitLocker sera généré et mis en séquestre ; l’ancienne est retirée une fois la nouvelle clé en place.",
@@ -770,7 +784,10 @@
     "threat": "Menace",
     "total": "Total",
     "trojan": "Troyen",
-    "vulnerabilities": "Vulnérabilités"
+    "vulnerabilities": "Vulnérabilités",
+    "severityFilterLabel": "Gravité",
+    "statusFilterLabel": "État de la menace",
+    "categoryFilterLabel": "Catégorie"
   },
   "pamPamAuditTab": {
     "errors": {

@@ -142,7 +142,9 @@
     "weakPasswords": "Zayıf Şifreler",
     "windows": "Windows",
     "withIssues": "Sorunlu",
-    "yes": "Evet"
+    "yes": "Evet",
+    "issueFilterLabel": "Sorun filtresi",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityAntivirusPage": {
     "active": "Aktif",
@@ -172,7 +174,9 @@
     "totalDevices": "Toplam Cihaz Sayısı",
     "unknown": "Bilinmiyor",
     "unprotected": "Korumasız",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Koruma durumu",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Temsilci/Tanımlar",
@@ -247,7 +251,10 @@
     "unencrypted": "Şifrelenmemiş",
     "volume": "Ses seviyesi",
     "windows": "Windows",
-    "yes": "Evet"
+    "yes": "Evet",
+    "statusFilterLabel": "Şifreleme durumu",
+    "osFilterLabel": "İşletim sistemi",
+    "escrowFilterLabel": "Anahtar emaneti"
   },
   "securityFirewallPage": {
     "active": "Aktif",
@@ -276,7 +283,9 @@
     "searchDevices": "Cihazları arayın...",
     "status": "Durum",
     "totalDevices": "Toplam Cihaz Sayısı",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Güvenlik duvarı durumu",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityHuntressIncidentList": {
     "actions": "Eylemler",
@@ -336,7 +345,9 @@
     "searchDevices": "Cihazları arayın...",
     "status": "Durum",
     "totalDevices": "Toplam Cihaz Sayısı",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Uyumluluk",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Yönetici Hesapları",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Öncelikli düzeltme kılavuzu",
     "securityRecommendations": "Güvenlik Önerileri",
     "total": "Toplam",
-    "vulnMgmt": "Vuln. Yönetim"
+    "vulnMgmt": "Vuln. Yönetim",
+    "priorityFilterLabel": "Öncelik",
+    "categoryFilterLabel": "Kategori",
+    "statusFilterLabel": "Öneri durumu"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
@@ -770,7 +784,10 @@
     "threat": "Tehdit",
     "total": "Toplam",
     "trojan": "Truva Atı",
-    "vulnerabilities": "Güvenlik Açıkları"
+    "vulnerabilities": "Güvenlik Açıkları",
+    "severityFilterLabel": "Önem derecesi",
+    "statusFilterLabel": "Tehdit durumu",
+    "categoryFilterLabel": "Kategori"
   },
   "pamPamAuditTab": {
     "errors": {

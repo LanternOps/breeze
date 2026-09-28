@@ -12,6 +12,7 @@ import { formatNumber, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import AccessDenied from "../shared/AccessDenied";
+import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type PolicyCheck = {
@@ -242,10 +243,11 @@ export default function PasswordPolicyPage() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={t("securityPasswordPolicyPage.complianceFilterLabel")}
           value={complianceFilter}
           onChange={(e) => setComplianceFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityPasswordPolicyPage.all")}</option>
           <option value="compliant">
@@ -254,11 +256,12 @@ export default function PasswordPolicyPage() {
           <option value="non_compliant">
             {t("securityPasswordPolicyPage.nonCompliant")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityPasswordPolicyPage.osFilterLabel")}
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityPasswordPolicyPage.allOS")}</option>
           <option value="windows">
@@ -266,7 +269,7 @@ export default function PasswordPolicyPage() {
           </option>
           <option value="macos">{t("securityPasswordPolicyPage.macos")}</option>
           <option value="linux">{t("securityPasswordPolicyPage.linux")}</option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">

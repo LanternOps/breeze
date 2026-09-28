@@ -142,7 +142,9 @@
     "weakPasswords": "Schwache Passwörter",
     "windows": "Windows",
     "withIssues": "Mit Problemen",
-    "yes": "Ja"
+    "yes": "Ja",
+    "issueFilterLabel": "Problemfilter",
+    "osFilterLabel": "Betriebssystem"
   },
   "securityAntivirusPage": {
     "active": "Aktiv",
@@ -172,7 +174,9 @@
     "totalDevices": "Gesamtzahl der Geräte",
     "unknown": "Unbekannt",
     "unprotected": "Ungeschützt",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Schutzstatus",
+    "osFilterLabel": "Betriebssystem"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agent/Definitionen",
@@ -247,7 +251,10 @@
     "unencrypted": "Unverschlüsselt",
     "volume": "Volume",
     "windows": "Windows",
-    "yes": "Ja"
+    "yes": "Ja",
+    "statusFilterLabel": "Verschlüsselungsstatus",
+    "osFilterLabel": "Betriebssystem",
+    "escrowFilterLabel": "Schlüsselhinterlegung"
   },
   "securityFirewallPage": {
     "active": "Aktiv",
@@ -276,7 +283,9 @@
     "searchDevices": "Geräte suchen...",
     "status": "Status",
     "totalDevices": "Gesamtzahl der Geräte",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Firewallstatus",
+    "osFilterLabel": "Betriebssystem"
   },
   "securityHuntressIncidentList": {
     "actions": "Aktionen",
@@ -336,7 +345,9 @@
     "searchDevices": "Geräte suchen...",
     "status": "Status",
     "totalDevices": "Gesamtzahl der Geräte",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Konformität",
+    "osFilterLabel": "Betriebssystem"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Admin-Konten",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Priorisierte Anleitung zur Behebung",
     "securityRecommendations": "Sicherheitsempfehlungen",
     "total": "Insgesamt",
-    "vulnMgmt": "Vuln. Mgmt"
+    "vulnMgmt": "Vuln. Mgmt",
+    "priorityFilterLabel": "Priorität",
+    "categoryFilterLabel": "Kategorie",
+    "statusFilterLabel": "Bearbeitungsstatus"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Es wird ein neues BitLocker-Wiederherstellungskennwort generiert und hinterlegt; Der alte wird entfernt, nachdem der neue Schlüssel angebracht wurde.",
@@ -770,7 +784,10 @@
     "threat": "Bedrohung",
     "total": "Insgesamt",
     "trojan": "Trojaner",
-    "vulnerabilities": "Schwachstellen"
+    "vulnerabilities": "Schwachstellen",
+    "severityFilterLabel": "Schweregrad",
+    "statusFilterLabel": "Bedrohungsstatus",
+    "categoryFilterLabel": "Kategorie"
   },
   "pamPamAuditTab": {
     "errors": {
