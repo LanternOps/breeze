@@ -16,7 +16,9 @@
  *     and delete inside that prefix;
  *   - read the server-selected base manifest (control key) and its own
  *     prefix;
- *   - once, before any upload, resume a journaled snapshot id it already owns
+ *   - once, before any upload, resume a journaled snapshot id: one it already
+ *     owns, a published one (read-only), or an unfinished one of an earlier
+ *     job of the same device, configuration, destination and dispatched base
  *     (see resumeWriteSession).
  * It never receives a storage credential.
  *
@@ -39,6 +41,7 @@ import { recordStorageSessionMint } from './backupMetrics';
 import { parseBackupObjectKey } from './backupObjectKey';
 import { resolveBackupWriteCommandDestination } from './backupProviderConfig';
 import {
+  SNAPSHOT_TAKEOVER_MAX_AGE_MS,
   findReservedForJob,
   loadReservation,
   reserveNewSnapshotId,
@@ -102,6 +105,18 @@ export const BROKERED_WRITE_COMMAND_TYPES: readonly string[] = [
   CommandTypes.HYPERV_BACKUP,
 ];
 export const MIN_BACKUP_WRITE_PROTOCOL_VERSION = 1;
+
+/**
+ * How long an upload may still be running after the URL it started with has
+ * expired. Storage checks a presigned URL's expiry only when the request
+ * starts, so a PUT or part (at most STORAGE_WRITE_PART_SIZE_BYTES through
+ * multipart; 64 MiB takes about 9 minutes at 1 Mbit/s) begun just before
+ * expiry can still land afterwards. Every "has the earlier writer's last URL
+ * expired" decision — redelivery, resume and takeover fencing, abandonment,
+ * and sealing at publication (migration 2026-11-08-160000, as
+ * `interval '15 minutes'`) — waits out URL expiry PLUS this margin.
+ */
+export const STORAGE_WRITE_TRANSFER_MARGIN_MS = 15 * 60 * 1000;
 
 const MAX_KEY_LENGTH = 1024;
 const LIVE_JOB_STATUSES = ['pending', 'running'];
@@ -204,6 +219,7 @@ export function buildWriteEnvelope(input: {
   deadline: Date;
   snapshotId: string;
   conditionalWrites: boolean;
+  storageIdentity: string;
 }): Record<string, unknown> {
   return {
     version: STORAGE_SESSION_PROTOCOL_VERSION,
@@ -218,7 +234,36 @@ export function buildWriteEnvelope(input: {
     maxBatch: STORAGE_SESSION_MAX_BATCH,
     partSizeBytes: STORAGE_WRITE_PART_SIZE_BYTES,
     conditionalWrites: input.conditionalWrites,
+    storageIdentity: input.storageIdentity,
   };
+}
+
+function configString(config: Record<string, unknown>, field: string): string {
+  const v = config[field];
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * The destination identity delivered in a write session (`storageIdentity`):
+ * exactly the string the helper's own S3 provider reports for the same
+ * destination when it is given the storage configuration
+ * (`s3|<endpoint>|<region>|<bucket>`, each field verbatim as configured, an
+ * absent one empty). A helper uses it as its checkpoint-journal identity, so
+ * a journal written by an earlier unbrokered run to the same destination
+ * still matches. It names the destination only; it carries no credential.
+ */
+export function helperStorageIdentity(provider: string, providerConfig: Record<string, unknown>): string {
+  return `${provider}|${configString(providerConfig, 'endpoint')}|${configString(providerConfig, 'region')}|${configString(providerConfig, 'bucket')}`;
+}
+
+/** Server-side encryption as reported to the helper by multipart:create. */
+export type AppliedEncryption = { algorithm: 'AES256' } | { algorithm: 'aws:kms'; kmsKeyId: string };
+
+/** The encryption a multipart upload was created with (null: none requested). */
+export function appliedEncryptionOf(sse: WriteSse): AppliedEncryption | null {
+  if (sse.mode === 's3-sse-s3') return { algorithm: 'AES256' };
+  if (sse.mode === 's3-sse-kms') return { algorithm: 'aws:kms', kmsKeyId: sse.keyId };
+  return null;
 }
 
 function sseFromPlan(plan: unknown): WriteSse {
@@ -443,6 +488,7 @@ export async function mintBackupWriteSession(
       deadline,
       snapshotId: minted.snapshotId,
       conditionalWrites,
+      storageIdentity: helperStorageIdentity(input.provider, input.providerConfig),
     }),
   };
 }
@@ -538,10 +584,11 @@ async function advanceHorizon(sessionId: string, horizon: Date): Promise<void> {
 }
 
 /**
- * The latest expiry of an upload URL that ANOTHER session of the same
- * reservation issued, when it is still in the future. A redelivered or
- * resumed session may not upload until then: the earlier process could
- * still write the same keys with those URLs.
+ * Until when an upload started with a URL that ANOTHER session of the same
+ * reservation issued may still land: the latest expiry of those URLs plus
+ * the transfer margin, when that is still in the future. A redelivered,
+ * resumed or continuing session may not upload until then: the earlier
+ * process could still write the same keys.
  */
 async function otherWriterHorizon(session: StorageSessionRow, reservationSnapshotId: string, now: Date): Promise<Date | null> {
   const [row] = await db
@@ -551,7 +598,7 @@ async function otherWriterHorizon(session: StorageSessionRow, reservationSnapsho
       eq(backupStorageSessions.reservationSnapshotId, reservationSnapshotId),
       ne(backupStorageSessions.id, session.id),
     ));
-  const h = row?.h ? new Date(row.h as unknown as string) : null;
+  const h = row?.h ? new Date(new Date(row.h as unknown as string).getTime() + STORAGE_WRITE_TRANSFER_MARGIN_MS) : null;
   return h && h.getTime() >= now.getTime() ? h : null;
 }
 
@@ -741,7 +788,7 @@ export async function createWriteSessionMultipart(
   key: string,
   run: OrgRunner,
   deps: WriteSessionDeps = defaultWriteSessionDeps,
-): Promise<{ status: 200; body: { uploadId: string } } | WriteFailure> {
+): Promise<{ status: 200; body: { uploadId: string; appliedEncryption: AppliedEncryption | null } } | WriteFailure> {
   const keyDecision = authorizeWriteKey(key, session.reservationSnapshotId ?? '');
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
   if (session.readOnly) return { status: 403, code: 'read_only' };
@@ -794,7 +841,9 @@ export async function createWriteSessionMultipart(
       logStorageFailure('abort of an unrecorded multipart upload failed; cleanup will retry', session.id, err));
     return { status: 409, code: 'reservation_sealed' };
   }
-  return { status: 200, body: { uploadId } };
+  // The encryption the upload was created with, so the helper can refuse to
+  // send parts to an upload that does not carry the encryption it expects.
+  return { status: 200, body: { uploadId, appliedEncryption: appliedEncryptionOf(prepared.destination.sse) } };
 }
 
 export function validateCompletedParts(parts: unknown): Array<{ partNumber: number; etag: string }> | null {
@@ -1000,7 +1049,7 @@ export async function deleteWriteSessionKeys(
 // ── Resume ──────────────────────────────────────────────────────────────────
 
 export type ResumeResult =
-  | { status: 200; body: { snapshotId: string; mode: 'write' | 'read_only_completion' } }
+  | { status: 200; body: { snapshotId: string; mode: 'write' | 'read_only_completion'; takeover: boolean } }
   | { status: 400; code: 'invalid_snapshot_id' }
   | { status: 409; code: 'not_resumable' | 'previous_writer_active' }
   | WriteFailure;
@@ -1008,6 +1057,89 @@ export type ResumeResult =
 type ResumePhase =
   | ResumeResult
   | { abort: Array<{ id: string; objectKey: string; uploadId: string | null }>; destination: ResolvedDestination };
+
+/** How long a helper is asked to wait before retrying a resume that must wait. */
+const RESUME_WAIT_SECONDS = 60;
+
+export type ResumeTargetView = Pick<SnapshotIdReservation,
+  | 'source' | 'orgId' | 'deviceId' | 'configId' | 'storageIdentity' | 'state' | 'currentJobId'
+  | 'publishedSnapshotDbId' | 'uploadsSweptAt' | 'createdAt'>;
+export type ResumeSessionView = { orgId: string; deviceId: string; configId: string; storageIdentity: string; jobId: string };
+/** A backup job as a resume sees it: whether it is still live, and the base it was dispatched with. */
+export type ResumeJobView = { status: string; baseSnapshotId: string | null };
+
+export type ResumeDecision =
+  | { kind: 'read_only' }
+  | { kind: 'write'; takeover: boolean }
+  | { kind: 'refuse' }
+  | { kind: 'wait'; retryAfterSeconds: number };
+
+function dispatchedBase(job: ResumeJobView): string | null {
+  return job.baseSnapshotId && job.baseSnapshotId.length > 0 ? job.baseSnapshotId : null;
+}
+
+/**
+ * Whether a write session may continue the snapshot id its helper's journal
+ * names (the target), given the job currently recorded on that id (prior)
+ * and the session's own job. Pure; resumePhase supplies locked rows.
+ *
+ * Every mode requires a server-issued id of the same organization, device,
+ * backup configuration and storage destination, and the same dispatched base
+ * (the server's base pin) on both jobs; a job that is gone cannot be checked
+ * and refuses.
+ *   - sealing / published: read-only completion.
+ *   - reserved to this same job: continue writing.
+ *   - reserved to, or abandoned after the end of, an EARLIER job: taken over
+ *     when that job has ended, no snapshot row exists for the id, and the id
+ *     was issued less than SNAPSHOT_TAKEOVER_MAX_AGE_MS ago. An abandoned id
+ *     also waits until the cleanup job has swept its unfinished multipart
+ *     uploads (it would otherwise abort the new writer's). An id abandoned by
+ *     a resume onto another id has no job and is never taken over.
+ */
+export function decideResumeTarget(
+  target: ResumeTargetView | null,
+  session: ResumeSessionView,
+  prior: ResumeJobView | null,
+  own: ResumeJobView | null,
+  now: Date,
+): ResumeDecision {
+  if (
+    !target
+    // Only an id the server issued is ever written through a session.
+    || target.source !== 'server_minted'
+    || target.orgId !== session.orgId
+    || target.deviceId !== session.deviceId
+    || target.storageIdentity === null
+    || target.storageIdentity !== session.storageIdentity
+    || target.configId === null
+    || target.configId !== session.configId
+    || target.currentJobId === null
+    || !prior
+    || !own
+    || dispatchedBase(prior) !== dispatchedBase(own)
+  ) {
+    return { kind: 'refuse' };
+  }
+  if (target.state === 'published' || target.state === 'sealing') return { kind: 'read_only' };
+  const sameJob = target.currentJobId === session.jobId;
+  if (target.state === 'reserved' && sameJob) return { kind: 'write', takeover: false };
+  if (target.state !== 'reserved' && target.state !== 'abandoned') return { kind: 'refuse' };
+  if (sameJob || target.publishedSnapshotDbId !== null) return { kind: 'refuse' };
+  if (now.getTime() - target.createdAt.getTime() > SNAPSHOT_TAKEOVER_MAX_AGE_MS) return { kind: 'refuse' };
+  if (LIVE_JOB_STATUSES.includes(prior.status)) return { kind: 'wait', retryAfterSeconds: RESUME_WAIT_SECONDS };
+  if (target.state === 'abandoned' && target.uploadsSweptAt === null) {
+    return { kind: 'wait', retryAfterSeconds: RESUME_WAIT_SECONDS };
+  }
+  return { kind: 'write', takeover: true };
+}
+
+async function loadResumeJobs(ids: string[]): Promise<Map<string, ResumeJobView>> {
+  const rows = await db
+    .select({ id: backupJobs.id, status: backupJobs.status, baseSnapshotId: backupJobs.baseSnapshotId })
+    .from(backupJobs)
+    .where(inArray(backupJobs.id, [...new Set(ids)]));
+  return new Map(rows.map((r) => [r.id, { status: r.status, baseSnapshotId: r.baseSnapshotId }]));
+}
 
 /**
  * One short phase of a resume, under the session row lock and then the
@@ -1039,16 +1171,25 @@ async function resumePhase(
   if (anyUpload) return { status: 409, code: 'not_resumable' };
 
   const target = await loadReservation(journalSnapshotId, { forUpdate: true });
-  if (
-    !target
-    // Only an id the server issued is ever written through a session.
-    || target.source !== 'server_minted'
-    || target.orgId !== session.orgId
-    || target.deviceId !== session.deviceId
-    || (target.storageIdentity !== null && target.storageIdentity !== session.storageIdentity)
-  ) {
-    return { status: 409, code: 'not_resumable' };
+  const jobs = await loadResumeJobs([session.jobId!, ...(target?.currentJobId ? [target.currentJobId] : [])]);
+  const decision = decideResumeTarget(
+    target,
+    {
+      orgId: session.orgId,
+      deviceId: session.deviceId,
+      configId: session.configId,
+      storageIdentity: session.storageIdentity,
+      jobId: session.jobId!,
+    },
+    target?.currentJobId ? jobs.get(target.currentJobId) ?? null : null,
+    jobs.get(session.jobId!) ?? null,
+    now,
+  );
+  if (decision.kind === 'refuse') return { status: 409, code: 'not_resumable' };
+  if (decision.kind === 'wait') {
+    return { status: 409, code: 'previous_writer_active', retryAfterSeconds: decision.retryAfterSeconds };
   }
+  const reservation = target!;
 
   const issuedId = session.reservationSnapshotId!;
   const abandonIssued = async () => {
@@ -1063,27 +1204,18 @@ async function resumePhase(
       ));
   };
 
-  if (target.state === 'published' || target.state === 'sealing') {
+  if (decision.kind === 'read_only') {
     await db.update(backupStorageSessions).set({
-      reservationSnapshotId: target.snapshotId,
-      reservationGeneration: target.writeGeneration,
+      reservationSnapshotId: reservation.snapshotId,
+      reservationGeneration: reservation.writeGeneration,
       readOnly: true,
       resumedAt: now,
     }).where(eq(backupStorageSessions.id, session.id));
     await abandonIssued();
-    await db.update(backupJobs).set({ snapshotId: target.snapshotId, updatedAt: now }).where(eq(backupJobs.id, session.jobId!));
-    return { status: 200, body: { snapshotId: target.snapshotId, mode: 'read_only_completion' } };
+    await db.update(backupJobs).set({ snapshotId: reservation.snapshotId, updatedAt: now }).where(eq(backupJobs.id, session.jobId!));
+    return { status: 200, body: { snapshotId: reservation.snapshotId, mode: 'read_only_completion', takeover: false } };
   }
-  if (target.state !== 'reserved') return { status: 409, code: 'not_resumable' };
 
-  if (target.currentJobId && target.currentJobId !== session.jobId) {
-    const [previous] = await db
-      .select({ status: backupJobs.status })
-      .from(backupJobs)
-      .where(eq(backupJobs.id, target.currentJobId))
-      .limit(1);
-    if (previous && LIVE_JOB_STATUSES.includes(previous.status)) return { status: 409, code: 'previous_writer_active' };
-  }
   // Revoke every other session of that reservation FIRST (the UPDATE waits
   // for any call still holding one of their rows), THEN read the latest URL
   // expiry they issued: a URL issued by a call that committed meanwhile is
@@ -1091,18 +1223,17 @@ async function resumePhase(
   await db.update(backupStorageSessions)
     .set({ revokedAt: now, revokedReason: 'superseded_by_resume' })
     .where(and(
-      eq(backupStorageSessions.reservationSnapshotId, target.snapshotId),
+      eq(backupStorageSessions.reservationSnapshotId, reservation.snapshotId),
       ne(backupStorageSessions.id, session.id),
       isNull(backupStorageSessions.revokedAt),
     ));
-  if (await otherWriterHorizon(session, target.snapshotId, now)) {
-    return { status: 409, code: 'previous_writer_active' };
-  }
+  const horizon = await otherWriterHorizon(session, reservation.snapshotId, now);
+  if (horizon) return previousWriterActive(horizon, now);
   const open = await db
     .select({ id: backupStorageSessionUploads.id, objectKey: backupStorageSessionUploads.objectKey, uploadId: backupStorageSessionUploads.uploadId })
     .from(backupStorageSessionUploads)
     .where(and(
-      eq(backupStorageSessionUploads.reservationSnapshotId, target.snapshotId),
+      eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
       inArray(backupStorageSessionUploads.state, ['creating', 'open', 'completing']),
     ));
   if (open.length > 0) {
@@ -1111,36 +1242,52 @@ async function resumePhase(
     return { abort: open, destination };
   }
 
-  const nextGeneration = target.writeGeneration + 1;
+  // Ownership moves: a new write generation for this job. A taken-over
+  // abandoned id is reserved again, and its prefix is swept again once it is
+  // finished.
+  const nextGeneration = reservation.writeGeneration + 1;
   await db.update(backupSnapshotIdReservations)
-    .set({ writeGeneration: nextGeneration, currentJobId: session.jobId!, updatedAt: now })
-    .where(eq(backupSnapshotIdReservations.snapshotId, target.snapshotId));
+    .set({
+      writeGeneration: nextGeneration,
+      currentJobId: session.jobId!,
+      state: 'reserved',
+      uploadsSweptAt: null,
+      updatedAt: now,
+    })
+    .where(eq(backupSnapshotIdReservations.snapshotId, reservation.snapshotId));
   await db.update(backupStorageSessions).set({
-    reservationSnapshotId: target.snapshotId,
+    reservationSnapshotId: reservation.snapshotId,
     reservationGeneration: nextGeneration,
     resumedAt: now,
   }).where(eq(backupStorageSessions.id, session.id));
   await abandonIssued();
-  await db.update(backupJobs).set({ snapshotId: target.snapshotId, updatedAt: now }).where(eq(backupJobs.id, session.jobId!));
-  return { status: 200, body: { snapshotId: target.snapshotId, mode: 'write' } };
+  await db.update(backupJobs).set({ snapshotId: reservation.snapshotId, updatedAt: now }).where(eq(backupJobs.id, session.jobId!));
+  return { status: 200, body: { snapshotId: reservation.snapshotId, mode: 'write', takeover: decision.takeover } };
 }
 
 /**
  * Lets a helper continue a snapshot id named by its local journal instead of
  * the id this session was issued. Allowed once per session, before the
  * session has issued any upload URL or multipart upload, and only for a
- * server-issued id reserved to the SAME device in the same organization:
+ * server-issued id of the SAME organization, device, backup configuration,
+ * storage destination and dispatched base (decideResumeTarget):
  *   - published (or sealing): the session becomes read-only on that prefix,
  *     so the helper can read the published manifest and report it;
- *   - reserved: only once the previous writer is fenced — its job has ended,
- *     every other session of that reservation is revoked, every upload URL
- *     issued for it has expired, and its open multipart uploads are aborted
- *     (here, with no DB context held; if an abort fails the call is refused
- *     and may be retried). The reservation's write generation then moves to
- *     this session's job.
+ *   - reserved to this job, or left unfinished by an earlier job of the same
+ *     device (reserved, or abandoned by the cleanup job after that job ended,
+ *     issued less than SNAPSHOT_TAKEOVER_MAX_AGE_MS ago): only once the
+ *     previous writer is fenced — its job has ended, every other session of
+ *     that reservation is revoked, every upload URL issued for it has expired
+ *     and the transfer margin has passed, and its open multipart uploads are
+ *     aborted (here, with no DB context held; if an abort fails the call is
+ *     refused and may be retried). The reservation's write generation then
+ *     moves to this session's job, which becomes the only job whose result
+ *     may publish the id (`takeover: true` in the answer when the id was an
+ *     earlier job's).
  * The id this session was issued is abandoned when the resume succeeds.
- * Every other case is `not_resumable` and the helper starts fresh under the
- * issued id.
+ * `previous_writer_active` (with Retry-After) means the id may become
+ * continuable shortly; every other refusal is `not_resumable` and the helper
+ * starts fresh under the issued id.
  */
 export async function resumeWriteSession(
   session: StorageSessionRow,
@@ -1153,7 +1300,7 @@ export async function resumeWriteSession(
     return { status: 400, code: 'invalid_snapshot_id' };
   }
   if (journalSnapshotId === session.reservationSnapshotId) {
-    return { status: 200, body: { snapshotId: journalSnapshotId, mode: session.readOnly ? 'read_only_completion' : 'write' } };
+    return { status: 200, body: { snapshotId: journalSnapshotId, mode: session.readOnly ? 'read_only_completion' : 'write', takeover: false } };
   }
   if (session.resumedAt || session.readOnly || session.urlHorizonAt) return { status: 409, code: 'not_resumable' };
 
