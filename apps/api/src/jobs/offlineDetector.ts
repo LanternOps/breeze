@@ -21,6 +21,7 @@ import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { captureMessage } from '../services/sentry';
 import { throttledReporter } from '../services/sentryThrottle';
+import { EDITION_MIGRATION_SETTLE_INTERVAL } from '../services/editionMigrationWindow';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -658,7 +659,24 @@ export async function processReapUninstallIntent(): Promise<{
       // and is guarded on this same status list. Exclude them so a reaped
       // device isn't re-selected (and re-audited) forever. Same guard list as
       // heartbeat.ts's own device UPDATE.
-      notInArray(devices.status, ['decommissioned', 'quarantined'])
+      notInArray(devices.status, ['decommissioned', 'quarantined']),
+      // #5016 — the automatic edition migration uninstalls the agent itself,
+      // and that `msiexec /x` fires UninstallNotify. An intent stamped inside
+      // the migration window is the migration's, not a removal: if the
+      // reinstall then failed, reaping would hide an agentless device an
+      // operator has to go and fix, 403 its token so even a hand-restored
+      // identity could not come back, and silently release the org's canary
+      // hold (agentEditionAutoMigrate.ts). Such a device stays offline and
+      // visible instead. An intent outside the window (a real uninstall long
+      // after a migration) is reaped as usual.
+      or(
+        isNull(devices.editionMigrationDispatchedAt),
+        lt(devices.uninstallIntentAt, devices.editionMigrationDispatchedAt),
+        gt(
+          devices.uninstallIntentAt,
+          sql`${devices.editionMigrationDispatchedAt} + ${EDITION_MIGRATION_SETTLE_INTERVAL}::interval`
+        )
+      )
     ];
     const selectConditions = [...reapPredicate];
     if (cursor) selectConditions.push(gt(devices.id, cursor));
