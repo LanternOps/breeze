@@ -57,7 +57,7 @@ export type ProviderCapabilityStatus = {
   };
 };
 
-function buildS3StorageClient(providerConfig: Record<string, unknown>) {
+export function buildS3StorageClient(providerConfig: Record<string, unknown>) {
   const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
   const region =
     getStringValue(providerConfig, 'region')?.trim() ||

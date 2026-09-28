@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import {
   WRITE_DESTINATION_ALIAS,
   WRITE_IDENTITY,
@@ -112,6 +113,27 @@ describe('backup snapshot id reservations', () => {
     const rows = await getTestDb().execute(sql`SELECT 1 FROM backup_snapshots WHERE snapshot_id = ${id}`);
     expect(rows.length).toBe(0);
     expect((await reservationRow(id))?.org_id).toBe(a.orgId);
+  });
+
+  runDb('an agent result naming an id owned by another organization records the job but no snapshot row', async () => {
+    const a = await seedWriteTenant();
+    const b = await seedWriteTenant({ destination: WRITE_DESTINATION_ALIAS });
+    await getTestDb().execute(sql`UPDATE backup_jobs SET storage_identity = ${normalizeStorageIdentity('s3', WRITE_DESTINATION_ALIAS)} WHERE id = ${b.jobId}`);
+    const id = sid('result-cross-org');
+    await reserveAs(a.orgId, { snapshotId: id, deviceId: a.deviceId, configId: a.configId, jobId: a.jobId });
+
+    const outcome = await withDbAccessContext(orgContext(b.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: b.jobId,
+        orgId: b.orgId,
+        deviceId: b.deviceId,
+        resultStatus: 'completed',
+        result: { snapshotId: id, filesBackedUp: 1, bytesBackedUp: 10 },
+      }),
+    );
+    expect(outcome).toMatchObject({ applied: true, snapshotDbId: null });
+    const rows = await getTestDb().execute(sql`SELECT 1 FROM backup_snapshots WHERE snapshot_id = ${id}`);
+    expect(rows.length).toBe(0);
   });
 
   runDb('a legacy writer\'s first snapshot row reserves its id; the owner may publish it again', async () => {

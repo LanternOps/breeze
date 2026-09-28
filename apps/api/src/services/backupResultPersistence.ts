@@ -30,6 +30,7 @@ import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
 import { recordBackupAttestation } from './backupMetrics';
+import { SNAPSHOT_ID_RESERVATION_CONSTRAINT, allowedSnapshotIdsForJob } from './backupSnapshotIdReservations';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -949,8 +950,11 @@ export async function applyBackupCommandResultToJob(params: {
   // DEVICE IN THE SAME ORG (RLS restricts by org, not by device) — but it is
   // NOT a guard against a different org's row on a destination shared across
   // orgs; that row is invisible to this SELECT by design. The actual cross-org guarantee is the
-  // `backup_snapshots_storage_identity_snapshot_id_uq` DB constraint
-  // enforced at INSERT time below (see `isPgUniqueViolation` handling) —
+  // snapshot id reservation (`backup_snapshot_id_reservations`, keyed by the
+  // id alone, whatever storage identity or endpoint spelling a row names),
+  // which the backup_snapshots insert trigger reserves or matches at INSERT
+  // time below, backed by the `backup_snapshots_storage_identity_snapshot_id_uq`
+  // constraint (see `isPgUniqueViolation` handling) —
   // Postgres refuses the conflicting row regardless of what this session's
   // RLS context can see, with no need to escalate to system scope (which
   // would double-hold a pooled connection under this request's own
@@ -1630,12 +1634,17 @@ export async function applyBackupCommandResultToJob(params: {
           // rest of this request's transaction usable.
           return await db.transaction((tx) => tx.insert(backupSnapshots).values(insertValues).returning());
         } catch (err) {
-          if (!isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')) {
+          if (
+            !isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')
+            && !isPgUniqueViolation(err, SNAPSHOT_ID_RESERVATION_CONSTRAINT)
+          ) {
             throw err;
           }
-          // A row this session cannot see (a different org's, under this
-          // request's own org-scoped RLS context) already claims this
-          // (storage_identity, snapshot_id) pair. Postgres refused the
+          // The snapshot id is owned by another backup: a row this session
+          // cannot see (a different org's, under this request's own
+          // org-scoped RLS context) already claims this (storage_identity,
+          // snapshot_id) pair, or the id is reserved to — or retired by —
+          // another owner (backup_snapshot_id_reservations, any identity). Postgres refused the
           // INSERT regardless of what this session's RLS context can see —
           // the DB-level guarantee the app-layer ownership check above
           // cannot provide across orgs. Deliberately NOT escalating to a

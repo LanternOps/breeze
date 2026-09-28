@@ -57,6 +57,13 @@ const sessionColumns = () => ({
   rateCallsAvailable: backupStorageSessions.rateCallsAvailable,
   rateObjectsAvailable: backupStorageSessions.rateObjectsAvailable,
   rateRefilledAt: backupStorageSessions.rateRefilledAt,
+  jobId: backupStorageSessions.jobId,
+  reservationSnapshotId: backupStorageSessions.reservationSnapshotId,
+  reservationGeneration: backupStorageSessions.reservationGeneration,
+  urlHorizonAt: backupStorageSessions.urlHorizonAt,
+  conditionalWrites: backupStorageSessions.conditionalWrites,
+  readOnly: backupStorageSessions.readOnly,
+  resumedAt: backupStorageSessions.resumedAt,
 });
 
 export const drizzleBrokeredReadStore: BrokeredReadStore = {
