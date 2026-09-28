@@ -26,6 +26,7 @@ import { isAccountingProviderError, rateLimitRetryAfterMs } from '../../services
 import { accountingProviderDisplayName } from '../../services/accounting/providerRegistry';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { auditOwedDeletesDiscarded } from './owedDeletesAudit';
 import { captureException } from '../../services/sentry';
 import { providerGateResponse } from './providerGate';
 import { finalizeConnection, type PriorRealm } from './connectFinalize';
@@ -194,18 +195,24 @@ export function registerConnectionSetupRoutes(router: Hono, deps: ConnectionSetu
     const { provider } = c.req.valid('param');
     const s = setup(c, provider, { requireConfigured: false });
     if ('refused' in s) return s.refused;
-    let discarded: boolean;
+    let result: Awaited<ReturnType<typeof discardPendingTenantSelection>>;
     try {
-      ({ discarded } = await discardPendingTenantSelection({ partnerId: s.partnerId, provider, reason: 'cancel', runInDbContext: s.runInDb }));
+      result = await discardPendingTenantSelection({ partnerId: s.partnerId, provider, reason: 'cancel', runInDbContext: s.runInDb });
     } catch (err) {
       // Review L: a typed body like the sibling routes, never the global 500.
       return setupErrorResponse(c, provider, err, {
         error: `Could not cancel the ${accountingProviderDisplayName(provider)} connection; try again`, code: 'cancel_failed',
       });
     }
-    if (!discarded) {
+    if (!result.discarded) {
       return c.json({ error: 'There is no connection waiting for an organisation', code: 'no_pending_selection' }, 404);
     }
+    // A RE-PARKED former connected row can still carry mappings (#7289): a
+    // cancel is the operator's decision, so it is never blocked, but the
+    // payment deletes those mappings owed are audited like a disconnect's.
+    auditOwedDeletesDiscarded(c, {
+      provider, connectionId: result.connectionId, reason: 'tenant_selection_cancelled', owed: result.owedPaymentDeletes,
+    });
     writeRouteAudit(c, {
       orgId: null,
       action: 'accounting.connection.tenant_selection_cancelled',

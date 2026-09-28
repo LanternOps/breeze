@@ -324,7 +324,7 @@ beforeEach(() => {
     selection: { connectableTenantType: 'ORGANISATION' },
     accessToken: 'at', authEventId: 'evt-00001', tenants: [], grantFingerprint: 'fp',
   });
-  effects.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+  effects.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: 'conn-row-1', owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
   effects.listSettingsOptions.mockResolvedValue({
     organisation: { name: 'Demo', isDemoCompany: true }, incomeAccounts: [], taxRates: [], bankAccounts: [],
   });

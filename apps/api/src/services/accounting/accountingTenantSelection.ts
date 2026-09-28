@@ -17,7 +17,7 @@ import { findAccountingProvider, getAccountingProvider } from './providerRegistr
 import {
   deletePendingTenantRow, listHeldTenantKeys, listStalePendingTenantConnections, loadPendingTenantRow, pendingGrantFingerprint,
 } from './accountingTenantSelectionStore';
-import type { AccountingConnection } from './accountingConnectionService';
+import type { AccountingConnection, OwedPaymentDeletes } from './accountingConnectionService';
 import type { AccountingProviderId, ProviderTenant, ProviderTenantSelection } from './types';
 
 export const PENDING_TENANT_TTL_MS = 60 * 60 * 1000;
@@ -139,30 +139,62 @@ export async function releaseUnchosenTenants(input: {
   return result;
 }
 
+/**
+ * `discarded: true` carries the owed payment deletes the cascade just dropped
+ * (#7289), already warned + Sentry-captured by the store; the ROUTE writes the
+ * `accounting.connection.owed_deletes_discarded` audit, as for a disconnect.
+ * `keptOwedPaymentDeletes` is the reaper's refusal: the row was left in place.
+ */
+export type DiscardPendingResult =
+  | { discarded: true; connectionId: string; owedPaymentDeletes: OwedPaymentDeletes }
+  | { discarded: false; keptOwedPaymentDeletes?: OwedPaymentDeletes };
+
 export async function discardPendingTenantSelection(input: {
   partnerId: string; provider: AccountingProviderId; connectionId?: string; olderThan?: Date;
   reason: 'cancel' | 'reaped'; runInDbContext: DbContextRunner;
-}): Promise<{ discarded: boolean }> {
+}): Promise<DiscardPendingResult> {
   assertNoAmbientDbContext('discardPendingTenantSelection');
   // Row FIRST: a select racing this cancel/reap then finds nothing to claim,
   // rather than claiming a tenant whose link we are about to remove.
+  //
+  // A re-parked former `connected` row can still owe payment deletes (#7289).
+  // An operator's cancel discards them (never blocked, reported and audited
+  // like deleteConnection). The reaper is a timer, not a decision: it KEEPS
+  // such a row, because a discarded payment delete is unrecoverable (the
+  // Payment Breeze voided stays in the books) while a kept row only holds the
+  // partner's connection slot until someone cancels, disconnects or re-picks.
   const deleted = await input.runInDbContext(() => deletePendingTenantRow(db, {
     partnerId: input.partnerId, provider: input.provider, connectionId: input.connectionId, olderThan: input.olderThan,
+    reason: input.reason, keepIfOwedPaymentDeletes: input.reason === 'reaped',
   }));
   if (!deleted) return { discarded: false };
+  if (deleted.kind === 'kept_owed_payment_deletes') {
+    const { count, remoteEntityIds } = deleted.owedPaymentDeletes;
+    console.warn('[accountingTenantSelection] stale pending connection NOT reaped: it still owes payment delete(s); '
+      + 'cancel or disconnect it to discard them, or pick the same organisation to keep them', {
+      connectionId: deleted.id, partnerId: input.partnerId, provider: input.provider, count, remoteEntityIds,
+    });
+    captureException(
+      new Error('accountingTenantSelection: stale pending connection kept because it still owes payment deletes'),
+      undefined,
+      { service: 'accountingTenantSelection', accounting_connection_id: deleted.id },
+    );
+    return { discarded: false, keptOwedPaymentDeletes: deleted.owedPaymentDeletes };
+  }
+  const discarded: DiscardPendingResult = { discarded: true, connectionId: deleted.id, owedPaymentDeletes: deleted.owedPaymentDeletes };
 
   const impl = findAccountingProvider(input.provider);
   const selection = impl?.tenantSelection;
-  if (!impl || !selection || !deleted.accessToken) return { discarded: true };
+  if (!impl || !selection || !deleted.accessToken) return discarded;
   // The ORIGINAL token: pending rows are never refreshed, so its claim is this flow's.
   const authEventId = selection.authEventIdOf(deleted.accessToken);
-  if (!authEventId) return { discarded: true };
+  if (!authEventId) return discarded;
 
   try {
     let accessToken = deleted.accessToken;
     const expiresAt = deleted.accessTokenExpiresAt?.getTime() ?? 0;
     if (expiresAt <= Date.now() + TENANT_PICK_TOKEN_MARGIN_MS) {
-      if (!deleted.refreshToken) return { discarded: true };
+      if (!deleted.refreshToken) return discarded;
       // The row is gone; the rotated tokens are used once for cleanup and dropped.
       accessToken = (await impl.refresh(deleted.refreshToken)).accessToken;
     }
@@ -178,10 +210,11 @@ export async function discardPendingTenantSelection(input: {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
     }
   }
-  return { discarded: true };
+  return discarded;
 }
 
-export async function reapStalePendingTenants(now: Date = new Date()): Promise<{ stale: number; reaped: number }> {
+/** `kept`: stale rows left in place because they still owe payment deletes (#7289); each is warned + captured per sweep. */
+export async function reapStalePendingTenants(now: Date = new Date()): Promise<{ stale: number; reaped: number; kept: number }> {
   assertNoAmbientDbContext('reapStalePendingTenants');
   const cutoff = new Date(now.getTime() - PENDING_TENANT_TTL_MS);
   const stale = await withSystemDbAccessContext(
@@ -189,6 +222,7 @@ export async function reapStalePendingTenants(now: Date = new Date()): Promise<{
     'accountingTenantSelection.reap.list',
   );
   let reaped = 0;
+  let kept = 0;
   for (const row of stale) {
     try {
       const result = await discardPendingTenantSelection({
@@ -196,9 +230,10 @@ export async function reapStalePendingTenants(now: Date = new Date()): Promise<{
         runInDbContext: (fn) => withSystemDbAccessContext(fn, 'accountingTenantSelection.reap'),
       });
       if (result.discarded) reaped++;
+      else if (result.keptOwedPaymentDeletes) kept++;
     } catch (err) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'accountingTenantSelection' });
     }
   }
-  return { stale: stale.length, reaped };
+  return { stale: stale.length, reaped, kept };
 }
