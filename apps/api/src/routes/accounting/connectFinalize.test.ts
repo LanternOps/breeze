@@ -28,6 +28,7 @@ vi.mock('../../services/sentry', () => ({ captureException: m.captureException, 
 import { connectRedirectPath, finalizeConnection, homeCurrencyField, readPriorRealm } from './connectFinalize';
 import { AccountingProviderConflictError, AccountingTenantHeldError } from '../../services/accounting/accountingConnectionService';
 import { AccountingProviderError } from '../../services/accounting/accountingProviderError';
+import { AccountingTenantSelectionError } from '../../services/accounting/accountingTenantSelection';
 
 const c = {} as any;
 const conn = { id: 'c1', partnerId: 'p1', provider: 'xero', updatedAt: new Date() } as any;
@@ -95,6 +96,20 @@ describe('finalizeConnection', () => {
     expect(m.resetConnectionForRealmChange).toHaveBeenCalledWith(expect.anything(), 'c1', 'p1');
     expect(m.writeRouteAudit).toHaveBeenCalledWith(c, expect.objectContaining({ action: 'accounting.connection.realm_changed' }));
     expect(m.updateHomeCurrency).toHaveBeenCalledWith(expect.anything(), 'c1', 'p1', expect.objectContaining({ realmId: 't2' }), 'NZD');
+  });
+
+  it('a picker claim error (AccountingTenantSelectionError) is RETHROWN, never flattened to persist_failed (review O)', async () => {
+    const err = new AccountingTenantSelectionError('grant_superseded', 409, 'superseded');
+    await expect(finalizeConnection(c, { provider: 'xero', partnerId: 'p1', realmId: 't1', prior: { known: true, realmId: null }, persist: async () => { throw err; } }))
+      .rejects.toBe(err);
+    expect(m.captureException).not.toHaveBeenCalled();
+    expect(m.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('a SAME-tenant reconnect never resets (mappings, cursor and default refs survive) (review J)', async () => {
+    await finalizeConnection(c, { provider: 'xero', partnerId: 'p1', realmId: 't1', prior: { known: true, realmId: 't1' }, persist: async () => conn });
+    expect(m.resetConnectionForRealmChange).not.toHaveBeenCalled();
+    expect(m.writeRouteAudit).not.toHaveBeenCalledWith(c, expect.objectContaining({ action: 'accounting.connection.realm_changed' }));
   });
 
   it('a pending→connected first pick (prior realm null) does not reset', async () => {

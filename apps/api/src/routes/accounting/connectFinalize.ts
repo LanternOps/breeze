@@ -119,7 +119,9 @@ export async function finalizeConnection(c: RouteCtx, input: {
   // connection still names the OLD realm's Customer/Item/Invoice/Payment ids,
   // and `cdc_cursor` is a watermark in the old realm's change stream. Left
   // alone, the next push would "update" a stranger's invoice and the next pull
-  // would skip the new realm's first window as already read.
+  // would skip the new realm's first window as already read. The settings'
+  // default refs (income account, tax codes, payment account) name the old
+  // realm's records too, so the reset clears them (Xero W02 review J).
   //
   // Only fires on a POSITIVELY KNOWN change: `prior.known` false means the
   // pre-upsert read failed, and destroying a healthy connection's entire

@@ -890,9 +890,23 @@ export async function resetConnectionForRealmChange(
     ))
     .returning({ id: accountingEntityMappings.id });
 
+  // The ONE place a tenant/realm change clears per-organisation state (Xero W02
+  // review J). Every path that changes it reaches here via finalizeConnection:
+  // the OAuth callback (QuickBooks, Xero single-org) and the Xero picker claim.
+  // The default refs name accounts / tax codes IN the old organisation (Xero
+  // AccountCodes like "200" repeat across orgs, so a kept ref would silently
+  // resolve to a different account); a same-realm reconnect never gets here.
   await dbc
     .update(accountingConnections)
-    .set({ cdcCursor: null, lastReconcileAt: null, updatedAt: new Date() })
+    .set({
+      cdcCursor: null,
+      lastReconcileAt: null,
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      defaultExemptTaxCodeRef: null,
+      defaultPaymentAccountRef: null,
+      updatedAt: new Date(),
+    })
     .where(and(
       eq(accountingConnections.id, connectionId),
       eq(accountingConnections.partnerId, partnerId),

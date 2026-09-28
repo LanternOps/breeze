@@ -1,11 +1,13 @@
 /**
  * Xero W02 against real Postgres: the races and the held-tenant rules that the
- * mocked suites can only simulate (the tenant-selection store has no unit tests
- * of its own; this suite is its proof).
+ * mocked suites can only simulate (the tenant-selection store's SQL has no unit
+ * tests of its own; this suite is its proof).
  *
  *  - Review Focus 1: two partners racing for one tenant. Exactly one row holds
  *    it; the loser gets AccountingTenantHeldError (409 accounting_tenant_held)
  *    and, from the picker, its row stays pending_tenant.
+ *  - Review J: an organisation switch clears the old organisation's default
+ *    settings refs; a same-organisation reconnect keeps them.
  *  - Review Focus 2: the held check sees ANOTHER partner's row because it runs in
  *    system scope, so that partner's link is never deleted.
  *  - Partner isolation of the store: a partner-scoped claim / delete / cancel
@@ -27,7 +29,7 @@ import {
 import { accountingConnections } from '../../db/schema';
 import { createPartner } from './db-utils';
 import {
-  AccountingProviderConflictError, AccountingTenantHeldError, upsertConnection,
+  AccountingProviderConflictError, AccountingTenantHeldError, resetConnectionForRealmChange, upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import {
   claimPendingTenant, deletePendingTenantRow, listHeldTenantKeys, listStalePendingTenantConnections,
@@ -198,6 +200,59 @@ describe('Xero W02 connection races (real DB)', () => {
     expect(after?.accessToken).toBe('at-B');
   });
 
+  // ---------------------------------------------------------------- review J
+  const REFS = { defaultIncomeAccountRef: '200', defaultTaxCodeRef: 'OUTPUT2', defaultExemptTaxCodeRef: 'NONE', defaultPaymentAccountRef: 'bank-A' };
+  const refsOf = (row: Awaited<ReturnType<typeof readRow>>) => ({
+    defaultIncomeAccountRef: row?.defaultIncomeAccountRef ?? null,
+    defaultTaxCodeRef: row?.defaultTaxCodeRef ?? null,
+    defaultExemptTaxCodeRef: row?.defaultExemptTaxCodeRef ?? null,
+    defaultPaymentAccountRef: row?.defaultPaymentAccountRef ?? null,
+  });
+
+  runDb('review J: an organisation switch through the picker clears organisation A\'s default refs', async () => {
+    const partner = await createPartner();
+    const orgA = `org-A-${partner.id}`;
+    const conn = await asSystem(() => upsertConnection(db, partner.id, 'xero', {
+      realmId: orgA, providerConnectionRef: 'conn-org-A', status: 'connected', ...REFS,
+    }));
+    // A multi-org reconnect re-parks the SAME row with the realm omitted, so it keeps org A (the picker's prior realm).
+    const pending = await parkPending(partner.id, 'rt-switch');
+    expect(pending.id).toBe(conn.id);
+    expect(pending.realmId).toBe(orgA);
+    const claim = await asPartner(partner.id, () => claimPendingTenant(db, {
+      connectionId: conn.id, partnerId: partner.id, provider: 'xero', realmId: `org-B-${partner.id}`,
+      providerConnectionRef: 'conn-org-B', resetRealmFacts: true, grantFingerprint: pendingGrantFingerprint('rt-switch'),
+    }));
+    expect(claim.kind).toBe('claimed');
+    // Prior realm org A ≠ org B, so finalizeConnection runs the realm-change reset (system
+    // scope, as there): the one place the refs are cleared.
+    await asSystem(() => resetConnectionForRealmChange(db, conn.id, partner.id));
+    expect(refsOf(await readRow(conn.id))).toEqual({
+      defaultIncomeAccountRef: null, defaultTaxCodeRef: null, defaultExemptTaxCodeRef: null, defaultPaymentAccountRef: null,
+    });
+  });
+
+  runDb('review J: a same-organisation reconnect keeps the default refs (callback upsert, and a picker claim of the own org)', async () => {
+    const partner = await createPartner();
+    const own = `org-own-${partner.id}`;
+    const conn = await asSystem(() => upsertConnection(db, partner.id, 'xero', {
+      realmId: own, providerConnectionRef: 'conn-own', status: 'connected', ...REFS,
+    }));
+    // Callback: the own tenant found again → token upsert of the SAME realm, no reset.
+    await asSystem(() => upsertConnection(db, partner.id, 'xero', {
+      realmId: own, providerConnectionRef: 'conn-own', accessToken: 'at-2', refreshToken: 'rt-2', status: 'connected',
+    }));
+    expect(refsOf(await readRow(conn.id))).toEqual(REFS);
+    // Picker: re-parked, then the own organisation picked (no realm change, no reset).
+    await parkPending(partner.id, 'rt-own');
+    const claim = await asPartner(partner.id, () => claimPendingTenant(db, {
+      connectionId: conn.id, partnerId: partner.id, provider: 'xero', realmId: own,
+      providerConnectionRef: 'conn-own-2', resetRealmFacts: false, grantFingerprint: pendingGrantFingerprint('rt-own'),
+    }));
+    expect(claim.kind).toBe('claimed');
+    expect(refsOf(await readRow(conn.id))).toEqual(REFS);
+  });
+
   // ---------------------------------------------------------------- Review Focus 2
   runDb('Review Focus 2: the held check sees ANOTHER partner\'s row only because it runs in system scope', async () => {
     const [holder, linkHolder, viewer] = [await createPartner(), await createPartner(), await createPartner()];
@@ -224,7 +279,7 @@ describe('Xero W02 connection races (real DB)', () => {
       provider: 'xero', accessToken: 'at-release', keepConnectionRef: null, context: 'select',
       tenants: [tenant('held-by-tenant', 'conn-link-1'), tenant('unrelated', 'conn-held-by-ref'), tenant('free-tenant', 'conn-free')],
     });
-    expect(out).toEqual({ removed: 1, kept: 2, failed: 0 });
+    expect(out).toEqual({ removed: 1, kept: 2, failed: 0, skipped: 0, stopped: null });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(String(url)).toBe('https://api.xero.com/connections/conn-free');
@@ -236,7 +291,8 @@ describe('Xero W02 connection races (real DB)', () => {
     const [a, b] = [await createPartner(), await createPartner()];
     const pendingA = await parkPending(a.id, 'rt-a');
     const pendingB = await parkPending(b.id, 'rt-b');
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    // Rejects, so a regression can never reach real Xero before the assertion fails.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
 
     // Forged partnerId = B, under A's RLS context.
     expect(await asPartner(a.id, () => deletePendingTenantRow(db, { partnerId: b.id, provider: 'xero' }))).toBeNull();
@@ -284,7 +340,8 @@ describe('Xero W02 connection races (real DB)', () => {
 
     await asSystem(() => db.update(accountingConnections)
       .set({ updatedAt: new Date(Date.now() - 2 * HOUR) }).where(eq(accountingConnections.id, pending.id)));
-    const fetchSpy = vi.spyOn(globalThis, 'fetch'); // the token has no auth-event claim → no HTTP at all
+    // The token has no auth-event claim → no HTTP at all (rejects, so a regression never reaches real Xero).
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
     const stale = await asSystem(() => listStalePendingTenantConnections(db, new Date(Date.now() - HOUR)));
     expect(stale.map((s) => s.id)).toContain(pending.id);
     const out = await reapStalePendingTenants();
@@ -302,6 +359,8 @@ describe('Xero W02 connection races (real DB)', () => {
     const pending = await parkPending(partner.id, 'r', 'x');
     // Both halves: the listing's cutoff AND the DELETE's own olderThan re-check.
     expect(await asSystem(() => listStalePendingTenantConnections(db, new Date(Date.now() - HOUR)))).toEqual([]);
+    // The reaper is instance-wide, so this exact {0,0} holds only because setup.ts
+    // TRUNCATEs before every test and the integration config runs files serially.
     const out = await reapStalePendingTenants();
     expect(out).toEqual({ stale: 0, reaped: 0 });
     expect((await readRow(pending.id))?.status).toBe('pending_tenant');
@@ -334,13 +393,15 @@ describe('Xero W02 connection races (real DB)', () => {
     }));
   }
 
-  runDb('Task 4 + precondition 3: a Xero revoked-grant refresh PERSISTS reauth_required (not rolled back)', async () => {
+  runDb('a revoked Xero grant (invalid_grant on refresh) PERSISTS reauth_required (not rolled back)', async () => {
     // F16: requestXeroTokens refuses before any fetch when the client id/secret are unset.
     vi.stubEnv('XERO_CLIENT_ID', 'test-xero-client');
     vi.stubEnv('XERO_CLIENT_SECRET', 'test-xero-secret');
     const partner = await createPartner();
     const conn = await seedExpiringXero(partner.id);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('unexpected fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // No ambient context: getValidAccessToken opens its own short transactions.
     await expect(getValidAccessToken(db, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
@@ -356,7 +417,7 @@ describe('Xero W02 connection races (real DB)', () => {
     vi.stubEnv('XERO_CLIENT_SECRET', '');
     const partner = await createPartner();
     const conn = await seedExpiringXero(partner.id);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
     const err = await getValidAccessToken(db, conn).catch((e) => e);
     expect(err).not.toBeInstanceOf(ReauthRequiredError);
     expect(err).toMatchObject({ kind: 'transient' });
@@ -369,7 +430,7 @@ describe('Xero W02 connection races (real DB)', () => {
     vi.stubEnv('XERO_CLIENT_SECRET', 'test-xero-secret');
     const partner = await createPartner();
     const conn = await seedExpiringXero(partner.id);
-    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch')).mockImplementationOnce(async () => {
       // A peer worker commits its rotation while our refresh is in flight.
       await asSystem(() => upsertConnection(db, partner.id, 'xero', {
         accessToken: 'peer-at', refreshToken: 'peer-rt',
