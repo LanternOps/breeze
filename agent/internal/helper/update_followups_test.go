@@ -162,6 +162,9 @@ func TestRollbackRefusesBackupThatDoesNotMatchRecordedCopy(t *testing.T) {
 	if h.renames != 0 {
 		t.Fatalf("rename attempted %d times with a damaged backup, want 0", h.renames)
 	}
+	if backupExists(h.backup) {
+		t.Fatalf("damaged backup %s kept, want it discarded", h.backup)
+	}
 	if h.mgr.updateFailures != 1 {
 		t.Fatalf("failures = %d, want the failed install counted", h.mgr.updateFailures)
 	}
