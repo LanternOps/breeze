@@ -523,5 +523,75 @@
         "configuration": "Configurazione"
       }
     }
+  },
+  "ai": {
+    "heading": "Spiega",
+    "explain": "Spiega",
+    "explainAgain": "Spiega di nuovo",
+    "cancel": "Interrompi",
+    "started": "Indagine di rete avviata",
+    "startFailed": "Impossibile avviare l'indagine di rete",
+    "intro": "Chiedi all'IA di spiegare questa selezione in base alle evidenze registrate. Legge soltanto; nulla viene eseguito senza la tua approvazione.",
+    "phase": {
+      "starting": "Avvio dell'indagine…",
+      "gathering_evidence": "Raccolta delle evidenze…",
+      "analyzing": "Analisi delle evidenze…",
+      "validating": "Verifica delle citazioni…",
+      "awaiting_approval": "In attesa della tua decisione su un controllo proposto…"
+    },
+    "findings": "Risultati",
+    "hypotheses": "Cause possibili",
+    "hypothesisNote": "Non verificato: un'interpretazione delle evidenze citate.",
+    "missingData": "Dati mancanti",
+    "nextChecks": "Controlli successivi",
+    "noEvidence": "Le evidenze non supportano alcun risultato per questa selezione.",
+    "partial": "Risposta parziale: alcune affermazioni sono state rimosse o segnate come non verificate.",
+    "evidenceChanged": "Alcune evidenze citate sono cambiate o non sono più disponibili, quindi le affermazioni che ne dipendevano sono state rimosse.",
+    "historical": "Risposta precedente per un'altra selezione o revisione della mappa. I controlli proposti sono disattivati.",
+    "fallback": "Le evidenze, lo stato e la diagnostica di questa pagina funzionano ancora.",
+    "errors": {
+      "disabled": "Le spiegazioni con IA sono disattivate per questa organizzazione o sede.",
+      "limit": "È stato raggiunto il limite di indagini con IA. Riprova più tardi.",
+      "scopeChanged": "La selezione o la sua sede è cambiata. Avvia una nuova spiegazione.",
+      "accessChanged": "Non hai più accesso alla topologia di questa sede.",
+      "invalid": "Impossibile convalidare la spiegazione, quindi non viene mostrata alcuna affermazione dell'IA.",
+      "generic": "La spiegazione con IA non è disponibile al momento."
+    },
+    "citation": {
+      "label": "Evidenza {{n}}",
+      "expired": "Dettaglio non più disponibile",
+      "observed": "osservato {{time}}",
+      "notObserved": "nessun orario di osservazione",
+      "resource": {
+        "node": "Dispositivo",
+        "relationship": "Connessione",
+        "observation": "Osservazione",
+        "confirmation": "Conferma",
+        "change": "Modifica",
+        "link_health": "Stato del collegamento",
+        "node_health": "Stato del dispositivo"
+      }
+    },
+    "proposal": {
+      "heading": "Controllo proposto",
+      "recipe": "Controllo",
+      "origin": "Da",
+      "expires": "L'approvazione scade",
+      "readOnly": "Non puoi eseguire la diagnostica in questa sede, quindi questa proposta non può essere approvata qui.",
+      "historical": "Questa proposta appartiene a una risposta precedente e non può essere approvata."
+    },
+    "run": {
+      "heading": "Controllo approvato",
+      "state": "Stato: {{state}}",
+      "loadFailed": "Impossibile caricare lo stato del controllo approvato."
+    },
+    "states": {
+      "queued": "In coda",
+      "running": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "cancelled": "Annullato",
+      "expired": "Scaduto"
+    }
   }
 }

@@ -34,7 +34,7 @@ const {
     updateWheres: [] as unknown[],
   },
   decryptMock: vi.fn(),
-  contextState: { outsideCalls: 0, systemCalls: 0 },
+  contextState: { outsideCalls: 0, systemCalls: 0, ambientScope: undefined as string | undefined },
   getListedProviderByEntryIdMock: vi.fn(),
   buildGuardedLlmFetchMock: vi.fn(),
   guardedFetchOptions: [] as Array<{
@@ -86,6 +86,7 @@ vi.mock('../sentry', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  getCurrentDbAccessContext: () => (contextState.ambientScope ? { scope: contextState.ambientScope } : undefined),
   runOutsideDbContext: (fn: () => unknown) => {
     contextState.outsideCalls += 1;
     return fn();
@@ -141,6 +142,7 @@ import {
   resolveLlmConfig,
   resolveLlmConfigForOrg,
   resolveWireModel,
+  isLlmProviderUsableForOrgInSystemContext,
   type UsableLlmConfig,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
@@ -225,6 +227,7 @@ beforeEach(() => {
   dbState.updateWheres.length = 0;
   contextState.outsideCalls = 0;
   contextState.systemCalls = 0;
+  contextState.ambientScope = undefined;
   decryptMock.mockReturnValue('partner-plaintext-key');
   guardedFetchOptions.length = 0;
   buildGuardedLlmFetchMock.mockImplementation((opts: (typeof guardedFetchOptions)[number]) => {
@@ -276,6 +279,41 @@ describe('resolveLlmConfigForOrg', () => {
     expect(decryptMock).not.toHaveBeenCalled();
     expect(contextState.outsideCalls).toBe(1);
     expect(contextState.systemCalls).toBe(1);
+  });
+});
+
+describe('isLlmProviderUsableForOrgInSystemContext (topology readiness, review R1)', () => {
+  beforeEach(() => { contextState.ambientScope = 'system'; });
+
+  it('reads on the CALLER\'s system connection — no escape, no second context, no error marking', async () => {
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row()]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(true);
+    expect(contextState.outsideCalls).toBe(0);
+    expect(contextState.systemCalls).toBe(0);
+  });
+
+  it('mirrors the resolver decisions: platform without a partner config; unusable on error status, undecryptable key or a delisted catalog pin', async () => {
+    dbState.selectResults.push([{ partnerId: null }]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(true);
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], []);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(true);
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row({ status: 'error' })]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(false);
+    decryptMock.mockImplementationOnce(() => { throw new Error('bad ciphertext'); });
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row()]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(false);
+    process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row({ catalogEntryId: CATALOG_ENTRY_ID })]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(false);
+    dbState.selectResults.push([]);
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).resolves.toBe(false);
+    expect(dbState.updateSets).toEqual([]);
+  });
+
+  it('refuses to run outside a system context (it would read under the wrong RLS scope)', async () => {
+    contextState.ambientScope = 'organization';
+    await expect(isLlmProviderUsableForOrgInSystemContext(ORG_ID)).rejects.toThrow(/system/);
+    expect(dbState.selectFields).toEqual([]);
   });
 });
 

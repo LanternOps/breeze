@@ -523,5 +523,75 @@
         "configuration": "Paramétrage"
       }
     }
+  },
+  "ai": {
+    "heading": "Expliquer",
+    "explain": "Expliquer",
+    "explainAgain": "Expliquer à nouveau",
+    "cancel": "Arrêter",
+    "started": "Enquête réseau démarrée",
+    "startFailed": "Impossible de démarrer l'enquête réseau",
+    "intro": "Demandez à l'IA d'expliquer cette sélection à partir des preuves enregistrées. Elle ne fait que lire ; rien ne s'exécute sans votre approbation.",
+    "phase": {
+      "starting": "Démarrage de l'enquête…",
+      "gathering_evidence": "Collecte des preuves…",
+      "analyzing": "Analyse des preuves…",
+      "validating": "Vérification des citations…",
+      "awaiting_approval": "En attente de votre décision sur une vérification proposée…"
+    },
+    "findings": "Constats",
+    "hypotheses": "Causes possibles",
+    "hypothesisNote": "Non vérifié : une interprétation des preuves citées.",
+    "missingData": "Données manquantes",
+    "nextChecks": "Prochaines vérifications",
+    "noEvidence": "Les preuves n'étayent aucun constat pour cette sélection.",
+    "partial": "Réponse partielle : certaines affirmations ont été retirées ou marquées comme non vérifiées.",
+    "evidenceChanged": "Certaines preuves citées ont changé ou ne sont plus disponibles ; les affirmations qui en dépendaient ont été retirées.",
+    "historical": "Réponse antérieure pour une autre sélection ou une autre révision de la carte. Les vérifications proposées sont désactivées.",
+    "fallback": "Les preuves, l'état et les diagnostics de cette page fonctionnent toujours.",
+    "errors": {
+      "disabled": "Les explications par IA sont désactivées pour cette organisation ou ce site.",
+      "limit": "La limite d'enquêtes par IA est atteinte. Réessayez plus tard.",
+      "scopeChanged": "La sélection ou son site a changé. Lancez une nouvelle explication.",
+      "accessChanged": "Vous n'avez plus accès à la topologie de ce site.",
+      "invalid": "L'explication n'a pas pu être validée ; aucune affirmation de l'IA n'est affichée.",
+      "generic": "L'explication par IA est indisponible pour le moment."
+    },
+    "citation": {
+      "label": "Preuve {{n}}",
+      "expired": "Détail plus disponible",
+      "observed": "observé {{time}}",
+      "notObserved": "aucune heure d'observation",
+      "resource": {
+        "node": "Appareil",
+        "relationship": "Connexion",
+        "observation": "Relevé",
+        "confirmation": "Validation",
+        "change": "Modification",
+        "link_health": "État du lien",
+        "node_health": "État de l'appareil"
+      }
+    },
+    "proposal": {
+      "heading": "Vérification proposée",
+      "recipe": "Vérification",
+      "origin": "Depuis",
+      "expires": "L'approbation expire",
+      "readOnly": "Vous ne pouvez pas lancer de diagnostics sur ce site ; cette proposition ne peut donc pas être approuvée ici.",
+      "historical": "Cette proposition appartient à une réponse antérieure et ne peut pas être approuvée."
+    },
+    "run": {
+      "heading": "Vérification approuvée",
+      "state": "État : {{state}}",
+      "loadFailed": "Impossible de charger l'état de la vérification approuvée."
+    },
+    "states": {
+      "queued": "En file d'attente",
+      "running": "En cours",
+      "completed": "Terminée",
+      "failed": "Échouée",
+      "cancelled": "Annulée",
+      "expired": "Expirée"
+    }
   }
 }

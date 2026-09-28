@@ -1,3 +1,4 @@
+import type { TopologyAiExplanation } from './topologyAi';
 import type { AiToolHandoffStatus } from '../utils/aiToolHandoff';
 
 // ============================================
@@ -127,7 +128,18 @@ export type AiPageContext =
   | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> };
+  | { type: 'custom'; label: string; data: Record<string, unknown> }
+  // Topology M4 (#6000): IDs only. The server pins the session to `siteId`
+  // after authorizing it; the client value is never authority afterwards.
+  | AiTopologyPageContext;
+
+export interface AiTopologyPageContext {
+  type: 'topology';
+  siteId: string;
+  subject: { kind: 'node' | 'relationship'; id: string };
+  view: 'overview' | 'physical' | 'logical';
+  graphRevision: string;
+}
 
 export interface AiTicketDraft {
   subject: string;
@@ -194,8 +206,24 @@ export interface AiRunResultArtifactRef {
   contentType: string;
 }
 
+/** Fixed, server-built phases of a topology investigation turn (M4 #6000); never model text. */
+export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'validating' | 'awaiting_approval';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
+  /**
+   * Topology M4 (#6000): a topology investigation turn never publishes
+   * `content_delta`, tool events or raw assistant text. Clients see only these
+   * fixed phases and ONE server-validated, cited `topology_explanation`.
+   */
+  | { type: 'topology_progress'; phase: AiTopologyProgressPhase }
+  | { type: 'topology_explanation'; explanation: TopologyAiExplanation }
+  /**
+   * Topology M4 (#6000): the ONLY trace of an approved `diagnose_connectivity`
+   * release a topology turn publishes — the accepted run's id and state. The
+   * client re-reads the run through the ordinary site-authorized run route.
+   */
+  | { type: 'topology_diagnostic_run'; runId: string; state: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   /**

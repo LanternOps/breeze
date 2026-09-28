@@ -523,5 +523,75 @@
         "configuration": "Konfiguration"
       }
     }
+  },
+  "ai": {
+    "heading": "Erklären",
+    "explain": "Erklären",
+    "explainAgain": "Erneut erklären",
+    "cancel": "Stoppen",
+    "started": "Netzwerkanalyse gestartet",
+    "startFailed": "Die Netzwerkanalyse konnte nicht gestartet werden",
+    "intro": "Lassen Sie die KI diese Auswahl anhand der erfassten Nachweise erklären. Sie liest nur; nichts wird ohne Ihre Freigabe ausgeführt.",
+    "phase": {
+      "starting": "Analyse wird gestartet…",
+      "gathering_evidence": "Nachweise werden gesammelt…",
+      "analyzing": "Nachweise werden ausgewertet…",
+      "validating": "Quellenangaben werden geprüft…",
+      "awaiting_approval": "Warten auf Ihre Entscheidung zu einer vorgeschlagenen Prüfung…"
+    },
+    "findings": "Befunde",
+    "hypotheses": "Mögliche Ursachen",
+    "hypothesisNote": "Nicht bestätigt – eine Deutung der zitierten Nachweise.",
+    "missingData": "Fehlende Daten",
+    "nextChecks": "Nächste Prüfungen",
+    "noEvidence": "Die Nachweise stützen für diese Auswahl keinen Befund.",
+    "partial": "Teilantwort: Einige Aussagen wurden entfernt oder als unbestätigt markiert.",
+    "evidenceChanged": "Einige zitierte Nachweise haben sich geändert oder sind nicht mehr verfügbar; davon abhängige Aussagen wurden entfernt.",
+    "historical": "Frühere Antwort für eine andere Auswahl oder Kartenrevision. Vorgeschlagene Prüfungen sind deaktiviert.",
+    "fallback": "Nachweise, Zustand und Diagnosen auf dieser Seite funktionieren weiterhin.",
+    "errors": {
+      "disabled": "KI-Erklärungen sind für diese Organisation oder diesen Standort deaktiviert.",
+      "limit": "Das Limit für KI-Analysen wurde erreicht. Versuchen Sie es später erneut.",
+      "scopeChanged": "Die Auswahl oder ihr Standort hat sich geändert. Starten Sie eine neue Erklärung.",
+      "accessChanged": "Sie haben keinen Zugriff mehr auf die Topologie dieses Standorts.",
+      "invalid": "Die Erklärung konnte nicht geprüft werden, daher wird keine KI-Aussage angezeigt.",
+      "generic": "Die KI-Erklärung ist derzeit nicht verfügbar."
+    },
+    "citation": {
+      "label": "Nachweis {{n}}",
+      "expired": "Details nicht mehr verfügbar",
+      "observed": "beobachtet {{time}}",
+      "notObserved": "kein Beobachtungszeitpunkt",
+      "resource": {
+        "node": "Gerät",
+        "relationship": "Verbindung",
+        "observation": "Beobachtung",
+        "confirmation": "Bestätigung",
+        "change": "Änderung",
+        "link_health": "Verbindungszustand",
+        "node_health": "Gerätezustand"
+      }
+    },
+    "proposal": {
+      "heading": "Vorgeschlagene Prüfung",
+      "recipe": "Prüfung",
+      "origin": "Von",
+      "expires": "Freigabe läuft ab",
+      "readOnly": "Sie dürfen an diesem Standort keine Diagnosen ausführen, daher kann dieser Vorschlag hier nicht freigegeben werden.",
+      "historical": "Dieser Vorschlag gehört zu einer früheren Antwort und kann nicht freigegeben werden."
+    },
+    "run": {
+      "heading": "Freigegebene Prüfung",
+      "state": "Zustand: {{state}}",
+      "loadFailed": "Der Status der freigegebenen Prüfung konnte nicht geladen werden."
+    },
+    "states": {
+      "queued": "In Warteschlange",
+      "running": "Läuft",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
+    }
   }
 }

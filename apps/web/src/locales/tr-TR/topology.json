@@ -523,5 +523,75 @@
         "configuration": "Yapılandırma"
       }
     }
+  },
+  "ai": {
+    "heading": "Açıkla",
+    "explain": "Açıkla",
+    "explainAgain": "Yeniden açıkla",
+    "cancel": "Durdur",
+    "started": "Ağ incelemesi başlatıldı",
+    "startFailed": "Ağ incelemesi başlatılamadı",
+    "intro": "Yapay zekâdan bu seçimi kaydedilmiş kanıtlara göre açıklamasını isteyin. Yalnızca okur; onayınız olmadan hiçbir şey çalışmaz.",
+    "phase": {
+      "starting": "İnceleme başlatılıyor…",
+      "gathering_evidence": "Kanıtlar toplanıyor…",
+      "analyzing": "Kanıtlar analiz ediliyor…",
+      "validating": "Kaynaklar denetleniyor…",
+      "awaiting_approval": "Önerilen bir kontrol için kararınız bekleniyor…"
+    },
+    "findings": "Bulgular",
+    "hypotheses": "Olası nedenler",
+    "hypothesisNote": "Doğrulanmadı — atıf yapılan kanıtların bir yorumu.",
+    "missingData": "Eksik veriler",
+    "nextChecks": "Sonraki kontroller",
+    "noEvidence": "Kanıtlar bu seçim için hiçbir bulguyu desteklemiyor.",
+    "partial": "Kısmi yanıt: bazı ifadeler kaldırıldı veya doğrulanmamış olarak işaretlendi.",
+    "evidenceChanged": "Atıf yapılan bazı kanıtlar değişti veya artık kullanılamıyor; bunlara dayanan ifadeler kaldırıldı.",
+    "historical": "Farklı bir seçim veya harita revizyonu için önceki yanıt. Önerilen kontroller devre dışı.",
+    "fallback": "Bu sayfadaki kanıtlar, durum bilgisi ve tanılamalar çalışmaya devam eder.",
+    "errors": {
+      "disabled": "Bu kuruluş veya konum için yapay zekâ açıklamaları kapalı.",
+      "limit": "Yapay zekâ inceleme sınırına ulaşıldı. Daha sonra tekrar deneyin.",
+      "scopeChanged": "Seçim veya konumu değişti. Yeni bir açıklama başlatın.",
+      "accessChanged": "Artık bu konumun topolojisine erişiminiz yok.",
+      "invalid": "Açıklama doğrulanamadı, bu nedenle hiçbir yapay zekâ ifadesi gösterilmiyor.",
+      "generic": "Yapay zekâ açıklaması şu anda kullanılamıyor."
+    },
+    "citation": {
+      "label": "Kanıt {{n}}",
+      "expired": "Ayrıntı artık kullanılamıyor",
+      "observed": "gözlem: {{time}}",
+      "notObserved": "gözlem zamanı yok",
+      "resource": {
+        "node": "Cihaz",
+        "relationship": "Bağlantı",
+        "observation": "Gözlem",
+        "confirmation": "Onay",
+        "change": "Değişiklik",
+        "link_health": "Bağlantı durumu",
+        "node_health": "Cihaz durumu"
+      }
+    },
+    "proposal": {
+      "heading": "Önerilen kontrol",
+      "recipe": "Kontrol",
+      "origin": "Kaynak",
+      "expires": "Onayın sona ermesi",
+      "readOnly": "Bu konumda tanılama çalıştıramazsınız, bu yüzden bu öneri burada onaylanamaz.",
+      "historical": "Bu öneri önceki bir yanıta ait ve onaylanamaz."
+    },
+    "run": {
+      "heading": "Onaylanan kontrol",
+      "state": "Durum: {{state}}",
+      "loadFailed": "Onaylanan kontrolün durumu yüklenemedi."
+    },
+    "states": {
+      "queued": "Sırada",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
+    }
   }
 }

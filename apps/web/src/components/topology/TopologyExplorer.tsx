@@ -124,6 +124,14 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   // The site settings read carries execute/configure + MFA authority; the graph projection reports neither.
   const canDiagnose = settings.permissions?.canDiagnose ?? !!graph?.permissions.canDiagnose;
   const canConfigureMonitoring = settings.permissions?.canConfigureMonitoring ?? !!graph?.permissions.canConfigureMonitoring;
+  // M4 Task 5: "Explain this" is offered only when the server reports AI available for the site (M4-D4).
+  const explain = settings.capabilities.ai?.available ? {
+    canApprove: canDiagnose && settings.capabilities.diagnostics.available,
+    investigationId: navigation.investigationId, runId: navigation.aiRunId,
+    onInvestigation: (investigationId: string | undefined) => { const current = parseTopologyHash(window.location.hash) ?? navigation; navigate({ ...current, investigationId, ...(investigationId ? {} : { aiRunId: undefined }) }); },
+    onRun: (aiRunId: string | undefined) => { const current = parseTopologyHash(window.location.hash) ?? navigation; navigate({ ...current, aiRunId }); },
+    onEvidenceSelect: (target: { kind: 'node' | 'relationship'; id: string }) => select({ kind: target.kind === 'relationship' ? 'edge' : 'node', id: target.id }),
+  } : undefined;
   const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
   return <section data-testid="topology-explorer" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-end gap-3">
@@ -162,7 +170,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
           hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
         {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
-          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
+          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
       {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}

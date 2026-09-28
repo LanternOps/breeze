@@ -10,6 +10,8 @@ import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptP
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
+import type { VerifiedTopologyDiagnostic } from '../topology/aiDiagnosticEffect';
+import { DIAGNOSE_CONNECTIVITY_TOOL_NAME as DIAGNOSE_CONNECTIVITY_TOOL } from './pinnedEffectPolicy';
 
 /**
  * Effect-digest pinning for tier-3 action intents (spec
@@ -96,6 +98,8 @@ type ResolverResult =
        * the creation path drops it (see `computeEffectDigestOutcome`).
        */
       verified?: VerifiedRunScript;
+      /** Topology M4-D3: the pinned diagnostic effect (digest attached by resolveEffectDigest). */
+      verifiedTopologyDiagnostic?: Omit<VerifiedTopologyDiagnostic, 'effectDigest'>;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -231,6 +235,25 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       material: runScriptDigestMaterial(built.snapshot),
       verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
     };
+  },
+
+  // diagnose_connectivity (Tier 3, SUPERVISED) — topology M4 Task 4 / M4-D3
+  // (#6000). Pins the deterministic executable effect of ONE fixed-recipe
+  // diagnostic: the materialized proposal (explicit origin/context/family and
+  // the immutable proposal expiry) plus the compiled plan's origin identity,
+  // destinations, steps, limits and dependency versions — see
+  // topology/aiDiagnosticEffect.ts for exactly what is and is not pinned.
+  // Auth-free by construction (M4-D3 "scoped loading → pure extraction";
+  // live authorization happens at release). The digest is REQUIRED for this
+  // tool (`requiresPinnedEffectDigest`): creation refuses an unresolved one
+  // and both release paths refuse a missing one instead of treating NULL as
+  // "nothing to check".
+  [DIAGNOSE_CONNECTIVITY_TOOL]: async (args, database) => {
+    // Loaded on demand: the topology planning graph is irrelevant to every other resolver.
+    const { resolveTopologyDiagnosticEffect } = await import('../topology/aiDiagnosticEffect');
+    const resolved = await resolveTopologyDiagnosticEffect(args, database);
+    if (resolved.kind !== 'material') return resolved.kind === 'missing_arg' ? MISSING_ARG : TARGET_ABSENT;
+    return { kind: 'material', material: resolved.material, verifiedTopologyDiagnostic: resolved.verified };
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
@@ -565,6 +588,8 @@ async function resolveContractUpdatedAt(
   return material(contract.updatedAt.toISOString());
 }
 
+export { requiresPinnedEffectDigest } from './pinnedEffectPolicy';
+
 /** The resolver key a given tool/action pair dispatches to, or null when the
  * surface is unpinnable. Exported so the coverage contract test can ask "does
  * this four_eyes surface resolve to anything?" without duplicating the
@@ -631,7 +656,7 @@ async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
-): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript }> {
+): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript; verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic }> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
   if (!key) return { outcome: { kind: 'not_applicable' } };
@@ -639,9 +664,13 @@ async function resolveEffectDigest(
   const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
   if (result.kind !== 'material') return { outcome: { kind: 'unresolved', reason: result.kind } };
 
+  const digest = createHash('sha256').update(result.material).digest('hex');
   return {
-    outcome: { kind: 'pinned', digest: createHash('sha256').update(result.material).digest('hex') },
+    outcome: { kind: 'pinned', digest },
     verified: result.verified,
+    ...(result.verifiedTopologyDiagnostic
+      ? { verifiedTopologyDiagnostic: { ...result.verifiedTopologyDiagnostic, effectDigest: digest } }
+      : {}),
   };
 }
 
@@ -689,9 +718,11 @@ export async function computeEffectDigestForRelease(
 ): Promise<EffectDigestReleaseResult> {
   const resolved = await resolveEffectDigest(toolName, args, database);
   const digest = resolved.outcome.kind === 'pinned' ? resolved.outcome.digest : null;
-  return resolved.verified
-    ? { digest, context: { verifiedRunScript: resolved.verified } }
-    : { digest };
+  if (resolved.verified) return { digest, context: { verifiedRunScript: resolved.verified } };
+  if (resolved.verifiedTopologyDiagnostic) {
+    return { digest, context: { verifiedTopologyDiagnostic: resolved.verifiedTopologyDiagnostic } };
+  }
+  return { digest };
 }
 
 /**

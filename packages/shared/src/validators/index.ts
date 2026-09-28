@@ -1138,6 +1138,8 @@ export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhy
 export * from './topologyTelemetry';
 // Incident impact and change history contracts (M3 #5999 Task 10)
 export * from './topologyInvestigation';
+// Topology AI investigation contracts (M4 #6000)
+export * from './topologyAi';
 export * from './topologyMonitoring';
 
 export * from './billingProfiles';

@@ -12,6 +12,12 @@ import {
 // device stats build inArray(devices.siteId, allowedSiteIds) and alert stats
 // build inArray(alerts.deviceId, resolvedDeviceIds). Removing either production
 // narrowing line makes the matching assertion fail.
+// Topology M4-D2: the admin/session reads resolve the caller's pinned-site visibility.
+vi.mock('../services/topology/aiSessionAccess', () => ({
+  resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
+  topologySessionAccessCondition: vi.fn(async () => undefined),
+  topologySessionCondition: vi.fn(() => undefined),
+}));
 vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
   return {

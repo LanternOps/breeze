@@ -255,9 +255,15 @@ export async function revalidateTopologyTraceAuthority(
   return null;
 }
 
-/** Whether a run carries a frozen requester authority that every boundary must re-derive. */
-export function runRequiresRequesterRevalidation(run: { recipeId: string; policyId?: string | null }): boolean {
-  return run.recipeId === 'trace_route' || !!run.policyId;
+/**
+ * Whether a run carries a frozen requester authority that every boundary must
+ * re-derive: a routed trace, a scheduled occurrence, and ANY run that froze one
+ * at acceptance (an approved AI proposal, topology M4 Task 4). A run that
+ * carries a frozen authority is always fenced on it — the record is never
+ * decorative.
+ */
+export function runRequiresRequesterRevalidation(run: { recipeId: string; policyId?: string | null; requesterAuthority?: unknown }): boolean {
+  return run.recipeId === 'trace_route' || !!run.policyId || (run.requesterAuthority !== null && run.requesterAuthority !== undefined);
 }
 
 export const revalidateTopologyRequesterAuthority = (input: Omit<TopologyTraceAuthorityInput, 'requireTraceCapability'>) =>

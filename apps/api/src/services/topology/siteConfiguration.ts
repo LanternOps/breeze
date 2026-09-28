@@ -5,6 +5,7 @@ import {
   type TopologyConfigurationPayload,
   type ResolvedTopologySettings,
   type TopologyTemplateSiteOutcome,
+  type TopologyScope,
 } from '@breeze/shared';
 import { canonicalizeArguments } from '@breeze/shared/canonicalize';
 import { db, withDbTransaction } from '../../db';
@@ -60,6 +61,24 @@ export async function loadTopologyConfiguration(
   );
   if (current.scope.orgId !== ctx.scope.orgId)
     throw new TopologyOperationError('topology_site_not_found', 404);
+  return readTopologyConfiguration(ctx.scope, selection);
+}
+
+/**
+ * The configuration read itself, with NO caller authorization: every query is
+ * predicated on the explicit scope. Callers are either `loadTopologyConfiguration`
+ * (after its access check) or an auth-free effect loader (M4-D3) that runs the
+ * live authorization separately.
+ */
+export async function readTopologyConfiguration(
+  scope: TopologyScope,
+  selection?: {
+    partnerVersionId: string | null;
+    orgVersionId: string | null;
+    overrides?: TopologyConfigurationPayload;
+  },
+): Promise<TopologyConfigurationSnapshot> {
+  const ctx = { scope };
   const [binding] = await db
     .select()
     .from(topologySiteTemplateBindings)

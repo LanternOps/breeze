@@ -32,6 +32,7 @@
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
     "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
+    "freshFactorRequired": "This check needs a fresh passkey confirmation (Touch ID, Windows Hello or a hardware key) made for this approval. Try again.",
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",
     "approvedToast": "Action approved",
