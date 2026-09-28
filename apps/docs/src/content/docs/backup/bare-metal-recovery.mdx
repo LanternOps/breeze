@@ -270,9 +270,10 @@ Progress is checkpointed to `<state-dir>/rebuild-<snapshot>-<target>.json` after
 
 The **VM Restore Wizard**'s **Rebuild engine** option runs the same [rebuild engine](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild)
 described above, but writes the result straight to a **VHDX** disk image
-instead of a physical disk on a platform-matched rebuild host, then boots it
-as a Hyper-V VM when the target is Windows — a Linux target still writes the
-VHDX for you to attach yourself. It's offered alongside **Full Restore** and
+instead of a physical disk on a platform-matched rebuild host. On a Windows
+rebuild host it can also create (but does not start) a Hyper-V VM from that
+VHDX — only when you ask for one in step 6; otherwise, and always on Linux,
+you attach the VHDX to a VM yourself. It's offered alongside **Full Restore** and
 **Instant Boot** whenever the selected snapshot carries a layout manifest
 (the same **Bare-metal restorable** snapshots the recovery media uses).
 
@@ -281,15 +282,23 @@ VHDX for you to attach yourself. It's offered alongside **Full Restore** and
 2. Select the backup snapshot to restore.
 3. On the **Restore mode** step, choose **Rebuild engine**.
 4. Pick a **rebuild host** running the same platform as the snapshot — an
-   online device running the Breeze helper (Linux: `qemu-utils` installed;
-   Windows: the Hyper-V role) with enough free disk space for the image.
-   Preflight refuses the run if either requirement isn't met.
+   online device running the Breeze helper with enough free disk space for
+   the image. On Linux the host also needs `qemu-utils`; the engine's
+   preflight refuses the run if `qemu-img` is missing or the free space is
+   short. A Windows host writes the VHDX natively, so the rebuild itself
+   needs no Hyper-V role — only the optional VM in step 6 does, and without
+   it that step fails as described there.
 5. Enter an absolute **output path** on the rebuild host ending in `.vhdx`
-   (a POSIX path on Linux, a drive-letter path on Windows).
+   (a POSIX path on Linux, a drive-letter path on Windows — a path in the
+   other host's style is refused with `output_path_host_mismatch`).
 6. On a Windows rebuild host, optionally name a Hyper-V VM and virtual
-   switch — Breeze creates the VM from the finished VHDX automatically, with
-   no network adapter unless you name a switch. If VM creation fails, the
-   VHDX itself is kept and the failure is reported rather than hidden.
+   switch — Breeze creates a Generation 2 VM from the finished VHDX, with
+   no network adapter unless you name a switch, and leaves it off for you
+   to start. If VM creation fails, the rebuild still completes, the VHDX is
+   kept, and the failure is reported rather than hidden: it is the first
+   warning on the restore job (shown as its error summary in the restore
+   history) and is recorded on the recovery's result as `vmCreated: false`
+   with the reason in `vmError`.
 7. Click **Start Rebuild**.
 </Steps>
 
@@ -320,9 +329,12 @@ What a Windows whole-machine rebuild preserves, and what it doesn't yet:
 - A BitLocker-protected source volume restores in **plaintext**. Breeze
   records the intent to re-encrypt on first boot; the executor for that
   intent ships with the Windows recovery media (W07).
-- A domain controller's system state is refused outright — recovering a DC
+- A domain controller source is refused at preflight — recovering a DC
   this way risks a broken AD replication topology; use your normal DC
-  recovery procedure instead.
+  recovery procedure instead. The refusal can only be overridden from the
+  command line (`breeze-backup rebuild --allow-domain-controller`), after
+  reading the DC recovery guidance; the recovery console, Restore as VM
+  and DR rehearsals never override it.
 
 ---
 

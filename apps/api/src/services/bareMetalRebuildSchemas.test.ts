@@ -27,6 +27,32 @@ describe('hypervOptionsSchema', () => {
     const value = { vmName: 'w06-proof', switchName: 'lab-switch', memoryMb: 4096, cpuCount: 2 };
     expect(hypervOptionsSchema.parse(value)).toEqual(value);
   });
+
+  // W06d: the same sizing bounds the agent enforces (ValidateCreateVMRequest),
+  // so a request the helper would refuse after hours of restore is a 400 now.
+  it.each([
+    ['memoryMb at the Gen2 ceiling', { memoryMb: 12582912 }, true],
+    ['memoryMb above the Gen2 ceiling', { memoryMb: 12582914 }, false],
+    ['odd memoryMb', { memoryMb: 4097 }, false],
+    ['odd memoryMb at the minimum', { memoryMb: 513 }, false],
+    ['cpuCount at the Gen2 ceiling', { cpuCount: 240 }, true],
+    ['cpuCount above the Gen2 ceiling', { cpuCount: 241 }, false],
+  ])('%s', (_label, extra, ok) => {
+    expect(hypervOptionsSchema.safeParse({ vmName: 'w06-proof', ...extra }).success).toBe(ok);
+  });
+
+  it.each([
+    ['vmName newline', { vmName: 'a\nb' }],
+    ['vmName NUL', { vmName: 'a\u0000b' }],
+    ['vmName tab', { vmName: 'a\tb' }],
+    ['vmName DEL', { vmName: 'a\u007fb' }],
+    ['vmName C1 NEL', { vmName: 'a\u0085b' }],
+    ['switchName carriage return', { vmName: 'ok', switchName: 'LAN\r' }],
+  ])('refuses control characters: %s', (_label, value) => {
+    const res = hypervOptionsSchema.safeParse(value);
+    expect(res.success).toBe(false);
+    expect(JSON.stringify(res.error?.issues)).toContain('control character');
+  });
 });
 
 // `routes/backup/schemas.ts` and `drBareMetalRebuildStep.ts` import this module

@@ -20,18 +20,43 @@ export function isAbsoluteRebuildPath(p: string): boolean {
 }
 
 /**
+ * A rebuild path's style must match the rebuild host's OS: a drive-letter
+ * path only on a Windows host, a POSIX path only on a non-Windows one. The
+ * helper would otherwise refuse the target (or write somewhere odd) only
+ * after the recovery rows exist and the command has been queued.
+ */
+export function rebuildPathMatchesHostOs(p: string, hostOsType: string | null | undefined): boolean {
+  return /^[A-Za-z]:\\/.test(p) === (hostOsType === 'windows');
+}
+
+/**
  * Optional Hyper-V VM creation after a Windows VHDX rebuild (VM-restore path
  * only; DR rehearsals stop at the VHDX). Field names match the agent's
  * `hyperVPayload` json tags. No network adapter unless `switchName` is set.
  * Only valid for a Windows rebuild host — enforced by the caller, which knows
  * the host (`hyperv_requires_windows_host`, 400).
  */
+// C0 controls, DEL and C1 controls — the agent's refuseControlChars
+// (unicode.IsControl) refuses the same set.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+// Hyper-V Gen2 ceilings, mirrored by the agent's ValidateCreateVMRequest
+// (maxCreateVMMemoryMB / maxCreateVMCPUCount): 12 TiB of startup memory in a
+// multiple of 2 MB, and 240 virtual processors.
+const HYPERV_MAX_MEMORY_MB = 12 * 1024 * 1024;
+const HYPERV_MAX_CPU_COUNT = 240;
+
 export const hypervOptionsSchema = z
   .object({
-    vmName: z.string().min(1).max(100),
-    switchName: z.string().min(1).max(200).optional(),
-    memoryMb: z.number().int().min(512).optional(),
-    cpuCount: z.number().int().min(1).optional(),
+    vmName: z.string().min(1).max(100).refine((s) => !CONTROL_CHARS.test(s), { message: 'vmName must not contain a control character' }),
+    switchName: z
+      .string()
+      .min(1)
+      .max(200)
+      .refine((s) => !CONTROL_CHARS.test(s), { message: 'switchName must not contain a control character' })
+      .optional(),
+    memoryMb: z.number().int().min(512).max(HYPERV_MAX_MEMORY_MB).multipleOf(2).optional(),
+    cpuCount: z.number().int().min(1).max(HYPERV_MAX_CPU_COUNT).optional(),
   })
   .strict()
   .optional();

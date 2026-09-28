@@ -81,7 +81,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'restore_as_vm',
       description:
-        'Restore a snapshot as a VM. hyperv (default) creates a Hyper-V VM on Windows from a Hyper-V backup; rebuild turns a whole-machine snapshot with a disk layout manifest into a VHDX on a rebuild host of the SAME platform (Linux snapshot on a Linux host, Windows snapshot on a Windows host). Rebuilt images always get a NEW machine identity. On a Windows rebuild host, pass the optional hyperv block to create a Hyper-V VM from the VHDX (no network adapter unless switchName is set); otherwise attach the VHDX to a VM manually.',
+        'Restore a snapshot as a VM. hyperv (default) creates a Hyper-V VM on a Windows host from a Hyper-V backup; rebuild turns a whole-machine snapshot with a disk layout into a VHDX on a rebuild host, always with a NEW machine identity.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -110,7 +110,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           },
           rebuildHostDeviceId: {
             type: 'string',
-            description: 'Device UUID that runs the rebuild; its OS must match the snapshot platform (required for engine "rebuild")',
+            description: 'Device UUID that runs the rebuild; same platform as the snapshot (Linux on Linux, Windows on Windows). Required for engine "rebuild"',
           },
           outputPath: {
             type: 'string',
@@ -126,7 +126,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
               cpuCount: { type: 'number', description: 'Optional virtual processor count' },
             },
             required: ['vmName'],
-            description: 'Optional (engine "rebuild", Windows rebuild hosts only): create a Gen2 Hyper-V VM from the rebuilt VHDX',
+            description: 'Optional, engine "rebuild" on a Windows host only: create (not start) a Gen2 Hyper-V VM from the VHDX. Omit to attach the VHDX to a VM manually',
           },
         },
         required: ['snapshotId'],

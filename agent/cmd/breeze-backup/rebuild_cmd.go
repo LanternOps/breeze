@@ -307,7 +307,7 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 		writeResult(res)
 		return runErr
 	}
-	res, runErr := runTokenModeRebuild(ctx, opts, report, rebuild.Run)
+	res, runErr := runTokenModeRebuild(ctx, opts, report, rebuild.Run, nil)
 	writeResult(res)
 	return runErr
 }
@@ -321,7 +321,16 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 // confirmation after the machine restarts (the console posts it), and
 // checked_in only ever comes from the heartbeat marker match (server-side,
 // see routes/agents/heartbeat.ts). runFn is rebuild.Run outside tests.
-func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(bmr.ProgressUpdate), runFn func(context.Context, rebuild.Options) (*rebuild.Result, error)) (*rebuild.Result, error) {
+//
+// afterRun, when non-nil, runs after a successful real run and BEFORE the
+// "validated" post, and may annotate the result (the bare_metal_rebuild
+// command's optional Hyper-V VM step records vmCreated/vmError and leads
+// Warnings with a failure). It must come first: for an identity: new
+// recovery the validated post is what completes the row server-side, after
+// which the server ignores anything the command result adds — so an outcome
+// recorded after that post would never reach it. afterRun never changes the
+// run's status; the CLI passes nil.
+func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(bmr.ProgressUpdate), runFn func(context.Context, rebuild.Options) (*rebuild.Result, error), afterRun func(context.Context, *rebuild.Result)) (*rebuild.Result, error) {
 	dry := opts
 	dry.DryRun = true
 	pre, preErr := runFn(ctx, dry)
@@ -352,6 +361,9 @@ func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(
 	res, runErr = annotateBudgetFailure(ctx, res, runErr)
 	switch {
 	case runErr == nil:
+		if afterRun != nil && res != nil {
+			afterRun(ctx, res)
+		}
 		report(bmr.ProgressUpdate{Status: "validated", Result: res, Warnings: res.Warnings})
 	case res != nil && res.Status == "refused":
 		report(bmr.ProgressUpdate{Status: "refused", Reason: res.Refusal, Result: res})

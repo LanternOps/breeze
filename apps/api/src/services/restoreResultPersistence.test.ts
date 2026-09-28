@@ -97,6 +97,28 @@ describe('restore result persistence', () => {
     });
   });
 
+  it('keeps the bare_metal_rebuild Hyper-V VM outcome (vmCreated/vmError) and redacts vmError (W06d)', () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    const created = buildRestoreResultMetadata(
+      'bare_metal_rebuild',
+      { status: 'completed' },
+      { status: 'completed', phaseReached: 'validate', vmCreated: true },
+    );
+    expect(created).toMatchObject({ status: 'completed', vmCreated: true });
+
+    const failed = buildRestoreResultMetadata(
+      'bare_metal_rebuild',
+      { status: 'completed' },
+      { status: 'completed', vmCreated: false, vmError: `New-VM: access denied\n${pem}` },
+    );
+    expect(failed.vmCreated).toBe(false);
+    expect(failed.vmError).toContain('New-VM: access denied');
+    expect(failed.vmError).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(failed.vmError).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
   it('redacts secrets from agent-supplied error/stderr/warnings before persistence (#2434)', () => {
     const pem =
       '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';

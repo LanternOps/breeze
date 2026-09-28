@@ -132,6 +132,21 @@ describe('startRebuildEngineVmRestore — host/platform matching (W06d)', () => 
     expect(mocks.createBareMetalRecovery).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a POSIX path on a Windows host', 'windows', '/srv/rebuild/dev-1.vhdx'],
+    ['a drive-letter path on a Linux host', 'linux', 'C:\\Rebuild\\dev-1.vhdx'],
+  ])('refuses %s with 400 output_path_host_mismatch before creating rows', async (_label, os, outputPath) => {
+    mocks.select
+      .mockReturnValueOnce(snapshotRow({ platform: os, disks: [] }))
+      .mockReturnValueOnce(hostRow(os));
+
+    const result = await startRebuildEngineVmRestore({ ...input, outputPath });
+
+    expect(result).toMatchObject({ ok: false, status: 400, error: 'output_path_host_mismatch' });
+    expect(mocks.createBareMetalRecovery).not.toHaveBeenCalled();
+    expect(mocks.queueBareMetalRebuild).not.toHaveBeenCalled();
+  });
+
   // R34
   it('rejects a hyperv block targeting a non-Windows host with 400', async () => {
     mocks.select
@@ -226,7 +241,7 @@ describe('startRebuildEngineVmRestore — host/platform matching (W06d)', () => 
       .mockReturnValueOnce(snapshotRow({ platform: 'windows', disks: [] }))
       .mockReturnValueOnce(hostRow('windows', 'offline'));
 
-    const result = await startRebuildEngineVmRestore(input);
+    const result = await startRebuildEngineVmRestore({ ...input, outputPath: 'C:\\Rebuild\\dev-1.vhdx' });
 
     expect(result).toEqual({ ok: false, status: 409, error: 'Device is offline, cannot execute command' });
   });

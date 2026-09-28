@@ -20,6 +20,7 @@ import {
   mintRecoveryTokenForRecovery,
 } from './bareMetalRecoveryService';
 import { queueBareMetalRebuildWithSystemPrecheck, type BareMetalRebuildPayload } from './bareMetalRebuildCommand';
+import { rebuildPathMatchesHostOs } from './bareMetalRebuildSchemas';
 import { CommandTypes, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import {
   BACKUP_READ_CREDENTIAL_COMMAND_TYPES,
@@ -835,6 +836,16 @@ async function dispatchBareMetalRebuildGroup(
     hostOsType = hostRow.osType;
   }
 
+  // The stored default (unset by the operator) is the Linux dir; map it to
+  // the host's own default (W06d). An operator-set dir must already be in the
+  // host's path style — checked once per group, before any row is created.
+  const outputDir = config.outputDir === DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR
+    ? defaultRebuildOutputDir(hostOsType ?? 'linux')
+    : config.outputDir;
+  if (rehearsal && host && !rebuildPathMatchesHostOs(outputDir, hostOsType)) {
+    return failGroup('output_path_host_mismatch');
+  }
+
   const alreadyQueued = new Set(
     nextResults.queuedRecoveries
       .filter((entry) => entry.groupId === group.id)
@@ -895,11 +906,7 @@ async function dispatchBareMetalRebuildGroup(
     }
 
     if (rehearsal && host && serverUrl) {
-      // The stored default (unset by the operator) is the Linux dir; map it to
-      // the host's own default, and join with the dir's separator (W06d).
-      const outputDir = config.outputDir === DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR
-        ? defaultRebuildOutputDir(hostOsType ?? 'linux')
-        : config.outputDir;
+      // Joined with the dir's separator (W06d); outputDir resolved above.
       const target = { kind: 'vhdx' as const, path: joinRebuildOutputPath(outputDir, `${deviceId}-${recoveryId}.vhdx`) };
       let token: string;
       try {

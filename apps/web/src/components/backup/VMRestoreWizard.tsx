@@ -216,12 +216,15 @@ export default function VMRestoreWizard() {
       diskSizeGb: diskGB,
     };
     // Optional Hyper-V VM after a Windows rebuild, sized from the VM Specs
-    // step (the agent defaults any field left out).
+    // step (the agent defaults any field left out). Hyper-V startup memory
+    // must be a multiple of 2 MB (the API refuses an odd value), so an odd
+    // entry is rounded down — 512 is even, so the result never drops below
+    // the minimum.
     const hyperv = hypervRequested
       ? {
           vmName: hypervVmName.trim(),
           switchName: hypervSwitchName.trim() || undefined,
-          memoryMb: Number.isInteger(memoryMB) && memoryMB >= 512 ? memoryMB : undefined,
+          memoryMb: Number.isInteger(memoryMB) && memoryMB >= 512 ? memoryMB - (memoryMB % 2) : undefined,
           cpuCount: Number.isInteger(cpuCount) && cpuCount >= 1 ? cpuCount : undefined,
         }
       : undefined;

@@ -91,6 +91,10 @@ func ValidateCreateVMRequest(req CreateVMRequest) error {
 	if req.MemoryMB != 0 && (req.MemoryMB < minCreateVMMemoryMB || req.MemoryMB > maxCreateVMMemoryMB) {
 		return fmt.Errorf("hyperv.memoryMb must be between %d and %d, got %d", minCreateVMMemoryMB, maxCreateVMMemoryMB, req.MemoryMB)
 	}
+	if req.MemoryMB%2 != 0 {
+		// Hyper-V refuses startup memory that is not a multiple of 2 MB.
+		return fmt.Errorf("hyperv.memoryMb must be a multiple of 2, got %d", req.MemoryMB)
+	}
 	if req.CPUCount != 0 && (req.CPUCount < 1 || req.CPUCount > maxCreateVMCPUCount) {
 		return fmt.Errorf("hyperv.cpuCount must be between 1 and %d, got %d", maxCreateVMCPUCount, req.CPUCount)
 	}
@@ -103,7 +107,8 @@ func ValidateCreateVMRequest(req CreateVMRequest) error {
 // buildCreateVMFromVHDXScript renders the whole VM creation as ONE script so
 // one PowerShell process (one runPSContext timeout) covers it. Every caller
 // value is bound once, as a psQuote'd literal assignment ($name, $vhd,
-// $switch); the commands only reference those variables.
+// $switchName — never $switch, a PowerShell automatic variable); the
+// commands only reference those variables.
 //
 // Order: resolve the switch (exact -eq match — Get-VMSwitch -Name and
 // Connect-VMNetworkAdapter -SwitchName are wildcards) and refuse an existing
@@ -130,9 +135,9 @@ func buildCreateVMFromVHDXScript(req CreateVMRequest) (string, error) {
 	fmt.Fprintf(&sb, "$vhd = %s\n", psQuote(req.VHDXPath))
 	sb.WriteString("if (-not (Test-Path -LiteralPath $vhd -PathType Leaf)) { throw ('Rebuilt VHDX not found: ' + $vhd) }\n")
 	if req.SwitchName != "" {
-		fmt.Fprintf(&sb, "$switch = %s\n", psQuote(req.SwitchName))
-		sb.WriteString(`$switches = @(Get-VMSwitch | Where-Object { $_.Name -eq $switch })
-if ($switches.Count -ne 1) { throw ("Expected exactly one virtual switch named '" + $switch + "', found " + $switches.Count) }
+		fmt.Fprintf(&sb, "$switchName = %s\n", psQuote(req.SwitchName))
+		sb.WriteString(`$switches = @(Get-VMSwitch | Where-Object { $_.Name -eq $switchName })
+if ($switches.Count -ne 1) { throw ("Expected exactly one virtual switch named '" + $switchName + "', found " + $switches.Count) }
 $sw = $switches[0]
 `)
 	}

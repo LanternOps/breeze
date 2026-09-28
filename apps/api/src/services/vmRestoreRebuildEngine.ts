@@ -26,7 +26,7 @@ import {
   mintRecoveryTokenForRecovery,
 } from './bareMetalRecoveryService';
 import { queueBareMetalRebuild } from './bareMetalRebuildCommand';
-import { resolveSnapshotPlatform, type HypervOptions } from './bareMetalRebuildSchemas';
+import { rebuildPathMatchesHostOs, resolveSnapshotPlatform, type HypervOptions } from './bareMetalRebuildSchemas';
 import { resolveServerUrl } from './recoveryBootstrap';
 
 export const REBUILD_VHDX_RESTORE_MODE = 'rebuild_vhdx';
@@ -141,6 +141,16 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
       status: 400,
       error: 'hyperv_requires_windows_host',
       message: `${HYPERV_REQUIRES_WINDOWS_HOST_MESSAGE}; this host is ${host.osType}`,
+    };
+  }
+  if (!rebuildPathMatchesHostOs(input.outputPath, host.osType)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'output_path_host_mismatch',
+      message: host.osType === 'windows'
+        ? 'outputPath must be a drive-letter path (e.g. C:\\…) on a Windows rebuild host'
+        : `outputPath must be a POSIX path (/…) on a ${host.osType} rebuild host`,
     };
   }
   if (host.status !== 'online') {

@@ -104,9 +104,9 @@ type bareMetalRebuildResult struct {
 // execBareMetalRebuild executes a server-driven bare_metal_rebuild command
 // on this host through the same token-mode path as `breeze-backup rebuild
 // --token`: authenticate the recovery token, build the options from the
-// bootstrap, dry-run preflight, run, and post exactly one terminal
-// progress status (validated/refused/failed). rebuildFn is rebuild.Run
-// outside tests.
+// bootstrap, dry-run preflight, run, create the optional Hyper-V VM, and
+// post exactly one terminal progress status (validated/refused/failed).
+// rebuildFn is rebuild.Run outside tests.
 //
 // Outcome mapping: a completed run is a successful command carrying the
 // result; a REFUSED run is also a successful command (the result's status
@@ -142,7 +142,19 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 		slog.Info("bare_metal_rebuild progress", "recoveryId", p.RecoveryID, "phase", string(ph), "message", msg, "current", cur, "total", total)
 	}
 
-	res, runErr := runTokenModeRebuild(ctx, opts, report, rebuildFn)
+	// The optional Hyper-V VM is created inside the token-mode run, after
+	// the engine completes and before the "validated" post, so that post
+	// carries vmCreated/vmError to the recovery row (see runTokenModeRebuild).
+	var afterRun func(context.Context, *rebuild.Result)
+	if p.HyperV != nil {
+		afterRun = func(ctx context.Context, res *rebuild.Result) {
+			if res.Status == "completed" {
+				createHyperVVM(ctx, &p, res)
+			}
+		}
+	}
+
+	res, runErr := runTokenModeRebuild(ctx, opts, report, rebuildFn, afterRun)
 	if errors.Is(runErr, rebuild.ErrUnsupportedHost) {
 		return fail(rebuild.ErrUnsupportedHost.Error())
 	}
@@ -151,9 +163,6 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 			runErr = errors.New("rebuild returned no result")
 		}
 		return fail(runErr.Error())
-	}
-	if runErr == nil && res.Status == "completed" && p.HyperV != nil {
-		createHyperVVM(ctx, &p, res)
 	}
 	body, merr := json.Marshal(bareMetalRebuildResult{Result: res, RecoveryID: p.RecoveryID})
 	if merr != nil {
@@ -170,7 +179,8 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 }
 
 // createHyperVVM creates the optional Hyper-V VM after a completed rebuild
-// and records the outcome on res. A failure never fails the command — the
+// (before the validated progress post — see execBareMetalRebuild) and records
+// the outcome on res. A failure never fails the command — the
 // rebuild succeeded and the VHDX stays where it is — but it is never silent
 // either: VMCreated stays false, VMError carries the reason, and the reason
 // leads Warnings so no warning cap can trim it away.

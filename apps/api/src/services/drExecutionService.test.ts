@@ -865,6 +865,25 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
       expect(pending[0]).toMatchObject({ payload: { target: { kind: 'vhdx', path: `D:\\dr\\out\\${DEVICE_ID}-${REC_1}.vhdx` } } });
     });
 
+    it.each([
+      ['a POSIX outputDir on a Windows host', 'windows', '/srv/dr/out'],
+      ['a drive-letter outputDir on a Linux host', 'linux', 'D:\\dr\\out'],
+    ])('fails the group with output_path_host_mismatch for %s (no recovery, no pending send)', async (_label, os, outputDir) => {
+      if (os === 'windows') windowsSnapshots();
+      hostOsType(os);
+      const group = bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID, outputDir } });
+
+      const { results, pending } = await dispatchGroup(execution('rehearsal'), group as any, initialResults());
+
+      expect(results.failedDispatches).toEqual([
+        expect.objectContaining({ groupId: GROUP_ID, commandType: 'BARE_METAL_REBUILD', error: 'output_path_host_mismatch' }),
+      ]);
+      expect(bmrMocks.createBareMetalRecovery).not.toHaveBeenCalled();
+      expect(bmrMocks.mintRecoveryTokenForRecovery).not.toHaveBeenCalled();
+      expect(pending).toEqual([]);
+      expect(results.dispatchStatus).toBe('failed');
+    });
+
     it('keeps the Linux default dir for a Linux host', async () => {
       const group = bmrGroup({ restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID } });
 

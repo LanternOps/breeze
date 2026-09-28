@@ -473,3 +473,63 @@ func TestExecBareMetalRebuild_HyperVRefusedOffWindowsBeforeEngine(t *testing.T) 
 		t.Fatalf("engine calls = %d, VM calls = %d; want neither", len(fake.calls), len(*got))
 	}
 }
+
+// W06d final review: the optional VM is created BEFORE the "validated"
+// progress post, so that post — the one that terminalises an identity:new
+// recovery server-side — carries vmCreated/vmError. Posting validated first
+// left the VM outcome on the command result alone, which the server then
+// ignored because the recovery row was already terminal.
+func TestExecBareMetalRebuild_VMOutcomeRidesTheValidatedPost(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	for name, tt := range map[string]struct {
+		createErr   error
+		wantCreated bool
+		wantError   string
+	}{
+		"created":       {nil, true, ""},
+		"create failed": {errors.New("New-VM: access denied"), false, "New-VM: access denied"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, statuses, _, bodies := newTokenModeTestServerRecordingBodies(t, biosLayoutJSON(t), "new", "")
+			var statusesAtCreate []string
+			orig := createRebuildVMFn
+			createRebuildVMFn = func(context.Context, hyperv.CreateVMRequest) error {
+				statusesAtCreate = statuses()
+				return tt.createErr
+			}
+			t.Cleanup(func() { createRebuildVMFn = orig })
+
+			vhdx := rebuiltVHDX(t)
+			fake := &fakeRebuild{}
+			pushCompletedRun(fake, vhdx, "engine warning")
+			result := execBareMetalRebuild(context.Background(), testBareMetalRebuildPayloadWithHyperV(t, server.URL, vhdx, `{"vmName":"w06-proof"}`), fake.fn)
+			if !result.Success {
+				t.Fatalf("result = %+v", result)
+			}
+			if strings.Join(statusesAtCreate, ",") != "planned,restoring" {
+				t.Fatalf("statuses already posted when the VM was created = %v, want planned,restoring (validated must come after)", statusesAtCreate)
+			}
+			if got := statuses(); strings.Join(got, ",") != "planned,restoring,validated" {
+				t.Fatalf("posted statuses = %v", got)
+			}
+			all := bodies()
+			var validated struct {
+				Status   string           `json:"status"`
+				Warnings []string         `json:"warnings"`
+				Result   hyperVResultBody `json:"result"`
+			}
+			if err := json.Unmarshal(all[len(all)-1], &validated); err != nil {
+				t.Fatalf("validated body: %v", err)
+			}
+			if validated.Status != "validated" {
+				t.Fatalf("last post status = %q, want validated", validated.Status)
+			}
+			if validated.Result.VMCreated != tt.wantCreated || validated.Result.VMError != tt.wantError {
+				t.Fatalf("validated post result vmCreated=%v vmError=%q, want %v %q", validated.Result.VMCreated, validated.Result.VMError, tt.wantCreated, tt.wantError)
+			}
+			if tt.wantError != "" && (len(validated.Warnings) == 0 || !strings.Contains(validated.Warnings[0], tt.wantError)) {
+				t.Fatalf("validated post warnings = %v, want the VM failure first", validated.Warnings)
+			}
+		})
+	}
+}

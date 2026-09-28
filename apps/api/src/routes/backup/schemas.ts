@@ -470,8 +470,9 @@ export const bmrMediaListSchema = z.object({
 });
 
 // Restore-as-VM (W05a): two engines behind one route. `hyperv` is the
-// existing Hyper-V path (fields verbatim); `rebuild` drives the Linux rebuild
-// engine on a helper host and produces a VHDX. The rebuild variant is strict
+// existing Hyper-V path (fields verbatim); `rebuild` drives the rebuild
+// engine on a helper host of the snapshot's platform (Linux or Windows) and
+// produces a VHDX. The rebuild variant is strict
 // and carries NO `identity` field — the server always creates the recovery
 // with `identity: 'new'` (spec §9: a rehearsal image can never resume the
 // production identity), so a client cannot even ask.

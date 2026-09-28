@@ -409,6 +409,26 @@ describe('VMRestoreWizard — platform-matched rebuild host', () => {
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
   });
 
+  it('never sends an odd hyperv.memoryMb (Hyper-V needs a multiple of 2 MB; the API refuses it)', async () => {
+    mockWithSnapshots([windowsSnapshot]);
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Windows Server Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /3\. VM Specs/i }));
+    // Wait for the estimate to pre-fill (8192) before overriding it.
+    await waitFor(() => expect((screen.getByLabelText(/Memory/i) as HTMLInputElement).value).toBe('8192'));
+    fireEvent.change(screen.getByLabelText(/Memory/i), { target: { value: '4097' } });
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+    fireEvent.click(await screen.findByTestId('vm-restore-engine-rebuild'));
+    fireEvent.click(await screen.findByRole('radio', { name: /hv-rebuild-01/i }));
+    fireEvent.change(screen.getByTestId('vm-restore-hyperv-vm-name'), { target: { value: 'srv-01-restored' } });
+    fireEvent.change(screen.getByTestId('vm-restore-rebuild-output-path'), { target: { value: 'C:\\Rebuild\\srv-01.vhdx' } });
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/backup/restore/as-vm')).toBe(true));
+
+    expect(bodyOfRestoreCall().hyperv).toEqual({ vmName: 'srv-01-restored', memoryMb: 4096, cpuCount: 4 });
+  });
+
   it('omits hyperv when no VM name is given and keeps the manual-attach note', async () => {
     mockWithSnapshots([windowsSnapshot]);
     await openRebuildFor(/Windows Server Snapshot/i);

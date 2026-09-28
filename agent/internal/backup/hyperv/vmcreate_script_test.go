@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,12 @@ func TestValidateCreateVMRequest(t *testing.T) {
 		"cpu negative":          {func(r *CreateVMRequest) { r.CPUCount = -1 }, "cpuCount"},
 		"memory absurdly large": {func(r *CreateVMRequest) { r.MemoryMB = 1 << 50 }, "memoryMb"},
 		"cpu too many":          {func(r *CreateVMRequest) { r.CPUCount = 1000 }, "cpuCount"},
+		"memory at maximum":     {func(r *CreateVMRequest) { r.MemoryMB = 12582912 }, ""},
+		"memory one over max":   {func(r *CreateVMRequest) { r.MemoryMB = 12582914 }, "memoryMb"},
+		"memory odd":            {func(r *CreateVMRequest) { r.MemoryMB = 4097 }, "multiple of 2"},
+		"memory odd at minimum": {func(r *CreateVMRequest) { r.MemoryMB = 513 }, "multiple of 2"},
+		"cpu at maximum":        {func(r *CreateVMRequest) { r.CPUCount = 240 }, ""},
+		"cpu one over max":      {func(r *CreateVMRequest) { r.CPUCount = 241 }, "cpuCount"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := validCreateVMRequest()
@@ -127,7 +134,7 @@ func TestBuildCreateVMFromVHDXScript_SwitchIsExactMatchAndConnected(t *testing.T
 		"-MemoryStartupBytes 8589934592",
 		"Set-VM -VM $vm -ProcessorCount 4",
 		// -Name on Get-VMSwitch is a wildcard; compare with -eq and demand exactly one.
-		"@(Get-VMSwitch | Where-Object { $_.Name -eq $switch })",
+		"@(Get-VMSwitch | Where-Object { $_.Name -eq $switchName })",
 		"Get-VMNetworkAdapter -VM $vm | Connect-VMNetworkAdapter -VMSwitch $sw",
 	} {
 		if !strings.Contains(script, want) {
@@ -140,8 +147,13 @@ func TestBuildCreateVMFromVHDXScript_SwitchIsExactMatchAndConnected(t *testing.T
 	if strings.Contains(script, "-SwitchName") {
 		t.Errorf("-SwitchName is a wildcard parameter; connect by switch object:\n%s", script)
 	}
-	if got := soleAssignedLiteral(t, script, "switch"); got != "LAN*" {
-		t.Errorf("$switch = %q", got)
+	if got := soleAssignedLiteral(t, script, "switchName"); got != "LAN*" {
+		t.Errorf("$switchName = %q", got)
+	}
+	// $switch is a PowerShell automatic variable (the switch statement's
+	// enumerator); the script must never bind or read it.
+	if regexp.MustCompile(`(?i)\$switch\b`).MatchString(script) {
+		t.Errorf("script uses the $switch automatic variable:\n%s", script)
 	}
 	// The switch is resolved before New-VM so a bad switch never leaves a VM behind.
 	if strings.Index(script, "Get-VMSwitch") > strings.Index(script, "New-VM") {
@@ -194,8 +206,8 @@ func TestBuildCreateVMFromVHDXScript_ValuesCannotBreakOut(t *testing.T) {
 			if got := soleAssignedLiteral(t, script, "name"); got != req.VMName {
 				t.Errorf("$name round-trips to %q, want %q", got, req.VMName)
 			}
-			if got := soleAssignedLiteral(t, script, "switch"); got != req.SwitchName {
-				t.Errorf("$switch round-trips to %q, want %q", got, req.SwitchName)
+			if got := soleAssignedLiteral(t, script, "switchName"); got != req.SwitchName {
+				t.Errorf("$switchName round-trips to %q, want %q", got, req.SwitchName)
 			}
 			if got := soleAssignedLiteral(t, script, "vhd"); got != req.VHDXPath {
 				t.Errorf("$vhd round-trips to %q, want %q", got, req.VHDXPath)
@@ -203,7 +215,7 @@ func TestBuildCreateVMFromVHDXScript_ValuesCannotBreakOut(t *testing.T) {
 			// The values appear only in their assignment lines; every command
 			// references the variables, never the raw text.
 			for _, line := range strings.Split(script, "\n") {
-				if strings.HasPrefix(line, "$name = ") || strings.HasPrefix(line, "$switch = ") || strings.HasPrefix(line, "$vhd = ") {
+				if strings.HasPrefix(line, "$name = ") || strings.HasPrefix(line, "$switchName = ") || strings.HasPrefix(line, "$vhd = ") {
 					continue
 				}
 				if strings.Contains(line, "Stop-Computer") || strings.Contains(line, "Remove-Item") {
