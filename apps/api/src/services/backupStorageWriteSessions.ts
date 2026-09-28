@@ -537,6 +537,32 @@ async function advanceHorizon(sessionId: string, horizon: Date): Promise<void> {
     .where(eq(backupStorageSessions.id, sessionId));
 }
 
+/**
+ * The latest expiry of an upload URL that ANOTHER session of the same
+ * reservation issued, when it is still in the future. A redelivered or
+ * resumed session may not upload until then: the earlier process could
+ * still write the same keys with those URLs.
+ */
+async function otherWriterHorizon(session: StorageSessionRow, reservationSnapshotId: string, now: Date): Promise<Date | null> {
+  const [row] = await db
+    .select({ h: max(backupStorageSessions.urlHorizonAt) })
+    .from(backupStorageSessions)
+    .where(and(
+      eq(backupStorageSessions.reservationSnapshotId, reservationSnapshotId),
+      ne(backupStorageSessions.id, session.id),
+    ));
+  const h = row?.h ? new Date(row.h as unknown as string) : null;
+  return h && h.getTime() >= now.getTime() ? h : null;
+}
+
+function previousWriterActive(horizon: Date, now: Date): WriteFailure {
+  return {
+    status: 409,
+    code: 'previous_writer_active',
+    retryAfterSeconds: Math.max(1, Math.ceil((horizon.getTime() - now.getTime()) / 1000) + 1),
+  };
+}
+
 // ── Resolve (PUT / UPLOAD_PART / GET) ───────────────────────────────────────
 
 export type WriteResolveRequest =
@@ -622,6 +648,10 @@ export async function resolveWriteSessionObjects(
 
   const granted = decisions.filter((d) => d.code === null);
   const now = deps.now();
+  if (granted.some((d) => d.request.method !== 'GET')) {
+    const horizon = await otherWriterHorizon(session, reservedId, now);
+    if (horizon) return previousWriterActive(horizon, now);
+  }
   const failure = await consume(session, granted.length, now);
   if (failure) return failure;
   const ttl = urlTtl(session, now);
@@ -723,6 +753,9 @@ export async function createWriteSessionMultipart(
     if (failure) return failure;
     const reservation = await lockWritableReservation(session);
     if (!reservation) return { status: 409, code: 'reservation_sealed' };
+    const now = deps.now();
+    const horizon = await otherWriterHorizon(session, reservation.snapshotId, now);
+    if (horizon) return previousWriterActive(horizon, now);
     // The row exists BEFORE the upload does, so a crash after the storage
     // call still leaves the cleanup job something to find (it also lists the
     // prefix's multipart uploads directly once the snapshot is finished).
@@ -897,11 +930,17 @@ export async function listWriteSessionPrefix(
   return { status: 200, body: out };
 }
 
+/** A delete marker older than this was left by a call that never finished. */
+export const STORAGE_DELETE_SETTLE_MS = 5 * 60 * 1000;
+
 /**
- * Deletes keys under the reserved prefix. The one storage call made while a
- * phase is open: the reservation row stays locked across the (single,
- * time-bounded) batch delete so a deletion can never land after the snapshot
- * was published. After sealing, only the helper's upload lease may go.
+ * Deletes keys under the reserved prefix, in three steps: a short phase
+ * decides which keys may go and records the delete as in flight on the
+ * session (`deleting_since`), the storage delete runs with no transaction
+ * held, and a second short phase clears the marker. A snapshot published
+ * while a delete is in flight stays sealing until the marker is cleared (by
+ * this call, or by the cleanup job for a call that never finished). After
+ * sealing, only the helper's upload lease may go.
  */
 export async function deleteWriteSessionKeys(
   session: StorageSessionRow,
@@ -910,13 +949,13 @@ export async function deleteWriteSessionKeys(
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { deleted: string[]; denied: Array<{ key: string; code: string }>; failed: Array<{ key: string; code: string }> } } | WriteFailure> {
   if (session.readOnly) return { status: 403, code: 'read_only' };
-  return run(async () => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; allowed: string[]; denied: Array<{ key: string; code: string }> }> => {
     const destination = await sessionDestination(session);
-    if (!destination) return { status: 410, code: 'storage_changed' } as WriteFailure;
+    if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
     if (failure) return failure;
     const reservation = await loadReservation(session.reservationSnapshotId!, { forUpdate: true });
-    if (!reservation) return { status: 410, code: 'reservation_changed' } as WriteFailure;
+    if (!reservation) return { status: 410, code: 'reservation_changed' };
     const unique = [...new Set(keys)];
     const completing = new Set(
       (await db
@@ -934,11 +973,28 @@ export async function deleteWriteSessionKeys(
       if (decision === 'ok') allowed.push(key);
       else denied.push({ key, code: decision });
     }
-    const result = allowed.length > 0
-      ? await deps.storage.deleteKeys(destination.providerConfig, allowed)
-      : { deleted: [], failed: [] };
-    return { status: 200 as const, body: { deleted: result.deleted, denied, failed: result.failed } };
+    if (allowed.length > 0) {
+      await db.update(backupStorageSessions)
+        .set({ deletingSince: deps.now() })
+        .where(eq(backupStorageSessions.id, session.id));
+    }
+    return { destination, allowed, denied };
   });
+  if ('status' in prepared) return prepared;
+  if (prepared.allowed.length === 0) return { status: 200, body: { deleted: [], denied: prepared.denied, failed: [] } };
+
+  let result: { deleted: string[]; failed: Array<{ key: string; code: string }> };
+  try {
+    result = await deps.storage.deleteKeys(prepared.destination.providerConfig, prepared.allowed);
+  } catch (err) {
+    logStorageFailure('delete failed', session.id, err);
+    result = { deleted: [], failed: prepared.allowed.map((key) => ({ key, code: 'storage_error' })) };
+  } finally {
+    await run(() => db.update(backupStorageSessions)
+      .set({ deletingSince: null })
+      .where(eq(backupStorageSessions.id, session.id)));
+  }
+  return { status: 200, body: { deleted: result.deleted, denied: prepared.denied, failed: result.failed } };
 }
 
 // ── Resume ──────────────────────────────────────────────────────────────────
@@ -998,7 +1054,8 @@ async function resumePhase(
   const abandonIssued = async () => {
     await db
       .update(backupSnapshotIdReservations)
-      .set({ state: 'abandoned', updatedAt: now })
+      // No job: an id given up for another one is never adoptable later.
+      .set({ state: 'abandoned', currentJobId: null, updatedAt: now })
       .where(and(
         eq(backupSnapshotIdReservations.snapshotId, issuedId),
         eq(backupSnapshotIdReservations.state, 'reserved'),
@@ -1038,11 +1095,7 @@ async function resumePhase(
       ne(backupStorageSessions.id, session.id),
       isNull(backupStorageSessions.revokedAt),
     ));
-  const [horizon] = await db
-    .select({ h: max(backupStorageSessions.urlHorizonAt) })
-    .from(backupStorageSessions)
-    .where(and(eq(backupStorageSessions.reservationSnapshotId, target.snapshotId), ne(backupStorageSessions.id, session.id)));
-  if (horizon?.h && new Date(horizon.h as unknown as string).getTime() >= now.getTime()) {
+  if (await otherWriterHorizon(session, target.snapshotId, now)) {
     return { status: 409, code: 'previous_writer_active' };
   }
   const open = await db

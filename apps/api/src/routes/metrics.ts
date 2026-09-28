@@ -291,6 +291,20 @@ const backupStorageSessionMintsTotal = new Counter({
   registers: [register]
 });
 
+const backupWriteUnexpectedLegacyTotal = new Counter({
+  name: 'breeze_backup_write_dispatch_unexpected_legacy_total',
+  help: 'Backup write deliveries that carried the storage destination for a reason other than an older helper or a non-S3 destination, by command type and reason',
+  labelNames: ['command_type', 'reason'] as const,
+  registers: [register]
+});
+
+const backupConditionalWriteProbeTotal = new Counter({
+  name: 'breeze_backup_storage_conditional_write_probe_total',
+  help: 'Destination probes for create-only write support by outcome (supported, unsupported) and reason',
+  labelNames: ['outcome', 'reason'] as const,
+  registers: [register]
+});
+
 const backupWriteJanitorTotal = new Counter({
   name: 'breeze_backup_write_janitor_total',
   help: 'Brokered backup write cleanup actions by action (abort_upload, sweep_prefix, publish, abandon) and outcome (ok, failed)',
@@ -938,6 +952,18 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordUnexpectedLegacyWriteMetric(commandType: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteUnexpectedLegacyTotal.labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
+function recordConditionalWriteProbeMetric(outcome: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupConditionalWriteProbeTotal.labels(normalizeMetricLabel(outcome, 'unknown'), normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
 function recordBackupWriteJanitorMetric(action: string, outcome: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1138,6 +1164,8 @@ function bindMetricsRecorders(): void {
     onWriteDispatch: recordBackupWriteDispatchMetric,
     onAttestation: recordBackupAttestationMetric,
     onWriteJanitor: recordBackupWriteJanitorMetric,
+    onUnexpectedLegacyWrite: recordUnexpectedLegacyWriteMetric,
+    onConditionalWriteProbe: recordConditionalWriteProbeMetric,
   });
 
   setAnomalyMetricsRecorder({

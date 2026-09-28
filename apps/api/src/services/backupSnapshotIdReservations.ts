@@ -22,7 +22,7 @@
  * completes sealing and abandonment.
  */
 import { randomBytes } from 'node:crypto';
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -114,9 +114,21 @@ export async function findReservedForJob(jobId: string): Promise<SnapshotIdReser
 }
 
 /**
+ * How long after the cleanup job abandons a job's reserved id a late result
+ * or a storage reconcile for THAT job may still publish it (enforced by the
+ * backup_snapshots insert trigger, migration 2026-11-08-120100, as
+ * `interval '108 hours'`). Equal to storage reconcile's age limit for an
+ * unclaimed manifest, and well inside the orphan window after which storage
+ * reclaim may remove an abandoned prefix.
+ */
+export const ABANDONED_ADOPTION_WINDOW_MS = 108 * 60 * 60 * 1000;
+
+/**
  * The snapshot ids a job's write sessions were allowed to produce: every
  * reservation one of its write sessions holds, except one it gave up by
- * resuming onto another id. Null when the job never had a write session (an
+ * resuming onto another id (abandoned with no job). An id the cleanup job
+ * abandoned after this job ended still counts — the database decides whether
+ * it is still adoptable. Null when the job never had a write session (an
  * unbrokered backup, which reports whatever id its helper chose).
  */
 export async function allowedSnapshotIdsForJob(jobId: string): Promise<string[] | null> {
@@ -131,7 +143,10 @@ export async function allowedSnapshotIdsForJob(jobId: string): Promise<string[] 
     .from(backupSnapshotIdReservations)
     .where(and(
       inArray(backupSnapshotIdReservations.snapshotId, ids),
-      ne(backupSnapshotIdReservations.state, 'abandoned'),
+      or(
+        ne(backupSnapshotIdReservations.state, 'abandoned'),
+        eq(backupSnapshotIdReservations.currentJobId, jobId),
+      ),
     ));
   return live.map((r) => r.snapshotId);
 }

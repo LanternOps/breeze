@@ -124,3 +124,22 @@ describe('brokered write cleanup job', () => {
     expect(s.listMultipart).not.toHaveBeenCalledWith(expect.anything(), prefix);
   });
 });
+
+describe('brokered write cleanup after a device move', () => {
+  runDb('still aborts and sweeps the moved device\'s uploads against the original destination', async () => {
+    const t = await seedWriteTenant();
+    const target = await seedWriteTenant();
+    const r = await reservation(t, { state: 'reserved', revoked: true });
+    await upload(t, r, 'open', 'u-moved');
+    const abandoned = await reservation(t, { state: 'abandoned', revoked: true });
+    await getTestDb().execute(sql`UPDATE devices SET org_id = ${target.orgId}, site_id = ${target.siteId} WHERE id = ${t.deviceId}`);
+
+    const prefix = `snapshots/${abandoned.id}/`;
+    const s = storage({ [prefix]: [{ key: `${prefix}files/stray.bin`, uploadId: 'u-stray' }] });
+    const summary = await runBackupWriteSessionJanitor({ now: () => new Date(), storage: s });
+    expect(summary.failures).toBe(0);
+    expect(await uploadStates(r.id)).toEqual(['aborted']);
+    expect(s.abortMultipart).toHaveBeenCalledWith(expect.anything(), `${prefix}files/stray.bin`, 'u-stray');
+    expect((await reservationRow(abandoned.id))?.uploads_swept_at).not.toBeNull();
+  });
+});

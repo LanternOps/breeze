@@ -82,6 +82,22 @@ describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyper
     expect(out).not.toHaveProperty('storageSession');
   });
 
+  it('falls back as before, with a counted reason, when issuing the session fails', async () => {
+    m.mint.mockRejectedValueOnce(new Error('db unavailable'));
+    const out = await deliverBackupWriteCommand(queued(), CTX);
+    expect(out).toMatchObject({ materialized: true });
+    expect(m.materialize).toHaveBeenCalledWith(expect.anything(), CTX, { legacyReason: 'mint_failed' });
+  });
+
+  it('hands the reason a delivery was not brokered to the destination refresher', async () => {
+    m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
+    await deliverBackupWriteCommand(queued(), CTX);
+    expect(m.materialize).toHaveBeenCalledWith(expect.anything(), CTX, { legacyReason: 'helper_unsupported' });
+    const { jobId: _j, ...noJob } = queued();
+    await deliverBackupWriteCommand(noJob, CTX);
+    expect(m.materialize).toHaveBeenLastCalledWith(expect.anything(), CTX, { legacyReason: 'no_job' });
+  });
+
   it('falls back without a job id or a reference, never minting', async () => {
     const { jobId: _j, ...noJob } = queued();
     await deliverBackupWriteCommand(noJob, CTX);

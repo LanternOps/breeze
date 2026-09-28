@@ -289,32 +289,47 @@ export async function deleteKeys(
   return { deleted, failed };
 }
 
+export type ConditionalWriteProbeResult = {
+  supported: boolean;
+  /** precondition_enforced | condition_ignored | probe_write_failed | unexpected_response */
+  reason: 'precondition_enforced' | 'condition_ignored' | 'probe_write_failed' | 'unexpected_response';
+};
+
 /**
  * Whether the destination honours a create-only condition: writes one probe
  * object, then writes it again with `If-None-Match: *`. Only a 412 on the
  * second write proves support; a second write that succeeds (the condition
- * was ignored) or any error means "not supported". The probe object is
- * removed either way (best effort).
+ * was ignored) or any error means "not supported", with the reason. Every
+ * call is time-bounded. The probe object is removed by the version id each
+ * write returned (on a versioned or object-lock bucket a plain delete would
+ * only add a delete marker), best effort.
  */
-export async function probeConditionalWrites(cfg: StorageProviderConfig): Promise<boolean> {
+export async function probeConditionalWrites(cfg: StorageProviderConfig): Promise<ConditionalWriteProbeResult> {
   const { bucket, client: s3 } = client(cfg);
   const key = `${CAPABILITY_PROBE_PREFIX}${randomUUID()}`;
-  let supported = false;
-  let wrote = false;
+  const versions: Array<string | undefined> = [];
+  let result: ConditionalWriteProbeResult;
   try {
-    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: 'probe', IfNoneMatch: '*' }));
-    wrote = true;
+    const first = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: 'probe', IfNoneMatch: '*' }), bounded());
+    versions.push(first.VersionId);
     try {
-      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: 'probe', IfNoneMatch: '*' }));
-      supported = false;
+      const second = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: 'probe', IfNoneMatch: '*' }), bounded());
+      versions.push(second.VersionId);
+      result = { supported: false, reason: 'condition_ignored' };
     } catch (err) {
-      supported = isPreconditionFailed(err);
+      result = isPreconditionFailed(err)
+        ? { supported: true, reason: 'precondition_enforced' }
+        : { supported: false, reason: 'unexpected_response' };
     }
   } catch {
-    supported = false;
+    result = { supported: false, reason: 'probe_write_failed' };
   }
-  if (wrote) {
-    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })).catch(() => undefined);
+  const distinct = [...new Set(versions)];
+  for (const versionId of distinct) {
+    await s3.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: key, ...(versionId ? { VersionId: versionId } : {}) }),
+      bounded(),
+    ).catch(() => undefined);
   }
-  return supported;
+  return result;
 }

@@ -170,7 +170,7 @@ function parseWriteRequests(body: unknown): WriteResolveRequest[] | null {
 }
 
 function failure(c: Context, result: WriteFailure): Response {
-  if (result.status === 429 && result.retryAfterSeconds) c.header('Retry-After', String(result.retryAfterSeconds));
+  if (result.retryAfterSeconds) c.header('Retry-After', String(result.retryAfterSeconds));
   return c.json({ error: result.code, code: result.code }, result.status);
 }
 

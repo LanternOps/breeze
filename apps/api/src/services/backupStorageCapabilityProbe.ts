@@ -5,8 +5,9 @@
  *
  * The result is bound to the storage identity it was probed against, so a
  * destination edit invalidates it even when the stored capabilities survive
- * the edit. It is refreshed at most daily, in the background, when a brokered
- * write is issued for the configuration; until a probe has succeeded the
+ * the edit. It is refreshed at most weekly (or at once after an identity
+ * change), in the background, when a brokered write is issued for the
+ * configuration; until a probe has succeeded the
  * destination is treated as NOT supporting the condition, which only makes
  * publication wait for every issued upload URL to expire (the safe default).
  */
@@ -15,9 +16,15 @@ import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
 import { backupConfigs } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
+import { recordConditionalWriteProbe } from './backupMetrics';
 import { probeConditionalWrites } from './backupStoragePresign';
 
-export const CONDITIONAL_WRITE_PROBE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/**
+ * A recorded result is refreshed weekly. A change of the destination's
+ * storage identity (endpoint, bucket) always re-probes, because the result
+ * is bound to the identity it was taken against.
+ */
+export const CONDITIONAL_WRITE_PROBE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 type ConditionalWritesRecord = { supported: boolean; probedAt: string; storageIdentity: string };
 
@@ -68,7 +75,9 @@ export async function refreshConditionalWriteProbe(configId: string, orgId: stri
   const destination = await withSystemDbAccessContext(() => resolveBackupProviderConfig(configId, orgId));
   if (!destination || destination.provider !== 's3') return null;
   const identity = normalizeStorageIdentity(destination.provider, destination.providerConfig);
-  const supported = await probeConditionalWrites(destination.providerConfig);
+  const probe = await probeConditionalWrites(destination.providerConfig);
+  const supported = probe.supported;
+  recordConditionalWriteProbe(supported ? 'supported' : 'unsupported', probe.reason);
   await withSystemDbAccessContext(async () => {
     const current = await resolveBackupProviderConfig(configId, orgId);
     if (!current || normalizeStorageIdentity(current.provider, current.providerConfig) !== identity) return;

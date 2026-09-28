@@ -9,7 +9,9 @@
 --    any object URL the session has issued (monotonic). conditional_writes
 --    records whether this session's single-object uploads carried a
 --    create-only condition. resumed_at / read_only record the one permitted
---    resume of a journaled snapshot id. A write session never has a command
+--    resume of a journaled snapshot id. deleting_since marks a storage delete
+--    in flight (recorded before the storage call, cleared after it; the
+--    cleanup job clears one left behind). A write session never has a command
 --    or an internal snapshot reference; a read session never has a job or a
 --    reservation (backup_storage_sessions_shape_chk).
 --
@@ -31,11 +33,23 @@
 -- 5. Sealing at publication: breeze_backup_snapshot_reserve_id (first defined
 --    in 2026-11-08-120000) now seals a reserved id when its snapshot row is
 --    inserted: every write session of the reservation is revoked, and the
---    reservation becomes 'published' at once when no unconditional upload URL
---    can still be used and no multipart completion is in flight, otherwise
---    'sealing' until sealed_until (the latest such URL expiry plus clock
---    skew) has passed and the cleanup job has settled every in-flight
---    completion, after which it publishes it.
+--    reservation becomes 'published' at once when every upload URL issued for
+--    it has expired and no multipart completion or delete is in flight,
+--    otherwise 'sealing' until sealed_until (the latest URL expiry of ANY of
+--    its sessions plus clock skew; at most about six minutes) has passed and
+--    the cleanup job has settled every in-flight operation, after which it
+--    publishes it.
+--
+-- 6. Adopting a lost result: when a backup job ends without reporting its
+--    snapshot, the cleanup job abandons the reserved id. A late result or a
+--    storage reconcile for THAT job (same organization, same device) may
+--    still publish it while the adoption window is open: 108 hours (4.5
+--    days) after abandonment — the same age limit storage reconcile applies
+--    to an unclaimed manifest, and well inside the orphan window after which
+--    storage reclaim may remove an abandoned prefix. The window is measured
+--    from updated_at, which the cleanup job sets when it abandons the id. An
+--    id abandoned because its session resumed onto another id has no job and
+--    is never adoptable.
 --
 -- DDL only: no rows written, so no breeze.scope election. Idempotent.
 
@@ -51,6 +65,7 @@ ALTER TABLE backup_storage_sessions ADD COLUMN IF NOT EXISTS url_horizon_at time
 ALTER TABLE backup_storage_sessions ADD COLUMN IF NOT EXISTS conditional_writes boolean NOT NULL DEFAULT false;
 ALTER TABLE backup_storage_sessions ADD COLUMN IF NOT EXISTS read_only boolean NOT NULL DEFAULT false;
 ALTER TABLE backup_storage_sessions ADD COLUMN IF NOT EXISTS resumed_at timestamptz NULL;
+ALTER TABLE backup_storage_sessions ADD COLUMN IF NOT EXISTS deleting_since timestamptz NULL;
 
 ALTER TABLE backup_storage_sessions DROP CONSTRAINT IF EXISTS backup_storage_sessions_scope_chk;
 ALTER TABLE backup_storage_sessions ADD CONSTRAINT backup_storage_sessions_scope_chk
@@ -235,36 +250,42 @@ DECLARE
   _horizon timestamptz;
   _sealed timestamptz;
   _completing boolean;
+  _adoptable boolean;
 BEGIN
   IF TG_OP = 'UPDATE' AND NEW.snapshot_id IS NOT DISTINCT FROM OLD.snapshot_id THEN
     RETURN NULL;
   END IF;
   SELECT * INTO r FROM public.backup_snapshot_id_reservations WHERE snapshot_id = NEW.snapshot_id FOR UPDATE;
   IF FOUND THEN
+    _adoptable := r.state = 'abandoned'
+      AND r.current_job_id IS NOT NULL
+      AND r.current_job_id = NEW.job_id
+      AND r.updated_at > now() - interval '108 hours';
     IF r.org_id <> NEW.org_id
        OR (r.device_id IS NOT NULL AND r.device_id <> NEW.device_id)
-       OR r.state NOT IN ('reserved', 'sealing', 'published') THEN
+       OR (r.state NOT IN ('reserved', 'sealing', 'published') AND NOT _adoptable) THEN
       RAISE EXCEPTION 'snapshot id % belongs to another backup', NEW.snapshot_id
         USING ERRCODE = 'unique_violation', CONSTRAINT = 'backup_snapshot_id_reservations_pkey';
     END IF;
-    IF r.state = 'reserved' THEN
+    IF r.state = 'reserved' OR _adoptable THEN
       UPDATE public.backup_storage_sessions
          SET revoked_at = now(), revoked_reason = 'sealed'
        WHERE reservation_snapshot_id = NEW.snapshot_id
          AND revoked_at IS NULL;
-      -- Only an upload URL issued WITHOUT a create-only condition can still
-      -- replace an object that now belongs to the published snapshot.
+      -- Every URL issued for the id, create-only or not, is waited out.
       SELECT max(s.url_horizon_at) INTO _horizon
         FROM public.backup_storage_sessions s
-       WHERE s.reservation_snapshot_id = NEW.snapshot_id
-         AND s.conditional_writes = false;
+       WHERE s.reservation_snapshot_id = NEW.snapshot_id;
       _sealed := CASE WHEN _horizon IS NULL THEN now() ELSE GREATEST(_horizon + interval '60 seconds', now()) END;
-      -- A multipart completion still in flight may yet create or replace an
-      -- object: the snapshot stays sealing until the cleanup job has settled
-      -- every such upload.
+      -- A multipart completion or a delete still in flight may yet change
+      -- an object: the snapshot stays sealing until the cleanup job has
+      -- settled every such operation.
       SELECT EXISTS (
         SELECT 1 FROM public.backup_storage_session_uploads u
          WHERE u.reservation_snapshot_id = NEW.snapshot_id AND u.state = 'completing'
+      ) OR EXISTS (
+        SELECT 1 FROM public.backup_storage_sessions s
+         WHERE s.reservation_snapshot_id = NEW.snapshot_id AND s.deleting_since IS NOT NULL
       ) INTO _completing;
       UPDATE public.backup_snapshot_id_reservations
          SET published_snapshot_db_id = NEW.id,

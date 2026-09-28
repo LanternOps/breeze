@@ -107,23 +107,19 @@ export async function deliverBackupWriteCommand(
   const refOrg = ref && typeof ref === 'object' ? ref.orgId : undefined;
   const refConfig = ref && typeof ref === 'object' ? ref.configId : undefined;
   const jobId = [payload.jobId, payload.backupJobId].find((v): v is string => typeof v === 'string' && UUID_PATTERN.test(v));
-  if (
-    payload.provider !== 's3'
-    || typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg)
-    || typeof refConfig !== 'string' || !UUID_PATTERN.test(refConfig)
-    || !jobId
-  ) {
-    return materializeBackupStorageCredentials(payload, ctx);
+  if (payload.provider !== 's3') return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'provider_not_s3' });
+  if (typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg) || typeof refConfig !== 'string' || !UUID_PATTERN.test(refConfig)) {
+    return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_reference' });
   }
+  if (!jobId) return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_job' });
 
-  const run = async (): Promise<Record<string, unknown> | null> => {
+  type Outcome = { payload: Record<string, unknown> } | { legacyReason: string };
+  const run = async (): Promise<Outcome> => {
     const destination = await resolveBackupWriteCommandDestination(refConfig, refOrg);
-    if (
-      !destination.ok
-      || destination.destination.provider !== 's3'
-      || !samePlan(payload.storageEncryption, destination.destination.storageEncryption)
-    ) {
-      return null;
+    if (!destination.ok) return { legacyReason: 'destination_unavailable' };
+    if (destination.destination.provider !== 's3') return { legacyReason: 'provider_not_s3' };
+    if (!samePlan(payload.storageEncryption, destination.destination.storageEncryption)) {
+      return { legacyReason: 'encryption_plan_changed' };
     }
     const minted = await mintBackupWriteSession({
       orgId: refOrg,
@@ -135,23 +131,39 @@ export async function deliverBackupWriteCommand(
       baseManifestKey: null,
       reportedWriteProtocolVersion: ctx.reportedBackupWriteProtocolVersion,
     });
-    if (minted.mode !== 'brokered') return null;
+    if (minted.mode !== 'brokered') return { legacyReason: minted.reason };
     recordBackupWriteDispatch(ctx.type, 'brokered', 'ok');
     return {
-      ...withoutDestination(payload),
-      provider: 's3',
-      storageEncryption: destination.destination.storageEncryption,
-      storageSession: minted.envelope,
+      payload: {
+        ...withoutDestination(payload),
+        provider: 's3',
+        storageEncryption: destination.destination.storageEncryption,
+        storageSession: minted.envelope,
+      },
     };
   };
 
   // Join the delivery path's own context; only a caller holding none (the
-  // direct push) gets a fresh organization-scoped one.
-  const brokered = hasDbAccessContext()
-    ? await run()
-    : await withDbAccessContext(
-      { scope: 'organization', orgId: refOrg, accessibleOrgIds: [refOrg], label: 'backupStorageWriteDelivery' },
-      run,
-    );
-  return brokered ?? materializeBackupStorageCredentials(payload, ctx);
+  // direct push) gets a fresh organization-scoped one. The mint writes in a
+  // savepoint, so a failure leaves the delivery transaction usable: it is
+  // logged and the backup is delivered as before, counted with its reason —
+  // the same fallback the backup worker takes.
+  let outcome: Outcome;
+  try {
+    outcome = hasDbAccessContext()
+      ? await run()
+      : await withDbAccessContext(
+        { scope: 'organization', orgId: refOrg, accessibleOrgIds: [refOrg], label: 'backupStorageWriteDelivery' },
+        run,
+      );
+  } catch (err) {
+    console.error('[backupStorageWriteDelivery] could not issue a write session; delivering the backup as before', {
+      commandId: ctx.commandId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    outcome = { legacyReason: 'mint_failed' };
+  }
+  if ('payload' in outcome) return outcome.payload;
+  return materializeBackupStorageCredentials(payload, ctx, { legacyReason: outcome.legacyReason });
 }

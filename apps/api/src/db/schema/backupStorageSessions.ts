@@ -63,6 +63,8 @@ export const backupStorageSessions = pgTable(
     /** Set after resuming onto an already-published snapshot id: reads of that prefix only. */
     readOnly: boolean('read_only').notNull().default(false),
     resumedAt: timestamp('resumed_at', { withTimezone: true }),
+    /** A storage delete through this session is in flight (see backupStorageWriteSessions.ts). */
+    deletingSince: timestamp('deleting_since', { withTimezone: true }),
   },
   (table) => ({
     tokenHashUq: uniqueIndex('backup_storage_sessions_token_hash_uq').on(table.tokenHash),

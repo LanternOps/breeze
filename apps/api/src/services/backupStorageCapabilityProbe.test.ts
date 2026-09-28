@@ -31,6 +31,10 @@ describe('withConditionalWriteProbe', () => {
 });
 
 describe('conditionalWriteProbeDue', () => {
+  it('refreshes weekly (an identity change always re-probes)', () => {
+    expect(CONDITIONAL_WRITE_PROBE_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
   it('is due when never probed, probed for another identity, or older than a day', () => {
     expect(conditionalWriteProbeDue(null, IDENTITY, NOW)).toBe(true);
     const fresh = withConditionalWriteProbe({}, true, IDENTITY, NOW);

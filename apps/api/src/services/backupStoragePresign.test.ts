@@ -187,25 +187,34 @@ describe('listKeysUnderPrefix / deleteKeys', () => {
 });
 
 describe('probeConditionalWrites', () => {
-  it('is true only when the second create-only write is refused with 412', async () => {
+  it('is supported only when the second create-only write is refused with 412; removes the probe by version', async () => {
     holder.send
-      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ VersionId: 'v1' })
       .mockRejectedValueOnce(httpError(412, 'PreconditionFailed'))
       .mockResolvedValueOnce({});
-    await expect(probeConditionalWrites(CFG)).resolves.toBe(true);
+    await expect(probeConditionalWrites(CFG)).resolves.toEqual({ supported: true, reason: 'precondition_enforced' });
     const [first, second, cleanup] = holder.send.mock.calls.map((c) => c[0].input);
     expect(first.Key).toMatch(/^breeze-capability-probe\/[0-9a-f-]{36}$/);
     expect(second).toMatchObject({ Key: first.Key, IfNoneMatch: '*' });
-    expect(cleanup).toMatchObject({ Key: first.Key });
+    expect(cleanup).toMatchObject({ Key: first.Key, VersionId: 'v1' });
+    // Every storage call is time-bounded.
+    for (const call of holder.send.mock.calls) expect(call[1]?.abortSignal).toBeInstanceOf(AbortSignal);
   });
 
-  it('is false when the second write succeeds (the condition is ignored)', async () => {
-    holder.send.mockResolvedValueOnce({}).mockResolvedValueOnce({}).mockResolvedValueOnce({});
-    await expect(probeConditionalWrites(CFG)).resolves.toBe(false);
+  it('is unsupported when the condition is ignored, and removes both versions', async () => {
+    holder.send
+      .mockResolvedValueOnce({ VersionId: 'v1' })
+      .mockResolvedValueOnce({ VersionId: 'v2' })
+      .mockResolvedValue({});
+    await expect(probeConditionalWrites(CFG)).resolves.toEqual({ supported: false, reason: 'condition_ignored' });
+    const deletes = holder.send.mock.calls.slice(2).map((c) => c[0].input.VersionId);
+    expect(deletes.sort()).toEqual(['v1', 'v2']);
   });
 
-  it('is false on any other error', async () => {
+  it('is unsupported on any other error, with a reason', async () => {
     holder.send.mockRejectedValueOnce(httpError(403, 'AccessDenied'));
-    await expect(probeConditionalWrites(CFG)).resolves.toBe(false);
+    await expect(probeConditionalWrites(CFG)).resolves.toEqual({ supported: false, reason: 'probe_write_failed' });
+    holder.send.mockResolvedValueOnce({}).mockRejectedValueOnce(httpError(500, 'InternalError')).mockResolvedValue({});
+    await expect(probeConditionalWrites(CFG)).resolves.toEqual({ supported: false, reason: 'unexpected_response' });
   });
 });

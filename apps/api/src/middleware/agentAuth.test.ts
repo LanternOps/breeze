@@ -549,6 +549,14 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the request-long org wrap for a different action at the storage-session path depth', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/other-action/x/multipart:complete' });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // M2 #5998 D14 — the topology adjacency ingest route parses a 4 MiB body
   // and resolves topology flags before its own short admission transaction.
   it('skips the request-long org wrap for the self-managed topology/adjacency route', async () => {

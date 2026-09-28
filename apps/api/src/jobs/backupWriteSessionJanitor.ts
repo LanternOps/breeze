@@ -15,8 +15,14 @@
  *  3. A sealing reservation whose sealed_until has passed, with no recorded
  *     upload still open, is published.
  *  4. A reserved id whose job has ended, whose issued URLs have all expired,
- *     and with no recorded upload still open, is abandoned (storage reclaim
- *     may then remove the prefix once it is old enough).
+ *     and with no recorded upload or delete still in flight, is abandoned
+ *     (a late result or reconcile for that job may still publish it within
+ *     the adoption window; storage reclaim may remove the prefix once it is
+ *     older than the orphan window).
+ *  5. A delete marker left behind by a call that never finished is cleared
+ *     once the (time-bounded) storage delete can no longer be running.
+ * Publication (rule 3) and abandonment (rule 4) also wait for any in-flight
+ * delete.
  *
  * The scans and the state writes run in short system contexts; no DB context
  * is held across a storage call.
@@ -25,6 +31,7 @@ import { Queue, Worker } from 'bullmq';
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
+  backupConfigs,
   backupJobs,
   backupSnapshotIdReservations,
   backupStorageSessionUploads,
@@ -33,7 +40,7 @@ import {
 import { recordBackupWriteJanitor } from '../services/backupMetrics';
 import { resolveBackupWriteCommandDestination } from '../services/backupProviderConfig';
 import { abortMultipartUpload, listMultipartUploads } from '../services/backupStoragePresign';
-import { STORAGE_WRITE_SESSION_DEADLINE_MS } from '../services/backupStorageWriteSessions';
+import { STORAGE_DELETE_SETTLE_MS, STORAGE_WRITE_SESSION_DEADLINE_MS } from '../services/backupStorageWriteSessions';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
@@ -60,12 +67,26 @@ const defaultDeps: JanitorDeps = {
   },
 };
 
-export type JanitorSummary = { abortedUploads: number; sweptPrefixes: number; published: number; abandoned: number; failures: number };
+export type JanitorSummary = { abortedUploads: number; settledDeletes: number; sweptPrefixes: number; published: number; abandoned: number; failures: number };
 
-async function destinationFor(configId: string | null, orgId: string): Promise<Record<string, unknown> | null> {
+/**
+ * The destination a session or reservation was issued for, by configuration
+ * id alone (system context). The row's own org_id is not used: after a
+ * device moves to another organization its write rows carry the new org,
+ * while the configuration — and the bucket holding the uploads — stays with
+ * the original one.
+ */
+async function destinationFor(configId: string | null): Promise<Record<string, unknown> | null> {
   if (!configId) return null;
-  const result = await withSystemDbAccessContext(() => resolveBackupWriteCommandDestination(configId, orgId));
-  if (!result.ok || result.destination.provider !== 's3') return null;
+  const result = await withSystemDbAccessContext(async () => {
+    const [config] = await db
+      .select({ orgId: backupConfigs.orgId })
+      .from(backupConfigs)
+      .where(eq(backupConfigs.id, configId))
+      .limit(1);
+    return config ? resolveBackupWriteCommandDestination(configId, config.orgId) : null;
+  });
+  if (!result || !result.ok || result.destination.provider !== 's3') return null;
   return result.destination.providerConfig;
 }
 
@@ -99,7 +120,7 @@ async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary):
   for (const row of rows) {
     try {
       if (row.uploadId) {
-        const cfg = await destinationFor(row.configId, row.orgId);
+        const cfg = await destinationFor(row.configId);
         if (!cfg) throw new Error('destination unavailable');
         await deps.storage.abortMultipart(cfg, row.objectKey, row.uploadId);
       }
@@ -142,6 +163,10 @@ async function abandonEndedReservations(deps: JanitorDeps, summary: JanitorSumma
                SELECT 1 FROM backup_storage_session_uploads u
                 WHERE u.reservation_snapshot_id = r.snapshot_id
                   AND u.state IN ('creating', 'open', 'completing'))
+         AND NOT EXISTS (
+               SELECT 1 FROM backup_storage_sessions s
+                WHERE s.reservation_snapshot_id = r.snapshot_id
+                  AND s.deleting_since IS NOT NULL)
       RETURNING r.snapshot_id
     `),
   );
@@ -164,12 +189,33 @@ async function publishSealed(deps: JanitorDeps, summary: JanitorSummary): Promis
                SELECT 1 FROM backup_storage_session_uploads u
                 WHERE u.reservation_snapshot_id = r.snapshot_id
                   AND u.state IN ('creating', 'open', 'completing'))
+         AND NOT EXISTS (
+               SELECT 1 FROM backup_storage_sessions s
+                WHERE s.reservation_snapshot_id = r.snapshot_id
+                  AND s.deleting_since IS NOT NULL)
       RETURNING r.snapshot_id
     `),
   );
   const n = (rows as unknown as unknown[]).length;
   summary.published += n;
   if (n > 0) recordBackupWriteJanitor('publish', 'ok', n);
+}
+
+/**
+ * Rule 5: a delete marker left by a call that never cleared it (process
+ * gone). The storage delete itself is time-bounded, so after
+ * STORAGE_DELETE_SETTLE_MS it has either happened or will not.
+ */
+async function settleStuckDeletes(deps: JanitorDeps, summary: JanitorSummary): Promise<void> {
+  const cutoff = new Date(deps.now().getTime() - STORAGE_DELETE_SETTLE_MS);
+  const rows = await withSystemDbAccessContext(() =>
+    db.update(backupStorageSessions)
+      .set({ deletingSince: null })
+      .where(lt(backupStorageSessions.deletingSince, cutoff))
+      .returning({ id: backupStorageSessions.id }),
+  );
+  summary.settledDeletes += rows.length;
+  if (rows.length > 0) recordBackupWriteJanitor('settle_delete', 'ok', rows.length);
 }
 
 /** Rule 2. */
@@ -209,7 +255,7 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
           ));
         return new Set(rows.map((u) => `${u.objectKey}\u0000${u.uploadId}`));
       });
-      const cfg = await destinationFor(r.configId, r.orgId);
+      const cfg = await destinationFor(r.configId);
       if (!cfg) throw new Error('destination unavailable');
       const open = await deps.storage.listMultipart(cfg, prefix);
       for (const u of open) {
@@ -235,8 +281,9 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
 }
 
 export async function runBackupWriteSessionJanitor(deps: JanitorDeps = defaultDeps): Promise<JanitorSummary> {
-  const summary: JanitorSummary = { abortedUploads: 0, sweptPrefixes: 0, published: 0, abandoned: 0, failures: 0 };
+  const summary: JanitorSummary = { abortedUploads: 0, settledDeletes: 0, sweptPrefixes: 0, published: 0, abandoned: 0, failures: 0 };
   await abortRecordedUploads(deps, summary);
+  await settleStuckDeletes(deps, summary);
   await abandonEndedReservations(deps, summary);
   await publishSealed(deps, summary);
   await sweepFinishedPrefixes(deps, summary);

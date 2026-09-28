@@ -350,14 +350,23 @@ describe('write-scoped storage sessions: schema', () => {
 
   runDb('inserting the snapshot row seals the reservation and revokes its write sessions', async () => {
     const a = await seedWriteTenant();
-    // No unconditional URL outstanding → published at once.
+    // Every issued URL expired → published at once.
     const quiet = sid('seal-quiet');
     await reserveAs(a.orgId, { snapshotId: quiet, deviceId: a.deviceId, configId: a.configId, jobId: a.jobId });
-    const s1 = await insertWriteSession(a, quiet, { horizon: new Date(Date.now() + 200_000), conditional: true });
+    const s1 = await insertWriteSession(a, quiet, { horizon: new Date(Date.now() - 200_000), conditional: false });
     await insertSnapshotRow(a, quiet);
     expect(await reservationRow(quiet)).toMatchObject({ state: 'published' });
     const s1Row = await getTestDb().execute(sql`SELECT revoked_reason FROM backup_storage_sessions WHERE id = ${s1}`);
     expect(s1Row[0]).toMatchObject({ revoked_reason: 'sealed' });
+
+    // A create-only URL still usable ALSO holds publication: every issued
+    // URL's horizon is waited out, whatever the destination supports.
+    const jobC = await seedBackupJob(a.orgId, a.configId, a.deviceId, 'running');
+    const conditional = sid('seal-conditional');
+    await reserveAs(a.orgId, { snapshotId: conditional, deviceId: a.deviceId, configId: a.configId, jobId: jobC });
+    await insertWriteSession({ ...a, jobId: jobC }, conditional, { horizon: new Date(Date.now() + 200_000), conditional: true });
+    await insertSnapshotRow({ ...a, jobId: jobC }, conditional);
+    expect(await reservationRow(conditional)).toMatchObject({ state: 'sealing' });
 
     // An unconditional URL still usable → sealing until its expiry (+ skew).
     const job2 = await seedBackupJob(a.orgId, a.configId, a.deviceId, 'running');
@@ -369,6 +378,34 @@ describe('write-scoped storage sessions: schema', () => {
     const r = await reservationRow(busy);
     expect(r?.state).toBe('sealing');
     expect(new Date(r!.sealed_until as string).getTime()).toBeGreaterThanOrEqual(horizon.getTime() + 59_000);
+  });
+
+  runDb('an abandoned id is adoptable by its own job only within the adoption window', async () => {
+    const a = await seedWriteTenant();
+    const abandon = async (id: string, jobId: string, ageMs: number) => {
+      await reserveAs(a.orgId, { snapshotId: id, deviceId: a.deviceId, configId: a.configId, jobId });
+      await getTestDb().execute(sql`
+        UPDATE backup_snapshot_id_reservations
+           SET state = 'abandoned', updated_at = now() - ${`${Math.floor(ageMs / 1000)} seconds`}::interval
+         WHERE snapshot_id = ${id}
+      `);
+    };
+    // Inside the window, by the job it was reserved to: adopted and published.
+    const fresh = sid('adopt-fresh');
+    await abandon(fresh, a.jobId, 60_000);
+    await insertSnapshotRow(a, fresh);
+    expect((await reservationRow(fresh))?.state).toBe('published');
+
+    // Outside the window: refused.
+    const old = sid('adopt-old');
+    await abandon(old, a.jobId, 5 * 24 * 60 * 60 * 1000);
+    expect(await expectSqlState(() => insertSnapshotRow(a, old))).toBe('23505');
+
+    // Another job of the same device: refused.
+    const otherJob = await seedBackupJob(a.orgId, a.configId, a.deviceId, 'failed');
+    const foreignJob = sid('adopt-other-job');
+    await abandon(foreignJob, otherJob, 60_000);
+    expect(await expectSqlState(() => insertSnapshotRow(a, foreignJob))).toBe('23505');
   });
 
   runDb('a device move restamps reservations, write sessions and upload rows', async () => {

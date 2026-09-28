@@ -32,6 +32,7 @@ import { authenticateStorageSession, type StorageSessionRow } from '../../servic
 import {
   completeWriteSessionMultipart,
   createWriteSessionMultipart,
+  deleteWriteSessionKeys,
   ensureWriteSessionLive,
   mintBackupWriteSession,
   resolveWriteSessionObjects,
@@ -157,6 +158,31 @@ describe('write-scoped storage sessions', () => {
     expect(stale.ok).toBe(false);
   });
 
+  runDb('a redelivered session may not upload until every URL the earlier session issued has expired', async () => {
+    const t = await seedWriteTenant();
+    const first = await mint(t);
+    if (first.mode !== 'brokered') throw new Error('expected brokered');
+    const s1 = await authed(t, first.envelope);
+    const key = `snapshots/${first.snapshotId}/files/a.bin`;
+    const issued = await asAgent(t, s1, (r) => resolveWriteSessionObjects(s1, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
+    expect(issued.status).toBe(200);
+
+    const second = await mint(t);
+    if (second.mode !== 'brokered') throw new Error('expected brokered');
+    const s2 = await authed(t, second.envelope);
+    const put = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
+    expect(put).toMatchObject({ status: 409, code: 'previous_writer_active' });
+    expect((put as { retryAfterSeconds?: number }).retryAfterSeconds).toBeGreaterThan(0);
+    const create = await createWriteSessionMultipart(s2, key, runFor(t), fakeDeps());
+    expect(create).toMatchObject({ status: 409, code: 'previous_writer_active' });
+    const get = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'GET', key }], fakeDeps()));
+    expect(get.status).toBe(200);
+
+    await getTestDb().execute(sql`UPDATE backup_storage_sessions SET url_horizon_at = now() - interval '1 second' WHERE id = ${s1.id}`);
+    const later = await asAgent(t, s2, (r) => resolveWriteSessionObjects(s2, r, [{ method: 'PUT', key, size: 1 }], fakeDeps()));
+    expect(later.status).toBe(200);
+  });
+
   runDb('does not mint for a helper that has not reported brokered writes', async () => {
     const t = await seedWriteTenant({ writeProtocol: 0 });
     await expect(mint(t)).resolves.toEqual({ mode: 'unbrokered', reason: 'helper_unsupported' });
@@ -222,6 +248,46 @@ describe('write-scoped storage sessions', () => {
     expect([409, 410]).toContain(after.status);
     const live = await withDbAccessContext(orgContext(t.orgId), () => ensureWriteSessionLive(session));
     expect(live.ok).toBe(false);
+  });
+});
+
+describe('deleting under a write session', () => {
+  const janitorStorage = { abortMultipart: async () => undefined, listMultipart: async () => [] };
+
+  runDb('holds no transaction across the storage delete; publication meanwhile stays sealing until it settles', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    const session = await authed(t, minted.envelope);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let entered!: () => void;
+    const storageEntered = new Promise<void>((r) => { entered = r; });
+    const deleting = deleteWriteSessionKeys(session, [`snapshots/${minted.snapshotId}/files/tmp.bin`], runFor(t), fakeDeps({
+      deleteKeys: async (_cfg, keys) => { entered(); await gate; return { deleted: keys, failed: [] }; },
+    }));
+    await storageEntered;
+    // Not blocked by the delete: no reservation lock is held across it.
+    await insertSnapshotRow(t, minted.snapshotId);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('sealing');
+    release();
+    await expect(deleting).resolves.toMatchObject({ status: 200 });
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: janitorStorage });
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
+  });
+
+  runDb('the cleanup job settles a delete that never finished', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await getTestDb().execute(sql`
+      UPDATE backup_storage_sessions SET deleting_since = now() - interval '10 minutes' WHERE id = ${minted.sessionId}
+    `);
+    await insertSnapshotRow(t, minted.snapshotId);
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('sealing');
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: janitorStorage });
+    expect((await sessionRow(minted.sessionId)).deleting_since).toBeNull();
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
   });
 });
 
@@ -387,6 +453,24 @@ describe('publishing a brokered snapshot', () => {
       SELECT 1 FROM audit_logs WHERE action = 'backup.result.reservation_mismatch' AND resource_id = ${t.jobId}
     `);
     expect(audit.length).toBe(1);
+  });
+
+  runDb('a lost result is still adopted after the cleanup job abandoned the id of the ended job', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${t.jobId}`);
+    await runBackupWriteSessionJanitor({ now: () => new Date(), storage: { abortMultipart: async () => undefined, listMultipart: async () => [] } });
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('abandoned');
+
+    const outcome = await withDbAccessContext(orgContext(t.orgId), () =>
+      applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed', source: 'reconcile',
+        result: { snapshotId: minted.snapshotId, filesBackedUp: 1, bytesBackedUp: 1 },
+      }),
+    );
+    expect(outcome.snapshotDbId).not.toBeNull();
+    expect((await reservationRow(minted.snapshotId))?.state).toBe('published');
   });
 
   runDb('publishing the issued id seals the reservation and ends the job\'s write sessions', async () => {
