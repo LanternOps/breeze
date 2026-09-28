@@ -1205,6 +1205,9 @@
     "importing": "Importing…",
     "importSelected": "Import {{count}} selected",
     "customerFailedCount_one": "{{count}} customer failed to import",
-    "customerFailedCount_other": "{{count}} customers failed to import"
+    "customerFailedCount_other": "{{count}} customers failed to import",
+    "showAllContacts_one": "Show all contacts ({{count}} supplier-only hidden)",
+    "showAllContacts_other": "Show all contacts ({{count}} supplier-only hidden)",
+    "archived": "Archived"
   }
 }

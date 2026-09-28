@@ -1205,6 +1205,9 @@
     "importing": "İçe aktarılıyor…",
     "importSelected": "İçe aktar {{count}} seçildi",
     "customerFailedCount_one": "{{count}} müşterisi içe aktarılamadı",
-    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu"
+    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu",
+    "showAllContacts_one": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "showAllContacts_other": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "archived": "Arşivlendi"
   }
 }

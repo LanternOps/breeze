@@ -18,6 +18,10 @@ interface AnnotatedCustomer {
   companyName?: string;
   alreadyImported: boolean;
   organizationId: string | null;
+  /** false = archived in the provider (still importable, badged). */
+  active?: boolean;
+  /** Known to the provider only as a supplier (Xero); hidden unless "show all". */
+  supplierOnly?: boolean;
 }
 
 interface ImportSummary {
@@ -38,9 +42,13 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [failures, setFailures] = useState<ImportSummary["errors"]>([]);
+  const [showAll, setShowAll] = useState(false);
   const selection = useBulkSelection();
 
-  const importable = (customers ?? []).filter((c) => !c.alreadyImported);
+  const all = customers ?? [];
+  const supplierOnlyCount = all.filter((c) => c.supplierOnly).length;
+  const visible = showAll ? all : all.filter((c) => !c.supplierOnly);
+  const importable = visible.filter((c) => !c.alreadyImported);
 
   async function load() {
     setLoading(true);
@@ -143,6 +151,21 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
 
       {customers && customers.length > 0 && (
         <>
+          {supplierOnlyCount > 0 && (
+            <label className="mt-3 flex items-center gap-2 text-xs text-gray-600">
+              <input
+                type="checkbox"
+                data-testid={`${provider}-import-show-all`}
+                checked={showAll}
+                onChange={(e) => {
+                  setShowAll(e.target.checked);
+                  selection.clear();
+                }}
+              />
+              {t("accountingCustomerImport.showAllContacts", { count: supplierOnlyCount })}
+            </label>
+          )}
+
           <table
             className="mt-4 w-full text-sm"
             data-testid={`${provider}-import-table`}
@@ -167,7 +190,7 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
               </tr>
             </thead>
             <tbody>
-              {customers.map((c) => (
+              {visible.map((c) => (
                 <tr
                   key={c.id}
                   data-testid={`${provider}-import-row-${c.id}`}
@@ -182,7 +205,17 @@ export default function AccountingCustomerImport({ provider, onUnauthorized }: P
                       onChange={() => selection.toggle(c.id)}
                     />
                   </td>
-                  <td className="py-1.5 text-gray-900">{c.displayName}</td>
+                  <td className="py-1.5 text-gray-900">
+                    {c.displayName}
+                    {c.active === false && (
+                      <span
+                        data-testid={`${provider}-import-archived-${c.id}`}
+                        className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase text-gray-600"
+                      >
+                        {t("accountingCustomerImport.archived")}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-1.5 text-gray-500">{c.email ?? "—"}</td>
                   <td className="py-1.5">
                     {c.alreadyImported && (

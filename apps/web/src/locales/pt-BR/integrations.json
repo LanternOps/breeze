@@ -1205,6 +1205,9 @@
     "importing": "Importando…",
     "importSelected": "Importar {{count}} selecionados",
     "customerFailedCount_one": "{{count}} cliente não pôde ser importado",
-    "customerFailedCount_other": "{{count}} clientes não puderam ser importados"
+    "customerFailedCount_other": "{{count}} clientes não puderam ser importados",
+    "showAllContacts_one": "Mostrar todos os contatos ({{count}} apenas fornecedores ocultos)",
+    "showAllContacts_other": "Mostrar todos os contatos ({{count}} apenas fornecedores ocultos)",
+    "archived": "Arquivado"
   }
 }
