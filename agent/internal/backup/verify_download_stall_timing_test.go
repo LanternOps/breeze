@@ -178,9 +178,10 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 			dest := filepath.Join(t.TempDir(), "manifest.json")
 
 			driveDone := make(chan struct{})
+			var driveErr error
 			go func() {
 				defer close(driveDone)
-				driveChunkedTransfer(t, fc, window/3, 11)
+				driveErr = driveChunkedTransfer(t, fc, window/3, 11)
 			}()
 
 			var err error
@@ -188,6 +189,9 @@ func TestDownloadWithStallTimeout_ActiveTransferIsNotCutOff(t *testing.T) {
 				err = downloadWithStallTimeout(context.Background(), p, "remote/manifest.json", dest)
 			})
 			<-driveDone
+			if driveErr != nil {
+				t.Fatalf("fake clock driver: %v", driveErr)
+			}
 			if err != nil {
 				t.Fatalf("an actively delivering transfer failed: %v", err)
 			}

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ import (
 // asserts ordering ("still no stall after N intervals of progress"), not
 // elapsed wall-clock time.
 type fakeStallClock struct {
-	t       *testing.T
 	mu      sync.Mutex
 	now     time.Time
 	pending []*fakeStallTimer // timers currently waiting to fire
@@ -23,7 +23,7 @@ type fakeStallClock struct {
 
 func newFakeStallClock(t *testing.T) *fakeStallClock {
 	t.Helper()
-	return &fakeStallClock{t: t, now: time.Unix(1_700_000_000, 0)}
+	return &fakeStallClock{now: time.Unix(1_700_000_000, 0)}
 }
 
 func (c *fakeStallClock) Now() time.Time {
@@ -45,6 +45,15 @@ func (c *fakeStallClock) NewTimer(d time.Duration) downloadTimerInterface {
 // pending. Tests use it between Advance calls to be sure a woken goroutine
 // has re-registered (via Reset) or newly registered its next wait before the
 // clock moves again.
+//
+// BlockUntil is always called from the helper goroutine driveChunkedTransfer
+// runs on, never the test's own goroutine, so a timeout here must not call
+// t.Fatalf directly: testing.T requires FailNow/Fatalf to run on the test's
+// own goroutine, and calling it elsewhere unwinds only this goroutine via
+// runtime.Goexit, not the test. Instead it panics; the panic propagates out
+// of driveChunkedTransfer, and the goroutine that launched it (see
+// verify_download_stall_timing_test.go / verify_download_test.go) recovers
+// it and fails the test from the correct goroutine.
 func (c *fakeStallClock) BlockUntil(n int) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -55,8 +64,7 @@ func (c *fakeStallClock) BlockUntil(n int) {
 			return
 		}
 		if time.Now().After(deadline) {
-			c.t.Fatalf("fakeStallClock.BlockUntil(%d): timed out with %d timers pending", n, got)
-			return
+			panic(fmt.Sprintf("fakeStallClock.BlockUntil(%d): timed out with %d timers pending", n, got))
 		}
 	}
 }
@@ -125,8 +133,20 @@ func (t *fakeStallTimer) Stop() bool {
 // chunk-pacing timer are both pending again. It models a producer that
 // paces waits+1 chunks step apart, matching chunkedStallProvider and
 // scriptedDownloadProvider.trickleManifest.
-func driveChunkedTransfer(t *testing.T, fc *fakeStallClock, step time.Duration, waits int) {
+//
+// Callers always run this on a helper goroutine (see
+// verify_download_stall_timing_test.go / verify_download_test.go), not the
+// test's own goroutine, so it must not fail the test directly (see
+// fakeStallClock.BlockUntil). It recovers BlockUntil's timeout panic instead
+// and returns it as an error; the caller joins the helper goroutine and
+// calls t.Fatalf on its own goroutine, as testing.T requires.
+func driveChunkedTransfer(t *testing.T, fc *fakeStallClock, step time.Duration, waits int) (err error) {
 	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
 	fc.BlockUntil(2)
 	for i := 0; i < waits; i++ {
 		fc.Advance(step)
@@ -134,4 +154,5 @@ func driveChunkedTransfer(t *testing.T, fc *fakeStallClock, step time.Duration, 
 			fc.BlockUntil(2)
 		}
 	}
+	return nil
 }
