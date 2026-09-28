@@ -181,7 +181,11 @@ export default function ConversionPendingBanner({ orgId, onReview, onConverted, 
               {counts.unconvertible.map((item) => (
                 <li key={`${item.sourceTable}:${item.sourceId}`}>
                   <span className="font-medium">{item.name}</span>
-                  {item.policyName ? <span> — {item.policyName}</span> : null}
+                  {item.policyName ? (
+                    <span> — {item.policyId
+                      ? <a className="underline" href={`/configuration-policies/${encodeURIComponent(item.policyId)}`}>{item.policyName}</a>
+                      : item.policyName}</span>
+                  ) : null}
                   <div className="mt-1">
                     <span>{t(/* i18n-dynamic */ unconvertibleReasonKeys(item.reason))}</span>
                     {' '}<code className="break-all text-xs">{item.reason}</code>

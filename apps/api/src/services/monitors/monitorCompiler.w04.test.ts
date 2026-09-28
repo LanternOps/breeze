@@ -224,7 +224,7 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(row).toEqual({
       orgId: 'o0000000-0000-4000-8000-000000000001',
       partnerId: null,
-      name: '[monitor] Gateway reachable',
+      name: 'Gateway reachable',
       monitorType: 'tcp_port',
       target: '10.0.0.1',
       assetId: null,
@@ -560,6 +560,20 @@ describe('network_check widening', () => {
     const verification = await verifyCompiled(def, executor as never);
     expect(verification.inSync).toBe(false);
     expect(verification.diff.some(diff => diff.startsWith('network_monitors.siteId:'))).toBe(true);
+  });
+
+  it('does not flag a legacy "[monitor] "-prefixed check name as drift (#7212)', async () => {
+    const def = makeDef();
+    def.compiledHash = computeCompiledHash(def);
+    const check = { ...buildCompiledNetworkMonitor(def), name: `[monitor] ${def.name}`, siteId: null };
+    const rows = [
+      { ...buildCompiledTemplate(def), id: 't-1' },
+      { ...buildCompiledRule(def, 't-1'), id: 'r-1' },
+      { ...buildCompiledAutomation(def, 'r-1'), id: 'a-1' },
+      check,
+    ];
+    const executor = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [rows.shift()] }) }) }) };
+    expect(await verifyCompiled(def, executor as never)).toEqual({ inSync: true, diff: [] });
   });
 
   it('carries verdict overrides without making asset binding overridable', () => {

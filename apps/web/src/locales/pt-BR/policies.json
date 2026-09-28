@@ -712,7 +712,7 @@
         "timezone2": "timezone",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Suprimir alertas",
-        "muteAlertNotificationsDuringWindow": "Silenciar notificações de alerta durante a janela.",
+        "muteAlertNotificationsDuringWindow": "Nenhum alerta novo é criado durante a janela.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suprimir aplicação de patches",
         "delayPatchInstallationsDuringWindow": "Adiar instalações de patches durante a janela.",
