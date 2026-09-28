@@ -4,9 +4,9 @@
  * W03 implements contacts and items; the `mapping`/`customerImport`
  * capabilities flip in W03b. W04 ships invoice push and void (capability
  * flipped in W04b). Every other method refuses with capability_unavailable
- * until its wave flips the capability (W05 paymentPull/paymentPush). The
- * capability gates in routes, producers and workers keep them unreachable; the
- * refusal is the backstop.
+ * until its wave flips the capability (W05 payments (pull wired in W05a, push
+ * in W05b; capabilities flip in W05c)). The capability gates in routes,
+ * producers and workers keep them unreachable; the refusal is the backstop.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
@@ -18,6 +18,7 @@ import {
 import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
 import { getXeroItem, listXeroItems, upsertXeroItem } from './xeroItems';
 import { findPushedXeroInvoice, pushXeroInvoice, voidXeroInvoice, xeroInvoicePreflight } from './xeroInvoices';
+import { embedXeroPaymentMarker, extractXeroPaymentMarker, readXeroPaymentChanges, XERO_PAYMENT_REF_MAX } from './xeroPayments';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
   AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
@@ -88,13 +89,9 @@ export class XeroProvider implements AccountingProvider {
   readonly capabilities = {
     connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false,
   } as const;
-  // paymentRefMax is PROVISIONAL: paymentPush is false until W05, which pins it
-  // against the Payments API `Reference` field.
-  readonly limits = { paymentRefMax: 255, rate: XERO_RATE_LIMIT };
-  readonly paymentMarker = {
-    embed: (_reference: string | null, _marker: string): string => notYet('payment marker', 'W05'),
-    extract: (_text: string | null | undefined): string | null => notYet('payment marker', 'W05'),
-  };
+  // Refinement 14: the raw human reference the core may pass; the marker goes first.
+  readonly limits = { paymentRefMax: XERO_PAYMENT_REF_MAX, rate: XERO_RATE_LIMIT };
+  readonly paymentMarker = { embed: embedXeroPaymentMarker, extract: extractXeroPaymentMarker };
 
   readonly tenantSelection: ProviderTenantSelection = {
     connectableTenantType: 'ORGANISATION',
@@ -255,7 +252,10 @@ export class XeroProvider implements AccountingProvider {
   // --- later waves (capability false; unreachable behind the gates) ---
   async createPayment(_conn: AccountingConnection, _payment: AccountingPaymentPayload): Promise<RemoteRef> { return notYet('payment push', 'W05'); }
   async deletePayment(_conn: AccountingConnection, _payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> { return notYet('payment delete', 'W05'); }
-  async reconcileChanges(_conn: AccountingConnection, _since: Date | null): Promise<ChangeSet> { return notYet('payment pull', 'W05'); }
+  // Assumes conn.accessToken is valid (the reconcile worker resolves it first); issues no DB queries.
+  async reconcileChanges(conn: AccountingConnection, since: Date | null): Promise<ChangeSet> {
+    return readXeroPaymentChanges(callContext(conn), conn, since);
+  }
 
   /**
    * `x-xero-signature` = base64(HMAC-SHA256(raw body, XERO_WEBHOOK_KEY))

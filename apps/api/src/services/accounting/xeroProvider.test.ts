@@ -324,15 +324,34 @@ describe('methods behind later waves', () => {
   it.each([
     ['createPayment', () => xeroProvider.createPayment(conn(), {} as any)],
     ['deletePayment', () => xeroProvider.deletePayment(conn(), {} as any)],
-    ['reconcileChanges', () => xeroProvider.reconcileChanges(conn(), null)],
   ])('%s refuses with capability_unavailable and makes no HTTP call', async (_name, call) => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await expect(call()).rejects.toMatchObject({ kind: 'validation', provider: 'xero', providerCode: 'capability_unavailable' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
 
-  it('paymentMarker throws until W05', () => {
-    expect(() => xeroProvider.paymentMarker.embed(null, 'm')).toThrow(/W05/);
+describe('payment pull wiring (Xero W05a)', () => {
+  it('pins the reference cap and the marker grammar', () => {
+    expect(xeroProvider.limits.paymentRefMax).toBe(64);
+    const marker = 'Breeze payment 0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f';
+    expect(xeroProvider.paymentMarker.extract(xeroProvider.paymentMarker.embed('pi_1', marker)))
+      .toBe('0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f');
+  });
+
+  it("reconcileChanges reads with the connection's own tenant id and token", async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Invoices: [] }));
+    await xeroProvider.reconcileChanges(conn({ realmId: 'tenant-A', accessToken: 'tok' }), null);
+    const headers = new Headers((fetchMock.mock.calls[0]![1] as RequestInit).headers);
+    expect(headers.get('xero-tenant-id')).toBe('tenant-A');
+    expect(headers.get('authorization')).toBe('Bearer tok');
+  });
+
+  it('still declares paymentPull and paymentPush false until W05c', () => {
+    expect(xeroProvider.capabilities.paymentPull).toBe(false);
+    expect(xeroProvider.capabilities.paymentPush).toBe(false);
   });
 });
 
