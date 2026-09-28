@@ -53,6 +53,10 @@ const { authState, effects, AccountingError } = vi.hoisted(() => {
       audit: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
       getPartnerConnectionRef: vi.fn(),
+      // Xero W02 connection-setup routes (picker, cancel, settings pickers).
+      loadPendingGrant: vi.fn(),
+      discardPendingTenantSelection: vi.fn(),
+      listSettingsOptions: vi.fn(),
     },
     AccountingError,
   };
@@ -95,6 +99,8 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  // Disconnect's provider-side release asserts it holds no ambient context (F9).
+  hasDbAccessContext: () => false,
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', () => ({
@@ -113,6 +119,17 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   // Any-status lookup (Xero W02): backs the /:provider/connect cross-provider
   // pre-check and GET /accounting/providers (listProvidersHandler).
   getPartnerConnectionRef: effects.getPartnerConnectionRef,
+  PENDING_TENANT_STATUS: 'pending_tenant',
+}));
+
+vi.mock('../../services/accounting/accountingTenantSelection', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/accounting/accountingTenantSelection')>()),
+  loadPendingGrant: effects.loadPendingGrant,
+  discardPendingTenantSelection: effects.discardPendingTenantSelection,
+}));
+
+vi.mock('../../services/accounting/accountingSettingsOptions', () => ({
+  listProviderSettingsOptions: effects.listSettingsOptions,
 }));
 
 vi.mock('../../services/accounting/accountingCustomerImport', () => ({
@@ -195,6 +212,15 @@ const routes: RouteCase[] = [
   },
   { name: 'settings refresh', method: 'POST', path: '/quickbooks/settings/refresh', effect: 'refreshRealmSettings', requires: 'accounting:manage', mfa: true },
   { name: 'reconcile', method: 'POST', path: '/quickbooks/reconcile', effect: 'enqueueReconcile', requires: 'accounting:manage', mfa: true },
+  // --- Xero W02 connection setup: the organisation picker, cancel and the
+  //     settings pickers ride the connect chain (manage; MFA on the writes) ---
+  { name: 'tenant list', path: '/quickbooks/tenants', effect: 'loadPendingGrant', requires: 'accounting:manage', mfa: false },
+  {
+    name: 'tenant select', method: 'POST', path: '/quickbooks/tenants/select',
+    body: { tenantId: 'ten-A' }, effect: 'loadPendingGrant', requires: 'accounting:manage', mfa: true,
+  },
+  { name: 'tenant cancel', method: 'POST', path: '/quickbooks/tenants/cancel', effect: 'discardPendingTenantSelection', requires: 'accounting:manage', mfa: true },
+  { name: 'settings options', path: '/quickbooks/settings/options', effect: 'listSettingsOptions', requires: 'accounting:manage', mfa: false },
   {
     name: 'mapping decision', method: 'PUT', path: '/quickbooks/mappings',
     body: { breezeEntityType: 'org', breezeEntityId: ENTITY_ID, decision: 'unlinked' }, effect: 'saveMapping',
@@ -293,14 +319,23 @@ beforeEach(() => {
   effects.getPartnerConnectionRef.mockImplementation(async (_db: unknown, partnerId: string) => ({
     id: 'connection-1', partnerId, provider: 'quickbooks', status: 'connected',
   }));
+  effects.loadPendingGrant.mockResolvedValue({
+    row: { id: 'connection-1', realmId: null, accessTokenExpiresAt: new Date(Date.now() + 600_000) },
+    selection: { connectableTenantType: 'ORGANISATION' },
+    accessToken: 'at', authEventId: 'evt-00001', tenants: [], grantFingerprint: 'fp',
+  });
+  effects.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: 'conn-row-1', owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
+  effects.listSettingsOptions.mockResolvedValue({
+    organisation: { name: 'Demo', isDemoCompany: true }, incomeAccounts: [], taxRates: [], bankAccounts: [],
+  });
 });
 
 describe('accounting permission family — route matrix', () => {
   it('covers every interactive accounting route exactly once', () => {
     expect(new Set(routes.map((route) => route.name)).size).toBe(routes.length);
-    expect(routes).toHaveLength(16);
+    expect(routes).toHaveLength(20);
     expect(readRoutes).toHaveLength(7);
-    expect(manageRoutes).toHaveLength(9);
+    expect(manageRoutes).toHaveLength(13);
     expect(ungatedRoutes).toHaveLength(0);
   });
 

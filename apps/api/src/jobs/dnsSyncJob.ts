@@ -17,7 +17,7 @@ import {
   type DnsPolicyDomain,
   type DnsThreatCategory
 } from '../db/schema';
-import { createDnsProvider, DnsProviderHttpError, type DnsEvent } from '../services/dnsProviders';
+import { createDnsProvider, DnsProviderHttpError, type DnsEvent, type DnsEventSlice } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
@@ -665,33 +665,73 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
       : new Date(Date.now() - 24 * 60 * 60 * 1000);
     const until = new Date();
 
-    // Phase 2 — fetch from the DNS provider with NO DB context held
-    // (#1105/#1697). The ~20s-timeout HTTP must not pin a pooled connection.
-    // Release any provider-held session afterwards (best-effort; see
-    // DnsProvider.dispose — relevant for the seat-limited Pi-hole v6 client).
-    const events = await dbModule.runOutsideDbContext(async () => {
-      try {
-        return await provider.syncEvents(since, until);
-      } finally {
-        await provider.dispose?.();
-      }
-    });
+    // A provider either hands back its whole window at once (one slice ending
+    // at `until`) or yields it in chronological slices (Umbrella, whose API
+    // cannot page past ~10k events per window — #7207).
+    const slices: AsyncIterable<DnsEventSlice> = provider.syncEventSlices
+      ? provider.syncEventSlices(since, until)
+      : (async function* () {
+          yield { events: await provider.syncEvents(since, until), until };
+        })();
+    const iterator = slices[Symbol.asyncIterator]();
 
-    // Phase 3 — process + persist all events in ONE context (security events,
-    // aggregations, retention prune and success status commit together).
-    const inserted = await runWithSystemDbAccess(() =>
-      persistDnsEventSync({
-        orgId: integration.orgId,
-        integrationId: integration.id,
-        config,
-        events,
-        until,
-      })
-    );
+    let fetched = 0;
+    let inserted = 0;
+    try {
+      for (;;) {
+        // Phase 2 — fetch the next slice with NO DB context held
+        // (#1105/#1697). The ~20s-timeout HTTP must not pin a pooled
+        // connection, so each resume of the provider's walk runs outside one.
+        const step = await dbModule.runOutsideDbContext(() => iterator.next());
+        if (step.done) break;
+        const slice = step.value;
+
+        // Phase 3 — persist this slice in ONE context (security events,
+        // aggregations, retention prune, and `lastSync` advanced to the
+        // slice's end commit together). Per slice, not per run: a failure on
+        // a later slice keeps every earlier one, and the next run resumes
+        // from the last checkpoint instead of retrying — and re-losing — the
+        // whole window (#7207). Overlap between slices, and the one-minute
+        // `since` overlap above, is deduped by the providerEventId conflict.
+        inserted += await runWithSystemDbAccess(() =>
+          persistDnsEventSync({
+            orgId: integration.orgId,
+            integrationId: integration.id,
+            config,
+            events: slice.events,
+            until: slice.until,
+          })
+        );
+        fetched += slice.events.length;
+      }
+    } finally {
+      // Release any provider-held session (best-effort; see
+      // DnsProvider.dispose — relevant for the seat-limited Pi-hole v6
+      // client). Closing the walk first runs the provider's own cleanup when
+      // a persist failed mid-walk. Cleanup failures are logged, never thrown:
+      // a throw from a `finally` would replace the error that got us here,
+      // and a failed cleanup must not fail a sync that otherwise succeeded.
+      await dbModule.runOutsideDbContext(async () => {
+        for (const [step, cleanup] of [
+          ['close event walk', () => iterator.return?.()],
+          ['dispose provider', () => provider.dispose?.()],
+        ] as const) {
+          try {
+            await cleanup();
+          } catch (cleanupErr) {
+            console.error(
+              `[DnsSyncJob] ${step} failed for integration ${integration.id}:`,
+              redactLogMessage(cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr))
+            );
+            captureException(cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr)));
+          }
+        }
+      });
+    }
 
     return {
       integrationId: integration.id,
-      fetched: events.length,
+      fetched,
       inserted
     };
   } catch (error) {

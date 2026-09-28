@@ -15,10 +15,13 @@ const {
   commitImportMock,
   captureExceptionMock,
   ReauthRequiredError,
+  shouldDeferMock,
+  RATE,
 } = vi.hoisted(() => {
   class ReauthRequiredError extends Error {
     constructor(message = 'reauth') { super(message); this.name = 'ReauthRequiredError'; }
   }
+  const RATE = { perConnection: { limit: 60, windowSeconds: 60 }, maxConcurrentPerConnection: 5, appWide: null, dailyPerConnection: { limit: () => 1000 } };
   return {
     selectMock: vi.fn(),
     insertMock: vi.fn(),
@@ -31,8 +34,11 @@ const {
     commitImportMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     ReauthRequiredError,
+    shouldDeferMock: vi.fn(async () => false),
+    RATE,
   };
 });
+vi.mock('./accountingRateLimit', () => ({ shouldDeferBackgroundWork: shouldDeferMock }));
 vi.mock('../../db', () => ({
   // The org/site contact mirror now records caller-verification destination
   // provenance (#6354) via recordDestinationChangeWithExecutor, which takes a
@@ -53,7 +59,7 @@ vi.mock('./accountingTokens', () => ({
 }));
 
 vi.mock('./providerRegistry', () => ({
-  getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock }),
+  getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock, limits: { paymentRefMax: 21, rate: RATE } }),
   providerSupports: () => true,
   accountingProviderDisplayName: (id: string) => (id === 'quickbooks' ? 'QuickBooks' : 'Xero'),
 }));
@@ -67,6 +73,7 @@ vi.mock('../tenantLifecycle', () => ({ restoreOrganizationTenantAccess: vi.fn() 
 import { organizations, organizationExternalLinks, partners, sites } from '../../db/schema';
 import { ensureDefaultProfile } from '../billingProfileService';
 import { contacts } from '../../db/schema/contacts';
+import { AccountingProviderError } from './accountingProviderError';
 import {
   importAccountingCustomers,
   listAccountingCustomersAnnotated,
@@ -590,5 +597,40 @@ describe('importAccountingCustomers — connection/QBO error mapping', () => {
     listRemoteCustomersMock.mockRejectedValue(new Error('QuickBooks customer query failed with 429'));
     await expect(importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] }))
       .rejects.toMatchObject({ code: 'provider_error', status: 502 });
+  });
+});
+
+describe('import throttling, permissions and budget (Xero W03)', () => {
+  it('maps a provider throttle to 429 rate_limited with retryAfterMs, no Sentry', async () => {
+    listRemoteCustomersMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'Xero contact list', retryAfterMs: 30_000, throttleSource: 'provider' }));
+    const err = await listAccountingCustomersAnnotated('p1', 'quickbooks').catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 30_000 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+  it('maps insufficient_scope to 409 provider_permission', async () => {
+    listRemoteCustomersMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'op', providerCode: 'insufficient_scope' }));
+    await expect(listAccountingCustomersAnnotated('p1', 'quickbooks')).rejects.toMatchObject({ code: 'provider_permission', status: 409 });
+  });
+  it('maps a throttled token refresh to 429 rate_limited instead of an HTTP 500 (quorum 11)', async () => {
+    getValidAccessTokenMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'Xero token refresh', retryAfterMs: 5_000, throttleSource: 'provider' }));
+    await expect(listAccountingCustomersAnnotated('p1', 'quickbooks')).rejects.toMatchObject({ code: 'rate_limited', status: 429, retryAfterMs: 5_000 });
+  });
+  it('defers below 20% of the daily budget before refreshing a token or listing', async () => {
+    shouldDeferMock.mockResolvedValueOnce(true);
+    await expect(listAccountingCustomersAnnotated('p1', 'quickbooks')).rejects.toMatchObject({ code: 'daily_budget_low', status: 429, retryAfterMs: undefined });
+    expect(getValidAccessTokenMock).not.toHaveBeenCalled();
+    expect(listRemoteCustomersMock).not.toHaveBeenCalled();
+  });
+  it('asks the limiter with the provider\'s own rate spec and the connection id', async () => {
+    listRemoteCustomersMock.mockResolvedValueOnce([]);
+    await listAccountingCustomersAnnotated('p1', 'quickbooks');
+    expect(shouldDeferMock).toHaveBeenCalledWith('quickbooks', RATE, expect.any(String));
+  });
+  it('tags a non-Error seam failure with the neutral prefix', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    stubState();
+    stubInserts({ failOn: () => 'weird failure' as unknown as Error });
+    await importAccountingCustomers({ partnerId: 'p1', provider: 'quickbooks', customerIds: ['1'] });
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/^\[accounting-import:quickbooks\] / ) }));
   });
 });

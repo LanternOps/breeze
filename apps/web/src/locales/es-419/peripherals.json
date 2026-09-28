@@ -31,7 +31,8 @@
       "policy": "Política"
     },
     "pagination": "Mostrando {{from}}–{{to}} de {{total}}",
-    "prev": "Anterior"
+    "prev": "Anterior",
+    "eventFilterLabel": "Tipo de evento"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Creado"
     },
     "partnerWideTitle": "Política en todo el socio: aplicada en los dispositivos de cada organización",
-    "allOrgs": "En todo el socio"
+    "allOrgs": "En todo el socio",
+    "classFilterLabel": "Clase de dispositivo",
+    "actionFilterLabel": "Acción",
+    "statusFilterLabel": "Estado"
   },
   "peripheralPolicyForm": {
     "errors": {

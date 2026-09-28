@@ -24,3 +24,12 @@ export function formSecretValue(value: unknown): string {
   }
   return '';
 }
+
+/**
+ * Whether a value read from the API is the masked marker standing in for a
+ * saved secret. Any run of asterisks counts, matching the API's own check, so
+ * an older response's shorter marker is recognised too.
+ */
+export function isMaskedSecret(value: unknown): value is string {
+  return typeof value === 'string' && /^\*+$/.test(value.trim());
+}

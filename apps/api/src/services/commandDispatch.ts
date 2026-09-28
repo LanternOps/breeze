@@ -120,11 +120,17 @@ export async function countInFlightCommandsForDevice(
 export async function releaseClaimedCommandDelivery(
   commandId: string,
   executedAt: Date,
+  /** Why delivery was deferred, kept on the row for the stale reaper to report. */
+  deferral?: string,
 ): Promise<void> {
   await withSystemDbAccessContext(() =>
     db
       .update(deviceCommands)
-      .set({ status: 'pending', executedAt: null })
+      .set(
+        deferral === undefined
+          ? { status: 'pending', executedAt: null }
+          : { status: 'pending', executedAt: null, result: { deliveryDeferred: deferral } },
+      )
       .where(
         and(
           eq(deviceCommands.id, commandId),

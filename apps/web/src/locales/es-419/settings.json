@@ -302,6 +302,9 @@
     "username": "Nombre de usuario (autenticación básica)",
     "password": "Contraseña (autenticación básica)",
     "notSet": "No configurado: las organizaciones se configuran individualmente",
+    "savedSecretPlaceholder": "Guardado: déjelo en blanco para conservarlo",
+    "secretRemovedPlaceholder": "Se eliminará al guardar",
+    "removeSecret": "Quitar",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Cuando esté habilitado, todas las organizaciones secundarias enviarán registros de eventos al punto final configurado. Funciona con cualquier tienda <bulk>_bulk</bulk> compatible con Elasticsearch/OpenSearch (Elasticsearch, OpenSearch, indexador Wazuh, AWS OpenSearch Service). Déjelo deshabilitado para permitir que cada organización se configure individualmente."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elástico",
       "password": "Contraseña",
       "passwordPlaceholder": "Ingrese la contraseña",
+      "savedSecretPlaceholder": "Guardado: déjelo en blanco para conservarlo",
       "credentialsDescription": "Las credenciales se almacenan cifradas. Las credenciales existentes se enmascaran cuando se cargan."
     },
     "collection": {
@@ -3419,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Intente ajustar su búsqueda o filtros.",
     "active": "Activo",
     "revoked": "Revocado",
-    "expired": "Vencido"
+    "expired": "Vencido",
+    "statusFilterLabel": "Estado de la clave"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Cargando claves API...",
@@ -4014,7 +4019,8 @@
     "cannotDeleteAssignedRole": "No se puede eliminar el rol con usuarios asignados",
     "inheritedFromParentRole": "Heredado del rol de padre",
     "waitingForPermissionCatalog": "Esperando a que se cargue el catálogo de permisos",
-    "summary": "{{filtered}} de {{total}} roles"
+    "summary": "{{filtered}} de {{total}} roles",
+    "typeFilterLabel": "Tipo de rol"
   },
   "roleSelector": {
     "currentRole": "Rol actual",
@@ -4139,7 +4145,8 @@
     "delete": "Eliminar",
     "allStatuses": "Todos los estados",
     "deactivate": "Desactivar",
-    "activate": "Activar"
+    "activate": "Activar",
+    "statusFilterLabel": "Estado del proveedor"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "No se pudieron recuperar los proveedores SSO",
@@ -5365,7 +5372,8 @@
       "title": "Eliminar campo personalizado",
       "messagePrefix": "¿Está seguro de que desea eliminar?",
       "messageSuffix": "Esto eliminará la definición del campo y todos los valores almacenados en los dispositivos."
-    }
+    },
+    "typeFilterLabel": "Tipo de campo"
   },
   "knownGuestsSettings": {
     "title": "Invitados conocidos",

@@ -40,6 +40,14 @@ describe('ScriptTestRunner', () => {
   // untestable with real timers.
   const flush = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
+  it('gives the test device select a real accessible name (#7156)', async () => {
+    render(
+      <ScriptTestRunner osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    expect(await screen.findByRole('combobox', { name: 'Test device' })).toBeInTheDocument();
+  });
+
   it('disables test runs and explains why when the script was never saved', async () => {
     render(
       <ScriptTestRunner osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />

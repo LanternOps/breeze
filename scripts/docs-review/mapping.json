@@ -2657,6 +2657,14 @@
       ]
     },
     {
+      "pattern": "apps/api/src/routes/webhooks/xero.ts",
+      "docs": [
+        "features/accounting-integrations.mdx",
+        "deploy/environment.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/services/accounting/accountingInvoicePush.ts",
       "docs": [
         "features/accounting-integrations.mdx"

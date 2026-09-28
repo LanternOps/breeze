@@ -265,7 +265,42 @@ const backupDispatchFailuresTotal = new Counter({
 
 const backupReadDispatchesTotal = new Counter({
   name: 'breeze_backup_read_dispatch_total',
-  help: 'Restore-shaped backup command deliveries by command type, mode (brokered storage session or legacy storage destination) and reason',
+  help: 'Restore-shaped backup command delivery attempts by command type, mode (brokered, local, deferred, refused, legacy) and reason',
+  labelNames: ['command_type', 'mode', 'reason'] as const,
+  registers: [register]
+});
+
+const backupStorageSessionCallsTotal = new Counter({
+  name: 'breeze_backup_storage_session_calls_total',
+  help: 'Agent storage-session endpoint calls by session scope, operation and HTTP status (410 = expired, revoked or ended)',
+  labelNames: ['scope', 'op', 'status'] as const,
+  registers: [register]
+});
+
+const backupStorageSessionObjectsTotal = new Counter({
+  name: 'breeze_backup_storage_session_objects_total',
+  help: 'Presigned object URLs issued through storage sessions by session scope and method',
+  labelNames: ['scope', 'method'] as const,
+  registers: [register]
+});
+
+const backupStorageSessionMintsTotal = new Counter({
+  name: 'breeze_backup_storage_session_mint_total',
+  help: 'Storage-session issuance decisions at command delivery by session scope, outcome (minted, refused, deferred, legacy) and reason',
+  labelNames: ['scope', 'outcome', 'reason'] as const,
+  registers: [register]
+});
+
+const backupCapabilityRegressionsTotal = new Counter({
+  name: 'breeze_backup_capability_regressed_total',
+  help: 'Backup helper protocol drops below the stored device value, by capability (read, integrity, write)',
+  labelNames: ['capability'] as const,
+  registers: [register]
+});
+
+const backupWriteDispatchesTotal = new Counter({
+  name: 'breeze_backup_write_dispatch_total',
+  help: 'Backup write commands handed to agents by command type, mode (brokered, legacy_credential, local, refused) and reason',
   labelNames: ['command_type', 'mode', 'reason'] as const,
   registers: [register]
 });
@@ -845,6 +880,50 @@ function recordBackupReadDispatchMetric(commandType: string, mode: string, reaso
     .inc(safeCount);
 }
 
+function safeMetricCount(count: number): number {
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+}
+
+function recordStorageSessionCallMetric(scope: string, op: string, status: number, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  const statusLabel = Number.isInteger(status) && status >= 100 && status <= 599 ? String(status) : 'unknown';
+  backupStorageSessionCallsTotal
+    .labels(normalizeMetricLabel(scope, 'unknown'), normalizeMetricLabel(op, 'unknown'), statusLabel)
+    .inc(safeCount);
+}
+
+const STORAGE_SESSION_OBJECT_METHODS = new Set(['GET', 'PUT', 'UPLOAD_PART']);
+
+function recordStorageSessionObjectsMetric(scope: string, method: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  const methodLabel = STORAGE_SESSION_OBJECT_METHODS.has(method) ? method : 'unknown';
+  backupStorageSessionObjectsTotal.labels(normalizeMetricLabel(scope, 'unknown'), methodLabel).inc(safeCount);
+}
+
+function recordStorageSessionMintMetric(scope: string, outcome: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupStorageSessionMintsTotal
+    .labels(normalizeMetricLabel(scope, 'unknown'), normalizeMetricLabel(outcome, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
+function recordBackupWriteDispatchMetric(commandType: string, mode: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteDispatchesTotal
+    .labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(mode, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
+function recordBackupCapabilityRegressedMetric(capability: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupCapabilityRegressionsTotal.labels(normalizeMetricLabel(capability, 'unknown')).inc(safeCount);
+}
+
 function recordBackupVerificationSkipMetric(
   verificationType: string,
   reason: string,
@@ -1026,6 +1105,11 @@ function bindMetricsRecorders(): void {
     onVerificationResult: recordBackupVerificationResultMetric,
     onLowReadinessDevices: setLowReadinessDevicesMetric,
     onReadDispatch: recordBackupReadDispatchMetric,
+    onCapabilityRegressed: recordBackupCapabilityRegressedMetric,
+    onStorageSessionCall: recordStorageSessionCallMetric,
+    onStorageSessionObjects: recordStorageSessionObjectsMetric,
+    onStorageSessionMint: recordStorageSessionMintMetric,
+    onWriteDispatch: recordBackupWriteDispatchMetric,
   });
 
   setAnomalyMetricsRecorder({

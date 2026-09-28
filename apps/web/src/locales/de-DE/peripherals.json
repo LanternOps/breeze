@@ -31,7 +31,8 @@
       "policy": "Richtlinie"
     },
     "pagination": "{{from}}–{{to}} von {{total}}",
-    "prev": "Zurück"
+    "prev": "Zurück",
+    "eventFilterLabel": "Ereignistyp"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Erstellt"
     },
     "partnerWideTitle": "Partnerweite Richtlinie — wird auf Geräten in allen Organisationen erzwungen",
-    "allOrgs": "Partnerweit"
+    "allOrgs": "Partnerweit",
+    "classFilterLabel": "Geräteklasse",
+    "actionFilterLabel": "Aktion",
+    "statusFilterLabel": "Richtlinienstatus"
   },
   "peripheralPolicyForm": {
     "errors": {

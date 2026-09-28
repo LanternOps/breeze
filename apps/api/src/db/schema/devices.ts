@@ -110,6 +110,15 @@ export const devices = pgTable('devices', {
   maintenanceReason: varchar('maintenance_reason', { length: 500 }),
   maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
+  // #7067 — latest agent-logs ingest time for this device. Written by the
+  // logs ingest route (agents/logs.ts), throttled to a conditional UPDATE so
+  // a batch that moved the value < 5 min doesn't cost a write on the hot
+  // ingest path. NULL = never shipped a log (or predates this column).
+  // Combined with `status`, this is what lets the server tell "a heartbeating
+  // device that is quiet by design" from "a heartbeating device whose log
+  // shipping is mute" without depending on the (possibly broken) log channel
+  // itself — see isDeviceLogSilent in @breeze/shared.
+  lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
   // a recovery. recoveredFromSnapshotId is a soft reference to
@@ -261,6 +270,14 @@ export const devices = pgTable('devices', {
   // credentials; 0 (default, and every agent that omits the field) = no.
   // Non-sticky: rewritten every beat so a helper downgrade clears the claim.
   backupReadProtocolVersion: integer('backup_read_protocol_version').notNull().default(0),
+  // Snapshot integrity protocol of the INSTALLED backup helper (same report,
+  // same non-sticky contract). 1 = the helper produces snapshot attestations;
+  // 2 = it also checks them at every restore. 0 = neither.
+  backupIntegrityProtocolVersion: integer('backup_integrity_protocol_version').notNull().default(0),
+  // Storage write protocol of the INSTALLED backup helper (same report, same
+  // non-sticky contract). 1 = the helper writes through brokered storage
+  // sessions; 0 = it writes with the configured storage destination.
+  backupWriteProtocolVersion: integer('backup_write_protocol_version').notNull().default(0),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally

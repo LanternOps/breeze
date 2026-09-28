@@ -126,6 +126,24 @@ describe('ConfigPolicyDetailPage — a11y (#7158)', () => {
   });
 });
 
+describe('ConfigPolicyDetailPage overview status select accessible name (#7156)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('gives the overview status select a real accessible name', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
 describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide policies (#2101)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();

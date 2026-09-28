@@ -1,5 +1,6 @@
+import '@/lib/i18n';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 
 const { fetchWithAuth } = vi.hoisted(() => ({
   fetchWithAuth: vi.fn()
@@ -33,6 +34,15 @@ beforeEach(() => {
 
 afterEach(() => {
   window.history.replaceState(null, '', window.location.pathname);
+});
+
+describe('VulnerabilitiesPage filter selects accessible name (#7156)', () => {
+  it('gives the severity/status/category filter selects a real accessible name', async () => {
+    render(<VulnerabilitiesPage />);
+    expect(await screen.findByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Category' })).toBeInTheDocument();
+  });
 });
 
 describe('VulnerabilitiesPage', () => {

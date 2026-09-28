@@ -778,15 +778,25 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // 8 -> 10: the two SyncToken-re-read fixes later in this branch each added a
     // tag-bearing capture without bumping the pin, which is exactly the count
     // mismatch this number exists to force.
-    ['accounting/accountingInvoicePush.ts', 10],
+    // 10 -> 12: Xero W04 refinement 22 void-recovery persist added its own
+    // zero-row and catch captureException calls (same tag shape as the
+    // existing SyncToken persist).
+    ['accounting/accountingInvoicePush.ts', 12],
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),
     // so the two worker files reach out of it.
-    ['accounting/accountingPaymentPush.ts', 12], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
+    // 12 -> 14: Xero W05 — the create-side `remote_ambiguous` refusal capture and
+    // `markPaymentRefusedIfStillOwed`'s own best-effort catch.
+    ['accounting/accountingPaymentPush.ts', 14], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
     // #6082: the sync-mapping terminal-failure path (`AccountingMappingError`)
     // added a third tag-bearing capture (`accounting_entity_id`).
     ['../jobs/accountingSyncWorker.ts', 3],
-    ['../jobs/accountingReconcileWorker.ts', 5],
+    // Xero W02: sweep pass 3 (reap stale pending_tenant rows) added a sixth
+    // tag-bearing capture (`accounting_reconcile_phase: 'sweep.reapPendingTenants'`).
+    // Xero W05a: sweep pass 1's owed-delete check (webhook budget deferral
+    // exemption) is isolated with its own tag-bearing capture
+    // (`accounting_reconcile_phase: 'sweep.owedDelete'`) — seventh.
+    ['../jobs/accountingReconcileWorker.ts', 7],
     // #5126: the same #4828/Phase D2 defect in the pull-back path — every
     // captureException in accountingPaymentPull.ts tagged camelCase keys
     // (action, resourceId, remotePaymentId, invoiceId) with no allowlisted

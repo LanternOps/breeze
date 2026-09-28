@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
+import { FilterSelect } from "../shared/FilterSelect";
 import { useTranslation } from "react-i18next";
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -119,13 +120,14 @@ export default function PeripheralActivityLog({
     <div className="space-y-4">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3">
-        <select
+        <FilterSelect
+          label={t("peripheralActivityLog.eventFilterLabel")}
           value={filterEventType}
           onChange={(e) => {
             setFilterEventType(e.target.value);
             setOffset(0);
           }}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-9"
         >
           <option value="">{t("peripheralActivityLog.allEvents")}</option>
           <option value="connected">
@@ -143,7 +145,7 @@ export default function PeripheralActivityLog({
           <option value="policy_override">
             {t("peripheralActivityLog.events.policy_override")}
           </option>
-        </select>
+        </FilterSelect>
         <input
           value={filterPeripheralType}
           onChange={(e) => {

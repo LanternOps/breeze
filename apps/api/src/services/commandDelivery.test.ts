@@ -473,6 +473,31 @@ describe('storage-destination delivery refreshers', () => {
     ]);
   });
 
+  it('hands the integrity and write helper protocols this heartbeat reported to the refresher', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.mssql_backup = async (p, ctx) => {
+      seen.push(ctx);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery(
+      [{ id: 'cmd-w', type: 'mssql_backup', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt }],
+      { reportedBackupReadProtocolVersion: 0, reportedBackupIntegrityProtocolVersion: 2, reportedBackupWriteProtocolVersion: 1 },
+    );
+
+    expect(seen).toEqual([
+      {
+        commandId: 'cmd-w',
+        deviceId: CLAIM_DEVICE,
+        type: 'mssql_backup',
+        claimedAt,
+        reportedBackupReadProtocolVersion: 0,
+        reportedBackupIntegrityProtocolVersion: 2,
+        reportedBackupWriteProtocolVersion: 1,
+      },
+    ]);
+  });
+
   it('hands every refresher the identity of the command it is preparing', async () => {
     const seen: unknown[] = [];
     deliveryRefreshers.software_install = async (p, ctx) => {
@@ -553,5 +578,44 @@ describe('storage-destination delivery refreshers', () => {
       claimedAt,
       'destination no longer resolves',
     );
+  });
+  it('a deferred delivery releases the claimed row with its reason for a later attempt, without an error report', async () => {
+    const { CommandDeliveryDeferredError } = await import('./commandDeliveryRefusal');
+    deliveryRefreshers.backup_restore = async () => {
+      throw new CommandDeliveryDeferredError('index still being prepared');
+    };
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const out = await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-restore', type: 'backup_restore', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt },
+      { id: 'cmd-plain', type: 'script', deviceId: CLAIM_DEVICE, payload: { a: 1 }, executedAt: claimedAt },
+    ]);
+
+    expect(out.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
+    expect(expireRefusedClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-restore', claimedAt, 'index still being prepared');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('refreshPayloadForDelivery releases a deferred claim with its reason on the enqueue-time push, without an error report', async () => {
+    const { CommandDeliveryDeferredError } = await import('./commandDeliveryRefusal');
+    deliveryRefreshers.backup_restore = async () => {
+      throw new CommandDeliveryDeferredError('index still being prepared');
+    };
+
+    await expect(
+      refreshPayloadForDelivery('backup_restore', {}, {
+        commandId: 'cmd-push',
+        deviceId: CLAIM_DEVICE,
+        type: 'backup_restore',
+        claimedAt,
+      }),
+    ).resolves.toBeNull();
+
+    expect(expireRefusedClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-push', claimedAt, 'index still being prepared');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });

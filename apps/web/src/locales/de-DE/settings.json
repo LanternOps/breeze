@@ -302,6 +302,9 @@
     "username": "Benutzername (Basisauthentifizierung)",
     "password": "Passwort (Basisauthentifizierung)",
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
+    "savedSecretPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
+    "secretRemovedPlaceholder": "Wird beim Speichern entfernt",
+    "removeSecret": "Entfernen",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Wenn diese Option aktiviert ist, senden alle untergeordneten Organisationen Ereignisprotokolle an den konfigurierten Endpunkt. Funktioniert mit jedem Elasticsearch/OpenSearch-kompatiblen <bulk>_bulk</bulk> Store (Elasticsearch, OpenSearch, Wazuh Indexer, AWS OpenSearch Service). Lassen Sie die Option deaktiviert, damit jede Organisation individuell konfiguriert werden kann."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastisch",
       "password": "Passwort",
       "passwordPlaceholder": "Passwort eingeben",
+      "savedSecretPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
       "credentialsDescription": "Anmeldeinformationen werden verschlüsselt gespeichert. Vorhandene Anmeldeinformationen werden beim Laden maskiert."
     },
     "collection": {
@@ -3419,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Suche oder Filter anpassen.",
     "active": "Aktiv",
     "revoked": "Widerrufen",
-    "expired": "Abgelaufen"
+    "expired": "Abgelaufen",
+    "statusFilterLabel": "API-Schlüsselstatus"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API-Schlüssel werden geladen...",
@@ -4014,7 +4019,8 @@
     "cannotDeleteAssignedRole": "Rolle mit zugewiesenen Benutzern kann nicht gelöscht werden",
     "inheritedFromParentRole": "Von der übergeordneten Rolle geerbt",
     "waitingForPermissionCatalog": "Warten auf das Laden des Berechtigungskatalogs",
-    "summary": "{{filtered}} von {{total}} Rollen"
+    "summary": "{{filtered}} von {{total}} Rollen",
+    "typeFilterLabel": "Rollentyp"
   },
   "roleSelector": {
     "currentRole": "Aktuelle Rolle",
@@ -4139,7 +4145,8 @@
     "delete": "Löschen",
     "allStatuses": "Alle Status",
     "deactivate": "Deaktivieren",
-    "activate": "Aktivieren"
+    "activate": "Aktivieren",
+    "statusFilterLabel": "Anbieterstatus"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Fehler beim Abrufen von SSO Anbietern",
@@ -5365,7 +5372,8 @@
       "title": "Benutzerdefiniertes Feld löschen",
       "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "messageSuffix": "Dadurch werden die Felddefinition und alle auf den Geräten gespeicherten Werte entfernt."
-    }
+    },
+    "typeFilterLabel": "Feldtyp"
   },
   "knownGuestsSettings": {
     "title": "Bekannte Gäste",

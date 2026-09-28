@@ -31,3 +31,33 @@ describe('DeviceCompare option source', () => {
     expect(fetchMock.mock.calls.some(([input]) => /^\/devices(?:\?|$)/.test(String(input)))).toBe(false);
   });
 });
+
+describe('DeviceCompare metrics time-range select accessible name (#7156)', () => {
+  beforeEach(() => {
+    // The component reads/writes `?ids=` via window.history on mount/selection
+    // change, and jsdom's window.location persists across tests in this file —
+    // reset it so a prior test's single-device selection doesn't leak in and
+    // short-circuit this test's two-device auto-select.
+    window.history.replaceState({}, '', '/');
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/devices/options?')) return response({
+        data: [
+          { id: 'device-1', hostname: 'device-a', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null },
+          { id: 'device-2', hostname: 'device-b', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null },
+        ],
+        page: { nextCursor: null, returned: 2, total: 2, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+      });
+      if (url.startsWith('/devices/device-1') || url.startsWith('/devices/device-2')) {
+        return response({ data: { id: url.includes('device-1') ? 'device-1' : 'device-2', hostname: 'device', osType: 'windows', status: 'online' } });
+      }
+      return response({ data: [] });
+    });
+  });
+
+  it('gives the metrics time-range select a real accessible name once two devices auto-select', async () => {
+    render(<DeviceCompare />);
+    expect(await screen.findByRole('combobox', { name: 'Time range' })).toBeInTheDocument();
+  });
+});

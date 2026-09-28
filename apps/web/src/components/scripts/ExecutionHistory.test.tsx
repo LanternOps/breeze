@@ -51,6 +51,15 @@ function bodyRows(): HTMLElement[] {
   return Array.from(body.querySelectorAll('tr'));
 }
 
+describe('ExecutionHistory filter selects accessible name (#7156)', () => {
+  it('gives the status and date-range filter selects a real accessible name', () => {
+    render(<ExecutionHistory executions={rows} />);
+
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Date range' })).toBeInTheDocument();
+  });
+});
+
 describe('ExecutionHistory', () => {
   it('filters on a search term without throwing when scriptName or deviceHostname is missing', () => {
     render(<ExecutionHistory executions={rows} />);

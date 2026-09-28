@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints twelve lines in
+# Reads changed-file paths on stdin (one per line) and prints thirteen lines in
 # GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, the six area flags
-# `api`, `web`, `portal`, `addins`, `m365`, `rust`, `topology_browser`, then
-# `agent_code` — each `true|false`.
+# `api`, `web`, `portal`, `addins`, `m365`, `rust`, `topology_browser`,
+# `agent_code`, then `integration` — each `true|false`. One optional argument:
+# `--pull-request` (path-gates `integration`; see below).
 #
 # `agent_code=true` means "agent code (or the CI that tests it) changed": any
 # agent/** path, `.github/workflows/ci.yml`, or this classifier. It is NOT the
@@ -47,8 +48,9 @@
 # runs? Add its carve-out here AND to the pinned list in the test.
 #
 # Area outputs (`api`, `web`, `portal`, `addins`, `m365`, `rust`) gate the
-# heavy jobs that exercise exactly one application area (test-api,
-# integration-test, test-web, the add-in and M365 suites, rust-check, ...).
+# heavy jobs that exercise exactly one application area (test-api, test-web,
+# the add-in and M365 suites, rust-check, ...; integration-test has its own
+# `integration` output, below).
 # A wrong area gate SILENTLY skips a whole area's tests, so they fail OPEN:
 #   - shared/global inputs (packages/**, the root manifests and lockfile,
 #     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
@@ -79,11 +81,34 @@
 # Every path it matches also falls outside the tooling allowlist, so it implies
 # `app=true` as well.
 #
+# `integration` (#5936, printed LAST) gates the 16-shard real-Postgres
+# `integration-test` job. It is path-gated ONLY when the caller passes
+# `--pull-request` — ci.yml does that on the `pull_request` branch and nowhere
+# else, so the merge queue (the real gate) and every other event run the full
+# suite for any code change. Without the flag it is simply `code`. With the flag
+# it fails OPEN: it is false only for the paths the suite provably cannot read —
+# agent/**, the web/portal/viewer/helper/mobile apps, the four Office add-ins,
+# the three M365 executors, and the root Cargo.* / rust-toolchain* manifests —
+# and true for everything else (apps/api/** incl. migrations and scripts,
+# packages/**, ee/**, root manifests/lockfile/patches/tsconfig, docker*,
+# .github/**, and any path no rule names). `ci-area-gating.test.mjs` re-derives
+# that exclusion list from the suite's configs, imports/reads and the job's
+# steps, and fails if anything the suite reaches lands in it. Like
+# topology_browser it is matched only on a non-docs path, so it implies code.
+#
 # Fail-closed: an empty file list is `code=true docs=true agent=true
-# app=true topology_browser=true agent_code=true` and every area true. Deciding "nothing
+# app=true topology_browser=true agent_code=true integration=true` and every area true. Deciding "nothing
 # changed" from no evidence is how a broken listing would green a PR (or
 # silently skip a job that should have run).
 set -euo pipefail
+
+gate_integration=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pull-request) gate_integration=true ;;
+    *) echo "classify-pr-paths: unknown argument '${arg}'" >&2; exit 2 ;;
+  esac
+done
 
 # The QEMU job's dependency set, pinned beside this script (see that file's
 # header). Missing or empty means we cannot tell what the job depends on, so
@@ -127,6 +152,7 @@ m365=false
 rust=false
 topology_browser=false
 agent_code=false
+integration=false
 seen=false
 all_areas() {
   api=true; web=true; portal=true; addins=true; m365=true; rust=true
@@ -203,10 +229,24 @@ while IFS= read -r path; do
     e2e-tests/pages/TopologyPage.ts|\
     .github/workflows/ci.yml) topology_browser=true ;;
   esac
+  # Integration-test gate (#5936). Ungated unless --pull-request; then only the
+  # paths the real-Postgres suite provably cannot read are false (fail open).
+  if [[ "${gate_integration}" != "true" ]]; then
+    integration=true
+  else
+    case "${path}" in
+      agent/*|\
+      apps/web/*|apps/portal/*|apps/viewer/*|apps/helper/*|apps/mobile/*|\
+      apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*|\
+      apps/m365-graph-read-executor/*|apps/m365-graph-actions-executor/*|apps/m365-communications-executor/*|\
+      Cargo.*|rust-toolchain*) : ;;
+      *) integration=true ;;
+    esac
+  fi
 done
 
 if [[ "${seen}" != "true" ]]; then
-  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app+topology_browser change in every area (fail-closed)" >&2
+  echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app+topology_browser+integration change in every area (fail-closed)" >&2
   code=true
   docs=true
   agent=true
@@ -214,6 +254,7 @@ if [[ "${seen}" != "true" ]]; then
   all_areas
   topology_browser=true
   agent_code=true
+  integration=true
 fi
 
 echo "code=${code}"
@@ -228,3 +269,4 @@ echo "m365=${m365}"
 echo "rust=${rust}"
 echo "topology_browser=${topology_browser}"
 echo "agent_code=${agent_code}"
+echo "integration=${integration}"

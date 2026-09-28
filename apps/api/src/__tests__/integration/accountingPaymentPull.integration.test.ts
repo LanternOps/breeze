@@ -453,7 +453,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
 
     await expect(withSystemDbAccessContext(() => voidPayment(applied.invoicePaymentId!, {
       userId: fx.userId, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId],
-    }))).rejects.toMatchObject({ status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT' });
+    }))).rejects.toMatchObject({ status: 409, code: 'PROVIDER_OWNED_PAYMENT' });
 
     // Refused BEFORE any write: the payment, its mapping and the invoice's own
     // money columns are all exactly as the pull left them.

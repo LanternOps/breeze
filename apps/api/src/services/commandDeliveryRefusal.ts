@@ -21,7 +21,21 @@ export type DeliveryRefreshContext = {
    * guarded device write may not have updated.
    */
   reportedBackupReadProtocolVersion?: number;
+  /**
+   * The backup helper's snapshot integrity and storage write protocols, as
+   * reported by the same heartbeat. Same semantics as the read field: absent
+   * on delivery paths that carry no heartbeat report, where a refresher falls
+   * back to the stored (non-sticky) device column.
+   */
+  reportedBackupIntegrityProtocolVersion?: number;
+  reportedBackupWriteProtocolVersion?: number;
 };
+
+/** The helper-protocol fields a heartbeat hands to delivery refreshers. */
+export type ReportedBackupHelperProtocols = Pick<
+  DeliveryRefreshContext,
+  'reportedBackupReadProtocolVersion' | 'reportedBackupIntegrityProtocolVersion' | 'reportedBackupWriteProtocolVersion'
+>;
 
 /**
  * Thrown by a delivery refresher when the command can NEVER be delivered as
@@ -42,4 +56,24 @@ export class CommandDeliveryRefusedError extends Error {
 
 export function isCommandDeliveryRefusal(err: unknown): err is CommandDeliveryRefusedError {
   return err instanceof CommandDeliveryRefusedError;
+}
+
+/**
+ * Thrown by a delivery refresher when the command cannot be delivered YET but
+ * will be deliverable shortly without anyone acting — a snapshot's file index
+ * that is still being prepared, say. The row is released back to `pending`
+ * with the reason recorded (`result.deliveryDeferred`), and the next claim
+ * tries again; if it is never delivered, the stale reaper reports that reason.
+ * An expected state, not a fault: it is not reported as an error. The message
+ * is operator-facing and must never contain credential material.
+ */
+export class CommandDeliveryDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CommandDeliveryDeferredError';
+  }
+}
+
+export function isCommandDeliveryDeferral(err: unknown): err is CommandDeliveryDeferredError {
+  return err instanceof CommandDeliveryDeferredError;
 }

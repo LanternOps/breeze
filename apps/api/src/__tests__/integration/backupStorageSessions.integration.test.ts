@@ -37,6 +37,7 @@ import {
   resolveStorageSessionObjects,
 } from '../../services/backupStorageSessions';
 import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
+import { CommandDeliveryRefusedError } from '../../services/commandDeliveryRefusal';
 import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
@@ -404,16 +405,14 @@ describe('brokered storage sessions (real database)', () => {
     expect(delivered).not.toHaveProperty('providerConfig');
   });
 
-  runDb('an older helper gets the storage destination and no session', async () => {
+  runDb('an older helper is refused, and is never sent the storage destination', async () => {
     const org = await seedOrg();
     await getTestDb().execute(sql`UPDATE devices SET backup_read_protocol_version = 0 WHERE id = ${org.executing}`);
     const payload = { snapshotId: SNAP, ...backupReadCredentialPayload(org.configId, org.orgId, 's3') };
     const commandId = await queueRestore(org.executing, payload);
-    const delivered = await runOutsideDbContext(() =>
+    await expect(runOutsideDbContext(() =>
       deliverBrokeredReadCommand(payload, { commandId, deviceId: org.executing, type: 'backup_restore', claimedAt: new Date() }),
-    );
-    expect(delivered).not.toHaveProperty('storageSession');
-    expect(delivered.providerConfig).toMatchObject({ bucket: DESTINATION.bucket });
+    )).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
     const n = (await getTestDb().execute(sql`SELECT count(*)::int AS n FROM backup_storage_sessions WHERE command_id = ${commandId}`)) as unknown as Array<{ n: number }>;
     expect(n[0]!.n).toBe(0);
   });
@@ -462,7 +461,7 @@ describe('brokered storage sessions (real database)', () => {
     expect(ended).toEqual({ revoked: true, revoked_reason: 'budget_exhausted' });
   });
 
-  runDb('a snapshot deleted while its session is minted withholds only that command', async () => {
+  runDb('a snapshot deleted while its session is minted never falls back to the destination', async () => {
     const org = await seedOrg();
     const payloadA = { snapshotId: SNAP, ...backupReadCredentialPayload(org.configId, org.orgId, 's3') };
     const claimedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 5000);
@@ -497,16 +496,17 @@ describe('brokered storage sessions (real database)', () => {
         }),
       );
       expect(deleted).toBe(true);
-      // The sibling was prepared after the snapshot vanished, so it falls
-      // back to the destination (snapshot_unresolved) rather than failing.
-      expect(delivered.map((c) => c.id)).toEqual([healthy]);
-      expect(delivered[0]!.payload).not.toHaveProperty('storageSession');
+      // The sibling was prepared after the snapshot vanished: it is refused
+      // (snapshot not found) and left for the reaper to expire, never sent the
+      // destination.
+      expect(delivered).toEqual([]);
       const rows = (await getTestDb().execute(sql`
-        SELECT id, status FROM device_commands WHERE id IN (${doomed}, ${healthy})
-      `)) as unknown as Array<{ id: string; status: string }>;
-      const status = Object.fromEntries(rows.map((r) => [r.id, r.status]));
-      expect(status[doomed]).toBe('pending'); // released for a later attempt, committed with the transaction
-      expect(status[healthy]).toBe('sent');
+        SELECT id, status, result->>'deliveryRefusal' AS refusal FROM device_commands WHERE id IN (${doomed}, ${healthy})
+      `)) as unknown as Array<{ id: string; status: string; refusal: string | null }>;
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+      expect(byId[doomed]).toMatchObject({ status: 'pending', refusal: null }); // released for a later attempt, committed with the transaction
+      expect(byId[healthy]!.status).toBe('pending');
+      expect(byId[healthy]!.refusal).toMatch(/could not be found/);
       const n = (await getTestDb().execute(sql`
         SELECT count(*)::int AS n FROM backup_storage_sessions WHERE command_id IN (${doomed}, ${healthy})
       `)) as unknown as Array<{ n: number }>;
@@ -541,7 +541,14 @@ describe('brokered storage sessions (real database)', () => {
       }),
     );
 
-    expect(delivered[0]!.payload).not.toHaveProperty('storageSession');
+    // Deferred, never sent the destination: the row is released for the next
+    // claim with the reason recorded.
+    expect(delivered).toHaveLength(0);
+    const [row] = (await getTestDb().execute(
+      sql`SELECT status, result FROM device_commands WHERE id = ${commandId}`,
+    )) as unknown as Array<{ status: string; result: Record<string, unknown> | null }>;
+    expect(row!.status).toBe('pending');
+    expect(row!.result).toHaveProperty('deliveryDeferred');
     await vi.waitFor(() => expect(hydration.calls).toHaveLength(1));
     expect(hydration.calls[0]).toEqual({
       snapshotDbId: org.snapshotDbId,

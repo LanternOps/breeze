@@ -51,6 +51,8 @@ const {
   enqueuePaymentDeleteMock,
   providerSupportsMock,
   getConnectionProvidersForMappingsMock,
+  reapStalePendingTenantsMock,
+  owesDeleteMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
   const record = (name: string) => {
@@ -96,6 +98,8 @@ const {
     enqueuePaymentDeleteMock: vi.fn(),
     providerSupportsMock: vi.fn((_id: string, _cap: string) => true),
     getConnectionProvidersForMappingsMock: vi.fn(),
+    reapStalePendingTenantsMock: vi.fn(),
+    owesDeleteMock: vi.fn(async () => false),
   };
 });
 
@@ -155,6 +159,7 @@ vi.mock('../services/accounting/providerRegistry', () => ({
   getAccountingProvider: getAccountingProviderMock,
   findAccountingProvider: (id: string) => ({ id, limits: { rate: { provider: id } } }),
   providerSupports: providerSupportsMock,
+  accountingProviderDisplayName: (id: string) => ({ quickbooks: 'QuickBooks', xero: 'Xero' } as Record<string, string>)[id] ?? `UNKNOWN_PROVIDER:${id}`,
 }));
 
 vi.mock('../services/accounting/accountingPaymentPull', () => ({
@@ -166,11 +171,17 @@ vi.mock('../services/accounting/accountingPaymentPull', () => ({
 
 vi.mock('../services/accounting/accountingPaymentPush', () => ({
   listOwedPaymentMappings: listOwedPaymentMappingsMock,
+  connectionOwesUnresolvedPaymentDelete: owesDeleteMock,
 }));
 
 vi.mock('./accountingSyncWorker', () => ({
   enqueueAccountingPaymentPush: enqueuePaymentPushMock,
   enqueueAccountingPaymentDelete: enqueuePaymentDeleteMock,
+}));
+
+// Xero W02 Task 9: the sweep's pass 3 (pending_tenant reaper).
+vi.mock('../services/accounting/accountingTenantSelection', () => ({
+  reapStalePendingTenants: reapStalePendingTenantsMock,
 }));
 
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
@@ -332,6 +343,12 @@ beforeEach(() => {
   providerSupportsMock.mockImplementation(() => true);
   enqueuePaymentPushMock.mockResolvedValue(true);
   enqueuePaymentDeleteMock.mockResolvedValue(true);
+
+  // Defaults so processReconcileSweep tests never depend on execution order
+  // (ruling F14): every test that cares about the reaper or the connection
+  // list overrides these explicitly.
+  listReconcilableConnectionsMock.mockResolvedValue([]);
+  reapStalePendingTenantsMock.mockResolvedValue({ stale: 0, reaped: 0, kept: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -438,6 +455,35 @@ describe('processReconcileConnectionJob: gating', () => {
     // The live connection is a DIFFERENT row than this stale job named —
     // nothing to safely stamp.
     expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('defers a WEBHOOK run when the provider daily budget is low, before any token work (Xero W05 refinement 6)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ provider: 'xero' }));
+    shouldDeferMock.mockResolvedValueOnce(true);
+    const log = vi.spyOn(console, 'log');
+
+    await expect(processReconcileConnectionJob({ ...JOB, trigger: 'webhook' })).resolves.toBeNull();
+
+    expect(shouldDeferMock).toHaveBeenCalledWith('xero', expect.anything(), JOB.connectionId);
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(log.mock.calls.some((c) => c.includes('reason=daily_budget_low'))).toBe(true);
+  });
+
+  it('does NOT defer a webhook run while the connection owes a delete only a pull can resolve (quorum finding 3)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ provider: 'xero' }));
+    shouldDeferMock.mockResolvedValueOnce(true);
+    owesDeleteMock.mockResolvedValueOnce(true);
+    await processReconcileConnectionJob({ ...JOB, trigger: 'webhook' });
+    expect(reconcileChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sweep', 'manual'] as const)('never consults the budget for a %s run (the sweep deferred at enqueue; Sync now is interactive)', async (trigger) => {
+    shouldDeferMock.mockResolvedValue(true);
+    await processReconcileConnectionJob({ ...JOB, trigger });
+    expect(shouldDeferMock).not.toHaveBeenCalled();
+    expect(reconcileChangesMock).toHaveBeenCalledTimes(1);
+    shouldDeferMock.mockResolvedValue(false);
   });
 });
 
@@ -886,6 +932,9 @@ describe('processReconcileConnectionJob: cursor', () => {
     await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/could not be fully enumerated/);
 
     expect(stampReconcileRunErrorMock.mock.calls.at(-1)![3]).toMatch(/truncat/i);
+    expect(stampReconcileRunErrorMock.mock.calls.at(-1)![3]).toBe(
+      'QuickBooks truncated the last change window and the backfill did not complete; payments may be missing',
+    );
   });
 
   it('holds the cursor and rethrows when the CDC window could not be fully enumerated', async () => {
@@ -940,7 +989,7 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
@@ -961,7 +1010,7 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, deferred: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0 });
   });
 
   it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
@@ -984,6 +1033,84 @@ describe('processReconcileSweep', () => {
     expect(queueAddMock).toHaveBeenCalledTimes(1);
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('a low-budget connection that owes an unresolved payment delete is still enqueued (quorum finding 3)', async () => {
+    // Arrange the sweep exactly as the file's first sweep test does, with ONE reconcilable connection.
+    listReconcilableConnectionsMock.mockImplementation(async () => {
+      record('listReconcilableConnections');
+      return [{ id: 'c1', partnerId: 'p1', provider: 'xero' }];
+    });
+    shouldDeferMock.mockResolvedValue(true);
+    owesDeleteMock.mockResolvedValue(true);
+    const result = await processReconcileSweep();
+    expect(result.deferred).toBe(0);
+    expect(result.enqueued).toBe(1);
+    shouldDeferMock.mockResolvedValue(false);
+    owesDeleteMock.mockResolvedValue(false);
+  });
+
+  it('isolates a failed owed-delete check to its own connection — the sweep still resolves, that connection is enqueued (fail toward pulling), and later passes still run', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([
+      { id: 'c1', partnerId: 'p1', provider: 'xero' },
+      { id: 'c2', partnerId: 'p2', provider: 'xero' },
+    ]);
+    shouldDeferMock.mockResolvedValue(true);
+    owesDeleteMock
+      .mockRejectedValueOnce(new Error('owed-delete check boom'))
+      .mockResolvedValueOnce(false);
+
+    const result = await processReconcileSweep();
+
+    expect(result.enqueued).toBe(1);
+    expect(result.deferred).toBe(1);
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, {
+      service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.owedDelete',
+    });
+    // Pass 2/3 still ran despite pass 1's owed-delete error.
+    expect(listOwedPaymentMappingsMock).toHaveBeenCalled();
+    expect(reapStalePendingTenantsMock).toHaveBeenCalled();
+
+    shouldDeferMock.mockResolvedValue(false);
+    owesDeleteMock.mockReset();
+    owesDeleteMock.mockResolvedValue(false);
+    captureExceptionMock.mockClear();
+  });
+});
+
+describe('pending_tenant reaper (Xero W02)', () => {
+  it('reaps stale pending rows on every sweep and reports the count', async () => {
+    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 2, reaped: 2, kept: 0 });
+
+    const out = await processReconcileSweep();
+
+    expect(reapStalePendingTenantsMock).toHaveBeenCalledTimes(1);
+    expect(out.pendingTenantsReaped).toBe(2);
+  });
+
+  it('#7289: reports stale rows KEPT because they still owe payment deletes (returned and logged)', async () => {
+    reapStalePendingTenantsMock.mockResolvedValueOnce({ stale: 3, reaped: 1, kept: 2 });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const out = await processReconcileSweep();
+
+    expect(out.pendingTenantsReaped).toBe(1);
+    expect(out.pendingTenantsKept).toBe(2);
+    const sweepLine = log.mock.calls.find((call) => call[0] === '[AccountingReconcileWorker] sweep complete');
+    expect(sweepLine).toContain('pendingTenantsKept=2');
+    log.mockRestore();
+  });
+
+  it('a reap failure never fails the sweep or blocks the other passes', async () => {
+    reapStalePendingTenantsMock.mockRejectedValueOnce(new Error('db down'));
+
+    const out = await processReconcileSweep();
+
+    expect(out.pendingTenantsReaped).toBe(0);
+    expect(out).toHaveProperty('enqueued');
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 });
@@ -1099,6 +1226,27 @@ describe('enqueueAccountingReconcile', () => {
 
     await expect(enqueueAccountingReconcile('c1', 'p1', 'manual')).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('adds a delay only when asked, and keeps the jobId (Xero W05 refinement 5)', async () => {
+    await expect(enqueueAccountingReconcile('c1', 'p1', 'webhook', { delayMs: 30_000 })).resolves.toBe(true);
+    const [, , opts] = queueAddMock.mock.calls.at(-1)!;
+    expect(opts).toEqual({
+      jobId: 'accounting-reconcile-c1',
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: true,
+      delay: 30_000,
+    });
+  });
+
+  it('a zero or absent delay leaves the add() options byte-identical to pre-W05 (QuickBooks pin)', async () => {
+    await enqueueAccountingReconcile('c1', 'p1', 'webhook', { delayMs: 0 });
+    await enqueueAccountingReconcile('c1', 'p1', 'webhook');
+    for (const call of queueAddMock.mock.calls.slice(-2)) {
+      expect(call[2]).not.toHaveProperty('delay');
+    }
   });
 });
 
@@ -1309,7 +1457,7 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       await expect(processReconcileSweep()).resolves.toEqual({
-        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0,
+        enqueued: 1, failed: 0, deferred: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0, pendingTenantsReaped: 0, pendingTenantsKept: 0,
       });
       expect(logSpy.mock.calls.some((c) => c.some((a) => String(a).includes('deferred=1')))).toBe(true);
     } finally {

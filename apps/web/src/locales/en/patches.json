@@ -264,7 +264,11 @@
       "moreFilters": "More filters",
       "lessFilters": "Less filters",
       "allSources": "All Sources",
-      "allOs": "All OS"
+      "allOs": "All OS",
+      "severityLabel": "Severity",
+      "statusLabel": "Approval status",
+      "sourceLabel": "Source",
+      "osLabel": "Operating system"
     },
     "actions": {
       "deploy": "Deploy",

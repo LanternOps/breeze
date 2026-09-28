@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   evaluateCapabilityContinuationForState: vi.fn((): any => ({ allow: true })),
   unresolvedPartnerDecision: vi.fn(async () => ({ allow: false as const, code: 'TRUST_RESTRICTED' as const, capability: 'remote_control' as const, reason: 'unresolved' })),
   tightenStatementTimeout: vi.fn(async () => 0),
+  checkVncConsentGate: vi.fn(async (): Promise<any> => ({ ok: true })),
 }));
 
 // `services/tokenRevocation` is intentionally left UNMOCKED (see below) so
@@ -97,6 +98,10 @@ vi.mock('./partnerTrust', () => ({
 
 vi.mock('../db/lockTimeout', () => ({
   tightenStatementTimeout: mocks.tightenStatementTimeout,
+}));
+
+vi.mock('../routes/remote/vncConsentGate', () => ({
+  checkVncConsentGate: mocks.checkVncConsentGate,
 }));
 
 import {
@@ -247,6 +252,7 @@ beforeEach(() => {
   mocks.select.mockReset();
   mocks.consumeWsTicket.mockResolvedValue(v2Ticket('terminal'));
   mocks.checkRemoteAccess.mockResolvedValue({ allowed: true });
+  mocks.checkVncConsentGate.mockResolvedValue({ ok: true });
   mocks.rateLimiter.mockResolvedValue({
     allowed: true,
     remaining: 9,
@@ -628,6 +634,46 @@ it('uses vncRelay for VNC tunnels and proxy for proxy tunnels', async () => {
   installAuthorizationRows({ kind: 'tunnel', session: { type: 'proxy' } });
   await authorizeConsumedRemoteWsTicket(consumed('tunnel'));
   expect(mocks.checkRemoteAccess).toHaveBeenLastCalledWith(DEVICE_ID, 'proxy');
+});
+
+describe('VNC tunnels on devices that require consent', () => {
+  it('denies VNC admission, continuation and live revalidation when the prompt mode is consent', async () => {
+    mocks.checkVncConsentGate.mockResolvedValue({
+      ok: false, status: 409, body: { error: 'consent', code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' },
+    });
+    const denial = { ok: false, status: 403, reason: 'consent_required' };
+
+    installAuthorizationRows({ kind: 'tunnel' });
+    expect(await authorizeConsumedRemoteWsTicket(consumed('tunnel'))).toEqual(denial);
+    installAuthorizationRows({ kind: 'tunnel' });
+    expect(await authorizeRemoteSessionContinuation(consumed('tunnel'), [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE])).toEqual(denial);
+    installAuthorizationRows({ kind: 'tunnel' });
+    expect(await revalidateRemoteWsAuthority(consumed('tunnel'))).toEqual(denial);
+    expect(mocks.checkVncConsentGate).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('denies with prompt_policy_unavailable when the prompt policy cannot be read', async () => {
+    mocks.checkVncConsentGate.mockResolvedValue({
+      ok: false, status: 503, body: { error: 'unavailable', code: 'REMOTE_PROMPT_POLICY_UNAVAILABLE' },
+    });
+    installAuthorizationRows({ kind: 'tunnel' });
+    expect(await authorizeConsumedRemoteWsTicket(consumed('tunnel'))).toEqual({
+      ok: false, status: 503, reason: 'prompt_policy_unavailable',
+    });
+  });
+
+  it('does not consult the consent gate for proxy tunnels, desktop or terminal sessions', async () => {
+    mocks.checkVncConsentGate.mockResolvedValue({
+      ok: false, status: 409, body: { error: 'consent', code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' },
+    });
+    installAuthorizationRows({ kind: 'tunnel', session: { type: 'proxy' } });
+    expect((await authorizeConsumedRemoteWsTicket(consumed('tunnel'))).ok).toBe(true);
+    installAuthorizationRows({ kind: 'desktop' });
+    expect((await authorizeConsumedRemoteWsTicket(consumed('desktop'))).ok).toBe(true);
+    installAuthorizationRows({ kind: 'terminal' });
+    expect((await authorizeConsumedRemoteWsTicket(consumed('terminal'))).ok).toBe(true);
+    expect(mocks.checkVncConsentGate).not.toHaveBeenCalled();
+  });
 });
 
 describe('live WebSocket authority', () => {

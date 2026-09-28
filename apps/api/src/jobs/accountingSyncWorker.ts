@@ -29,7 +29,11 @@
  *     (409 — the pushed lines do not sum to the invoice subtotal, #7161) PLUS `record_failed` (502 — the remote
  *     QuickBooks write already landed; only the local persist failed, so
  *     retrying would create a duplicate invoice in QuickBooks, not fix
- *     anything). Retrying any of these can never succeed: the mapping row
+ *     anything), PLUS the five Xero W04 terminal refusals: `push_settings_incomplete`,
+ *     `remote_missing`, `remote_ambiguous`, `remote_locked`, `provider_permission`
+ *     (each 409 — an operator must act in Xero or in Breeze's settings; see
+ *     `INVOICE_USER_RESOLVABLE_CODES` below for which of these skip Sentry).
+ *     Retrying any of these can never succeed: the mapping row
  *     already carries the error for an operator/route to see and act on.
  *   - RETRYABLE (rethrown so BullMQ's attempts/backoff fires): `provider_error`
  *     (502 — a genuine provider/network failure; the never-thrown pre-W01
@@ -44,7 +48,10 @@
  * separate `PAYMENT_TERMINAL_CODES` set below: `push_disabled`,
  * `customer_not_mapped`, `home_currency_unknown`, `currency_mismatch`,
  * `invoice_void`, `record_failed`, `not_connected` and `reauth_required` are
- * terminal; `provider_error` (and its legacy alias `quickbooks_error`),
+ * terminal, PLUS the Xero W05 set (`push_settings_incomplete`, `remote_missing`,
+ * `remote_locked`, `remote_ambiguous`, `provider_permission`,
+ * `amount_exceeds_due`, `remote_deleted` — see `PAYMENT_USER_RESOLVABLE_CODES`
+ * for which skip Sentry); `provider_error` (and its legacy alias `quickbooks_error`),
  * `sync_in_progress` and `invoice_not_synced` (plus any non-typed error) are
  * retryable. Unlike invoice jobs, the
  * `pushMode` gate does NOT apply to payment jobs — see the handler below.
@@ -68,7 +75,10 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { findAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../services/accounting/providerRegistry';
+import {
+  accountingProviderDisplayName, findAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
+} from '../services/accounting/providerRegistry';
+import { paymentNotConnectedMessage } from '../services/accounting/accountingPaymentMessages';
 import type { AccountingCapability, AccountingProviderId } from '../services/accounting/types';
 import { logJobDrop, resolveJobConnection, type JobConnectionRef } from './accountingJobConnection';
 import { delayJobForRateLimit, rateLimitRetryAfterMs, type AccountingJobContext } from './accountingJobDelay';
@@ -85,7 +95,6 @@ import {
   notePaymentJobSkipped,
   paymentDeleteAwaitsRemoteRef,
   AccountingPaymentPushError,
-  PAYMENT_NOT_CONNECTED_MESSAGE,
   type AccountingPaymentPushErrorCode,
   type PaymentPushOutcome,
   type PaymentDeleteOutcome,
@@ -157,6 +166,26 @@ const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'record_failed',
   'void_blocked_by_payments',
   'invoice_totals_mismatch',
+  'push_settings_incomplete',
+  'remote_missing',
+  'remote_ambiguous',
+  'remote_locked',
+  'provider_permission',
+]);
+
+/**
+ * Terminal invoice codes an operator resolves in Xero or in Breeze's settings
+ * (Xero W04). Each is already persisted on the invoice's mapping row with the
+ * remedy, so a Sentry event per job would only be noise. `remote_ambiguous`
+ * is deliberately absent: two remote invoices for one Breeze invoice should be
+ * impossible and deserves an alert. The pre-W04 terminal codes keep their
+ * capture, so QuickBooks telemetry is unchanged.
+ */
+const INVOICE_USER_RESOLVABLE_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
+  'push_settings_incomplete',
+  'remote_missing',
+  'remote_locked',
+  'provider_permission',
 ]);
 
 /**
@@ -177,12 +206,36 @@ const PAYMENT_TERMINAL_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new 
   'record_failed',
   'not_connected',
   'reauth_required',
+  // Xero W05 (refinements 16–17): provider refusals and a parked setting.
+  'push_settings_incomplete', 'remote_missing', 'remote_locked', 'remote_ambiguous', 'provider_permission', 'amount_exceeds_due',
+  'remote_deleted',
+]);
+
+/**
+ * Terminal payment codes the OPERATOR resolves (a setting, a Xero-side record):
+ * logged, never sent to Sentry. `remote_ambiguous` is deliberately absent — it
+ * should never happen and IS reported, once, by the coordinator (with provider
+ * tags); the worker logs it as an error and does not capture it again. The
+ * pre-W05 terminal codes keep their capture, so QuickBooks telemetry is unchanged.
+ */
+const PAYMENT_USER_RESOLVABLE_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new Set([
+  'push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission', 'amount_exceeds_due', 'remote_deleted',
 ]);
 
 const MAPPING_TERMINAL_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set([
   'not_connected', 'reauth_required', 'mapping_conflict', 'entity_not_found',
   'income_account_required', 'mapping_not_ready', 'currency_mismatch',
   'item_price_required', 'record_failed',
+  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
+]);
+
+/**
+ * Terminal refusals the USER resolves in the workbench (Xero W03): logged, never
+ * retried, and not reported to Sentry — they are expected outcomes, not incidents.
+ * Every other terminal code keeps its capture (QuickBooks telemetry unchanged).
+ */
+const MAPPING_USER_RESOLVABLE_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set([
+  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
 ]);
 
 let accountingSyncQueue: Queue<AccountingSyncJobData> | null = null;
@@ -274,10 +327,12 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
         // unexpected failures use the queue's existing attempts/backoff policy.
         if (!(err instanceof AccountingMappingError) || !MAPPING_TERMINAL_CODES.has(err.code)) throw err;
         console.error('[AccountingSyncWorker] terminal mapping failure, not retrying', err.code, err.message);
-        captureException(err, undefined, {
-          service: 'accountingSyncWorker', accounting_job_type: data.type,
-          accounting_entity_id: data.breezeEntityId, accounting_error_code: err.code,
-        });
+        if (!MAPPING_USER_RESOLVABLE_CODES.has(err.code)) {
+          captureException(err, undefined, {
+            service: 'accountingSyncWorker', accounting_job_type: data.type,
+            accounting_entity_id: data.breezeEntityId, accounting_error_code: err.code,
+          });
+        }
       }
       return;
     }
@@ -302,7 +357,15 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
         return;
       }
       if (data.type === 'push-payment' || data.type === 'delete-payment') {
-        await notePaymentJobSkipped(data.mappingId, data.partnerId, PAYMENT_NOT_CONNECTED_MESSAGE);
+        // Labelled by the row's OWN provider (Xero W05b): for a payment job
+        // `conn` IS the mapping row's connection (`getConnectionForMapping`, the
+        // same partner-guarded join the give-up's `getConnectionProviderForMapping`
+        // reads), so no second read is needed. No row at all reads as the legacy
+        // provider, whose text is the unchanged 'QuickBooks is not connected'.
+        const label = accountingProviderDisplayName(
+          (conn?.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId,
+        );
+        await notePaymentJobSkipped(data.mappingId, data.partnerId, paymentNotConnectedMessage(label));
       }
       return;
     }
@@ -335,12 +398,14 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
           '[AccountingSyncWorker] terminal failure, not retrying',
           `type=${data.type}`, `invoiceId=${data.invoiceId}`, `code=${err.code}`, err.message,
         );
-        captureException(err, undefined, {
-          service: 'accountingSyncWorker',
-          accounting_job_type: data.type,
-          invoice_id: data.invoiceId,
-          accounting_error_code: err.code,
-        });
+        if (!INVOICE_USER_RESOLVABLE_CODES.has(err.code)) {
+          captureException(err, undefined, {
+            service: 'accountingSyncWorker',
+            accounting_job_type: data.type,
+            invoice_id: data.invoiceId,
+            accounting_error_code: err.code,
+          });
+        }
         return;
       }
       // provider_error or its legacy alias quickbooks_error (502),
@@ -379,16 +444,27 @@ async function processPaymentJob(
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) return delayJobForRateLimit(ctx, err, throttleMs);
     if (err instanceof AccountingPaymentPushError && PAYMENT_TERMINAL_CODES.has(err.code)) {
-      console.error(
+      const logArgs = [
         '[AccountingSyncWorker] terminal payment failure, not retrying',
         `type=${data.type}`, `mappingId=${data.mappingId}`, `code=${err.code}`, err.message,
-      );
-      captureException(err, undefined, {
-        service: 'accountingPaymentPush',
-        accounting_job_type: data.type,
-        accounting_mapping_id: data.mappingId,
-        accounting_error_code: err.code,
-      });
+      ];
+      if (PAYMENT_USER_RESOLVABLE_CODES.has(err.code)) {
+        // An expected outcome the operator resolves; the mapping row carries the remedy.
+        console.warn(...logArgs);
+      } else if (err.code === 'remote_ambiguous') {
+        // Loud but NOT re-captured: the coordinator's create-catch already
+        // reported it to Sentry, with the provider telemetry tags only it has.
+        // A second capture here doubled every event (Xero W05b F3).
+        console.error(...logArgs);
+      } else {
+        console.error(...logArgs);
+        captureException(err, undefined, {
+          service: 'accountingPaymentPush',
+          accounting_job_type: data.type,
+          accounting_mapping_id: data.mappingId,
+          accounting_error_code: err.code,
+        });
+      }
       return;
     }
     throw err;

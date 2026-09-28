@@ -164,7 +164,11 @@ export default function IncidentsPage() {
 
       {/* Filters */}
       <div className="flex gap-3">
+        <label htmlFor="incidents-kind-filter" className="sr-only">
+          {t('longTail.incidents.IncidentsPage.filters.kindLabel')}
+        </label>
         <select
+          id="incidents-kind-filter"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as FeedFilter)}
           className="rounded-md border bg-background px-3 py-2 text-sm text-foreground"

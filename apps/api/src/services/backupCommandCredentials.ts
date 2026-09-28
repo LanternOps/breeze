@@ -23,6 +23,8 @@ import { devices } from '../db/schema';
 import { resolveBackupProviderConfig, resolveBackupWriteCommandDestination } from './backupProviderConfig';
 import { CommandTypes } from './commandTypes';
 import { CommandDeliveryRefusedError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
+import { BACKUP_READ_CREDENTIAL_COMMAND_TYPES } from './backupReadHelperGate';
+import { recordBackupWriteDispatch } from './backupMetrics';
 
 export const PROVIDER_CONFIG_REF_FIELD = 'providerConfigRef';
 
@@ -33,14 +35,7 @@ export type BackupStorageEncryptionPlan =
   | { required: true; mode: string; keyReference: string | null };
 
 /** Commands that READ a snapshot back from the destination named in their payload. */
-export const BACKUP_READ_CREDENTIAL_COMMAND_TYPES: readonly string[] = [
-  CommandTypes.BACKUP_RESTORE,
-  CommandTypes.BACKUP_VERIFY,
-  CommandTypes.BACKUP_TEST_RESTORE,
-  CommandTypes.MSSQL_RESTORE,
-  CommandTypes.MSSQL_VERIFY,
-  CommandTypes.HYPERV_RESTORE,
-];
+export { BACKUP_READ_CREDENTIAL_COMMAND_TYPES };
 
 /**
  * Commands that WRITE to the destination named in their payload. `backup_run`
@@ -141,7 +136,8 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
  * Delivery refresher for every storage-destination command type. Returns the
  * wire payload: the stored payload minus `providerConfigRef`, plus the
  * resolved `provider`/`providerConfig` (and, for writes, the re-checked
- * `storageEncryption`).
+ * `storageEncryption`). For a READ it resolves only a local destination: an
+ * S3 read is served through a storage session instead, and is refused here.
  *
  * A payload with no reference is returned untouched. That covers rows queued
  * before references existed (their inline destination is still delivered, and
@@ -195,6 +191,11 @@ export async function materializeBackupStorageCredentials(
           'The backup destination encryption settings changed after this command was queued; run it again.',
         );
       }
+      if (destination.provider === 'local') {
+        recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
+      } else {
+        recordBackupWriteDispatch(ctx.type, 'legacy_credential', 'delivery_refresher');
+      }
       return {
         ...rest,
         provider: destination.provider,
@@ -211,6 +212,12 @@ export async function materializeBackupStorageCredentials(
       throw new CommandDeliveryRefusedError(
         'The backup destination changed provider after this command was queued; run it again.',
       );
+    }
+    // A read is served through a storage session (backupStorageSessions.ts);
+    // only a local destination — a path, not a credential — is ever resolved
+    // into a read command here.
+    if (resolved.provider !== 'local') {
+      throw new CommandDeliveryRefusedError('This backup can only be read through a secure storage session.');
     }
     return { ...rest, provider: resolved.provider, providerConfig: resolved.providerConfig };
   });

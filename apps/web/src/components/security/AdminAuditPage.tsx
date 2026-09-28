@@ -16,6 +16,7 @@ import {
   friendlyFetchError,
 } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import { FilterSelect } from "../shared/FilterSelect";
 import { fetchWithAuth } from "@/stores/auth";
 import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
@@ -245,10 +246,11 @@ export default function AdminAuditPage() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={t("securityAdminAuditPage.issueFilterLabel")}
           value={issueFilter}
           onChange={(e) => setIssueFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityAdminAuditPage.all")}</option>
           <option value="default_account">
@@ -263,17 +265,18 @@ export default function AdminAuditPage() {
           <option value="no_issues">
             {t("securityAdminAuditPage.noIssues")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("securityAdminAuditPage.osFilterLabel")}
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm"
+          className="h-10"
         >
           <option value="">{t("securityAdminAuditPage.allOS")}</option>
           <option value="windows">{t("securityAdminAuditPage.windows")}</option>
           <option value="macos">{t("securityAdminAuditPage.macos")}</option>
           <option value="linux">{t("securityAdminAuditPage.linux")}</option>
-        </select>
+        </FilterSelect>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">

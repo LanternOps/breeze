@@ -42,6 +42,14 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
 import {
+  CONSENT_UPGRADE_REQUIRED_CODE,
+  CONSENT_UPGRADE_REQUIRED_MESSAGE,
+  REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE,
+  REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE,
+  RemoteSessionPromptPolicyError,
+  requiresConsentCapableAgent,
+} from './consentGate';
+import {
   assertDesktopStartIntentCurrent,
   boundConsentUnavailableBehavior,
   commitDesktopStartIntent,
@@ -1041,7 +1049,29 @@ sessionRoutes.post(
     // untrusted. Undefined when the policy is `off` (a fully silent session
     // ships no prompt block at all). Shared with the viewer-token WS offer
     // handler (desktopWs.ts). Remote-session consent.
-    const prompt = await buildRemoteSessionPromptPayload(device, session.userId);
+    let prompt: Awaited<ReturnType<typeof buildRemoteSessionPromptPayload>>;
+    try {
+      prompt = await buildRemoteSessionPromptPayload(device, session.userId);
+    } catch (error) {
+      // The prompt policy could not be established; starting anyway could drop
+      // a consent requirement, so refuse (the resolver already logged it).
+      if (error instanceof RemoteSessionPromptPolicyError) {
+        return c.json({
+          error: REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE,
+          code: REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE,
+        }, 503);
+      }
+      throw error;
+    }
+    // A consent-mode start needs an agent that runs the consent prompt; an
+    // older agent drops the prompt block and streams without asking. Refuse
+    // before the start intent is committed or anything is dispatched.
+    if (requiresConsentCapableAgent(prompt, device)) {
+      return c.json({
+        error: CONSENT_UPGRADE_REQUIRED_MESSAGE,
+        code: CONSENT_UPGRADE_REQUIRED_CODE,
+      }, 409);
+    }
     const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
     const startCommandId = createDesktopStartCommandId(sessionId);
 

@@ -31,7 +31,8 @@
       "policy": "Criterio"
     },
     "pagination": "Visualizzazione di {{from}}-{{to}} su {{total}}",
-    "prev": "Prec."
+    "prev": "Prec.",
+    "eventFilterLabel": "Tipo di evento"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Creato"
     },
     "partnerWideTitle": "Criterio a livello partner - applicato ai dispositivi di ogni organizzazione",
-    "allOrgs": "A livello partner"
+    "allOrgs": "A livello partner",
+    "classFilterLabel": "Classe dispositivo",
+    "actionFilterLabel": "Azione",
+    "statusFilterLabel": "Stato"
   },
   "peripheralPolicyForm": {
     "errors": {

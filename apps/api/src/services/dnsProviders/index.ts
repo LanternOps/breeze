@@ -20,8 +20,29 @@ export interface DnsEvent {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * One completed stretch of a sliced event sync: every event the provider holds
+ * between the previous slice's `until` (or the requested `since`) and this
+ * slice's `until` — so the caller can persist it and checkpoint `until`.
+ */
+export interface DnsEventSlice {
+  events: DnsEvent[];
+  until: Date;
+}
+
 export interface DnsProvider {
   syncEvents(since: Date, until: Date): Promise<DnsEvent[]>;
+  /**
+   * Optional sliced variant of {@link syncEvents}, for providers whose API
+   * cannot return an arbitrarily large window in one walk (Cisco Umbrella's
+   * offset cap, #7207). Slices are yielded in chronological order and are
+   * contiguous from `since`; once a slice is yielded, its `until` is a safe
+   * resume point. It may end before `until` (a per-run request budget) — the
+   * caller then resumes from the last slice's `until` on the next run. When
+   * present, the sync job uses this instead of `syncEvents` and persists each
+   * slice as it arrives, so a late failure no longer discards earlier pages.
+   */
+  syncEventSlices?(since: Date, until: Date): AsyncIterable<DnsEventSlice>;
   addBlocklistDomain(domain: string, reason?: string): Promise<void>;
   removeBlocklistDomain(domain: string): Promise<void>;
   addAllowlistDomain(domain: string): Promise<void>;

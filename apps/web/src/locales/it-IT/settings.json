@@ -302,6 +302,9 @@
     "username": "Nome utente (basic auth)",
     "password": "Password (autenticazione di base)",
     "notSet": "Non impostato - le organizzazioni configurano singolarmente",
+    "savedSecretPlaceholder": "Salvato: lascia vuoto per mantenerlo",
+    "secretRemovedPlaceholder": "Verrà rimosso al salvataggio",
+    "removeSecret": "Rimuovi",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Quando abilitato, tutte le organizzazioni figlie invieranno i log eventi all'endpoint configurato. Funziona con qualsiasi archivio compatibile con <bulk>_bulk</bulk> Elasticsearch/OpenSearch (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service). Lascia disabilitato per consentire a ogni organizzazione di configurarlo singolarmente."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastic",
       "password": "Password",
       "passwordPlaceholder": "Inserisci password",
+      "savedSecretPlaceholder": "Salvato: lascia vuoto per mantenerlo",
       "credentialsDescription": "Le credenziali sono archiviate cifrate. Le credenziali esistenti vengono mascherate al caricamento."
     },
     "collection": {
@@ -3419,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Prova a modificare la ricerca o i filtri.",
     "active": "Attiva",
     "revoked": "Revocata",
-    "expired": "Scaduta"
+    "expired": "Scaduta",
+    "statusFilterLabel": "Stato della chiave"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Caricamento chiavi API...",
@@ -4009,7 +4014,8 @@
     "cannotDeleteAssignedRole": "Impossibile eliminare un ruolo con utenti assegnati",
     "inheritedFromParentRole": "Ereditato dal ruolo padre",
     "waitingForPermissionCatalog": "In attesa del caricamento del catalogo autorizzazioni",
-    "summary": "{{filtered}} di {{total}} ruoli"
+    "summary": "{{filtered}} di {{total}} ruoli",
+    "typeFilterLabel": "Tipo di ruolo"
   },
   "roleSelector": {
     "currentRole": "Ruolo attuale",
@@ -4134,7 +4140,8 @@
     "delete": "Elimina",
     "allStatuses": "Tutti gli stati",
     "deactivate": "Disattiva",
-    "activate": "Attiva"
+    "activate": "Attiva",
+    "statusFilterLabel": "Stato del provider"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Recupero provider SSO non riuscito",
@@ -5413,7 +5420,8 @@
       "title": "Elimina campo personalizzato",
       "messagePrefix": "Sei sicuro di voler eliminare",
       "messageSuffix": " Questo rimuoverà la definizione del campo e tutti i valori archiviati sui dispositivi."
-    }
+    },
+    "typeFilterLabel": "Tipo di campo"
   },
   "knownGuestsSettings": {
     "title": "Ospiti noti",

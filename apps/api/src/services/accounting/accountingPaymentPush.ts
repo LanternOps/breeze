@@ -85,9 +85,32 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // `@breeze/shared` is a leaf package, so this closes no cycle.
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import {
-  providerFaultSuffix, providerLogFields, providerRateLimitedMessage, providerTelemetryTags, rateLimitRetryAfterMs,
-  rateLimitSourceOf, type AccountingThrottleSource,
+  providerFaultSuffix, providerLogFields, providerPermissionMessage, providerRateLimitedMessage, providerTelemetryTags,
+  rateLimitRetryAfterMs, rateLimitSourceOf, refusalCodeOf, type AccountingThrottleSource,
 } from './accountingProviderError';
+// Provider-labelled operator text (Xero W05). A dependency-free leaf, so this
+// import closes no cycle.
+import {
+  PAYMENT_PUSH_MAX_ATTEMPTS,
+  paymentAmountExceedsDueMessage,
+  paymentCurrencyMismatchSuffix,
+  paymentCustomerNotMappedMessage,
+  paymentDeleteRecordFailedMessage,
+  paymentInvoiceNotSyncedMessage,
+  paymentInvoiceVoidMessage,
+  paymentNotConnectedMessage,
+  paymentProviderPermissionMessage,
+  paymentPushDisabledMessage,
+  paymentPushGaveUpMessageFor,
+  paymentRecordConflictRetryMessage,
+  paymentRecordFailedOrphanMessage,
+  paymentRecordFailedRetryMessage,
+  paymentRemoteAmbiguousMessage,
+  paymentRemoteDeletedMessage,
+  paymentRemoteLockedMessage, paymentRemoteBatchedMessage,
+  paymentRemoteMissingMessage,
+  paymentSyncInProgressMessage,
+} from './accountingPaymentMessages';
 import {
   accountingProviderDisplayName, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
 } from './providerRegistry';
@@ -119,7 +142,8 @@ export const PAYMENT_REF_MAX_LENGTH = 21;
  */
 export const PAYMENT_DELETE_UNRESOLVED_GRACE_MS = 24 * 60 * 60 * 1000;
 
-export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this QuickBooks connection';
+/** @deprecated QuickBooks text; use `paymentPushDisabledMessage(label)`. Kept for existing imports. */
+export const PAYMENT_PUSH_DISABLED_MESSAGE = paymentPushDisabledMessage('QuickBooks');
 
 /**
  * Stamped when a payment's own invoice has not reached QuickBooks yet.
@@ -130,9 +154,10 @@ export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this 
  * mapped, a currency the realm refuses) cycled through the 15-minute sweep
  * forever, invisible to `PAYMENT_PUSH_MAX_ATTEMPTS`. It names the operator's
  * action, because the recovery is on the INVOICE, not the payment.
+ *
+ * @deprecated QuickBooks text; use `paymentInvoiceNotSyncedMessage(label)`. Kept for existing imports.
  */
-export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
-  'The invoice is not synced to QuickBooks yet; push the invoice first';
+export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE = paymentInvoiceNotSyncedMessage('QuickBooks');
 
 /**
  * How many failed attempts a `pending_op = 'push'` row gets before Breeze stops
@@ -156,8 +181,11 @@ export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
  * long enough to survive a lunch-hour outage.)
  *
  * A `delete` row is deliberately NOT capped — see `markPaymentMappingError`.
+ *
+ * Defined in `accountingPaymentMessages` (the give-up text quotes it) and
+ * re-exported here, so its importers are unaffected.
  */
-export const PAYMENT_PUSH_MAX_ATTEMPTS = 100;
+export { PAYMENT_PUSH_MAX_ATTEMPTS };
 
 /**
  * How many sweeps a `record_failed` row keeps re-sending its create before
@@ -190,22 +218,24 @@ export const PAYMENT_RECORD_FAILED_MAX_SWEEPS = 8;
  * The two mean opposite things: one says "QuickBooks has no Payment, make
  * another", this one says "QuickBooks HAS a Payment nobody can name". Both the
  * fan-out predicate and `reownPushMapping`'s WHERE exclude this exact string,
- * so a manual invoice re-push cannot duplicate the orphan.
+ * so a manual invoice re-push cannot duplicate the orphan. (Today both key on
+ * `terminal_reason = 'orphaned'`, not on this text.)
+ *
+ * @deprecated QuickBooks text; use `paymentRecordFailedOrphanMessage(label)`. Kept for existing imports.
  */
-export const PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE =
-  'QuickBooks accepted the payment but Breeze could not record it; '
-  + 'the QuickBooks Payment may be orphaned — contact support';
+export const PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE = paymentRecordFailedOrphanMessage('QuickBooks');
 
-/** How the WHILE-RETRYING state reads on the mapping card. The count that
- *  bounds it lives on `record_failed_count`, never in this text. */
-function paymentRecordFailedRetryMessage(remoteId: string): string {
-  return `QuickBooks accepted the payment (remote id ${remoteId}) but Breeze could not record it yet; `
-    + 'Breeze is retrying briefly and will stop rather than create a second payment';
-}
+// How the WHILE-RETRYING state reads on the mapping card is
+// `paymentRecordFailedRetryMessage(remoteId, label)`. The count that bounds it
+// lives on `record_failed_count`, never in that text.
 
-/** Stamped by the sync worker when a payment job finds no connected QuickBooks
- *  connection to run against (`notePaymentJobSkipped`). */
-export const PAYMENT_NOT_CONNECTED_MESSAGE = 'QuickBooks is not connected';
+/**
+ * The QuickBooks text of the not-connected skip stamp. The sync worker now
+ * stamps `paymentNotConnectedMessage(label)` with the mapping row's own provider
+ * (`notePaymentJobSkipped`); for a QuickBooks row that is this exact string.
+ * @deprecated QuickBooks text; use `paymentNotConnectedMessage(label)` where a provider is known.
+ */
+export const PAYMENT_NOT_CONNECTED_MESSAGE = paymentNotConnectedMessage('QuickBooks');
 
 /**
  * How a push row that burned through `PAYMENT_PUSH_MAX_ATTEMPTS` reads on the
@@ -213,10 +243,11 @@ export const PAYMENT_NOT_CONNECTED_MESSAGE = 'QuickBooks is not connected';
  * tells an operator nothing about what to fix, and names the recovery: the
  * invoice's "Push to QuickBooks" button, whose fan-out re-owns the row and
  * resets the counter.
+ *
+ * @deprecated QuickBooks text; use `paymentPushGaveUpMessageFor(previous, label)`. Kept for existing callers.
  */
 export function paymentPushGaveUpMessage(previous: string): string {
-  return `QuickBooks payment push gave up after ${PAYMENT_PUSH_MAX_ATTEMPTS} attempts: ${previous}. `
-    + 'Fix the cause and push the invoice again.';
+  return paymentPushGaveUpMessageFor(previous, 'QuickBooks');
 }
 
 /**
@@ -249,7 +280,15 @@ export type AccountingPaymentPushErrorCode =
   | 'provider_error'
   // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility
   | 'quickbooks_error'
-  | 'record_failed';
+  | 'record_failed'
+  // Xero W05 (refinement 17): a provider setting the push needs is missing
+  // (Xero: the payment bank account). PARKED — pending_op kept, no attempt.
+  | 'push_settings_incomplete'
+  // Xero W05 (refinement 16): provider REFUSALS an operator resolves. Terminal
+  // 409s; the owed operation is cleared (conditionally — see
+  // `markPaymentRefusedIfStillOwed`) and the message names the fix.
+  | 'remote_missing' | 'remote_locked' | 'remote_ambiguous' | 'provider_permission'
+  | 'amount_exceeds_due' | 'remote_deleted';
 
 export class AccountingPaymentPushError extends Error {
   /** Set on `rate_limited` only: how long to wait before retrying. */
@@ -307,6 +346,41 @@ const SYNCED_INVOICE_STATUSES = new Set(['synced', 'synced_with_tax_variance']);
  */
 function sanitizePaymentSyncErrorMessage(err: unknown, label: string): string {
   return `${label} rejected the payment sync${providerFaultSuffix(err)}`;
+}
+
+/**
+ * A provider REFUSAL an operator must resolve (Xero W05 refinement 16) → a
+ * terminal 409 with an explained message. Only codes a provider sets on
+ * purpose (ACCOUNTING_REFUSAL_CODES via refusalCodeOf) qualify — QuickBooks
+ * sets none on a payment, so its errors keep the retryable 502 path.
+ * Per operation: `remote_locked` and `remote_batched` are delete-only (both
+ * surface as the payment error `remote_locked`, with their own text); `remote_missing`,
+ * `amount_exceeds_due`, `duplicate_key` and `remote_deleted` are create-only;
+ * `insufficient_scope` maps on both, with op-specific text (a create must be
+ * re-pushed; a delete is parked by the caller). Anything else returns null.
+ */
+function paymentPushRefusal(
+  err: unknown,
+  label: string,
+  op: 'create' | 'delete',
+): { code: AccountingPaymentPushErrorCode; message: string } | null {
+  switch (refusalCodeOf(err)) {
+    // Create: the owed push is cleared, so the text adds the re-push step. Delete:
+    // the row stays owed (parked), so reconnecting is the whole fix.
+    case 'insufficient_scope': return {
+      code: 'provider_permission',
+      message: op === 'create' ? paymentProviderPermissionMessage(label) : providerPermissionMessage(label),
+    };
+    case 'remote_locked': return op === 'delete' ? { code: 'remote_locked', message: paymentRemoteLockedMessage(label) } : null;
+    // #7300: same bookkeeper-owned outcome as a reconciled payment (terminal,
+    // pending_op cleared, remote id kept, quiet) — only the fix differs.
+    case 'remote_batched': return op === 'delete' ? { code: 'remote_locked', message: paymentRemoteBatchedMessage(label) } : null;
+    case 'remote_missing': return op === 'create' ? { code: 'remote_missing', message: paymentRemoteMissingMessage(label) } : null;
+    case 'amount_exceeds_due': return op === 'create' ? { code: 'amount_exceeds_due', message: paymentAmountExceedsDueMessage(label) } : null;
+    case 'duplicate_key': return op === 'create' ? { code: 'remote_ambiguous', message: paymentRemoteAmbiguousMessage(label) } : null;
+    case 'remote_deleted': return op === 'create' ? { code: 'remote_deleted', message: paymentRemoteDeletedMessage(label) } : null;
+    default: return null;
+  }
 }
 
 /**
@@ -378,7 +452,7 @@ function toCurrencyPushError(err: unknown, conn: AccountingConnection): Accounti
   return new AccountingPaymentPushError(
     'currency_mismatch',
     409,
-    `${err.message} Record this payment in ${home ?? 'the connected home currency'} or reconcile it in QuickBooks by hand.`,
+    `${err.message}${paymentCurrencyMismatchSuffix(home, accountingProviderDisplayName(conn.provider))}`,
   );
 }
 
@@ -794,16 +868,19 @@ export async function requestPaymentDelete(
       // Not stranded — RETIRED as possibly orphaned (finding D7). Keep the row
       // and say so; there is nothing to ask QuickBooks for, because Breeze never
       // learned the remote id.
-      console.warn(
-        '[accountingPaymentPush] kept a possibly-orphaned payment mapping through a void — '
-        + 'a QuickBooks Payment may exist that Breeze cannot name',
-        `mappingId=${mapping.id}`, `invoicePaymentId=${invoicePaymentId}`, `partnerId=${mapping.partnerId}`,
-      );
+      //
       // Read inside the destroyer's own transaction (`tx`) — no second context.
       // The row exists, so its connection does (composite FK, ON DELETE CASCADE).
       // Provider column only: this void must not start failing on a connection
       // whose tokens cannot be decrypted (it never read the row before W01).
+      // Read BEFORE the log, which names the provider (Xero W05).
       const mappingProvider = await getConnectionProviderForMapping(tx, mapping.id, mapping.partnerId);
+      console.warn(
+        '[accountingPaymentPush] kept a possibly-orphaned payment mapping through a void — '
+        + `a ${accountingProviderDisplayName((mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId)} `
+        + 'Payment may exist that Breeze cannot name',
+        `mappingId=${mapping.id}`, `invoicePaymentId=${invoicePaymentId}`, `partnerId=${mapping.partnerId}`,
+      );
       fireAudit({
         provider: mappingProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER,
         action: 'accounting.payment.orphan_retained',
@@ -856,9 +933,12 @@ export async function requestPaymentDelete(
     ))
     .returning({ id: accountingEntityMappings.id });
   if (rows.length !== 1) {
+    // Error path only: one provider-column read, in the destroyer's own `tx`, to name it (Xero W05).
+    const provider = await getConnectionProviderForMapping(tx, mapping.id, mapping.partnerId);
+    const label = accountingProviderDisplayName((provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId);
     throw new Error(
       `accountingPaymentPush: delete request matched no accounting_entity_mappings row (id=${mapping.id}); `
-      + 'refusing to destroy a Breeze payment whose QuickBooks Payment would then be orphaned',
+      + `refusing to destroy a Breeze payment whose ${label} Payment would then be orphaned`,
     );
   }
   return mapping.id;
@@ -993,6 +1073,11 @@ async function markPaymentMappingError(
   // must not trip the give-up either — a row already sitting at the ceiling
   // (its last real attempt raced this stamp) keeps its outbox entry.
   if (counts && row.pendingOp === 'push' && row.syncAttempts >= PAYMENT_PUSH_MAX_ATTEMPTS) {
+    // The give-up text names the row's OWN provider (Xero W05). No caller has to
+    // thread a label: `notePaymentJobSkipped` runs with no connection resolved.
+    // Provider column only, never tokens, and at most once per row (the give-up).
+    const provider = await getConnectionProviderForMapping(db, mappingId, partnerId);
+    const label = accountingProviderDisplayName((provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId);
     await db
       .update(accountingEntityMappings)
       .set({
@@ -1001,7 +1086,7 @@ async function markPaymentMappingError(
         // Re-ownable, unlike `orphaned`: nothing exists in QuickBooks, and the
         // invoice's own "Push to QuickBooks" is the documented recovery.
         terminalReason: 'gave_up',
-        lastError: paymentPushGaveUpMessage(message),
+        lastError: paymentPushGaveUpMessageFor(message, label),
         updatedAt: new Date(),
       })
       .where(and(
@@ -1114,6 +1199,89 @@ async function markPaymentMappingErrorInOwnContext(
 }
 
 /**
+ * The terminal stamp for a provider refusal (Xero W05), applied ONLY while the
+ * row still owes the operation that was refused (quorum finding 2). The
+ * provider call ran with no lock held; in that time a pull may have adopted the
+ * payment, or a void may have turned the owed push into an owed delete. An
+ * unconditional `pending_op = NULL` would then erase that newer obligation, and
+ * a Xero payment Breeze has reversed would stay in the books. When the row has
+ * moved on, only this job's own lease is released (neither a void nor a pull
+ * touches `claimed_at`): the job still ends with the refusal, and the newer
+ * state belongs to its own worker. Own short context, so the stamp commits
+ * before the throw.
+ *
+ * The delete arm matches `pending_op = 'delete'` only — the same predicate
+ * `owedPaymentDeletesOfConnection` reads as "a delete is owed" — and never
+ * touches `remote_entity_id` (refinement 16: the id is what lets the pull match
+ * the provider-side deletion later).
+ *
+ * Best-effort like `markPaymentMappingErrorInOwnContext`: a failure to open the
+ * context must not replace the typed refusal the caller is about to throw.
+ */
+async function markPaymentRefusedIfStillOwed(
+  runInDbContext: DbContextRunner,
+  mappingId: string,
+  partnerId: string,
+  message: string,
+  expected: { op: 'push'; pushGeneration: number } | { op: 'delete' },
+): Promise<boolean> {
+  let landed: boolean;
+  try {
+    const rows = await runInDbContext(() => db
+      .update(accountingEntityMappings)
+      .set({ syncStatus: 'error', lastError: message, claimedAt: null, pendingOp: null, updatedAt: new Date() })
+      .where(and(
+        eq(accountingEntityMappings.id, mappingId),
+        eq(accountingEntityMappings.partnerId, partnerId),
+        eq(accountingEntityMappings.pendingOp, expected.op),
+        ...(expected.op === 'push'
+          ? [isNull(accountingEntityMappings.remoteEntityId), eq(accountingEntityMappings.pushGeneration, expected.pushGeneration)]
+          : []),
+      ))
+      .returning({ id: accountingEntityMappings.id }));
+    landed = (rows as unknown[]).length > 0;
+    if (!landed) {
+      // The row moved on (a void flipped it to delete, a pull adopted it), and
+      // neither touches `claimed_at` — the lease is still THIS job's. Release
+      // it, as every other failure path does, or the job that now owns the row
+      // waits out the 10-minute lease on `sync_in_progress`. Nothing else is
+      // written: the newer obligation's state belongs to its own worker.
+      await runInDbContext(() => db
+        .update(accountingEntityMappings)
+        .set({ claimedAt: null })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingId),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id }));
+    }
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,
+    });
+    return false;
+  }
+  if (!landed) {
+    console.warn(
+      '[accountingPaymentPush] refusal not stamped — the mapping moved on during the provider call',
+      `mappingId=${mappingId}`, `op=${expected.op}`,
+    );
+  }
+  return landed;
+}
+
+/**
+ * The display label of a mapping row's OWN connection, for text raised before
+ * any connection is resolved (a lease CAS miss). Provider column only, never
+ * tokens; runs in the caller's context. An unreadable row reads as the legacy
+ * provider, whose text is unchanged.
+ */
+async function mappingProviderLabel(mappingId: string, partnerId: string): Promise<string> {
+  const provider = await getConnectionProviderForMapping(db, mappingId, partnerId);
+  return accountingProviderDisplayName((provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId);
+}
+
+/**
  * A throttle after the lease was claimed (Review Focus 5): keep `pending_op`,
  * RELEASE the lease (a held 10-minute lease would block the delayed retry), and
  * do NOT count toward PAYMENT_PUSH_MAX_ATTEMPTS — throttling must never retire a
@@ -1179,6 +1347,8 @@ async function noteRecordFailed(
   message: string,
   /** The COMPOSITE `<PaymentId>/<InvoiceId>`, as `stampRemoteRef` stores it. */
   remoteId: string,
+  /** The connection's display label (`accountingProviderDisplayName`). */
+  label: string,
 ): Promise<void> {
   try {
     const retired = await runInDbContext(async () => {
@@ -1215,7 +1385,7 @@ async function noteRecordFailed(
           claimedAt: null,
           terminalReason: 'orphaned',
           remoteEntityId: remoteId,
-          lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+          lastError: paymentRecordFailedOrphanMessage(label),
           updatedAt: new Date(),
         })
         .where(and(
@@ -1230,8 +1400,8 @@ async function noteRecordFailed(
       // name that QuickBooks Payment again, so only a human can reconcile it.
       captureException(
         new Error(
-          `accountingPaymentPush: gave up recording a QuickBooks payment (remote id ${remoteId}) after `
-          + `${PAYMENT_RECORD_FAILED_MAX_SWEEPS} sweeps — the QuickBooks Payment may be orphaned and needs `
+          `accountingPaymentPush: gave up recording a ${label} payment (remote id ${remoteId}) after `
+          + `${PAYMENT_RECORD_FAILED_MAX_SWEEPS} sweeps — the ${label} Payment may be orphaned and needs `
           + 'manual reconciliation',
         ),
         undefined,
@@ -1290,6 +1460,8 @@ async function stampRemoteRef(
     /** The row starts owing a DELETE here, so its grace window starts here. */
     stampPendingSince?: boolean;
   },
+  /** The connection's display label, for the refusal text only. */
+  label: string,
 ): Promise<void> {
   const rows = await db
     .update(accountingEntityMappings)
@@ -1315,7 +1487,7 @@ async function stampRemoteRef(
   if (rows.length !== 1) {
     throw new Error(
       `accountingPaymentPush: stamping the remote ref matched no accounting_entity_mappings row (id=${mappingId}); `
-      + 'refusing to lose the QuickBooks payment result',
+      + `refusing to lose the ${label} payment result`,
     );
   }
 }
@@ -1402,6 +1574,31 @@ export async function listOwedPaymentMappings(
       lt(accountingEntityMappings.updatedAt, ageCutoff),
     ));
   return rows as Array<{ id: string; partnerId: string; pendingOp: 'push' | 'delete' }>;
+}
+
+/**
+ * Does this connection owe a payment DELETE whose remote id only a pull can
+ * recover? That is the `awaiting_remote_ref` park: a create whose response was
+ * lost, then a Breeze void (Xero W05, quorum finding 3). The reconcile worker
+ * and sweep never budget-defer such a connection. One indexed read, no lock.
+ */
+export async function connectionOwesUnresolvedPaymentDelete(
+  dbc: PaymentMappingExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<boolean> {
+  const [row] = await dbc
+    .select({ id: accountingEntityMappings.id })
+    .from(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.integrationId, connectionId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      eq(accountingEntityMappings.pendingOp, 'delete'),
+      isNull(accountingEntityMappings.remoteEntityId),
+    ))
+    .limit(1);
+  return !!row;
 }
 
 /**
@@ -1628,12 +1825,13 @@ export async function pushPaymentToAccounting(
       // Either a live lease, or the row is not visible yet because the caller's
       // transaction is still an uncommitted savepoint. Both are retryable, which
       // is why `sync_in_progress` is absent from the worker's terminal set.
+      // Labelled by the row's own provider (no connection is resolved yet).
       return {
         kind: 'refused',
         error: new AccountingPaymentPushError(
           'sync_in_progress',
           409,
-          'Another QuickBooks payment sync for this payment is already in flight; it will be retried',
+          paymentSyncInProgressMessage(await mappingProviderLabel(mappingId, partnerId), 'sync'),
         ),
       } as const;
     }
@@ -1641,11 +1839,13 @@ export async function pushPaymentToAccounting(
     // A typed refusal that must NOT be recorded simply THROWS: this whole phase
     // is one transaction, so the throw rolls the lease claim back too.
     const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
+    const label = accountingProviderDisplayName(conn.provider);
     if (!conn.pushPayments) {
-      await markPaymentMappingError(mappingId, partnerId, PAYMENT_PUSH_DISABLED_MESSAGE, { clearPendingOp: true });
+      const message = paymentPushDisabledMessage(label);
+      await markPaymentMappingError(mappingId, partnerId, message, { clearPendingOp: true });
       return {
         kind: 'refused',
-        error: new AccountingPaymentPushError('push_disabled', 409, PAYMENT_PUSH_DISABLED_MESSAGE),
+        error: new AccountingPaymentPushError('push_disabled', 409, message),
       } as const;
     }
 
@@ -1677,7 +1877,7 @@ export async function pushPaymentToAccounting(
       // not create one either — QuickBooks refuses to apply a Payment to a void
       // Invoice, and asserting cash against a document the operator voided is
       // exactly the divergence decision 11 exists to prevent.
-      const message = 'Invoice was voided in Breeze; QuickBooks payments are not pushed to a void invoice';
+      const message = paymentInvoiceVoidMessage(label);
       await markPaymentMappingError(mappingId, partnerId, message, { clearPendingOp: true });
       return { kind: 'refused', error: new AccountingPaymentPushError('invoice_void', 409, message) } as const;
     }
@@ -1689,18 +1889,17 @@ export async function pushPaymentToAccounting(
       // the attempt IS counted (`markPaymentMappingError` also releases the
       // lease), so an invoice mapping stuck in `error` cannot keep this row
       // cycling through the sweep for ever outside PAYMENT_PUSH_MAX_ATTEMPTS.
-      await markPaymentMappingError(
-        mappingId, partnerId, PAYMENT_INVOICE_NOT_SYNCED_MESSAGE, { clearPendingOp: false },
-      );
+      const message = paymentInvoiceNotSyncedMessage(label);
+      await markPaymentMappingError(mappingId, partnerId, message, { clearPendingOp: false });
       return {
         kind: 'refused',
-        error: new AccountingPaymentPushError('invoice_not_synced', 409, PAYMENT_INVOICE_NOT_SYNCED_MESSAGE),
+        error: new AccountingPaymentPushError('invoice_not_synced', 409, message),
       } as const;
     }
 
     const orgMapping = await loadTypedMapping(db, conn.id, partnerId, 'org', invoice.orgId);
     if (!orgMapping?.remoteEntityId || orgMapping.linkStatus === 'unlinked' || orgMapping.linkStatus === 'suggested') {
-      const message = 'This organization is not mapped to a QuickBooks customer yet — confirm or create a mapping first';
+      const message = paymentCustomerNotMappedMessage(label);
       await markPaymentMappingError(mappingId, partnerId, message, { clearPendingOp: true });
       return { kind: 'refused', error: new AccountingPaymentPushError('customer_not_mapped', 409, message) } as const;
     }
@@ -1713,6 +1912,20 @@ export async function pushPaymentToAccounting(
       const typed = toCurrencyPushError(err, conn);
       await markPaymentMappingError(mappingId, partnerId, typed.message, { clearPendingOp: true });
       return { kind: 'refused', error: typed } as const;
+    }
+
+    // Xero W05 (refinement 17): a provider setting the push needs (Xero: the bank
+    // account) is missing. PARK, don't fail: pending_op stays 'push', the lease
+    // is released, no attempt is counted, and the sweep re-offers the row every
+    // 15 minutes at no provider cost — the first sweep after the setting is
+    // chosen pushes it. Checked before any token refresh or network call.
+    const settingsRefusal = getAccountingProvider(conn.provider).paymentPushPreflight?.(conn) ?? null;
+    if (settingsRefusal) {
+      await markPaymentMappingError(mappingId, partnerId, settingsRefusal, { clearPendingOp: false, countAttempt: 'never' });
+      return {
+        kind: 'refused',
+        error: new AccountingPaymentPushError('push_settings_incomplete', 409, settingsRefusal),
+      } as const;
     }
 
     return {
@@ -1760,6 +1973,25 @@ export async function pushPaymentToAccounting(
     if (throttleMs !== null) {
       await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs, err);
     }
+    const refusal = paymentPushRefusal(err, accountingProviderDisplayName(prep.conn.provider), 'create');
+    if (refusal) {
+      logProviderFault('createPayment', mappingId, err);
+      if (refusal.code === 'remote_ambiguous') {
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          ...providerTelemetryTags(err),
+          service: 'accountingPaymentPush',
+          accounting_mapping_id: mappingId,
+          invoice_payment_id: prep.payload.invoicePaymentId,
+        });
+      }
+      // Terminal: the owed push is cleared. The next invoice push re-owns the row
+      // (fanOutOwedPayments, new push_generation), which is what the message asks for.
+      // CONDITIONAL (quorum finding 2): only while the row still owes THIS push.
+      await markPaymentRefusedIfStillOwed(runInDbContext, mappingId, partnerId, refusal.message, {
+        op: 'push', pushGeneration: prep.payload.pushGeneration,
+      });
+      throw new AccountingPaymentPushError(refusal.code, 409, refusal.message);
+    }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('createPayment', mappingId, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
@@ -1778,6 +2010,7 @@ export async function pushPaymentToAccounting(
   // ---- Phase 2: invoice FOR UPDATE first, then re-read everything ----
   let outcome: PaymentPushOutcome;
   let audit: { orgId: string; invoiceId: string; details: Record<string, unknown> } | null = null;
+  const label = accountingProviderDisplayName(prep.conn.provider);
   try {
     const phase2 = await runInDbContext(async () => {
       const lockedInvoice = await lockOwnedInvoice(prep.invoiceId, partnerId);
@@ -1795,8 +2028,8 @@ export async function pushPaymentToAccounting(
       const mapping = await loadMappingById(mappingId, partnerId);
       if (!mapping) {
         throw new Error(
-          `accountingPaymentPush: mapping ${mappingId} vanished between the QuickBooks create and phase 2 `
-          + `(remote payment ${ref.id}); refusing to lose the QuickBooks sync result`,
+          `accountingPaymentPush: mapping ${mappingId} vanished between the ${label} create and phase 2 `
+          + `(remote payment ${ref.id}); refusing to lose the ${label} sync result`,
         );
       }
       const remoteEntityId = paymentMappingRemoteId(ref.id, prep.remoteInvoiceId);
@@ -1838,7 +2071,7 @@ export async function pushPaymentToAccounting(
           // When `requestPaymentDelete` already flipped the row it re-stamps to
           // ~now, which only lengthens the window: safe, never a premature drop.
           stampPendingSince: true,
-        });
+        }, label);
         return { outcome: 'converted_to_delete' as const, audit: null };
       }
 
@@ -1862,16 +2095,16 @@ export async function pushPaymentToAccounting(
           toMinorUnits(prep.amount, currency) - toMinorUnits(payment.amount, currency),
           currency,
         );
-        const message = partialRefundDivergenceMessage(totalRefunded, accountingProviderDisplayName(prep.conn.provider));
+        const message = partialRefundDivergenceMessage(totalRefunded, label);
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
           syncStatus: 'error', linkStatus: 'confirmed', pendingOp: null, lastError: message,
-        });
+        }, label);
         return { outcome: 'diverged' as const, audit: null };
       }
 
       await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.remoteVersion ?? null, {
         syncStatus: 'synced', linkStatus: 'confirmed', pendingOp: null, lastError: null, stampSyncedAt: true,
-      });
+      }, label);
       return {
         outcome: 'pushed' as const,
         audit: {
@@ -1898,13 +2131,13 @@ export async function pushPaymentToAccounting(
       // about it says QuickBooks holds an orphan. Keep `pending_op`, leave the
       // orphan budget alone, and let the sweep retry — the same requestid
       // replays QuickBooks' original response, so the retry is free.
-      const retryMessage = 'A database conflict interrupted recording the QuickBooks payment; it will be retried';
+      const retryMessage = paymentRecordConflictRetryMessage(label);
       await markPaymentMappingErrorInOwnContext(
         runInDbContext, mappingId, partnerId, retryMessage, { clearPendingOp: false },
       );
       throw new AccountingPaymentPushError('provider_error', 502, retryMessage);
     }
-    const message = paymentRecordFailedRetryMessage(ref.id);
+    const message = paymentRecordFailedRetryMessage(ref.id, label);
     // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
     // holds the Payment (review finding 1). Clearing it produced a row that was
     // byte-identical to the one `accountingPaymentPull`'s
@@ -1938,6 +2171,7 @@ export async function pushPaymentToAccounting(
     await noteRecordFailed(
       runInDbContext, mappingId, partnerId, message,
       paymentMappingRemoteId(ref.id, prep.remoteInvoiceId),
+      label,
     );
     throw new AccountingPaymentPushError('record_failed', 502, message);
   }
@@ -1989,7 +2223,7 @@ export async function deletePaymentInAccounting(
         error: new AccountingPaymentPushError(
           'sync_in_progress',
           409,
-          'Another QuickBooks payment delete for this payment is already in flight; it will be retried',
+          paymentSyncInProgressMessage(await mappingProviderLabel(mappingId, partnerId), 'delete'),
         ),
       } as const;
     }
@@ -2083,7 +2317,8 @@ export async function deletePaymentInAccounting(
           // stops matching at one, so the semicolon this message used to carry
           // hid the call's tags from the guard completely.
           `accountingPaymentPush: dropped a delete-pending payment mapping (id=${mappingId}) that never recorded a `
-          + 'QuickBooks remote id within the grace window — a QuickBooks Payment for this Breeze payment may be '
+          + `${accountingProviderDisplayName(prep.provider)} remote id within the grace window — a `
+          + `${accountingProviderDisplayName(prep.provider)} Payment for this Breeze payment may be `
           + 'orphaned and needs manual reconciliation',
         ),
         undefined,
@@ -2121,6 +2356,28 @@ export async function deletePaymentInAccounting(
     const throttleMs = rateLimitRetryAfterMs(err);
     if (throttleMs !== null) {
       await markPaymentRateLimitedAndThrow(runInDbContext, mappingId, partnerId, prep.conn.provider, throttleMs, err);
+    }
+    const refusal = paymentPushRefusal(err, accountingProviderDisplayName(prep.conn.provider), 'delete');
+    if (refusal) {
+      logProviderFault('deletePayment', mappingId, err);
+      if (refusal.code === 'provider_permission') {
+        // PARKED, never cleared: a `delete` row is NEVER dropped (see
+        // `markPaymentMappingError`), and a missing grant is fixed by
+        // reconnecting — after which the sweep must still retry this delete, and
+        // `readOwedPaymentDeletes` (#7291) must still count it as owed. So `pending_op` stays 'delete', the
+        // lease is released, no attempt is counted and there is no Sentry event:
+        // it is an operator-resolvable refusal, not an incident.
+        await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, refusal.message, {
+          clearPendingOp: false, countAttempt: 'never',
+        });
+        throw new AccountingPaymentPushError(refusal.code, 409, refusal.message);
+      }
+      // Terminal, and the remote id is KEPT (refinement 16): the bookkeeper
+      // resolves it in the provider (Xero: unreconcile, then delete there), and
+      // the pull then observes the deletion. CONDITIONAL: only while the row
+      // still owes this delete.
+      await markPaymentRefusedIfStillOwed(runInDbContext, mappingId, partnerId, refusal.message, { op: 'delete' });
+      throw new AccountingPaymentPushError(refusal.code, 409, refusal.message);
     }
     const message = sanitizePaymentSyncErrorMessage(err, accountingProviderDisplayName(prep.conn.provider));
     logProviderFault('deletePayment', mappingId, err);
@@ -2160,7 +2417,7 @@ export async function deletePaymentInAccounting(
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: prep.remotePaymentId,
     });
-    const message = `QuickBooks removed the payment (remote id ${prep.remotePaymentId}) but Breeze could not clear its mapping; the reconcile sweep will retry`;
+    const message = paymentDeleteRecordFailedMessage(prep.remotePaymentId, accountingProviderDisplayName(prep.conn.provider));
     // `pending_op` KEPT and the lease released: a repeat delete against an
     // already-deleted Payment answers `already_absent`, which clears the row —
     // so the sweep heals this on its own.
@@ -2184,7 +2441,7 @@ export async function deletePaymentInAccounting(
     });
   } else {
     console.warn(
-      '[accountingPaymentPush] deleted a QuickBooks payment with no resolvable Breeze invoice for the audit trail',
+      `[accountingPaymentPush] deleted a ${accountingProviderDisplayName(prep.conn.provider)} payment with no resolvable Breeze invoice for the audit trail`,
       `mappingId=${mappingId}`,
       `remotePaymentId=${prep.remotePaymentId}`,
     );

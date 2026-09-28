@@ -14,6 +14,7 @@ import { runAction, handleActionError } from "../../lib/runAction";
 import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
 import { ScopeBadge } from "../shared/ScopeBadge";
+import { FilterSelect } from "../shared/FilterSelect";
 import DeploymentWizard from "./DeploymentWizard";
 import DeploymentList from "./DeploymentList";
 import DeploymentProgress from "./DeploymentProgress";
@@ -540,10 +541,11 @@ export default function SoftwareCatalog() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={i18n.t("policies:software.softwareCatalog.categoryFilterLabel")}
           value={category}
           onChange={(event) => setCategory(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
+          className="w-full sm:w-56"
         >
           <option value="all">
             {i18n.t("policies:software.softwareCatalog.allCategories")}
@@ -553,7 +555,7 @@ export default function SoftwareCatalog() {
               {item.charAt(0).toUpperCase() + item.slice(1)}
             </option>
           ))}
-        </select>
+        </FilterSelect>
       </div>
 
       {filteredSoftware.length === 0 && !loading ? (

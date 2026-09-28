@@ -51,6 +51,13 @@ const sampleCatalog: PermissionCatalog = {
   }
 };
 
+describe('RoleManager role-type filter select accessible name (#7156)', () => {
+  it('gives the role-type filter select a real accessible name', () => {
+    render(<RoleManager roles={[]} />);
+    expect(screen.getByRole('combobox', { name: 'Role type' })).toBeInTheDocument();
+  });
+});
+
 describe('RoleManager — catalog-driven matrix (issue #801)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

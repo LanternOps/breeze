@@ -21,6 +21,13 @@ const orgOwned: ConfigPolicy = {
   orgName: 'OliveTech',
 };
 
+describe('ConfigPolicyList status filter select accessible name (#7156)', () => {
+  it('gives the status filter select a real accessible name', () => {
+    render(<ConfigPolicyList policies={[]} />);
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
 describe('ConfigPolicyList ownership badges', () => {
   it('shows the Partner-wide badge only on partner-wide policies', () => {
     render(<ConfigPolicyList policies={[partnerWide, orgOwned]} />);

@@ -74,7 +74,7 @@ import {
 } from '../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
-import { findAccountingProvider, getAccountingProvider, providerSupports } from '../services/accounting/providerRegistry';
+import { accountingProviderDisplayName, findAccountingProvider, getAccountingProvider, providerSupports } from '../services/accounting/providerRegistry';
 import { shouldDeferBackgroundWork } from '../services/accounting/accountingRateLimit';
 import { delayJobForRateLimit, rateLimitRetryAfterMs, type AccountingJobContext } from './accountingJobDelay';
 import type { ChangeSet, ChangeSetPaymentLine } from '../services/accounting/types';
@@ -85,8 +85,10 @@ import {
   reverseStaleAllocations,
   type PaymentPullOutcome,
 } from '../services/accounting/accountingPaymentPull';
-import { listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
+import { connectionOwesUnresolvedPaymentDelete, listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
+import { reconcileWindowTruncatedError, reconcileWindowTruncatedMessage } from '../services/accounting/accountingPaymentMessages';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from './accountingSyncWorker';
+import { reapStalePendingTenants } from '../services/accounting/accountingTenantSelection';
 
 export const ACCOUNTING_RECONCILE_QUEUE = 'accounting-reconcile';
 
@@ -107,6 +109,12 @@ export interface ReconcileConnectionJobData {
 
 export interface ReconcileSweepJobData {
   type: 'sweep';
+}
+
+/** Xero W05 (refinement 5): a webhook burst coalesces into one delayed run. */
+export interface ReconcileEnqueueOptions {
+  /** Milliseconds before the job becomes runnable. Absent or 0 = run now (the pre-W05 add() options, byte-identical). */
+  delayMs?: number;
 }
 
 export type AccountingReconcileJobData = ReconcileConnectionJobData | ReconcileSweepJobData;
@@ -264,10 +272,10 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 }
 
 /**
- * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, all
- * four conditions below collapsed into one silent `return null` — a
- * switched-off connection, a lost connection, a stale job target and a
- * genuine connectivity problem were indistinguishable from the outside.
+ * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, the
+ * conditions below collapsed into one silent `return null` — a switched-off
+ * connection, a lost connection, a stale job target and a genuine
+ * connectivity problem were indistinguishable from the outside.
  *
  *   - `missing`: the connection this job names no longer exists (Xero W01:
  *     loaded by id, so a disconnect or a provider switch lands here).
@@ -287,8 +295,15 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
  *     `skipped_pull_disabled` (review finding 2).
  *   - `capability_unavailable` (Xero W01, checked by the caller after these):
  *     the connection's provider has no payment pull.
+ *   - `daily_budget_low` (Xero W05, webhook trigger only): the provider's
+ *     daily call budget is under 20%. The sweep catches up once the budget
+ *     recovers — it defers under the same rule (pass 1, above) — and a
+ *     connection that owes an unresolved payment delete is never deferred,
+ *     by either path.
  */
-type ReconcileSkipReason = 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off' | 'capability_unavailable';
+type ReconcileSkipReason =
+  | 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off' | 'capability_unavailable'
+  | 'daily_budget_low';
 
 function classifyReconcileSkip(
   conn: Pick<AccountingConnection, 'id' | 'status' | 'pullPayments' | 'pushPayments'> | null,
@@ -374,6 +389,32 @@ export async function processReconcileConnectionJob(
         );
       }
       return null;
+    }
+
+    // Xero W05 (refinement 6): a webhook-triggered run is background work too.
+    // The sweep defers at enqueue; this is the same rule for the doorbell, so a
+    // signed-delivery storm cannot spend the tenant's daily budget. QuickBooks
+    // declares no daily budget, so the ratio is null and this never fires.
+    // Sync now ('manual') is interactive and never defers. But a Sync now that
+    // arrives while a delayed webhook job is already queued under the same
+    // jobId (see enqueueAccountingReconcile) joins that job instead of
+    // starting a new one — that run still carries trigger 'webhook', so it can
+    // defer on budget even though Sync now triggered it.
+    if (data.trigger === 'webhook' && conn) {
+      const budgetProvider = findAccountingProvider(conn.provider);
+      if (
+        budgetProvider
+        && await shouldDeferBackgroundWork(conn.provider, budgetProvider.limits.rate, conn.id)
+        // Quorum finding 3: a lost create whose Breeze payment was voided waits
+        // (delete `awaiting_remote_ref`, 24 h grace) for THIS pull to adopt its
+        // remote id. Deferring it for budget could outlast the grace window and
+        // orphan the provider payment. Checked only after the budget says defer,
+        // so QuickBooks (no daily budget) never reaches this query.
+        && !(await runInDbContext(() => connectionOwesUnresolvedPaymentDelete(db, conn.id, data.partnerId)))
+      ) {
+        logReconcileSkip(data, 'daily_budget_low', conn);
+        return null;
+      }
     }
 
     let fresh: AccountingConnection;
@@ -477,8 +518,9 @@ export async function processReconcileConnectionJob(
     // integration panel still read "connected". Counts only — never a
     // QuickBooks response body (Phase C rule). Cleared on the next clean run,
     // and prefix-scoped so it can never wipe a reauth message.
+    const label = accountingProviderDisplayName(fresh.provider);
     const runError = changes.overflowed
-      ? 'QuickBooks truncated the last change window and the backfill did not complete; payments may be missing'
+      ? reconcileWindowTruncatedMessage(label)
       : summary.failed > 0
         ? `${summary.failed} item(s) failed in the last reconcile run`
         : null;
@@ -490,10 +532,7 @@ export async function processReconcileConnectionJob(
       // return has been applied above (those are real changes), but the cursor
       // must stay put: advancing it would skip whatever QuickBooks withheld,
       // and nothing ever re-reads a window the cursor has moved past.
-      const err = new Error(
-        `accounting reconcile for connection ${fresh.id} could not be fully enumerated `
-        + '(QuickBooks truncated the change window and the /query backfill did not complete)',
-      );
+      const err = new Error(reconcileWindowTruncatedError(fresh.id, label));
       console.error('[AccountingReconcileWorker] CDC window truncated', `connectionId=${fresh.id}`, `trigger=${data.trigger}`);
       captureException(err, undefined, {
         service: 'accountingReconcileWorker',
@@ -601,6 +640,7 @@ export async function processReconcileConnectionJob(
  */
 export async function processReconcileSweep(): Promise<{
   enqueued: number; failed: number; deferred: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
+  pendingTenantsReaped: number; pendingTenantsKept: number;
 }> {
   return runOutsideDbContext(async () => {
     // Each pass's DB read is its OWN try/catch: a failure reading the
@@ -637,8 +677,32 @@ export async function processReconcileSweep(): Promise<{
     for (const connection of connections) {
       const provider = findAccountingProvider(connection.provider);
       if (provider && await shouldDeferBackgroundWork(connection.provider, provider.limits.rate, connection.id)) {
-        deferred++;
-        continue;
+        // The owed-delete check is its own try/catch (review finding A): a DB
+        // error reading ONE connection must not throw out of the sweep loop —
+        // the remaining connections still need their chance to enqueue or
+        // defer, and passes 2/3 below still need to run this tick. On error we
+        // treat the connection as OWING (never deferred, falls through to
+        // enqueue): an extra pull only costs budget, while a wrongly deferred
+        // pull can orphan a Xero payment past the 24 h delete grace.
+        let owesDelete = true;
+        try {
+          owesDelete = await withSystemDbAccessContext(
+            () => connectionOwesUnresolvedPaymentDelete(db, connection.id, connection.partnerId),
+            'accountingReconcile.sweep.owedDelete',
+          );
+        } catch (err) {
+          console.error(
+            '[AccountingReconcileWorker] sweep pass 1 owed-delete check failed',
+            err instanceof Error ? err.message : err,
+          );
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.owedDelete',
+          });
+        }
+        if (!owesDelete) {
+          deferred++;
+          continue;
+        }
       }
       if (await enqueueAccountingReconcile(connection.id, connection.partnerId, 'sweep')) enqueued++;
       else failed++;
@@ -681,10 +745,33 @@ export async function processReconcileSweep(): Promise<{
       else pendingOpsFailed++;
     }
 
+    // Pass 3 (Xero W02): reap pending_tenant rows older than 1 hour. They hold the
+    // partner's one-connection slot (a half-finished Xero connect blocks a
+    // QuickBooks connect), so they must not live forever. Best-effort: a failure
+    // here is logged and never fails or retries the sweep — the next tick retries.
+    // A stale row that still owes payment deletes is KEPT, not reaped (#7289):
+    // `pendingTenantsKept` counts those; each was warned + captured by the reaper.
+    let pendingTenantsReaped = 0;
+    let pendingTenantsKept = 0;
+    try {
+      const reap = await reapStalePendingTenants();
+      pendingTenantsReaped = reap.reaped;
+      pendingTenantsKept = reap.kept;
+    } catch (err) {
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 3 (reap pending tenants) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.reapPendingTenants',
+      });
+    }
+
     console.log(
       '[AccountingReconcileWorker] sweep complete',
       `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`, `deferred=${deferred}`,
       `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
+      `pendingTenantsReaped=${pendingTenantsReaped}`, `pendingTenantsKept=${pendingTenantsKept}`,
     );
 
     if (connectionsReadFailed || owedReadFailed) {
@@ -697,7 +784,7 @@ export async function processReconcileSweep(): Promise<{
       );
     }
 
-    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed };
+    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped, pendingTenantsKept };
   });
 }
 
@@ -758,12 +845,23 @@ export async function enqueueAccountingReconcile(
   connectionId: string,
   partnerId: string,
   trigger: ReconcileConnectionJobData['trigger'],
+  opts?: ReconcileEnqueueOptions,
 ): Promise<boolean> {
   try {
+    const jobId = `accounting-reconcile-${connectionId}`;
+    // A delayed job still holds its jobId, so every enqueue for this connection
+    // during the delay (another webhook, a sweep tick, Sync now) is dropped by
+    // BullMQ (Xero W05 refinement 5). The run starts `delayMs` after the FIRST
+    // enqueue — a fixed window; later events do not extend it. Enqueues while
+    // that job is active are dropped too; the next sweep or event picks up
+    // anything later.
+    const jobOpts = opts?.delayMs && opts.delayMs > 0
+      ? { jobId, ...ENQUEUE_OPTS, delay: opts.delayMs }
+      : { jobId, ...ENQUEUE_OPTS };
     await getAccountingReconcileQueue().add(
       'reconcile-connection',
       { type: 'reconcile-connection', connectionId, partnerId, trigger },
-      { jobId: `accounting-reconcile-${connectionId}`, ...ENQUEUE_OPTS },
+      jobOpts,
     );
     return true;
   } catch (err) {

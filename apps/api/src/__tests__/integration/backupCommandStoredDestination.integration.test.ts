@@ -92,6 +92,19 @@ async function commandStatus(id: string): Promise<string> {
   return rows[0]!.status;
 }
 
+// Read commands resolve only a LOCAL destination (an S3 read is served
+// through a storage session), so the read-path tests below use one.
+const LOCAL_DESTINATION = { path: '/srv/breeze-backups' };
+
+async function insertLocalConfig(orgId: string): Promise<string> {
+  const configId = randomUUID();
+  await getTestDb().execute(sql`
+    INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+    VALUES (${configId}, ${orgId}, 'Primary', 'file', 'local', ${JSON.stringify(LOCAL_DESTINATION)}::jsonb)
+  `);
+  return configId;
+}
+
 async function insertS3Config(orgId: string): Promise<string> {
   const configId = randomUUID();
   await getTestDb().execute(sql`
@@ -112,13 +125,9 @@ describe('backup command storage destinations', () => {
   runDb('resolves a stored reference at delivery under the referenced organization only', async () => {
     const home = await seedOrgWithDevice();
     const foreign = await seedOrgWithDevice();
-    const configId = randomUUID();
-    await getTestDb().execute(sql`
-      INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
-      VALUES (${configId}, ${home.orgId}, 'Primary', 'file', 's3', ${JSON.stringify(S3_DESTINATION)}::jsonb)
-    `);
+    const configId = await insertLocalConfig(home.orgId);
 
-    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 's3') };
+    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 'local') };
 
     const delivered = await runOutsideDbContext(() =>
       materializeBackupStorageCredentials(stored, {
@@ -128,7 +137,7 @@ describe('backup command storage destinations', () => {
         claimedAt: new Date(),
       }),
     );
-    expect(delivered).toEqual({ snapshotId: 'snap-1', provider: 's3', providerConfig: S3_DESTINATION });
+    expect(delivered).toEqual({ snapshotId: 'snap-1', provider: 'local', providerConfig: LOCAL_DESTINATION });
 
     // A device of another organization cannot be handed this destination,
     // whatever the stored reference says.
@@ -147,7 +156,7 @@ describe('backup command storage destinations', () => {
     await expect(
       runOutsideDbContext(() =>
         materializeBackupStorageCredentials(
-          { ...backupReadCredentialPayload(configId, foreign.orgId, 's3') },
+          { ...backupReadCredentialPayload(configId, foreign.orgId, 'local') },
           { commandId: randomUUID(), deviceId: foreign.deviceId, type: 'backup_restore', claimedAt: new Date() },
         ),
       ),
@@ -161,8 +170,8 @@ describe('backup command storage destinations', () => {
     // the target device.
     const home = await seedOrgWithDevice();
     const foreign = await seedOrgWithDevice();
-    const configId = await insertS3Config(home.orgId);
-    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 's3') };
+    const configId = await insertLocalConfig(home.orgId);
+    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 'local') };
 
     const inSystemContext = <T>(fn: () => Promise<T>) =>
       runOutsideDbContext(() => withSystemDbAccessContext(fn, 'backupCommandStoredDestination.test'));
@@ -189,13 +198,26 @@ describe('backup command storage destinations', () => {
           claimedAt: new Date(),
         }),
       ),
-    ).resolves.toEqual({ snapshotId: 'snap-1', provider: 's3', providerConfig: S3_DESTINATION });
+    ).resolves.toEqual({ snapshotId: 'snap-1', provider: 'local', providerConfig: LOCAL_DESTINATION });
+  });
+
+  runDb('never resolves an S3 destination into a read command', async () => {
+    const home = await seedOrgWithDevice();
+    const configId = await insertS3Config(home.orgId);
+    await expect(
+      runOutsideDbContext(() =>
+        materializeBackupStorageCredentials(
+          { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 's3') },
+          { commandId: randomUUID(), deviceId: home.deviceId, type: 'backup_restore', claimedAt: new Date() },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
   });
 
   runDb('a statement error resolving one command leaves the held delivery transaction usable', async () => {
     const home = await seedOrgWithDevice();
-    const configId = await insertS3Config(home.orgId);
-    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 's3') };
+    const configId = await insertLocalConfig(home.orgId);
+    const stored = { snapshotId: 'snap-1', ...backupReadCredentialPayload(configId, home.orgId, 'local') };
     // Millisecond precision so the release fence (executed_at = claim) matches.
     const claimedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 5000);
     const broken = await insertClaimedCommand(home.deviceId, claimedAt, stored);
@@ -223,7 +245,7 @@ describe('backup command storage destinations', () => {
     );
 
     expect(delivered.map((cmd) => cmd.id)).toEqual([healthy]);
-    expect(delivered[0]!.payload).toEqual({ snapshotId: 'snap-1', provider: 's3', providerConfig: S3_DESTINATION });
+    expect(delivered[0]!.payload).toEqual({ snapshotId: 'snap-1', provider: 'local', providerConfig: LOCAL_DESTINATION });
     // The failed command was released for a later attempt, and that release
     // committed with the outer transaction.
     expect(await commandStatus(broken)).toBe('pending');

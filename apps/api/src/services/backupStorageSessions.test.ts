@@ -35,6 +35,8 @@ import {
   type StorageSessionRow,
   type StorageSnapshotRow,
 } from './backupStorageSessions';
+import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
+import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupReadHelperGate';
 
 type SessionDescriptor = { sessionId: string; token: string; baseUrl: string; expiresAt: string; deadline: string };
 
@@ -69,6 +71,7 @@ function makeSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     configId: CONFIG,
     snapshotId: SNAP,
     storageIdentity: IDENTITY,
+    keyLayout: 'legacy_flat',
     fileIndexStatus: 'complete',
     metadata: {},
     ...overrides,
@@ -142,8 +145,9 @@ let tokenCounter = 0;
 function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
   const store = makeStore(state);
   const deps: BrokeredReadDeps & {
-    materializeLegacy: ReturnType<typeof vi.fn>;
+    materializeLocalDestination: ReturnType<typeof vi.fn>;
     recordDispatch: ReturnType<typeof vi.fn>;
+    recordMint: ReturnType<typeof vi.fn>;
     requestIndexHydration: ReturnType<typeof vi.fn>;
     presignGet: ReturnType<typeof vi.fn>;
   } = {
@@ -157,11 +161,12 @@ function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
       `https://storage.example/bucket-a/${encodeURIComponent(key)}?X-Amz-Expires=${expiresInSeconds}&X-Amz-Signature=sig`),
     requestIndexHydration: vi.fn(async () => undefined),
     publicOrigins: () => ['https://api.breeze.example'],
-    materializeLegacy: vi.fn(async (payload: Record<string, unknown>) => {
+    materializeLocalDestination: vi.fn(async (payload: Record<string, unknown>) => {
       const { providerConfigRef: _ref, ...rest } = payload;
       return { ...rest, providerConfig: { bucket: 'bucket-a', secretKey: 'synthetic-secret-value' } };
     }),
     recordDispatch: vi.fn(),
+    recordMint: vi.fn(),
     inOrgContext: async <T,>(_orgId: string, fn: () => Promise<T>) => fn(),
     lookupDeviceOrg: async () => ORG,
     ...overrides,
@@ -191,6 +196,58 @@ beforeEach(() => {
 });
 
 describe('brokered read delivery', () => {
+  it.each(['backup_restore', 'mssql_restore'])(
+    'refuses %s for a snapshot written in a key layout this server cannot read',
+    async (type) => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ keyLayout: 'device_scoped', metadata: { backupFileName: 'db.bak' } })];
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ type }), deps))
+        .rejects.toThrow('This backup was written in a storage format this server version cannot read. Update the server, then try again.');
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'refused', 'key_layout_unsupported');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
+
+  describe('storage session issuance telemetry', () => {
+    it('counts a minted session once', async () => {
+      const deps = makeDeps(makeState());
+      await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'minted', 'ok']]);
+    });
+
+    it('counts a refusal with its reason and mints nothing', async () => {
+      const state = makeState();
+      state.device!.backupReadProtocolVersion = 0;
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'refused', 'helper_unsupported']]);
+      expect(state.sessions.size).toBe(0);
+    });
+
+    it('counts a deferral while the file index is not ready', async () => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ fileIndexStatus: 'agent' })];
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'index_unavailable']]);
+    });
+
+    it('counts a VM command delivered as queued', async () => {
+      const state = makeState();
+      state.device!.backupReadProtocolVersion = 0;
+      const deps = makeDeps(state);
+      await deliverBrokeredReadCommand({ restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' }, ctx({ type: 'vm_instant_boot' }), deps);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'legacy', 'helper_unsupported']]);
+    });
+
+    it('does not count a local destination, which never needs a session', async () => {
+      const deps = makeDeps(makeState());
+      await deliverBrokeredReadCommand({ ...restorePayload(), provider: 'local' }, ctx(), deps);
+      expect(deps.recordMint).not.toHaveBeenCalled();
+    });
+  });
+
   it('covers exactly the eight restore-shaped command types', () => {
     expect([...BROKERED_READ_COMMAND_TYPES].sort()).toEqual([
       'backup_restore', 'backup_test_restore', 'backup_verify', 'hyperv_restore',
@@ -207,7 +264,7 @@ describe('brokered read delivery', () => {
     expect(out).not.toHaveProperty('providerConfigRef');
     expect(out).not.toHaveProperty('providerConfigEnvelope');
     expect(out.provider).toBe('s3');
-    expect(deps.materializeLegacy).not.toHaveBeenCalled();
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
     const session = out.storageSession as Record<string, unknown>;
     expect(session).toMatchObject({
       version: 1,
@@ -264,30 +321,53 @@ describe('brokered read delivery', () => {
 
   it.each([
     ['helper does not report the protocol', (s: FakeState) => { s.device!.backupReadProtocolVersion = 0; }, 'helper_unsupported'],
-    ['provider is local', (s: FakeState) => { s.config = { provider: 'local', providerConfig: { path: '/b' } }; }, 'provider_not_s3'],
+    ['destination changed provider after queueing', (s: FakeState) => { s.config = { provider: 'local', providerConfig: { path: '/b' } }; }, 'provider_changed'],
     ['storage endpoint is plain http', (s: FakeState) => { s.config!.providerConfig.endpoint = 'http://storage.example'; }, 'insecure_endpoint'],
     ['storage identity drifted', (s: FakeState) => { s.config!.providerConfig.bucket = 'bucket-b'; }, 'storage_identity_mismatch'],
+    ['snapshot has no recorded storage identity', (s: FakeState) => { s.snapshots = [makeSnapshot({ storageIdentity: null })]; }, 'storage_identity_unrecorded'],
     ['snapshot not found', (s: FakeState) => { s.snapshots = []; }, 'snapshot_unresolved'],
     ['device reports a different server origin', (s: FakeState) => { s.device!.agentServerUrl = 'https://other-origin.example'; }, 'server_origin_mismatch'],
-  ])('falls back to the storage destination when %s', async (_name, mutate, reason) => {
+  ])('refuses delivery, and never resolves the storage destination, when %s', async (_name, mutate, reason) => {
     const state = makeState();
     mutate(state);
     const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
-    expect(out).not.toHaveProperty('storageSession');
-    expect(out.providerConfig).toBeTruthy();
-    expect(deps.materializeLegacy).toHaveBeenCalledTimes(1);
-    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'legacy', reason);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', reason);
+    expect(deps.recordDispatch).not.toHaveBeenCalledWith('backup_restore', 'legacy', expect.anything());
     expect(state.sessions.size).toBe(0);
   });
 
-  it('refuses to broker when the server origin is plain http', async () => {
+  it('tells the operator to update the agent when the helper does not support storage sessions', async () => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toThrow(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
+  });
+
+  it('delivers a local destination as before, whatever the helper supports: it carries a path, not a credential', async () => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state, {
+      materializeLocalDestination: vi.fn(async (payload: Record<string, unknown>) => {
+        const { providerConfigRef: _ref, ...rest } = payload;
+        return { ...rest, providerConfig: { path: '/backups' } };
+      }),
+    } as Partial<BrokeredReadDeps>);
+    const out = await deliverBrokeredReadCommand({ ...restorePayload(), provider: 'local' }, ctx(), deps);
+    expect(out.providerConfig).toEqual({ path: '/backups' });
+    expect(deps.materializeLocalDestination).toHaveBeenCalledTimes(1);
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'local', 'no_credential');
+    expect(state.sessions.size).toBe(0);
+  });
+
+  it('refuses when the server origin is plain http', async () => {
     const state = makeState();
     state.device!.agentServerUrl = null;
     const deps = makeDeps(state, { publicOrigins: () => ['http://api.breeze.example'] });
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
-    expect(out).not.toHaveProperty('storageSession');
-    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'legacy', 'insecure_endpoint');
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', 'insecure_server_origin');
   });
 
   it('emits a bare origin without the default port', async () => {
@@ -301,27 +381,41 @@ describe('brokered read delivery', () => {
   it('uses the reported protocol from this delivery over the stored column', async () => {
     const state = makeState();
     const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ reportedBackupReadProtocolVersion: 0 }), deps);
-    expect(out).not.toHaveProperty('storageSession');
-    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'legacy', 'helper_unsupported');
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ reportedBackupReadProtocolVersion: 0 }), deps))
+      .rejects.toThrow(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', 'helper_unsupported');
   });
 
-  it('requests file-index hydration and falls back when the index is not authoritative', async () => {
-    const state = makeState();
-    state.snapshots = [makeSnapshot({ fileIndexStatus: 'agent' })];
-    const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
-    expect(out).not.toHaveProperty('storageSession');
-    expect(deps.requestIndexHydration).toHaveBeenCalledWith(SNAPSHOT_DB_ID);
-    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'legacy', 'index_unavailable');
-  });
+  it.each(['backup_restore', 'vm_restore_from_backup'])(
+    'requests file-index hydration and defers %s (retryable, no destination) while the index is not authoritative',
+    async (type) => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ fileIndexStatus: 'agent' })];
+      const deps = makeDeps(state);
+      const payload = type === 'backup_restore' ? restorePayload() : { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' };
+      await expect(deliverBrokeredReadCommand(payload, ctx({ type }), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.requestIndexHydration).toHaveBeenCalledWith(SNAPSHOT_DB_ID);
+      expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'deferred', 'index_unavailable');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
 
-  it('passes a payload without a destination reference through the legacy path', async () => {
+  it.each([
+    ['an inline storage destination', (p: Record<string, unknown>) => {
+      const { providerConfigRef: _ref, ...inline } = p;
+      return { ...inline, providerConfig: { bucket: 'x' } };
+    }, 'inline_destination'],
+    ['no destination reference', (p: Record<string, unknown>) => {
+      const { providerConfigRef: _ref, ...rest } = p;
+      return rest;
+    }, 'no_destination_ref'],
+  ])('refuses a payload carrying %s', async (_name, shape, reason) => {
     const state = makeState();
     const deps = makeDeps(state);
-    const { providerConfigRef: _ref, ...inline } = restorePayload();
-    await deliverBrokeredReadCommand({ ...inline, providerConfig: { bucket: 'x' } }, ctx(), deps);
-    expect(deps.materializeLegacy).toHaveBeenCalledTimes(1);
+    await expect(deliverBrokeredReadCommand(shape(restorePayload()), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', reason);
     expect(state.sessions.size).toBe(0);
   });
 
@@ -341,16 +435,17 @@ describe('brokered read delivery', () => {
     expect(row.controlKeys).toEqual([`snapshots/${SNAP}/manifest.json`, `snapshots/${SNAP}/files/db_full.bak`]);
   });
 
-  it.each(['../x.bak', 'a/b.bak', '', '..'])('does not broker MSSQL when the backup file name %j is not a single component', async (name) => {
+  it.each(['../x.bak', 'a/b.bak', '', '..'])('refuses MSSQL (never defers) when the backup file name %j is not a single component', async (name) => {
     const state = makeState();
     state.snapshots = [makeSnapshot({ fileIndexStatus: 'none', metadata: { backupFileName: name } })];
     const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(
+    await expect(deliverBrokeredReadCommand(
       { snapshotId: SNAP, provider: 's3', providerConfigRef: { configId: CONFIG, orgId: ORG } },
       ctx({ type: 'mssql_verify' }),
       deps,
-    );
-    expect(out).not.toHaveProperty('storageSession');
+    )).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.recordDispatch).toHaveBeenCalledWith('mssql_verify', 'refused', 'invalid_backup_file');
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
   });
 
   it('brokers VM restore commands that carry no destination reference, and leaves them untouched otherwise', async () => {
@@ -366,7 +461,7 @@ describe('brokered read delivery', () => {
     const legacyDeps = makeDeps(legacyState);
     const untouched = await deliverBrokeredReadCommand(vmPayload, ctx({ type: 'vm_instant_boot' }), legacyDeps);
     expect(untouched).toEqual(vmPayload);
-    expect(legacyDeps.materializeLegacy).not.toHaveBeenCalled();
+    expect(legacyDeps.materializeLocalDestination).not.toHaveBeenCalled();
   });
 
   it('bounds the deadline by the command execution clock and the lease by the deadline', async () => {
@@ -593,6 +688,7 @@ describe('storage session per-call revalidation', () => {
     ['the snapshot now belongs to another source device', (s: FakeState) => { s.snapshots = [makeSnapshot({ deviceId: OTHER_DEVICE })]; }],
     ['the snapshot pinned storage identity changed', (s: FakeState) => { s.snapshots = [makeSnapshot({ storageIdentity: 's3::storage.example::bucket-z' })]; }],
     ['the destination endpoint is no longer https', (s: FakeState) => { s.config!.providerConfig.endpoint = 'http://storage.example'; }],
+    ['the snapshot reports a key layout this server cannot read', (s: FakeState) => { s.snapshots = [makeSnapshot({ keyLayout: 'device_scoped' })]; }],
   ])('ends the session when %s', async (_name, mutate) => {
     const state = makeState();
     const { deps, row } = await mintSession(state);
@@ -631,9 +727,10 @@ describe('storage session key grammar', () => {
     const state = makeState();
     state.snapshots = [makeSnapshot({ snapshotId, metadata: { backupFileName: 'db.bak' } })];
     const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand({ ...restorePayload(), snapshotId }, ctx({ type }), deps);
-    expect(out.storageSession).toBeUndefined();
-    expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'legacy', 'invalid_snapshot_key');
+    await expect(deliverBrokeredReadCommand({ ...restorePayload(), snapshotId }, ctx({ type }), deps))
+      .rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'refused', 'invalid_snapshot_key');
+    expect(deps.materializeLocalDestination).not.toHaveBeenCalled();
     expect(state.sessions.size).toBe(0);
   });
 });

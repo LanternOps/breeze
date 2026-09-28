@@ -264,7 +264,11 @@
       "moreFilters": "Più filtri",
       "lessFilters": "Meno filtri",
       "allSources": "Tutte le fonti",
-      "allOs": "Tutti gli OS"
+      "allOs": "Tutti gli OS",
+      "severityLabel": "Gravità",
+      "statusLabel": "Stato di approvazione",
+      "sourceLabel": "Origine",
+      "osLabel": "Sistema operativo"
     },
     "actions": {
       "deploy": "Distribuisci",

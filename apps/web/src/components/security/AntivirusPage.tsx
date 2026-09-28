@@ -6,6 +6,7 @@ import { Loader2, Search, ShieldCheck, ShieldOff } from "lucide-react";
 import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import { FilterSelect } from "../shared/FilterSelect";
 import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
@@ -288,10 +289,11 @@ export default function AntivirusPage() {
                 className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
-            <select
+            <FilterSelect
+              label={t("securityAntivirusPage.statusFilterLabel")}
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm"
+              className="h-10"
             >
               <option value="">{t("securityAntivirusPage.allStatuses")}</option>
               <option value="protected">
@@ -306,11 +308,12 @@ export default function AntivirusPage() {
               <option value="offline">
                 {t("securityAntivirusPage.offline")}
               </option>
-            </select>
-            <select
+            </FilterSelect>
+            <FilterSelect
+              label={t("securityAntivirusPage.osFilterLabel")}
               value={osFilter}
               onChange={(e) => setOsFilter(e.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm"
+              className="h-10"
             >
               <option value="">{t("securityAntivirusPage.allOS")}</option>
               <option value="windows">
@@ -318,7 +321,7 @@ export default function AntivirusPage() {
               </option>
               <option value="macos">{t("securityAntivirusPage.macos")}</option>
               <option value="linux">{t("securityAntivirusPage.linux")}</option>
-            </select>
+            </FilterSelect>
           </div>
 
           <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">

@@ -1136,7 +1136,8 @@
           "title": "Nenhuma conexão PSA configurada"
         },
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status da conexão"
         },
         "headers": {
           "connection": "Conexão",
@@ -1205,7 +1206,8 @@
           "title": "Nenhum ticket PSA sincronizado"
         },
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status do chamado"
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
@@ -1341,7 +1343,8 @@
         "empty": "Nenhum webhook encontrado.",
         "failedCount": "{{count}} falhou",
         "filters": {
-          "allStatuses": "Todos os status"
+          "allStatuses": "Todos os status",
+          "statusFilterLabel": "Status do webhook"
         },
         "headers": {
           "events": "Eventos",
@@ -2119,7 +2122,8 @@
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
-          "findings": "Achados"
+          "findings": "Achados",
+          "kindLabel": "Tipo"
         },
         "emptyTitle": "Nenhum incidente encontrado",
         "emptyFiltered": "Nenhum incidente corresponde aos filtros atuais.",
@@ -2342,7 +2346,9 @@
           "unknown": "Desconhecido"
         },
         "lastSeen": "Visto por último",
-        "noDeviceInventory": "Nenhum inventário de dispositivos disponível dos clientes ainda."
+        "noDeviceInventory": "Nenhum inventário de dispositivos disponível dos clientes ainda.",
+        "healthFilterLabel": "Saúde",
+        "sortFilterLabel": "Ordenar por"
       }
     },
     "remediation": {

@@ -1124,7 +1124,7 @@ describe('QuickBooks payment push — real Postgres', () => {
 
     // The badge and the refusal are the same fact: QuickBooks OWNS its row.
     await expect(withSystemDbAccessContext(() => voidPayment(pulled.invoicePaymentId!, fx.actor)))
-      .rejects.toMatchObject({ status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT' });
+      .rejects.toMatchObject({ status: 409, code: 'PROVIDER_OWNED_PAYMENT' });
     expect(await loadPayments(invoiceId)).toHaveLength(2);
 
     // ...while the Breeze-origin one is still hand-voidable, and the void
@@ -1158,6 +1158,44 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect(mappings).toHaveLength(2);
     expect(mappings.every((m) => m.pendingOp === 'push' && m.breezeOrigin)).toBe(true);
     expect(new Set(mappings.map((m) => m.id))).toEqual(new Set(first));
+  });
+
+  runDb('stamps the horizon from the DATABASE clock, so an API clock running ahead cannot drop the next payment (#7293)', async () => {
+    // `invoice_payments.created_at` comes from Postgres `now()`. If
+    // `upsertConnection` stamped `push_payments_since` from Node's clock, then
+    // any skew with Node ahead would put a payment recorded right after connecting
+    // "before" the horizon, and it would silently never be pushed. The test stack
+    // runs 5-12 ms behind Node, which made this suite flake. Pinning Node's Date
+    // a minute ahead ONLY while the connection is written makes that skew
+    // deterministic. Postgres never sees the fake clock.
+    const realNow = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    let seeded: Awaited<ReturnType<typeof seedPushable>>;
+    try {
+      vi.setSystemTime(realNow + 60_000);
+      seeded = await seedPushable();
+    } finally {
+      vi.useRealTimers();
+    }
+    const { fx, invoiceId } = seeded;
+
+    // Positive control: the skew really is on the stamped horizon's side. The
+    // horizon must read back at or before the DB clock, never a minute ahead.
+    const [conn] = await withSystemDbAccessContext(() => db
+      .select({
+        since: accountingConnections.pushPaymentsSince,
+        dbNow: sql<string>`now()::text`,
+      })
+      .from(accountingConnections)
+      .where(eq(accountingConnections.id, fx.conn.id)));
+    expect(conn!.since!.getTime()).toBeLessThanOrEqual(new Date(conn!.dbNow).getTime());
+
+    await withSystemDbAccessContext(() => recordPayment(
+      invoiceId, { amount: 40, method: 'check', receivedAt: '2026-09-02' }, fx.actor,
+    ));
+
+    const mapping = await loadOnePaymentMapping(fx);
+    expect(mapping).toMatchObject({ breezeEntityType: 'payment', pendingOp: 'push', syncStatus: 'pending' });
   });
 
   runDb('the push horizon is an inclusive UTC boundary, whatever the session time zone', async () => {

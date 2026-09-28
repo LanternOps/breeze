@@ -11,10 +11,7 @@
  * (routes/agents/storageSessions.ts), and never sees a credential.
  *
  * Delivery (`deliverBrokeredReadCommand`, the delivery refresher for these
- * eight types): a session is minted only when ALL of these hold — otherwise
- * the command is delivered exactly as before (the storage destination via
- * `materializeBackupStorageCredentials`, or untouched for the VM types) and a
- * `legacy` dispatch is recorded with the reason:
+ * eight types): a session is minted only when ALL of these hold:
  *   - the device's helper reports `backupReadProtocolVersion >= 1` (the value
  *     this heartbeat reported, else the stored non-sticky column);
  *   - the snapshot resolves uniquely in the command's organization, its
@@ -26,6 +23,17 @@
  *     index (`file_index_status = 'complete'`; hydration is requested when it
  *     is not), or, for MSSQL, the snapshot's manifest plus its single backup
  *     file.
+ *
+ * When one does not hold, the storage destination is NEVER sent instead:
+ *   - index not yet server-verified → the delivery is DEFERRED
+ *     (CommandDeliveryDeferredError): hydration has been requested and the
+ *     row is released for the next claim;
+ *   - anything else, for the six types that name a destination → the delivery
+ *     is REFUSED (CommandDeliveryRefusedError) with an operator-facing reason;
+ *   - the two VM types name no destination: they are delivered as queued
+ *     (the helper uses its own configuration) and recorded as `legacy`.
+ * A LOCAL destination is not brokered and not withheld: it is a filesystem
+ * path, not a credential, and is delivered as before to any helper.
  *
  * Authorization at use: every key is compared VERBATIM against the session's
  * control keys (manifest, layout and system-state manifests) and the EXACT
@@ -43,7 +51,8 @@ import {
   PROVIDER_CONFIG_REF_FIELD,
   materializeBackupStorageCredentials,
 } from './backupCommandCredentials';
-import { recordBackupReadDispatch } from './backupMetrics';
+import { recordBackupReadDispatch, recordStorageSessionMint } from './backupMetrics';
+import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
   STORAGE_SESSION_CALL_BURST,
@@ -53,7 +62,12 @@ import {
   type StorageSessionBudgetDecision,
 } from './backupStorageSessionBudget';
 import { drizzleBrokeredReadStore } from './backupStorageSessionStore';
-import type { DeliveryRefreshContext } from './commandDeliveryRefusal';
+import {
+  CommandDeliveryDeferredError,
+  CommandDeliveryRefusedError,
+  type DeliveryRefreshContext,
+} from './commandDeliveryRefusal';
+import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE, MIN_BACKUP_READ_PROTOCOL_VERSION } from './backupReadHelperGate';
 import { getCommandTimeoutMs } from './commandTimeouts';
 import { CommandTypes } from './commandTypes';
 import { presignSnapshotObjectGet } from './recoveryDownloadService';
@@ -106,6 +120,8 @@ export type StorageSnapshotRow = {
   configId: string | null;
   snapshotId: string;
   storageIdentity: string | null;
+  /** Object-key layout (services/backupKeyLayout.ts); only a supported one is ever read. */
+  keyLayout: string;
   fileIndexStatus: string;
   metadata: unknown;
 };
@@ -144,6 +160,14 @@ export type VerifiedOriginRow = {
 };
 
 export type StorageDestination = { provider: string; providerConfig: Record<string, unknown> };
+
+/**
+ * How a restore-shaped command was delivered: `brokered` (storage session),
+ * `local` (a local destination path, no credential), `deferred` (released
+ * until its index is ready), `refused`, or `legacy` (a VM command delivered as
+ * queued, with no destination).
+ */
+export type BackupReadDispatchMode = 'brokered' | 'local' | 'deferred' | 'refused' | 'legacy';
 
 /** Data access used by this module; the default is the Drizzle store. */
 export interface BrokeredReadStore {
@@ -187,8 +211,11 @@ export interface BrokeredReadDeps {
   requestIndexHydration(snapshotDbId: string): Promise<void>;
   /** API origins this deployment serves agents on. */
   publicOrigins(): string[];
-  materializeLegacy(payload: Record<string, unknown>, ctx: DeliveryRefreshContext): Promise<Record<string, unknown>>;
-  recordDispatch(commandType: string, mode: 'brokered' | 'legacy', reason: string): void;
+  /** Resolves a LOCAL destination reference into the command (a path, never a credential). */
+  materializeLocalDestination(payload: Record<string, unknown>, ctx: DeliveryRefreshContext): Promise<Record<string, unknown>>;
+  recordDispatch(commandType: string, mode: BackupReadDispatchMode, reason: string): void;
+  /** One storage-session issuance decision (minted, or why not). */
+  recordMint(scope: 'snapshot_read', outcome: 'minted' | 'refused' | 'deferred' | 'legacy', reason: string): void;
   /** Run `fn` inside the delivery path's DB context, or an org-scoped one when none is held. */
   inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T>;
   lookupDeviceOrg(deviceId: string): Promise<string | null>;
@@ -240,8 +267,9 @@ export const defaultBrokeredReadDeps: BrokeredReadDeps = {
     });
   },
   publicOrigins: () => defaultPublicOrigins(),
-  materializeLegacy: (payload, ctx) => materializeBackupStorageCredentials(payload, ctx),
+  materializeLocalDestination: (payload, ctx) => materializeBackupStorageCredentials(payload, ctx),
   recordDispatch: (commandType, mode, reason) => recordBackupReadDispatch(commandType, mode, reason),
+  recordMint: (scope, outcome, reason) => recordStorageSessionMint(scope, outcome, reason),
   inOrgContext: (orgId, fn) => defaultInOrgContext(orgId, fn),
   lookupDeviceOrg: (deviceId) => defaultLookupDeviceOrg(deviceId),
 };
@@ -317,28 +345,92 @@ function httpsEndpoint(providerConfig: Record<string, unknown>): boolean {
 
 type Decision =
   | { mode: 'brokered'; payload: Record<string, unknown> }
-  | { mode: 'legacy'; reason: string };
+  | { mode: 'unbrokered'; reason: string };
+
+/**
+ * The operator-facing reason a read was refused. Never names a credential or a
+ * key; worded for the restore job / command result it ends up on.
+ */
+const REFUSAL_MESSAGES: Record<string, string> = {
+  helper_unsupported: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE,
+  inline_destination:
+    'This restore was queued by an earlier version of Breeze and can no longer be delivered. Start it again.',
+  malformed_reference: 'This command carries a malformed backup destination reference. Start it again.',
+  no_destination_ref: 'This command carries no backup destination reference. Start it again.',
+  device_org_mismatch: 'The target device no longer belongs to the organization that owns this backup.',
+  server_origin_mismatch:
+    'This device connects to Breeze at an address the server is not configured to serve, so a secure storage session '
+    + 'cannot be issued. Set PUBLIC_API_URL to the address agents use.',
+  server_origin_unavailable:
+    'The server address agents use is not configured, so a secure storage session cannot be issued. Set PUBLIC_API_URL.',
+  insecure_server_origin:
+    'Restoring or verifying backups requires agents to reach Breeze over HTTPS. Serve the agent API over HTTPS.',
+  snapshot_unresolved: 'The backup could not be found for this organization, or its backup destination no longer exists.',
+  invalid_snapshot_key: 'This backup has an identifier that cannot be read from storage.',
+  key_layout_unsupported:
+    'This backup was written in a storage format this server version cannot read. Update the server, then try again.',
+  provider_not_s3: 'This backup is stored with a provider that restores do not support.',
+  provider_changed: 'The backup destination changed provider after this command was queued. Start it again.',
+  insecure_endpoint:
+    'Restoring or verifying backups requires the storage endpoint to use HTTPS. Change the backup destination endpoint to HTTPS.',
+  storage_identity_unrecorded:
+    'The storage location of this backup has not been confirmed yet. Try again after the next storage check, or run a new backup.',
+  storage_identity_mismatch:
+    'This backup was written to a different bucket or endpoint than its backup configuration now uses. '
+    + 'Point the configuration back to where the backup was written.',
+  invalid_backup_file: 'This database backup does not record a readable backup file name.',
+  deadline_passed: 'This command reached its time limit before it could be delivered. Start it again.',
+};
+
+const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
+
+function refusalMessage(reason: string): string {
+  return REFUSAL_MESSAGES[reason] ?? 'This backup cannot be read securely.';
+}
 
 /**
  * Delivery refresher for the eight restore-shaped command types. Returns the
  * wire payload: a storage session (and no destination) when the command can
- * be brokered, otherwise exactly what the command would have carried before.
+ * be brokered, a local destination path, or a VM command as queued. Throws
+ * CommandDeliveryDeferredError (index not ready) or CommandDeliveryRefusedError
+ * otherwise — a storage destination is never delivered for a read.
  */
 export async function deliverBrokeredReadCommand(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps = defaultBrokeredReadDeps,
 ): Promise<Record<string, unknown>> {
+  if (REF_TYPES.has(ctx.type) && payload.provider === 'local' && !hasInlineDestination(payload)) {
+    // A local destination is a path the device reaches itself. The resolver
+    // refuses if the referenced configuration is no longer local.
+    deps.recordDispatch(ctx.type, 'local', 'no_credential');
+    return deps.materializeLocalDestination(payload, ctx);
+  }
+
   const decision = await decide(payload, ctx, deps);
   if (decision.mode === 'brokered') {
+    deps.recordMint('snapshot_read', 'minted', 'ok');
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
     return decision.payload;
   }
+  if (decision.reason === 'index_unavailable') {
+    deps.recordMint('snapshot_read', 'deferred', decision.reason);
+    deps.recordDispatch(ctx.type, 'deferred', decision.reason);
+    throw new CommandDeliveryDeferredError(DEFERRAL_MESSAGE);
+  }
+  if (REF_TYPES.has(ctx.type)) {
+    deps.recordMint('snapshot_read', 'refused', decision.reason);
+    deps.recordDispatch(ctx.type, 'refused', decision.reason);
+    throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
+  }
+  // VM commands name no destination; they go as queued.
+  deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
-  // Commands that carry a destination reference get it resolved exactly as
-  // before (including every refusal); VM commands carry none and go as queued.
-  if (REF_TYPES.has(ctx.type)) return deps.materializeLegacy(payload, ctx);
   return payload;
+}
+
+function hasInlineDestination(payload: Record<string, unknown>): boolean {
+  return 'providerConfig' in payload || 'providerConfigEnvelope' in payload;
 }
 
 async function decide(
@@ -346,11 +438,11 @@ async function decide(
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps,
 ): Promise<Decision> {
-  if (!BROKERED_READ_COMMAND_TYPES.includes(ctx.type)) return { mode: 'legacy', reason: 'unsupported_type' };
-  if ('providerConfig' in payload || 'providerConfigEnvelope' in payload) {
-    // Queued before destination references existed: its inline destination is
-    // the only way it can still be delivered.
-    return { mode: 'legacy', reason: 'inline_destination' };
+  if (!BROKERED_READ_COMMAND_TYPES.includes(ctx.type)) return { mode: 'unbrokered', reason: 'unsupported_type' };
+  if (hasInlineDestination(payload)) {
+    // Queued before destination references existed: its only way to be
+    // delivered is its inline destination, which is never sent for a read.
+    return { mode: 'unbrokered', reason: 'inline_destination' };
   }
 
   let orgId: string;
@@ -361,15 +453,15 @@ async function decide(
     const configId = ref && typeof ref === 'object' ? ref.configId : undefined;
     const refOrg = ref && typeof ref === 'object' ? ref.orgId : undefined;
     if (typeof configId !== 'string' || !UUID_PATTERN.test(configId) || typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg)) {
-      return { mode: 'legacy', reason: 'malformed_reference' };
+      return { mode: 'unbrokered', reason: 'malformed_reference' };
     }
     orgId = refOrg;
     refConfigId = configId;
   } else if (REF_TYPES.has(ctx.type)) {
-    return { mode: 'legacy', reason: 'no_destination_ref' };
+    return { mode: 'unbrokered', reason: 'no_destination_ref' };
   } else {
     const deviceOrg = await deps.lookupDeviceOrg(ctx.deviceId);
-    if (!deviceOrg) return { mode: 'legacy', reason: 'device_org_mismatch' };
+    if (!deviceOrg) return { mode: 'unbrokered', reason: 'device_org_mismatch' };
     orgId = deviceOrg;
   }
 
@@ -385,12 +477,12 @@ async function mint(
 ): Promise<Decision> {
   const { store } = deps;
   const device = await store.loadDevice(ctx.deviceId);
-  if (!device || device.orgId !== orgId) return { mode: 'legacy', reason: 'device_org_mismatch' };
+  if (!device || device.orgId !== orgId) return { mode: 'unbrokered', reason: 'device_org_mismatch' };
 
   const protocol = typeof ctx.reportedBackupReadProtocolVersion === 'number'
     ? ctx.reportedBackupReadProtocolVersion
     : device.backupReadProtocolVersion;
-  if (!(protocol >= STORAGE_SESSION_PROTOCOL_VERSION)) return { mode: 'legacy', reason: 'helper_unsupported' };
+  if (!(protocol >= MIN_BACKUP_READ_PROTOCOL_VERSION)) return { mode: 'unbrokered', reason: 'helper_unsupported' };
 
   // The helper only accepts a bare https origin equal to a server URL it is
   // configured with. Prefer the origin the device itself reported using, and
@@ -399,60 +491,63 @@ async function mint(
   let baseUrl: string | null;
   if (device.agentServerUrl) {
     const reported = originOf(device.agentServerUrl);
-    if (!reported || !configured.includes(reported)) return { mode: 'legacy', reason: 'server_origin_mismatch' };
+    if (!reported || !configured.includes(reported)) return { mode: 'unbrokered', reason: 'server_origin_mismatch' };
     baseUrl = reported;
   } else {
     baseUrl = configured[0] ?? null;
   }
-  if (!baseUrl) return { mode: 'legacy', reason: 'server_origin_unavailable' };
-  if (!baseUrl.startsWith('https://')) return { mode: 'legacy', reason: 'insecure_endpoint' };
+  if (!baseUrl) return { mode: 'unbrokered', reason: 'server_origin_unavailable' };
+  if (!baseUrl.startsWith('https://')) return { mode: 'unbrokered', reason: 'insecure_server_origin' };
 
   const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
-  if (!externalSnapshotId) return { mode: 'legacy', reason: 'snapshot_unresolved' };
+  if (!externalSnapshotId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const candidates = await store.findSnapshots({ orgId, externalSnapshotId, configId: refConfigId });
-  if (candidates.length !== 1) return { mode: 'legacy', reason: 'snapshot_unresolved' };
+  if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
-  if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'legacy', reason: 'snapshot_unresolved' };
+  if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
+  // A layout this server does not understand is a permanent property of the
+  // snapshot: its keys cannot be derived, so it is refused, never guessed.
+  if (!isSupportedKeyLayout(snapshot.keyLayout)) return { mode: 'unbrokered', reason: 'key_layout_unsupported' };
   // The snapshot id is agent-reported and every authorized key is built from
   // it: it must be a single segment of the object-key grammar.
-  if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'legacy', reason: 'invalid_snapshot_key' };
+  if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'unbrokered', reason: 'invalid_snapshot_key' };
 
   const destination = await store.resolveConfig(snapshot.configId, orgId);
-  if (!destination) return { mode: 'legacy', reason: 'snapshot_unresolved' };
-  if (destination.provider !== 's3') return { mode: 'legacy', reason: 'provider_not_s3' };
-  if (hasRefProviderMismatch(payload, destination.provider)) return { mode: 'legacy', reason: 'provider_changed' };
-  if (!httpsEndpoint(destination.providerConfig)) return { mode: 'legacy', reason: 'insecure_endpoint' };
+  if (!destination) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
+  if (hasRefProviderMismatch(payload, destination.provider)) return { mode: 'unbrokered', reason: 'provider_changed' };
+  if (destination.provider !== 's3') return { mode: 'unbrokered', reason: 'provider_not_s3' };
+  if (!httpsEndpoint(destination.providerConfig)) return { mode: 'unbrokered', reason: 'insecure_endpoint' };
   const identity = normalizeStorageIdentity(destination.provider, destination.providerConfig);
-  if (!snapshot.storageIdentity || snapshot.storageIdentity !== identity) {
-    return { mode: 'legacy', reason: 'storage_identity_mismatch' };
-  }
+  if (!snapshot.storageIdentity) return { mode: 'unbrokered', reason: 'storage_identity_unrecorded' };
+  if (snapshot.storageIdentity !== identity) return { mode: 'unbrokered', reason: 'storage_identity_mismatch' };
 
   let controlKeys: string[];
   let useFileIndex: boolean;
   let authorizedKeyCount: number;
   if (MSSQL_TYPES.has(ctx.type)) {
     const fileName = mssqlBackupFileName(snapshot.metadata);
-    if (!isSinglePathComponent(fileName)) return { mode: 'legacy', reason: 'index_unavailable' };
+    // A permanent property of the snapshot, not a pending index: refused.
+    if (!isSinglePathComponent(fileName)) return { mode: 'unbrokered', reason: 'invalid_backup_file' };
     const fileKey = `snapshots/${snapshot.snapshotId}/files/${fileName}`;
     if (classifyBackupObjectKey(fileKey, snapshot.snapshotId)?.kind !== 'own') {
-      return { mode: 'legacy', reason: 'index_unavailable' };
+      return { mode: 'unbrokered', reason: 'invalid_backup_file' };
     }
     controlKeys = [`snapshots/${snapshot.snapshotId}/manifest.json`, fileKey];
     useFileIndex = false;
     authorizedKeyCount = controlKeys.length;
   } else {
     if (snapshot.fileIndexStatus !== 'complete') {
-      // Ask for a server-verified index so a later delivery can be brokered.
-      // Queue-only, started after the delivery transaction closes (no DB
-      // connection, no Redis round trip while it is held); a failure here
-      // must not block delivery.
+      // Ask for a server-verified index so the next delivery attempt can be
+      // brokered; this one is deferred. Queue-only, started after the delivery
+      // transaction closes (no DB connection, no Redis round trip while it is
+      // held); a failure to queue is logged and the deferral stands.
       await deps.requestIndexHydration(snapshot.id).catch((err: unknown) => {
         console.warn('[backupStorageSessions] could not request file-index hydration', {
           snapshotDbId: snapshot.id,
           error: err instanceof Error ? err.message : String(err),
         });
       });
-      return { mode: 'legacy', reason: 'index_unavailable' };
+      return { mode: 'unbrokered', reason: 'index_unavailable' };
     }
     controlKeys = controlKeysFor(snapshot.snapshotId);
     useFileIndex = true;
@@ -463,7 +558,7 @@ async function mint(
   const base = ctx.claimedAt && ctx.claimedAt.getTime() > now.getTime() ? ctx.claimedAt : now;
   const deadline = new Date(Math.floor((base.getTime() + getCommandTimeoutMs(ctx.type, payload)) / 1000) * 1000);
   const expiresAt = new Date(Math.min(Math.floor((now.getTime() + STORAGE_SESSION_LEASE_MS) / 1000) * 1000, deadline.getTime()));
-  if (expiresAt.getTime() <= now.getTime()) return { mode: 'legacy', reason: 'deadline_passed' };
+  if (expiresAt.getTime() <= now.getTime()) return { mode: 'unbrokered', reason: 'deadline_passed' };
 
   const token = deps.randomToken();
   if (!TOKEN_PATTERN.test(token)) throw new Error('storage session token generator produced an invalid token');
@@ -594,6 +689,7 @@ export async function resolveStorageSessionObjects(
     || snapshot.orgId !== session.orgId
     || snapshot.deviceId !== session.sourceDeviceId
     || snapshot.storageIdentity !== session.storageIdentity
+    || !isSupportedKeyLayout(snapshot.keyLayout)
     || !destination
     || destination.provider !== 's3'
     || !httpsEndpoint(destination.providerConfig)

@@ -157,7 +157,8 @@
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
-      "inheritsBadge": "Erbt"
+      "inheritsBadge": "Erbt",
+      "statusFilterLabel": "Status"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -947,7 +948,8 @@
         "promptNotify": "Benachrichtigen — Verbindungshinweis anzeigen",
         "promptConsent": "Zustimmung erforderlich — der Benutzer muss genehmigen",
         "consentUnavailable": "Wenn niemand antworten kann",
-        "consentUnavailableHelp": "Gilt, wenn Zustimmung erforderlich ist, aber kein Benutzer angemeldet ist.",
+        "consentUnavailableHelp": "Gilt, wenn niemand angemeldet ist, wenn die Zustimmungsabfrage nicht angezeigt werden kann (zum Beispiel, weil Breeze Assist nicht läuft oder nicht reagiert) oder wenn der angemeldete Benutzer nicht innerhalb von 30 Sekunden antwortet.",
+        "consentVncNote": "VNC kann keine Zustimmung einholen. Daher werden VNC-Sitzungen auf Geräten, die eine Zustimmung erfordern, abgelehnt. Verwenden Sie stattdessen den Remotedesktop-Viewer.",
         "unavailableProceed": "Sitzung fortsetzen",
         "unavailableBlock": "Sitzung blockieren",
         "showIndicator": "Anzeige aktiver Sitzungen",
@@ -1628,7 +1630,8 @@
       "bulkSoftwareDeployment": "Massensoftwarebereitstellung",
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
-      "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
+      "summaryFailed7d": "Fehlgeschlagen (7 Tage)",
+      "categoryFilterLabel": "Kategorie"
     },
     "softwareInventory": {
       "allowed": "Erlaubt",

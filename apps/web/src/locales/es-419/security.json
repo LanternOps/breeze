@@ -142,7 +142,9 @@
     "weakPasswords": "Contraseñas débiles",
     "windows": "Windows",
     "withIssues": "Con problemas",
-    "yes": "Sí"
+    "yes": "Sí",
+    "issueFilterLabel": "Filtro de problemas",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityAntivirusPage": {
     "active": "Activo",
@@ -172,7 +174,9 @@
     "totalDevices": "Dispositivos totales",
     "unknown": "Desconocido",
     "unprotected": "Desprotegido",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Estado de protección",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agente/Definiciones",
@@ -247,7 +251,10 @@
     "unencrypted": "Sin cifrar",
     "volume": "Volumen",
     "windows": "Windows",
-    "yes": "Sí"
+    "yes": "Sí",
+    "statusFilterLabel": "Estado de cifrado",
+    "osFilterLabel": "Sistema operativo",
+    "escrowFilterLabel": "Custodia de claves"
   },
   "securityFirewallPage": {
     "active": "Activo",
@@ -276,7 +283,9 @@
     "searchDevices": "Buscar dispositivos...",
     "status": "Estado",
     "totalDevices": "Dispositivos totales",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Estado del firewall",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityHuntressIncidentList": {
     "actions": "Acciones",
@@ -336,7 +345,9 @@
     "searchDevices": "Buscar dispositivos...",
     "status": "Estado",
     "totalDevices": "Dispositivos totales",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Cumplimiento",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Cuentas de administrador",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Orientación de remediación priorizada",
     "securityRecommendations": "Recomendaciones de seguridad",
     "total": "Total",
-    "vulnMgmt": "Vuln. gestión"
+    "vulnMgmt": "Vuln. gestión",
+    "priorityFilterLabel": "Prioridad",
+    "categoryFilterLabel": "Categoría",
+    "statusFilterLabel": "Estado de la recomendación"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Se generará y custodiará una nueva contraseña de recuperación de BitLocker; la antigua se retira una vez colocada la nueva.",
@@ -430,7 +444,9 @@
     "status": "Estado",
     "threat": "Amenaza",
     "threatsMatchYourFilters": "Las amenazas {{count}} coinciden con sus filtros.",
-    "unknownThreat": "Amenaza desconocida"
+    "unknownThreat": "Amenaza desconocida",
+    "severityFilterLabel": "Gravedad",
+    "statusFilterLabel": "Estado"
   },
   "securityScoreDetailPage": {
     "a": "A",
@@ -768,7 +784,10 @@
     "threat": "Amenaza",
     "total": "Total",
     "trojan": "troyano",
-    "vulnerabilities": "Vulnerabilidades"
+    "vulnerabilities": "Vulnerabilidades",
+    "severityFilterLabel": "Gravedad",
+    "statusFilterLabel": "Estado de la amenaza",
+    "categoryFilterLabel": "Categoría"
   },
   "pamPamAuditTab": {
     "errors": {
@@ -1658,7 +1677,8 @@
       "lastScanned": "Último escaneado"
     },
     "loading": "Cargando datos de cumplimiento...",
-    "empty": "No se encontraron resultados de cumplimiento."
+    "empty": "No se encontraron resultados de cumplimiento.",
+    "osFilterLabel": "Sistema operativo"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1759,7 +1779,8 @@
     "title": "Remediaciones",
     "tooltip": "Correcciones automatizadas para comprobaciones fallidas de CIS. Cada uno debe aprobarse antes de su ejecución en el dispositivo de destino.",
     "filters": {
-      "allStatuses": "Todos los estados"
+      "allStatuses": "Todos los estados",
+      "statusFilterLabel": "Estado"
     },
     "status": {
       "pendingApproval": "Pendiente de aprobación",

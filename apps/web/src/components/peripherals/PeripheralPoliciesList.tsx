@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Layers, Plus, RefreshCw, Globe } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import PeripheralPolicyForm from "./PeripheralPolicyForm";
+import { FilterSelect } from "../shared/FilterSelect";
 import { useTranslation } from "react-i18next";
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -94,10 +95,11 @@ export default function PeripheralPoliciesList() {
     <div className="space-y-4">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3">
-        <select
+        <FilterSelect
+          label={t("peripheralPoliciesList.classFilterLabel")}
           value={filterClass}
           onChange={(e) => setFilterClass(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-9"
         >
           <option value="">{t("peripheralPoliciesList.allClasses")}</option>
           <option value="storage">
@@ -112,11 +114,12 @@ export default function PeripheralPoliciesList() {
           <option value="thunderbolt">
             {t("peripheralPoliciesList.classes.thunderbolt")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("peripheralPoliciesList.actionFilterLabel")}
           value={filterAction}
           onChange={(e) => setFilterAction(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-9"
         >
           <option value="">{t("peripheralPoliciesList.allActions")}</option>
           <option value="allow">
@@ -131,16 +134,17 @@ export default function PeripheralPoliciesList() {
           <option value="alert">
             {t("peripheralPoliciesList.actions.alert")}
           </option>
-        </select>
-        <select
+        </FilterSelect>
+        <FilterSelect
+          label={t("peripheralPoliciesList.statusFilterLabel")}
           value={filterActive}
           onChange={(e) => setFilterActive(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-9"
         >
           <option value="">{t("peripheralPoliciesList.allStatus")}</option>
           <option value="true">{t("common:states.active")}</option>
           <option value="false">{t("common:states.inactive")}</option>
-        </select>
+        </FilterSelect>
         <div className="ml-auto flex gap-2">
           <button
             type="button"

@@ -302,6 +302,9 @@
     "username": "Kullanıcı adı (temel kimlik doğrulama)",
     "password": "Şifre (temel kimlik doğrulama)",
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
+    "savedSecretPlaceholder": "Kaydedildi — korumak için boş bırakın",
+    "secretRemovedPlaceholder": "Kaydettiğinizde kaldırılacak",
+    "removeSecret": "Kaldır",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "esinti günlükleri",
     "description": "Etkinleştirildiğinde, tüm alt kuruluşlar olay günlüklerini yapılandırılmış uç noktaya gönderecektir. Herhangi bir Elasticsearch/OpenSearch uyumlu <bulk>_bulk</bulk> deposuyla çalışır (Elasticsearch, OpenSearch, Wazuh indeksleyici, AWS OpenSearch Service). Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için devre dışı bırakın."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastik",
       "password": "Şifre",
       "passwordPlaceholder": "Şifreyi girin",
+      "savedSecretPlaceholder": "Kaydedildi — korumak için boş bırakın",
       "credentialsDescription": "Kimlik bilgileri şifrelenmiş olarak saklanır. Mevcut kimlik bilgileri yüklendiğinde maskelenir."
     },
     "collection": {
@@ -3419,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "active": "Aktif",
     "revoked": "İptal edildi",
-    "expired": "Süresi dolmuş"
+    "expired": "Süresi dolmuş",
+    "statusFilterLabel": "Anahtar durumu"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -4014,7 +4019,8 @@
     "cannotDeleteAssignedRole": "Atanan kullanıcılarla rol silinemiyor",
     "inheritedFromParentRole": "Üst rolden devralındı",
     "waitingForPermissionCatalog": "İzin kataloğunun yüklenmesi bekleniyor",
-    "summary": "{{filtered}} / {{total}} rol"
+    "summary": "{{filtered}} / {{total}} rol",
+    "typeFilterLabel": "Rol türü"
   },
   "roleSelector": {
     "currentRole": "Mevcut görev",
@@ -4139,7 +4145,8 @@
     "delete": "Sil",
     "allStatuses": "Tüm durumlar",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "statusFilterLabel": "Sağlayıcı durumu"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "SSO sağlayıcıları getirilemedi",
@@ -5418,7 +5425,8 @@
       "title": "Özel Alanı Sil",
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
-    }
+    },
+    "typeFilterLabel": "Alan türü"
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",

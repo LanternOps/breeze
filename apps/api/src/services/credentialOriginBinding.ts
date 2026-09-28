@@ -1,3 +1,5 @@
+import { isEncryptedSecret } from './secretCrypto';
+
 /**
  * Whether replacing one HTTP(S) endpoint with another crosses an origin
  * boundary. URL.origin normalizes host case and default ports while retaining
@@ -70,4 +72,58 @@ export function webhookOriginChangeWouldRetainAuthorization(
   const existingHeaders = headerValues(existing.headers);
   if (existingHeaders.length > 0 && !('headers' in patch)) return true;
   return headerValues(patch.headers).some(isMaskedSecret);
+}
+
+export interface SettingsSecretDestination {
+  /** Path of the object holding the destination URL and its credentials. */
+  path: readonly string[];
+  urlKey: string;
+  secretKeys: readonly string[];
+}
+
+function valueAt(value: unknown, path: readonly string[]): unknown {
+  let current = value;
+  for (const part of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+/**
+ * Origin binding for a secret kept inside a settings JSON blob: true when the
+ * incoming settings point a destination at a different origin while a stored
+ * credential for it would be kept (masked marker, omitted key, or the sealed
+ * value echoed back) rather than entered again. A stored credential with no
+ * recorded destination fails closed. Evaluate on the raw request, before
+ * `restoreMaskedSettingsSecrets`.
+ */
+export function settingsSecretWouldFollowNewOrigin(
+  incoming: unknown,
+  stored: unknown,
+  destinations: readonly SettingsSecretDestination[],
+  isMaskedSecret: (value: unknown) => boolean,
+): boolean {
+  for (const destination of destinations) {
+    const next = valueAt(incoming, destination.path);
+    if (!isRecord(next)) continue;
+    const nextUrl = next[destination.urlKey];
+    if (typeof nextUrl !== 'string' || nextUrl.trim().length === 0) continue;
+
+    const current = valueAt(stored, destination.path);
+    const currentRecord = isRecord(current) ? current : {};
+    const currentUrl = currentRecord[destination.urlKey];
+
+    const carriesStoredSecret = destination.secretKeys.some((secretKey) => {
+      const storedSecret = currentRecord[secretKey];
+      if (typeof storedSecret !== 'string' || storedSecret.length === 0) return false;
+      if (!(secretKey in next) || next[secretKey] === undefined || next[secretKey] === null) return true;
+      const value = next[secretKey];
+      return isMaskedSecret(value) || (typeof value === 'string' && isEncryptedSecret(value));
+    });
+    if (!carriesStoredSecret) continue;
+
+    if (typeof currentUrl !== 'string' || urlOriginChanged(currentUrl, nextUrl)) return true;
+  }
+  return false;
 }

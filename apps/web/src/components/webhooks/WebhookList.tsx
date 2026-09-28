@@ -1,6 +1,7 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import { Pencil, Trash2, Play, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useTranslation } from 'react-i18next';
 
@@ -146,15 +147,16 @@ export default function WebhookList({
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
-          <select
+          <FilterSelect
+            label={t('longTail.webhooks.WebhookList.filters.statusFilterLabel')}
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value as DisplayStatus | 'all')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">{t('longTail.webhooks.WebhookList.filters.allStatuses')}</option>
             <option value="active">{t('common:states.active')}</option>
             <option value="disabled">{t('common:states.disabled')}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

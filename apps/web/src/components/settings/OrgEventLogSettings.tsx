@@ -8,6 +8,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { MASKED_SECRET, isMaskedSecret } from '@/lib/redactedSecret';
 
 type LogForwardingData = {
   enabled: boolean;
@@ -40,6 +41,11 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
   const [elasticsearchApiKey, setElasticsearchApiKey] = useState('');
   const [elasticsearchUsername, setElasticsearchUsername] = useState('');
   const [elasticsearchPassword, setElasticsearchPassword] = useState('');
+  // The API never returns a saved credential, only the masked marker. The
+  // fields stay empty with a "saved" placeholder; leaving one blank sends the
+  // marker back so the saved value is kept, and typing replaces it.
+  const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
+  const [hasSavedPassword, setHasSavedPassword] = useState(false);
   const [indexPrefix, setIndexPrefix] = useState('breeze-logs');
 
   const [loading, setLoading] = useState(true);
@@ -66,13 +72,13 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
           setEnabled(lf.enabled ?? false);
           setElasticsearchUrl(lf.elasticsearchUrl || '');
           setIndexPrefix(lf.indexPrefix || 'breeze-logs');
+          setHasSavedApiKey(isMaskedSecret(lf.elasticsearchApiKey));
+          setHasSavedPassword(isMaskedSecret(lf.elasticsearchPassword));
           if (lf.elasticsearchUsername) {
             setAuthMethod('basic');
             setElasticsearchUsername(lf.elasticsearchUsername);
-            setElasticsearchPassword(lf.elasticsearchPassword || '');
           } else {
             setAuthMethod('apiKey');
-            setElasticsearchApiKey(lf.elasticsearchApiKey || '');
           }
         }
       } catch (err) {
@@ -103,10 +109,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
       };
 
       if (authMethod === 'apiKey') {
-        body.elasticsearchApiKey = elasticsearchApiKey;
+        body.elasticsearchApiKey = elasticsearchApiKey || (hasSavedApiKey ? MASKED_SECRET : '');
       } else {
         body.elasticsearchUsername = elasticsearchUsername;
-        body.elasticsearchPassword = elasticsearchPassword;
+        body.elasticsearchPassword = elasticsearchPassword || (hasSavedPassword ? MASKED_SECRET : '');
       }
 
       const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/log-forwarding`, {
@@ -117,6 +123,15 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(extractApiError(data, t('orgEventLogSettings.errors.saveForwarding')));
+      }
+
+      const saved = await response.json().catch(() => ({}));
+      const savedForwarding = saved?.settings?.logForwarding as LogForwardingData | undefined;
+      if (savedForwarding) {
+        setHasSavedApiKey(isMaskedSecret(savedForwarding.elasticsearchApiKey));
+        setHasSavedPassword(isMaskedSecret(savedForwarding.elasticsearchPassword));
+        setElasticsearchApiKey('');
+        setElasticsearchPassword('');
       }
 
       showToast({ message: t('orgEventLogSettings.toasts.saved'), type: 'success' });
@@ -288,7 +303,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                       setElasticsearchApiKey(event.target.value);
                       markDirty();
                     }}
-                    placeholder={t('orgEventLogSettings.authentication.apiKeyPlaceholder')}
+                    placeholder={hasSavedApiKey
+                      ? t('orgEventLogSettings.authentication.savedSecretPlaceholder')
+                      : t('orgEventLogSettings.authentication.apiKeyPlaceholder')}
+                    autoComplete="new-password"
                     className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchApiKey') ? 'opacity-60' : ''}`}
                   />
                   {isLocked('elasticsearchApiKey') && (
@@ -324,7 +342,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                         setElasticsearchPassword(event.target.value);
                         markDirty();
                       }}
-                      placeholder={t('orgEventLogSettings.authentication.passwordPlaceholder')}
+                      placeholder={hasSavedPassword
+                        ? t('orgEventLogSettings.authentication.savedSecretPlaceholder')
+                        : t('orgEventLogSettings.authentication.passwordPlaceholder')}
+                      autoComplete="new-password"
                       className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchPassword') ? 'opacity-60' : ''}`}
                     />
                     {isLocked('elasticsearchPassword') && (

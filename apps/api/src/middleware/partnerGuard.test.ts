@@ -39,7 +39,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { partnerGuard } from './partnerGuard';
+import { isPartnerGuardExemptPath, partnerGuard } from './partnerGuard';
 import { verifyToken } from '../services/jwt';
 
 function makeApp() {
@@ -288,5 +288,14 @@ describe('partnerGuard — wrapper shape (regression for #781 wrapper-discards-R
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok?: boolean };
     expect(body.ok).toBe(true);
+  });
+});
+
+describe('isPartnerGuardExemptPath — signature-authenticated webhooks (Xero W05, quorum finding 10)', () => {
+  it('exempts exactly the Xero webhook path, so a bearer token cannot trigger partner reads before the HMAC', () => {
+    expect(isPartnerGuardExemptPath('/api/v1/webhooks/xero')).toBe(true);
+    expect(isPartnerGuardExemptPath('/api/v1/webhooks/xero/')).toBe(false);
+    expect(isPartnerGuardExemptPath('/api/v1/webhooks')).toBe(false);          // the CRUD webhook router stays guarded
+    expect(isPartnerGuardExemptPath('/api/v1/webhooks/quickbooks')).toBe(false); // QuickBooks byte-identical (follow-up issue)
   });
 });

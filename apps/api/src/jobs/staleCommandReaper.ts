@@ -488,12 +488,21 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       cmd.status === 'pending' && typeof pendingResult?.deliveryRefusal === 'string'
         ? pendingResult.deliveryRefusal
         : null;
+    // A row a delivery refresher DEFERRED (released with
+    // `result.deliveryDeferred`) was offered to a connected device but could
+    // not be prepared yet; if it ages out, that is why it was never delivered.
+    const deliveryDeferred =
+      cmd.status === 'pending' && typeof pendingResult?.deliveryDeferred === 'string'
+        ? pendingResult.deliveryDeferred
+        : null;
     if (cmd.status === 'pending' && cmd.deliverBy) {
       due = cmd.deliverBy.getTime() <= now;
       kind = 'expired';
       errorMsg = deliveryRefusal
         ? `Command was not delivered: ${deliveryRefusal}`
-        : `Device did not reconnect before ${cmd.deliverBy.toISOString()}; command was never delivered`;
+        : deliveryDeferred
+          ? `Command was not delivered: ${deliveryDeferred}`
+          : `Device did not reconnect before ${cmd.deliverBy.toISOString()}; command was never delivered`;
     } else if (cmd.status === 'sent' && cmd.executedAt) {
       due = now - cmd.executedAt.getTime() >= timeoutMs;
       kind = 'timeout';
@@ -511,7 +520,9 @@ export async function reapStaleDeviceCommands(): Promise<number> {
         cmd.type === 'software_install' ? LEGACY_SOFTWARE_INSTALL_QUEUE_MS : timeoutMs;
       due = now - cmd.createdAt.getTime() >= legacyTimeoutMs;
       kind = 'timeout';
-      errorMsg = `Command expired: agent never received the command (${Math.round(legacyTimeoutMs / 60000)} min timeout)`;
+      errorMsg = deliveryDeferred
+        ? `Command was not delivered: ${deliveryDeferred}`
+        : `Command expired: agent never received the command (${Math.round(legacyTimeoutMs / 60000)} min timeout)`;
     }
 
     if (!due) continue;
@@ -530,12 +541,19 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       kind === 'expired'
         ? {
             status: SERVER_TIMEOUT_RESULT_STATUS,
-            reason: deliveryRefusal ? 'delivery_refused' : 'not_delivered_before_deadline',
+            reason: deliveryRefusal
+              ? 'delivery_refused'
+              : deliveryDeferred ? 'delivery_deferred' : 'not_delivered_before_deadline',
             clock: 'delivery',
             error: errorMsg,
             timedOutBy: 'server',
           }
-        : { status: SERVER_TIMEOUT_RESULT_STATUS, error: errorMsg, timedOutBy: 'server' };
+        : {
+            status: SERVER_TIMEOUT_RESULT_STATUS,
+            ...(deliveryDeferred ? { reason: 'delivery_deferred' } : {}),
+            error: errorMsg,
+            timedOutBy: 'server',
+          };
 
     // #5128 — CAS on the OBSERVED state, not `status IN ('pending','sent')`.
     // A row observed `pending` here but claimed between the SELECT and this

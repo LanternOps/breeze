@@ -583,10 +583,11 @@ export default function ConfigPolicyDetailPage({
               />
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-status" className="text-sm font-medium">
                 {i18n.t("common:labels.status")}
               </label>
               <select
+                id="config-policy-status"
                 value={editStatus}
                 onChange={(e) => setEditStatus(e.target.value)}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"

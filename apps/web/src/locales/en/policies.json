@@ -147,6 +147,7 @@
       "policies": "policies",
       "searchPolicies": "Search policies...",
       "allStatus": "All Status",
+      "statusFilterLabel": "Status",
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
@@ -947,7 +948,8 @@
         "promptNotify": "Notify — show a connection notice",
         "promptConsent": "Require consent — the user must approve",
         "consentUnavailable": "If no one can respond",
-        "consentUnavailableHelp": "Applies when consent is required but no user is signed in to answer.",
+        "consentUnavailableHelp": "Applies when no one is signed in, when the consent prompt can't be shown (for example, Breeze Assist isn't running or isn't responding), or when the signed-in user doesn't answer within 30 seconds.",
+        "consentVncNote": "VNC can't ask for consent, so VNC sessions are refused on devices that require consent. Use the remote desktop viewer instead.",
         "unavailableProceed": "Proceed with the session",
         "unavailableBlock": "Block the session",
         "showIndicator": "Active-session indicator",
@@ -1628,7 +1630,8 @@
       "bulkSoftwareDeployment": "Bulk Software Deployment",
       "catalogTab": "Catalog",
       "summaryCompleted7d": "Completed (7d)",
-      "summaryFailed7d": "Failed (7d)"
+      "summaryFailed7d": "Failed (7d)",
+      "categoryFilterLabel": "Category"
     },
     "softwareInventory": {
       "allowed": "Allowed",

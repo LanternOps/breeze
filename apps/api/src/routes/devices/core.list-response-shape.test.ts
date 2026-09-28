@@ -182,6 +182,7 @@ describe('GET /devices — response shape', () => {
         updateAttemptStartedAt: new Date('2026-05-26T19:20:00.000Z'),
         updateAttemptLastAt: new Date('2026-05-26T19:24:00.000Z'),
         helperInstallIssue: 'awaiting_server_offer',
+        lastLogAt: new Date('2026-05-26T19:30:00.000Z'),
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
@@ -250,6 +251,14 @@ describe('GET /devices — response shape', () => {
       new Date('2026-05-26T19:24:00.000Z').toISOString(),
     );
     expect(row).toHaveProperty('helperInstallIssue', 'awaiting_server_offer');
+    // #7067 — the "logs silent" list badge (DeviceList.tsx) reads lastLogAt
+    // off the list row directly; the detail route already returns it via
+    // projectPublicDevice, but the list select/mapper needs the same fix as
+    // #7068/#7023 above or the badge silently never renders on the list.
+    expect(row).toHaveProperty(
+      'lastLogAt',
+      new Date('2026-05-26T19:30:00.000Z').toISOString(),
+    );
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -300,6 +309,7 @@ describe('GET /devices — response shape', () => {
         updateAttemptStartedAt: null,
         updateAttemptLastAt: null,
         helperInstallIssue: null,
+        lastLogAt: null,
       },
     ]);
 
@@ -387,6 +397,11 @@ describe('GET /devices — response shape', () => {
     expect(row.updateAttemptStartedAt).toBeNull();
     expect(row.updateAttemptLastAt).toBeNull();
     expect(row.helperInstallIssue).toBeNull();
+
+    // #7067 — key present (null) for a device that has never shipped a log
+    // (or predates this column).
+    expect(Object.prototype.hasOwnProperty.call(row, 'lastLogAt')).toBe(true);
+    expect(row.lastLogAt).toBeNull();
   });
 
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {

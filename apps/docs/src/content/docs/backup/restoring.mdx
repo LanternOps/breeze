@@ -10,6 +10,10 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 Breeze supports several restore methods depending on what you need to recover — from a single file to a complete system.
 
+<Aside title="S3 restores need HTTPS">
+Restores and verification from S3 or S3-compatible storage need the v0.118 agent or later, an HTTPS agent API and an HTTPS storage endpoint. See [HTTPS for Restores](/backup/https-restores/).
+</Aside>
+
 ---
 
 ## Browsing Snapshots

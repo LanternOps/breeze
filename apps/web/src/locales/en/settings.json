@@ -302,6 +302,9 @@
     "username": "Username (basic auth)",
     "password": "Password (basic auth)",
     "notSet": "Not set — orgs configure individually",
+    "savedSecretPlaceholder": "Saved — leave blank to keep",
+    "secretRemovedPlaceholder": "Will be removed when you save",
+    "removeSecret": "Remove",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "When enabled, all child organizations will ship event logs to the configured endpoint. Works with any Elasticsearch/OpenSearch-compatible <bulk>_bulk</bulk> store (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service). Leave disabled to let each organization configure individually."
@@ -1273,6 +1276,7 @@
       "usernamePlaceholder": "elastic",
       "password": "Password",
       "passwordPlaceholder": "Enter password",
+      "savedSecretPlaceholder": "Saved — leave blank to keep",
       "credentialsDescription": "Credentials are stored encrypted. Existing credentials are masked when loaded."
     },
     "collection": {
@@ -3419,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Try adjusting your search or filters.",
     "active": "Active",
     "revoked": "Revoked",
-    "expired": "Expired"
+    "expired": "Expired",
+    "statusFilterLabel": "Status"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4014,7 +4019,8 @@
     "cannotDeleteAssignedRole": "Cannot delete role with assigned users",
     "inheritedFromParentRole": "Inherited from parent role",
     "waitingForPermissionCatalog": "Waiting for permission catalog to load",
-    "summary": "{{filtered}} of {{total}} roles"
+    "summary": "{{filtered}} of {{total}} roles",
+    "typeFilterLabel": "Role type"
   },
   "roleSelector": {
     "currentRole": "Current role",
@@ -4139,7 +4145,8 @@
     "delete": "Delete",
     "allStatuses": "All statuses",
     "deactivate": "Deactivate",
-    "activate": "Activate"
+    "activate": "Activate",
+    "statusFilterLabel": "Status"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Failed to fetch SSO providers",
@@ -5413,7 +5420,8 @@
       "title": "Delete Custom Field",
       "messagePrefix": "Are you sure you want to delete",
       "messageSuffix": " This will remove the field definition and all stored values on devices."
-    }
+    },
+    "typeFilterLabel": "Field type"
   },
   "knownGuestsSettings": {
     "title": "Known Guests",

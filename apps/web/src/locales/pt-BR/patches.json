@@ -264,7 +264,11 @@
       "moreFilters": "Mais filtros",
       "lessFilters": "Menos filtros",
       "allSources": "Todas as fontes",
-      "allOs": "Todos os SOs"
+      "allOs": "Todos os SOs",
+      "severityLabel": "Gravidade",
+      "statusLabel": "Status de aprovação",
+      "sourceLabel": "Origem",
+      "osLabel": "Sistema operacional"
     },
     "actions": {
       "deploy": "Implantar",
