@@ -118,6 +118,13 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 			}
 		}
 	}
+	// Every rename goes through the single renameHive seam, in renameOrder:
+	// artifact logs, then tree-present primaries, then tree-missing primaries
+	// strictly LAST. A rename failure partway through must never leave a
+	// tree-missing hive's slot filled — that would read as "complete" to a
+	// retry (selectOfflineHives treats the tree as authoritative) and stop it
+	// re-entering the fallback, stranding the temp files this same failure
+	// leaves behind.
 	for _, name := range renameOrder(staged, treeMissing) {
 		if err := renameHive(tmp(name), filepath.Join(cfg, name)); err != nil {
 			removeTemps()
@@ -127,7 +134,9 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 	return "registry hives restored from the system-state artifacts, not the file tree", nil
 }
 
-// renameHive is os.Rename, a seam so tests can fail one rename of the swap.
+// renameHive is os.Rename, a seam so tests can inject a failure at any
+// rename of the swap (18b row 3) and prove it never leaves a tree-missing
+// hive's slot filled.
 var renameHive = os.Rename
 
 // renameOrder orders the fallback swap so an interrupted swap is always
@@ -226,12 +235,13 @@ func RestoreSystemStateOfflineWindows(ctx context.Context, root, stagingDir, roo
 		}
 	}()
 	if !allowDC {
-		isDC, err := winhive.HasNTDS(system.Root())
+		dc, err := winhive.IsDomainController(system.Root())
 		if err != nil {
-			return nil, warnings, fmt.Errorf(`check Services\NTDS: %w`, err)
+			return nil, warnings, fmt.Errorf("domain-controller check: %w", err)
 		}
-		if isDC {
-			return nil, warnings, errors.New(`source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance`)
+		warnings = append(warnings, dc.Warnings...)
+		if dc.IsDC {
+			return nil, warnings, fmt.Errorf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)
 		}
 	}
 	sets, err := winhive.ControlSets(system.Root())

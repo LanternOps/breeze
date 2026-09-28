@@ -1,6 +1,8 @@
-// Restore-as-VM on the rebuild engine (bare-metal W05a, Task 5): a Linux
-// whole-machine snapshot is rebuilt into a Hyper-V-ready VHDX on a Linux
-// helper host, driven by the `bare_metal_rebuild` device command. One
+// Restore-as-VM on the rebuild engine (bare-metal W05a, Task 5; W06d): a
+// whole-machine snapshot is rebuilt into a Hyper-V-ready VHDX on a rebuild
+// host of the SAME platform (Linux snapshot → Linux host, Windows snapshot →
+// Windows host), driven by the `bare_metal_rebuild` device command. A Windows
+// host can also create the Hyper-V VM afterwards (`hyperv`). One
 // orchestration shared by `POST /backup/restore/as-vm` (engine: 'rebuild')
 // and the `restore_as_vm` AI tool, so both write the same pair of rows:
 //
@@ -24,6 +26,7 @@ import {
   mintRecoveryTokenForRecovery,
 } from './bareMetalRecoveryService';
 import { queueBareMetalRebuild } from './bareMetalRebuildCommand';
+import { rebuildPathMatchesHostOs, resolveSnapshotPlatform, type HypervOptions } from './bareMetalRebuildSchemas';
 import { resolveServerUrl } from './recoveryBootstrap';
 
 export const REBUILD_VHDX_RESTORE_MODE = 'rebuild_vhdx';
@@ -40,11 +43,22 @@ export type RebuildEngineVmRestoreInput = {
   userId: string | null;
   /** Used only as the last fallback when neither BREEZE_SERVER nor PUBLIC_API_URL is set. */
   requestUrl?: string;
+  /** Create a Hyper-V VM from the rebuilt VHDX (W06d). Windows rebuild hosts only. */
+  hyperv?: HypervOptions;
 };
 
 export type RebuildEngineVmRestoreResult =
   | { ok: true; jobId: string; recoveryId: string; commandId: string; status: 'queued' }
-  | { ok: false; status: 404 | 409 | 502; error: string; details?: Record<string, unknown> };
+  | {
+    ok: false;
+    status: 400 | 404 | 409 | 502;
+    error: string;
+    /** Human-readable text for refusals whose `error` is a machine code. */
+    message?: string;
+    details?: Record<string, unknown>;
+  };
+
+export const HYPERV_REQUIRES_WINDOWS_HOST_MESSAGE = 'hyperv is only valid for Windows rebuild hosts';
 
 function dispatchErrorStatus(error: string): 409 | 502 {
   return error.startsWith('Device is ') ? 409 : 502;
@@ -90,6 +104,17 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
       details: snapshot.layoutManifest ? {} : { reasons: ['snapshot has no disk layout manifest'] },
     };
   }
+  // W06d: the engine picks its phase table from the layout's platform, so a
+  // layout without one cannot be rebuilt (every layout since W01 records it).
+  const snapshotPlatform = resolveSnapshotPlatform(snapshot.layoutManifest);
+  if (!snapshotPlatform) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'snapshot_not_bare_metal_restorable',
+      details: { reasons: ['snapshot disk layout manifest records no platform'] },
+    };
+  }
 
   const [host] = await db
     .select({ id: devices.id, status: devices.status, osType: devices.osType })
@@ -99,10 +124,34 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
   if (!host) {
     return { ok: false, status: 404, error: 'rebuild_host_not_found' };
   }
-  // The engine runs on Linux only in this wave (rebuild.Run → ErrUnsupportedHost
-  // elsewhere); refuse before creating rows rather than after a wasted round trip.
-  if (host.osType !== 'linux') {
-    return { ok: false, status: 409, error: 'rebuild_host_unsupported', details: { osType: host.osType } };
+  // W06d: platform-matched, not Linux-only. rebuild.Run refuses a snapshot
+  // whose platform differs from the host's; refuse here before creating rows
+  // rather than after a wasted round trip (macOS never matches).
+  if (host.osType !== snapshotPlatform) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'rebuild_host_unsupported',
+      details: { osType: host.osType, snapshotPlatform },
+    };
+  }
+  if (input.hyperv && host.osType !== 'windows') {
+    return {
+      ok: false,
+      status: 400,
+      error: 'hyperv_requires_windows_host',
+      message: `${HYPERV_REQUIRES_WINDOWS_HOST_MESSAGE}; this host is ${host.osType}`,
+    };
+  }
+  if (!rebuildPathMatchesHostOs(input.outputPath, host.osType)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'output_path_host_mismatch',
+      message: host.osType === 'windows'
+        ? 'outputPath must be a drive-letter path (e.g. C:\\…) on a Windows rebuild host'
+        : `outputPath must be a POSIX path (/…) on a ${host.osType} rebuild host`,
+    };
   }
   if (host.status !== 'online') {
     recordBackupDispatchFailure('manual_restore', 'device_offline');
@@ -161,6 +210,7 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
         sourceDeviceId: snapshot.deviceId,
         recoveryId,
         ...(input.imageSizeGb ? { imageSizeGb: input.imageSizeGb } : {}),
+        ...(input.hyperv ? { hyperv: input.hyperv } : {}),
       },
       createdAt: now,
       updatedAt: now,
@@ -181,6 +231,7 @@ export async function startRebuildEngineVmRestore(input: RebuildEngineVmRestoreI
       server: resolveServerUrl(input.requestUrl),
       target,
       identity: 'new',
+      ...(input.hyperv ? { hyperv: input.hyperv } : {}),
     },
   });
 

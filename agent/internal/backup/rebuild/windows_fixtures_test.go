@@ -20,6 +20,17 @@ func withHostPlatform(t *testing.T, v string) {
 	t.Cleanup(func() { hostPlatform = prev })
 }
 
+// withHostWindowsDir overrides hostSystemTool's (win_boot.go) hostWindowsDir
+// seam for one test — the untagged twin of setting SystemRoot, now that
+// hostSystemTool reads the real host Windows directory instead of that
+// (spoofable) environment variable (18b row 6 / ruling D13).
+func withHostWindowsDir(t *testing.T, v string) {
+	t.Helper()
+	prev := hostWindowsDir
+	hostWindowsDir = func() string { return v }
+	t.Cleanup(func() { hostWindowsDir = prev })
+}
+
 // withHostPlatformWindows makes the engine behave as on a Windows host on
 // ANY host: hostPlatform answers "windows", and package backup strips a
 // drive-letter volume (C:) the way filepath.VolumeName does on Windows, so a
@@ -122,7 +133,11 @@ func seedFakeHives(sys *fakeWinSystem) {
 	_ = cn.SetString("ComputerName", "FILESERVER01")
 	_, _ = system.CreateKey("MountedDevices")
 	software := winhive.NewFake()
-	_, _ = software.CreateKey(`Microsoft\Cryptography`)
+	crypto, _ := software.CreateKey(`Microsoft\Cryptography`)
+	// 18b row 9c: a real MachineGuid pre-seeded (not just an empty key) so a
+	// test can assert rotation actually changed it, not merely that some
+	// 36-char value exists.
+	_ = crypto.SetString("MachineGuid", "00000000-0000-0000-0000-000000000000")
 	sys.hives["SYSTEM"] = system
 	sys.hives["SOFTWARE"] = software
 }

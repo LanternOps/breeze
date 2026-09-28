@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { vmRestoreRoutes } from './vmrestore';
+import { rebuildVhdxOutputPathSchema } from './schemas';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -430,17 +431,17 @@ describe('vm restore routes — rebuild engine', () => {
     imageSizeGb: 120,
   };
 
-  function mockHappyPath() {
+  function mockHappyPath(platform: 'linux' | 'windows' = 'linux') {
     selectMock
       .mockReturnValueOnce(chainMock([{
         id: SNAPSHOT_ID,
         orgId: ORG_ID,
         snapshotId: 'snap-ext-001',
         deviceId: DEVICE_ID,
-        layoutManifest: { disks: [] },
+        layoutManifest: { platform, disks: [] },
         bareMetalRestorable: true,
       }]))
-      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: 'linux' }]));
+      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: platform }]));
     insertMock.mockReturnValueOnce(
       chainMock([{
         id: RESTORE_JOB_ID,
@@ -639,27 +640,123 @@ describe('vm restore routes — rebuild engine', () => {
     );
   });
 
-  it('refuses a rebuild host that is not a Linux device', async () => {
-    selectMock
-      .mockReturnValueOnce(chainMock([{
-        id: SNAPSHOT_ID,
-        orgId: ORG_ID,
-        snapshotId: 'snap-ext-001',
-        deviceId: DEVICE_ID,
-        layoutManifest: { disks: [] },
-        bareMetalRestorable: true,
-      }]))
-      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: 'windows' }]));
+  function snapshotWithPlatform(platform: 'linux' | 'windows' | undefined) {
+    return chainMock([{
+      id: SNAPSHOT_ID,
+      orgId: ORG_ID,
+      snapshotId: 'snap-ext-001',
+      deviceId: DEVICE_ID,
+      layoutManifest: platform ? { platform, disks: [] } : { disks: [] },
+      bareMetalRestorable: true,
+    }]);
+  }
 
-    const res = await app.request('/backup/restore/as-vm', {
+  async function postRebuild(body: Record<string, unknown>) {
+    return app.request('/backup/restore/as-vm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify(rebuildBody),
+      body: JSON.stringify(body),
     });
+  }
+
+  // W06d (Task 20): the host rule is a platform MATCH, not Linux-only.
+  it('refuses a Windows rebuild host for a Linux snapshot with 409 rebuild_host_unsupported', async () => {
+    selectMock
+      .mockReturnValueOnce(snapshotWithPlatform('linux'))
+      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: 'windows' }]));
+
+    const res = await postRebuild(rebuildBody);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: 'rebuild_host_unsupported',
+      details: { osType: 'windows', snapshotPlatform: 'linux' },
+    });
+    expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a Linux rebuild host for a Windows snapshot with 409 rebuild_host_unsupported', async () => {
+    selectMock
+      .mockReturnValueOnce(snapshotWithPlatform('windows'))
+      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: 'linux' }]));
+
+    const res = await postRebuild(rebuildBody);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: 'rebuild_host_unsupported',
+      details: { osType: 'linux', snapshotPlatform: 'windows' },
+    });
+    expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a macOS rebuild host', async () => {
+    selectMock
+      .mockReturnValueOnce(snapshotWithPlatform('linux'))
+      .mockReturnValueOnce(chainMock([{ id: HOST_ID, status: 'online', osType: 'macos' }]));
+
+    const res = await postRebuild(rebuildBody);
 
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'rebuild_host_unsupported' });
+  });
+
+  it('refuses a snapshot whose layout has no platform as snapshot_not_bare_metal_restorable', async () => {
+    // Refused before the host lookup, so only the snapshot read is queued.
+    selectMock.mockReturnValueOnce(snapshotWithPlatform(undefined));
+
+    const res = await postRebuild(rebuildBody);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'snapshot_not_bare_metal_restorable' });
     expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a request that includes hyperv for a Linux rebuild host', async () => {
+    mockHappyPath();
+
+    const res = await postRebuild({ ...rebuildBody, hyperv: { vmName: 'x' } });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: 'hyperv_requires_windows_host' });
+    expect(body.message).toMatch(/^hyperv is only valid for Windows rebuild hosts/);
+    expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
+    expect(queueBareMetalRebuildMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a Windows snapshot on a Windows host with a drive-letter path and forwards hyperv to the command', async () => {
+    mockHappyPath('windows');
+    const outputPath = 'C:\\ProgramData\\Breeze\\rebuild\\out\\dev-1.vhdx';
+    const hyperv = { vmName: 'w06-proof', switchName: 'lab-switch' };
+
+    const res = await postRebuild({ ...rebuildBody, outputPath, hyperv });
+
+    expect(res.status).toBe(202);
+    expect(queueBareMetalRebuildMock).toHaveBeenCalledWith(expect.objectContaining({
+      hostDeviceId: HOST_ID,
+      payload: expect.objectContaining({
+        target: expect.objectContaining({ kind: 'vhdx', path: outputPath }),
+        identity: 'new',
+        hyperv,
+      }),
+    }));
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ outputPath, hyperv }) }),
+    );
+  });
+
+  // R32
+  it.each([
+    ['/srv/rebuild/x.vhdx', true],
+    ['C:\\images\\x.vhdx', true],
+    ['c:\\images\\X.VHDX', true],
+    ['\\\\server\\share\\x.vhdx', false],
+    ['x.vhdx', false],
+    ['C:\\images\\x.img', false],
+  ])('rebuildVhdxOutputPathSchema(%j) accepted === %s', (path, accepted) => {
+    expect(rebuildVhdxOutputPathSchema.safeParse(path).success).toBe(accepted);
   });
 
   it('fails the restore job and cancels the recovery when the rebuild command cannot be queued', async () => {

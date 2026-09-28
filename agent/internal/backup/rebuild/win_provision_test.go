@@ -190,19 +190,20 @@ type closeCountingHandle struct {
 func (h closeCountingHandle) Close() error { *h.closed++; return nil }
 
 // winTeardown is the failure-path backstop: hives closed, ESP letter
-// released, recovery/ESP folder mounts removed before root; the run's
-// VHDX detach stays teardown's job (after winTeardown).
+// released, the recovery folder mount removed before root (the ESP is
+// never folder-mounted, ruling C1, so there is nothing to remove for it);
+// the run's VHDX detach stays teardown's job (after winTeardown).
 func TestWinTeardown_ReleasesEverythingRootLast(t *testing.T) {
 	dir := t.TempDir()
 	sys := newFakeWinSystem(dir)
 	closed, released := 0, 0
 	detached := false
 	r := &run{opts: Options{WinSystem: sys}, winSys: sys,
-		rootDir: filepath.Join(dir, "root"), recoveryDir: filepath.Join(dir, "recovery"), espDir: filepath.Join(dir, "esp"),
+		rootDir: filepath.Join(dir, "root"), recoveryDir: filepath.Join(dir, "recovery"),
 		hives:            map[string]winhive.Handle{"SYSTEM": closeCountingHandle{winhive.NewFake(), &closed}},
 		espLetterRelease: func() error { released++; return nil },
 		detach: func() error {
-			if len(sys.unmounts) != 3 {
+			if len(sys.unmounts) != 2 {
 				t.Errorf("detach ran before every folder mount was removed: %v", sys.unmounts)
 			}
 			detached = true
@@ -213,14 +214,14 @@ func TestWinTeardown_ReleasesEverythingRootLast(t *testing.T) {
 	if closed != 1 || released != 1 || !detached {
 		t.Fatalf("closed=%d released=%d detached=%v", closed, released, detached)
 	}
-	if len(sys.unmounts) != 3 || sys.unmounts[2] != filepath.Join(dir, "root") {
+	if len(sys.unmounts) != 2 || sys.unmounts[1] != filepath.Join(dir, "root") {
 		t.Fatalf("unmounts = %v, want root last", sys.unmounts)
 	}
-	if r.rootDir != "" || r.espDir != "" || r.recoveryDir != "" || r.hives != nil || r.espLetterRelease != nil {
+	if r.rootDir != "" || r.recoveryDir != "" || r.hives != nil || r.espLetterRelease != nil {
 		t.Fatalf("teardown left state behind: %+v", r)
 	}
 	r.teardown() // idempotent: nothing is released twice
-	if closed != 1 || released != 1 || len(sys.unmounts) != 3 {
+	if closed != 1 || released != 1 || len(sys.unmounts) != 2 {
 		t.Fatalf("second teardown released again: closed=%d released=%d unmounts=%v", closed, released, sys.unmounts)
 	}
 }

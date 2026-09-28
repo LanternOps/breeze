@@ -21,6 +21,12 @@ import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
+import {
+  defaultRebuildOutputDir,
+  isAbsoluteVhdxPath,
+  rebuildPathMatchesOs,
+  type RebuildHostOs,
+} from '../../lib/rebuildPaths';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -37,8 +43,12 @@ type Snapshot = {
     diskGB?: number;
   };
   /** Storage key of the disk-layout manifest; only whole-machine snapshots
-   * carry one, and only those can go through the Linux rebuild engine. */
+   * carry one, and only those can go through the rebuild engine. */
   layoutManifestKey?: string | null;
+  /** Platform recorded in the layout manifest (W06d). The rebuild engine is
+   * platform-matched: it picks the host OS filter, and a null platform cannot
+   * be rebuilt (the API refuses it as snapshot_not_bare_metal_restorable). */
+  layoutPlatform?: RebuildHostOs | null;
 };
 
 type VMEstimate = {
@@ -52,9 +62,11 @@ type VMEstimate = {
 
 type RestoreMode = 'full' | 'instant' | 'rebuild';
 
-function isAbsoluteVhdxPath(path: string): boolean {
-  const trimmed = path.trim();
-  return trimmed.startsWith('/') && trimmed.endsWith('.vhdx') && trimmed.length > '/.vhdx'.length;
+function snapshotRebuildPlatform(snapshot: Snapshot | undefined): RebuildHostOs | null {
+  if (!snapshot?.layoutManifestKey) return null;
+  return snapshot.layoutPlatform === 'linux' || snapshot.layoutPlatform === 'windows'
+    ? snapshot.layoutPlatform
+    : null;
 }
 
 const steps = ['Snapshot', 'Target Host', 'VM Specs', 'VM Name', 'Mode', 'Review'];
@@ -77,6 +89,8 @@ export default function VMRestoreWizard() {
   const [rebuildHostDeviceId, setRebuildHostDeviceId] = useState('');
   const [rebuildHostSearch, setRebuildHostSearch] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [hypervVmName, setHypervVmName] = useState('');
+  const [hypervSwitchName, setHypervSwitchName] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [restoreError, setRestoreError] = useState<string>();
@@ -87,12 +101,16 @@ export default function VMRestoreWizard() {
     osType: 'windows',
     includeIds: targetDeviceId ? [targetDeviceId] : [],
   });
-  // Rebuild engine hosts (W05a): Linux only in this wave — the engine refuses
-  // other platforms — so the picker is filtered server-side and only loads
-  // once the rebuild engine is chosen.
+  const selectedSnapshot = snapshots.find((s) => s.id === snapshotId);
+  const rebuildPlatform = snapshotRebuildPlatform(selectedSnapshot);
+  // Rebuild engine hosts (W06d): platform-matched — the host must run the
+  // snapshot's OS (the API refuses a mismatch with 409) — so the picker is
+  // filtered server-side by the snapshot's platform and only loads once the
+  // rebuild engine is chosen.
+  const rebuildHostOs: RebuildHostOs = rebuildPlatform ?? 'linux';
   const rebuildHostOptions = useDeviceOptions({
     search: rebuildHostSearch,
-    osType: 'linux',
+    osType: rebuildHostOs,
     includeIds: rebuildHostDeviceId ? [rebuildHostDeviceId] : [],
     enabled: mode === 'rebuild',
   });
@@ -152,10 +170,26 @@ export default function VMRestoreWizard() {
     fetchEstimate();
   }, [snapshotId]);
 
-  const selectedSnapshot = snapshots.find((s) => s.id === snapshotId);
   const selectedDevice = deviceOptions.options.find((d) => d.id === targetDeviceId);
   const selectedRebuildHost = rebuildHostOptions.options.find((d) => d.id === rebuildHostDeviceId);
-  const rebuildEngineAvailable = Boolean(selectedSnapshot?.layoutManifestKey);
+  const rebuildEngineAvailable = rebuildPlatform !== null;
+  // Hyper-V VM creation after the rebuild: Windows rebuild hosts only (the API
+  // answers 400 hyperv_requires_windows_host otherwise).
+  const hypervAvailable = rebuildHostOs === 'windows' && selectedRebuildHost?.osType === 'windows';
+  const hypervRequested = mode === 'rebuild' && hypervAvailable && hypervVmName.trim() !== '';
+  const outputPathValid = isAbsoluteVhdxPath(outputPath) && rebuildPathMatchesOs(outputPath, rebuildHostOs);
+  const outputPathPlaceholder = `${defaultRebuildOutputDir(rebuildHostOs)}${rebuildHostOs === 'windows' ? '\\' : '/'}server-01.vhdx`;
+
+  const selectSnapshot = (snapshot: Snapshot) => {
+    // A picked rebuild host (and its Hyper-V options) only fits the platform
+    // it was picked for; a snapshot of another platform starts over.
+    if (snapshotRebuildPlatform(snapshot) !== rebuildPlatform) {
+      setRebuildHostDeviceId('');
+      setHypervVmName('');
+      setHypervSwitchName('');
+    }
+    setSnapshotId(snapshot.id);
+  };
 
   // Switching to a snapshot without a layout manifest invalidates the rebuild engine.
   useEffect(() => {
@@ -164,7 +198,7 @@ export default function VMRestoreWizard() {
 
   const canSubmit =
     mode === 'rebuild'
-      ? Boolean(snapshotId && rebuildHostDeviceId && isAbsoluteVhdxPath(outputPath) && rebuildHostOptions.canSubmit)
+      ? Boolean(snapshotId && rebuildHostDeviceId && outputPathValid && rebuildHostOptions.canSubmit)
       : Boolean(snapshotId && targetDeviceId && vmName.trim() && deviceOptions.canSubmit);
 
   // Full restore / instant boot need a VM name; the rebuild engine takes none (#7213).
@@ -181,6 +215,19 @@ export default function VMRestoreWizard() {
       cpuCount,
       diskSizeGb: diskGB,
     };
+    // Optional Hyper-V VM after a Windows rebuild, sized from the VM Specs
+    // step (the agent defaults any field left out). Hyper-V startup memory
+    // must be a multiple of 2 MB (the API refuses an odd value), so an odd
+    // entry is rounded down — 512 is even, so the result never drops below
+    // the minimum.
+    const hyperv = hypervRequested
+      ? {
+          vmName: hypervVmName.trim(),
+          switchName: hypervSwitchName.trim() || undefined,
+          memoryMb: Number.isInteger(memoryMB) && memoryMB >= 512 ? memoryMB - (memoryMB % 2) : undefined,
+          cpuCount: Number.isInteger(cpuCount) && cpuCount >= 1 ? cpuCount : undefined,
+        }
+      : undefined;
     // The rebuild variant deliberately carries no `identity`: the server
     // always creates the recovery with a NEW machine identity.
     const payload =
@@ -190,6 +237,7 @@ export default function VMRestoreWizard() {
             snapshotId,
             rebuildHostDeviceId,
             outputPath: outputPath.trim(),
+            ...(hyperv ? { hyperv } : {}),
           }
         : {
             snapshotId,
@@ -231,7 +279,7 @@ export default function VMRestoreWizard() {
     } finally {
       setRestoring(false);
     }
-  }, [cpuCount, diskGB, memoryMB, mode, outputPath, rebuildHostDeviceId, snapshotId, t, targetDeviceId, virtualSwitch, vmName]);
+  }, [cpuCount, diskGB, hypervRequested, hypervSwitchName, hypervVmName, memoryMB, mode, outputPath, rebuildHostDeviceId, snapshotId, t, targetDeviceId, virtualSwitch, vmName]);
 
   if (loading) {
     return (
@@ -307,7 +355,7 @@ export default function VMRestoreWizard() {
                     <button
                       key={snap.id}
                       type="button"
-                      onClick={() => setSnapshotId(snap.id)}
+                      onClick={() => selectSnapshot(snap)}
                       className={cn(
                         'rounded-lg border p-4 text-left',
                         snapshotId === snap.id
@@ -471,32 +519,82 @@ export default function VMRestoreWizard() {
                 <div className="space-y-4 rounded-lg border border-dashed bg-muted/20 p-4">
                   <div>
                     <h4 className="text-sm font-semibold text-foreground">{t('vMRestoreWizard.selectRebuildHost')}</h4>
-                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.chooseALinuxDeviceWithQemuUtils')}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {rebuildHostOs === 'windows'
+                        ? t('vMRestoreWizard.chooseAWindowsRebuildHost')
+                        : t('vMRestoreWizard.chooseALinuxDeviceWithQemuUtils')}
+                    </p>
                   </div>
-                  <DeviceOptionPicker
-                    result={rebuildHostOptions}
-                    selectedIds={rebuildHostDeviceId ? [rebuildHostDeviceId] : []}
-                    onSelectedIdsChange={(ids) => setRebuildHostDeviceId(ids[0] ?? '')}
-                    search={rebuildHostSearch}
-                    onSearchChange={setRebuildHostSearch}
-                    selectionMode="single"
-                  />
+                  <div data-testid="vm-restore-rebuild-host-picker" data-os-filter={rebuildHostOs}>
+                    <DeviceOptionPicker
+                      result={rebuildHostOptions}
+                      selectedIds={rebuildHostDeviceId ? [rebuildHostDeviceId] : []}
+                      onSelectedIdsChange={(ids) => setRebuildHostDeviceId(ids[0] ?? '')}
+                      search={rebuildHostSearch}
+                      onSearchChange={setRebuildHostSearch}
+                      selectionMode="single"
+                    />
+                  </div>
                   <div className="space-y-2">
                     <label htmlFor="rebuild-output-path" className="text-xs font-medium text-muted-foreground">
                       {t('vMRestoreWizard.outputPath')}
                     </label>
                     <input
                       id="rebuild-output-path"
+                      data-testid="vm-restore-rebuild-output-path"
                       value={outputPath}
                       onChange={(e) => setOutputPath(e.target.value)}
-                      placeholder="/var/lib/breeze/rebuild/out/server-01.vhdx"
+                      placeholder={outputPathPlaceholder}
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono"
                     />
                     <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.outputPathHint')}</p>
-                    {outputPath.trim() && !isAbsoluteVhdxPath(outputPath) && (
-                      <p className="text-xs text-destructive">{t('vMRestoreWizard.outputPathInvalid')}</p>
+                    {outputPath.trim() && !outputPathValid && (
+                      <p data-testid="vm-restore-rebuild-output-path-invalid" className="text-xs text-destructive">
+                        {t('vMRestoreWizard.outputPathInvalid')}
+                      </p>
                     )}
                   </div>
+                  {hypervAvailable && (
+                    <fieldset data-testid="vm-restore-hyperv-options" className="space-y-3 rounded-md border bg-background p-3">
+                      <legend className="px-1 text-xs font-semibold text-foreground">{t('vMRestoreWizard.hypervOptional')}</legend>
+                      <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.hypervSpecsHint')}</p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <label htmlFor="rebuild-hyperv-vm-name" className="text-xs font-medium text-muted-foreground">
+                            {t('vMRestoreWizard.hypervVmName')}
+                          </label>
+                          <input
+                            id="rebuild-hyperv-vm-name"
+                            data-testid="vm-restore-hyperv-vm-name"
+                            value={hypervVmName}
+                            maxLength={100}
+                            onChange={(e) => setHypervVmName(e.target.value)}
+                            placeholder={t('vMRestoreWizard.hypervVmNamePlaceholder')}
+                            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label htmlFor="rebuild-hyperv-switch" className="text-xs font-medium text-muted-foreground">
+                            {t('vMRestoreWizard.hypervSwitch')}
+                          </label>
+                          <input
+                            id="rebuild-hyperv-switch"
+                            data-testid="vm-restore-hyperv-switch"
+                            value={hypervSwitchName}
+                            maxLength={200}
+                            onChange={(e) => setHypervSwitchName(e.target.value)}
+                            placeholder={t('vMRestoreWizard.hypervSwitchPlaceholder')}
+                            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                          />
+                        </div>
+                      </div>
+                      {hypervVmName.trim() && !hypervSwitchName.trim() && (
+                        <p data-testid="vm-restore-hyperv-no-nic-hint" className="text-xs text-muted-foreground">
+                          {t('vMRestoreWizard.hypervNoNicHint')}
+                        </p>
+                      )}
+                    </fieldset>
+                  )}
                 </div>
               )}
             </div>
@@ -513,6 +611,7 @@ export default function VMRestoreWizard() {
               mode={mode}
               vmName={vmName}
               outputPath={outputPath.trim()}
+              hypervVmName={hypervRequested ? hypervVmName.trim() : undefined}
             />
           )}
         </div>

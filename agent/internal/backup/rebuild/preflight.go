@@ -169,7 +169,7 @@ func preflightVerify(ctx context.Context, r *run) error {
 			return &RefusalError{Reason: fmt.Sprintf("%d file(s) reference objects outside the authorized download scope (first: %s); upgrade the Breeze server or choose a self-contained snapshot", n, first)}
 		}
 	}
-	staging, err := os.MkdirTemp("", "breeze-rebuild-state-*")
+	staging, err := newStateStagingDir()
 	if err != nil {
 		return err
 	}

@@ -24,9 +24,9 @@ tracking_issue: LanternOps/breeze#5493
 - **No PowerShell, no diskpart in the engine.** Partition tables: `FSCTL_LOCK_VOLUME` + `FSCTL_DISMOUNT_VOLUME` on every existing volume of the target disk, `IOCTL_DISK_DELETE_DRIVE_LAYOUT`, zero the first and last MiB, `IOCTL_DISK_CREATE_DISK` (GPT; disk GUID from the layout when recorded), `IOCTL_DISK_SET_DRIVE_LAYOUT_EX` (partition GUIDs and GPT attributes preserved), `IOCTL_DISK_UPDATE_PROPERTIES`. Filesystems: `format.com`. Mounts: root/recovery on **folder mount points** under the staging root (`SetVolumeMountPointW`), the ESP on a **temporary drive letter** for `bcdboot /s` (documented as a volume letter). VHDX: `CreateVirtualDisk` (dynamic, 32 MiB block, logical sector size = source disk's) + `AttachVirtualDisk` with `ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER` and **no** `PERMANENT_LIFETIME` (the handle stays open for the run; a helper crash auto-detaches). Hives: `RegLoadKeyW`/`RegUnLoadKeyW` under `SeBackupPrivilege` + `SeRestorePrivilege` enabled explicitly with `AdjustTokenPrivileges` (SYSTEM holds them disabled). Every external tool goes through `WinSystem.Run(ctx, name, args...)` so the fake records it.
 - **No automount surprises.** Every partition is written with GPT attribute `0x8000000000000000` (no drive letter) during the run; `winValidate`'s last layout write clears it on root/data partitions (Recovery keeps `0x8000000000000001`). The engine never depends on a host-assigned letter.
 - **Partition GUIDs are identity, and `MountedDevices` is rewritten regardless.** Provision writes each partition with its recorded `PartUUID`. The offline SYSTEM edit (Part C Task 14) ALWAYS writes `MountedDevices\\DosDevices\C:` = `DMIO:ID:` + the restored root partition's 16-byte GUID (mixed-endian GUID bytes, exactly what `IOCTL_DISK_GET_PARTITION_INFO_EX` returns) and deletes every `\DosDevices\<X>:` value whose `DMIO:ID` GUID is not on the rebuilt disk; `\??\Volume{…}` values are left alone. A Windows snapshot whose root partition has no `PartUUID` is refused by `Assess` (W06a) with `root partition has no recorded partition GUID; back up again with a current agent`.
-- **Hives: file tree first, all-or-nothing artifact fallback, never the live registry.** The VSS file tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` + `.LOG1/.LOG2`, `Users\*\NTUSER.DAT`) is authoritative. If ANY of SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, ALL FOUR are replaced from `system-state/registry/<HIVE>` and their `.LOG1/.LOG2` deleted (mixing capture points splits LSA secrets from the machine password); if any artifact is missing too → error `hive %s missing from both the file tree and the system-state artifacts`. Nothing in this wave ever calls `reg restore`, `reg import`, `bcdedit /import` or touches the host's own `HKLM`. Hive mounts are run-scoped (`HKLM\BRZ_<runid>_<HIVE>`), every key handle is closed and `RegFlushKey` called before `RegUnLoadKeyW`, and `Run` starts by unloading any leftover `HKLM\BRZ_*` mounts and detaching any VHDX it recorded in a stale state file (Part B Task 12).
+- **Hives: file tree first, all-or-nothing artifact fallback, never the live registry.** The VSS file tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` + `.LOG1/.LOG2`, `Users\*\NTUSER.DAT`) is authoritative. If ANY of SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, ALL FOUR are replaced from `system-state/registry/<HIVE>`: the tree's `.LOG1/.LOG2` for those hives are deleted and the artifact's OWN `.LOG1/.LOG2` installed beside each artifact hive when it carries them (a hive copied from a VSS shadow copy is dirty and needs its logs, since `RegLoadKey` replays them; a `reg save` artifact has none) — never a tree log beside an artifact hive (mixing capture points splits LSA secrets from the machine password, and a stale log would be replayed against the wrong hive); if any artifact is missing too → error `hive %s missing from both the file tree and the system-state artifacts`. Nothing in this wave ever calls `reg restore`, `reg import`, `bcdedit /import` or touches the host's own `HKLM`. Hive mounts are run-scoped (`HKLM\BRZ_<runid>_<HIVE>`), every key handle is closed and `RegFlushKey` called before `RegUnLoadKeyW`, and `Run` starts by unloading any leftover `HKLM\BRZ_*` mounts and detaching any VHDX it recorded in a stale state file (Part B Task 12).
 - **Control set.** Edits go to `ControlSet00<Select\Default>`; if `Select\Current` differs, the same edits are applied to it too.
-- **Refuse before destructive work.** Every refusal this wave introduces fires in `preflight` (before `provision`). `disk:` targets on Windows are refused unless the process runs in WinPE (`HKLM\SYSTEM\CurrentControlSet\Control\MiniNT` exists); a live Windows host may only write `vhdx:` targets. A `disk:` target that is the system disk, the WinPE media disk, read-only, offline, or holds a `Windows\System32\config\SYSTEM` on any volume is refused (the last one overridable by `Options.ForceDisk`, CLI `--force-disk` only). A source with `Services\NTDS` in its SYSTEM hive (domain controller) is refused unless `Options.AllowDomainController` (CLI `--allow-domain-controller` only; never from the server payload) — this check runs in preflight against the `system-state/registry/SYSTEM` artifact when present, else in the restore phase before any hive edit.
+- **Refuse before destructive work.** Every refusal this wave introduces fires in `preflight` (before `provision`). `disk:` targets on Windows are refused unless the process runs in WinPE (`HKLM\SYSTEM\CurrentControlSet\Control\MiniNT` exists); a live Windows host may only write `vhdx:` targets. A `disk:` target that is the system disk, the WinPE media disk, read-only, offline, or holds a `Windows\System32\config\SYSTEM` on any volume is refused (the last one overridable by `Options.ForceDisk`, CLI `--force-disk` only). A domain-controller source (`winhive.IsDomainController`: `Control\ProductOptions\ProductType` = `LanmanNt`; when ProductType is missing, a `DSA Database file`/`DSA Working Directory` value under `Services\NTDS\Parameters`, else not a DC with an "inconclusive" warning — the bare `Services\NTDS` key is NOT a DC signal, a standalone server has it) is refused unless `Options.AllowDomainController` (CLI `--allow-domain-controller` only; never from the server payload) — this check runs in preflight against the `system-state/registry/SYSTEM` artifact when present, else in the restore phase before any hive edit.
 - **Sizing.** Hard links become copies (WinSxS ↔ System32), so the root partition's minimum and the VHDX free-space check use `max(manifest logical bytes × 1.1, layout UsedBytes × 1.1)`; `PlanPartitionsWindows` therefore takes the manifest total, and the Windows preflight fetches the manifest BEFORE planning. The root partition (`C:`) grows; partitions after it (Recovery) keep their size.
 - **Paths.** On Windows the restore keys every file by `journalEntryKey(f)` (`OriginalPath` first) with the volume stripped (`stripVolumeAndLeadingSeparators`, `restore.go:546`); validate MUST use the same key (Part A Task 3 fixes `validate.go:61`). The token-mode `pathClean` (`bmr/download_provider.go:681`) must use `path.Clean` on the forward-slash key, never `filepath.Clean` (#6631 item 2).
 - **Work dir.** `Options.WorkRoot` (new): Windows `vhdx:` → `%ProgramData%\Breeze\rebuild\work\<snapshotID>` on the HOST (a dynamic VHDX never shrinks); Windows `disk:` (WinPE) → `<root mount>\$breeze-rebuild-work` (the `X:` RAM drive is ≤ 512 MB), removed before validate; Linux unchanged. `StateDir` defaults to `%ProgramData%\Breeze\rebuild` on Windows.
@@ -10669,16 +10669,34 @@ func (r *run) ensureWinHives() error
 func (r *run) closeWinHives() error
 func (r *run) diskPartitionGUIDs() (root string, all []string, err error)
 func rootIsBitLocker(r *run) bool
-func resolveBcdboot(r *run) (path string, hostFallback bool, err error)
+func hostSystemTool(name string) string // host %SystemRoot%\System32\<name>, absolute (ruling C4; no restored-tree or PATH resolution)
+func runHostTool(ctx context.Context, r *run, name string, args ...string) (out []byte, exe string, err error)
 func bcdbootArgs(root, letter string, vhdx bool) []string
-func ensureBootx64(espDir string) error
+func ensureBootx64(espVolume string) error // ESP VOLUME path, never a folder mount (ruling C1)
 type postRestoreActions struct{ SchemaVersion int; BitLocker *postRestoreBitLocker; WinRE postRestoreWinRE }
-// run struct addition: controlSets []string
+// run struct addition: controlSets []string (Select\Default first, then Current)
+
+// agent/internal/backup/winhive (windows; stub elsewhere)
+func LoadReadOnly(hiveFile, mountName string) (Handle, error) // KEY_READ handles; BCD-Template ACL denies KEY_ALL_ACCESS
+
+// agent/internal/backup/rebuild WinSystem seam addition
+LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error)
 ```
+
+(Refreshed 2026-09-26, ruling C-D1: this list originally named `resolveBcdboot` — restored tree's bcdboot first, host fallback — which ruling C4 replaced before merge.)
 
 ---
 
-## Part D — W06d (PR 4, "Closes #5499")
+## Part D — W06d (PR 4, "Closes #7183")
+
+**Tracking (2026-09-26).** Wave #5499 closed when W06c (#6928) merged, so W06d is tracked as its own wave, #7183 (key W10 in `get_feature_status`), on branch `feature/5493-bare-metal-boot-media/wave-7183`. PR 4 closes #7183, not #5499.
+
+**W06d pre-flight: Part C final-review blockers (2026-09-24).** These must land before any Windows DR host is enabled. They come before the API/web tasks below:
+1. Lab-verify that host `dism.exe /Image:<root> /Add-Driver` and host `bcdboot.exe` load no code from the offline image (DISM log servicing-stack path; Procmon image loads under the root mount). If either does, refuse `--drivers` on a live host and leave injection to WinPE (W07).
+2. Reclaim an ESP drive letter left by a killed run: after `winReattach`, delete every `X:\` mount point of the ESP volume, and run `dism /Cleanup-Mountpoints`. Lab row: kill during DISM, then resume.
+3. Run the real-VHDX test as LocalSystem (`psexec -s` or through the agent). Every native run so far used elevated Administrator.
+4. Boot the rebuilt VHDX in a Gen2 Hyper-V VM. On the real seam, assert `\DosDevices\C:` == the rebuilt root GUID, MachineGuid rotated, Tcpip hostname, `secrets.yaml` gone.
+The remaining minors (`/p` comment wording, fallback rename order, `secrets.yaml.tmp`, `format.com` absolute path, `GetSystemWindowsDirectory`, ...) are in the SDD ledger's `followups-partC.md`.
 
 **Depends on:** W06a/b/c on this same wave for `Result.Platform`, `Result.VMCreated`
 (`types.go` additions, Part 0 §1), and `agent/cmd/breeze-backup/exec_bare_metal_rebuild.go`'s
@@ -12226,9 +12244,13 @@ tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` plus
 each `.LOG1`/`.LOG2`, and every `Users\*\NTUSER.DAT`). If any one of
 SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, all four are
 replaced together from the independently captured system-state artifacts
-(`system-state/registry/<HIVE>`) and their `.LOG1`/`.LOG2` files are
-deleted — mixing a tree hive with an artifact hive from a different capture
-point would split LSA secrets from the machine password. If an artifact is
+(`system-state/registry/<HIVE>`). The tree's `.LOG1`/`.LOG2` for those
+hives are deleted and each artifact's own `.LOG1`/`.LOG2` are installed
+beside it when the artifact carries them: a hive copied from a VSS shadow
+copy is dirty, and loading it replays those logs (a `reg save` artifact has
+none). A tree log is never left beside an artifact hive — mixing a tree
+hive or log with an artifact hive from a different capture point would
+split LSA secrets from the machine password. If an artifact is
 missing too, the restore fails naming the hive.
 
 Every hive is mounted at a run-scoped key (`HKLM\BRZ_<runid>_<HIVE>`),
@@ -12242,11 +12264,13 @@ partition's GUID (`DMIO:ID:` + the 16-byte mixed-endian GUID exactly as
 deleted; `\??\Volume{…}` values are left untouched.
 
 `bcdboot <root>\Windows /s <ESP letter>: /f UEFI /v` regenerates the EFI
-system partition from the restored tree's own `bcdboot.exe` when present,
-falling back to the host's with a warning. For a VHDX target on a live
-host, `/p` is added to preserve the host's own UEFI firmware boot entries
-— proven unchanged before/after by the lab run in §11. The captured BCD
-store (`system-state/boot/bcd_export`) is never imported.
+system partition. It always runs the rebuild host's own `bcdboot.exe`, by
+absolute path from `%SystemRoot%\System32`. Nothing from the restored tree is
+ever executed, and there is no fallback: a host without bcdboot fails the
+phase. The guest's boot files are still copied from `<root>\Windows`. For a
+VHDX target on a live host, `/p` is added so bcdboot keeps the existing order
+of the host's UEFI firmware boot entries. The captured BCD store
+(`system-state/boot/bcd_export`) is never imported.
 
 A BitLocker-protected source restores in plaintext. The phase writes a
 post-restore-actions intent file rather than re-encrypting immediately —
@@ -12371,7 +12395,7 @@ grep -c "^### 6.1 Windows offline state apply" docs/superpowers/specs/backup/202
 - [ ] **Step 3: PR.**
 
 ```
-Closes #5499
+Closes #7183
 
 Windows whole-machine recovery: platform-matched rebuild hosts, drive-letter
 absolute paths across the rebuild command/DR/VM-restore schemas, per-host-OS
@@ -12382,7 +12406,7 @@ snapshot platform, i18n across all locales, docs, five follow-up issues for
 what's deliberately out of scope, and a proof run on the KIT lab (WIN-A
 whole-machine snapshot → native VHDX → VM boots; host NVRAM unchanged).
 
-This is PR 4 of 4 on wave #5499 (W06a agent fidelity/guards, W06b engine
+This is PR 4 of 4 for W06 (#5499 → W06d tracked as #7183; W06a agent fidelity/guards, W06b engine
 core, W06c OS state, W06d this PR). Depends on all three merging first.
 
 One independent review round is expected before merge, per this repo's
@@ -12452,4 +12476,4 @@ since W06a/b/c land on branches this PR is stacked on top of.
 
 **Pre-implementation checks (controller, before Task 1).** `git -C <worktree> log -1 --format=%H origin/main` and re-verify the §0 citations that move most (`engine.go:79-168`, `preflight.go:143-198`, `validate.go:61`, `backup.go:1527`, `ci.yml:1874`); `ls apps/api/migrations | sort | tail -1` must still be `2026-10-28-100000-…` or the Task 19 slot moves; Codex availability (`codex exec` one-liner) decides Codex vs Sonnet drivers.
 
-**Next after this doc merges.** `start_wave` W06 on `feature/5493-bare-metal-boot-media/wave-5499` (worktree off main) → Part A (Tasks 1–6) → PR 1 → Part B → PR 2 → Part C → PR 3 → Part D → PR 4 (`Closes #5499`) with the KIT proof (Task 24) before enqueue. Agent release needed for the shipped surface; W07 follows.
+**Next after this doc merges.** `start_wave` W06 on `feature/5493-bare-metal-boot-media/wave-5499` (worktree off main) → Part A (Tasks 1–6) → PR 1 → Part B → PR 2 → Part C → PR 3 → Part D (wave #7183, branch wave-7183) → PR 4 (`Closes #7183`) with the KIT proof (Task 24) before enqueue. Agent release needed for the shipped surface; W07 follows.

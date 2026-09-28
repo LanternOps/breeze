@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -10,6 +10,13 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
+import {
+  REBUILD_DEFAULT_OUTPUT_DIR_LINUX,
+  defaultRebuildOutputDir,
+  isAbsoluteRebuildPath,
+  rebuildPathMatchesOs,
+  type RebuildHostOs,
+} from '../../lib/rebuildPaths';
 import '../../lib/i18n';
 
 /** DR step types the dispatcher accepts (`DR_ALLOWED_COMMAND_TYPES` on the
@@ -26,7 +33,12 @@ export const DR_STEP_TYPES = [
 
 export type DRStepType = (typeof DR_STEP_TYPES)[number];
 
-export const DEFAULT_REBUILD_OUTPUT_DIR = '/var/lib/breeze/rebuild/out';
+/** The stored "operator left it unset" sentinel (`DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR`
+ *  on the API). Dispatch maps it to the rebuild host's own per-OS default
+ *  (W06d), so the form shows it as a blank field with that default as the
+ *  placeholder. */
+export const DEFAULT_REBUILD_OUTPUT_DIR = REBUILD_DEFAULT_OUTPUT_DIR_LINUX;
+const REBUILD_HOST_OSES: readonly RebuildHostOs[] = ['linux', 'windows'];
 export const DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES = 240;
 /** Mirrors `drBareMetalRebuildConfigSchema.outputDir.max` on the API (#6382). */
 export const REBUILD_OUTPUT_DIR_MAX_LENGTH = 1024;
@@ -46,9 +58,11 @@ export type DRGroupForm = {
   dependsOnGroupKey: string | null;
   /** `restoreConfig.commandType`; '' until the operator picks one (required on save). */
   stepType: DRStepType | '';
-  /** BARE_METAL_REBUILD only: Linux device that runs the rebuild engine for rehearsals. */
+  /** BARE_METAL_REBUILD only: Linux or Windows device that runs the rebuild engine for rehearsals
+   *  (must match the rehearsed devices' platform — enforced at dispatch). */
   rebuildHostDeviceId: string | null;
-  /** BARE_METAL_REBUILD only: directory on the rebuild host that receives the VHDX images. */
+  /** BARE_METAL_REBUILD only: directory on the rebuild host that receives the VHDX images;
+   *  '' = the host's per-OS default. */
   outputDir: string;
   /** BARE_METAL_REBUILD only: minutes to wait for `checked_in` before the device is marked failed. */
   waitTimeoutMinutes: string;
@@ -85,14 +99,36 @@ export default function DRPlanGroupCard({
     includeIds: group.deviceIds,
   });
   const isRebuild = group.stepType === 'BARE_METAL_REBUILD';
-  // Rebuild hosts: Linux only in this wave (the engine refuses other
-  // platforms), filtered server-side and only loaded once the step needs one.
+  // Rebuild hosts (W06d): Linux or Windows — never macOS — one OS at a time,
+  // filtered server-side and only loaded once the step needs one. The group's
+  // devices' snapshot platform is not knowable here, so the operator picks the
+  // host OS; dispatch refuses a mismatched host/snapshot pair.
+  const [hostOs, setHostOs] = useState<RebuildHostOs>('linux');
   const hostOptions = useDeviceOptions({
     search: hostSearch,
-    osType: 'linux',
+    osType: hostOs,
     includeIds: group.rebuildHostDeviceId ? [group.rebuildHostDeviceId] : [],
     enabled: isRebuild,
   });
+  const selectedHost = hostOptions.options.find((option) => option.id === group.rebuildHostDeviceId);
+  // A saved host is hydrated through includeIds regardless of the OS filter;
+  // follow it so the filter, placeholder and warnings describe the real host.
+  const selectedHostOs = selectedHost?.osType;
+  useEffect(() => {
+    if ((selectedHostOs === 'linux' || selectedHostOs === 'windows') && selectedHostOs !== hostOs) {
+      setHostOs(selectedHostOs);
+    }
+    // Keyed on the resolved host OS only: a filter change must not snap back.
+  }, [selectedHostOs]);
+  const changeHostOs = (next: RebuildHostOs) => {
+    setHostOs(next);
+    if (group.rebuildHostDeviceId && selectedHostOs !== next) {
+      onChange((current) => ({ ...current, rebuildHostDeviceId: null }));
+    }
+  };
+  const outputDirValue = group.outputDir.trim();
+  const outputDirOsMismatch =
+    outputDirValue !== '' && isAbsoluteRebuildPath(outputDirValue) && !rebuildPathMatchesOs(outputDirValue, hostOs);
   const stepTypeLabels: Record<DRStepType, string> = {
     VM_RESTORE_FROM_BACKUP: t('dRPlanGroupCard.stepTypes.vmRestoreFromBackup'),
     VM_INSTANT_BOOT: t('dRPlanGroupCard.stepTypes.vmInstantBoot'),
@@ -258,6 +294,25 @@ export default function DRPlanGroupCard({
               {t('dRPlanGroupCard.rebuildHost')}
             </div>
             <p className="mb-2 text-xs text-muted-foreground">{t('dRPlanGroupCard.rebuildHostHint')}</p>
+            <label
+              htmlFor={`dr-group-rebuild-host-os-${group.localId}`}
+              className="mb-1 block text-xs font-medium text-muted-foreground"
+            >
+              {t('dRPlanGroupCard.rebuildHostOs')}
+            </label>
+            <select
+              id={`dr-group-rebuild-host-os-${group.localId}`}
+              data-testid="dr-group-rebuild-host-os"
+              value={hostOs}
+              onChange={(event) => {
+                const next = REBUILD_HOST_OSES.find((os) => os === event.target.value);
+                if (next) changeHostOs(next);
+              }}
+              className="mb-2 h-9 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="linux">{t('dRPlanGroupCard.rebuildHostOsLinux')}</option>
+              <option value="windows">{t('dRPlanGroupCard.rebuildHostOsWindows')}</option>
+            </select>
             <div className="rounded-md border bg-background p-2">
               <DeviceOptionPicker
                 result={hostOptions}
@@ -286,10 +341,15 @@ export default function DRPlanGroupCard({
                 const outputDir = event.target.value;
                 onChange((current) => ({ ...current, outputDir }));
               }}
-              placeholder={DEFAULT_REBUILD_OUTPUT_DIR}
+              placeholder={defaultRebuildOutputDir(hostOs)}
               className="h-10 w-full rounded-md border bg-background px-3 font-mono text-sm"
             />
             <p className="mt-1 text-xs text-muted-foreground">{t('dRPlanGroupCard.outputDirHint')}</p>
+            {outputDirOsMismatch && (
+              <p data-testid="dr-group-rebuild-output-dir-os-mismatch" className="mt-1 text-xs text-destructive">
+                {t('dRPlanGroupCard.outputDirOsMismatch')}
+              </p>
+            )}
           </div>
           <div>
             <label
