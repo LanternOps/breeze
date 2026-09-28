@@ -183,6 +183,13 @@ x-api-env: &api-env
   # Intuit's app-level webhook verifier token. Unset -> the webhook route
   # answers 503 and the 15-minute reconcile sweep is the only pull path.
   QBO_WEBHOOK_VERIFIER_TOKEN: ${QBO_WEBHOOK_VERIFIER_TOKEN:-}
+  # Xero accounting integration (W02). All optional; unset keeps it dark.
+  # Mapped explicitly: Compose only interpolates vars listed in this block.
+  XERO_CLIENT_ID: ${XERO_CLIENT_ID:-}
+  XERO_CLIENT_SECRET: ${XERO_CLIENT_SECRET:-}
+  XERO_REDIRECT_URI: ${XERO_REDIRECT_URI:-}
+  XERO_WEBHOOK_KEY: ${XERO_WEBHOOK_KEY:-}
+  XERO_DAILY_CALL_LIMIT: ${XERO_DAILY_CALL_LIMIT:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.

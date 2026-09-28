@@ -364,6 +364,34 @@ export const QBO_ENVIRONMENT = process.env.QBO_ENVIRONMENT?.trim() ?? '';
 // relies entirely on the 15-minute reconcile sweep instead.
 export const QBO_WEBHOOK_VERIFIER_TOKEN = process.env.QBO_WEBHOOK_VERIFIER_TOKEN?.trim() ?? '';
 
+// Xero (accounting integration, Xero W02). Read at CALL time (not module load)
+// so tests can flip them without vi.resetModules(). '' = unset: the Xero card
+// stays hidden and every Xero route answers provider_not_configured.
+export function xeroOAuthConfig(): { clientId: string; clientSecret: string; redirectUri: string } {
+  return {
+    clientId: process.env.XERO_CLIENT_ID?.trim() ?? '',
+    clientSecret: process.env.XERO_CLIENT_SECRET?.trim() ?? '',
+    redirectUri: process.env.XERO_REDIRECT_URI?.trim() ?? '',
+  };
+}
+// The Xero webhook signing key (x-xero-signature HMAC). Registered in W02 so the
+// deploy plumbing lands once; only POST /webhooks/xero (W05) reads it.
+export function xeroWebhookKey(): string {
+  return process.env.XERO_WEBHOOK_KEY?.trim() ?? '';
+}
+// Per-organisation daily call budget. 1000 = Xero Starter tier; hosted sets its
+// tier's value (spec "Commercial constraint"). validate.ts refuses a bad value at
+// boot, so the fallback here guards direct callers in tests as well as any
+// process path that reads config without ever running validateConfig() (a
+// script, a job, an unrelated test suite importing this module directly).
+export const XERO_DEFAULT_DAILY_CALL_LIMIT = 1000;
+export function xeroDailyCallLimit(): number {
+  const raw = process.env.XERO_DAILY_CALL_LIMIT?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return XERO_DEFAULT_DAILY_CALL_LIMIT;
+  const value = Number(raw);
+  return value > 0 ? value : XERO_DEFAULT_DAILY_CALL_LIMIT;
+}
+
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');

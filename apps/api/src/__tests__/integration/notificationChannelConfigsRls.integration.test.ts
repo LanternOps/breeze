@@ -1,7 +1,8 @@
 /**
  * Notification channel config confidentiality at the DB layer (#6379).
  *
- * Migration under test: 2026-11-02-100600-notification-channel-configs.sql.
+ * Migrations under test: 2026-11-02-100600-notification-channel-configs.sql
+ * (expand) and 2026-11-06-100100-drop-notification-channels-config.sql (contract).
  *
  * `notification_channels` carries a SELECT-only partner-wide read branch
  * (2026-10-10-120000), so an ORG session can read its MSP's partner-wide
@@ -17,19 +18,19 @@
  * PARENT row is visible to it, so "config not visible" cannot pass vacuously
  * because the whole channel was hidden.
  *
- * EXPAND/CONTRACT: the legacy `notification_channels.config` column is kept for
- * one release so an image rollback keeps delivering. The rollback-path cases
- * prove the new image mirrors config into it and that an OLD image's write of it
- * reaches the child table through the sync trigger. Until the contract step
- * drops the column, an org session can still read that legacy column of a
- * partner-wide row at the DB layer — this change closes that gap fully only
- * once the column is gone.
+ * CONTRACT (#7028): the legacy `notification_channels.config` column, kept for
+ * one release as a write-only rollback mirror, is dropped by
+ * 2026-11-06-100100-drop-notification-channels-config.sql together with its
+ * sync trigger. Only then can an org session no longer read a partner-wide
+ * row's config at the DB layer; the first case below proves the column is gone.
  *
- * The replay case re-creates the pre-migration shape (config NOT NULL on the
- * parent, no trigger, child empty) inside a transaction that is always rolled back, hands
- * both tables to a NOSUPERUSER NOBYPASSRLS owner, and replays the migration as
- * that owner — the managed-Postgres shape where a missing
- * `set_config('breeze.scope','system')` would silently backfill zero rows.
+ * The replay case re-creates the expand-step shape (legacy column + sync
+ * trigger, one channel whose child row is missing — the race window between the
+ * expand step's backfill and its CREATE TRIGGER) inside a transaction that is
+ * always rolled back, hands both tables to a NOSUPERUSER NOBYPASSRLS owner, and
+ * replays the contract migration as that owner — the managed-Postgres shape
+ * where a missing `set_config('breeze.scope','system')` would silently backfill
+ * zero rows.
  */
 import './setup';
 import { readFileSync } from 'node:fs';
@@ -47,8 +48,12 @@ import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION_SQL = readFileSync(
+const EXPAND_MIGRATION_SQL = readFileSync(
   join(__dirname, '../../../migrations/2026-11-02-100600-notification-channel-configs.sql'),
+  'utf8',
+);
+const CONTRACT_MIGRATION_SQL = readFileSync(
+  join(__dirname, '../../../migrations/2026-11-06-100100-drop-notification-channels-config.sql'),
   'utf8',
 );
 
@@ -127,54 +132,32 @@ function readConfigs(ids: string[]) {
 }
 
 describe('notification_channel_configs RLS (#6379)', () => {
-  runDb('writeNotificationChannelConfig mirrors config into the legacy parent column (image-rollback path)', async () => {
+  runDb('the legacy notification_channels.config column and its sync trigger are gone (42703 for an org session)', async () => {
     const f = await seed();
-    const rows = await withSystemDbAccessContext(() => db.execute(sql`
-      SELECT id::text AS id, config FROM notification_channels
-      WHERE id IN (${f.partnerWideId}, ${f.orgOwnedId}, ${f.partnerWideBareId})`)) as unknown as Array<{ id: string; config: unknown }>;
-    expect(new Map(rows.map((r) => [r.id, r.config]))).toEqual(new Map<string, unknown>([
-      [f.partnerWideBareId, null],
-      [f.partnerWideId, PARTNER_SECRET],
-      [f.orgOwnedId, ORG_SECRET],
-    ]));
 
-    // An owner's update reaches both copies.
-    const next = { webhookUrl: 'https://hooks.slack.example/partner-rotated' };
-    await withDbAccessContext(partnerContext(f.partner.id), () => writeNotificationChannelConfig(f.partnerWideId, next));
-    const after = await withSystemDbAccessContext(() => db.execute(sql`
-      SELECT config FROM notification_channels WHERE id = ${f.partnerWideId}`)) as unknown as Array<{ config: unknown }>;
-    expect(after[0]?.config).toEqual(next);
-    const child = await withSystemDbAccessContext(() => readConfigs([f.partnerWideId]));
-    expect(child).toEqual([{ channelId: f.partnerWideId, config: next }]);
-  });
-
-  runDb('an OLD-image write of only the legacy column reaches the child table (sync trigger) under the writer RLS', async () => {
-    const f = await seed();
-    const oldImageConfig = { webhookUrl: 'https://hooks.slack.example/written-by-old-image' };
-
-    // Old image, org session: INSERT a channel with config on the parent only.
-    const inserted = await withDbAccessContext(orgContext(f.org.id, f.partner.id), () => db.execute(sql`
-      INSERT INTO notification_channels (org_id, name, type, config)
-      VALUES (${f.org.id}, 'old-image-org', 'slack', ${JSON.stringify(oldImageConfig)}::jsonb)
-      RETURNING id::text AS id`)) as unknown as Array<{ id: string }>;
-    const newId = inserted[0]!.id;
-
-    // Old image, partner session: UPDATE a partner-wide channel's legacy config.
-    await withDbAccessContext(partnerContext(f.partner.id), () => db.execute(sql`
-      UPDATE notification_channels SET config = ${JSON.stringify(oldImageConfig)}::jsonb
-      WHERE id = ${f.partnerWideId}`));
-
-    const child = await withSystemDbAccessContext(() => readConfigs([newId, f.partnerWideId]));
-    expect(new Map(child.map((r) => [r.channelId, r.config]))).toEqual(new Map([
-      [newId, oldImageConfig],
-      [f.partnerWideId, oldImageConfig],
-    ]));
-
-    // The org session still cannot read the partner-wide child row.
     await withDbAccessContext(orgContext(f.org.id, f.partner.id), async () => {
-      expect(await readConfigs([f.partnerWideId])).toEqual([]);
-      expect(await readConfigs([newId])).toEqual([{ channelId: newId, config: oldImageConfig }]);
+      // Non-vacuity: the partner-wide parent row IS visible to the org session,
+      // so the 42703 below is the column being gone, not the row being hidden.
+      const parent = await db.select({ id: notificationChannels.id })
+        .from(notificationChannels).where(eq(notificationChannels.id, f.partnerWideId));
+      expect(parent).toEqual([{ id: f.partnerWideId }]);
     });
+    await expectSqlState(
+      () => withDbAccessContext(orgContext(f.org.id, f.partner.id), () => db.execute(sql`
+        SELECT config FROM notification_channels WHERE id = ${f.partnerWideId}`)),
+      '42703',
+    );
+
+    const leftovers = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT 'column' AS kind FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'notification_channels' AND column_name = 'config'
+      UNION ALL
+      SELECT 'trigger' FROM pg_trigger
+        WHERE tgrelid = 'public.notification_channels'::regclass AND tgname = 'notification_channels_sync_legacy_config'
+      UNION ALL
+      SELECT 'function' FROM pg_proc
+        WHERE proname = 'notification_channels_sync_legacy_config'`)) as unknown as Array<{ kind: string }>;
+    expect(leftovers).toEqual([]);
   });
 
   runDb('an org session sees the partner-wide channel row but NOT its config; it still reads its own org channel config', async () => {
@@ -256,7 +239,7 @@ describe('notification_channel_configs RLS (#6379)', () => {
   });
 });
 
-describe('2026-11-02-100600 migration replay (#6379)', () => {
+describe('2026-11-06-100100 contract migration replay (#7028)', () => {
   const notices: string[] = [];
   const admin = postgres(process.env.DATABASE_URL ?? '', {
     max: 1,
@@ -266,70 +249,76 @@ describe('2026-11-02-100600 migration replay (#6379)', () => {
 
   class Rollback extends Error {}
 
-  runDb('backfills config verbatim and keeps the legacy column (nullable, synced) when replayed by a NOSUPERUSER NOBYPASSRLS owner; re-applying is a no-op', async () => {
+  runDb('backfills a missing child row, never overwrites an existing one, drops trigger + column as a NOSUPERUSER NOBYPASSRLS owner; re-applying is a no-op', async () => {
     const f = await seed();
-    // An opaque ciphertext-shaped value: the backfill must copy it byte-for-byte,
-    // never decrypt/re-encrypt it.
-    const sealed = { webhookUrl: 'enc:v3:test-key:AAAA:BBBB:CCCC' };
-    await withSystemDbAccessContext(() => writeNotificationChannelConfig(f.partnerWideId, sealed));
+    // Opaque ciphertext-shaped values: the backfill must copy byte-for-byte.
+    const orphanLegacy = { webhookUrl: 'enc:v3:test-key:ORPHAN:AAAA:BBBB' };
+    const childAuthoritative = { webhookUrl: 'enc:v3:test-key:CHILD:CCCC:DDDD' };
 
-    const role = `mig_6379_${Date.now()}`;
+    const role = `mig_7028_${Date.now()}`;
     let checked = false;
     try {
       await admin.begin(async (tx) => {
-        // Re-create the pre-migration shape: config on the parent (NOT NULL),
-        // no sync trigger, child table empty.
-        await tx.unsafe('DROP FUNCTION public.notification_channels_sync_legacy_config() CASCADE');
-        await tx.unsafe(`UPDATE notification_channels nc SET config = COALESCE(c.config, nc.config, '{}'::jsonb)
-          FROM notification_channels n2 LEFT JOIN notification_channel_configs c ON c.channel_id = n2.id
-          WHERE n2.id = nc.id`);
-        await tx.unsafe('ALTER TABLE notification_channels ALTER COLUMN config SET NOT NULL');
-        await tx.unsafe('DELETE FROM notification_channel_configs');
-        const [{ total }] = await tx.unsafe<[{ total: number }]>(
-          'SELECT count(*)::int AS total FROM notification_channels');
+        // Re-create the expand-step shape: legacy column populated from the
+        // child table, then the expand migration replayed for its sync trigger.
+        await tx.unsafe('ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS config jsonb');
+        await tx.unsafe(`UPDATE notification_channels nc SET config = c.config
+          FROM notification_channel_configs c WHERE c.channel_id = nc.id`);
+        await tx.unsafe(EXPAND_MIGRATION_SQL);
 
-        // A migrator that is neither superuser nor BYPASSRLS, owning both tables.
+        // Race-window row: legacy value, no child row (an old image wrote it
+        // between the expand step's backfill and its CREATE TRIGGER).
+        await tx.unsafe('UPDATE notification_channels SET config = $1::text::jsonb WHERE id = $2',
+          [JSON.stringify(orphanLegacy), f.orgOwnedId]);
+        await tx.unsafe('DELETE FROM notification_channel_configs WHERE channel_id = $1', [f.orgOwnedId]);
+        // Diverged row: the child (authoritative) differs from the legacy copy.
+        await tx.unsafe('UPDATE notification_channel_configs SET config = $1::text::jsonb WHERE channel_id = $2',
+          [JSON.stringify(childAuthoritative), f.partnerWideId]);
+
+        // A migrator that is neither superuser nor BYPASSRLS, owning both tables
+        // and the trigger function.
         await tx.unsafe(`CREATE ROLE ${role} NOSUPERUSER NOBYPASSRLS NOLOGIN`);
         await tx.unsafe(`GRANT USAGE, CREATE ON SCHEMA public TO ${role}`);
         await tx.unsafe(`ALTER TABLE notification_channels OWNER TO ${role}`);
         await tx.unsafe(`ALTER TABLE notification_channel_configs OWNER TO ${role}`);
+        await tx.unsafe(`ALTER FUNCTION public.notification_channels_sync_legacy_config() OWNER TO ${role}`);
         await tx.unsafe(`SET LOCAL ROLE ${role}`);
         const [who] = await tx.unsafe<{ rolsuper: boolean; rolbypassrls: boolean }[]>(
           'SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user');
         expect(who).toEqual({ rolsuper: false, rolbypassrls: false });
 
         notices.length = 0;
-        await tx.unsafe(MIGRATION_SQL);
-        expect(notices).toContain(`notification_channel_configs: backfilled ${total} channel config row(s)`);
+        await tx.unsafe(CONTRACT_MIGRATION_SQL);
+        expect(notices).toContain(
+          'notification_channel_configs: backfilled 1 channel config row(s) missing before dropping notification_channels.config');
 
-        // Re-apply: nothing left to backfill, no error.
+        // Re-apply: the column is gone, so the backfill is skipped; no error.
         notices.length = 0;
-        await tx.unsafe(MIGRATION_SQL);
-        expect(notices).toContain('notification_channel_configs: backfilled 0 channel config row(s)');
+        await tx.unsafe(CONTRACT_MIGRATION_SQL);
+        expect(notices.filter((n) => n.includes('backfilled'))).toEqual([]);
 
         await tx.unsafe('RESET ROLE');
-        // Expand step: the legacy column stays, now nullable, with the sync trigger.
-        const cols = await tx.unsafe<{ is_nullable: string }[]>(`
-          SELECT is_nullable FROM information_schema.columns
+        const cols = await tx.unsafe(`
+          SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public' AND table_name = 'notification_channels' AND column_name = 'config'`);
-        expect(cols).toEqual([{ is_nullable: 'YES' }]);
-        const triggers = await tx.unsafe<{ tgname: string }[]>(`
-          SELECT tgname FROM pg_trigger
-          WHERE tgrelid = 'public.notification_channels'::regclass AND NOT tgisinternal
+        expect(cols).toHaveLength(0);
+        const triggers = await tx.unsafe(`
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = 'public.notification_channels'::regclass
             AND tgname = 'notification_channels_sync_legacy_config'`);
-        expect(triggers).toHaveLength(1);
+        expect(triggers).toHaveLength(0);
+        const fns = await tx.unsafe(
+          `SELECT 1 FROM pg_proc WHERE proname = 'notification_channels_sync_legacy_config'`);
+        expect(fns).toHaveLength(0);
 
         const copied = await tx.unsafe<{ channel_id: string; config: unknown }[]>(
-          'SELECT channel_id, config FROM notification_channel_configs WHERE channel_id IN ($1, $2) ORDER BY channel_id',
-          [f.partnerWideId, f.orgOwnedId],
+          'SELECT channel_id, config FROM notification_channel_configs WHERE channel_id IN ($1, $2, $3)',
+          [f.partnerWideId, f.orgOwnedId, f.partnerWideBareId],
         );
         expect(new Map(copied.map((r) => [r.channel_id, r.config]))).toEqual(new Map([
-          [f.partnerWideId, sealed],
-          [f.orgOwnedId, ORG_SECRET],
+          [f.partnerWideId, childAuthoritative],
+          [f.orgOwnedId, orphanLegacy],
         ]));
-        const [{ n }] = await tx.unsafe<[{ n: number }]>(
-          'SELECT count(*)::int AS n FROM notification_channel_configs');
-        expect(n).toBe(total);
         checked = true;
         throw new Rollback();
       });

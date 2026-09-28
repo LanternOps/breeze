@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "Windows ti chiederà conferma",
     "body": "Quando apri il file, Windows mostra una richiesta di conferma prima di eseguirlo. Il file è firmato digitalmente, quindi quella richiesta indica un autore: dovrebbe riportare {{publisher}}. Se indica che l’autore è sconosciuto, o riporta un nome che non ti aspetti, chiudi la finestra e chiama la persona che ti sta aiutando invece di proseguire.",
+    "bodyUnsigned": "Quando apri il file, Windows mostra una richiesta di conferma prima di eseguirlo. Potrebbe indicare che l’autore è sconosciuto: è normale per questo programma e non è segno di un problema. Prosegui solo se hai avviato questa sessione con la persona che ti sta aiutando. In caso contrario, chiudi la finestra e non eseguire il file.",
     "publisher": "l’autore di Breeze"
   },
   "trust": {

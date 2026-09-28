@@ -162,6 +162,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           <a
             href="/reports"
             className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('reports.reportEditPage.backToReports')}
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
@@ -263,6 +264,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         <a
           href="/reports"
           className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+          aria-label={t('reports.reportEditPage.backToReports')}
         >
           <ArrowLeft className="h-4 w-4" />
         </a>

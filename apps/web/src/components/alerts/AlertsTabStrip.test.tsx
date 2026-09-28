@@ -46,4 +46,19 @@ describe('AlertsTabStrip', () => {
     render(<AlertsTabStrip currentPath="/alerts/channels" />);
     expect(screen.getByRole('link', { name: 'Delivery' })).toHaveAttribute('aria-current', 'page');
   });
+
+  // #7148: at 390px this row was wider than the screen with no scroll
+  // affordance, so the last tab (Delivery) was completely off-screen. These
+  // are real cross-page `<a href>` links, not client-side OverflowTabs
+  // buttons, so the fix is a horizontally scrollable row instead — every
+  // tab stays reachable via native scroll/swipe.
+  it('scrolls horizontally instead of clipping tabs off-screen', () => {
+    render(<AlertsTabStrip />);
+    const nav = screen.getByRole('navigation');
+    expect(nav.className).toContain('overflow-x-auto');
+    for (const link of screen.getAllByRole('link')) {
+      expect(link.className).toContain('shrink-0');
+      expect(link.className).toContain('whitespace-nowrap');
+    }
+  });
 });

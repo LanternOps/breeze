@@ -1707,7 +1707,7 @@ export default function ReportBuilder({
       onSubmit={handleFormSubmit}
       className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_420px]"
     >
-      <div className="space-y-6">
+      <div className="min-w-0 space-y-6">
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {error}
@@ -1720,8 +1720,8 @@ export default function ReportBuilder({
             <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportDetails.description')}</p>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            <div className="space-y-2 min-w-0">
               <label htmlFor="report-name" className="text-sm font-medium">
                 {t('reports.reportBuilder.fieldsShared.reportName')}
               </label>
@@ -1778,7 +1778,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {reportTypeOptions.map(type => {
               const isSelected = builderType === type.value;
               return (
@@ -1787,13 +1787,13 @@ export default function ReportBuilder({
                   type="button"
                   onClick={() => handleTypeSelect(type.value)}
                   className={cn(
-                    'flex flex-col items-start gap-2 rounded-lg border p-4 text-left transition',
+                    'flex min-w-0 flex-col items-start gap-2 rounded-lg border p-4 text-left transition',
                     isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted'
                   )}
                 >
-                  <div className="flex items-center gap-2">
-                    <type.icon className={cn('h-5 w-5', isSelected ? 'text-primary' : 'text-muted-foreground')} />
-                    <span className="font-medium">{getReportTypeOptionLabel(type.value)}</span>
+                  <div className="flex min-w-0 w-full items-center gap-2">
+                    <type.icon className={cn('h-5 w-5 shrink-0', isSelected ? 'text-primary' : 'text-muted-foreground')} />
+                    <span className="truncate font-medium">{getReportTypeOptionLabel(type.value)}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">{getReportTypeOptionDescription(type.value)}</p>
                 </button>
@@ -1811,9 +1811,9 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {dataSourceFields.map(field => (
-              <div key={field.id} className="space-y-2">
+              <div key={field.id} className="space-y-2 min-w-0">
                 <label className="text-xs font-medium text-muted-foreground">{getDataSourceFieldLabel(field.id)}</label>
                 {field.type === 'toggle' ? (
                   <label className="flex items-center gap-2 text-sm font-medium">
@@ -1862,8 +1862,8 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            <div className="min-w-0 space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.availableFields')}</p>
               <div className="flex flex-wrap gap-2">
                 {fieldDefinitions.map(field => {
@@ -1886,7 +1886,7 @@ export default function ReportBuilder({
                 })}
               </div>
             </div>
-            <div className="space-y-3">
+            <div className="min-w-0 space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.selectedFields')}</p>
               {selectedFields.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
@@ -1916,14 +1916,15 @@ export default function ReportBuilder({
                         draggedIndex === index && 'border-primary/60 bg-primary/5'
                       )}
                     >
-                      <div className="flex items-center gap-2">
-                        <GripVertical className="h-4 w-4 text-muted-foreground" />
-                        <span>{getFieldLabel(field)}</span>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{getFieldLabel(field)}</span>
                       </div>
                       <button
                         type="button"
                         onClick={() => toggleField(field)}
-                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={t('reports.reportBuilder.removeField', { field: getFieldLabel(field) })}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
                       >
                         <X className="h-4 w-4" />
                       </button>
@@ -2073,7 +2074,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.groupBy')}</label>
               <select
@@ -2140,7 +2141,7 @@ export default function ReportBuilder({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-1 xl:grid-cols-4">
             {chartTypeOptions.map(option => {
               const isSelected = chartType === option.value;
               return (
@@ -2149,12 +2150,12 @@ export default function ReportBuilder({
                   type="button"
                   onClick={() => setChartType(option.value)}
                   className={cn(
-                    'flex flex-col items-center gap-2 rounded-md border px-3 py-3 text-xs font-medium transition',
+                    'flex min-w-0 flex-col items-center gap-2 rounded-md border px-3 py-3 text-xs font-medium transition',
                     isSelected ? 'border-primary bg-primary/10 text-foreground' : 'hover:bg-muted'
                   )}
                 >
                   <option.icon className={cn('h-4 w-4', isSelected ? 'text-primary' : 'text-muted-foreground')} />
-                  {getChartTypeLabel(option.value)}
+                  <span className="w-full truncate text-center">{getChartTypeLabel(option.value)}</span>
                 </button>
               );
             })}
@@ -2193,10 +2194,11 @@ export default function ReportBuilder({
                 ))}
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
+                  <label htmlFor="report-builder-run-time" className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
                   <input
+                    id="report-builder-run-time"
                     type="time"
                     value={scheduleTime}
                     onChange={event => setScheduleTime(event.target.value)}
@@ -2240,7 +2242,7 @@ export default function ReportBuilder({
 
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.exportFormatsTitle')}</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 {exportFormatOptions.map(format => {
                   const isSelected = exportFormats.includes(format.value);
                   return (
@@ -2249,12 +2251,12 @@ export default function ReportBuilder({
                       type="button"
                       onClick={() => toggleExportFormat(format.value)}
                       className={cn(
-                        'flex flex-col items-start gap-1 rounded-md border px-3 py-2 text-left text-xs transition',
+                        'flex min-w-0 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left text-xs transition',
                         isSelected ? 'border-primary bg-primary/10 text-foreground' : 'hover:bg-muted'
                       )}
                     >
-                      <span className="font-medium">{getExportFormatLabel(format.value)}</span>
-                      <span className="text-muted-foreground">{getExportFormatDescription(format.value)}</span>
+                      <span className="w-full truncate font-medium">{getExportFormatLabel(format.value)}</span>
+                      <span className="w-full truncate text-muted-foreground">{getExportFormatDescription(format.value)}</span>
                     </button>
                   );
                 })}
@@ -2278,7 +2280,7 @@ export default function ReportBuilder({
                 <p className="text-xs font-medium text-muted-foreground">
                   {t('reports.reportBuilder.recipients.contacts')}
                 </p>
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                   {contacts.map(contact => (
                     <label
                       key={contact.id}

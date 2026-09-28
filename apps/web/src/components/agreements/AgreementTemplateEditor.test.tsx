@@ -87,6 +87,17 @@ describe('AgreementTemplateEditor', () => {
     await waitFor(() => expect(api.publishTemplateVersion).toHaveBeenCalledWith('tpl-1', 'ver-draft'));
   });
 
+  it('pairs the preview prose class with dark:prose-invert so text stays readable in dark mode (#7177)', async () => {
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
+
+    fireEvent.click(screen.getByTestId('template-preview-toggle'));
+
+    const preview = await screen.findByTestId('template-preview');
+    expect(preview).toHaveClass('prose');
+    expect(preview).toHaveClass('dark:prose-invert');
+  });
+
   it('blocks Publish while the body has un-saved edits and never destroys the typed text', async () => {
     render(<AgreementTemplateEditor templateId="tpl-1" />);
     await screen.findByTestId('agreement-template-editor');
@@ -235,5 +246,20 @@ describe('AgreementTemplateEditor', () => {
     expect(dialog).toHaveTextContent(/couldn.t check what this template is used by/i);
     // The warning half of the sentence must survive the fallback.
     expect(dialog).toHaveTextContent(/keep working/i);
+  });
+
+  // #7151: the header (back link, title, status, usage, and version/archive/
+  // upload buttons) must wrap on mobile instead of squeezing the title into
+  // a one-word column and clipping "New version" off-screen.
+  it('lets the header row stack and its buttons wrap below sm', async () => {
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    const addVersionBtn = await screen.findByTestId('template-add-version-btn');
+
+    const headerRow = addVersionBtn.closest('[class*="flex-col"]');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.className).toMatch(/sm:flex-row/);
+
+    const actionsContainer = addVersionBtn.closest('[class*="flex-wrap"]');
+    expect(actionsContainer).not.toBeNull();
   });
 });

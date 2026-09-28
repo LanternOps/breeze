@@ -1855,6 +1855,38 @@ describe('bmr routes', () => {
     ]);
   });
 
+  // Server-only images pair with an older binaries release: the recovery ISO
+  // catalog must advertise that release's media (version + manifest), never the
+  // server's own version — which has no recovery assets at all.
+  it('server-only image: the catalog follows the paired binaries release', async () => {
+    const saved = { ...process.env };
+    try {
+      process.env.BINARY_SOURCE = 'github';
+      process.env.BREEZE_VERSION = '0.118.2';
+      process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+      delete process.env.BINARY_VERSION;
+      delete process.env.BINARY_GITHUB_REPOSITORY;
+      delete process.env.GITHUB_REPO;
+      lookupReleaseManifestAssetForDisplayMock.mockResolvedValue(null);
+
+      const res = await app.request('/backup/bmr/boot-media', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      for (const entry of body.data) expect(entry.version).toBe('0.118.0');
+      expect(lookupReleaseManifestAssetForDisplayMock).toHaveBeenCalled();
+      for (const [, manifestUrl] of lookupReleaseManifestAssetForDisplayMock.mock.calls) {
+        expect(manifestUrl).toContain('/releases/download/v0.118.0/');
+      }
+    } finally {
+      process.env = saved;
+    }
+  });
+
   it('degrades to null checksums when the release manifest cannot be resolved', async () => {
     lookupReleaseManifestAssetForDisplayMock.mockResolvedValue(null);
 

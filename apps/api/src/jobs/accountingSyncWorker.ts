@@ -96,11 +96,18 @@ export const ACCOUNTING_SYNC_QUEUE = 'accounting-sync';
 // `connectionId` (Xero W01): the exact connection the job was enqueued for. It
 // is optional ONLY so jobs enqueued before W01 still parse; every enqueue helper
 // below requires it. See `accountingJobConnection.ts` for the drop rules.
+//
+// `requestedBy` (#7251): `'operator'` marks a push a person asked for (the bulk
+// push route). The worker's `pushMode` gate applies only to AUTOMATIC pushes
+// (the invoice-issue and quote-accept hooks), which carry no marker. Absent
+// means automatic, so a job enqueued before #7251 keeps the old behaviour.
+export type InvoicePushRequestedBy = 'operator';
 interface PushInvoiceJobData {
   type: 'push-invoice';
   invoiceId: string;
   partnerId: string;
   connectionId?: string;
+  requestedBy?: InvoicePushRequestedBy;
 }
 interface VoidInvoiceJobData {
   type: 'void-invoice';
@@ -209,7 +216,9 @@ export function getAccountingSyncQueue(): Queue<AccountingSyncJobData> {
  *     exception is a `delete-payment` whose mapping has no remote id: its
  *     grace-window resolution needs no live realm — see
  *     `paymentDeleteAwaitsRemoteRef`.
- *   - `pushMode: 'manual'` gates INVOICE PUSH jobs only. VOID jobs always
+ *   - `pushMode: 'manual'` gates AUTOMATIC INVOICE PUSH jobs only (the
+ *     issue / quote-accept hooks); an operator push (`requestedBy:
+ *     'operator'`, the bulk route — #7251) runs in either mode. VOID jobs always
  *     process when a mapping exists — books must not keep a voided invoice
  *     open in QuickBooks just because auto-push is off;
  *     `voidInvoiceInAccounting` itself no-ops when the invoice was never
@@ -302,7 +311,10 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
     // already refused in manual mode, so a payment job in manual mode came from
     // the invoice push's own fan-out and must run. Deletes run in every mode:
     // once Breeze created a Payment in QuickBooks it owns its removal.
-    if (data.type === 'push-invoice' && resolution.conn.pushMode !== 'auto') return;
+    // An OPERATOR push (bulk push, #7251) runs in every mode too: `manual`
+    // means "don't push on issue", not "don't push when I ask". Only unmarked
+    // (automatic) jobs are gated.
+    if (data.type === 'push-invoice' && data.requestedBy !== 'operator' && resolution.conn.pushMode !== 'auto') return;
 
     if (data.type === 'push-payment' || data.type === 'delete-payment') {
       await processPaymentJob(data, runInDbContext, target, ctx);
@@ -431,25 +443,42 @@ const ENQUEUE_OPTS = {
 };
 
 /**
- * Enqueue an accounting push for a just-issued invoice. Fire-and-forget: a
- * Redis outage must NEVER fail the issuance that triggered it — the invoice
- * is simply not auto-synced until the next manual push/retry.
+ * Enqueue an accounting invoice push. Two producers: the automatic
+ * issue / quote-accept hooks (no `requestedBy`; gated by `pushMode`) and the
+ * operator bulk push route (`requestedBy: 'operator'`; runs in either mode).
+ * Fire-and-forget: a Redis outage must NEVER fail the issuance that triggered
+ * an automatic push — the invoice is simply not auto-synced until the next
+ * manual push/retry.
  *
  * `connectionId` (Xero W01) is REQUIRED: the job runs against that connection
- * or is dropped. The jobId is unchanged, so dedup semantics do not move.
+ * or is dropped. `opts.requestedBy` marks an operator push (#7251) — see the
+ * jobId note in the body.
  *
  * Returns whether the queue ACCEPTED the job. The post-commit issue/void hooks
  * ignore it (there is nothing they could do), but the bulk push route reports
  * it: counting a swallowed Redis failure as "enqueued" told the operator the
  * work was queued when nothing had been.
  */
-export async function enqueueAccountingInvoicePush(invoiceId: string, partnerId: string, connectionId: string): Promise<boolean> {
+export async function enqueueAccountingInvoicePush(
+  invoiceId: string,
+  partnerId: string,
+  connectionId: string,
+  opts: { requestedBy?: InvoicePushRequestedBy } = {},
+): Promise<boolean> {
+  // Operator pushes get their OWN jobId (#7251). BullMQ silently drops an add()
+  // whose jobId is already waiting/delayed/active, so sharing
+  // `accounting-push-<id>` with the issue hook's automatic job — which a
+  // manual-mode worker drops — would swallow the operator's request while the
+  // bulk route still counted it `enqueued`. Automatic jobs keep the original
+  // id, so their dedup is unchanged. In auto mode an automatic and an operator
+  // job for the same invoice can both be queued: the same overlap the
+  // synchronous single-invoice push route already has with a queued job.
+  const job: PushInvoiceJobData = opts.requestedBy
+    ? { type: 'push-invoice', invoiceId, partnerId, connectionId, requestedBy: opts.requestedBy }
+    : { type: 'push-invoice', invoiceId, partnerId, connectionId };
+  const jobId = opts.requestedBy ? `accounting-push-${opts.requestedBy}-${invoiceId}` : `accounting-push-${invoiceId}`;
   try {
-    await getAccountingSyncQueue().add(
-      'push-invoice',
-      { type: 'push-invoice', invoiceId, partnerId, connectionId },
-      { jobId: `accounting-push-${invoiceId}`, ...ENQUEUE_OPTS }
-    );
+    await getAccountingSyncQueue().add('push-invoice', job, { jobId, ...ENQUEUE_OPTS });
     return true;
   } catch (err) {
     console.error('[AccountingSyncWorker] failed to enqueue push-invoice', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);

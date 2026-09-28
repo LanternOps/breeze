@@ -10,13 +10,18 @@ import {
   recoveryTokens,
   restoreJobs,
 } from '../db/schema';
-import { getGithubReleasePageUrl } from './binarySource';
+import { getGithubReleasePageUrl, getPairedBinariesVersion } from './binarySource';
 
 export const BMR_BOOTSTRAP_VERSION = 1;
+// The recovery helper ships with the agent binaries, so a server-only image
+// (paired with an older binaries release) must require that release's helper,
+// not its own server version — otherwise every recovery ISO it serves is
+// rejected as too old. Full-release images: pairing empty, unchanged.
 export const BMR_MIN_HELPER_VERSION =
-  process.env.BREEZE_VERSION ||
-  process.env.BINARY_VERSION ||
-  '0.5.0';
+  getPairedBinariesVersion() ??
+  (process.env.BREEZE_VERSION ||
+    process.env.BINARY_VERSION ||
+    '0.5.0');
 
 // Parse a helper version exactly like the recovery console's parseVersion
 // (agent/internal/recoveryconsole/console.go): strip one leading "v", split

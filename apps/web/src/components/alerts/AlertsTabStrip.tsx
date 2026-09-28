@@ -46,8 +46,19 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
     return '/alerts';
   }, [path]);
 
+  // These tabs are real `<a href>` navigation across separate Astro pages
+  // (not client-side tab switching), so they can't move onto OverflowTabs
+  // (its "More" menu is button/onTabChange-only and would turn page
+  // navigation into a no-op). Instead let the row scroll horizontally so
+  // every tab — including the last one, previously clipped off-screen at
+  // 390px — stays reachable; `shrink-0` keeps each tab's own width, and
+  // `overflow-x-auto` gives the row a native scrollbar/swipe instead of
+  // clipping.
   return (
-    <nav className="flex gap-1 border-b text-sm" aria-label={t('alertsTabStrip.alertsSections')}>
+    <nav
+      className="flex gap-1 overflow-x-auto border-b text-sm"
+      aria-label={t('alertsTabStrip.alertsSections')}
+    >
       {TABS.map((tab) => {
         const isActive = tab.href === activeHref;
         const isDisabled = tab.href === '/alerts/correlations' && alertCorrelationDisabled;
@@ -56,7 +67,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
             <span
               key={tab.href}
               className={
-                'inline-flex h-10 cursor-not-allowed items-center px-4 -mb-px border-b-2 text-muted-foreground opacity-70 ' +
+                'inline-flex h-10 shrink-0 cursor-not-allowed items-center whitespace-nowrap px-4 -mb-px border-b-2 text-muted-foreground opacity-70 ' +
                 (isActive ? 'border-muted-foreground/40 font-semibold' : 'border-transparent')
               }
               aria-current={isActive ? 'page' : undefined}
@@ -73,7 +84,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
             href={tab.href}
             data-testid={`alerts-tab-${tab.labelKey}`}
             className={
-              'inline-flex h-10 items-center px-4 -mb-px border-b-2 transition ' +
+              'inline-flex h-10 shrink-0 items-center whitespace-nowrap px-4 -mb-px border-b-2 transition ' +
               (isActive
                 ? 'border-primary font-semibold text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/40')

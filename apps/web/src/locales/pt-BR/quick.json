@@ -69,6 +69,7 @@
   "windowsPrompt": {
     "title": "O Windows vai perguntar antes de executar",
     "body": "Ao abrir o arquivo, o Windows mostra um aviso perguntando se você permite a execução. O arquivo é assinado digitalmente, então esse aviso mostra um fornecedor: deve aparecer {{publisher}}. Se disser que o fornecedor é desconhecido, ou mostrar um nome que você não esperava, feche o aviso e ligue para quem está ajudando você em vez de continuar.",
+    "bodyUnsigned": "Ao abrir o arquivo, o Windows mostra um aviso perguntando se você permite a execução. Ele pode dizer que o fornecedor é desconhecido; isso é normal para este programa e não é sinal de problema. Continue somente se você começou esta sessão com a pessoa que está ajudando você. Caso contrário, feche o aviso e não execute o arquivo.",
     "publisher": "o fornecedor do Breeze"
   },
   "trust": {

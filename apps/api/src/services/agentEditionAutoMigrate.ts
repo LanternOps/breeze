@@ -444,8 +444,9 @@ function warnStagedVersionHoldBack(args: {
   let reason: string;
   if (stagedVersion === 'latest') {
     reason =
-      `this deployment's staged release is unknown (BREEZE_VERSION unset), so the raw MSI route's ` +
-      `installer cannot be matched to the resolved target ${target}. Set BREEZE_VERSION to the staged release.`;
+      `this deployment's staged binaries release is unknown (BINARY_VERSION, BREEZE_BINARIES_VERSION and ` +
+      `BREEZE_VERSION all unset), so the raw MSI route's installer cannot be matched to the resolved target ` +
+      `${target}. Set BREEZE_VERSION to the staged release.`;
   } else if (pin) {
     reason =
       `the effective agent version pin ${pin} (org setting, or the partner default it inherits) holds them at ` +

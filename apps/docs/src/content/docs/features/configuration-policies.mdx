@@ -112,9 +112,11 @@ Compliance rules support three enforcement levels:
 
 | Mode | Behaviour |
 |---|---|
-| `monitor` | Report non-compliance only. No action taken. |
-| `warn` | Log a warning and send notifications. |
-| `enforce` | Auto-remediate using the linked remediation script. Falls back to `warn` if no script is set. |
+| `monitor` | Report non-compliance only. No alert, no action. |
+| `warn` | Raise a **medium** alert for each non-compliant device. It is delivered like any other alert and resolves itself once the device is compliant again. |
+| `enforce` | Raise a **high** alert and auto-remediate using the linked remediation script. Without a script it behaves like `warn` at high severity. |
+
+Compliance alerts always belong to the device's organization, including for partner-wide policies. Changing a rule to `monitor` resolves the alerts it already raised at its next evaluation.
 
 ## Creating a policy
 

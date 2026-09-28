@@ -33,10 +33,10 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
-import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS } from '@breeze/shared/validators';
+import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape } from './aiToolSchemas';
+import { deliveryToolShape, executeCommandShape, setDeviceContextShape } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -311,11 +311,16 @@ export const TOOL_TIERS = {
   // M3-D12 (#5999): read-only topology monitoring status for one site.
   get_topology_monitoring_status: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
-  // get_monitor / manage_monitor_definitions remain in the frozen
+  // get_monitor remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
   // — these two are new and wired directly instead of widening that list.
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
+  // #6669: the only chat path to author a monitor (e.g. software_presence
+  // "alert me when <app> is removed"). Tier 3 = approval-gated, matching its
+  // registered tier; the handler's site-ceiling gate (canMutateOrgWideGovernance)
+  // and the alerts:write RBAC map in aiGuardrails.ts were already in place.
+  manage_monitor_definitions: 3,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_remediation_suggestions: 1,
   list_incidents: 1,
@@ -995,7 +1000,7 @@ export function scriptProposalToolDefinitions(
         content: z.string().min(1).max(65536),
         goal: z.string().min(1).max(2000),
         expectedEffect: z.string().min(1).max(2000),
-        verification: z.record(z.string(), z.unknown()),
+        verification: scriptVerificationClaimSchema,
         rollbackNote: z.string().max(2000).optional(),
         deviceIds: z.array(uuid).min(1).max(10),
         runAs: z.enum(['system', 'user']).optional(),
@@ -1462,7 +1467,7 @@ export function buildBreezeSdkTools(
     tool(
       'get_device_hardware_health',
       registryDescription('get_device_hardware_health'),
-      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      { deviceId: uuid, includeEvents: z.boolean().optional(), includeReliability: z.boolean().optional() },
       makeHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -1662,16 +1667,7 @@ export function buildBreezeSdkTools(
     tool(
       'execute_command',
       registryDescription('execute_command'),
-      {
-        deviceId: uuid,
-        commandType: z.enum([
-          'list_processes', 'kill_process',
-          'list_services', 'start_service', 'stop_service', 'restart_service',
-          'file_list', 'file_read',
-          'event_logs_list', 'event_logs_query',
-        ]),
-        payload: z.record(z.string(), z.unknown()).optional(),
-      },
+      executeCommandShape,
       makeHandler('execute_command', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -2213,13 +2209,7 @@ export function buildBreezeSdkTools(
     tool(
       'set_device_context',
       registryDescription('set_device_context'),
-      {
-        deviceId: uuid,
-        contextType: z.enum(['issue', 'quirk', 'followup', 'preference']),
-        summary: z.string().min(1).max(255),
-        details: z.record(z.string(), z.unknown()).optional(),
-        expiresInDays: z.number().int().positive().max(365).optional(),
-      },
+      setDeviceContextShape,
       makeHandler('set_device_context', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -2789,6 +2779,24 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
       },
       makeHandler('reset_monitor_escalation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitor definition authoring (#6669). `definition` stays an open record
+    // here: the handler deep-validates it with createMonitorDefinitionSchema /
+    // updateMonitorDefinitionSchema and returns the first issue to the model.
+    tool(
+      'manage_monitor_definitions',
+      registryDescription('manage_monitor_definitions'),
+      {
+        action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        monitorId: uuid.optional(),
+        definition: z.record(z.string(), z.unknown()).optional(),
+        configPolicyId: uuid.optional(),
+        attachmentId: uuid.optional(),
+        enabled: z.boolean().optional(),
+        overrides: z.record(z.string(), z.unknown()).nullable().optional(),
+      },
+      makeHandler('manage_monitor_definitions', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

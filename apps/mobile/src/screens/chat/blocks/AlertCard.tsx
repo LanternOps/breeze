@@ -17,6 +17,7 @@ export interface AlertLike {
   message?: string | null;
   severity?: string | null;
   type?: string | null;
+  source?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   deviceHostname?: string | null;
@@ -59,6 +60,7 @@ export function toAlert(a: AlertLike): Alert {
     message: a.message ?? '',
     severity: normalizedSeverity,
     type: a.type ?? 'unknown',
+    source: a.source ?? undefined,
     deviceId: a.deviceId ?? undefined,
     deviceName: a.deviceName ?? a.deviceHostname ?? undefined,
     acknowledged: Boolean(a.acknowledged),

@@ -51,7 +51,7 @@ describe('planRecovery', () => {
     expect(plans).toEqual([]);
     expect(skipped).toHaveLength(1);
     expect(skipped[0].reason).toContain('still 0.65.6 (broken)');
-    expect(skipped[0].reason).toContain('Bump BREEZE_VERSION');
+    expect(skipped[0].reason).toContain('Deploy a server release whose binariesVersion (see /health) is newer first');
   });
 
   it('skips devices with null os_type with a distinct reason', () => {

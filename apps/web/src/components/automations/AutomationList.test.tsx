@@ -157,3 +157,21 @@ describe('AutomationList elevated actions', () => {
     expect(screen.queryByTestId('automation-elevated-badge')).toBeNull();
   });
 });
+
+describe('AutomationList empty state (#7155)', () => {
+  it('renders the empty state outside the table so it is not centered across a table wider than the screen', () => {
+    render(
+      <AutomationList
+        automations={[]}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRun={vi.fn()}
+        onToggle={vi.fn()}
+        onViewHistory={vi.fn()}
+      />
+    );
+
+    const emptyMessage = screen.getByText('No automations found. Try adjusting your search or filters.');
+    expect(emptyMessage.closest('table')).toBeNull();
+  });
+});

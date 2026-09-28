@@ -11,6 +11,9 @@ export interface PageHeaderProps {
   actions?: ReactNode;
   /** data-testid passthrough on the outer row. */
   testId?: string;
+  /** data-testid passthrough on the `h1` title, for pages migrating an
+   *  existing heading testid used elsewhere (e.g. e2e specs). */
+  headingTestId?: string;
 }
 
 /**
@@ -20,7 +23,14 @@ export interface PageHeaderProps {
  * title/description/actions layout — and its `md`-breakpoint wrap behavior —
  * lives in one place.
  */
-export function PageHeader({ icon, title, description, actions, testId }: PageHeaderProps): JSX.Element {
+export function PageHeader({
+  icon,
+  title,
+  description,
+  actions,
+  testId,
+  headingTestId,
+}: PageHeaderProps): JSX.Element {
   return (
     <div
       className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between"
@@ -36,7 +46,7 @@ export function PageHeader({ icon, title, description, actions, testId }: PageHe
           </div>
         )}
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          <h1 className="text-xl font-semibold tracking-tight" data-testid={headingTestId}>{title}</h1>
           {description && (
             <p className="mt-1 max-w-prose text-muted-foreground">{description}</p>
           )}

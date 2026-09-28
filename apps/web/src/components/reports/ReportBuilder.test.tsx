@@ -122,6 +122,28 @@ describe('ReportBuilder live preview', () => {
   });
 });
 
+describe('ReportBuilder a11y (#7158)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+  });
+
+  it('gives the icon-only "remove field" chip button an accessible name', async () => {
+    render(<ReportBuilder mode="builder" />);
+
+    // `devices` is the default builder type; its default selected fields
+    // include `hostname`, which the chip renders as "Hostname".
+    expect(await screen.findByRole('button', { name: 'Remove Hostname' })).toBeInTheDocument();
+  });
+
+  it('links the schedule "Run time" input to its label', async () => {
+    render(<ReportBuilder mode="builder" />);
+
+    // Delivery/schedule section is shown for every mode except 'adhoc'.
+    expect(await screen.findByLabelText('Run time')).toBeInTheDocument();
+  });
+});
+
 describe('ReportBuilder config preservation', () => {
   beforeEach(() => {
     vi.clearAllMocks();

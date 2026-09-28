@@ -527,6 +527,9 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
     templateName: template?.name,
     // #5289 — lets the web render a compiled rule read-only.
     managedByMonitorId: rule.managedByMonitorId ?? null,
+    // #7206 — built-in system anchor rule (services/monitors/systemManagedRules.ts):
+    // never offered for conversion.
+    systemManaged: template?.isBuiltIn === true,
     // #5289 — lets the Legacy rules list show a "Converted" badge instead of
     // the Convert action for a rule that already went through conversion.
     convertedToMonitorId: overrides.convertedToMonitorId ?? null,

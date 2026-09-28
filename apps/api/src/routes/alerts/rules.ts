@@ -6,6 +6,7 @@ import { db } from '../../db';
 import { alertRules, alertTemplates, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { notSystemManagedRule } from '../../services/monitors/systemManagedRules';
 import {
   listAlertRulesSchema,
 } from './schemas';
@@ -164,6 +165,11 @@ rulesRoutes.get(
       conditions.push(eq(alertRules.isActive, enabledFilter === 'true'));
     }
     if (query.includeRetired !== 'true') conditions.push(isNull(alertRules.retiredAt));
+    // #7206: in SQL, not client-side, so the page slice and `total` match the
+    // rows the Needs-conversion list renders.
+    if (query.needsConversion === 'true') {
+      conditions.push(isNull(alertRules.managedByMonitorId), notSystemManagedRule());
+    }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 

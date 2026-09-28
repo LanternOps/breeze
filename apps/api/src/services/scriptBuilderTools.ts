@@ -312,7 +312,7 @@ export function buildScriptBuilderTools(
     tool(
       'get_device_hardware_health',
       'Get current hardware health, components, collectors and optional recent events.',
-      { deviceId: uuid, includeEvents: z.boolean().optional() },
+      { deviceId: uuid, includeEvents: z.boolean().optional(), includeReliability: z.boolean().optional() },
       makeExistingHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
     ),
 

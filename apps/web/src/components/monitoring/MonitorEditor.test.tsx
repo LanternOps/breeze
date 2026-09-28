@@ -69,6 +69,18 @@ const MONITOR_M1_FIXTURE = {
   attachments: [],
 };
 
+describe('MonitorEditor back link (#7158 a11y)', () => {
+  it('gives the icon-only back-to-monitors link an accessible name', async () => {
+    fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
+    render(<MonitorEditor />);
+
+    expect(await screen.findByRole('link', { name: 'Back to Monitors' })).toHaveAttribute(
+      'href',
+      '/alerts/monitors',
+    );
+  });
+});
+
 describe('MonitorEditor owner scope hydration (#6391)', () => {
   it('omits the owner-scope block from the server markup so hydration matches', () => {
     // `isPartnerScope` is browser-only (it decodes the access token), so the

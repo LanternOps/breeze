@@ -36,6 +36,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 ARG APP_VERSION=0.2.0
 ENV APP_VERSION=${APP_VERSION}
+# Server-only release images bake the binaries release they pair with (empty
+# for full releases); read by services/binarySource.ts. Never set via compose.
+ARG BREEZE_BINARIES_VERSION=""
+ENV BREEZE_BINARIES_VERSION=${BREEZE_BINARIES_VERSION}
 
 # CVE-2026-45447: pinned base ships libcrypto3/libssl3 3.5.6; drop once the
 # node:24-alpine digest is refreshed past 3.5.7.

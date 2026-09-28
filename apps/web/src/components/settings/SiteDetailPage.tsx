@@ -408,6 +408,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           <a
             href={org ? `/organizations/${org.id}` : '/organizations'}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('siteDetailPage.backToOrganizations')}
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
@@ -486,8 +487,9 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                 <h2 className="text-lg font-semibold">{t('siteDetailPage.details.title')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">{t('siteForm.fields.name')}</label>
+                    <label htmlFor="site-detail-name" className="text-sm font-medium">{t('siteForm.fields.name')}</label>
                     <input
+                      id="site-detail-name"
                       value={formName}
                       onChange={handleFieldChange(setFormName)}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

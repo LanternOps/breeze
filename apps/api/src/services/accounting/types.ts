@@ -24,6 +24,48 @@ export interface ConnectionTokens {
   refreshTokenExpiresAt: Date;
 }
 
+/** One tenant (organisation) an OAuth grant can reach (Xero W02). */
+export interface ProviderTenant {
+  tenantId: string;
+  /** The provider's id for this user's link to the tenant (Xero: the connection id). */
+  connectionRef: string;
+  name: string;
+  /** Provider tenant type (Xero: 'ORGANISATION', 'PRACTICEMANAGER', …). */
+  tenantType: string;
+  /** The auth event that FIRST linked this tenant (Xero connection.authEventId). */
+  authEventId: string | null;
+}
+
+/**
+ * Providers whose OAuth grant can reach several tenants and whose callback
+ * carries no realm id (Xero W02). Absent = the callback's realmId IS the
+ * tenant (QuickBooks).
+ */
+export interface ProviderTenantSelection {
+  /** The provider tenant type that is connectable (Xero: 'ORGANISATION'). */
+  readonly connectableTenantType: string;
+  authEventIdOf(accessToken: string): string | null;
+  listGrantTenants(accessToken: string, authEventId: string): Promise<ProviderTenant[]>;
+  /** Reconnect lookup ONLY (plan refinement item 2) — never a fallback for a missing claim. */
+  listAllTenants(accessToken: string): Promise<ProviderTenant[]>;
+  removeTenantConnection(accessToken: string, connectionRef: string): Promise<void>;
+}
+
+/** One selectable option for a connection default-ref picker (income account, tax rate, bank account). */
+export interface ProviderSettingsOption {
+  ref: string;
+  label: string;
+  detail: string | null;
+}
+
+/** Pickers and organisation badge for a connection's settings step (Xero W02). */
+export interface ProviderSettingsOptions {
+  organisation: { name: string | null; isDemoCompany: boolean | null };
+  incomeAccounts: ProviderSettingsOption[];
+  taxRates: ProviderSettingsOption[];
+  bankAccounts: ProviderSettingsOption[];
+}
+
 export interface RemoteEntity {
   id: string;
   displayName: string;
@@ -426,6 +468,23 @@ export interface AccountingProvider {
   connectEnvironment(): AccountingEnvironment;
   /** Null when the instance is configured for this provider; otherwise an operator-facing reason. */
   configError(): string | null;
+  /**
+   * Providers whose OAuth grant can reach several tenants and whose callback
+   * carries no realm id (Xero W02). Absent = the callback's realmId IS the tenant (QuickBooks).
+   */
+  readonly tenantSelection?: ProviderTenantSelection;
+  /** Pickers for the connection's default refs (Xero W02). Absent = the provider has its own settings UI. */
+  listSettingsOptions?(conn: AccountingConnection): Promise<ProviderSettingsOptions>;
+  /**
+   * Best-effort provider-side removal of Breeze's link before the row is deleted
+   * (Xero: DELETE /connections/{provider_connection_ref}). NEVER token
+   * revocation — that removes every link the authorising user has to the app,
+   * which can include another Breeze partner's connection (spec quorum finding 3).
+   * The caller must pass a connection whose access token was obtained via
+   * `getValidAccessToken` — a stale token 401s at the provider and is
+   * indistinguishable from a transient failure.
+   */
+  releaseConnection?(conn: AccountingConnection): Promise<void>;
 }
 
 /**

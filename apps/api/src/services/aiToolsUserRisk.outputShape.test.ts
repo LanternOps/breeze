@@ -109,4 +109,51 @@ describe('get_fleet_health output shape (#6745)', () => {
     expect(compacted.hasMore).toBe(true);
     expect(typeof compacted.nextCursor).toBe('string');
   });
+
+  it('#7131: compaction keeps topIssues content instead of dropping it to a depth marker', async () => {
+    const raw = await tool().handler({ limit: 100, includeTopIssues: true }, auth());
+    const compacted = JSON.parse(compactToolResultForChat('get_fleet_health', raw)) as {
+      devices: Array<{ topIssues?: unknown }>;
+    };
+    expect(compacted.devices.length).toBeGreaterThan(0);
+    // The devices array itself is also bounded (a page of 100 compacts down
+    // to a handful of real rows + the ordinary "...N more items omitted"
+    // sentinel STRING as the last element) — skip that sentinel, it's not a
+    // device, and only check the real device rows.
+    const realDevices = compacted.devices.filter((d): d is { topIssues?: unknown } => typeof d === 'object' && d !== null);
+    expect(realDevices.length).toBeGreaterThan(0);
+    for (const device of realDevices) {
+      expect(device.topIssues).not.toBe('[truncated: max depth reached]');
+      expect(Array.isArray(device.topIssues)).toBe(true);
+      const issues = device.topIssues as unknown[];
+      expect(issues.length).toBeGreaterThan(0);
+      // At least one real issue item (not just a sentinel) must survive with
+      // its actual fields readable, not collapsed to the depth marker.
+      const firstIssue = issues[0];
+      expect(firstIssue).not.toBe('[truncated: max depth reached]');
+      expect(typeof firstIssue).toBe('object');
+      expect(firstIssue).toMatchObject({ type: expect.any(String), severity: expect.any(String) });
+    }
+  });
+
+  it('#7131: a realistic 13-device fleet with topIssues near the chat budget keeps them, not a depth marker', async () => {
+    // Reproduces the reported prod shape: a page just over MAX_TOOL_RESULT_CHARS
+    // (the original incident's raw output was 8,163 chars) needs only the depth-4
+    // tier to fit, not the full digest fallback.
+    const raw = await tool().handler({ limit: 13, includeTopIssues: true }, auth());
+    const compacted = JSON.parse(compactToolResultForChat('get_fleet_health', raw)) as {
+      devices: Array<{ topIssues?: unknown }>;
+    };
+    expect(Array.isArray(compacted.devices)).toBe(true);
+    const realDevices = compacted.devices.filter((d): d is { topIssues?: unknown } => typeof d === 'object' && d !== null);
+    expect(realDevices.length).toBeGreaterThan(0);
+    for (const device of realDevices) {
+      expect(device.topIssues).not.toBe('[truncated: max depth reached]');
+      expect(Array.isArray(device.topIssues)).toBe(true);
+      const issues = device.topIssues as unknown[];
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0]).not.toBe('[truncated: max depth reached]');
+      expect(issues[0]).toMatchObject({ type: expect.any(String), severity: expect.any(String) });
+    }
+  });
 });

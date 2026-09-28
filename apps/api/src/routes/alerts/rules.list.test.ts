@@ -40,7 +40,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  alertRules: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', isActive: 'isActive', createdAt: 'createdAt', templateId: 'templateId' },
+  alertRules: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', isActive: 'isActive', createdAt: 'createdAt', templateId: 'templateId', managedByMonitorId: 'managedByMonitorId', retiredAt: 'retiredAt' },
   alertTemplates: {},
   alerts: {},
   devices: {},
@@ -269,5 +269,43 @@ describe('GET /alerts/rules (dual-axis list, #2128)', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Access to this organization denied' });
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+  // #7206: the Monitors → "Needs conversion" list asks for needsConversion=true.
+  // Built-in system anchor rules (ownerless is_built_in templates, e.g.
+  // "Reboot pending too long") and monitor-managed rules are excluded in SQL,
+  // so the page slice and `total` agree with what the list renders.
+  it('needsConversion=true excludes built-in anchor rules and monitor-managed rules in the WHERE', async () => {
+    authRef.current = {
+      scope: 'organization',
+      partnerId: null,
+      orgId: 'org-1',
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+    dbQueueRef.current = [[{ count: 0 }], []];
+
+    const res = await makeApp().request('/alerts/rules?needsConversion=true');
+    expect(res.status).toBe(200);
+    const where = JSON.stringify(capturedWhere.current);
+    expect(where).toContain('is_built_in');
+    expect(where).toMatch(/not exists/i);
+    expect(where).toContain('managedByMonitorId');
+  });
+
+  it('without needsConversion the list is unchanged (built-in rules still listed)', async () => {
+    authRef.current = {
+      scope: 'organization',
+      partnerId: null,
+      orgId: 'org-1',
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+    dbQueueRef.current = [[{ count: 0 }], []];
+
+    const res = await makeApp().request('/alerts/rules');
+    expect(res.status).toBe(200);
+    const where = JSON.stringify(capturedWhere.current);
+    expect(where).not.toContain('is_built_in');
+    expect(where).not.toContain('managedByMonitorId');
   });
 });

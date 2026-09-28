@@ -27,6 +27,7 @@ import {
   getGithubReleaseArtifactManifestSignatureUrl,
   getGithubReleaseArtifactManifestUrl,
   getGithubReleaseVersion,
+  getPairedBinariesVersion,
 } from './binarySource';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
@@ -170,7 +171,11 @@ export async function resolveBackupBinary(
     fileName
   );
   const sourceRef = candidatePath;
-  const version = process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'workspace-local';
+  const version =
+    process.env.BINARY_VERSION ||
+    getPairedBinariesVersion() ||
+    process.env.BREEZE_VERSION ||
+    'workspace-local';
   await copyFile(candidatePath, destinationPath);
 
   const verified = await verifyBinaryChecksum({

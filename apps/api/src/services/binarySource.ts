@@ -30,9 +30,45 @@ export function getAgentAutoPromote(): boolean {
   return !['false', '0', 'no', 'off'].includes(raw);
 }
 
-export function getGithubReleaseVersion(): string {
-  return process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'latest';
+function envTrim(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
 }
+
+/**
+ * The binaries release this server image is paired with.
+ *
+ * Baked into the image as BREEZE_BINARIES_VERSION by the release pipeline, and
+ * set ONLY on server-only releases (a release that rebuilds the API/web/portal
+ * images but carries the previous full release's agent binaries forward). Full
+ * release images bake an empty value, so this returns undefined and every
+ * caller falls back to its pre-pairing expression unchanged.
+ *
+ * Never set this from compose: `${VAR:-}` in an `environment:` block would
+ * override the baked value with an empty string. Enforced by
+ * config/binariesVersionEnvContract.test.ts.
+ */
+export function getPairedBinariesVersion(): string | undefined {
+  return envTrim('BREEZE_BINARIES_VERSION');
+}
+
+/**
+ * The release whose agent binaries this server registers, redirects to and
+ * verifies against: an explicit BINARY_VERSION override (bring-your-own
+ * signing), else the image's paired binaries release, else the server's own
+ * BREEZE_VERSION, else "latest". Whitespace-only values count as unset.
+ */
+export function getBinariesVersion(): string {
+  return (
+    envTrim('BINARY_VERSION') ??
+    getPairedBinariesVersion() ??
+    envTrim('BREEZE_VERSION') ??
+    'latest'
+  );
+}
+
+/** @deprecated Alias kept for existing callers; identical to getBinariesVersion(). */
+export const getGithubReleaseVersion = getBinariesVersion;
 
 export function getGithubReleasePageUrl(): string {
   const version = getGithubReleaseVersion();

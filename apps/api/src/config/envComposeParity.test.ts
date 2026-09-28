@@ -285,6 +285,29 @@ describe('QuickBooks QBO_* env plumbing (finding I)', () => {
 });
 
 /**
+ * Xero (W02). Pinned on all four axes for the same reason QBO_* is: a var that
+ * validate.ts accepts but no compose file maps is a silent no-op.
+ */
+describe('Xero XERO_* env plumbing (W02)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const XERO_VARS = ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET', 'XERO_REDIRECT_URI', 'XERO_WEBHOOK_KEY', 'XERO_DAILY_CALL_LIMIT'] as const;
+
+  it.each(XERO_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+  it.each(XERO_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+  it.each(XERO_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+  it.each(XERO_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
+  });
+});
+
+/**
  * Partner sending domains (spec 2026-09-17 §11). Pinned on all four axes for
  * the same reason QBO_* is: a variable that validate.ts accepts but that no
  * compose file maps is a silent no-op — setting it in .env does nothing and the

@@ -73,9 +73,14 @@ export default function HelpPanel() {
         // off-canvas shell truly non-interactive so it can't intercept clicks
         // meant for page content on wide layouts, and its (off-viewport) Close
         // control drops out of the focus/hit-test order (#1419).
+        //
+        // shadow-2xl is applied only while open (#7150): once collapsed, the
+        // shell's left edge sits exactly on the viewport's right edge, and an
+        // always-on shadow's blur spilled back into view as a grey band on
+        // every page.
         inert={!isOpen}
-        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card shadow-2xl transition-transform duration-300 ${
-          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card transition-transform duration-300 ${
+          isOpen ? 'translate-x-0 shadow-2xl' : 'translate-x-full pointer-events-none'
         }`}
       >
         <div className="flex items-center justify-between border-b bg-card px-4 py-3">

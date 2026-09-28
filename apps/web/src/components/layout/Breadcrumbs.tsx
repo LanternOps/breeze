@@ -19,22 +19,22 @@ export default function Breadcrumbs({ items }: BreadcrumbsProps) {
   if (items.length <= 1) return null;
 
   return (
-    <nav aria-label={t('layout.breadcrumb')} className="mb-4">
-      <ol className="flex items-center gap-1 text-sm text-muted-foreground">
+    <nav aria-label={t('layout.breadcrumb')} className="mb-4 min-w-0">
+      <ol className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
         {items.map((item, index) => (
-          <li key={index} className="flex items-center gap-1">
+          <li key={index} className="flex min-w-0 items-center gap-1">
             {index > 0 && (
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
             )}
             {item.href && index < items.length - 1 ? (
               <a
                 href={item.href}
-                className="hover:text-foreground transition-colors"
+                className="truncate hover:text-foreground transition-colors"
               >
                 {item.label}
               </a>
             ) : (
-              <span className={index === items.length - 1 ? 'text-foreground font-medium truncate max-w-[200px]' : ''}>
+              <span className={index === items.length - 1 ? 'truncate text-foreground font-medium max-w-[200px]' : 'truncate'}>
                 {item.label}
               </span>
             )}

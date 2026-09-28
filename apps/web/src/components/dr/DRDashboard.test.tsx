@@ -74,6 +74,20 @@ describe('DRDashboard', () => {
     await screen.findByText('No DR executions have been launched yet.');
   });
 
+  it('wraps the plans and executions tables in a horizontally scrollable container so mobile content stays inside the card (#7155)', async () => {
+    render(<DRDashboard />);
+
+    const plansTable = await screen.findByText(/No recovery plans yet/i);
+    const plansWrapper = plansTable.closest('table')!.parentElement!;
+    expect(plansWrapper.className).toContain('overflow-x-auto');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Executions' }));
+
+    const executionsMessage = await screen.findByText('No DR executions have been launched yet.');
+    const executionsWrapper = executionsMessage.closest('table')!.parentElement!;
+    expect(executionsWrapper.className).toContain('overflow-x-auto');
+  });
+
   it('renders plan rows when data exists', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
@@ -231,5 +245,31 @@ describe('DRDashboard execute failure copy (#6382)', () => {
 
     expect(await screen.findByText(/backup write permission/i)).toBeInTheDocument();
     expect(screen.queryByText('backup_write_required')).toBeNull();
+  });
+});
+
+describe('DRDashboard header (#7151)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/dr/plans' || url === '/dr/executions?limit=100') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+  });
+
+  it('stacks the title and action buttons below md via the shared PageHeader', async () => {
+    render(<DRDashboard />);
+
+    const createPlanButton = await screen.findByRole('button', { name: 'Create Plan' });
+    const headerRow = createPlanButton.closest('[class*="flex-col"]');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.className).toContain('md:flex-row');
+
+    const actionsContainer = createPlanButton.closest('[class*="flex-wrap"]');
+    expect(actionsContainer).not.toBeNull();
   });
 });

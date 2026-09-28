@@ -12,6 +12,7 @@ import { normalizeAutomationTrigger } from '../../automationRuntime';
 import { monitorConversions, networkMonitors, partners } from '../../../db/schema';
 import type { AuthContext } from '../../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import { notSystemManagedRule } from '../systemManagedRules';
 import type { ConversionSourceTable, PendingConversionCounts } from './types';
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -139,7 +140,7 @@ export async function countPendingConversions(
       eq(configPolicyAutomations.triggerType, 'event'), eq(configPolicyAutomations.eventType, 'alert.triggered')))
     .groupBy(configurationPolicies.id, configurationPolicies.name);
   const [standalone] = await executor.select({ count: sql<number>`count(*)::int` }).from(alertRules)
-    .where(and(ownership(alertRules), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt)));
+    .where(and(ownership(alertRules), isNull(alertRules.managedByMonitorId), isNull(alertRules.retiredAt), notSystemManagedRule()));
   const networkOwner = scope.orgId
     ? eq(networkMonitors.orgId, scope.orgId)
     : scope.partnerId

@@ -73,6 +73,27 @@ describe('system routes', () => {
 
   // ────────────────────── GET /version ──────────────────────
   describe('GET /version', () => {
+    it('reports binariesVersion — the paired binaries release on a server-only image', async () => {
+      const saved = { ...process.env };
+      try {
+        process.env.BREEZE_VERSION = '0.118.2';
+        process.env.BREEZE_BINARIES_VERSION = '0.118.0';
+        delete process.env.BINARY_VERSION;
+        vi.mocked(getLatestVersion).mockResolvedValue({
+          latest: null,
+          fetchedAt: new Date(),
+          source: 'cache',
+        } as any);
+        const app = makeApp();
+        const res = await app.request('/system/version');
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.binariesVersion).toBe('0.118.0');
+      } finally {
+        process.env = saved;
+      }
+    });
+
     it('includes version, latest, isStale, latestFetchedAt fields', async () => {
       vi.mocked(getLatestVersion).mockResolvedValueOnce({
         latest: '99.99.99',

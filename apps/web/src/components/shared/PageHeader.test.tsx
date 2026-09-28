@@ -64,4 +64,18 @@ describe('PageHeader', () => {
     render(<PageHeader title="AI impact" testId="ai-impact-header" />);
     expect(screen.getByTestId('ai-impact-header')).toBeInTheDocument();
   });
+
+  it('passes through data-testid on the heading when headingTestId is provided', () => {
+    render(<PageHeader title="AI impact" headingTestId="ai-impact-heading" />);
+    expect(screen.getByTestId('ai-impact-heading')).toBe(
+      screen.getByRole('heading', { name: 'AI impact', level: 1 })
+    );
+  });
+
+  it('stacks the row vertically below md and switches to a row at md', () => {
+    render(<PageHeader title="AI impact" testId="header" />);
+    const header = screen.getByTestId('header');
+    expect(header.className).toContain('flex-col');
+    expect(header.className).toContain('md:flex-row');
+  });
 });

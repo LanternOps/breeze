@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const reg = vi.hoisted(() => ({
   qbo: { provider: 'quickbooks', displayName: 'QuickBooks', configError: vi.fn((): string | null => null),
     capabilities: { connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true } },
-  resolveActiveConnectionRef: vi.fn(),
+  getPartnerConnectionRef: vi.fn(),
 }));
 vi.mock('../../services/accounting/providerRegistry', () => ({
   findAccountingProvider: (id: string) => (id === 'quickbooks' ? reg.qbo : null),
@@ -14,7 +14,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
 }));
 vi.mock('../../db', () => ({ db: { marker: 'ambient-db' } }));
 vi.mock('../../services/accounting/accountingConnectionService', () => ({
-  resolveActiveConnectionRef: reg.resolveActiveConnectionRef,
+  getPartnerConnectionRef: reg.getPartnerConnectionRef,
 }));
 import { listProvidersHandler, providerGateResponse } from './providerGate';
 
@@ -73,20 +73,26 @@ describe('listProvidersHandler', () => {
   }
 
   it('reads the active connection through the NON-decrypting ref on the ambient db', async () => {
-    reg.resolveActiveConnectionRef.mockResolvedValueOnce({ id: 'c1', provider: 'quickbooks', status: 'reauth_required' });
+    reg.getPartnerConnectionRef.mockResolvedValueOnce({ id: 'c1', provider: 'quickbooks', status: 'reauth_required' });
     const res = await list('p1');
     expect(res.status).toBe(200);
-    expect(reg.resolveActiveConnectionRef).toHaveBeenCalledWith({ marker: 'ambient-db' }, 'p1');
+    expect(reg.getPartnerConnectionRef).toHaveBeenCalledWith({ marker: 'ambient-db' }, 'p1');
     expect((await res.json()).activeConnection).toEqual({ provider: 'quickbooks', status: 'reauth_required' });
   });
 
   it('reports an unconfigured provider as configured:false and no connection as null', async () => {
-    reg.resolveActiveConnectionRef.mockResolvedValueOnce(null);
+    reg.getPartnerConnectionRef.mockResolvedValueOnce(null);
     reg.qbo.configError.mockReturnValueOnce('QuickBooks OAuth is not configured on this instance');
     const res = await list();
     expect(await res.json()).toEqual({
       data: [{ id: 'quickbooks', displayName: 'QuickBooks', configured: false, capabilities: reg.qbo.capabilities }],
       activeConnection: null,
     });
+  });
+
+  it('reports a pending_tenant row as the active connection (so the other card greys out)', async () => {
+    reg.getPartnerConnectionRef.mockResolvedValueOnce({ id: 'c1', provider: 'xero', status: 'pending_tenant' });
+    const res = await list('p1');
+    expect((await res.json()).activeConnection).toEqual({ provider: 'xero', status: 'pending_tenant' });
   });
 });

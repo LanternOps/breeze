@@ -90,6 +90,7 @@ export function accountingConnectorState(status: string): ConnectorState {
     case 'reauth_required':
       return 'reauth_required';
     case 'disconnected':
+    case 'pending_tenant': // a half-finished connect is not a working connection
       return 'disconnected';
     default:
       return 'error';

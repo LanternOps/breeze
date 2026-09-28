@@ -29,7 +29,7 @@ import { cn } from "@/lib/utils";
 import { useJwtClaims } from "@/lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useHashTab } from "@/lib/useHashState";
-import { OverflowTabs } from "../shared/OverflowTabs";
+import { OverflowTabs, overflowPanelId, overflowTabId } from "../shared/OverflowTabs";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -498,6 +498,9 @@ export default function ConfigPolicyDetailPage({
           <a
             href="/configuration-policies"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={i18n.t(
+              "policies:configurationPolicies.configPolicyDetailPage.backToList",
+            )}
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
@@ -537,6 +540,17 @@ export default function ConfigPolicyDetailPage({
         onTabChange={(id) => selectTab(id as Tab)}
       />
 
+      {/* Tab panel: exactly one of the activeTab-gated blocks below renders
+          at a time, so this single wrapper always matches whichever tab
+          button's aria-controls is currently pointing at it (axe:
+          aria-valid-attr-value / aria-required-children — #7179). */}
+      <div
+        role="tabpanel"
+        id={overflowPanelId(activeTab)}
+        aria-labelledby={overflowTabId(activeTab)}
+        tabIndex={-1}
+        className="space-y-6"
+      >
       {/* Overview Tab */}
       {activeTab === "overview" && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -547,20 +561,22 @@ export default function ConfigPolicyDetailPage({
           </h2>
           <div className="mt-4 grid gap-4">
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-name" className="text-sm font-medium">
                 {i18n.t("common:labels.name")}
               </label>
               <input
+                id="config-policy-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-description" className="text-sm font-medium">
                 {i18n.t("common:labels.description")}
               </label>
               <textarea
+                id="config-policy-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
                 className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -755,6 +771,7 @@ export default function ConfigPolicyDetailPage({
             partnerId={policy.partnerId}
           />
         )}
+      </div>
     </div>
   );
 }

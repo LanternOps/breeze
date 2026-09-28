@@ -7,6 +7,7 @@ import { pctFromFraction } from './invoiceTypes';
 import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { useHashTab } from '../../lib/useHashState';
+import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
@@ -177,20 +178,21 @@ export default function PartnerBillingSettingsPage() {
     { id: 'connections', labelKey: 'partnerBillingSettingsTabs.connections' },
   ];
   const renderedTabs = TABS.filter((tab) => !tab.reserved);
+  const overflowTabs: OverflowTab[] = renderedTabs.map((tab) => ({
+    id: tab.id,
+    label: t(/* i18n-dynamic */ tab.labelKey),
+    icon: null,
+  }));
 
   return (
     <div className="space-y-6" data-testid="partner-billing-settings">
-      <div role="tablist" className="flex gap-1 border-b" data-testid="billing-settings-tabs">
-        {renderedTabs.map((tab) => (
-          <button
-            key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id}
-            onClick={() => { window.location.hash = tab.id; setActiveTab(tab.id); }}
-            data-testid={`billing-settings-tab-${tab.id}`}
-            className={activeTab === tab.id ? 'border-b-2 border-primary px-4 py-2 text-sm font-medium -mb-px' : 'border-b-2 border-transparent px-4 py-2 text-sm font-medium text-muted-foreground -mb-px'}
-          >
-            {t(/* i18n-dynamic */ tab.labelKey)}
-          </button>
-        ))}
+      <div data-testid="billing-settings-tabs">
+        <OverflowTabs
+          tabs={overflowTabs}
+          activeTab={activeTab}
+          onTabChange={(id) => { window.location.hash = id; setActiveTab(id as BillingTab); }}
+          testIdPrefix="billing-settings-tab-"
+        />
       </div>
 
       {activeTab === 'defaults' && (
