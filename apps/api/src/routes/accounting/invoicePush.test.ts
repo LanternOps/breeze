@@ -387,9 +387,12 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ enqueued: 2, skipped: 1, failed: 0 });
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledTimes(2);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', 'c1');
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1', 'c1');
-    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1', 'c1');
+    // #7251: every bulk job carries the operator marker — the worker's
+    // pushMode gate drops unmarked (automatic) jobs in manual mode, which made
+    // bulk push a silent no-op in exactly the mode that needs it.
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', 'c1', { requestedBy: 'operator' });
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1', 'c1', { requestedBy: 'operator' });
+    expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalledWith(INVOICE_ID_FOREIGN, 'p1', 'c1', expect.anything());
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -457,7 +460,7 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     });
     const res = await pushBulk([INVOICE_ID], `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, 'c1');
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, 'c1', { requestedBy: 'operator' });
   });
 
   // Xero W01 capability gate (spec: routes return 409 capability_unavailable).

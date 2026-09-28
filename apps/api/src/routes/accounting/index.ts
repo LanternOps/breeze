@@ -1262,7 +1262,8 @@ accountingRoutes.post(
     let skipped = 0;
     for (const invoiceId of invoiceIds) {
       if (!ownedIds.has(invoiceId) || !conn) { skipped++; continue; }
-      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId, conn.id)) enqueued++;
+      // Operator-initiated: runs even in pushMode 'manual' (#7251).
+      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId, conn.id, { requestedBy: 'operator' })) enqueued++;
       else failed++;
     }
 
