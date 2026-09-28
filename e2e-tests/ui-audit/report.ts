@@ -263,7 +263,7 @@ export function renderMarkdown(
       '|---|---|---|---|---|',
     );
     for (const f of shell) {
-      const cell = (v: string) => v.replace(/\|/g, '\\|').slice(0, 120);
+      const cell = (v: string) => v.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').slice(0, 120);
       lines.push(`| ${f.severity} | ${f.kind} | ${f.paths.length} | \`${cell(f.selector ?? '')}\` | ${cell(f.message)} |`);
     }
     lines.push('');
@@ -279,7 +279,7 @@ export function renderMarkdown(
       '| Severity | Source | Rule / kind | Count | Routes | Samples |',
       '|---|---|---|---|---|---|',
     );
-    const cell = (v: string) => v.replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 90);
+    const cell = (v: string) => v.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 90);
     for (const g of nonVisual) {
       lines.push(
         `| ${g.severity} | ${g.source} | ${g.kind} | ${g.count} | ${g.paths.length} | ${g.samples.slice(0, 3).map((x) => `\`${cell(x)}\``).join('<br>')} |`,
