@@ -105,4 +105,18 @@ describe('EnrollDeviceStep — installer device count (#2992)', () => {
 
     expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=5');
   });
+
+  // #7217 — the parent key is minted for this one installer. If the build
+  // fails the server must discard it rather than leave a live key behind.
+  it('asks the installer route to discard its parent key on failure', async () => {
+    mockHappyPath();
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('setup-download-installer'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('discardKeyOnFailure=1');
+  });
 });

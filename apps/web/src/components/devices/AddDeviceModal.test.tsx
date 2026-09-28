@@ -326,7 +326,7 @@ describe('AddDeviceModal', () => {
       if (url === '/enrollment-keys') {
         return makeJsonResponse({ id: 'key-456', key: 'raw-key-def' }, true, 201);
       }
-      if (url === '/enrollment-keys/key-456/installer-link') {
+      if (url === '/enrollment-keys/key-456/installer-link?discardKeyOnFailure=1') {
         return makeJsonResponse({
           url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?h=dlh_abc123',
           expiresAt: '2026-04-14T00:00:00Z',
@@ -357,7 +357,7 @@ describe('AddDeviceModal', () => {
     // parent — max_usage is an enforced enrollment budget, not a display label.
     expect(createBody.maxUsage).toBeUndefined();
     const linkCall = fetchWithAuthMock.mock.calls[1];
-    expect(String(linkCall[0])).toBe('/enrollment-keys/key-456/installer-link');
+    expect(String(linkCall[0])).toBe('/enrollment-keys/key-456/installer-link?discardKeyOnFailure=1');
     expect(JSON.parse((linkCall[1] as RequestInit).body as string).ttlMinutes)
       .toBe(43200);
   });
@@ -870,5 +870,128 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
       expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('30');
     });
     expect(optionLabels('link-ttl')).toEqual(['in about 30 minutes']);
+  });
+});
+
+// #7217 — every Download / Generate Link click mints a parent key first. A
+// failed attempt must not leave that key live: the server discards it on an
+// HTTP failure (the request carries ?discardKeyOnFailure=1), and the modal
+// deletes it itself when the request never got an answer.
+describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setOrgStore();
+    authState.user = { hasPassword: true };
+  });
+
+  function deleteCalls() {
+    return fetchWithAuthMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+    );
+  }
+
+  it('asks the installer route to discard the key on failure', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d1' }, true, 201);
+      if (url.startsWith('/enrollment-keys/key-d1/installer/')) {
+        return makeJsonResponse({ error: 'MSI not available' }, false, 503);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => expect(screen.getByText(/MSI not available/)).toBeDefined());
+    const dlUrl = String(fetchWithAuthMock.mock.calls[1][0]);
+    expect(dlUrl).toContain('discardKeyOnFailure=1');
+    // The server discarded it; the modal must not send a second delete.
+    expect(deleteCalls()).toHaveLength(0);
+  });
+
+  it('asks the link route to discard the key on failure', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d2' }, true, 201);
+      if (url.startsWith('/enrollment-keys/key-d2/installer-link')) {
+        return makeJsonResponse({ error: 'macOS PKG not reachable' }, false, 503);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Generate Link'));
+
+    await waitFor(() => expect(screen.getByText(/macOS PKG not reachable/)).toBeDefined());
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toBe(
+      '/enrollment-keys/key-d2/installer-link?discardKeyOnFailure=1',
+    );
+    expect(deleteCalls()).toHaveLength(0);
+  });
+
+  it('deletes the key itself when the installer request never gets an answer', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d3' }, true, 201);
+      if (url.startsWith('/enrollment-keys/key-d3/installer/')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url === '/enrollment-keys/key-d3' && init?.method === 'DELETE') {
+        return makeJsonResponse({ success: true });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => expect(screen.getByText(/Failed to fetch/)).toBeDefined());
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+    expect(String(deleteCalls()[0][0])).toBe('/enrollment-keys/key-d3');
+  });
+
+  it('deletes the key itself when the link request never gets an answer', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d4' }, true, 201);
+      if (url.startsWith('/enrollment-keys/key-d4/installer-link')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url === '/enrollment-keys/key-d4' && init?.method === 'DELETE') {
+        return makeJsonResponse({ success: true });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Generate Link'));
+
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+    expect(String(deleteCalls()[0][0])).toBe('/enrollment-keys/key-d4');
+  });
+
+  it('logs a key it could not delete instead of dropping it silently', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d5' }, true, 201);
+      if (url.startsWith('/enrollment-keys/key-d5/installer/')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (init?.method === 'DELETE') return makeJsonResponse({ error: 'nope' }, false, 500);
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() =>
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not delete/i),
+        expect.objectContaining({ keyId: 'key-d5' }),
+      ),
+    );
+    errSpy.mockRestore();
   });
 });

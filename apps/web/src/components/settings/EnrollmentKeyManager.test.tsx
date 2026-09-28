@@ -74,6 +74,7 @@ interface Row {
   id: string;
   orgId: string;
   siteId: string | null;
+  siteName?: string | null;
   name: string;
   shortCode?: string | null;
   hasShortLink?: boolean;
@@ -158,7 +159,8 @@ describe('EnrollmentKeyManager — short code column', () => {
   });
 
   it('renders a dash when short code is absent', async () => {
-    routeFetch([makeRow({ shortCode: null })]);
+    // Named site, so the only dash on the row is the short-code cell's.
+    routeFetch([makeRow({ shortCode: null, siteId: 's-1', siteName: 'HQ Office' })]);
     render(<EnrollmentKeyManager />);
     await screen.findByText('Prod key');
     expect(screen.getByText('—')).toBeTruthy();
@@ -176,6 +178,51 @@ describe('EnrollmentKeyManager — short code column', () => {
     await screen.findByText('Prod key');
     expect(screen.getByText(/hidden.*enrollment permission/i)).toBeTruthy();
     expect(screen.queryByText('—', { selector: 'span' })).toBeNull();
+  });
+});
+
+// #7217 — Add Device mints keys with identical names ("Add device installer
+// (2026-09-27)"); the bound site is what tells them apart.
+describe('EnrollmentKeyManager — site column (#7217)', () => {
+  it('shows the site each key enrolls into', async () => {
+    routeFetch([
+      makeRow({ id: 'k-1', name: 'Add device installer', siteId: 's-1', siteName: 'HQ Office' }),
+      makeRow({ id: 'k-2', name: 'Add device installer', siteId: 's-2', siteName: 'Branch Office' }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    expect(await screen.findByText('HQ Office')).toBeTruthy();
+    expect(screen.getByText('Branch Office')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Site' })).toBeTruthy();
+    expect(screen.getByTestId('key-site-k-1').textContent).toBe('HQ Office');
+  });
+
+  it('renders a dash for a key with no site', async () => {
+    routeFetch([makeRow({ id: 'k-9', siteId: null, siteName: null, shortCode: 'ABC123XYZ0' })]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText('Prod key');
+    expect(screen.getByTestId('key-site-k-9').textContent).toBe('—');
+  });
+});
+
+// #7217 (sweep paper cut #44) — a role without enrollment-key access used to
+// see "Failed to fetch enrollment keys" and a Retry that can only 403 again.
+describe('EnrollmentKeyManager — access denied (#7217)', () => {
+  it('renders an access-denied state, not a retryable error, on 403', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ error: 'Forbidden' }, false, 403));
+    render(<EnrollmentKeyManager />);
+
+    expect(await screen.findByTestId('enrollment-keys-denied')).toBeTruthy();
+    expect(screen.queryByText(/Failed to fetch enrollment keys/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+
+  it('keeps the retryable error for other failures', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ error: 'boom' }, false, 500));
+    render(<EnrollmentKeyManager />);
+
+    expect(await screen.findByText(/Failed to fetch enrollment keys/)).toBeTruthy();
+    expect(screen.queryByTestId('enrollment-keys-denied')).toBeNull();
   });
 });
 
