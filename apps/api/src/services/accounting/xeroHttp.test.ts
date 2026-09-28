@@ -12,8 +12,8 @@ vi.mock('./accountingRateLimit', () => ({
 }));
 
 import {
-  classifyXeroInvoiceKind, classifyXeroValidation, decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections,
-  parseXeroDate, requestXeroTokens, requireXeroBody, xeroApiError, xeroApiGet, xeroApiWrite, xeroArray,
+  classifyXeroInvoiceKind, classifyXeroValidation, decodeXeroAuthEventId, deleteXeroConnection, formatXeroIfModifiedSince,
+  listXeroConnections, parseXeroDate, requestXeroTokens, requireXeroBody, xeroApiError, xeroApiGet, xeroApiWrite, xeroArray,
   xeroIdempotencyKey, xeroQuery, xeroTokenError, XERO_CONNECTIONS_URL, XERO_REFRESH_TOKEN_LIFETIME_MS, XERO_SCOPES,
   XERO_TOKEN_URL,
 } from './xeroHttp';
@@ -585,5 +585,34 @@ describe('invoice refusals through the write helper (Xero W04)', () => {
   it('W03 classifications are unchanged (a duplicate contact name stays validation + duplicate_name)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(failing('The contact name Acme is already assigned to another contact.'));
     await expect(xeroApiWrite(ctx, 'PUT', 'Contacts', {}, 'op')).rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_name' });
+  });
+});
+
+describe('If-Modified-Since reads (Xero W05)', () => {
+  const ctx = { connectionId: 'c1', tenantId: 'ten-A', accessToken: 'at', rate: SPEC };
+
+  it('formats UTC to the second, no zone suffix (Xero: "yyyy-mm-ddThh:mm:ss")', () => {
+    expect(formatXeroIfModifiedSince(new Date('2026-09-27T08:05:09.987Z'))).toBe('2026-09-27T08:05:09');
+  });
+
+  it('sends the header only when asked', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Payments: [] }));
+    await xeroApiGet(ctx, 'Payments', 'op', { ifModifiedSince: new Date('2026-09-27T08:05:09Z') });
+    await xeroApiGet(ctx, 'Payments', 'op');
+    const headersOf = (i: number) => new Headers((fetchMock.mock.calls[i]![1] as RequestInit).headers);
+    expect(headersOf(0).get('if-modified-since')).toBe('2026-09-27T08:05:09');
+    expect(headersOf(1).get('if-modified-since')).toBeNull();
+  });
+
+  it('a 304 to a conditional read is "nothing changed" (null), never an error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 304 }));
+    await expect(xeroApiGet(ctx, 'Payments', 'op', { ifModifiedSince: new Date() })).resolves.toBeNull();
+  });
+
+  it('a 304 to an UNconditional read is still an error (transient)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 304 }));
+    await expect(xeroApiGet(ctx, 'Payments', 'op')).rejects.toMatchObject({ kind: 'transient', httpStatus: 304 });
   });
 });

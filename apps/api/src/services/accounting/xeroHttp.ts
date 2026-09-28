@@ -456,9 +456,22 @@ export function xeroArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+/**
+ * Xero's If-Modified-Since format: "A UTC timestamp (yyyy-mm-ddThh:mm:ss)",
+ * "accurate to the second" (Requests and responses). No zone suffix.
+ */
+export function formatXeroIfModifiedSince(at: Date): string {
+  return at.toISOString().slice(0, 19);
+}
+
+export interface XeroGetOptions {
+  /** Only rows created or modified since this instant (Xero W05 payment pull). */
+  ifModifiedSince?: Date;
+}
+
 async function xeroApiCall<T>(
   ctx: XeroCallContext, method: 'GET' | 'PUT' | 'POST', path: string, operation: string,
-  write?: { body: string; idempotencyKey?: string },
+  write?: { body: string; idempotencyKey?: string }, read?: XeroGetOptions,
 ): Promise<T> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${ctx.accessToken}`,
@@ -467,6 +480,7 @@ async function xeroApiCall<T>(
   };
   if (write) headers['Content-Type'] = 'application/json';
   if (write?.idempotencyKey) headers['Idempotency-Key'] = write.idempotencyKey;
+  if (read?.ifModifiedSince) headers['If-Modified-Since'] = formatXeroIfModifiedSince(read.ifModifiedSince);
   // The slot wraps only this leaf round trip (request + body read), like the
   // QuickBooks boundary; the abort budget starts inside the slot, so a queue
   // wait for a slot never eats into Xero's own response time.
@@ -486,6 +500,8 @@ async function xeroApiCall<T>(
     await noteDailyRemaining('xero', ctx.connectionId, remaining);
   }
 
+  if (response.status === 304 && read?.ifModifiedSince) return null as T; // nothing changed since the cursor (lab X59)
+
   if (!response.ok) {
     const err = xeroApiError(operation, response.status, response.headers, text);
     console.error(
@@ -501,9 +517,9 @@ async function xeroApiCall<T>(
   }
 }
 
-/** A tenant-scoped Accounting API GET through the rate-limit slot. */
-export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operation: string): Promise<T> {
-  return xeroApiCall<T>(ctx, 'GET', path, operation);
+/** A tenant-scoped Accounting API GET through the rate-limit slot. With `ifModifiedSince`, a 304 resolves to null. */
+export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operation: string, opts: XeroGetOptions = {}): Promise<T> {
+  return xeroApiCall<T>(ctx, 'GET', path, operation, undefined, opts);
 }
 
 /**
