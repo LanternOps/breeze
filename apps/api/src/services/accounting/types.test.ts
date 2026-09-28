@@ -6,6 +6,7 @@ import type {
   AccountingEntityMapping,
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
+  AccountingInvoicePreflightRefusal,
   AccountingItemPayload,
   AccountingPaymentPayload,
   AccountingPaymentMethod,
@@ -171,5 +172,25 @@ describe('single-record lookups and supplierOnly (Xero W03)', () => {
   });
   it('declares supplierOnly as an optional boolean', () => {
     expectTypeOf<RemoteCustomer['supplierOnly']>().toEqualTypeOf<boolean | undefined>();
+  });
+});
+
+describe('invoice push preflight (Xero W04)', () => {
+  it('declares an optional synchronous preflight', () => {
+    expectTypeOf<AccountingProvider['invoicePushPreflight']>().toEqualTypeOf<
+      | ((
+        conn: AccountingConnection,
+        invoice: Pick<AccountingInvoicePayload, 'currencyCode' | 'taxTotal' | 'lines'>,
+      ) => AccountingInvoicePreflightRefusal | null)
+      | undefined
+    >();
+  });
+  it('declares an optional lookup of a pushed invoice by its Breeze id (refinement 22)', () => {
+    expectTypeOf<AccountingProvider['findRemoteInvoice']>().toEqualTypeOf<
+      ((conn: AccountingConnection, invoiceId: string) => Promise<{ id: string; remoteVersion?: string } | null>) | undefined
+    >();
+  });
+  it('a refusal carries a reason and an operator message', () => {
+    expectTypeOf<AccountingInvoicePreflightRefusal>().toEqualTypeOf<{ reason: 'settings' | 'totals'; message: string }>();
   });
 });

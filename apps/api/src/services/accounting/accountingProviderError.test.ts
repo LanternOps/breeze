@@ -158,3 +158,11 @@ describe('refusalCodeOf (Xero W03)', () => {
     expect(refusalCodeOf(null)).toBeNull();
   });
 });
+
+describe('remote_locked refusal code (Xero W04)', () => {
+  it('is a neutral refusal code on a validation error', () => {
+    expect(ACCOUNTING_REFUSAL_CODES).toContain('remote_locked');
+    expect(refusalCodeOf(new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'op', providerCode: 'remote_locked' })))
+      .toBe('remote_locked');
+  });
+});
