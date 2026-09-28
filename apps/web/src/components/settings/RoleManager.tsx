@@ -23,6 +23,9 @@ export type Role = {
   description: string | null;
   scope: 'system' | 'partner' | 'organization';
   isSystem: boolean;
+  // #5317: `roles.force_mfa` — members of this role must enroll MFA. Optional
+  // so an older API payload without it reads as "not required".
+  forceMfa?: boolean;
   parentRoleId?: string | null;
   parentRoleName?: string | null;
   permissions?: Permission[];
@@ -318,6 +321,15 @@ export default function RoleManager({
                     >
                       {role.isSystem ? t('roleManager.system') : t('roleManager.custom')}
                     </span>
+                    {role.forceMfa && (
+                      <span
+                        data-testid="role-mfa-required-badge"
+                        title={t('roleManager.mfaRequiredTooltip')}
+                        className="ml-2 inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700"
+                      >
+                        {t('roleManager.mfaRequired')}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm">
                     {role.parentRoleName ? (
@@ -671,13 +683,21 @@ export function PermissionMatrix({ catalog, permissions, inheritedPermissions = 
 }
 
 // Role Form Modal Component
+export type RoleFormData = {
+  name: string;
+  description: string;
+  permissions: Permission[];
+  parentRoleId: string | null;
+  forceMfa: boolean;
+};
+
 type RoleFormModalProps = {
   isOpen: boolean;
   mode: 'create' | 'edit' | 'clone';
   role?: Role | null;
   availableParentRoles?: Role[];
   inheritedPermissions?: EffectivePermission[];
-  onSubmit: (data: { name: string; description: string; permissions: Permission[]; parentRoleId: string | null }) => void;
+  onSubmit: (data: RoleFormData) => void;
   onCancel: () => void;
   loading?: boolean;
 };
@@ -696,6 +716,7 @@ export function RoleFormModal({
   const [description, setDescription] = useState(role?.description || '');
   const [permissions, setPermissions] = useState<Permission[]>(role?.permissions || []);
   const [parentRoleId, setParentRoleId] = useState<string | null>(role?.parentRoleId || null);
+  const [forceMfa, setForceMfa] = useState<boolean>(role?.forceMfa === true);
   const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogReloadKey, setCatalogReloadKey] = useState(0);
@@ -752,6 +773,9 @@ export function RoleFormModal({
     setDescription(role?.description || '');
     setPermissions(role?.permissions || []);
     setParentRoleId(role?.parentRoleId || null);
+    // Clone pre-fills from the source: the server copies force_mfa onto the
+    // clone, so the toggle must start from the same value it will get.
+    setForceMfa(role?.forceMfa === true);
   }, [isOpen, role, mode]);
 
   if (!isOpen) return null;
@@ -764,7 +788,7 @@ export function RoleFormModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ name, description, permissions, parentRoleId });
+    onSubmit({ name, description, permissions, parentRoleId, forceMfa });
   };
 
   // Filter out the current role from available parent roles (cannot be own parent)
@@ -833,6 +857,27 @@ export function RoleFormModal({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="space-y-2 rounded-md border bg-muted/40 p-4">
+            <label
+              htmlFor="role-force-mfa"
+              className="flex items-center justify-between gap-4 text-sm font-medium"
+            >
+              <span>{i18n.t('settings:roleManager.requireMfaForThisRole')}</span>
+              <input
+                id="role-force-mfa"
+                data-testid="role-force-mfa-toggle"
+                type="checkbox"
+                checked={forceMfa}
+                onChange={(e) => setForceMfa(e.target.checked)}
+                disabled={loading}
+                className="h-4 w-4 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t('settings:roleManager.requireMfaForThisRoleHelp')}
+            </p>
           </div>
 
           <div className="space-y-2">
