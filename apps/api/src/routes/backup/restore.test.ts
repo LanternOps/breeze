@@ -125,6 +125,13 @@ vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => 
   };
 });
 
+// Device-name enrichment is covered in deviceNames.test.ts; keep these list
+// tests focused on scoping (they assert exact select() call counts).
+vi.mock('./deviceNames', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./deviceNames')>()),
+  attachDeviceNames: async (_orgId: string, rows: unknown[]) => rows,
+}));
+
 import { restoreRoutes } from './restore';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';

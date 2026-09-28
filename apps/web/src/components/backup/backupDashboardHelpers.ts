@@ -294,3 +294,10 @@ export function buildLinePath(values: number[], maxValue: number): string {
     .join(' ');
 }
 import { formatDateTime } from '@/lib/dateTimeFormat';
+
+const ISO_TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g;
+
+/** Attention-item text is composed server-side with raw ISO timestamps; show them in the user's format (#7213). */
+export function localizeIsoTimestamps(text: string): string {
+  return text.replace(ISO_TIMESTAMP_RE, (iso) => formatDateTime(iso, { fallback: iso }));
+}

@@ -123,7 +123,9 @@
     "score": "Puan",
     "estRto": "Tah. RTO",
     "estRpo": "Tah. RPO",
-    "riskFactors": "Risk Faktörleri"
+    "riskFactors": "Risk Faktörleri",
+    "reason": "Neden",
+    "noDevicesScoredYet": "Henüz hiçbir cihazın hazırlık puanı yok."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Doğrulama verileri yükleniyor...",
@@ -521,14 +523,19 @@
     "command": "Komut:",
     "targetPath": "Hedef yolu:",
     "completed": "Tamamlandı:",
-    "resultPayload": "Sonuç yükü",
     "noRestoreHistoryYetStartARestoreTo": "Henüz geri yükleme geçmişi yok. Canlı sonuç ayrıntılarını buraya yüklemek için bir geri yükleme başlatın.",
     "recentRestoreHistory": "Son geri yükleme geçmişi",
     "mostRecentRestoreJobsForThisOrganization": "Bu kuruluş için en yeni geri yükleme işleri.",
     "noRestoreHistoryYet": "Henüz geri yükleme geçmişi yok.",
-    "restore": "geri yükleme ·",
     "files2": "Dosyalar:",
-    "size": "Boyut:"
+    "size": "Boyut:",
+    "filesSelected_one": "{{count}} dosya seçildi",
+    "filesSelected_other": "{{count}} dosya seçildi",
+    "unknownDevice": "Bilinmeyen cihaz",
+    "kindVm": "VM olarak geri yükle",
+    "kindInstantBoot": "Anında önyükleme",
+    "kindSelective": "Seçmeli geri yükleme",
+    "kindFull": "Tam geri yükleme"
   },
   "sLAConfigDialog": {
     "name": "Ad",
@@ -675,7 +682,9 @@
     "outputPathHint": "Yeniden oluşturma ana bilgisayarında .vhdx ile biten mutlak yol.",
     "outputPathInvalid": ".vhdx ile biten mutlak bir yol girin.",
     "startRebuild": "Yeniden oluşturmayı başlat",
-    "rebuildStarted": "Yeniden oluşturma başlatıldı. VHDX, işlem tamamlandığında yeniden oluşturma ana bilgisayarında görünecek."
+    "rebuildStarted": "Yeniden oluşturma başlatıldı. VHDX, işlem tamamlandığında yeniden oluşturma ana bilgisayarında görünecek.",
+    "enterAVmNameToContinue": "Devam etmek için bir VM adı girin.",
+    "enterAVmNameOnTheVmNameStep": "Geri yüklemeyi başlatmak için “VM Adı” adımında bir VM adı girin."
   },
   "vaultConfigDialog": {
     "device": "Cihaz",

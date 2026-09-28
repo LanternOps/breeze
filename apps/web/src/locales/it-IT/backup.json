@@ -123,7 +123,9 @@
     "score": "Punteggio",
     "estRto": "RTO stim.",
     "estRpo": "RPO stim.",
-    "riskFactors": "Fattori di rischio"
+    "riskFactors": "Fattori di rischio",
+    "reason": "Motivo",
+    "noDevicesScoredYet": "Nessun dispositivo ha ancora un punteggio di prontezza."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Caricamento dati di verifica...",
@@ -521,14 +523,19 @@
     "command": "Comando:",
     "targetPath": "Percorso destinazione:",
     "completed": "Completato:",
-    "resultPayload": "Payload risultato",
     "noRestoreHistoryYetStartARestoreTo": "Nessuna cronologia di ripristino. Avvia un ripristino per caricare qui i dettagli del risultato in tempo reale.",
     "recentRestoreHistory": "Cronologia ripristini recente",
     "mostRecentRestoreJobsForThisOrganization": "Processi di ripristino più recenti per questa organizzazione.",
     "noRestoreHistoryYet": "Nessuna cronologia di ripristino.",
-    "restore": "ripristino ·",
     "files2": "File:",
-    "size": "Dimensione:"
+    "size": "Dimensione:",
+    "filesSelected_one": "{{count}} file selezionato",
+    "filesSelected_other": "{{count}} file selezionati",
+    "unknownDevice": "Dispositivo sconosciuto",
+    "kindVm": "Ripristina come VM",
+    "kindInstantBoot": "Avvio istantaneo",
+    "kindSelective": "Ripristino selettivo",
+    "kindFull": "Ripristino completo"
   },
   "sLAConfigDialog": {
     "name": "Nome",
@@ -675,7 +682,9 @@
     "outputPathHint": "Percorso assoluto sull'host di ricostruzione che termina con .vhdx.",
     "outputPathInvalid": "Inserisci un percorso assoluto che termini con .vhdx.",
     "startRebuild": "Avvia ricostruzione",
-    "rebuildStarted": "Ricostruzione avviata. Il VHDX comparirà sull'host di ricostruzione al termine."
+    "rebuildStarted": "Ricostruzione avviata. Il VHDX comparirà sull'host di ricostruzione al termine.",
+    "enterAVmNameToContinue": "Inserisci un nome per la VM per continuare.",
+    "enterAVmNameOnTheVmNameStep": "Inserisci un nome per la VM nel passaggio «Nome VM» per avviare il ripristino."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",

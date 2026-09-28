@@ -7,6 +7,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId, toDateOrNull } from './helpers';
+import { attachDeviceNames } from './deviceNames';
 import {
   backupHealthQuerySchema,
   recoveryReadinessQuerySchema,
@@ -186,7 +187,7 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
   return c.json({
     // Keep the HTTP serialization boundary explicit even though the shared
     // list service also projects for its internal callers.
-    data: rows.map(toVerificationListItem)
+    data: await attachDeviceNames(orgId, rows.map(toVerificationListItem))
   });
 });
 
@@ -222,7 +223,7 @@ backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSION
   return c.json({
     data: {
       summary,
-      devices: rows
+      devices: await attachDeviceNames(orgId, rows)
     }
   });
 });

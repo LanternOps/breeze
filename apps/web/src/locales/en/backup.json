@@ -123,7 +123,9 @@
     "score": "Score",
     "estRto": "Est. RTO",
     "estRpo": "Est. RPO",
-    "riskFactors": "Risk Factors"
+    "riskFactors": "Risk Factors",
+    "reason": "Reason",
+    "noDevicesScoredYet": "No devices have a readiness score yet."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Loading verification data...",
@@ -521,14 +523,19 @@
     "command": "Command:",
     "targetPath": "Target path:",
     "completed": "Completed:",
-    "resultPayload": "Result payload",
     "noRestoreHistoryYetStartARestoreTo": "No restore history yet. Start a restore to load live result details here.",
     "recentRestoreHistory": "Recent restore history",
     "mostRecentRestoreJobsForThisOrganization": "Most recent restore jobs for this organization.",
     "noRestoreHistoryYet": "No restore history yet.",
-    "restore": "restore ·",
     "files2": "Files:",
-    "size": "Size:"
+    "size": "Size:",
+    "filesSelected_one": "{{count}} file selected",
+    "filesSelected_other": "{{count}} files selected",
+    "unknownDevice": "Unknown device",
+    "kindVm": "Restore as VM",
+    "kindInstantBoot": "Instant boot",
+    "kindSelective": "Selective restore",
+    "kindFull": "Full restore"
   },
   "sLAConfigDialog": {
     "name": "Name",
@@ -675,7 +682,9 @@
     "outputPathHint": "Absolute path on the rebuild host ending in .vhdx.",
     "outputPathInvalid": "Enter an absolute path that ends in .vhdx.",
     "startRebuild": "Start Rebuild",
-    "rebuildStarted": "Rebuild started. The VHDX will appear on the rebuild host when the rebuild completes."
+    "rebuildStarted": "Rebuild started. The VHDX will appear on the rebuild host when the rebuild completes.",
+    "enterAVmNameToContinue": "Enter a VM name to continue.",
+    "enterAVmNameOnTheVmNameStep": "Enter a VM name on the VM Name step to start the restore."
   },
   "vaultConfigDialog": {
     "device": "Device",

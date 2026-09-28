@@ -508,6 +508,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
             )}
           </div>
           <div className="flex items-center gap-2">
+            {runBackupDisabledReason ? (
+              <p className="text-xs text-muted-foreground">{runBackupDisabledReason}</p>
+            ) : null}
             <button
               type="button"
               onClick={() => void handleRunBackupNow()}
@@ -627,7 +630,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                   ? t('deviceBackupTab.lastBackupCompletedWithErrors')
                   : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
             </p>
-            <p className="mt-1 break-words opacity-90">{lastJobDiagnostic}</p>
+            <p className="mt-1 whitespace-pre-line break-words opacity-90">{lastJobDiagnostic}</p>
           </div>
         </div>
       )}

@@ -123,7 +123,9 @@
     "score": "Puntaje",
     "estRto": "RTO est.",
     "estRpo": "RPO est.",
-    "riskFactors": "Factores de riesgo"
+    "riskFactors": "Factores de riesgo",
+    "reason": "Motivo",
+    "noDevicesScoredYet": "Aún ningún dispositivo tiene una puntuación de preparación."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Cargando datos de verificación...",
@@ -521,14 +523,19 @@
     "command": "Comando:",
     "targetPath": "Ruta de destino:",
     "completed": "Terminado:",
-    "resultPayload": "Carga útil del resultado",
     "noRestoreHistoryYetStartARestoreTo": "Aún no hay historial de restauración. Inicie una restauración para cargar los detalles de los resultados en vivo aquí.",
     "recentRestoreHistory": "Historial de restauración reciente",
     "mostRecentRestoreJobsForThisOrganization": "Trabajos de restauración más recientes para esta organización.",
     "noRestoreHistoryYet": "Aún no hay historial de restauración.",
-    "restore": "restaurar ·",
     "files2": "Archivos:",
-    "size": "Tamaño:"
+    "size": "Tamaño:",
+    "filesSelected_one": "{{count}} archivo seleccionado",
+    "filesSelected_other": "{{count}} archivos seleccionados",
+    "unknownDevice": "Dispositivo desconocido",
+    "kindVm": "Restaurar como VM",
+    "kindInstantBoot": "Arranque instantáneo",
+    "kindSelective": "Restauración selectiva",
+    "kindFull": "Restauración completa"
   },
   "sLAConfigDialog": {
     "name": "Nombre",
@@ -675,7 +682,9 @@
     "outputPathHint": "Ruta absoluta en el host de reconstrucción que termine en .vhdx.",
     "outputPathInvalid": "Ingrese una ruta absoluta que termine en .vhdx.",
     "startRebuild": "Iniciar reconstrucción",
-    "rebuildStarted": "Reconstrucción iniciada. El VHDX aparecerá en el host de reconstrucción cuando termine."
+    "rebuildStarted": "Reconstrucción iniciada. El VHDX aparecerá en el host de reconstrucción cuando termine.",
+    "enterAVmNameToContinue": "Ingrese un nombre de VM para continuar.",
+    "enterAVmNameOnTheVmNameStep": "Ingrese un nombre de VM en el paso «Nombre de la VM» para iniciar la restauración."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",

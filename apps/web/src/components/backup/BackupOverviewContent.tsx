@@ -23,6 +23,7 @@ import {
   attentionIconMap,
   buildLinePath,
   formatBytes,
+  localizeIsoTimestamps,
   resolveJobConfig,
   resolveJobDevice,
   resolveJobDuration,
@@ -463,7 +464,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                       {item.title}
                     </div>
                     {item.description && (
-                      <p className="mt-1 text-xs text-muted-foreground">{item.description}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{localizeIsoTimestamps(item.description)}</p>
                     )}
                   </div>
                 );
