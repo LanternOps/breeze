@@ -595,4 +595,13 @@ describe('RemediationSuggestionsPanel', () => {
     expect(screen.getByRole('button', { name: /^worked$/i })).toBeTruthy();
     expect(screen.getByText('Outcome: running')).toBeTruthy();
   });
+
+  it('hides 👍/👎 on a cancelled attempt — it never counts, so a vote would change nothing (M5)', async () => {
+    const cancelled = { ...suggestion, status: 'executed', outcome: { state: 'cancelled', stateReason: 'script_cancelled', humanVote: null } };
+    serve([cancelled]);
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByTestId('remediation-outcome');
+    expect(screen.queryByTestId('remediation-vote-up')).toBeNull();
+    expect(screen.queryByTestId('remediation-vote-down')).toBeNull();
+  });
 });

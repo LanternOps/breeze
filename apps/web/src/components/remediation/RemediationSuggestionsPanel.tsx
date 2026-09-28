@@ -625,7 +625,8 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                         {t('longTail.remediation.RemediationSuggestionsPanel.execute')}
                       </button>
                     )}
-                    {suggestion.outcome && (
+                    {/* A cancelled attempt never counts (a vote on it changes nothing): no rating. */}
+                    {suggestion.outcome && suggestion.outcome.state !== 'cancelled' && (
                       <>
                         <button
                           type="button"

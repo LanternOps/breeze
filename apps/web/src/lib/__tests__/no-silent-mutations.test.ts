@@ -129,6 +129,10 @@ const TARGET_GLOBS = [
   // Metric anomaly episodes W04: card actions (dismiss/resolve/promote/unsnooze)
   // are the only mutation surface for the rewritten panel.
   'src/components/devices/AnomalyEpisodeCard.tsx',
+  // AI Suggested Fixes W1: Generate/accept/dismiss/execute plus the 👍/👎 vote
+  // and Done feed the fix-memory outcome record — a silent failure here loses
+  // the evidence a proven fix is built from.
+  'src/components/remediation/RemediationSuggestionsPanel.tsx',
   // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
   'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
@@ -846,7 +850,8 @@ describe('no silent mutations in targeted set', () => {
     // 195 -> 197: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
     // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 197 → 198.
     // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 198 → 199.
-    expect(absoluteFiles.length).toBe(199);
+    // AI Suggested Fixes W1 adds remediation/RemediationSuggestionsPanel.tsx: 199 → 200.
+    expect(absoluteFiles.length).toBe(200);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
