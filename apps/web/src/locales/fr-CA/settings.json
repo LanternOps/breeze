@@ -1077,6 +1077,7 @@
       "3": "L3 — biométrique + code PIN",
       "4": "L4 — clé matérielle + code PIN"
     },
+    "unreachableLevelHint": "Les niveaux qu’un appareil d’approbateur ne peut pas atteindre pour un niveau de risque ne sont pas offerts.",
     "requireEnrollment": "Exiger un appareil d’approbateur enregistré (appliquer — bloquer les approbations sous-assurées)",
     "enforcement": {
       "inherit": "Valeur par défaut de la plateforme",

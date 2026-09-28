@@ -38,7 +38,7 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 | **L4 -- hardware key + re-auth** | A hardware-attested, platform-bound security key -- Breeze verifies the attestation server-side, not just a claim from the device -- plus fresh re-authentication (password or login MFA). |
 
 <Aside type="tip">
-  The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed).
+  The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed). You also cannot pick a level an approver device can never produce for that tier -- the highest reachable level is L2 for low and medium, L3 for high and L4 for critical -- because such a floor would block every approval at that tier. A previously saved floor above that is treated as the highest reachable level.
 </Aside>
 
 An AI-authored script proposal's risk tier comes from its independent reviewer and feeds into this same floor table like any other approvable action. A proposal that matched a strict security pattern additionally requires the approver to hold the Scripts permission and complete a fresh MFA check before they can approve it, regardless of the proposal's risk tier — see [AI Script Authoring & Review](/features/ai-script-authoring/#the-approval-card).

@@ -1033,12 +1033,12 @@ describe('approval-security policy routes (Phase 4)', () => {
 
   it('GET /policy returns the stored policy as an explicit choice', async () => {
     mockLoadPolicy.mockResolvedValue({
-      floorOverrides: { high: 4 },
+      floorOverrides: { low: 2 },
       requireEnrollment: true,
       enforceFrom: new Date('2026-07-01T00:00:00.000Z'),
     });
     const body = await (await app.request('/authenticator/policy')).json();
-    expect(body.policy).toEqual({ floorOverrides: { high: 4 }, requireEnrollment: true, enforceFrom: '2026-07-01T00:00:00.000Z' });
+    expect(body.policy).toEqual({ floorOverrides: { low: 2 }, requireEnrollment: true, enforceFrom: '2026-07-01T00:00:00.000Z' });
     expect(body.effective).toMatchObject({ source: 'explicit', mode: 'enforcing', defaultNotice: null });
   });
 
@@ -1054,14 +1054,14 @@ describe('approval-security policy routes (Phase 4)', () => {
     const res = await app.request('/authenticator/policy', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ floorOverrides: { high: 4 }, requireEnrollment: null, enforceFrom: '2026-12-01T00:00:00.000Z' }),
+      body: JSON.stringify({ floorOverrides: { low: 2 }, requireEnrollment: null, enforceFrom: '2026-12-01T00:00:00.000Z' }),
     });
     expect(res.status).toBe(200);
     expect(dbState.insertValues[0]).toMatchObject({
       partnerId: 'partner-123',
       requireEnrollment: null,
       enforceFrom: null,
-      floorOverrides: { high: 4 },
+      floorOverrides: { low: 2 },
     });
   });
 
@@ -1079,18 +1079,31 @@ describe('approval-security policy routes (Phase 4)', () => {
     const res = await app.request('/authenticator/policy', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ floorOverrides: { medium: 3 }, requireEnrollment: true, enforceFrom: null }),
+      body: JSON.stringify({ floorOverrides: { low: 2 }, requireEnrollment: true, enforceFrom: null }),
     });
     expect(res.status).toBe(200);
     expect(dbState.insertValues[0]).toMatchObject({
       partnerId: 'partner-123',
       requireEnrollment: true,
-      floorOverrides: { medium: 3 },
+      floorOverrides: { low: 2 },
     });
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.authenticator.policy.update' }),
     );
+  });
+
+  it('PUT /policy rejects a floor no approver device can reach with a clear 400', async () => {
+    const res = await app.request('/authenticator/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorOverrides: { high: 4 }, requireEnrollment: true, enforceFrom: null }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('unreachable_floor');
+    expect(body.detail).toMatch(/high/);
+    expect(dbState.insertValues).toHaveLength(0);
   });
 
   it('PUT /policy rejects a weakening (raise-only violation) with 400', async () => {

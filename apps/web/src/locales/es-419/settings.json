@@ -1077,6 +1077,7 @@
       "3": "L3 — biométrico + PIN",
       "4": "L4 — llave de hardware + PIN"
     },
+    "unreachableLevelHint": "Los niveles que un dispositivo de aprobación no puede alcanzar para un nivel de riesgo no están disponibles.",
     "requireEnrollment": "Requerir un dispositivo de aprobación inscrito (aplicar: bloquear aprobaciones no aseguradas)",
     "enforcement": {
       "inherit": "Predeterminado de la plataforma",

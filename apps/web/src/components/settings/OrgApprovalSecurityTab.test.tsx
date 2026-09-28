@@ -79,6 +79,20 @@ describe('OrgApprovalSecurityTab', () => {
     expect(Array.from(highSelect.options).map((o) => o.value)).toEqual(['3', '4']);
   });
 
+  it('disables levels no approver device can reach for a tier', async () => {
+    render(<OrgApprovalSecurityTab />);
+    await waitFor(() => screen.getByTestId('level-high'));
+    const enabled = (tier: string) =>
+      Array.from((screen.getByTestId(`level-${tier}`) as HTMLSelectElement).options)
+        .filter((o) => !o.disabled)
+        .map((o) => o.value);
+    expect(enabled('low')).toEqual(['1', '2']);
+    expect(enabled('medium')).toEqual(['2']);
+    expect(enabled('high')).toEqual(['3']);
+    expect(enabled('critical')).toEqual(['4']);
+    expect(screen.getByTestId('floor-unreachable-hint')).toBeTruthy();
+  });
+
   it('with no explicit choice: shows "Platform default" selected and the inherited value with its source', async () => {
     render(<OrgApprovalSecurityTab />);
     await waitFor(() => screen.getByTestId('enforcement-choice'));
@@ -119,14 +133,14 @@ describe('OrgApprovalSecurityTab', () => {
     render(<OrgApprovalSecurityTab />);
     await waitFor(() => screen.getByTestId('save-approval-security'));
 
-    fireEvent.change(screen.getByTestId('level-medium'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('level-low'), { target: { value: '2' } });
     fireEvent.change(screen.getByTestId('enforcement-choice'), { target: { value: 'required' } });
     fireEvent.change(screen.getByTestId('enforce-from'), { target: { value: '2026-12-01' } });
     fireEvent.click(screen.getByTestId('save-approval-security'));
 
     await waitFor(() => expect(putPolicyMock).toHaveBeenCalled());
     const saved = putPolicyMock.mock.calls[0][0];
-    expect(saved.floorOverrides.medium).toBe(3);
+    expect(saved.floorOverrides.low).toBe(2);
     expect(saved.requireEnrollment).toBe(true);
     expect(saved.enforceFrom).toMatch(/^2026-12-01/);
   });
@@ -134,7 +148,7 @@ describe('OrgApprovalSecurityTab', () => {
   it('saving without touching the enforcement choice keeps it blank (inherit), not "not required"', async () => {
     render(<OrgApprovalSecurityTab />);
     await waitFor(() => screen.getByTestId('save-approval-security'));
-    fireEvent.change(screen.getByTestId('level-medium'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('level-low'), { target: { value: '2' } });
     fireEvent.click(screen.getByTestId('save-approval-security'));
     await waitFor(() => expect(putPolicyMock).toHaveBeenCalled());
     expect(putPolicyMock.mock.calls[0][0]).toMatchObject({ requireEnrollment: null, enforceFrom: null });

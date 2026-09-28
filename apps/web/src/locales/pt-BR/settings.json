@@ -1077,6 +1077,7 @@
       "3": "L3 — biometria + PIN",
       "4": "L4 — chave física + PIN"
     },
+    "unreachableLevelHint": "Níveis que um dispositivo de aprovador não consegue atingir para um nível de risco ficam indisponíveis.",
     "requireEnrollment": "Exigir um dispositivo de aprovador cadastrado (aplicar — bloquear aprovações com garantia insuficiente)",
     "enforcement": {
       "inherit": "Padrão da plataforma",

@@ -2,7 +2,13 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { authenticatorPolicies } from '../db/schema';
-import { DEFAULT_ASSURANCE_FLOOR, type AssuranceFloorOverrides, type RiskTier } from '@breeze/shared';
+import {
+  DEFAULT_ASSURANCE_FLOOR,
+  MAX_REACHABLE_ASSURANCE,
+  type AssuranceFloorOverrides,
+  type AssuranceLevel,
+  type RiskTier,
+} from '@breeze/shared';
 import { approverAssuranceDefaultEnforceFrom } from '../config/env';
 
 export type PartnerAuthenticatorPolicy = typeof authenticatorPolicies.$inferSelect;
@@ -37,7 +43,49 @@ export async function loadPartnerPolicy(partnerId: string | null): Promise<Partn
       .where(eq(authenticatorPolicies.partnerId, partnerId))
       .limit(1)
   );
-  return row ?? null;
+  if (!row) return null;
+  const { overrides, clampedTiers } = clampFloorOverrides(row.floorOverrides ?? {});
+  if (clampedTiers.length === 0) return row;
+  console.warn(
+    `[authenticatorPolicy] partner ${partnerId} has a floor no approver device can reach on ${clampedTiers.join(', ')}; ` +
+      'using the highest reachable level instead',
+  );
+  return { ...row, floorOverrides: overrides };
+}
+
+/**
+ * Lower any tier whose override is above MAX_REACHABLE_ASSURANCE to that
+ * maximum. Never goes below the Breeze floor (the maximum is always at or
+ * above it). Returns the tiers it changed so a caller can log them.
+ */
+export function clampFloorOverrides(overrides: AssuranceFloorOverrides): {
+  overrides: AssuranceFloorOverrides;
+  clampedTiers: RiskTier[];
+} {
+  const out: AssuranceFloorOverrides = {};
+  const clampedTiers: RiskTier[] = [];
+  for (const [tier, level] of Object.entries(overrides) as [RiskTier, AssuranceLevel][]) {
+    const max = MAX_REACHABLE_ASSURANCE[tier];
+    if (level > max) {
+      out[tier] = Math.max(max, DEFAULT_ASSURANCE_FLOOR[tier]) as AssuranceLevel;
+      clampedTiers.push(tier);
+    } else {
+      out[tier] = level;
+    }
+  }
+  return { overrides: out, clampedTiers };
+}
+
+/** Reject an override no approver device can satisfy. Throws on the first one. */
+export function validateReachable(overrides: AssuranceFloorOverrides): void {
+  for (const [tier, level] of Object.entries(overrides) as [RiskTier, AssuranceLevel][]) {
+    const max = MAX_REACHABLE_ASSURANCE[tier];
+    if (level > max) {
+      throw new Error(
+        `override for '${tier}' (${level}) cannot be met by any approver device; the highest reachable level for '${tier}' is ${max}`,
+      );
+    }
+  }
 }
 
 /** The stored fields the resolver reads. `requireEnrollment: null` = the
@@ -86,7 +134,7 @@ export function resolveEffectivePolicy(
   stored: StoredAuthenticatorPolicy | null,
   defaultEnforceFrom: Date,
 ): EffectiveAuthenticatorPolicy {
-  const floorOverrides = stored?.floorOverrides ?? {};
+  const floorOverrides = clampFloorOverrides(stored?.floorOverrides ?? {}).overrides;
   if (!stored || stored.requireEnrollment === null) {
     return {
       source: 'platform_default',

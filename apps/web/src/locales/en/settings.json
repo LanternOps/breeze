@@ -1077,6 +1077,7 @@
       "3": "L3 — biometric + PIN",
       "4": "L4 — hardware key + PIN"
     },
+    "unreachableLevelHint": "Levels an approver device cannot reach for a tier are unavailable.",
     "requireEnrollment": "Require an enrolled approver device (enforce — block under-assured approvals)",
     "enforcement": {
       "inherit": "Platform default",

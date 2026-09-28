@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { Loader2, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { DEFAULT_ASSURANCE_FLOOR, type RiskTier, type AssuranceLevel } from '@breeze/shared';
+import {
+  DEFAULT_ASSURANCE_FLOOR,
+  MAX_REACHABLE_ASSURANCE,
+  type RiskTier,
+  type AssuranceLevel,
+} from '@breeze/shared';
 import {
   getAuthenticatorPolicyState,
   putAuthenticatorPolicy,
@@ -160,7 +165,9 @@ export function OrgApprovalSecurityTab() {
                 {([1, 2, 3, 4] as AssuranceLevel[])
                   .filter((lvl) => lvl >= floor)
                   .map((lvl) => (
-                    <option key={lvl} value={lvl}>
+                    // Levels an approver device cannot produce for this tier
+                    // are shown but disabled; the server refuses them too.
+                    <option key={lvl} value={lvl} disabled={lvl > MAX_REACHABLE_ASSURANCE[tier]}>
                       {t(/* i18n-dynamic */ LEVEL_LABEL_KEYS[lvl])}
                     </option>
                   ))}
@@ -168,6 +175,9 @@ export function OrgApprovalSecurityTab() {
             </div>
           );
         })}
+        <p className="text-xs text-muted-foreground" data-testid="floor-unreachable-hint">
+          {t('orgApprovalSecurityTab.unreachableLevelHint')}
+        </p>
       </div>
 
       <div className="space-y-2">

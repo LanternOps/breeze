@@ -1077,6 +1077,7 @@
       "3": "L3 — biyometrik + PIN",
       "4": "L4 — donanım anahtarı + PIN"
     },
+    "unreachableLevelHint": "Bir onay cihazının bir risk düzeyi için ulaşamayacağı seviyeler kullanılamaz.",
     "requireEnrollment": "Kayıtlı bir onay cihazı gerektir (uygulama — yetersiz güvence altına alınan onayları engelleme)",
     "enforcement": {
       "inherit": "Platform varsayılanı",

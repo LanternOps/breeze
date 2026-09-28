@@ -16,6 +16,7 @@ import {
   loadPartnerPolicy,
   PLATFORM_DEFAULT_ENFORCED_TIERS,
   validateRaiseOnly,
+  validateReachable,
 } from '../services/authenticatorPolicy';
 import { approverAssuranceDefaultEnforceFrom } from '../config/env';
 import {
@@ -864,6 +865,13 @@ authenticatorRoutes.put(
       validateRaiseOnly(floorOverrides);
     } catch (err) {
       return c.json({ error: 'invalid_policy', detail: err instanceof Error ? err.message : 'raise-only violation' }, 400);
+    }
+    // Reachable-only: a floor above what any approver device can produce for
+    // that tier would block every approve at it once enforcement applies.
+    try {
+      validateReachable(floorOverrides);
+    } catch (err) {
+      return c.json({ error: 'unreachable_floor', detail: err instanceof Error ? err.message : 'unreachable floor' }, 400);
     }
 
     const values = {

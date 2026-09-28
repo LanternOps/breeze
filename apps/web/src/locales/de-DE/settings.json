@@ -1077,6 +1077,7 @@
       "3": "L3 – biometrisch + PIN",
       "4": "L4 – Hardwareschlüssel + PIN"
     },
+    "unreachableLevelHint": "Stufen, die ein Genehmigergerät für eine Risikostufe nicht erreichen kann, sind nicht verfügbar.",
     "requireEnrollment": "Ein registriertes Genehmigergerät erfordern (erzwingen – unzureichend gesicherte Genehmigungen blockieren)",
     "enforcement": {
       "inherit": "Plattformstandard",

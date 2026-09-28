@@ -115,7 +115,7 @@ describe('authenticatorPolicySchema (Phase 4)', () => {
     expect(r.success).toBe(true);
   });
   it('accepts a blank enforcement choice (null = inherit the platform default)', () => {
-    const r = authenticatorPolicySchema.safeParse({ floorOverrides: { high: 4 }, requireEnrollment: null, enforceFrom: null });
+    const r = authenticatorPolicySchema.safeParse({ floorOverrides: { low: 2 }, requireEnrollment: null, enforceFrom: null });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.requireEnrollment).toBeNull();
   });

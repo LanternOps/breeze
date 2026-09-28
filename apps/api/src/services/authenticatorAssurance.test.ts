@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { db } from '../db';
+import { MAX_REACHABLE_ASSURANCE } from '@breeze/shared';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { loadPartnerPolicy } from './authenticatorPolicy';
@@ -183,6 +184,16 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
     expect(capture.updateSet?.signCount).toBe(5);
     expect(capture.updateSet?.lastUsedAt).toBeInstanceOf(Date);
   });
+
+  it.each(['low', 'medium', 'high'] as const)(
+    'a verified device proof at %s reaches exactly MAX_REACHABLE_ASSURANCE (no higher level is producible)',
+    async (riskTier) => {
+      setupDbMocks({ id: 'dev-1', credentialId: 'cred-123', publicKey: 'pub', signCount: 2, transports: ['internal'] });
+      mockVerify.mockResolvedValue({ verified: true, newSignCount: 5 });
+      const d = await assertApprovalAssurance({ approvalId: 'appr-1', userId: 'user-1', riskTier, proof: PROOF });
+      expect(d.decidedAssuranceLevel).toBe(MAX_REACHABLE_ASSURANCE[riskTier]);
+    },
+  );
 
   it('proof present but device not found → throws', async () => {
     setupDbMocks(null);
@@ -761,9 +772,9 @@ describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-
   const ENFORCING = { requireEnrollment: true, enforceFrom: null, floorOverrides: {} as Record<string, number> };
 
   it('raises the required level from a partner floor override', async () => {
-    mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: { medium: 3 } });
-    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p' });
-    expect(d.requiredLevel).toBe(3); // default medium floor is 2, raised to 3
+    mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: { low: 2 } });
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'low', partnerId: 'p' });
+    expect(d.requiredLevel).toBe(2); // default low floor is 1, raised to 2
   });
 
   it('BLOCKS an under-assured approve when enforcing → StepUpRequiredError', async () => {

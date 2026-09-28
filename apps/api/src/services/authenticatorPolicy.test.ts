@@ -19,6 +19,8 @@ import {
   resolveEffectivePolicy,
   describeEffectivePolicy,
   validateRaiseOnly,
+  validateReachable,
+  clampFloorOverrides,
 } from './authenticatorPolicy';
 
 beforeEach(() => {
@@ -41,6 +43,58 @@ describe('loadPartnerPolicy', () => {
   it('returns null when no row', async () => {
     dbMock.limit.mockResolvedValueOnce([]);
     expect(await loadPartnerPolicy('p1')).toBeNull();
+  });
+  it('clamps a stored unreachable floor to the highest reachable level and logs a warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      dbMock.limit.mockResolvedValueOnce([
+        { partnerId: 'p1', requireEnrollment: true, enforceFrom: null, floorOverrides: { low: 3, medium: 4, high: 4, critical: 4 } },
+      ]);
+      const policy = await loadPartnerPolicy('p1');
+      expect(policy?.floorOverrides).toEqual({ low: 2, medium: 2, high: 3, critical: 4 });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/p1/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it('does not warn for a reachable floor', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      dbMock.limit.mockResolvedValueOnce([
+        { partnerId: 'p1', requireEnrollment: true, enforceFrom: null, floorOverrides: { low: 2 } },
+      ]);
+      expect((await loadPartnerPolicy('p1'))?.floorOverrides).toEqual({ low: 2 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('floor reachability', () => {
+  it('validateReachable accepts levels an approver device can produce', () => {
+    expect(() => validateReachable({ low: 2, medium: 2, high: 3, critical: 4 })).not.toThrow();
+    expect(() => validateReachable({})).not.toThrow();
+  });
+  it('validateReachable rejects a level above what the tier can reach', () => {
+    expect(() => validateReachable({ high: 4 })).toThrow(/high.*4.*highest reachable.*3/i);
+    expect(() => validateReachable({ medium: 3 })).toThrow(/medium/);
+    expect(() => validateReachable({ low: 3 })).toThrow(/low/);
+  });
+  it('clampFloorOverrides lowers only unreachable tiers, never below the Breeze floor', () => {
+    expect(clampFloorOverrides({ high: 4, low: 2, critical: 4 })).toEqual({
+      overrides: { high: 3, low: 2, critical: 4 },
+      clampedTiers: ['high'],
+    });
+    expect(clampFloorOverrides({})).toEqual({ overrides: {}, clampedTiers: [] });
+  });
+  it('resolveEffectivePolicy clamps an unreachable stored floor', () => {
+    const eff = resolveEffectivePolicy(
+      { requireEnrollment: true, enforceFrom: null, floorOverrides: { high: 4 } },
+      new Date('2026-11-05T00:00:00Z'),
+    );
+    expect(eff.floorOverrides).toEqual({ high: 3 });
   });
 });
 
@@ -74,7 +128,7 @@ describe('isEnforcing (no explicit choice → platform default)', () => {
   const defaultFrom = new Date('2026-11-05T00:00:00Z');
   const before = new Date('2026-11-04T23:59:59Z');
   const after = new Date('2026-11-05T00:00:00Z');
-  const inherit = { requireEnrollment: null, enforceFrom: null, floorOverrides: { medium: 3 as const } };
+  const inherit = { requireEnrollment: null, enforceFrom: null, floorOverrides: { low: 2 as const } };
 
   it('no row: not enforcing before the platform date', () => {
     expect(isEnforcing(null, before, 'high', defaultFrom)).toBe(false);
@@ -91,8 +145,8 @@ describe('isEnforcing (no explicit choice → platform default)', () => {
   it('a row that leaves the enforcement choice blank inherits the platform default', () => {
     expect(isEnforcing(inherit, before, 'high', defaultFrom)).toBe(false);
     expect(isEnforcing(inherit, after, 'high', defaultFrom)).toBe(true);
-    // A raised medium floor does not by itself make medium enforcing.
-    expect(isEnforcing(inherit, after, 'medium', defaultFrom)).toBe(false);
+    // A raised low floor does not by itself make low enforcing.
+    expect(isEnforcing(inherit, after, 'low', defaultFrom)).toBe(false);
   });
   it('reads the platform date from the environment when not passed', () => {
     const original = process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
@@ -124,12 +178,12 @@ describe('resolveEffectivePolicy / describeEffectivePolicy', () => {
   });
   it('blank enforcement choice → platform default, keeps the row floor overrides', () => {
     const eff = resolveEffectivePolicy(
-      { requireEnrollment: null, enforceFrom: new Date('2020-01-01T00:00:00Z'), floorOverrides: { high: 4 } },
+      { requireEnrollment: null, enforceFrom: new Date('2020-01-01T00:00:00Z'), floorOverrides: { low: 2 } },
       defaultFrom,
     );
     expect(eff.source).toBe('platform_default');
     expect(eff.enforceFrom).toEqual(defaultFrom); // a stored date is ignored while inheriting
-    expect(eff.floorOverrides).toEqual({ high: 4 });
+    expect(eff.floorOverrides).toEqual({ low: 2 });
   });
   it('explicit off is respected', () => {
     const eff = resolveEffectivePolicy({ requireEnrollment: false, enforceFrom: null, floorOverrides: {} }, defaultFrom);
