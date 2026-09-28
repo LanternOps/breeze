@@ -299,7 +299,7 @@ function C2CDashboardInner() {
       />
 
       {activeTab === 'connections' && (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
@@ -347,7 +347,7 @@ function C2CDashboardInner() {
       )}
 
       {activeTab === 'configs' && (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
@@ -388,7 +388,7 @@ function C2CDashboardInner() {
       )}
 
       {activeTab === 'jobs' && (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
@@ -472,7 +472,7 @@ function C2CDashboardInner() {
             </button>
           </div>
 
-          <div className="rounded-lg border">
+          <div className="overflow-x-auto rounded-lg border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50">

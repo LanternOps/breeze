@@ -278,7 +278,7 @@ function DRDashboardInner() {
       </div>
 
       {activeTab === 'plans' && (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
@@ -341,7 +341,7 @@ function DRDashboardInner() {
       )}
 
       {activeTab === 'executions' && (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">

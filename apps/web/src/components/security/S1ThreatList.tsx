@@ -283,7 +283,7 @@ export default function S1ThreatList() {
                 {t("securityS1ThreatList.resolved")}
               </option>
             </select>
-            <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <input
                 type="date"

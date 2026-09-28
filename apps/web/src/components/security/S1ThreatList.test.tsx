@@ -75,6 +75,15 @@ describe('S1ThreatList', () => {
     expect(firstUrl).not.toContain('orgId=');
   });
 
+  it('lets the date-range row wrap instead of overflowing on narrow screens (#7155)', async () => {
+    routeFetch([]);
+    render(<S1ThreatList />);
+    await waitFor(() => expect(getS1ThreatUrls().length).toBeGreaterThan(0));
+
+    const dateRangeRow = screen.getByLabelText('Start date').closest('div')!;
+    expect(dateRangeRow.className).toContain('flex-wrap');
+  });
+
   it('re-runs reads with non-empty filters and omits all/empty filters', async () => {
     routeFetch([
       {
