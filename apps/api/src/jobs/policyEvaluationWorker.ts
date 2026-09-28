@@ -104,11 +104,40 @@ async function processScanDuePolicies(): Promise<{ queued: number }> {
   return { queued: duePolicies.length };
 }
 
-async function processEvaluatePolicy(policyId: string): Promise<{
+/**
+ * #7347 — runs an evaluation in its own system transaction, then — only once
+ * that transaction has committed — enqueues the remediation runs it created
+ * (`afterCommit`, which never rejects). Each run row is INSERTed in the
+ * transaction and the execute-run worker reads it on its own connection:
+ * enqueued inside, a fast worker finds no run and throws `Automation run not
+ * found`, and a rollback leaves a job for a run that never existed. A
+ * transaction that throws — including a failed commit — propagates before
+ * anything is enqueued. The worker calls these with no ambient context, so
+ * this transaction is the outermost one and really commits when it returns.
+ */
+async function commitThenEnqueue<R extends object>(
+  evaluate: () => Promise<R & { afterCommit?: () => Promise<void> }>,
+): Promise<R> {
+  const { afterCommit, ...result } = await runWithSystemDbAccess(evaluate);
+  if (afterCommit) await afterCommit();
+  return result as unknown as R;
+}
+
+function processEvaluatePolicy(policyId: string): Promise<{
   policyId: string;
   devicesEvaluated: number;
   compliant: number;
   nonCompliant: number;
+}> {
+  return commitThenEnqueue(() => admitEvaluatePolicy(policyId));
+}
+
+async function admitEvaluatePolicy(policyId: string): Promise<{
+  policyId: string;
+  devicesEvaluated: number;
+  compliant: number;
+  nonCompliant: number;
+  afterCommit?: () => Promise<void>;
 }> {
   const [policy] = await db
     .select()
@@ -133,6 +162,7 @@ async function processEvaluatePolicy(policyId: string): Promise<{
   const result = await evaluatePolicy(policy, {
     source: 'policy-evaluation-worker',
     requestRemediation: true,
+    deferEnqueue: true,
   });
 
   return {
@@ -140,6 +170,7 @@ async function processEvaluatePolicy(policyId: string): Promise<{
     devicesEvaluated: result.devicesEvaluated,
     compliant: result.summary.compliant,
     nonCompliant: result.summary.non_compliant,
+    ...(result.afterCommit ? { afterCommit: result.afterCommit } : {}),
   };
 }
 
@@ -148,11 +179,14 @@ async function processConfigPolicyComplianceScan(): Promise<{
   devicesEvaluated: number;
 }> {
   try {
-    const result = await scanAndEvaluateConfigPolicyCompliance();
-    return {
-      rulesScanned: result.rulesScanned,
-      devicesEvaluated: result.devicesEvaluated,
-    };
+    return await commitThenEnqueue(async () => {
+      const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+      return {
+        rulesScanned: result.rulesScanned,
+        devicesEvaluated: result.devicesEvaluated,
+        ...(result.afterCommit ? { afterCommit: result.afterCommit } : {}),
+      };
+    });
   } catch (error: unknown) {
     if (isRelationNotFoundError(error)) {
       if (!_configPolicyTableWarningLogged) {
@@ -169,17 +203,20 @@ export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> 
   return new Worker<PolicyEvaluationJobData>(
     POLICY_EVALUATION_QUEUE,
     async (job: Job<PolicyEvaluationJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'scan-due-policies') {
-          return processScanDuePolicies();
-        }
+      const { data } = job;
+      if (data.type === 'scan-due-policies') {
+        return runWithSystemDbAccess(() => processScanDuePolicies());
+      }
 
-        if (job.data.type === 'scan-config-policy-compliance') {
-          return processConfigPolicyComplianceScan();
-        }
+      // #7347 — both evaluations own their transaction (commitThenEnqueue) and
+      // enqueue remediation runs only after it commits, so they run with NO
+      // ambient context here: wrapped in a worker transaction, theirs would
+      // join it and the enqueue would again precede the commit.
+      if (data.type === 'scan-config-policy-compliance') {
+        return processConfigPolicyComplianceScan();
+      }
 
-        return processEvaluatePolicy(job.data.policyId);
-      });
+      return processEvaluatePolicy(data.policyId);
     },
     {
       connection: getBullMQConnection(),

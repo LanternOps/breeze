@@ -7,7 +7,7 @@ import {
   softwareInstallMethods,
   softwareVersions,
 } from '../db/schema';
-import { createSoftwareDeployment } from './softwareDeployment';
+import { createSoftwareDeployment, type SoftwareInstallDeliveryReport } from './softwareDeployment';
 
 /**
  * #5505 W03 — everything that must be decided BEFORE a policy-owned
@@ -246,6 +246,15 @@ export async function hasUnfinishedPolicyOwnedInstall(
  * software_deployments_one_target_chk; passing both or neither throws at
  * softwareDeployment.ts:998-1002.
  *
+ * #7347 — the push is DEFERRED (`deferDelivery`). The only caller, the install
+ * remediation worker, runs this inside its system transaction, and the agent
+ * result path reads `device_commands` on its own connection: a push made here
+ * would let a fast agent answer a row that has not committed, and the result
+ * would be dropped as an orphan. The returned `deliver()` pushes the live
+ * agent's command; the caller runs it once its transaction has committed, with
+ * no ambient context. It never rejects. A command that is never pushed stays
+ * queued for the heartbeat claim.
+ *
  * Nothing here touches the EDR secret-resolution branch
  * (softwareDeployment.ts:554-584): that fires only when the resolved catalog
  * item's integrationProvider is 'huntress' or 'sentinelone', and this path adds
@@ -257,7 +266,12 @@ export async function createPolicyOwnedInstallDeployment(input: {
   orgId: string;
   deviceId: string;
   target: PolicyInstallTarget;
-}): Promise<{ deploymentId: string; status: 'pending' | 'failed'; message?: string }> {
+}): Promise<{
+  deploymentId: string;
+  status: 'pending' | 'failed';
+  message?: string;
+  deliver?: () => Promise<SoftwareInstallDeliveryReport>;
+}> {
   const targetFields =
     input.target.kind === 'install_method'
       ? { installMethodId: input.target.installMethodId, versionMode: 'latest' as const }
@@ -276,12 +290,14 @@ export async function createPolicyOwnedInstallDeployment(input: {
     targetType: 'devices',
     targetIds: [input.deviceId],
     softwarePolicyId: input.policyId,
+    deferDelivery: true,
   });
 
   return {
     deploymentId: result.deploymentId,
     status: result.status,
     ...(result.message ? { message: result.message } : {}),
+    ...(result.deliver ? { deliver: result.deliver } : {}),
   };
 }
 

@@ -20,6 +20,7 @@ vi.mock('../db', () => ({
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
   },
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));
@@ -29,8 +30,10 @@ vi.mock('./featureConfigResolver', () => ({
 }));
 
 import {
+  __remediationAfterCommit,
   __triggerConfigPolicyRemediation,
   __triggerRemediationAutomation,
+  type DeferredRemediationEnqueues,
 } from './policyEvaluationService';
 
 const DEVICE = {
@@ -173,5 +176,95 @@ describe('policy remediation actually dispatches (#3413)', () => {
 
     expect(result).toBe(false);
     expect(insertMock).not.toHaveBeenCalled();
+  });
+});
+
+// #7347 — both triggers run inside the policy-evaluation worker's transaction.
+// With a `deferred` collector they record the run instead of enqueueing it; the
+// worker runs `afterCommit` once that transaction has committed.
+describe('deferred remediation enqueue (#7347)', () => {
+  const CONFIG_RULE = {
+    id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    name: 'BitLocker enabled',
+    remediationScriptId: SCRIPT_ID,
+    featureLinkId: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+  };
+
+  it('config-policy remediation records the run for after commit instead of enqueueing it', async () => {
+    queueSelects(
+      [{ orgId: DEVICE.orgId }],
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, actions: [{ scriptId: SCRIPT_ID }] }],
+      [{ id: AUTOMATION_ID, enabled: true }],
+    );
+    const deferred: DeferredRemediationEnqueues = [];
+
+    const result = await __triggerConfigPolicyRemediation(CONFIG_RULE as never, DEVICE as never, deferred);
+
+    expect(result).toBe(true);
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(enqueueAutomationRunMock).not.toHaveBeenCalled();
+    expect(deferred).toEqual([{ runId: RUN_ID, deviceId: DEVICE.id }]);
+  });
+
+  it('standalone-policy remediation records the run for after commit instead of enqueueing it', async () => {
+    queueSelects(
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, orgId: DEVICE.orgId, enabled: true }],
+    );
+    const deferred: DeferredRemediationEnqueues = [];
+
+    const result = await __triggerRemediationAutomation(
+      { id: 'policy-1', name: 'Policy' } as never,
+      DEVICE as never,
+      'non_compliant',
+      AUTOMATION_ID,
+      undefined,
+      deferred,
+    );
+
+    expect(result).toBe(RUN_ID);
+    expect(enqueueAutomationRunMock).not.toHaveBeenCalled();
+    expect(deferred).toEqual([{ runId: RUN_ID, deviceId: DEVICE.id }]);
+  });
+
+  it('afterCommit enqueues every deferred run, targeted at its device', async () => {
+    const afterCommit = __remediationAfterCommit([
+      { runId: 'run-a', deviceId: 'device-a' },
+      { runId: 'run-b', deviceId: 'device-b' },
+    ]);
+
+    await afterCommit!();
+
+    expect(enqueueAutomationRunMock.mock.calls).toEqual([
+      ['run-a', ['device-a']],
+      ['run-b', ['device-b']],
+    ]);
+  });
+
+  it('afterCommit fails a run whose enqueue throws, and still enqueues the rest', async () => {
+    const setCalls: Array<Record<string, unknown>> = [];
+    updateMock.mockReturnValue({
+      set: (values: Record<string, unknown>) => {
+        setCalls.push(values);
+        return { where: () => Promise.resolve(undefined) };
+      },
+    });
+    enqueueAutomationRunMock.mockRejectedValueOnce(new Error('redis down'));
+    const afterCommit = __remediationAfterCommit([
+      { runId: 'run-a', deviceId: 'device-a' },
+      { runId: 'run-b', deviceId: 'device-b' },
+    ]);
+
+    await expect(afterCommit!()).resolves.toBeUndefined();
+
+    expect(enqueueAutomationRunMock).toHaveBeenCalledTimes(2);
+    expect(enqueueAutomationRunMock).toHaveBeenLastCalledWith('run-b', ['device-b']);
+    // The committed run would otherwise sit `running` with no job, forever.
+    expect(setCalls).toEqual([expect.objectContaining({ status: 'failed', completedAt: expect.any(Date) })]);
+  });
+
+  it('nothing deferred means no continuation', () => {
+    expect(__remediationAfterCommit([])).toBeUndefined();
   });
 });

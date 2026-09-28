@@ -718,17 +718,38 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
  * transition are the compliance worker's (W02), and double-incrementing it
  * would halve the effective attempt budget.
  *
+ * #7347 — owns its system transaction. The deployments, their result rows and
+ * their `device_commands` rows commit together, and only then are the live
+ * agents' commands pushed (each deployment's deferred `deliver()`, which never
+ * rejects). A push made inside the transaction let a fast agent answer a row
+ * it could not see yet, and its result was dropped as an orphan. A transaction
+ * that throws — including a failed commit — propagates before anything is
+ * pushed, so a BullMQ retry re-runs the whole admission and pushes nothing
+ * twice. Call it with NO ambient context (the processor does): nested inside
+ * another transaction it would join that one and push before it commits.
+ *
  * Exported for tests and for the BullMQ processor switch.
  */
 export async function processRemediateDeviceInstall(
   data: InstallRemediateDeviceJobData
-): Promise<{
+): Promise<InstallRemediationResult> {
+  const { afterCommit, ...result } = await runWithSystemDbAccess(() => admitRemediateDeviceInstall(data));
+  if (afterCommit) await afterCommit();
+  return result;
+}
+
+type InstallRemediationResult = {
   policyId: string;
   deviceId: string;
   deploymentsCreated: number;
   skipped: number;
   errors: number;
-}> {
+};
+
+/** The admission half of processRemediateDeviceInstall; runs inside its transaction. */
+async function admitRemediateDeviceInstall(
+  data: InstallRemediateDeviceJobData
+): Promise<InstallRemediationResult & { afterCommit?: () => Promise<void> }> {
   const nothing = {
     policyId: data.policyId,
     deviceId: data.deviceId,
@@ -1022,6 +1043,8 @@ export async function processRemediateDeviceInstall(
 
     const errors: Array<{ rule: string; message: string }> = [];
     const deploymentIds: string[] = [];
+    // #7347 — pushed only after this transaction commits (see the wrapper).
+    const pendingDeliveries: Array<() => Promise<unknown>> = [];
     for (const entry of targets) {
       try {
         const created = await createPolicyOwnedInstallDeployment({
@@ -1033,6 +1056,7 @@ export async function processRemediateDeviceInstall(
           target: entry.target,
         });
         deploymentIds.push(created.deploymentId);
+        if (created.deliver) pendingDeliveries.push(created.deliver);
         recordSoftwareRemediationDecision('command_queued');
       } catch (error) {
         errors.push({
@@ -1091,6 +1115,13 @@ export async function processRemediateDeviceInstall(
       deploymentsCreated: deploymentIds.length,
       skipped: skips.length,
       errors: errors.length,
+      ...(pendingDeliveries.length > 0
+        ? {
+          afterCommit: async () => {
+            for (const deliver of pendingDeliveries) await deliver();
+          },
+        }
+        : {}),
     };
   } catch (error) {
     console.error(
@@ -1115,17 +1146,20 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
   return new Worker<SoftwareRemediationJobData>(
     SOFTWARE_REMEDIATION_QUEUE,
     async (job: Job<SoftwareRemediationJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        // #5505 W03: the two verbs are separate processors, replacing W02's
-        // parking branch. Discriminating on job.data.type keeps the uninstall
-        // path (and its #3553 manual-authorization machinery) byte-identical:
-        // processRemediateDevice is uninstall-specific end to end and would
-        // misread an install payload.
-        if (job.data.type === 'install-remediate-device') {
-          return processRemediateDeviceInstall(job.data);
-        }
-        return processRemediateDevice(job.data);
-      });
+      // #5505 W03: the two verbs are separate processors, replacing W02's
+      // parking branch. Discriminating on job.data.type keeps the uninstall
+      // path (and its #3553 manual-authorization machinery) byte-identical:
+      // processRemediateDevice is uninstall-specific end to end and would
+      // misread an install payload.
+      //
+      // #7347 — the install processor owns its transaction and pushes after it
+      // commits, so it runs with NO ambient context here: wrapped in this
+      // processor's transaction, its own would join it and push before commit.
+      const { data } = job;
+      if (data.type === 'install-remediate-device') {
+        return processRemediateDeviceInstall(data);
+      }
+      return runWithSystemDbAccess(() => processRemediateDevice(data));
     },
     {
       connection: getBullMQConnection(),
