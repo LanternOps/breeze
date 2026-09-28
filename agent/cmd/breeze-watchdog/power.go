@@ -18,7 +18,10 @@ type powerNotice struct {
 // powerNoticeBuffer sizes the SCM-handler → main-loop channel. Suspend and
 // resume arrive in pairs minutes apart at most; 16 only fills if the main
 // loop is wedged for many sleep cycles, and then dropping is the right call —
-// the SCM control handler must never block.
+// the SCM control handler must never block. A drop is deliberately not
+// journaled: the SCM goroutine has no journal (the main loop owns it), and a
+// main loop wedged that long is already stopping every tick, including the
+// heartbeat check the grace exists for.
 const powerNoticeBuffer = 16
 
 // forwardPowerEvent hands a power event from the SCM handler goroutine to the

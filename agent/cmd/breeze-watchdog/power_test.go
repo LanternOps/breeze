@@ -53,6 +53,20 @@ func TestForwardPowerEventNeverBlocksTheSCMHandler(t *testing.T) {
 	}
 }
 
+func TestForwardPowerEventDropsWhenBufferFull(t *testing.T) {
+	t.Parallel()
+	ch := make(chan powerNotice, 1)
+	if !forwardPowerEvent(ch, testPBTSuspend, time.Now()) {
+		t.Fatal("first notice should fill the buffer")
+	}
+	if forwardPowerEvent(ch, testPBTResumeAutomatic, time.Now()) {
+		t.Fatal("a full buffer must drop, not block or report queued")
+	}
+	if n := <-ch; n.eventType != testPBTSuspend {
+		t.Fatalf("buffered notice = %#x, want the original suspend", n.eventType)
+	}
+}
+
 func TestApplyPowerNoticeResumeGracesStaleHeartbeat(t *testing.T) {
 	t.Parallel()
 	journal, err := watchdog.NewJournal(t.TempDir(), 1, 1)

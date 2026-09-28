@@ -29,7 +29,8 @@ const (
 	// Resume: the system has resumed from sleep. PBT_APMRESUMEAUTOMATIC is
 	// sent on every resume, including unattended/maintenance wakes;
 	// PBT_APMRESUMESUSPEND follows it only when a user is present;
-	// PBT_APMRESUMECRITICAL is the pre-Vista critical-resume variant.
+	// PBT_APMRESUMECRITICAL is the legacy critical-resume variant (Windows
+	// XP/Server 2003; not sent since Vista), accepted for completeness.
 	Resume
 )
 
