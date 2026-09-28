@@ -73,6 +73,8 @@ func TestApplyPowerNoticeResumeGracesStaleHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows cannot remove the TempDir while the journal file is still open.
+	t.Cleanup(func() { _ = journal.Close() })
 	hc := watchdog.NewHealthChecker(nil, nil, 3*time.Minute)
 	s := &state.AgentState{LastHeartbeat: time.Now().Add(-40 * time.Minute)}
 
