@@ -76,6 +76,15 @@ describe('payment marker (refinement 14)', () => {
     expect(xeroPaymentHumanReference('X'.repeat(300))).toHaveLength(255);
     expect(xeroPaymentHumanReference('   ')).toBeNull();
   });
+
+  it.each([[`${MARKER} |`], [`${MARKER} | `]])('a bare trailing separator (%j) still claims, with no human reference', (text) => {
+    expect(extractXeroPaymentMarker(text)).toBe(PAY_ID);
+    expect(xeroPaymentHumanReference(text)).toBeNull();
+  });
+
+  it('a bare trailing separator does not loosen the anchor', () => {
+    expect(extractXeroPaymentMarker(`Paid via ${MARKER} |`)).toBeNull();
+  });
 });
 
 describe('toChangeSetPaymentLine (refinements 10, 12, 13, 20)', () => {
@@ -278,5 +287,21 @@ describe('readXeroPaymentChanges (refinements 9, 11)', () => {
     expect(changes.deletedPayments).toEqual(['d']);
     expect(changes.payments).toEqual([]);
     expect(changes.deletedInvoices).toEqual([]);
+  });
+
+  it('a DELETED receipt with no Invoice is still a deletion (reversal keys on PaymentID alone)', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: 'gone', Status: 'DELETED', Invoice: undefined })] }))
+      .mockResolvedValueOnce(json({ Invoices: [] }));
+    const changes = await readXeroPaymentChanges(ctx, conn(), since);
+    expect(changes.deletedPayments).toEqual(['gone']);
+  });
+
+  it('a DELETED payment on a bill (Invoice.Type ACCPAY) is not a deletion', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: 'bill-d', Status: 'DELETED', Invoice: { InvoiceID: INV, Type: 'ACCPAY' } })] }))
+      .mockResolvedValueOnce(json({ Invoices: [] }));
+    const changes = await readXeroPaymentChanges(ctx, conn(), since);
+    expect(changes.deletedPayments).toEqual([]);
   });
 });

@@ -60,9 +60,18 @@ export function embedXeroPaymentMarker(reference: string | null, marker: string)
   return ref ? `${marker}${MARKER_SEPARATOR}${ref.slice(0, XERO_PAYMENT_REF_MAX)}` : marker;
 }
 
+/**
+ * The text before the first separator. With no separator, one bare trailing
+ * `|` is dropped: `"<marker> | "` trims to `"<marker> |"` (a reference edited
+ * to nothing in Xero), and that must still claim. The rest must still be
+ * exactly the marker, because the anchored parse runs on it.
+ */
 function markerHead(trimmed: string): string {
   const at = trimmed.indexOf(MARKER_SEPARATOR);
-  return at === -1 ? trimmed : trimmed.slice(0, at);
+  if (at !== -1) return trimmed.slice(0, at);
+  // Equivalent to .replace(/\s*\|$/, '') without backtracking on a long,
+  // unbounded Reference.
+  return trimmed.endsWith('|') ? trimmed.slice(0, -1).trimEnd() : trimmed;
 }
 
 /**
@@ -109,6 +118,18 @@ function isReceivable(p: XeroPayment): boolean {
     && typeof p.PaymentID === 'string' && p.PaymentID !== ''
     && typeof p.Invoice?.InvoiceID === 'string' && p.Invoice.InvoiceID !== ''
     && (p.Invoice.Type === undefined || p.Invoice.Type === 'ACCREC');
+}
+
+/**
+ * A DELETED receivable payment. Downstream reversal is keyed on the PaymentID
+ * alone, so the nested Invoice is not required: if Xero omits it on a deleted
+ * row, the deletion must not be dropped silently. A row that names a
+ * non-ACCREC document (a bill payment) is still excluded.
+ */
+function isReceivableDeletion(p: XeroPayment): boolean {
+  return p.PaymentType === 'ACCRECPAYMENT'
+    && typeof p.PaymentID === 'string' && p.PaymentID !== ''
+    && (p.Invoice?.Type === undefined || p.Invoice.Type === 'ACCREC');
 }
 
 /**
@@ -167,6 +188,12 @@ function newestOf(rows: ReadonlyArray<{ UpdatedDateUTC?: string }>): Date | null
  * (its last row's UpdatedDateUTC − 1 s). Offset paging would lose a row whenever
  * a row on an earlier page is updated mid-read (quorum finding 1). Rows read
  * twice are de-duplicated by id; the later read wins.
+ *
+ * If-Modified-Since is second-granular, so the next request sends
+ * floor(end − 1 s) and its window can reach back almost 2 s. A full page that
+ * ends no later than the previous page did is a STALL: about 1,000 rows across
+ * two adjacent seconds (not only within one) can cause it. A stall stops the
+ * list loudly (`overflowed`, cursor held), and nothing is lost.
  *
  * Pages that end at or before `windowStart` (the 5-minute overlap) do not count
  * against XERO_RECONCILE_MAX_REQUESTS, so a dense overlap cannot stall the pull
@@ -247,8 +274,11 @@ export async function readXeroPaymentChanges(
   const lines = new Map<string, ChangeSetPaymentLine>();
   const deleted = new Set<string>();
   for (const p of payments.rows) {
+    if (p.Status === 'DELETED') {
+      if (isReceivableDeletion(p)) { deleted.add(p.PaymentID!); lines.delete(p.PaymentID!); }
+      continue;
+    }
     if (!isReceivable(p)) continue;
-    if (p.Status === 'DELETED') { deleted.add(p.PaymentID!); lines.delete(p.PaymentID!); continue; }
     const line = toChangeSetPaymentLine(p, conn);
     if (line && !deleted.has(line.remotePaymentId)) lines.set(line.remotePaymentId, line);
   }
@@ -266,6 +296,9 @@ export async function readXeroPaymentChanges(
     if (earliest <= windowStart.getTime()) overflowed = true;
     else cursor = new Date(earliest);
   } else {
+    // The max across both lists assumes the Invoices read finishes within the
+    // 5-minute overlap of the Payments read. The limiter rejects rather than
+    // waits (withProviderCallSlot), which bounds the gap between them.
     const newest = Math.max(payments.newest?.getTime() ?? -Infinity, invoices.newest?.getTime() ?? -Infinity);
     if (newest > windowStart.getTime()) cursor = new Date(newest);
   }
