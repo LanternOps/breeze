@@ -24,6 +24,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./featureConfigResolver', () => ({
   resolveComplianceRulesForDevice: vi.fn(),
   scanDueComplianceChecks: vi.fn(),
@@ -262,6 +264,11 @@ describe('deferred remediation enqueue (#7347)', () => {
     expect(enqueueAutomationRunMock).toHaveBeenLastCalledWith('run-b', ['device-b']);
     // The committed run would otherwise sit `running` with no job, forever.
     expect(setCalls).toEqual([expect.objectContaining({ status: 'failed', completedAt: expect.any(Date) })]);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'redis down' }),
+      undefined,
+      { runId: 'run-a', deviceId: 'device-a' },
+    );
   });
 
   it('nothing deferred means no continuation', () => {

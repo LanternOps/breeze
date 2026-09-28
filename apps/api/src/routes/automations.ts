@@ -55,6 +55,7 @@ import {
   managedAutomationOwnerIsLive,
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
+import { captureException } from '../services/sentry';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
@@ -1707,6 +1708,7 @@ async function triggerAutomationRun(
     // The run has already committed `running`, and nothing reaps a run no job
     // will ever execute: fail it here rather than leave it spinning forever.
     console.error(`[automations] Failed to enqueue manually triggered run ${run.id}:`, error);
+    captureException(error, undefined, { runId: run.id, automationId: automation.id });
     await withAuthDbAccessContext(auth, () =>
       db
         .update(automationRuns)

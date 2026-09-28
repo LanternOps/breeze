@@ -16,6 +16,7 @@ import {
   softwareInventory,
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 import {
   resolveComplianceRulesForDevice,
   scanDueComplianceChecks,
@@ -131,6 +132,7 @@ function remediationAfterCommit(deferred: DeferredRemediationEnqueues): (() => P
         await enqueueAutomationRun(runId, [deviceId]);
       } catch (error) {
         console.error(`[PolicyEvaluation] Failed to enqueue remediation run ${runId} after commit:`, error);
+        captureException(error, undefined, { runId, deviceId });
         await withSystemDbAccessContext(() =>
           db
             .update(automationRuns)

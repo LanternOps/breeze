@@ -34,6 +34,9 @@ vi.mock('../jobs/automationWorker', () => ({
   enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
 }));
 
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null)
 }));
@@ -1263,6 +1266,11 @@ describe('automations routes', () => {
       expect(await res.json()).toMatchObject({ error: expect.any(String), runId: 'run-1' });
       // The committed run would otherwise sit `running` with no job, forever.
       expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'redis down' }),
+        undefined,
+        { runId: 'run-1', automationId: '11111111-1111-4111-8111-111111111111' },
+      );
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ action: 'automation.trigger', result: 'failure' }),
