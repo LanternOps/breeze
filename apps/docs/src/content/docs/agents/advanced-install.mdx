@@ -194,7 +194,7 @@ For MDM, configuration management (Ansible, Chef, Puppet, Salt), golden images, 
   </TabItem>
 </Tabs>
 
-On macOS, from agent 0.118.0, `service install` copies the binary to `/Library/Breeze/bin/breeze-agent` and the service runs from there. The copy you downloaded to `/usr/local/bin` is only used to enroll and install.
+On macOS, this manual `service install` path (unlike the `.pkg` installer) always copies the binary to `/Library/Breeze/bin/breeze-agent` and the service runs from there, regardless of whether `/usr/local/bin` would otherwise be safe to run from. The copy you downloaded to `/usr/local/bin` is only used to enroll and install. See [macOS Permissions](/agents/macos-permissions/#agent-path-usrlocalbin-or-librarybreezebin) for when the `.pkg` installer instead leaves the agent in `/usr/local/bin`, and grant Full Disk Access at whichever path applies.
 
 ### `breeze-agent enroll` — flag reference
 

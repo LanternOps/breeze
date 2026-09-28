@@ -14,13 +14,29 @@ macOS gates access to the screen, input events, and protected files behind per-a
 
 | Permission | Binary | Used For | How to Grant |
 |---|---|---|---|
-| **Full Disk Access** | `/Library/Breeze/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | System data collection, backup features | MDM PPPC profile (zero-touch) or manual System Settings grant |
-| **Accessibility** | `/Library/Breeze/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | Remote input (mouse and keyboard) during remote desktop sessions | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Full Disk Access** | `/usr/local/bin/breeze-agent` or `/Library/Breeze/bin/breeze-agent` (see [agent path](#agent-path-usrlocalbin-or-librarybreezebin)), `/usr/local/bin/breeze-desktop-helper` | System data collection, backup features | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Accessibility** | `/usr/local/bin/breeze-agent` or `/Library/Breeze/bin/breeze-agent` (see [agent path](#agent-path-usrlocalbin-or-librarybreezebin)), `/usr/local/bin/breeze-desktop-helper` | Remote input (mouse and keyboard) during remote desktop sessions | MDM PPPC profile (zero-touch) or manual System Settings grant |
 | **Screen Recording** | `/usr/local/bin/breeze-desktop-helper` | Remote desktop screen capture | **User approval only.** MDM cannot pre-grant it -- a PPPC profile can only allow standard (non-admin) users to approve it themselves, via the `ScreenCapture` service's `AllowStandardUserToSetSystemService` authorization (macOS 11+) |
 
 <Aside type="note">
   Apple does not permit MDM to silently grant Screen Recording. The best available automation is the `AllowStandardUserToSetSystemService` key, which lets a logged-in standard user click **Allow** without needing admin credentials. The end user still has to approve the prompt once.
 </Aside>
+
+## Agent Path: /usr/local/bin or /Library/Breeze/bin
+
+macOS ties Full Disk Access for a bare (non-bundle) binary to its file path, not just its code-signing identity, so which path the agent runs from decides where you grant FDA.
+
+From agent 0.118.3:
+
+- The agent and watchdog **stay in `/usr/local/bin`** when `/usr/local/bin` and every directory above it are owned by root and not writable by group or other -- the stock macOS state. Nothing moves, and existing Full Disk Access and other privacy grants keep working.
+- The agent **moves to `/Library/Breeze/bin`** only when `/usr/local/bin` is unsafe for a root daemon: the binary or a directory above it is not owned by root, or is group- or world-writable. The known case is Homebrew on Intel Macs, which hands `/usr/local/bin` to an admin user. Only in this case do you need to re-grant Full Disk Access, for `/Library/Breeze/bin/breeze-agent`. The agent logs a warning when it moves.
+- Agents 0.118.0 through 0.118.2 moved **every** install, safe or not, which is why fleets on those versions saw Full Disk Access break widely. 0.118.3 does not move an install back to `/usr/local/bin` once it has moved -- a re-grant you already made for `/Library/Breeze/bin` keeps holding. Move any Mac still on 0.118.0-0.118.2 to 0.118.3 or later; do not promote those versions to Macs you cannot touch.
+- The `.pkg` installer (used for installs and for macOS agent updates) always installs to wherever the existing install lives, so it never moves an install back and forth on its own. `breeze-agent service install` (manual CLI install) and the dev install script install to `/Library/Breeze/bin` directly.
+- The desktop helper is never moved -- it always stays at `/usr/local/bin/breeze-desktop-helper`.
+
+For an MDM-managed fleet, the simplest zero-touch approach is a PPPC profile that lists both paths (see below) so it covers a Mac regardless of which one it runs from.
+
+See [After an agent relocation](#after-an-agent-relocation) for what changes on a Mac that does move, and how to confirm the grant landed.
 
 ## Zero-Touch Grants with a PPPC Profile
 
@@ -28,8 +44,8 @@ If the Mac is enrolled in an MDM (Jamf, Mosyle, Kandji, Intune, etc.), deploy a 
 
 The profile identifies each binary by its installed path plus a code-signing requirement, so the grant only applies to a genuine, Developer ID-signed Breeze binary at that path.
 
-<Aside type="caution" title="Agent path changed in v0.118.0">
-  From agent 0.118.0 the agent (and its watchdog) runs from `/Library/Breeze/bin/breeze-agent`. On its first start, a 0.118 agent installed at `/usr/local/bin/breeze-agent` moves itself there. The desktop helper stays at `/usr/local/bin/breeze-desktop-helper`. A path-based grant for the old agent path does not cover the new one, so update your profile. While your fleet is still updating, keep an entry for `/usr/local/bin/breeze-agent` alongside the new path, with the same code requirement.
+<Aside type="caution" title="Cover both agent paths">
+  From agent 0.118.3, most Macs keep running the agent from `/usr/local/bin/breeze-agent`; only Macs where that directory is unsafe for a root daemon (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)) move to `/Library/Breeze/bin/breeze-agent`. A path-based PPPC grant for one path does not cover the other, so list both `/usr/local/bin/breeze-agent` and `/Library/Breeze/bin/breeze-agent`, each with the same code requirement, as the sample profile below does. That way the profile grants the permission wherever a given Mac's agent runs, with no need to know in advance which path applies. The desktop helper is never moved -- it always stays at `/usr/local/bin/breeze-desktop-helper`.
 </Aside>
 
 <Aside type="caution">
@@ -62,6 +78,16 @@ The following profile is ready to import into your MDM (most consoles accept a r
         <array>
           <dict>
             <key>Identifier</key>
+            <string>/usr/local/bin/breeze-agent</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
+          <dict>
+            <key>Identifier</key>
             <string>/Library/Breeze/bin/breeze-agent</string>
             <key>IdentifierType</key>
             <string>path</string>
@@ -83,6 +109,16 @@ The following profile is ready to import into your MDM (most consoles accept a r
         </array>
         <key>Accessibility</key>
         <array>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-agent</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
           <dict>
             <key>Identifier</key>
             <string>/Library/Breeze/bin/breeze-agent</string>
@@ -138,9 +174,11 @@ The following profile is ready to import into your MDM (most consoles accept a r
 </plist>
 ```
 
-The code requirements match both the Apple Silicon (`-darwin-arm64`) and Intel (`-darwin-amd64`) builds, so a single profile covers a mixed fleet. You can verify the signing identity of an installed binary at any time:
+The code requirements match both the Apple Silicon (`-darwin-arm64`) and Intel (`-darwin-amd64`) builds, so a single profile covers a mixed fleet. The agent entry is listed twice, once per path, so the same profile grants the permission whether a given Mac's agent runs from `/usr/local/bin` or `/Library/Breeze/bin` (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)). You can verify the signing identity of an installed binary at any time, using whichever path the agent currently runs from:
 
 ```bash
+codesign -dvvv /usr/local/bin/breeze-agent 2>&1 | grep -E '^Identifier|TeamIdentifier'
+# or, on a Mac where the agent moved:
 codesign -dvvv /Library/Breeze/bin/breeze-agent 2>&1 | grep -E '^Identifier|TeamIdentifier'
 # Identifier=breeze-agent-darwin-arm64
 # TeamIdentifier=D8W6N2JYMA
@@ -160,7 +198,7 @@ Without an MDM, grant the permissions on the device under **System Settings > Pr
 
 <Steps>
 
-1. **Full Disk Access** -- open **Privacy & Security > Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> in the file picker, and add `/Library/Breeze/bin/breeze-agent` and `/usr/local/bin/breeze-desktop-helper`.
+1. **Full Disk Access** -- open **Privacy & Security > Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> in the file picker, and add `/usr/local/bin/breeze-desktop-helper` plus the agent binary at whichever path it runs from -- `/usr/local/bin/breeze-agent` on most Macs, or `/Library/Breeze/bin/breeze-agent` if it has moved (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)). Run `ls /Library/Breeze/bin/breeze-agent` first if you are not sure which one applies.
 
 2. **Accessibility** -- open **Privacy & Security > Accessibility** and add the same two binaries.
 
@@ -174,19 +212,29 @@ Changes to Full Disk Access take effect after the agent service restarts:
 sudo launchctl kickstart -k system/com.breeze.agent
 ```
 
+## After an agent relocation
+
+This applies only to a Mac where `/usr/local/bin` was unsafe for a root daemon and the agent moved to `/Library/Breeze/bin` (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)). Most Macs never hit this.
+
+- **Grant Full Disk Access at the new path.** Add `/Library/Breeze/bin/breeze-agent` in **System Settings > Privacy & Security > Full Disk Access**, or push the PPPC update, if you have not already covered both paths as shown above.
+- **How to tell a Mac needs this.** Until the grant lands, the device's Full Disk Access status still shows as missing, and the agent's self-health reports a `macos_fda_relocation` warning naming the old and new path (from `GET /devices/{id}/health`). The warning clears on its own once Full Disk Access is granted for the new path -- there is no separate UI panel for it.
+- **Leftover binaries are cleaned up automatically.** After moving, the agent removes the old `breeze-agent`, `breeze-watchdog` and `breeze-backup` copies left behind in `/usr/local/bin` on its next start.
+- **A PPPC profile covering both paths needs zero further action.** If your profile already lists both `/usr/local/bin/breeze-agent` and `/Library/Breeze/bin/breeze-agent` with the same code requirement (as in the sample profile above), the grant applies automatically regardless of which path the agent ends up on.
+
 ## Troubleshooting
 
 **A permission "disappears" after an agent update.**
-TCC grants are keyed to the binary's code-signing identity, not just its path. Official Breeze binaries are Developer ID signed with a stable identity, so grants survive updates. If a grant stops applying after an update, check that the binary is still properly signed:
+For a bare (non-bundle) binary like the agent, macOS keys a TCC grant to the binary's file path, not just its code-signing identity, so a grant made for one path does not carry over if the binary starts running from a different one -- see [After an agent relocation](#after-an-agent-relocation) if that is what happened. Within a stable path, official Breeze binaries are Developer ID signed with a stable identity, so grants survive ordinary updates. If a grant stops applying after an update at the same path, check that the binary is still properly signed:
 
 ```bash
-codesign -dvvv /Library/Breeze/bin/breeze-agent
+codesign -dvvv /usr/local/bin/breeze-agent
+# or /Library/Breeze/bin/breeze-agent, whichever path the agent runs from
 ```
 
 Expect `Authority=Developer ID Application: LanternOps LLC (D8W6N2JYMA)` and `TeamIdentifier=D8W6N2JYMA`. An ad-hoc or unsigned binary -- typical of a manual or development build -- gets a new identity on every build, so macOS treats each update as a brand-new app and drops the grant. Reinstall an official signed release, or re-grant after each build for development installs.
 
 **The PPPC profile is installed but permissions are not granted.**
-Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary: `codesign -d -r- /Library/Breeze/bin/breeze-agent` prints the designated requirement to compare against.
+Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary, at whichever path it runs from: `codesign -d -r- /usr/local/bin/breeze-agent` (or the `/Library/Breeze/bin` path) prints the designated requirement to compare against.
 
 **Remote desktop connects but shows a black screen.**
 Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.
