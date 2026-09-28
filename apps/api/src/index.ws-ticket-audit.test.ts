@@ -41,6 +41,9 @@ describe('fallbackAuditEligible (real source)', () => {
   const start = indexSource.indexOf('const FALLBACK_AUDIT_EXCLUDE_PREFIXES');
   const fnStart = indexSource.indexOf('function fallbackAuditEligible');
   const end = indexSource.indexOf('\n}\n', fnStart) + 3;
+  if (start < 0 || fnStart < start) {
+    throw new Error('index.ts layout changed: cannot locate fallback audit eligibility code');
+  }
   const eligible = new Function(
     transpile(`${indexSource.slice(start, end)}\nreturn fallbackAuditEligible;`),
   )() as (path: string) => boolean;

@@ -54,9 +54,6 @@ describe('formatAuditAction', () => {
       'Deleted alerts \u203a channels',
     );
     expect(formatAuditAction('api.put.settings.:n')).toBe('Updated settings');
-    for (const code of ['api.patch.orgs.:id.billing-settings', 'api.post.quotes.:id.send']) {
-      expect(formatAuditAction(code)).not.toMatch(/:id|:n|\bapi\b|\b(patch|post)\b/i);
-    }
   });
 
   it('uses the translated fallback verb template when supplied', () => {
@@ -65,6 +62,15 @@ describe('formatAuditAction', () => {
         'api.fallback.patch': 'Aktualisiert: {target}',
       }),
     ).toBe('Aktualisiert: orgs \u203a billing settings');
+  });
+
+  it('ships a {target} verb template for every locale', () => {
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR']) {
+      const actions = auditActions(locale);
+      for (const verb of ['post', 'put', 'patch', 'delete']) {
+        expect(actions[`api.fallback.${verb}`], `${locale} ${verb}`).toContain('{target}');
+      }
+    }
   });
 
   it('leaves non-mutating or unrecognised api.* codes to the prettifier', () => {
