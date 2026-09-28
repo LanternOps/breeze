@@ -55,9 +55,12 @@ An AI-authored script proposal's risk tier comes from its independent reviewer a
 
 2. For each **risk tier** (Low, Medium, High, Critical), pick the minimum **assurance level** you want to require from the dropdown. Only levels at or above the Breeze default for that tier are selectable.
 
-3. Optionally turn on **Require an enrolled approver device** to *enforce* the policy -- under-assured approvals (including approvals from a technician who hasn't enrolled an Authenticator device) are blocked rather than merely flagged.
+3. Choose whether an approver device is required:
+   - **Platform default** (what a partner that never saved a choice gets) -- high- and critical-risk approvals require a registered approver device from the platform date (5 November 2026 on hosted Breeze; self-hosters can move it with `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM`). Low- and medium-risk approvals are allowed below the floor and recorded as downgraded. The tab shows the inherited value and its date.
+   - **Required** -- enforce the policy at every risk tier: under-assured approvals (including approvals from a technician who hasn't enrolled an Authenticator device) are blocked rather than merely flagged.
+   - **Not required** -- never block; approvals below the floor are allowed and recorded as downgraded. This explicit choice is kept after the platform date.
 
-4. Optionally set an **Enforce from** date. This is the grace-window cutoff: before that date the policy is advisory, giving your team time to enroll their devices; on and after it, enforcement is live.
+4. With **Required**, optionally set an **Enforce from** date. This is the grace-window cutoff: before that date the policy is advisory, giving your team time to enroll their devices; on and after it, enforcement is live. Leave it blank to enforce immediately.
 
 5. Click **Save**.
 
@@ -85,8 +88,12 @@ When an approver acts on a request from any surface (the [Privileged Access](/fe
 
 Because an approval always requires a *separate* human identity from the requester, Approval Security is what makes "confirmed with MFA" concrete: it defines exactly how strong that confirmation has to be for the risk at hand.
 
+<Aside type="note" title="Platform default">
+  Until a partner saves an enforcement choice, the approvals inbox and this tab show a notice with the date the platform default starts requiring an approver device for high- and critical-risk approvals, and afterwards explain why those approvals ask for one. The server applies the same rule to every surface -- the web console, the mobile app and a direct API call are refused alike.
+</Aside>
+
 <Aside type="caution">
-  If **Require an enrolled approver device** is on and enforcement is live, a technician who has not enrolled a Breeze Authenticator device -- or who can only satisfy a level below the tier's floor -- cannot approve requests at that tier. Make sure your approvers are enrolled before the **Enforce from** date arrives.
+  If enforcement is live (**Required** past its date, or the platform default past the platform date for high/critical), a technician who has not enrolled a Breeze Authenticator device -- or who can only satisfy a level below the tier's floor -- cannot approve requests at that tier. Make sure your approvers are enrolled before the **Enforce from** date arrives.
 </Aside>
 
 ## Related

@@ -114,6 +114,14 @@ describe('authenticatorPolicySchema (Phase 4)', () => {
     });
     expect(r.success).toBe(true);
   });
+  it('accepts a blank enforcement choice (null = inherit the platform default)', () => {
+    const r = authenticatorPolicySchema.safeParse({ floorOverrides: { high: 4 }, requireEnrollment: null, enforceFrom: null });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.requireEnrollment).toBeNull();
+  });
+  it('still requires the enforcement field to be present (omitting it is not the same as blank)', () => {
+    expect(authenticatorPolicySchema.safeParse({ floorOverrides: {}, enforceFrom: null }).success).toBe(false);
+  });
   it('rejects an out-of-range level and an unknown tier (wire-shape; raise-only is server-side)', () => {
     expect(authenticatorPolicySchema.safeParse({ floorOverrides: { high: 5 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
     expect(authenticatorPolicySchema.safeParse({ floorOverrides: { urgent: 3 }, requireEnrollment: true, enforceFrom: null }).success).toBe(false);
