@@ -362,6 +362,18 @@ describe('sidebar i18n seed', () => {
     });
   });
 
+  it('gates and labels the new software items like Software (devices:read, own i18n keys)', () => {
+    const items = section('fleet-management').items;
+    for (const [href, labelKey] of [
+      ['/software-inventory', 'nav.softwareInventory'],
+      ['/software-policies', 'nav.softwarePolicies'],
+    ]) {
+      const item = items.find((i) => i.href === href);
+      expect(item?.labelKey, href).toBe(labelKey);
+      expect(item?.requiredPermission, href).toEqual({ resource: 'devices', action: 'read' });
+    }
+  });
+
   it.each(['/software', '/software-inventory', '/software-policies'])(
     'highlights only the matching Software item for path %s',
     async (path) => {
