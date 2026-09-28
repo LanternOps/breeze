@@ -401,8 +401,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
       office-addin-manifest:
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.0.1
+        version: 3.0.1
       tailwindcss:
         specifier: ^4.3.1
         version: 4.3.1
@@ -803,8 +803,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
       office-addin-manifest:
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.0.1
+        version: 3.0.1
       tailwindcss:
         specifier: ^4.3.1
         version: 4.3.1
@@ -943,8 +943,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
       office-addin-manifest:
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.0.1
+        version: 3.0.1
       tailwindcss:
         specifier: ^4.3.1
         version: 4.3.1
@@ -1246,8 +1246,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
       office-addin-manifest:
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.0.1
+        version: 3.0.1
       tailwindcss:
         specifier: ^4.3.1
         version: 4.3.1
@@ -9812,12 +9812,16 @@ packages:
     resolution: {integrity: sha512-kO6M+SDW5oyHos1Zf183/5cmkJnthIFPK0zEWjqu43HMf4hd4JlsU615EHjMF3RNEZdInBPyGv2hi424mmTv+A==}
     hasBin: true
 
-  office-addin-manifest@3.0.0:
-    resolution: {integrity: sha512-g1yeZ9AmEuw/anJfPf8oEbvpekqUq4DSDptPx1tr5LiTQRXCYSmol9hrNQWXbhVndebrE5krxcoHTm3hiooJYA==}
+  office-addin-manifest@3.0.1:
+    resolution: {integrity: sha512-1gHBxW+Bri23UCNK7x3D1qhogsSUFiRE5q8NR+lI1MwKE35Jq8nUrNKO0ZgT7WiEfxl4ZcZlmylGrsvMVoooLw==}
     hasBin: true
 
   office-addin-usage-data@3.0.0:
     resolution: {integrity: sha512-kYyOeZlfGdXwB284bAGlbTJ8qaZ2To7ZdUlLPmxl4k/XXYD+myIWAkvvIY93Dv7yfM7cEXbWkAbZ5DI0ln4eqA==}
+    hasBin: true
+
+  office-addin-usage-data@3.0.1:
+    resolution: {integrity: sha512-nso5kikrl9MH+4aqDiIZtc5i8RCd6VsoQZu4CrDm75wLLXYoBnwl3Wux+XvM42AytJi94qyFuR5rp/+Er5o6Sg==}
     hasBin: true
 
   ohash@2.0.12:
@@ -22086,7 +22090,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  office-addin-manifest@3.0.0:
+  office-addin-manifest@3.0.1:
     dependencies:
       '@microsoft/app-manifest': 1.1.2
       adm-zip: 0.6.1
@@ -22094,13 +22098,17 @@ snapshots:
       commander: 13.1.0
       fs-extra: 7.0.1
       node-fetch: 2.7.0
-      office-addin-usage-data: 3.0.0
+      office-addin-usage-data: 3.0.1
       uuid: 14.0.2
       xml2js: 0.5.0
     transitivePeerDependencies:
       - encoding
 
   office-addin-usage-data@3.0.0:
+    dependencies:
+      commander: 13.1.0
+
+  office-addin-usage-data@3.0.1:
     dependencies:
       commander: 13.1.0
 
