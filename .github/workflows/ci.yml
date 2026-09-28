@@ -2001,6 +2001,40 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # Whole-machine Windows capture path. internal/backup and
+      # internal/backup/systemstate are both excluded from the bare package
+      # list above: run natively on Server 2022 (Defender on) each has
+      # pre-existing failures unrelated to this path — internal/backup 9
+      # (mode/mtime/contract-matcher tests written against POSIX semantics),
+      # systemstate 6 (TestCollectSystemState* run the real collector, whose
+      # non-VSS `reg save HKLM\SAM|SECURITY` Defender blocks as
+      # Trojan:Win32/Commando.A!ml; TestHelperCopy* assert POSIX modes). So,
+      # like the steps above, name the tests and assert they PASSED.
+      # cleanBackupRoot: a VSS whole-machine root (`C:\` rewritten to
+      # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\) must keep its
+      # trailing separator — filepath.Clean strips it only under Windows path
+      # semantics, and the bare device does not stat, which failed every
+      # whole-machine backup. The systemstate tests pin the #5397 follow-up:
+      # under VSS the registry hive files are copied from the shadow copy
+      # (CreateFile with backup semantics) and reg.exe is never spawned. The
+      # live counterparts (TestLive_WholeMachineShadowRootIsWalkable,
+      # TestLive_CollectRegistryFromRealShadowCopy) stay opt-in behind
+      # BREEZE_VSS_LIVE like the other live VSS suites.
+      - name: Run Windows whole-machine capture path tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the whole-machine capture path tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # The real WinSystem (internal/backup/rebuild/winsystem_windows.go) and
       # winhive's RegLoadKeyW/RegUnLoadKeyW are the W06 Windows engine's only
       # contact with the host: VHDX create/attach/detach, GPT write/read,
