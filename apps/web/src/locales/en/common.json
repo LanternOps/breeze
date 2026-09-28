@@ -653,7 +653,7 @@
       "orgRequiredLine": "This page shows one organization at a time — choose one to continue."
     },
     "org": {
-      "allOrganizations": "All organizations",
+      "allOrganizations": "All Organizations",
       "selectTitle": "Select Organization (Cmd+O)",
       "switching": "Switching…",
       "organizations": "Organizations",

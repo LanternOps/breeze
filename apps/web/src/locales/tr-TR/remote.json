@@ -294,8 +294,8 @@
       "threads": "Konular"
     },
     "errors": {
-      "handlerNotConfigured": "İşleyici yapılandırılamadı",
-      "killFailed": "Öldürme başarısız oldu"
+      "handlerNotConfigured": "İşlem sonlandırma işleyicisi yapılandırılmamış",
+      "killFailed": "İşlem sonlandırılamadı"
     },
     "killConfirm": "Sonlandırma Onayı",
     "killProcess": "İşlemi Sonlandır",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "Bu bağlantı geçersiz veya süresi dolmuş.",
-      "obtainTicket": "Bilet alınamadı",
-      "prepareConnection": "Bağlantı hazırlanamadı",
+      "obtainTicket": "Tünel bileti alınamadı",
+      "prepareConnection": "Proxy bağlantısı hazırlanamadı",
       "tlsUntrusted": "Bu cihaz güvenilmeyen veya kendinden imzalı bir sertifika sundu.",
       "tunnelFailed": "Tünel açılamadı"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Dizeleri Girin",
     "enterValueName": "Değer Adını Girin",
     "errors": {
-      "createKey": "Anahtar oluşturulamadı",
+      "createKey": "Kayıt defteri anahtarı oluşturulamadı",
       "createKeyDetail": "Kayıt defteri anahtarı oluşturulamadı: {{message}}",
-      "deleteKey": "Anahtar silinemedi",
+      "deleteKey": "Kayıt defteri anahtarı silinemedi",
       "deleteKeyDetail": "Kayıt defteri anahtarı silinemedi: {{message}}",
-      "deleteValue": "Değer silinemedi",
+      "deleteValue": "Kayıt defteri değeri silinemedi",
       "deleteValueDetail": "Kayıt değeri silinemedi: {{message}}",
-      "invalidFormat": "Geçersiz biçimlendirme başarısız oldu",
-      "invalidNumber": "Geçersiz numara başarısız oldu",
-      "keyNameBackslash": "Adın ters eğik çizgisi tuşlanamadı",
-      "keyNameRequired": "Gerekli ad anahtarlanamadı",
-      "keyProvider": "Anahtar sağlayıcıya ulaşılamadı",
-      "loadKeys": "Anahtarlar yüklenemedi",
+      "invalidFormat": "Geçersiz değer biçimi",
+      "invalidNumber": "Geçersiz sayı değeri",
+      "keyNameBackslash": "Anahtar adı ters eğik çizgi içeremez",
+      "keyNameRequired": "Anahtar adı gereklidir",
+      "keyProvider": "Kayıt defteri anahtar sağlayıcısı yapılandırılmamış",
+      "loadKeys": "Kayıt defteri anahtarları yüklenemedi",
       "loadKeysDetail": "Kayıt defteri anahtarları yüklenemedi: {{message}}",
-      "loadValues": "Değerler yüklenemedi",
+      "loadValues": "Kayıt defteri değerleri yüklenemedi",
       "loadValuesDetail": "Kayıt defteri değerleri yüklenemedi: {{message}}",
-      "saveValue": "Değer kaydedilemedi",
+      "saveValue": "Kayıt defteri değeri kaydedilemedi",
       "saveValueDetail": "Kayıt değeri kaydedilemedi: {{message}}",
-      "valueNameRequired": "Gerekli adın değeri belirlenemedi",
-      "valueProvider": "Sağlayıcıya değer verilemedi"
+      "valueNameRequired": "Değer adı gereklidir",
+      "valueProvider": "Kayıt defteri değer sağlayıcısı yapılandırılmamış"
     },
     "hexadecimal": "Onaltılı",
     "key": "Anahtar",
@@ -454,14 +454,14 @@
     "disconnect": "Bağlantıyı kes",
     "errorMessage": "Hata: {{message}}",
     "errors": {
-      "closedUnexpectedly": "Beklenmedik bir şekilde kapatılamadı",
+      "closedUnexpectedly": "Bağlantı beklenmedik şekilde kapandı",
       "connection": "Bağlantı kurulamadı",
       "createSession": "Oturum oluşturulamadı",
-      "createTicket": "Bilet oluşturulamadı",
+      "createTicket": "Bağlantı bileti oluşturulamadı",
       "failed": "Başarısız oldu",
       "initialize": "Başlatılamadı",
-      "invalidTicket": "Geçersiz bilet başarısız oldu",
-      "webSocket": "Web soketi başarısız oldu"
+      "invalidTicket": "Geçersiz bağlantı bileti yanıtı",
+      "webSocket": "WebSocket bağlantı hatası"
     },
     "exitFullscreen": "Tam Ekrandan Çık",
     "fullscreen": "Tam Ekran",
@@ -497,23 +497,23 @@
       "deleteRegistryValue": "Kayıt defteri değeri silinemedi",
       "disableTask": "Görev devre dışı bırakılamadı",
       "enableTask": "Görev etkinleştirilemedi",
-      "eventDetails": "Etkinlik ayrıntıları başarısız oldu",
+      "eventDetails": "Olay ayrıntıları alınamadı",
       "fetchEventLogs": "Olay günlükleri getirilemedi",
       "fetchProcesses": "İşlemler getirilemedi",
       "fetchServices": "Hizmetler getirilemedi",
       "fetchTasks": "Görevler getirilemedi",
       "killProcess": "İşlem sonlandırılamadı",
-      "processDetails": "Ayrıntılar işlenemedi",
+      "processDetails": "İşlem ayrıntıları alınamadı",
       "queryEvents": "Etkinlikler sorgulanamadı",
-      "registryKeys": "Kayıt defteri anahtarları başarısız oldu",
-      "registryValues": "Değerler kaydedilemedi",
+      "registryKeys": "Kayıt defteri anahtarları yüklenemedi",
+      "registryValues": "Kayıt defteri değerleri yüklenemedi",
       "restartService": "Hizmet yeniden başlatılamadı",
       "runTask": "Görev çalıştırılamadı",
       "setRegistryValue": "Kayıt defteri değeri ayarlanamadı",
       "startService": "Hizmet başlatılamadı",
       "stopService": "Hizmet durdurulamadı",
-      "taskDetails": "Görev ayrıntıları başarısız oldu",
-      "taskHistory": "Görev geçmişi başarısız oldu"
+      "taskDetails": "Görev ayrıntıları yüklenemedi",
+      "taskHistory": "Görev geçmişi yüklenemedi"
     },
     "policyDisabled": "Bir yapılandırma ilkesi uzak sistem araçlarını devre dışı bıraktı.",
     "policyDisabledNamed": "\"{{name}}\" yapılandırma politikası uzak sistem araçlarını devre dışı bıraktı.",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Ayrıntılar Başlığı",
     "errors": {
-      "exportFetch": "Getirme dışa aktarılamadı"
+      "exportFetch": "Dışa aktarma için oturumlar alınamadı"
     },
     "fields": {
       "dataTransferred": "Aktarılan Veriler",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Bağlantıyı kes",
     "errors": {
-      "authenticationDetail": "Kimlik doğrulama ayrıntısı başarısız oldu",
+      "authenticationDetail": "Kimlik doğrulama başarısız oldu: {{reason}}. VNC şifrenizi kontrol edin.",
       "authenticationFailed": "Kimlik doğrulama başarısız oldu",
-      "connectionLost": "Bağlantı başarısız oldu",
-      "loadViewer": "Görüntüleyici yüklenemedi",
-      "securityFailure": "Güvenlik hatası nedeniyle başarısız oldu",
-      "securityType": "Güvenlik türü başarısız oldu"
+      "connectionLost": "Bağlantı beklenmedik şekilde kesildi",
+      "loadViewer": "VNC görüntüleyici yüklenemedi",
+      "securityFailure": "Güvenlik hatası: {{reason}}",
+      "securityType": "Güvenlik türü desteklenmiyor: {{reason}}"
     },
     "exitFullscreen": "Tam Ekrandan Çık",
     "fullscreen": "Tam Ekran",
@@ -779,8 +779,8 @@
     "disconnect": "Bağlantıyı kes",
     "errors": {
       "connect": "Bağlantı kurulamadı",
-      "invalidTicket": "Geçersiz bilet başarısız oldu",
-      "obtainTicket": "Bilet alınamadı"
+      "invalidTicket": "Geçersiz tünel bileti yanıtı",
+      "obtainTicket": "VNC tünel bileti alınamadı"
     },
     "sessionTitle": "Oturum Başlığı"
   },

@@ -324,7 +324,7 @@ describe('NetworkDeviceDetailPage', () => {
     expect(ports.textContent).toContain('SSH');
     expect(ports.textContent).toContain('443');
     expect(ports.textContent).toContain('HTTPS');
-    expect(ports.querySelector('h3')?.textContent).toContain('Open ports');
+    expect(ports.querySelector('h3')?.textContent).toContain('Open Ports');
     expect(screen.getByTestId('network-detail-ports-count').textContent).toBe('2');
 
     const snmp = screen.getByTestId('network-detail-snmp');

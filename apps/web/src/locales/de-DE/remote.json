@@ -294,7 +294,7 @@
       "threads": "Threads"
     },
     "errors": {
-      "handlerNotConfigured": "Fehler beim Handler nicht konfiguriert",
+      "handlerNotConfigured": "Der Handler zum Beenden von Prozessen ist nicht konfiguriert",
       "killFailed": "Prozess konnte nicht beendet werden"
     },
     "killConfirm": "Prozessbeendigung bestätigen",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "Dieser Link ist ungültig oder abgelaufen.",
-      "obtainTicket": "Ticket konnte nicht abgerufen werden",
-      "prepareConnection": "Die Verbindung konnte nicht vorbereitet werden",
+      "obtainTicket": "Tunnel-Ticket konnte nicht abgerufen werden",
+      "prepareConnection": "Proxy-Verbindung konnte nicht vorbereitet werden",
       "tlsUntrusted": "Dieses Gerät hat ein nicht vertrauenswürdiges oder selbstsigniertes Zertifikat vorgelegt.",
       "tunnelFailed": "Tunnel konnte nicht geöffnet werden"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Geben Sie Zeichenfolgen ein",
     "enterValueName": "Geben Sie den Wertnamen ein",
     "errors": {
-      "createKey": "Schlüssel konnte nicht erstellt werden",
+      "createKey": "Registrierungsschlüssel konnte nicht erstellt werden",
       "createKeyDetail": "Registrierungsschlüssel konnte nicht erstellt werden: {{message}}",
-      "deleteKey": "Schlüssel konnte nicht gelöscht werden",
+      "deleteKey": "Registrierungsschlüssel konnte nicht gelöscht werden",
       "deleteKeyDetail": "Registrierungsschlüssel konnte nicht gelöscht werden: {{message}}",
-      "deleteValue": "Wert konnte nicht gelöscht werden",
+      "deleteValue": "Registrierungswert konnte nicht gelöscht werden",
       "deleteValueDetail": "Registrierungswert konnte nicht gelöscht werden: {{message}}",
-      "invalidFormat": "Ungültiges Format fehlgeschlagen",
-      "invalidNumber": "Fehler bei ungültiger Nummer",
-      "keyNameBackslash": "Der Backslash des Schlüsselnamens konnte nicht eingegeben werden",
-      "keyNameRequired": "Schlüsselname erforderlich konnte nicht eingegeben werden",
-      "keyProvider": "Fehler beim Schlüsselanbieter",
-      "loadKeys": "Schlüssel konnten nicht geladen werden",
+      "invalidFormat": "Ungültiges Wertformat",
+      "invalidNumber": "Ungültiger Zahlenwert",
+      "keyNameBackslash": "Der Schlüsselname darf keinen Backslash enthalten",
+      "keyNameRequired": "Schlüsselname ist erforderlich",
+      "keyProvider": "Der Registrierungsschlüssel-Provider ist nicht konfiguriert",
+      "loadKeys": "Registrierungsschlüssel konnten nicht geladen werden",
       "loadKeysDetail": "Registrierungsschlüssel konnten nicht geladen werden: {{message}}",
-      "loadValues": "Werte konnten nicht geladen werden",
+      "loadValues": "Registrierungswerte konnten nicht geladen werden",
       "loadValuesDetail": "Registrierungswerte konnten nicht geladen werden: {{message}}",
-      "saveValue": "Wert konnte nicht gespeichert werden",
+      "saveValue": "Registrierungswert konnte nicht gespeichert werden",
       "saveValueDetail": "Registrierungswert konnte nicht gespeichert werden: {{message}}",
-      "valueNameRequired": "Der erforderliche Name konnte nicht eingegeben werden",
-      "valueProvider": "Fehler beim Wert des Anbieters"
+      "valueNameRequired": "Wertname ist erforderlich",
+      "valueProvider": "Der Registrierungswert-Provider ist nicht konfiguriert"
     },
     "hexadecimal": "Hexadezimal",
     "key": "Schlüssel",
@@ -454,14 +454,14 @@
     "disconnect": "Trennen",
     "errorMessage": "Fehler: {{message}}",
     "errors": {
-      "closedUnexpectedly": "Das unerwartete Schließen ist fehlgeschlagen",
+      "closedUnexpectedly": "Verbindung wurde unerwartet geschlossen",
       "connection": "Verbindung fehlgeschlagen",
       "createSession": "Sitzung konnte nicht erstellt werden",
-      "createTicket": "Ticket konnte nicht erstellt werden",
+      "createTicket": "Verbindungsticket konnte nicht erstellt werden",
       "failed": "Fehlgeschlagen, fehlgeschlagen",
       "initialize": "Initialisierung fehlgeschlagen",
-      "invalidTicket": "Fehler beim ungültigen Ticket",
-      "webSocket": "Web-Socket fehlgeschlagen"
+      "invalidTicket": "Ungültige Antwort für Verbindungsticket",
+      "webSocket": "WebSocket-Verbindungsfehler"
     },
     "exitFullscreen": "Beenden Sie den Vollbildmodus",
     "fullscreen": "Vollbild",
@@ -497,23 +497,23 @@
       "deleteRegistryValue": "Der Registrierungswert konnte nicht gelöscht werden",
       "disableTask": "Die Aufgabe konnte nicht deaktiviert werden",
       "enableTask": "Aufgabe konnte nicht aktiviert werden",
-      "eventDetails": "Ereignisdetails konnten nicht aufgerufen werden",
+      "eventDetails": "Ereignisdetails konnten nicht abgerufen werden",
       "fetchEventLogs": "Ereignisprotokolle konnten nicht abgerufen werden",
       "fetchProcesses": "Prozesse konnten nicht abgerufen werden",
       "fetchServices": "Dienste konnten nicht abgerufen werden",
       "fetchTasks": "Aufgaben konnten nicht abgerufen werden",
       "killProcess": "Prozess konnte nicht beendet werden",
-      "processDetails": "Details konnten nicht verarbeitet werden",
+      "processDetails": "Prozessdetails konnten nicht abgerufen werden",
       "queryEvents": "Ereignisse konnten nicht abgefragt werden",
-      "registryKeys": "Registrierungsschlüssel fehlgeschlagen",
-      "registryValues": "Registrierungswerte fehlgeschlagen",
+      "registryKeys": "Registrierungsschlüssel konnten nicht geladen werden",
+      "registryValues": "Registrierungswerte konnten nicht geladen werden",
       "restartService": "Der Dienst konnte nicht neu gestartet werden",
       "runTask": "Aufgabe konnte nicht ausgeführt werden",
       "setRegistryValue": "Der Registrierungswert konnte nicht festgelegt werden",
       "startService": "Der Dienst konnte nicht gestartet werden",
       "stopService": "Der Dienst konnte nicht beendet werden",
-      "taskDetails": "Aufgabendetails konnten nicht aufgerufen werden",
-      "taskHistory": "Fehler beim Aufgabenverlauf"
+      "taskDetails": "Aufgabendetails konnten nicht geladen werden",
+      "taskHistory": "Aufgabenverlauf konnte nicht geladen werden"
     },
     "policyDisabled": "Eine Konfigurationsrichtlinie hat Remote-Systemtools deaktiviert.",
     "policyDisabledNamed": "Die Konfigurationsrichtlinie „{{name}}“ hat Remote-Systemtools deaktiviert.",
@@ -616,7 +616,7 @@
     "displayName": "Anzeigename",
     "executablePath": "Ausführbarer Pfad",
     "loading": "Laden",
-    "noDescription": "Keine Beschreibung",
+    "noDescription": "Keine Beschreibung verfügbar",
     "noServicesAvailable": "Keine Dienste verfügbar",
     "noServicesFound": "Keine Dienste gefunden",
     "ok": "Okay",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Details Titel",
     "errors": {
-      "exportFetch": "Der Abruf konnte nicht exportiert werden"
+      "exportFetch": "Sitzungen für den Export konnten nicht abgerufen werden"
     },
     "fields": {
       "dataTransferred": "Daten übertragen",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Trennen",
     "errors": {
-      "authenticationDetail": "Authentifizierungsdetails fehlgeschlagen",
-      "authenticationFailed": "Die Authentifizierung ist fehlgeschlagen",
-      "connectionLost": "Fehler beim Verbindungsverlust",
-      "loadViewer": "Viewer konnte nicht geladen werden",
-      "securityFailure": "Aufgrund eines Sicherheitsfehlers fehlgeschlagen",
-      "securityType": "Fehler beim Sicherheitstyp"
+      "authenticationDetail": "Authentifizierung fehlgeschlagen: {{reason}}. Bitte überprüfen Sie Ihr VNC-Passwort.",
+      "authenticationFailed": "Authentifizierung fehlgeschlagen",
+      "connectionLost": "Verbindung unerwartet unterbrochen",
+      "loadViewer": "VNC-Viewer konnte nicht geladen werden",
+      "securityFailure": "Sicherheitsfehler: {{reason}}",
+      "securityType": "Sicherheitstyp wird nicht unterstützt: {{reason}}"
     },
     "exitFullscreen": "Beenden Sie den Vollbildmodus",
     "fullscreen": "Vollbild",
@@ -779,8 +779,8 @@
     "disconnect": "Trennen",
     "errors": {
       "connect": "Verbindung konnte nicht hergestellt werden",
-      "invalidTicket": "Fehler beim ungültigen Ticket",
-      "obtainTicket": "Ticket konnte nicht abgerufen werden"
+      "invalidTicket": "Ungültige Antwort für Tunnel-Ticket",
+      "obtainTicket": "VNC-Tunnel-Ticket konnte nicht abgerufen werden"
     },
     "sessionTitle": "Sitzungstitel"
   },

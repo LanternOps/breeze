@@ -294,8 +294,8 @@
       "threads": "Fils de filage"
     },
     "errors": {
-      "handlerNotConfigured": "Impossible de gérer le gestionnaire non configuré",
-      "killFailed": "Impossible d’arrêter le processus"
+      "handlerNotConfigured": "Le gestionnaire d'arrêt de processus n'est pas configuré",
+      "killFailed": "Échec de l'arrêt du processus"
     },
     "killConfirm": "Kill Confirmer",
     "killProcess": "Arrêter le processus",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "Ce lien n'est plus valide ou a expiré.",
-      "obtainTicket": "Impossible de récupérer le ticket",
-      "prepareConnection": "Impossible de préparer la connexion",
+      "obtainTicket": "Impossible d'obtenir le ticket du tunnel",
+      "prepareConnection": "Impossible de préparer la connexion du proxy",
       "tlsUntrusted": "Cet appareil a présenté un certificat non fiable ou auto-signé.",
       "tunnelFailed": "Le tunnel n'a pas pu s'ouvrir"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Saisir les chaînes",
     "enterValueName": "Saisir le nom de la valeur",
     "errors": {
-      "createKey": "Impossible de créer la clé",
+      "createKey": "Impossible de créer la clé de registre",
       "createKeyDetail": "Impossible de créer une clé de registre : {{message}}",
-      "deleteKey": "Impossible de supprimer la clé",
+      "deleteKey": "Impossible de supprimer la clé de registre",
       "deleteKeyDetail": "Impossible de supprimer la clé du registre : {{message}}",
-      "deleteValue": "Impossible de supprimer la valeur",
+      "deleteValue": "Impossible de supprimer la valeur du registre",
       "deleteValueDetail": "Impossible de supprimer la valeur du registre : {{message}}",
-      "invalidFormat": "Format non valide",
-      "invalidNumber": "Nombre non valide",
-      "keyNameBackslash": "Le nom de la clé ne peut pas contenir de barre oblique inverse",
-      "keyNameRequired": "Le nom de la clé est obligatoire",
-      "keyProvider": "Fournisseur de clés non disponible",
-      "loadKeys": "Impossible de charger les clés",
+      "invalidFormat": "Format de valeur invalide",
+      "invalidNumber": "Valeur numérique invalide",
+      "keyNameBackslash": "Le nom de la clé ne peut pas contenir de barre oblique inversée",
+      "keyNameRequired": "Le nom de la clé est requis",
+      "keyProvider": "Le fournisseur de clés de registre n'est pas configuré",
+      "loadKeys": "Impossible de charger les clés du registre",
       "loadKeysDetail": "Impossible de charger les clés du registre : {{message}}",
-      "loadValues": "Impossible de charger les valeurs",
+      "loadValues": "Impossible de charger les valeurs du registre",
       "loadValuesDetail": "Impossible de charger les valeurs du registre : {{message}}",
-      "saveValue": "Impossible d’enregistrer la valeur",
+      "saveValue": "Impossible d'enregistrer la valeur du registre",
       "saveValueDetail": "Impossible d’enregistrer la valeur du registre : {{message}}",
-      "valueNameRequired": "Le nom de la valeur est obligatoire",
-      "valueProvider": "Fournisseur de valeurs non disponible"
+      "valueNameRequired": "Le nom de la valeur est requis",
+      "valueProvider": "Le fournisseur de valeurs de registre n'est pas configuré"
     },
     "hexadecimal": "Hexadécimal",
     "key": "Clé",
@@ -454,14 +454,14 @@
     "disconnect": "Déconnecter",
     "errorMessage": "Erreur : {{message}}",
     "errors": {
-      "closedUnexpectedly": "Impossible de fermer de façon inattendue",
+      "closedUnexpectedly": "La connexion s'est fermée de manière inattendue",
       "connection": "Impossible de connecter",
       "createSession": "Impossible de créer une session",
-      "createTicket": "Impossible de créer un ticket",
+      "createTicket": "Impossible de créer le ticket de connexion",
       "failed": "Impossible d’échouer",
       "initialize": "Impossible d’initialiser",
-      "invalidTicket": "Impossible de valider le ticket",
-      "webSocket": "Impossible de faire le web socket"
+      "invalidTicket": "Réponse de ticket de connexion invalide",
+      "webSocket": "Erreur de connexion WebSocket"
     },
     "exitFullscreen": "Sortie plein écran",
     "fullscreen": "Plein écran",
@@ -497,23 +497,23 @@
       "deleteRegistryValue": "Impossible de supprimer la valeur du registre",
       "disableTask": "Impossible de désactiver la tâche",
       "enableTask": "Impossible d’activer la tâche",
-      "eventDetails": "Impossible de pouvoir faire des détails de l’événement",
+      "eventDetails": "Impossible de récupérer les détails de l'événement",
       "fetchEventLogs": "Impossible de récupérer les journaux d’événements",
       "fetchProcesses": "Impossible de récupérer les processus",
       "fetchServices": "Impossible de récupérer des services",
       "fetchTasks": "Impossible de récupérer des tâches",
       "killProcess": "Impossible d’arrêter le processus",
-      "processDetails": "Impossible de traiter les détails",
+      "processDetails": "Impossible d'obtenir les détails du processus",
       "queryEvents": "Impossible d’interroger les événements",
-      "registryKeys": "Impossible de pouvoir enregistrer les clés",
-      "registryValues": "Impossible de registrar les valeurs",
+      "registryKeys": "Impossible de charger les clés du registre",
+      "registryValues": "Impossible de charger les valeurs du registre",
       "restartService": "Impossible de relancer le service",
       "runTask": "Impossible d’exécuter la tâche",
       "setRegistryValue": "Impossible de définir la valeur du registre",
       "startService": "Impossible de démarrer le service",
       "stopService": "Impossible d’arrêter le service",
-      "taskDetails": "Impossible de fournir des tâches détaillées",
-      "taskHistory": "Impossible de faire des tâches historiques"
+      "taskDetails": "Impossible de charger les détails de la tâche",
+      "taskHistory": "Impossible de charger l'historique de la tâche"
     },
     "policyDisabled": "Une politique de configuration a désactivé les outils système à distance.",
     "policyDisabledNamed": "La politique de configuration « {{name}} » a désactivé les outils système à distance.",
@@ -616,7 +616,7 @@
     "displayName": "Nom d’affichage",
     "executablePath": "Chemin exécutable",
     "loading": "Chargement",
-    "noDescription": "Aucune description",
+    "noDescription": "Aucune description disponible",
     "noServicesAvailable": "Aucun service disponible",
     "noServicesFound": "Aucun service trouvé",
     "ok": "Ok",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Détails Titre",
     "errors": {
-      "exportFetch": "Impossible d’exporter la récupération"
+      "exportFetch": "Impossible de récupérer les sessions pour l'exportation"
     },
     "fields": {
       "dataTransferred": "Données transférées",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Déconnecter",
     "errors": {
-      "authenticationDetail": "Impossible de pouvoir authentification détail",
-      "authenticationFailed": "Impossible d’authentification échouée",
-      "connectionLost": "Connexion perdue",
-      "loadViewer": "Impossible de charger le visualiseur",
-      "securityFailure": "Échec de sécurité",
-      "securityType": "Impossible de typer la sécurité"
+      "authenticationDetail": "Échec de l'authentification : {{reason}}. Vérifiez votre mot de passe VNC.",
+      "authenticationFailed": "Échec de l'authentification",
+      "connectionLost": "Connexion perdue de manière inattendue",
+      "loadViewer": "Impossible de charger la visionneuse VNC",
+      "securityFailure": "Échec de sécurité : {{reason}}",
+      "securityType": "Type de sécurité non pris en charge : {{reason}}"
     },
     "exitFullscreen": "Sortie plein écran",
     "fullscreen": "Plein écran",
@@ -779,8 +779,8 @@
     "disconnect": "Déconnecter",
     "errors": {
       "connect": "Impossible de se connecter",
-      "invalidTicket": "Impossible de valider le ticket",
-      "obtainTicket": "Impossible de récupérer le ticket"
+      "invalidTicket": "Réponse de ticket de tunnel invalide",
+      "obtainTicket": "Impossible d'obtenir le ticket du tunnel VNC"
     },
     "sessionTitle": "Titre de la session"
   },

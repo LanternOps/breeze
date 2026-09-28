@@ -2600,7 +2600,7 @@
       "discoveryMethods": "Métodos de descoberta",
       "discoveryProfile": "Perfil de descoberta",
       "displayName": "Nome de exibição",
-      "firstSeen": "Visto pela primeira vez",
+      "firstSeen": "Primeira vez visto",
       "hostname": "Nome do host",
       "linkedDevice": "Dispositivo vinculado",
       "manufacturer": "Fabricante",
@@ -2661,7 +2661,7 @@
     "sections": {
       "discovery": "Descoberta",
       "identity": "Identidade",
-      "monitoringStatus": "Status do monitoramento",
+      "monitoringStatus": "Status de monitoramento",
       "openPorts": "Portas abertas",
       "snmpData": "Dados SNMP",
       "reachability": "Acessibilidade",

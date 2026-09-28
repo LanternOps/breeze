@@ -653,7 +653,7 @@
       "orgRequiredLine": "Bu sayfada aynı anda tek bir kuruluş gösterilmektedir; devam etmek için birini seçin."
     },
     "org": {
-      "allOrganizations": "Tüm kuruluşlar",
+      "allOrganizations": "Tüm Organizasyonlar",
       "selectTitle": "Kuruluşu Seçin (Cmd+O)",
       "switching": "Değiştiriliyor…",
       "organizations": "Kuruluşlar",
