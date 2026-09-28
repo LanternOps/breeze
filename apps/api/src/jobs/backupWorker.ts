@@ -24,6 +24,7 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
+import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { eq, ne, and, or, desc, gt, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
@@ -859,7 +860,10 @@ export type FullBackupFallbackReason =
   | 'base_job_not_completed'
   | 'base_retired'
   | 'base_deleted_race'
-  | 'base_retired_race';
+  | 'base_retired_race'
+  // The helper verifies its base and no candidate carries a verified
+  // snapshot attestation.
+  | 'no_verified_base';
 
 /**
  * The newest snapshot for this device+config ignoring EVERY eligibility
@@ -996,6 +1000,9 @@ function logFullBackupFallback(
  * write happens while a lock from the other table is held (cf. #3911's
  * key-share deadlock).
  */
+/** The attested base manifest a capable helper checks its downloaded base against. */
+export type BaseAttestation = { manifestKey: string; manifestSha256: string; manifestSize: number };
+
 async function stampDispatchPinAndIdentity(params: {
   deviceId: string;
   configId: string;
@@ -1003,14 +1010,14 @@ async function stampDispatchPinAndIdentity(params: {
   mode: 'file' | 'system_image' | null;
   provider: string;
   providerConfig: Record<string, unknown>;
-}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null }> {
+}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null; baseAttestation: BaseAttestation | null }> {
   const storageIdentity = normalizeStorageIdentity(params.provider, params.providerConfig);
 
   if (params.mode === null) {
     // hyperv/mssql: identity only — no lease, no pin (spec: pins/leases are
     // file/system_image only; storage_identity stamping is not).
     await db.update(backupJobs).set({ storageIdentity }).where(eq(backupJobs.id, params.jobId));
-    return { baseSnapshotId: '', publishLeaseExpiresAt: null };
+    return { baseSnapshotId: '', publishLeaseExpiresAt: null, baseAttestation: null };
   }
   const mode = params.mode;
 
@@ -1034,54 +1041,100 @@ async function stampDispatchPinAndIdentity(params: {
     // wins instead of dispatch falling back to a full run unnecessarily. The
     // lock-time re-check below still exists to catch the narrow race where a
     // retirement lands AFTER this select but before the FOR SHARE lock.
-    const [candidate] = await tx
-      .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
-      .from(backupSnapshots)
-      .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
-      .leftJoin(
-        backupSnapshotRetirements,
-        and(
-          eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
-          eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
-        ),
-      )
-      .where(
-        and(
-          eq(backupSnapshots.deviceId, params.deviceId),
-          eq(backupSnapshots.configId, params.configId),
-          // Review fix: scope by THIS dispatch's storage identity too. Without
-          // this, a config edit (§3.6) can leave the newest snapshot carrying
-          // the OLD identity while this job is stamped with the NEW one —
-          // dispatch would then pin a base whose row retention's pin check
-          // (scoped by storageIdentity) can never see, so retention would
-          // retire and delete it out from under an in-flight run.
-          eq(backupSnapshots.storageIdentity, storageIdentity),
-          mode === 'system_image'
-            ? eq(backupSnapshots.backupType, 'system_image')
-            : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
-          // #6351: the candidate must merely be UNEXPIRED RIGHT NOW — not
-          // survive the whole publish lease. Requiring
-          // `expiresAt > publishLeaseExpiresAt` was unsatisfiable for the
-          // default configuration: an ordinary daily snapshot expires at
-          // `taken + keepDaily` (7 days) while the lease runs to `now + 7
-          // days`, so the newest snapshot always fell short by exactly the
-          // gap between the two runs and EVERY backup fell back to a full
-          // copy. Survival across the lease is what the PIN is for:
-          // backupRetention.ts's `deleteSnapshotRow` returns 'pinned' for any
-          // snapshot named by an in-flight job's base_snapshot_id or by a
-          // still-live publish lease, regardless of expires_at (proved by
-          // backupRetentionPins.integration.test.ts's "skips an expired
-          // snapshot pinned as a running job's base"). Once the child
-          // publishes, the parent's objects stay reachable through the
-          // child's own manifest in the mark-and-sweep root set, so letting
-          // the parent ROW expire on schedule is safe.
-          or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, dispatchedAt)),
-          inArray(backupJobs.status, INCREMENTAL_BASE_JOB_STATUSES),
-          isNull(backupSnapshotRetirements.id),
-        ),
-      )
-      .orderBy(desc(backupSnapshots.timestamp))
+    // A helper that verifies its incremental base (snapshot integrity
+    // protocol >= 1) is only ever handed a base whose attestation the server
+    // verified, plus that base manifest's attested digest to check the
+    // downloaded bytes against. No verified candidate means a full run.
+    // Older helpers keep the unrestricted selection.
+    const [deviceRow] = await tx
+      .select({ integrityVersion: devices.backupIntegrityProtocolVersion })
+      .from(devices)
+      .where(eq(devices.id, params.deviceId))
       .limit(1);
+    const requireAttestedBase = (deviceRow?.integrityVersion ?? 0) >= 1;
+
+    const eligible = and(
+      eq(backupSnapshots.deviceId, params.deviceId),
+      eq(backupSnapshots.configId, params.configId),
+      // Review fix: scope by THIS dispatch's storage identity too. Without
+      // this, a config edit (§3.6) can leave the newest snapshot carrying
+      // the OLD identity while this job is stamped with the NEW one —
+      // dispatch would then pin a base whose row retention's pin check
+      // (scoped by storageIdentity) can never see, so retention would
+      // retire and delete it out from under an in-flight run.
+      eq(backupSnapshots.storageIdentity, storageIdentity),
+      mode === 'system_image'
+        ? eq(backupSnapshots.backupType, 'system_image')
+        : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+      // #6351: the candidate must merely be UNEXPIRED RIGHT NOW — not
+      // survive the whole publish lease. Requiring
+      // `expiresAt > publishLeaseExpiresAt` was unsatisfiable for the
+      // default configuration: an ordinary daily snapshot expires at
+      // `taken + keepDaily` (7 days) while the lease runs to `now + 7
+      // days`, so the newest snapshot always fell short by exactly the
+      // gap between the two runs and EVERY backup fell back to a full
+      // copy. Survival across the lease is what the PIN is for:
+      // backupRetention.ts's `deleteSnapshotRow` returns 'pinned' for any
+      // snapshot named by an in-flight job's base_snapshot_id or by a
+      // still-live publish lease, regardless of expires_at (proved by
+      // backupRetentionPins.integration.test.ts's "skips an expired
+      // snapshot pinned as a running job's base"). Once the child
+      // publishes, the parent's objects stay reachable through the
+      // child's own manifest in the mark-and-sweep root set, so letting
+      // the parent ROW expire on schedule is safe.
+      or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, dispatchedAt)),
+      inArray(backupJobs.status, INCREMENTAL_BASE_JOB_STATUSES),
+      isNull(backupSnapshotRetirements.id),
+    );
+    const retirementJoin = and(
+      eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+      eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
+    );
+
+    let candidate: { id: string; snapshotId: string; baseAttestation: BaseAttestation | null } | undefined;
+    if (requireAttestedBase) {
+      const [row] = await tx
+        .select({
+          id: backupSnapshots.id,
+          snapshotId: backupSnapshots.snapshotId,
+          manifestKey: backupSnapshotAttestations.manifestKey,
+          manifestSha256: backupSnapshotAttestations.manifestSha256,
+          manifestSize: backupSnapshotAttestations.manifestSize,
+        })
+        .from(backupSnapshots)
+        .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+        .innerJoin(
+          backupSnapshotAttestations,
+          and(
+            eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id),
+            eq(backupSnapshotAttestations.status, 'verified'),
+            eq(backupSnapshotAttestations.deviceId, params.deviceId),
+            eq(backupSnapshotAttestations.storageIdentity, storageIdentity),
+            eq(backupSnapshotAttestations.providerSnapshotId, backupSnapshots.snapshotId),
+          ),
+        )
+        .leftJoin(backupSnapshotRetirements, retirementJoin)
+        .where(eligible)
+        .orderBy(desc(backupSnapshots.timestamp))
+        .limit(1);
+      candidate = row
+        ? {
+            id: row.id,
+            snapshotId: row.snapshotId,
+            baseAttestation: { manifestKey: row.manifestKey, manifestSha256: row.manifestSha256, manifestSize: row.manifestSize },
+          }
+        : undefined;
+    } else {
+      const [row] = await tx
+        .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
+        .from(backupSnapshots)
+        .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+        .leftJoin(backupSnapshotRetirements, retirementJoin)
+        .where(eligible)
+        .orderBy(desc(backupSnapshots.timestamp))
+        .limit(1);
+      candidate = row ? { ...row, baseAttestation: null } : undefined;
+    }
 
     // Lock order: JOB row first (this UPDATE stamps identity/lease/tentative
     // pin unconditionally — every dispatched backup_run job gets these).
@@ -1095,8 +1148,8 @@ async function stampDispatchPinAndIdentity(params: {
       .where(eq(backupJobs.id, params.jobId));
 
     if (!candidate) {
-      pendingFallback = 'diagnose';
-      return { baseSnapshotId: '', publishLeaseExpiresAt };
+      pendingFallback = requireAttestedBase ? 'no_verified_base' : 'diagnose';
+      return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
 
     // SNAPSHOT row second, locked ALONE (see docstring for why the retirement
@@ -1111,7 +1164,7 @@ async function stampDispatchPinAndIdentity(params: {
       // Row already gone — a concurrent retention delete won the race.
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_deleted_race';
-      return { baseSnapshotId: '', publishLeaseExpiresAt };
+      return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
 
     const [retirement] = await tx
@@ -1128,10 +1181,10 @@ async function stampDispatchPinAndIdentity(params: {
     if (retirement) {
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_retired_race';
-      return { baseSnapshotId: '', publishLeaseExpiresAt };
+      return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
 
-    return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt };
+    return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt, baseAttestation: candidate.baseAttestation };
   });
 
   if (pendingFallback !== null) {
@@ -1377,6 +1430,9 @@ async function prepareBackupDispatchTargets(
           ? {
               baseSnapshotId: dispatchPin.baseSnapshotId,
               publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
+              // Only for a verified base pinned for a capable helper, which
+              // checks the downloaded base manifest against it.
+              ...(dispatchPin.baseAttestation ? { baseAttestation: dispatchPin.baseAttestation } : {}),
             }
           : {}),
       },
