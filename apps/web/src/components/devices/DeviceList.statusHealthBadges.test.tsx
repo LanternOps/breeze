@@ -17,6 +17,12 @@ vi.mock('@/stores/orgStore', () => ({
 }));
 vi.mock('../remote/ConnectDesktopButton', () => ({ default: () => null }));
 vi.mock('@/lib/formatTime', () => ({ formatLastSeen: () => 'just now' }));
+// DeviceList gates write actions on usePermissions (#7342); grant-all here —
+// permission behaviour is covered in DeviceList.permissions.test.tsx.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));
 
 function device(id: string, hostname: string, overrides: Partial<Device> = {}): Device {
   return {
