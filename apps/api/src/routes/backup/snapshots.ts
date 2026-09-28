@@ -19,6 +19,7 @@ import {
   snapshotProtectionReasonSchema,
 } from './schemas';
 import type { SnapshotTreeItem } from './types';
+import { attachDeviceNames } from './deviceNames';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -256,7 +257,7 @@ snapshotsRoutes.get(
       .where(and(...conditions))
       .orderBy(desc(backupSnapshots.timestamp));
 
-    return c.json({ data: rows.map(toSnapshotResponse) });
+    return c.json({ data: await attachDeviceNames(orgId, rows.map(toSnapshotResponse)) });
   }
 );
 

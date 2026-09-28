@@ -167,6 +167,9 @@ export default function VMRestoreWizard() {
       ? Boolean(snapshotId && rebuildHostDeviceId && isAbsoluteVhdxPath(outputPath) && rebuildHostOptions.canSubmit)
       : Boolean(snapshotId && targetDeviceId && vmName.trim() && deviceOptions.canSubmit);
 
+  // Full restore / instant boot need a VM name; the rebuild engine takes none (#7213).
+  const vmNameMissing = mode !== 'rebuild' && !vmName.trim();
+
   const handleRestore = useCallback(async () => {
     setRestoring(true);
     setRestoreError(undefined);
@@ -389,6 +392,9 @@ export default function VMRestoreWizard() {
                     placeholder={t('vMRestoreWizard.eGRestoredDbServer')}
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                   />
+                  {vmNameMissing ? (
+                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.enterAVmNameToContinue')}</p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <label htmlFor="vm-switch" className="text-xs font-medium text-muted-foreground">
@@ -521,11 +527,15 @@ export default function VMRestoreWizard() {
           >
             <ArrowLeft className="h-4 w-4" /> {t('vMRestoreWizard.back')} </button>
           <div className="flex items-center gap-2">
+            {step === steps.length - 1 && vmNameMissing ? (
+              <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.enterAVmNameOnTheVmNameStep')}</p>
+            ) : null}
             {step < steps.length - 1 ? (
               <button
                 type="button"
                 onClick={nextStep}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                disabled={step === 3 && vmNameMissing}
+                className="disabled:opacity-50 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
                 {t('vMRestoreWizard.continue')} <ArrowRight className="h-4 w-4" />
               </button>

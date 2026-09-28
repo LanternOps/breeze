@@ -123,7 +123,9 @@
     "score": "Punktzahl",
     "estRto": "Schätzung: RTO",
     "estRpo": "Schätzung: RPO",
-    "riskFactors": "Risikofaktoren"
+    "riskFactors": "Risikofaktoren",
+    "reason": "Grund",
+    "noDevicesScoredYet": "Für kein Gerät liegt bereits ein Bereitschaftswert vor."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Verifizierungsdaten werden geladen...",
@@ -521,14 +523,19 @@
     "command": "Befehl:",
     "targetPath": "Zielpfad:",
     "completed": "Abgeschlossen:",
-    "resultPayload": "Ergebnisnutzlast",
     "noRestoreHistoryYetStartARestoreTo": "Noch kein Wiederherstellungsverlauf. Starten Sie hier eine Wiederherstellung, um Live-Ergebnisdetails zu laden.",
     "recentRestoreHistory": "Aktueller Wiederherstellungsverlauf",
     "mostRecentRestoreJobsForThisOrganization": "Die aktuellsten Wiederherstellungsjobs für diese Organisation.",
     "noRestoreHistoryYet": "Noch kein Wiederherstellungsverlauf.",
-    "restore": "wiederherstellen ·",
     "files2": "Dateien:",
-    "size": "Größe:"
+    "size": "Größe:",
+    "filesSelected_one": "{{count}} Datei ausgewählt",
+    "filesSelected_other": "{{count}} Dateien ausgewählt",
+    "unknownDevice": "Unbekanntes Gerät",
+    "kindVm": "Als VM wiederherstellen",
+    "kindInstantBoot": "Sofortstart",
+    "kindSelective": "Selektive Wiederherstellung",
+    "kindFull": "Vollständige Wiederherstellung"
   },
   "sLAConfigDialog": {
     "name": "Name",
@@ -675,7 +682,9 @@
     "outputPathHint": "Absoluter Pfad auf dem Rebuild-Host, der auf .vhdx endet.",
     "outputPathInvalid": "Geben Sie einen absoluten Pfad ein, der auf .vhdx endet.",
     "startRebuild": "Rebuild starten",
-    "rebuildStarted": "Rebuild gestartet. Die VHDX-Datei erscheint auf dem Rebuild-Host, sobald der Rebuild abgeschlossen ist."
+    "rebuildStarted": "Rebuild gestartet. Die VHDX-Datei erscheint auf dem Rebuild-Host, sobald der Rebuild abgeschlossen ist.",
+    "enterAVmNameToContinue": "Geben Sie einen VM-Namen ein, um fortzufahren.",
+    "enterAVmNameOnTheVmNameStep": "Geben Sie im Schritt „VM-Name“ einen VM-Namen ein, um die Wiederherstellung zu starten."
   },
   "vaultConfigDialog": {
     "device": "Gerät",

@@ -75,6 +75,10 @@ vi.mock('./verificationService', () => ({
   },
 }));
 
+vi.mock('./deviceNames', () => ({
+  attachDeviceNames: async (_orgId: string, rows: unknown[]) => rows,
+}));
+
 import { backupVerificationRoutes } from './verification';
 
 describe('backup verification read site scope', () => {

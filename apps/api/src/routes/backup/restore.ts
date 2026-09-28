@@ -11,6 +11,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from '../../services/backupProviderConfig';
 import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { resolveScopedOrgId } from './helpers';
+import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
 import {
   authorizeRouteResilienceResources,
@@ -154,7 +155,7 @@ restoreRoutes.get(
       .orderBy(desc(restoreJobs.createdAt))
       .limit(query.limit);
 
-    return c.json({ data: rows.map(toRestoreResponse) });
+    return c.json({ data: await attachDeviceNames(orgId, rows.map(toRestoreResponse)) });
   }
 );
 
@@ -185,7 +186,8 @@ restoreRoutes.get(
       return c.json({ error: 'Restore job not found' }, 404);
     }
 
-    return c.json({ data: toRestoreResponse(row) });
+    const [withName] = await attachDeviceNames(orgId, [toRestoreResponse(row)]);
+    return c.json({ data: withName });
   }
 );
 
@@ -557,6 +559,9 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
     snapshotId: row.snapshotId,
     deviceId: row.deviceId,
     restoreType: row.restoreType,
+    // Restore-as-VM / instant boot persist restoreType 'full'; expose the mode so
+    // the UI does not label them "full restore" (#7213).
+    restoreMode: restoreModeFromTargetConfig(row.targetConfig),
     selectedPaths: row.selectedPaths ?? [],
     status: row.status,
     targetPath: row.targetPath ?? null,

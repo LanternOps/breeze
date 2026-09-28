@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { snapshotsRoutes } from './snapshots';
 
+const attachNamesMock = vi.hoisted(() => vi.fn(async (_orgId: string, rows: unknown[]) => rows));
+vi.mock('./deviceNames', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./deviceNames')>()),
+  attachDeviceNames: (...args: [string, unknown[]]) => attachNamesMock(...args),
+}));
+
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SITE_A = '11111111-1111-4111-8111-111111111111';
@@ -235,6 +241,20 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data).toHaveLength(2);
     expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the device-name-enriched snapshot rows (#7213)', async () => {
+    attachNamesMock.mockImplementationOnce(async (_orgId, rows) =>
+      (rows as Array<{ deviceId: string }>).map((r) => ({ ...r, deviceName: 'FRONT-DESK-01' })));
+    selectMock.mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].deviceName).toBe('FRONT-DESK-01');
   });
 
   it('denies GET /snapshots/:id for a site-restricted caller when the source device is out-of-site', async () => {

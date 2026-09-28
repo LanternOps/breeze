@@ -707,11 +707,13 @@ describe('backup jobs routes', () => {
         },
       } as any;
     });
+    const openContextsAtEnqueue = new Map<string, number>();
     enqueueBackupDispatchMock.mockImplementation(async (jobId: string) => {
       const ctx = createdIn.get(jobId);
       committedAtEnqueue.set(jobId, ctx !== undefined && authDbContexts.committed.has(ctx));
+      openContextsAtEnqueue.set(jobId, authDbContexts.stack.length);
     });
-    return { createdIn, committedAtEnqueue };
+    return { createdIn, committedAtEnqueue, openContextsAtEnqueue };
   }
 
   it('run-all commits every job row before enqueueing any dispatch (#6597)', async () => {
@@ -736,7 +738,7 @@ describe('backup jobs routes', () => {
   });
 
   it('single-device run commits every job row before enqueueing its dispatch (#6597)', async () => {
-    const { createdIn, committedAtEnqueue } = trackCreateAndEnqueueContexts();
+    const { createdIn, committedAtEnqueue, openContextsAtEnqueue } = trackCreateAndEnqueueContexts();
     selectMock.mockReturnValueOnce(makeSelectChain([{ id: 'device-1', status: 'online' }]));
     vi.mocked(resolveBackupConfigForDevice).mockResolvedValueOnce({
       settings: null,
@@ -758,6 +760,8 @@ describe('backup jobs routes', () => {
     for (const [jobId, ctx] of createdIn) {
       expect(ctx, `${jobId} was not created in its own committed transaction`).toBeDefined();
       expect(committedAtEnqueue.get(jobId), `${jobId} was enqueued before its row committed`).toBe(true);
+      // #7213: the Redis enqueue must not hold a pooled DB connection.
+      expect(openContextsAtEnqueue.get(jobId), `${jobId} was enqueued inside a held DB context`).toBe(0);
     }
   });
 });

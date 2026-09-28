@@ -133,6 +133,30 @@ describe('VMRestoreWizard', () => {
     ));
   });
 
+  it('blocks Continue on the VM Name step until a name is typed, and says why (#7213)', async () => {
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /4\. VM Name/i }));
+
+    const cont = screen.getByRole('button', { name: /^Continue/i }) as HTMLButtonElement;
+    expect(cont.disabled).toBe(true);
+    expect(screen.getByText(/Enter a VM name to continue/i)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/VM Name/i), { target: { value: 'Recovered VM' } });
+    expect((screen.getByRole('button', { name: /^Continue/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/Enter a VM name to continue/i)).toBeNull();
+  });
+
+  it('explains why Start is disabled when the VM name is empty (#7213)', async () => {
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+
+    const start = screen.getByRole('button', { name: /Start Full Restore/i }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    expect(screen.getByText(/Enter a VM name on the VM Name step/i)).toBeTruthy();
+  });
+
   it('sends the nested VM spec payload for instant boot', async () => {
     render(<VMRestoreWizard />);
 

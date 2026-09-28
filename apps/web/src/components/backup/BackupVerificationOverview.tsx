@@ -158,6 +158,8 @@ export default function BackupVerificationOverview() {
   }
 
   const avgReadiness = health?.readiness?.averageScore ?? 0;
+  // No scored device: an average of 0 is "no data", not a failing score (#7213).
+  const hasReadinessData = devices.length > 0;
   const highReadiness = devices.filter((device) => device.readinessScore >= 85).length;
   const lowReadiness = health?.readiness?.lowReadinessCount ?? 0;
   const recentFailures = health?.escalations?.verificationFailures ?? failures.length;
@@ -172,10 +174,16 @@ export default function BackupVerificationOverview() {
             <ShieldCheck className="h-4 w-4" />
             {t('backupVerificationOverview.avgReadiness')} </div>
           <div className="mt-2">
-            <span className={cn('text-2xl font-semibold', readinessColor(avgReadiness))}>
-              {avgReadiness}
-            </span>
-            <span className="text-sm text-muted-foreground"> / 100</span>
+            {hasReadinessData ? (
+              <>
+                <span className={cn('text-2xl font-semibold', readinessColor(avgReadiness))}>
+                  {avgReadiness}
+                </span>
+                <span className="text-sm text-muted-foreground"> / 100</span>
+              </>
+            ) : (
+              <span className="text-2xl font-semibold text-muted-foreground">--</span>
+            )}
           </div>
         </div>
         <div className="rounded-lg border bg-card px-5 py-4">
@@ -220,7 +228,8 @@ export default function BackupVerificationOverview() {
                   <th className="pb-2 pr-4">{t('backupVerificationOverview.type')}</th>
                   <th className="pb-2 pr-4">{t('backupVerificationOverview.started')}</th>
                   <th className="pb-2 pr-4">{t('backupVerificationOverview.filesOk')}</th>
-                  <th className="pb-2">{t('backupVerificationOverview.filesFailed')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.filesFailed')}</th>
+                  <th className="pb-2">{t('backupVerificationOverview.reason')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -234,7 +243,10 @@ export default function BackupVerificationOverview() {
                     </td>
                     <td className="py-2 pr-4 text-muted-foreground">{formatTime(v.startedAt)}</td>
                     <td className="py-2 pr-4 text-success">{v.filesVerified}</td>
-                    <td className="py-2 text-destructive">{v.filesFailed}</td>
+                    <td className="py-2 pr-4 text-destructive">{v.filesFailed}</td>
+                    <td className="py-2 text-muted-foreground">
+                      {typeof v.details?.reason === 'string' && v.details.reason.trim() ? v.details.reason.trim() : '--'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -249,7 +261,9 @@ export default function BackupVerificationOverview() {
         <p className="text-sm text-muted-foreground">{t('backupVerificationOverview.devicesScoringBelowThe85PointReadinessThreshold')}</p>
         {lowDevices.length === 0 ? (
           <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-            {t('backupVerificationOverview.allDevicesMeetTheReadinessThreshold')} </div>
+            {hasReadinessData
+              ? t('backupVerificationOverview.allDevicesMeetTheReadinessThreshold')
+              : t('backupVerificationOverview.noDevicesScoredYet')} </div>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">

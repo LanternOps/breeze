@@ -123,7 +123,9 @@
     "score": "Partition",
     "estRto": "RTO estimé",
     "estRpo": "RPO estimé",
-    "riskFactors": "Facteurs de risque"
+    "riskFactors": "Facteurs de risque",
+    "reason": "Motif",
+    "noDevicesScoredYet": "Aucun appareil n’a encore de score de préparation."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Chargement des données de vérification...",
@@ -521,14 +523,19 @@
     "command": "Commandement :",
     "targetPath": "Chemin de la cible :",
     "completed": "Terminé :",
-    "resultPayload": "Charge utile résultante",
     "noRestoreHistoryYetStartARestoreTo": "Aucun historique de restauration pour l’instant. Commencez une restauration pour charger les détails des résultats en direct ici.",
     "recentRestoreHistory": "Historique récent de la restauration",
     "mostRecentRestoreJobsForThisOrganization": "Les travaux de restauration les plus récents pour cette organisation.",
     "noRestoreHistoryYet": "Aucun historique de restauration pour l’instant.",
-    "restore": "restaurer ·",
     "files2": "Fichiers :",
-    "size": "Taille :"
+    "size": "Taille :",
+    "filesSelected_one": "{{count}} fichier sélectionné",
+    "filesSelected_other": "{{count}} fichiers sélectionnés",
+    "unknownDevice": "Appareil inconnu",
+    "kindVm": "Restaurer en tant que VM",
+    "kindInstantBoot": "Démarrage instantané",
+    "kindSelective": "Restauration sélective",
+    "kindFull": "Restauration complète"
   },
   "sLAConfigDialog": {
     "name": "Nom",
@@ -675,7 +682,9 @@
     "outputPathHint": "Chemin absolu sur l'hôte de reconstruction se terminant par .vhdx.",
     "outputPathInvalid": "Saisissez un chemin absolu se terminant par .vhdx.",
     "startRebuild": "Lancer la reconstruction",
-    "rebuildStarted": "Reconstruction lancée. Le VHDX apparaîtra sur l'hôte de reconstruction une fois celle-ci terminée."
+    "rebuildStarted": "Reconstruction lancée. Le VHDX apparaîtra sur l'hôte de reconstruction une fois celle-ci terminée.",
+    "enterAVmNameToContinue": "Saisissez un nom de VM pour continuer.",
+    "enterAVmNameOnTheVmNameStep": "Saisissez un nom de VM à l’étape « Nom de la VM » pour lancer la restauration."
   },
   "vaultConfigDialog": {
     "device": "Dispositif",
