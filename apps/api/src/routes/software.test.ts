@@ -419,6 +419,40 @@ describe('software routes', () => {
       expectDeliveredAfterCommit();
     });
 
+    it('POST /deployments (package manager, cross-platform split): delivers every deployment after commit', async () => {
+      const MAC_ID = '33333333-3333-4333-8333-333333333333';
+      const brewMethod = {
+        id: 'method-mac', catalogId: CATALOG_ID, platform: 'macos', kind: 'homebrew_cask', packageId: 'app', enabled: true,
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([wingetMethod, brewMethod]))
+        .mockReturnValueOnce(selectResult([{ id: DEVICE_ID, osType: 'windows' }, { id: MAC_ID, osType: 'macos' }]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID, MAC_ID]);
+      const deliverMac = vi.fn(async () => {
+        events.push({ event: 'deliver-mac', open: authDbContexts.stack.length });
+        return { deliveredDeviceIds: [MAC_ID] };
+      });
+      trackDispatch(createDeploymentMock, {
+        deploymentId: 'dep-win', deployment: { id: 'dep-win' }, status: 'pending', dispatchedDeviceIds: [DEVICE_ID],
+      });
+      createDeploymentMock.mockImplementationOnce(async () => ({
+        deploymentId: 'dep-mac', deployment: { id: 'dep-mac' }, status: 'pending', dispatchedDeviceIds: [MAC_ID],
+        deliver: deliverMac,
+      }));
+
+      const res = await postJson('/software/deployments', {
+        name: 'Rollout', catalogId: CATALOG_ID, deploymentType: 'install', targetType: 'devices',
+        targetIds: [DEVICE_ID, MAC_ID], scheduleType: 'immediate',
+      });
+
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(2);
+      expect(createDeploymentMock.mock.calls.every(([input]) => input.deferDelivery === true)).toBe(true);
+      expectDeliveredAfterCommit();
+      expect(events.find((e) => e.event === 'deliver-mac')).toMatchObject({ open: 0 });
+    });
+
     it('POST /deploy (legacy): creates deferred inside a committed context, delivers after', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([catalogRow]))

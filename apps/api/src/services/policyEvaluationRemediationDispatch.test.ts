@@ -35,6 +35,7 @@ import {
   __remediationAfterCommit,
   __triggerConfigPolicyRemediation,
   __triggerRemediationAutomation,
+  evaluatePolicy,
   type DeferredRemediationEnqueues,
 } from './policyEvaluationService';
 
@@ -273,5 +274,85 @@ describe('deferred remediation enqueue (#7347)', () => {
 
   it('nothing deferred means no continuation', () => {
     expect(__remediationAfterCommit([])).toBeUndefined();
+  });
+});
+
+// #7347 — end-to-end: evaluatePolicy's own `deferEnqueue` option must thread a
+// collector all the way into triggerRemediationAutomation and back out as
+// `afterCommit`, not just the two `__trigger*` helpers tested in isolation
+// above.
+describe('evaluatePolicy deferEnqueue end to end (#7347)', () => {
+  const POLICY = {
+    id: 'policy-1111-1111-1111-111111111111',
+    name: 'OS build check',
+    orgId: DEVICE.orgId,
+    partnerId: null,
+    enforcement: 'enforce',
+    targets: {},
+    // A device on osVersion 10.0.19045 never satisfies this, so the device is
+    // reliably non_compliant without depending on the (empty-mocked) software/
+    // disk/registry/config inventory rows.
+    rules: [{ type: 'os_version', minOsVersion: '99.0.0' }],
+    remediationScriptId: SCRIPT_ID,
+  };
+
+  /** Queue the 11 selects `evaluatePolicy` issues, in call order, for one org-owned policy + one target device. */
+  function queueEvaluatePolicySelects() {
+    queueSelects(
+      [DEVICE],                                                                     // 1. resolveTargetDevices
+      [],                                                                            // 2. existingComplianceRows
+      [],                                                                            // 3. diskRows
+      [],                                                                            // 4. installed softwareRows
+      [],                                                                            // 5. softwareInventory rows
+      [],                                                                            // 6. registryRows
+      [],                                                                            // 7. configRows
+      [{ partnerId: null }],                                                        // 8. org lookup (resolvePolicyRemediationAutomationIdForOrg)
+      [{ id: AUTOMATION_ID, actions: [{ scriptId: SCRIPT_ID }], orgId: DEVICE.orgId, partnerId: null }], // 9. candidate automations
+      [{ partnerId: null }],                                                        // 10. org lookup (triggerRemediationAutomation)
+      [{ id: AUTOMATION_ID, enabled: true, orgId: DEVICE.orgId, partnerId: null, retiredAt: null }],     // 11. the automation row
+    );
+  }
+
+  /** insert() is used both for the compliance upsert (onConflictDoUpdate) and the automation-run insert (returning). */
+  function mockInsertForEvaluatePolicy() {
+    insertMock.mockReturnValue({
+      values: () => ({
+        returning: () => Promise.resolve([{ id: RUN_ID, logs: [] }]),
+        onConflictDoUpdate: () => Promise.resolve(undefined),
+      }),
+    });
+  }
+
+  it('defers the enqueue during the call and runs it via afterCommit once the caller commits', async () => {
+    queueEvaluatePolicySelects();
+    mockInsertForEvaluatePolicy();
+
+    const result = await evaluatePolicy(POLICY as never, { deferEnqueue: true, requestRemediation: true });
+
+    // Not enqueued yet — the caller's transaction has not committed.
+    expect(enqueueAutomationRunMock).not.toHaveBeenCalled();
+
+    expect(result.results[0]!.status).toBe('non_compliant');
+    expect(result.results[0]!.remediationRunId).toBe(RUN_ID);
+    expect(typeof result.afterCommit).toBe('function');
+
+    await result.afterCommit!();
+
+    expect(enqueueAutomationRunMock).toHaveBeenCalledTimes(1);
+    expect(enqueueAutomationRunMock).toHaveBeenCalledWith(RUN_ID, [DEVICE.id]);
+  });
+
+  it('without deferEnqueue, enqueues immediately and returns no afterCommit', async () => {
+    queueEvaluatePolicySelects();
+    mockInsertForEvaluatePolicy();
+
+    const result = await evaluatePolicy(POLICY as never, { requestRemediation: true });
+
+    expect(result.results[0]!.status).toBe('non_compliant');
+    expect(result.results[0]!.remediationRunId).toBe(RUN_ID);
+    expect('afterCommit' in result).toBe(false);
+
+    expect(enqueueAutomationRunMock).toHaveBeenCalledTimes(1);
+    expect(enqueueAutomationRunMock).toHaveBeenCalledWith(RUN_ID, [DEVICE.id]);
   });
 });
